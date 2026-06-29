@@ -325,6 +325,12 @@ impl ContextStorageApplier {
     /// value. Recovering it (rather than `.expect()`-ing) keeps a transient
     /// panic in one apply from poisoning the mutex and turning every later
     /// apply on this context into a crash.
+    ///
+    /// If a holder panicked after `take()`-ing the key but before replacing it,
+    /// the recovered slot is observed empty, so the next apply acquires a fresh
+    /// `ContextAtomic::Lock` instead of reusing a held one. That is safe and
+    /// leaks nothing: the panicked holder's `ContextAtomicKey` is an owned
+    /// `RwLock` guard, so it was dropped during unwind and its lock released.
     fn lock_apply_slot(&self) -> std::sync::MutexGuard<'_, Option<ContextAtomicKey>> {
         self.apply_lock_slot
             .lock()

@@ -308,9 +308,12 @@ where
             let loaded = self.inner.get(self.value_id())?.unwrap_or_default();
             *slot = Some(loaded);
         }
-        // The slot is populated above, so this closure never runs — it only
-        // hands back the cached `&mut T` while keeping the borrow checker happy
-        // without a panicking `unwrap`.
+        // The slot is `Some` by the line above, so `get_or_insert_with` never
+        // calls `T::default` — it is just the panic-free way to obtain `&mut T`
+        // from a now-populated slot (a borrow-checker-clean alternative to
+        // `as_mut().unwrap()` that needs no `clippy::expect_used` waiver). A
+        // bare `expect`/`unwrap` would reintroduce a panic on the hot read path
+        // this change exists to remove.
         let value = slot.get_or_insert_with(T::default);
         #[expect(unsafe_code, reason = "necessary for caching, mirrors Root::get")]
         let value = unsafe { &mut *core::ptr::from_mut(value) };
