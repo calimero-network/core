@@ -981,6 +981,24 @@ where
     }
 }
 
+/// Logged when a fallible collection comparison hits a store read error. The
+/// comparison still returns a total result (it never panics), but the fault is
+/// surfaced so it is not silently swallowed — in particular two unreadable
+/// collections compare *equal*, which a caller must not mistake for "converged".
+/// These `PartialEq`/`Ord` impls are not on the sync/merkle convergence path
+/// (that compares hashes, not whole collections), so a masked difference here
+/// cannot hide replication divergence; the warning keeps the fault observable
+/// regardless.
+#[cold]
+fn warn_collection_compare_read_error() {
+    tracing::warn!(
+        target: "storage::collections",
+        "store read error during collection comparison/format; degraded to a \
+         total fallback instead of panicking — any difference between the \
+         unreadable sides is not observed by this comparison"
+    );
+}
+
 /// Total equality over two fallible collection reads.
 ///
 /// `PartialEq`/`Ord`/`Debug` on these collections have to read from the
@@ -988,7 +1006,8 @@ where
 /// mid-comparison — e.g. inside a `BTreeMap` lookup or a `tracing` log — on a
 /// transient or corrupt store. Instead we degrade to a *total* result: two
 /// unreadable collections compare equal, and a readable one never equals an
-/// unreadable one. No comparison can panic.
+/// unreadable one. No comparison can panic; a read error is logged via
+/// [`warn_collection_compare_read_error`] so the fault stays observable.
 pub(crate) fn fallible_iter_eq<I, T, E>(l: Result<I, E>, r: Result<I, E>) -> bool
 where
     I: Iterator<Item = T>,
@@ -996,8 +1015,14 @@ where
 {
     match (l, r) {
         (Ok(l), Ok(r)) => l.eq(r),
-        (Err(_), Err(_)) => true,
-        _ => false,
+        (Err(_), Err(_)) => {
+            warn_collection_compare_read_error();
+            true
+        }
+        _ => {
+            warn_collection_compare_read_error();
+            false
+        }
     }
 }
 
@@ -1012,9 +1037,18 @@ where
 {
     match (l, r) {
         (Ok(l), Ok(r)) => l.cmp(r),
-        (Err(_), Ok(_)) => Ordering::Less,
-        (Ok(_), Err(_)) => Ordering::Greater,
-        (Err(_), Err(_)) => Ordering::Equal,
+        (Err(_), Ok(_)) => {
+            warn_collection_compare_read_error();
+            Ordering::Less
+        }
+        (Ok(_), Err(_)) => {
+            warn_collection_compare_read_error();
+            Ordering::Greater
+        }
+        (Err(_), Err(_)) => {
+            warn_collection_compare_read_error();
+            Ordering::Equal
+        }
     }
 }
 
@@ -1032,9 +1066,18 @@ where
 {
     match (l, r) {
         (Ok(l), Ok(r)) => l.partial_cmp(r),
-        (Err(_), Ok(_)) => Some(Ordering::Less),
-        (Ok(_), Err(_)) => Some(Ordering::Greater),
-        (Err(_), Err(_)) => Some(Ordering::Equal),
+        (Err(_), Ok(_)) => {
+            warn_collection_compare_read_error();
+            Some(Ordering::Less)
+        }
+        (Ok(_), Err(_)) => {
+            warn_collection_compare_read_error();
+            Some(Ordering::Greater)
+        }
+        (Err(_), Err(_)) => {
+            warn_collection_compare_read_error();
+            Some(Ordering::Equal)
+        }
     }
 }
 

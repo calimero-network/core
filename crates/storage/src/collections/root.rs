@@ -195,7 +195,15 @@ where
 
     /// Fetches the root collection.
     ///
-    /// Returns `None` when no root has been written yet. A storage-read
+    /// Returns `None` when no root has been written yet. A returned
+    /// `Some(root)` guarantees the single inner entry exists — it is written
+    /// atomically alongside the root at construction (see [`Self::new_internal`])
+    /// — so a *missing* entry observed later by [`Self::get`] is always store
+    /// corruption (or a partial write from a previous crash), never a normal
+    /// "empty root" state. That is why `get` panics rather than returning `None`
+    /// for the absent-entry case.
+    ///
+    /// A storage-read
     /// fault (as opposed to "not present") is fatal and has nowhere to
     /// propagate through this `Option`-returning signature, so it is logged
     /// and then panics — keeping the cause in node logs before any abort.

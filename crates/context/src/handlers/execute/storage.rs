@@ -132,8 +132,12 @@ impl ContextStorage {
         // safety: the interned `Arc` lives in `self`'s `keys` map for as long as
         //         `Self` (the temporal layer that borrows it is also a field of
         //         `Self`), and its heap payload keeps a stable address across
-        //         later map inserts/rehashes. We never hand a key reference out
-        //         past `Self`.
+        //         later map inserts/rehashes — taking the reference through the
+        //         `Arc` (`&**interned`), not into the `HashMap`, so a rehash does
+        //         not invalidate it. `Self` is an `ouroboros` self-referential
+        //         struct, so it is pinned in place: a move cannot invalidate the
+        //         temporal layer's borrow of these keys. We never hand a key
+        //         reference out past `Self`.
         Some(unsafe {
             mem::transmute::<&key::ContextState, &'static key::ContextState>(&**interned)
         })
@@ -316,10 +320,13 @@ impl ContextPrivateStorage {
             .entry(state_key)
             .or_insert_with(|| Arc::new(key::ContextPrivateState::new(*context_id, state_key)));
 
-        // safety: the interned `Arc` lives in `self`'s `keys` map for as long as
-        //         `Self`, and its heap payload keeps a stable address across
-        //         later map inserts/rehashes. We never hand a key reference out
-        //         past `Self`.
+        // safety: same as `ContextStorage::state_key` — the interned `Arc` lives
+        //         in `self`'s `keys` map for as long as `Self`, its heap payload
+        //         keeps a stable address across map rehashes (the reference goes
+        //         through the `Arc`, not the `HashMap`), and `Self` is an
+        //         `ouroboros`-pinned self-referential struct so a move cannot
+        //         invalidate the temporal layer's borrow. We never hand a key
+        //         reference out past `Self`.
         Some(unsafe {
             mem::transmute::<&key::ContextPrivateState, &'static key::ContextPrivateState>(
                 &**interned,
