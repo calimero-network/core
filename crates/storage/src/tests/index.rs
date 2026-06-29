@@ -590,7 +590,7 @@ mod index__public_methods {
             ChildInfo::new(child_id, child_own_hash, Metadata::default()),
         )
         .is_ok());
-        assert!(<Index<MainStorage>>::remove_child_from(root_id, child_id).is_ok());
+        assert!(<Index<MainStorage>>::remove_child_from(root_id, child_id, time_now()).is_ok());
 
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         // After removal, children should be None
@@ -725,6 +725,122 @@ mod index__private_methods {
         assert!(<Index<TestStorage>>::get_index(child3_id)
             .unwrap()
             .is_some()); // Not deleted
+    }
+}
+
+#[cfg(test)]
+mod subtree_tombstoning {
+    use super::*;
+    use crate::env::time_now;
+    use crate::store::MockedStorage;
+
+    /// Builds a linear chain root -> a -> b -> c under a fresh root and
+    /// returns the four ids. Each level is a child of the previous, so the
+    /// subtree under `a` is {b, c}.
+    fn build_chain<S: crate::store::StorageAdaptor>() -> (Id, Id, Id, Id) {
+        let root = Id::random();
+        let a = Id::random();
+        let b = Id::random();
+        let c = Id::random();
+        <Index<S>>::add_root(ChildInfo::new(root, [1; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(root, ChildInfo::new(a, [2; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(b, [3; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(b, ChildInfo::new(c, [4; 32], Metadata::default())).unwrap();
+        (root, a, b, c)
+    }
+
+    /// Deleting a node tombstones its WHOLE subtree, not just the node. The
+    /// pre-fix behaviour tombstoned only `a`, leaving `b` and `c` live as
+    /// orphans under a tombstoned ancestor (and so unreclaimable by GC).
+    #[test]
+    fn remove_child_from_tombstones_whole_subtree() {
+        let (root, a, b, c) = build_chain::<MainStorage>();
+
+        <Index<MainStorage>>::remove_child_from(root, a, time_now()).unwrap();
+
+        assert!(<Index<MainStorage>>::is_deleted(a).unwrap(), "root child");
+        assert!(<Index<MainStorage>>::is_deleted(b).unwrap(), "grandchild");
+        assert!(
+            <Index<MainStorage>>::is_deleted(c).unwrap(),
+            "great-grandchild"
+        );
+    }
+
+    /// `tombstone_descendants_of` tombstones every descendant but leaves the
+    /// root itself untouched (the caller tombstones the root).
+    #[test]
+    fn tombstone_descendants_of_skips_root_tombstones_rest() {
+        let (_root, a, b, c) = build_chain::<MainStorage>();
+
+        <Index<MainStorage>>::tombstone_descendants_of(a, time_now()).unwrap();
+
+        assert!(
+            !<Index<MainStorage>>::is_deleted(a).unwrap(),
+            "root untouched"
+        );
+        assert!(<Index<MainStorage>>::is_deleted(b).unwrap());
+        assert!(<Index<MainStorage>>::is_deleted(c).unwrap());
+    }
+
+    /// A descendant whose own `updated_at` is strictly newer than the delete
+    /// nonce survives as a "zombie" (live entity under a tombstoned ancestor),
+    /// matching the canonical delete-vs-update tiebreak `apply_delete_ref_action`
+    /// uses. This is what keeps concurrent update-into-a-deleted-subtree
+    /// convergent rather than letting an unconditional tombstone clobber a
+    /// causally-newer update.
+    #[test]
+    fn newer_update_on_descendant_wins_tiebreak() {
+        let (root, a, b, c) = build_chain::<MainStorage>();
+        let deleted_at = time_now();
+
+        // `c` received an update that causally follows the delete.
+        let mut c_index = <Index<MainStorage>>::get_index(c).unwrap().unwrap();
+        *c_index.metadata.updated_at = deleted_at + 1_000;
+        <Index<MainStorage>>::save_index(&c_index).unwrap();
+
+        <Index<MainStorage>>::remove_child_from(root, a, deleted_at).unwrap();
+
+        assert!(<Index<MainStorage>>::is_deleted(a).unwrap());
+        assert!(<Index<MainStorage>>::is_deleted(b).unwrap());
+        assert!(
+            !<Index<MainStorage>>::is_deleted(c).unwrap(),
+            "strictly-newer update on a descendant must survive the subtree delete"
+        );
+    }
+
+    /// The point of the fix: once the subtree is tombstoned, GC reclaims the
+    /// WHOLE subtree after retention — not just the directly-deleted node.
+    #[test]
+    fn gc_reclaims_full_subtree_after_retention() {
+        type TestStorage = MockedStorage<2100>;
+
+        let (root, a, b, c) = build_chain::<TestStorage>();
+
+        // Delete two days ago so a one-day-retention GC reclaims the subtree.
+        let two_days = 2 * 86_400_000_000_000_u64;
+        let deleted_at = time_now() - two_days;
+        <Index<TestStorage>>::remove_child_from(root, a, deleted_at).unwrap();
+
+        // All three subtree rows are tombstoned (root stays live).
+        for id in [a, b, c] {
+            assert!(
+                <Index<TestStorage>>::is_deleted(id).unwrap(),
+                "subtree row should be tombstoned before GC"
+            );
+        }
+
+        let one_day = 86_400_000_000_000_u64;
+        let collected = <Index<TestStorage>>::garbage_collect_tombstones(one_day).unwrap();
+
+        assert_eq!(collected, 3, "GC should reclaim all three subtree rows");
+        for id in [a, b, c] {
+            assert!(
+                <Index<TestStorage>>::get_index(id).unwrap().is_none(),
+                "subtree row should be reclaimed by GC"
+            );
+        }
+        // The (live) root survives.
+        assert!(<Index<TestStorage>>::get_index(root).unwrap().is_some());
     }
 }
 

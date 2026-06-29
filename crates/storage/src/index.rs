@@ -906,25 +906,107 @@ impl<S: StorageAdaptor> Index<S> {
 
     /// Removes and deletes a child from a collection.
     ///
-    /// Uses tombstone-based deletion. To move a child to a different parent,
-    /// just add it to the new parent instead.
-    pub(crate) fn remove_child_from(parent_id: Id, child_id: Id) -> Result<(), StorageError> {
+    /// Uses tombstone-based deletion. Deleting a child also tombstones its
+    /// entire subtree (see [`tombstone_descendants_of`](Self::tombstone_descendants_of)):
+    /// a non-recursive delete would leave descendant index rows live, so they
+    /// could never be reclaimed by tombstone GC and would linger as orphans
+    /// under a tombstoned parent.
+    ///
+    /// `deleted_at` is the caller's tombstone nonce — the same value carried on
+    /// the `DeleteRef` wire action — so the child, every descendant, and the
+    /// remote replicas that replay the `DeleteRef` all stamp the subtree with
+    /// one identical timestamp and converge.
+    ///
+    /// To move a child to a different parent, add it to the new parent instead.
+    pub(crate) fn remove_child_from(
+        parent_id: Id,
+        child_id: Id,
+        deleted_at: u64,
+    ) -> Result<(), StorageError> {
         let _mutation_guard = index_mutation_guard();
-        Self::delete_entity_and_create_tombstone(child_id)?;
+        // Tombstone the subtree first (while `child_id`'s `children` are still
+        // readable), then the child itself, then detach it from its parent.
+        Self::tombstone_descendants_of(child_id, deleted_at)?;
+        Self::delete_entity_and_create_tombstone(child_id, deleted_at)?;
         Self::update_parent_after_child_removal(parent_id, child_id)?;
         Self::recalculate_ancestor_hashes_for(parent_id)?;
         Ok(())
     }
 
-    /// Deletes entity data and creates tombstone marker.
+    /// Deletes entity data and creates a tombstone marker for a single entity.
     ///
     /// Step 1 of deletion: Remove actual data, keep index for CRDT sync.
-    fn delete_entity_and_create_tombstone(id: Id) -> Result<(), StorageError> {
+    fn delete_entity_and_create_tombstone(id: Id, deleted_at: u64) -> Result<(), StorageError> {
         // Delete the actual entity data immediately (save storage space)
         let _ignored = S::storage_remove(Key::Entry(id));
 
         // Mark child index as deleted (tombstone for CRDT sync)
-        Self::mark_deleted(id, time_now())
+        Self::mark_deleted(id, deleted_at)
+    }
+
+    /// Tombstones every descendant of `root_id` at `deleted_at`.
+    ///
+    /// Deleting an entity detaches its whole subtree from the live Merkle tree
+    /// (the root is dropped from its parent's `children`), but the descendant
+    /// index rows remain. Without tombstoning them they keep `deleted_at =
+    /// None` forever, so tombstone GC can never reclaim them and they leak. This
+    /// walks the subtree via each node's `children` and tombstones the rows.
+    ///
+    /// Each descendant is resolved with the SAME canonical delete-vs-update
+    /// tiebreak that [`apply_delete_ref_action`] uses for a directly-deleted
+    /// entity: a descendant whose own `updated_at` is STRICTLY newer than
+    /// `deleted_at` (a concurrent update that causally follows the delete) keeps
+    /// its data — only strictly-older state is tombstoned. Running the identical
+    /// rule here and on the `DeleteRef` replay path means every replica stamps
+    /// the subtree the same way and converges, including the live-update-wins
+    /// "zombie" case (a surviving entity under a tombstoned ancestor), which is
+    /// the existing single-level concurrent add/update-vs-delete semantics
+    /// applied transitively.
+    ///
+    /// Internal subtree parent-lists and hashes are intentionally NOT
+    /// recomputed: the whole subtree is detached at the root, so none of it
+    /// feeds a live hash. Only the root's removal from its parent (done by the
+    /// caller) touches the live tree.
+    ///
+    /// [`apply_delete_ref_action`]: crate::interface::Interface::apply_delete_ref_action
+    pub(crate) fn tombstone_descendants_of(
+        root_id: Id,
+        deleted_at: u64,
+    ) -> Result<(), StorageError> {
+        let _mutation_guard = index_mutation_guard();
+
+        // Collect the descendant ids up front (depth-first over `children`) so
+        // the per-node tombstone writes below don't mutate the structure we are
+        // still traversing.
+        let mut stack = vec![root_id];
+        let mut descendants = Vec::new();
+        while let Some(id) = stack.pop() {
+            let Some(index) = Self::get_index(id)? else {
+                continue;
+            };
+            if let Some(children) = index.children {
+                for child in children {
+                    let child_id = child.id();
+                    descendants.push(child_id);
+                    stack.push(child_id);
+                }
+            }
+        }
+
+        for id in descendants {
+            let Some(index) = Self::get_index(id)? else {
+                continue;
+            };
+            // Strictly-newer local state wins (a concurrent update that
+            // causally follows this delete); equal or older is tombstoned. Same
+            // `<` tiebreak as `apply_delete_ref_action`.
+            if deleted_at < *index.metadata.updated_at {
+                continue;
+            }
+            Self::delete_entity_and_create_tombstone(id, deleted_at)?;
+        }
+
+        Ok(())
     }
 
     /// Removes a child reference from a parent without creating a tombstone.
