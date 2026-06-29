@@ -30,11 +30,12 @@ pub fn validate_path_component(component: &str, component_label: Option<&str>) -
         eyre::bail!("{component_label} cannot be empty");
     }
 
-    // Belt-and-suspenders guard against literal `..` traversal sequences. The
-    // PRIMARY traversal defense is the ASCII allowlist below, which rejects path
-    // separators (`/`, `\`) outright; this `..` check is an additional guard.
-    // Keep the allowlist even if this check is ever reordered or removed — they
-    // are not independent.
+    // Reject interior `..` traversal sequences. This check is LOAD-BEARING, not
+    // merely redundant: the ASCII allowlist below permits `.`, and the
+    // dot-boundary check only rejects leading/trailing dots, so an interior
+    // `..` (e.g. `a..b`) is caught ONLY here. The allowlist independently blocks
+    // path separators (`/`, `\`). The two guards cover different cases and
+    // neither subsumes the other — do not drop this one when refactoring.
     if component.contains("..") {
         eyre::bail!("{component_label} cannot contain '..': '{component}'");
     }
