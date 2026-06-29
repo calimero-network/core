@@ -221,6 +221,13 @@ pub fn spawn(store: Store, context_client: ContextClient) {
 /// aborts any per-event handler tasks still in flight (e.g. parked on
 /// `join_context`); the semaphore close additionally unblocks any that
 /// were parked on `acquire` first.
+///
+/// A handler already inside `join_context` when the abort lands is
+/// cancelled at an arbitrary await point rather than a clean boundary.
+/// This is accepted as best-effort shutdown: `join_context` is
+/// idempotent, so a partially-applied join left behind is reconciled by
+/// the re-join on the next `ContextRegistered`/`AutoFollowSet` event
+/// after restart (the DAG is authoritative).
 pub fn shutdown() {
     if let Some(state) = HANDLE.lock().expect("auto-follow HANDLE poisoned").take() {
         state.limiter.close();
