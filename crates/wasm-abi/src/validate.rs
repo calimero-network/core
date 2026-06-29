@@ -5,11 +5,32 @@ use crate::schema::{
     Variant,
 };
 
+/// The `schema_version` tag prefix every manifest carries.
+const SCHEMA_PREFIX: &str = "wasm-abi/";
+
+/// The ABI schema major version this build understands. A manifest tagged with
+/// this major (any minor) validates; a *different* major is a known-but-
+/// unsupported schema, surfaced distinctly from a tag that isn't a
+/// `wasm-abi/<major>` string at all. Matching the major (rather than the whole
+/// `"wasm-abi/1"` string) means a forward-compatible minor bump (`wasm-abi/1.1`)
+/// still validates instead of being silently rejected as "no schema".
+const SUPPORTED_SCHEMA_MAJOR: u32 = 1;
+
+/// Parse the major version out of a `wasm-abi/<major>[.<minor>]` tag. `None` if
+/// the string lacks the prefix or the major isn't an integer.
+fn schema_major(version: &str) -> Option<u32> {
+    let rest = version.strip_prefix(SCHEMA_PREFIX)?;
+    let major = rest.split('.').next().unwrap_or(rest);
+    major.parse::<u32>().ok()
+}
+
 /// Validation error types
 #[derive(Debug, thiserror::Error)]
 pub enum ValidationError {
     #[error("invalid schema version: {0}")]
     InvalidSchemaVersion(String),
+    #[error("unsupported schema major version: {0} (this build understands wasm-abi/{SUPPORTED_SCHEMA_MAJOR})")]
+    UnsupportedSchemaVersion(String),
     #[error("invalid type reference: {ref_name} at {path}")]
     InvalidTypeReference { ref_name: String, path: String },
     #[error("invalid bytes size: {size} at {path}")]
@@ -24,11 +45,22 @@ pub enum ValidationError {
 
 /// Validate a manifest
 pub fn validate_manifest(manifest: &Manifest) -> Result<(), ValidationError> {
-    // Check schema version
-    if manifest.schema_version != "wasm-abi/1" {
-        return Err(ValidationError::InvalidSchemaVersion(
-            manifest.schema_version.clone(),
-        ));
+    // Check schema version by major. A future major (e.g. wasm-abi/2) is
+    // reported as `UnsupportedSchemaVersion` — distinct from a malformed tag —
+    // so callers can tell "schema present but from a newer toolchain" apart from
+    // "no/garbled schema" rather than collapsing both to a generic rejection.
+    match schema_major(&manifest.schema_version) {
+        Some(SUPPORTED_SCHEMA_MAJOR) => {}
+        Some(_) => {
+            return Err(ValidationError::UnsupportedSchemaVersion(
+                manifest.schema_version.clone(),
+            ));
+        }
+        None => {
+            return Err(ValidationError::InvalidSchemaVersion(
+                manifest.schema_version.clone(),
+            ));
+        }
     }
 
     // Check that methods are sorted
@@ -324,7 +356,42 @@ mod tests {
         let mut manifest = Manifest::new();
         manifest.schema_version = "invalid".to_owned();
 
-        assert!(validate_manifest(&manifest).is_err());
+        assert!(matches!(
+            validate_manifest(&manifest),
+            Err(ValidationError::InvalidSchemaVersion(_))
+        ));
+    }
+
+    #[test]
+    fn test_unsupported_future_major_is_distinct() {
+        let mut manifest = Manifest::new();
+        manifest.schema_version = "wasm-abi/2".to_owned();
+
+        // A well-formed tag from a newer toolchain is surfaced distinctly from a
+        // malformed one, so callers can treat "newer schema" ≠ "no schema".
+        assert!(matches!(
+            validate_manifest(&manifest),
+            Err(ValidationError::UnsupportedSchemaVersion(_))
+        ));
+    }
+
+    #[test]
+    fn test_forward_compatible_minor_accepted() {
+        let mut manifest = Manifest::new();
+        manifest.schema_version = "wasm-abi/1.3".to_owned();
+
+        // Same major, newer minor: still our schema, must validate.
+        assert!(validate_manifest(&manifest).is_ok());
+    }
+
+    #[test]
+    fn schema_major_parsing() {
+        assert_eq!(schema_major("wasm-abi/1"), Some(1));
+        assert_eq!(schema_major("wasm-abi/1.4"), Some(1));
+        assert_eq!(schema_major("wasm-abi/2"), Some(2));
+        assert_eq!(schema_major("wasm-abi/"), None);
+        assert_eq!(schema_major("nope/1"), None);
+        assert_eq!(schema_major("invalid"), None);
     }
 
     #[test]

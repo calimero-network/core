@@ -37,6 +37,13 @@ impl std::error::Error for EmbedError {
 /// Read the embedded state-schema `Manifest`, or `None` if the section is absent
 /// or malformed (drives fail-open at the upgrade gate).
 ///
+/// Note: a section tagged with an unsupported *future* major (`wasm-abi/2`)
+/// fails `validate_manifest` and is therefore also read as `None` here — i.e. it
+/// fails open like an absent section. Distinguishing "schema present but from a
+/// newer toolchain" from "no schema" at the downgrade gate would require
+/// threading [`crate::validate::ValidationError::UnsupportedSchemaVersion`] up
+/// to the caller and is intentionally left to a focused change on that gate.
+///
 /// Returns the *last* parseable `calimero_abi_v1` section. The writer emits
 /// exactly one (appended last), so this is normally unambiguous; on the off
 /// chance a stale earlier section co-exists, last-wins matches the writer's

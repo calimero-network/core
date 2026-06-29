@@ -67,9 +67,9 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
 /// */
 /// ```
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics at compile time if:
+/// Emits a compile error (with a span pointing at the offending item) if:
 /// - Applied to non-struct types (enums, unions)
 /// - Struct has unnamed fields
 /// - Missing `#[storage]` attribute
@@ -89,21 +89,37 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 
     let fields = match &input.data {
         Data::Struct(data) => &data.fields,
-        Data::Enum(_) | Data::Union(_) => panic!("AtomicUnit can only be derived for structs"),
+        Data::Enum(_) | Data::Union(_) => {
+            return syn::Error::new_spanned(name, "AtomicUnit can only be derived for structs")
+                .to_compile_error()
+                .into();
+        }
     };
 
     let named_fields = match fields {
         Fields::Named(fields) => &fields.named,
         Fields::Unnamed(_) | Fields::Unit => {
-            panic!("AtomicUnit can only be derived for structs with named fields")
+            return syn::Error::new_spanned(
+                fields,
+                "AtomicUnit can only be derived for structs with named fields",
+            )
+            .to_compile_error()
+            .into();
         }
     };
 
     // Find the field marked with the #[storage] attribute
-    let storage_field = named_fields
+    let Some(storage_field) = named_fields
         .iter()
         .find(|f| f.attrs.iter().any(|attr| attr.path().is_ident("storage")))
-        .expect("You must designate one field with #[storage] for the Element");
+    else {
+        return syn::Error::new_spanned(
+            name,
+            "AtomicUnit requires exactly one field annotated with #[storage] to hold the Element",
+        )
+        .to_compile_error()
+        .into();
+    };
 
     let storage_ident = storage_field.ident.as_ref().unwrap();
 
@@ -129,9 +145,9 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         impl #impl_generics calimero_storage::entities::Data for #name #ty_generics #serde_where_clause {
-            fn collections(&self) -> std::collections::BTreeMap<String, Vec<calimero_storage::entities::ChildInfo>> {
+            fn collections(&self) -> ::std::collections::BTreeMap<::std::string::String, ::std::vec::Vec<calimero_storage::entities::ChildInfo>> {
                 use calimero_storage::entities::Collection;
-                let mut collections = std::collections::BTreeMap::new();
+                let mut collections = ::std::collections::BTreeMap::new();
                 #(
                     collections.insert(
                         stringify!(#collection_fields).to_owned(),
@@ -199,12 +215,11 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// # Panics
+/// # Errors
 ///
-/// This macro will panic during compilation if:
+/// This macro emits a compile error (with a span on the offending item) if:
 ///
 ///   - It is applied to anything other than a struct
-///   - The struct has unnamed fields
 ///   - The `#[children(Type)]` attribute is missing or invalid
 ///
 /// # See also
@@ -218,30 +233,54 @@ pub fn collection_derive(input: TokenStream) -> TokenStream {
     let name = &input.ident;
     let where_clause = input.generics.make_where_clause().clone();
     let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
-    let child_type = input
+    let Some(children_attr) = input
         .attrs
         .iter()
         .find(|attr| attr.path().is_ident("children"))
-        .and_then(|attr| attr.parse_args::<Type>().ok())
-        .expect("Collection derive requires #[children(Type)] attribute");
+    else {
+        return syn::Error::new_spanned(
+            &input.ident,
+            "Collection derive requires a `#[children(Type)]` attribute naming the child Data type",
+        )
+        .to_compile_error()
+        .into();
+    };
+    let child_type = match children_attr.parse_args::<Type>() {
+        Ok(ty) => ty,
+        Err(err) => return err.to_compile_error().into(),
+    };
 
     let fields = match input.data {
         Data::Struct(data) => data.fields,
-        Data::Enum(_) | Data::Union(_) => panic!("Collection can only be derived for structs"),
+        Data::Enum(_) | Data::Union(_) => {
+            return syn::Error::new_spanned(
+                &input.ident,
+                "Collection can only be derived for structs",
+            )
+            .to_compile_error()
+            .into();
+        }
     };
 
+    // A Collection is a pure grouping handle: its entries live as child elements
+    // in storage, never inline. So it (de)serializes to exactly zero bytes. The
+    // serialize/deserialize pair is symmetric (both touch no bytes), which keeps
+    // the surrounding struct's borsh stream in lock-step — the writer emits
+    // nothing for this field and the reader consumes nothing for it. Any inline
+    // fields the struct carries are reconstructed via `Default` on decode, so the
+    // type must not rely on them surviving a round-trip.
     let deserialize_impl = quote! {
         impl #impl_generics calimero_sdk::borsh::BorshDeserialize for #name #ty_generics #where_clause {
-            fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-                Ok(Self::default())
+            fn deserialize_reader<R: ::std::io::Read>(_reader: &mut R) -> ::std::io::Result<Self> {
+                ::core::result::Result::Ok(<Self as ::core::default::Default>::default())
             }
         }
     };
 
     let serialize_impl = quote! {
         impl #impl_generics calimero_sdk::borsh::BorshSerialize for #name #ty_generics #where_clause {
-            fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-                Ok(())
+            fn serialize<W: ::std::io::Write>(&self, _writer: &mut W) -> ::std::io::Result<()> {
+                ::core::result::Result::Ok(())
             }
         }
     };
@@ -250,7 +289,7 @@ pub fn collection_derive(input: TokenStream) -> TokenStream {
         .iter()
         .map(|field| {
             let ident = field.ident.as_ref().unwrap();
-            quote! { #ident: Default::default(), }
+            quote! { #ident: ::core::default::Default::default(), }
         })
         .collect::<Vec<_>>();
 

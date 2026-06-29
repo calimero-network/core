@@ -21,16 +21,16 @@ pub struct Slice<'a, T> {
 pub type Buffer<'a> = Slice<'a, u8>;
 pub type BufferMut<'a> = Buffer<'a>;
 
-impl<'a, T> AsRef<[T]> for Slice<'a, T> {
+impl<T> AsRef<[T]> for Slice<'_, T> {
     #[inline]
-    fn as_ref(&self) -> &'a [T] {
+    fn as_ref(&self) -> &[T] {
         self.as_slice()
     }
 }
 
-impl<'a, T> AsMut<[T]> for Slice<'a, T> {
+impl<T> AsMut<[T]> for Slice<'_, T> {
     #[inline]
-    fn as_mut(&mut self) -> &'a mut [T] {
+    fn as_mut(&mut self) -> &mut [T] {
         self.as_mut_slice()
     }
 }
@@ -49,18 +49,18 @@ impl<'a, T> From<&'a mut [T]> for Slice<'a, T> {
     }
 }
 
-impl<'a, T> Deref for Slice<'a, T> {
+impl<T> Deref for Slice<'_, T> {
     type Target = [T];
 
     #[inline]
-    fn deref(&self) -> &'a Self::Target {
+    fn deref(&self) -> &Self::Target {
         self.as_slice()
     }
 }
 
-impl<'a, T> DerefMut for Slice<'a, T> {
+impl<T> DerefMut for Slice<'_, T> {
     #[inline]
-    fn deref_mut(&mut self) -> &'a mut Self::Target {
+    fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut_slice()
     }
 }
@@ -69,6 +69,9 @@ impl<'a> TryFrom<Buffer<'a>> for &'a str {
     type Error = Utf8Error;
 
     fn try_from(buf: Buffer<'a>) -> Result<Self, Self::Error> {
-        from_utf8(buf.as_slice())
+        // The descriptor is consumed by value, so the `'a` slice cannot alias a
+        // live borrow of `buf`. `into_slice` is the only path that hands out the
+        // full `'a` lifetime; the borrowing accessors stay tied to `self`.
+        from_utf8(buf.into_slice())
     }
 }

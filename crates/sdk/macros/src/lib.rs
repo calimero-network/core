@@ -353,9 +353,16 @@ pub fn emit(input: TokenStream) -> TokenStream {
             let event = &parsed.elems[0];
             quote!(::calimero_sdk::event::emit(#event)).into()
         } else {
-            // Fallback to regular emit if not 1 or 2 arguments
-            let event = &parsed.elems[0];
-            quote!(::calimero_sdk::event::emit(#event)).into()
+            // Zero elements (`emit!(())`) or three+ — neither is a valid event.
+            // Indexing `elems[0]` here would panic the proc macro ("proc macro
+            // panicked") with no useful span; emit a clear spanned error instead.
+            syn::Error::new_spanned(
+                &parsed,
+                "`app::emit!` expects an event, optionally with a handler: \
+                 `emit!(event)` or `emit!((event, \"handler\"))`",
+            )
+            .to_compile_error()
+            .into()
         }
     } else {
         // Simple case - just the event (not a tuple)

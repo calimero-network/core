@@ -38,21 +38,61 @@ impl ToTokens for EventImpl<'_> {
             #orig
 
             impl #impl_generics ::calimero_sdk::event::AppEvent for #ident #ty_generics #where_clause {
+                // `kind` and `data` are read off the serde-tagged object so the
+                // wire names honour any `#[serde(rename/rename_all)]` the variant
+                // carries — deriving them from the raw variant identifier here
+                // would silently diverge from how the event actually serializes.
                 fn kind(&self) -> ::std::borrow::Cow<str> {
-                    // todo! revisit quick
                     match ::calimero_sdk::serde_json::to_value(self) {
-                        Ok(data) => ::std::borrow::Cow::Owned(data["kind"].as_str().expect("Failed to get event kind").to_string()),
-                        Err(err) => ::calimero_sdk::env::panic_str(
-                            &format!("Failed to serialize event: {:?}", err)
+                        ::core::result::Result::Ok(
+                            ::calimero_sdk::serde_json::Value::Object(mut __obj)
+                        ) => match __obj.remove("kind") {
+                            ::core::option::Option::Some(
+                                ::calimero_sdk::serde_json::Value::String(__k)
+                            ) => ::std::borrow::Cow::Owned(__k),
+                            _ => ::calimero_sdk::env::panic_str(
+                                "event did not serialize with a string `kind` tag",
+                            ),
+                        },
+                        ::core::result::Result::Ok(_) => ::calimero_sdk::env::panic_str(
+                            "event did not serialize to a `{ kind, data }` object",
+                        ),
+                        ::core::result::Result::Err(__err) => ::calimero_sdk::env::panic_str(
+                            &::std::format!("Failed to serialize event: {:?}", __err)
                         ),
                     }
                 }
                 fn data(&self) -> ::std::borrow::Cow<[u8]> {
-                    // todo! revisit quick
                     match ::calimero_sdk::serde_json::to_value(self) {
-                        Ok(data) => ::std::borrow::Cow::Owned(::calimero_sdk::serde_json::to_vec(&data["data"]).expect("Failed to serialize event data")),
-                        Err(err) => ::calimero_sdk::env::panic_str(
-                            &format!("Failed to serialize event: {:?}", err)
+                        ::core::result::Result::Ok(
+                            ::calimero_sdk::serde_json::Value::Object(__obj)
+                        ) => match __obj.get("data") {
+                            // A unit variant carries no `content`, so serde omits
+                            // `data` (or leaves it null). Emit an empty payload —
+                            // not the 4-byte JSON literal `null` the old
+                            // round-trip produced.
+                            ::core::option::Option::None
+                            | ::core::option::Option::Some(
+                                ::calimero_sdk::serde_json::Value::Null
+                            ) => ::std::borrow::Cow::Borrowed(&[][..]),
+                            ::core::option::Option::Some(__data) => {
+                                match ::calimero_sdk::serde_json::to_vec(__data) {
+                                    ::core::result::Result::Ok(__bytes) =>
+                                        ::std::borrow::Cow::Owned(__bytes),
+                                    ::core::result::Result::Err(__err) =>
+                                        ::calimero_sdk::env::panic_str(
+                                            &::std::format!(
+                                                "Failed to serialize event data: {:?}", __err
+                                            )
+                                        ),
+                                }
+                            }
+                        },
+                        ::core::result::Result::Ok(_) => ::calimero_sdk::env::panic_str(
+                            "event did not serialize to a `{ kind, data }` object",
+                        ),
+                        ::core::result::Result::Err(__err) => ::calimero_sdk::env::panic_str(
+                            &::std::format!("Failed to serialize event: {:?}", __err)
                         ),
                     }
                 }
@@ -141,5 +181,53 @@ impl<'a> TryFrom<EventImplInput<'a>> for EventImpl<'a> {
             generics,
             orig: input.item,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use quote::ToTokens;
+    use syn::parse_quote;
+
+    use super::*;
+
+    fn render(item: syn::ItemEnum) -> String {
+        // Validation consults the reserved-ident table; initialize it first.
+        crate::reserved::init();
+        let item = StructOrEnumItem::Enum(item);
+        EventImpl::try_from(EventImplInput { item: &item })
+            .map_err(|_| "event impl should build for a valid enum")
+            .unwrap()
+            .to_token_stream()
+            .to_string()
+    }
+
+    #[test]
+    fn event_data_emits_empty_payload_for_unit_variants_and_drops_expect() {
+        let rendered = render(parse_quote! {
+            pub enum Event {
+                Ping,
+                Tick { count: u32 },
+            }
+        });
+
+        // A unit variant must no longer serialize to the 4-byte JSON literal
+        // `null`: `data()` returns an empty borrowed payload for a null/absent
+        // `data` field.
+        assert!(
+            rendered.contains("Null"),
+            "data() must special-case a null/absent `data` field, got:\n{rendered}",
+        );
+        assert!(
+            rendered.contains("Borrowed"),
+            "data() must return an empty borrowed payload for unit variants, got:\n{rendered}",
+        );
+
+        // The brittle `.expect(...)` that aborted the whole instance on a
+        // malformed value is gone.
+        assert!(
+            !rendered.contains(". expect ("),
+            "kind()/data() must not use `.expect`, got:\n{rendered}",
+        );
     }
 }

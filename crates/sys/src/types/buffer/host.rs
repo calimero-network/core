@@ -29,12 +29,17 @@ impl<'a, T> Slice<'a, T> {
     }
 
     #[inline]
-    pub(crate) fn as_slice(&self) -> &'a [T] {
+    pub(crate) fn as_slice(&self) -> &[T] {
         unimplemented!("Slice construction is only permitted in wasm32")
     }
 
     #[inline]
-    pub(crate) fn as_mut_slice(&mut self) -> &'a mut [T] {
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [T] {
+        unimplemented!("Slice construction is only permitted in wasm32")
+    }
+
+    #[inline]
+    pub(crate) fn into_slice(self) -> &'a [T] {
         unimplemented!("Slice construction is only permitted in wasm32")
     }
 }
