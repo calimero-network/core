@@ -94,7 +94,10 @@ pub use self::local_state::{
     track_member_context_join,
 };
 pub use self::membership::MembershipRepository;
-pub use self::membership::{GroupMembershipView, MembershipPath, MembershipPolicy};
+pub use self::membership::{
+    tcb_status_allowed, GroupMembershipView, MembershipPath, MembershipPolicy,
+    DEFAULT_ALLOWED_TCB_STATUS, TCB_STATUS_MOCK, TCB_STATUS_REVOKED,
+};
 pub use self::meta::MetaRepository;
 
 pub use self::metadata::MetadataRepository;

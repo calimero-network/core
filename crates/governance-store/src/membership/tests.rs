@@ -285,6 +285,108 @@ fn membership_policy_rules_report_rejection_reasons() {
 }
 
 #[test]
+fn tcb_status_gate_fail_closed_on_empty_allowlist() {
+    use super::policy_rules::{tcb_status_allowed, DEFAULT_ALLOWED_TCB_STATUS};
+
+    // Audit #356 / #17: an empty allowlist must NOT skip the TCB check; it
+    // enforces against the secure default {"UpToDate"}.
+    assert_eq!(DEFAULT_ALLOWED_TCB_STATUS, "UpToDate");
+
+    // Real UpToDate is admitted under an empty (default) policy.
+    assert!(tcb_status_allowed(&[], "UpToDate", false));
+
+    // Real OutOfDate is rejected under an empty policy — the regression this
+    // fix proves. Previously this was admitted (check skipped).
+    assert!(!tcb_status_allowed(&[], "OutOfDate", false));
+    assert!(!tcb_status_allowed(&[], "SWHardeningNeeded", false));
+}
+
+#[test]
+fn tcb_status_gate_honors_non_empty_allowlist() {
+    use super::policy_rules::tcb_status_allowed;
+
+    let allow = vec!["SWHardeningNeeded".to_owned()];
+    // Explicit allowlist still honored: an entry it lists is admitted...
+    assert!(tcb_status_allowed(&allow, "SWHardeningNeeded", false));
+    // ...and a status it does not list is rejected (including the default).
+    assert!(!tcb_status_allowed(&allow, "UpToDate", false));
+    assert!(!tcb_status_allowed(&allow, "OutOfDate", false));
+}
+
+#[test]
+fn tcb_status_gate_rejects_revoked_unconditionally() {
+    use super::policy_rules::tcb_status_allowed;
+
+    // Revoked is rejected even if somehow present in the allowlist, and
+    // case-insensitively (guards the stored-status subgroup-reuse path).
+    assert!(!tcb_status_allowed(&[], "Revoked", false));
+    assert!(!tcb_status_allowed(
+        &["Revoked".to_owned()],
+        "Revoked",
+        false
+    ));
+    assert!(!tcb_status_allowed(&[], "revoked", false));
+    assert!(!tcb_status_allowed(&[], "REVOKED", false));
+    // Even an explicit mock flag does not rescue a Revoked status.
+    assert!(!tcb_status_allowed(&[], "Revoked", true));
+}
+
+#[test]
+fn tcb_status_gate_preserves_mock_path() {
+    use super::policy_rules::tcb_status_allowed;
+
+    // Mock must still be admitted: via the explicit is_mock flag under an
+    // empty policy (admit_tee_node path)...
+    assert!(tcb_status_allowed(&[], "Mock", true));
+    // ...and via the reserved "Mock" status with is_mock=false (the op-apply /
+    // subgroup-reuse path, which carries no is_mock flag).
+    assert!(tcb_status_allowed(&[], "Mock", false));
+    // Mock bypasses even a non-empty allowlist that does not list it.
+    assert!(tcb_status_allowed(&["UpToDate".to_owned()], "Mock", false));
+}
+
+#[test]
+fn validate_allowlists_empty_tcb_enforces_secure_default() {
+    use super::policy_rules::{
+        validate_tee_attestation_allowlists, MembershipPolicyRejection, TeeAllowlistPolicy,
+        TeeAttestationClaims,
+    };
+
+    // Empty allowlists everywhere except the secure-default TCB enforcement.
+    let policy = TeeAllowlistPolicy {
+        allowed_mrtd: vec!["m-ok".to_owned()],
+        allowed_rtmr0: vec![],
+        allowed_rtmr1: vec![],
+        allowed_rtmr2: vec![],
+        allowed_rtmr3: vec![],
+        allowed_tcb_statuses: vec![],
+    };
+    let up_to_date = TeeAttestationClaims {
+        mrtd: "m-ok",
+        rtmr0: "x",
+        rtmr1: "x",
+        rtmr2: "x",
+        rtmr3: "x",
+        tcb_status: "UpToDate",
+    };
+    assert!(validate_tee_attestation_allowlists(&policy, &up_to_date).is_ok());
+
+    let out_of_date = TeeAttestationClaims {
+        tcb_status: "OutOfDate",
+        ..up_to_date
+    };
+    let err = validate_tee_attestation_allowlists(&policy, &out_of_date).unwrap_err();
+    assert_eq!(err.reason(), MembershipPolicyRejection::TcbStatusNotAllowed);
+
+    // Mock still passes through the op-apply path with an empty allowlist.
+    let mock = TeeAttestationClaims {
+        tcb_status: "Mock",
+        ..up_to_date
+    };
+    assert!(validate_tee_attestation_allowlists(&policy, &mock).is_ok());
+}
+
+#[test]
 fn count_members_and_admins() {
     let store = test_store();
     let gid = test_group_id();

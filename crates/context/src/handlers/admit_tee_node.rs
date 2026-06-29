@@ -136,9 +136,17 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         if !policy.allowed_mrtd.iter().any(|a| a == &mrtd) {
             return ActorResponse::reply(Err(eyre::eyre!("MRTD not in policy allowlist")));
         }
-        if !policy.allowed_tcb_statuses.is_empty()
-            && !policy.allowed_tcb_statuses.iter().any(|a| a == &tcb_status)
-        {
+        // Fail-closed TCB-status gate (audit #356 / #17). An empty
+        // `allowed_tcb_statuses` no longer skips the check: it enforces against
+        // the secure default `{UpToDate}`. `Revoked` is rejected
+        // unconditionally. Mock (`is_mock`) bypasses the allowlist — it is
+        // already gated by `accept_mock` above. Shared with the op-apply path
+        // (`governance_store::membership::tcb_status_allowed`).
+        if !calimero_governance_store::tcb_status_allowed(
+            &policy.allowed_tcb_statuses,
+            &tcb_status,
+            is_mock,
+        ) {
             return ActorResponse::reply(Err(eyre::eyre!("TCB status not in policy allowlist")));
         }
         if !policy.allowed_rtmr0.is_empty() && !policy.allowed_rtmr0.iter().any(|a| a == &rtmr0) {

@@ -19,6 +19,9 @@ mod tests;
 
 pub use self::core::{MembershipPath, MembershipRepository};
 pub use self::policy::MembershipPolicy;
-pub use self::policy_rules::TeeAttestationClaims;
+pub use self::policy_rules::{
+    tcb_status_allowed, TeeAttestationClaims, DEFAULT_ALLOWED_TCB_STATUS, TCB_STATUS_MOCK,
+    TCB_STATUS_REVOKED,
+};
 pub(crate) use self::status::role_from_invited_role;
 pub use self::view::GroupMembershipView;
