@@ -86,11 +86,16 @@ pub fn read_embedded_state_schema(wasm: &[u8]) -> Option<Manifest> {
 /// an unsupported future major fails *closed* instead of being mistaken for "no
 /// schema".
 ///
-/// Returns the *last* `calimero_abi_v1` section that parses as a `Manifest`. The
-/// writer emits exactly one (appended last), so this is normally unambiguous;
-/// last-wins matches the writer's append semantics. A structurally-valid
-/// supported manifest always wins; failing that, a present unsupported-version
-/// section is reported over `Absent`; a malformed/invalid section is ignored.
+/// The writer emits exactly one section, but this is robust to several. The
+/// resolution rules, in priority order:
+///   - a `Supported` section is **never** overwritten by an `UnsupportedVersion`
+///     one, so a usable schema always wins over an opaque one *regardless of
+///     order* — the security property the gate relies on;
+///   - among multiple `Supported` sections the last wins (matches the writer's
+///     append/replace semantics);
+///   - an `UnsupportedVersion` is reported only when no `Supported` section
+///     exists (last unsupported wins among themselves);
+///   - a malformed / structurally-invalid section is ignored entirely.
 #[must_use]
 pub fn read_embedded_state_schema_versioned(wasm: &[u8]) -> EmbeddedSchema {
     let mut found = EmbeddedSchema::Absent;
@@ -295,6 +300,44 @@ mod tests {
         assert!(matches!(
             read_embedded_state_schema_versioned(&empty_module()),
             EmbeddedSchema::Absent
+        ));
+    }
+
+    /// Build a module with two raw `calimero_abi_v1` sections in the given JSON
+    /// order, bypassing the writer's dedup (which would keep only one).
+    fn module_with_two_sections(first: &Manifest, second: &Manifest) -> Vec<u8> {
+        let mut wasm = empty_module();
+        wasm.extend_from_slice(&encode_custom_section(
+            SECTION_NAME,
+            &serde_json::to_vec(first).unwrap(),
+        ));
+        wasm.extend_from_slice(&encode_custom_section(
+            SECTION_NAME,
+            &serde_json::to_vec(second).unwrap(),
+        ));
+        wasm
+    }
+
+    #[test]
+    fn versioned_supported_wins_over_a_later_unsupported_section() {
+        // Supported first, UnsupportedVersion appended after: the supported one
+        // must still win. This is the security property — an opaque section can
+        // never demote a usable one — so it is pinned in both orderings.
+        let wasm = module_with_two_sections(&sample_manifest(), &future_major_manifest());
+        assert!(matches!(
+            read_embedded_state_schema_versioned(&wasm),
+            EmbeddedSchema::Supported(_)
+        ));
+    }
+
+    #[test]
+    fn versioned_later_supported_wins_over_earlier_unsupported_section() {
+        // UnsupportedVersion first, Supported appended after: last-wins for a
+        // usable schema, so the result is still Supported.
+        let wasm = module_with_two_sections(&future_major_manifest(), &sample_manifest());
+        assert!(matches!(
+            read_embedded_state_schema_versioned(&wasm),
+            EmbeddedSchema::Supported(_)
         ));
     }
 
