@@ -375,6 +375,56 @@ fn member_joined_at_rejects_expired_invitation() {
 }
 
 #[test]
+fn member_joined_rejects_when_expiration_set_and_joined_at_absent() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let ns_id = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut rng);
+    let joiner_pk = joiner_sk.public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    // MemberJoined (legacy, no joined_at) with a non-zero expiration is a
+    // malformed op — the caller should have used MemberJoinedAt.
+    let signed_invitation = sign_invitation(&admin_sk, gid, 9_999_999_999, 1);
+    let ns_op = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns_id,
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoined {
+            member: joiner_pk,
+            signed_invitation,
+        }),
+    )
+    .expect("sign MemberJoined");
+
+    let err = group_store::apply_signed_namespace_op(&store, &ns_op)
+        .expect_err("MemberJoined with non-zero expiration must be rejected");
+    assert!(
+        format!("{err:#}").contains("joined_at is absent"),
+        "rejection must come from the absent-joined_at gate: {err:#}"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&gid, &joiner_pk)
+            .unwrap(),
+        "joiner must not be recorded as a member"
+    );
+}
+
+#[test]
 fn member_joined_at_accepts_in_window_invitation() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 

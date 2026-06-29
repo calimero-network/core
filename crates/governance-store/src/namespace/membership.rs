@@ -47,7 +47,7 @@ impl<'a> NamespaceMembershipService<'a> {
             // A missing joined_at with a non-zero expiration is a malformed op,
             // not merely an expired one — distinguish the two failure modes.
             let Some(joined_at) = joined_at else {
-                bail!("invalid MemberJoined op: expiration {expiration} is set but joined_at is absent");
+                bail!("invalid op: expiration {expiration} is set but joined_at is absent (use MemberJoinedAt for expiring invitations)");
             };
             if joined_at > expiration {
                 bail!("invitation expired: joined_at {joined_at} > expiration {expiration}");
