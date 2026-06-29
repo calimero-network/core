@@ -79,10 +79,11 @@ $: ./build.sh
 ### 3. Sign the Manifest and Create Bundle
 
 ```bash
-# Sign manifest in-place and package into .mpk
+# Sign manifest in-place and package into .mpk.
+# --dev uses the well-known development key (no real key file needed).
 $: mero-sign sign res/bundle-temp/manifest.json \
-  --key ../../scripts/test-signing-key/test-key.json
-> Signed manifest: res/bundle-temp/manifest.json
+  --dev
+> ⚠  Signed with DEVELOPMENT key. This bundle cannot be published to the registry.
 >    signerId: did:key:z6Mkm9KCceaDHiwAuYM7y3HteaCHSEkPzACySDkqkXTK6nWd
 >  Bundle created: res/kv-store-1.0.0.mpk
 ```
@@ -121,12 +122,16 @@ See [meroctl README](../../crates/meroctl/README.md) for deployment details.
 Signs a `manifest.json` file in-place and packages the bundle directory into an `.mpk` file.
 
 ```bash
+# With your own key file:
 $: mero-sign sign <MANIFEST_PATH> --key <KEY_FILE>
+
+# Or with the well-known development key (no key file required):
+$: mero-sign sign <MANIFEST_PATH> --dev
 
 # Example:
 $: mero-sign sign apps/kv-store/res/bundle-temp/manifest.json \
-  --key scripts/test-signing-key/test-key.json
-> Signed manifest: apps/kv-store/res/bundle-temp/manifest.json
+  --dev
+> ⚠  Signed with DEVELOPMENT key. This bundle cannot be published to the registry.
 >    signerId: did:key:z6Mkm9KCceaDHiwAuYM7y3HteaCHSEkPzACySDkqkXTK6nWd
 >  Bundle created: res/kv-store-1.0.0.mpk
 ```
@@ -141,6 +146,10 @@ $: mero-sign sign apps/kv-store/res/bundle-temp/manifest.json \
 **Arguments:**
 - `<MANIFEST_PATH>`: Path to `manifest.json` file
 - `--key <PATH>`: Path to Ed25519 private key (JSON format)
+- `--dev`: Sign with the well-known development key instead of `--key`. This
+  key is public and deterministic (like Android's `debug.keystore`), so it
+  requires no key file and bundles signed with it cannot be published to the
+  registry. Use this for local development and CI.
 
 ### `generate-key` - Generate Ed25519 keypair
 
@@ -202,9 +211,9 @@ $: cat > res/bundle-temp/manifest.json <<EOF
 }
 EOF
 
-# 4. Sign and package
+# 4. Sign and package (--dev uses the well-known development key)
 $: mero-sign sign res/bundle-temp/manifest.json \
-  --key ../../scripts/test-signing-key/test-key.json
+  --dev
 
 # Result: res/kv-store-1.0.0.mpk created
 ```
@@ -233,7 +242,8 @@ Example: See [`apps/kv-store/build-bundle.sh`](../../apps/kv-store/build-bundle.
 ## Security Best Practices
 
 1. **Never commit signing keys** to version control
-2. **Use test keys for development** (see `scripts/test-signing-key/`)
+2. **Use the `--dev` flag for development** signing — it relies on a public,
+   well-known key embedded in the tool, so no private key is ever committed
 3. **Generate unique keys for production** applications
 4. **Store keys securely** outside the repository for production
 5. **Verify signer IDs** after signing to ensure correctness
@@ -280,4 +290,3 @@ cargo install --path tools/mero-sign --force
 ## See Also
 
 - [Application build examples](../../apps/) - Reference implementations for various app types
-- [Test signing key](../../scripts/test-signing-key/README.md) - Pre-generated key for development

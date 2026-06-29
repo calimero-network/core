@@ -1200,8 +1200,10 @@ pub fn blob_announce_to_context(blob_id: &[u8; 32], target_context_id: &[u8; 32]
     #[cfg(not(target_arch = "wasm32"))]
     {
         // The in-process host has no network; the announce is a no-op that
-        // succeeds once the (already-checked) context match holds.
+        // succeeds once the (already-checked) context match holds — unless a
+        // test opted into failure via the harness so it can exercise the
+        // announce-failure branch (see `TestHost::set_blob_announce_should_fail`).
         let _ = blob_id;
-        true
+        !host::blob_announce_should_fail()
     }
 }

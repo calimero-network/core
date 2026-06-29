@@ -18,7 +18,8 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 
 use super::super::test_fixtures::{
-    nest_for_test, sample_meta_with_admin, test_group_id, test_meta, test_store,
+    bootstrap_namespace_with_admin, nest_for_test, sample_meta_with_admin, test_group_id,
+    test_meta, test_store,
 };
 use super::super::*;
 
@@ -3855,28 +3856,13 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
     // exact-equality determinism check would permanently reject the retry,
     // stalling the namespace DAG. The subset check lets the retry resume.
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
-    use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
-    let admin_sk = PrivateKey::from(admin_sk_bytes);
-    let admin_pk = admin_sk.public_key();
-
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
-        .unwrap();
-    NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
-        .unwrap();
+    let (admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
 
     // Build: namespace → A → B (two-level subtree).
     let a_id = [0xAAu8; 32];
@@ -3940,6 +3926,92 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
     assert!(
         MetaRepository::new(&store).load(&a_gid).unwrap().is_none(),
         "cascade retry must complete the root deletion"
+    );
+}
+
+#[test]
+fn execute_group_deleted_ignores_payload_groups_outside_local_subtree() {
+    // Security regression: GroupDeleted is authorized only against
+    // `root_group_id`, but the apply used to cascade-delete the
+    // `cascade_group_ids` carried in the (attacker-authored) op payload.
+    // A leaf-subgroup owner could therefore list arbitrary, even
+    // cross-namespace, group ids and have every peer delete them. The
+    // subset determinism check only rejects when the LOCAL subtree contains
+    // ids the payload omits — payload *extras* were merely warned about,
+    // then deleted. The fix recomputes the subtree locally and deletes only
+    // that; payload extras must survive.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let ns_id = [0xA0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let (admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
+
+    // Build: namespace → A → B (the subtree the signer legitimately owns),
+    // plus an unrelated sibling X directly under the namespace root that the
+    // signer has no authority over.
+    let a_id = [0xAAu8; 32];
+    let b_id = [0xBBu8; 32];
+    let x_id = [0xEEu8; 32];
+    let a_gid = ContextGroupId::from(a_id);
+    let b_gid = ContextGroupId::from(b_id);
+    let x_gid = ContextGroupId::from(x_id);
+    for gid in [&a_gid, &b_gid, &x_gid] {
+        MetaRepository::new(&store)
+            .save(gid, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &a_gid)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&a_gid, &b_gid)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &x_gid)
+        .unwrap();
+
+    // Hostile payload: deletes A (authorized) but also lists the unrelated
+    // X. Local subtree of A is {B}, so {B} ⊆ {B, X} — the subset check
+    // passes and X is a payload extra.
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::GroupDeleted {
+            root_group_id: a_id,
+            cascade_group_ids: vec![b_id, x_id],
+            cascade_context_ids: vec![],
+        }),
+    )
+    .expect("sign op");
+    gov.apply_signed_op(&op)
+        .expect("authorized deletion of A applies");
+
+    // The legitimate subtree is gone.
+    assert!(
+        MetaRepository::new(&store).load(&a_gid).unwrap().is_none(),
+        "root of the authorized subtree must be deleted"
+    );
+    assert!(
+        MetaRepository::new(&store).load(&b_gid).unwrap().is_none(),
+        "local descendant must be deleted"
+    );
+
+    // The unrelated group listed in the payload MUST survive — it is not a
+    // local descendant of A.
+    assert!(
+        MetaRepository::new(&store).load(&x_gid).unwrap().is_some(),
+        "payload extra outside the local subtree must NOT be deleted"
+    );
+    assert_eq!(
+        NamespaceRepository::new(&store).parent(&x_gid).unwrap(),
+        Some(ns_gid),
+        "payload extra's parent edge must remain intact"
     );
 }
 
@@ -5119,7 +5191,7 @@ fn curative_sweep_redrives_stranded_context() {
     // This receiver node's namespace identity — makes the namespace a "known"
     // one for `iter_identities`/`known_namespace_identities`.
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, &member_sk, &[0u8; 32])
+        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
         .unwrap();
 
     // ---- The stranded subgroup: pick id + mint its key ---------------------
