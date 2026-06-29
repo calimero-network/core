@@ -142,12 +142,6 @@ mod interface__public_methods {
         // TODO: This is best done when there's data
         todo!()
     }
-
-    #[test]
-    #[ignore]
-    fn validate() {
-        todo!()
-    }
 }
 
 #[cfg(test)]
