@@ -3,7 +3,6 @@ use calimero_server_primitives::sse::{
     Command, ConnectionId, Response, ResponseBody, ResponseBodyError, ServerResponseError,
 };
 use core::pin::pin;
-use core::time::Duration;
 use futures_util::StreamExt;
 use serde_json::to_value as to_json_value;
 use std::sync::Arc;
@@ -15,10 +14,21 @@ use super::state::ServiceState;
 
 /// Handle incoming node events and forward to subscribed clients
 ///
+/// # Lifetime
+///
+/// This task is bound to a single SSE connection via `command_sender`. It runs
+/// for as long as that connection is open and **exits as soon as the connection
+/// closes** (the SSE stream's receiver is dropped) or the node's event stream
+/// ends. Exiting promptly is important: the task holds a broadcast receiver
+/// subscription obtained from [`NodeClient::receive_events`], so a task that
+/// outlived its connection would leak that subscription — and the spawned task
+/// itself — for the remaining lifetime of the process. On reconnection, a fresh
+/// task is spawned and bound to the new connection.
+///
 /// # Event Delivery Behavior
 ///
 /// This handler uses a **skip-on-disconnect** model:
-/// - Events are only delivered to currently active connections
+/// - Events are only delivered while the connection is active
 /// - Events that occur during disconnection are **not buffered** and will be skipped
 /// - When a client reconnects, they resume from the current event counter
 /// - Clients should handle gaps in event IDs and re-query application state if needed
@@ -30,23 +40,30 @@ pub async fn handle_node_events(
     session_id: ConnectionId,
     state: Arc<ServiceState>,
     session_state: SessionState,
+    command_sender: mpsc::Sender<Command>,
 ) {
     let events = state.node_client.receive_events();
 
     let mut events = pin!(events);
 
-    while let Some(event) = events.next().await {
-        // Check if there's an active connection for this session
-        let active_connections = state.active_connections.read().await;
-        let Some(active_conn) = active_connections.get(&session_id).cloned() else {
-            debug!(%session_id, "No active connection, skipping event (no buffering)");
-            drop(active_connections);
-
-            // Wait a bit before checking again (connection might be reconnecting)
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            continue;
+    loop {
+        let event = tokio::select! {
+            // Stop as soon as the connection goes away so we don't leak the
+            // broadcast receiver subscription (and this task) for the process
+            // lifetime. The session itself persists for reconnection; a new
+            // task is spawned when the client reconnects.
+            () = command_sender.closed() => {
+                debug!(%session_id, "SSE connection closed, stopping event handler");
+                break;
+            }
+            maybe_event = events.next() => match maybe_event {
+                Some(event) => event,
+                None => {
+                    debug!(%session_id, "Node event stream ended, stopping event handler");
+                    break;
+                }
+            },
         };
-        drop(active_connections);
 
         let subscriptions = session_state.inner.read().await.subscriptions.clone();
 
@@ -76,27 +93,15 @@ pub async fn handle_node_events(
 
         let response = Response { body };
 
-        if let Err(err) = active_conn.commands.send(Command::Send(response)).await {
+        if let Err(err) = command_sender.send(Command::Send(response)).await {
+            // The receiver is gone, so the connection has closed. Stop here
+            // rather than spinning; the session persists for reconnection.
             debug!(
                 %session_id,
                 %err,
-                "Failed to send event (connection closed, event skipped - no buffering)",
+                "Failed to send event (connection closed), stopping event handler",
             );
-            // Don't break - session persists for reconnection, but this event is lost
+            break;
         };
     }
-}
-
-/// Clean up connection when SSE stream closes
-pub async fn handle_connection_cleanup(
-    session_id: ConnectionId,
-    state: Arc<ServiceState>,
-    command_sender: mpsc::Sender<Command>,
-) {
-    command_sender.closed().await;
-
-    // Remove active connection but keep session for reconnection
-    drop(state.active_connections.write().await.remove(&session_id));
-
-    debug!(%session_id, "Active SSE connection closed (session persists for reconnection)");
 }
