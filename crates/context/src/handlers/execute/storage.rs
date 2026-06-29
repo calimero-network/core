@@ -164,11 +164,13 @@ impl Storage for ContextStorage {
         let key = self.state_key(&key)?;
 
         self.with_inner_mut(|inner| {
+            // Single read: `get` already distinguishes present from absent, so
+            // the prior `has` + `get` was a redundant second lookup per write.
+            // `.ok()?` preserves the original abort-on-read-error behavior — a
+            // failed lookup skips the put rather than treating it as absent.
             let old = inner
-                .has(key)
+                .get(key)
                 .ok()?
-                .then(|| inner.get(key).ok().flatten())
-                .flatten()
                 .map(|slice| slice.into_boxed().into_vec());
 
             inner.put(key, value.into()).ok()?;
@@ -347,11 +349,13 @@ impl Storage for ContextPrivateStorage {
         let key = self.state_key(&key)?;
 
         self.with_inner_mut(|inner| {
+            // Single read: `get` already distinguishes present from absent, so
+            // the prior `has` + `get` was a redundant second lookup per write.
+            // `.ok()?` preserves the original abort-on-read-error behavior — a
+            // failed lookup skips the put rather than treating it as absent.
             let old = inner
-                .has(key)
+                .get(key)
                 .ok()?
-                .then(|| inner.get(key).ok().flatten())
-                .flatten()
                 .map(|slice| slice.into_boxed().into_vec());
 
             inner.put(key, value.into()).ok()?;

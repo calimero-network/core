@@ -122,7 +122,11 @@ async fn handle_request_inner(
     auth_node_owner: Option<AuthenticatedNodeOwner>,
     request: PrimitiveRequest<serde_json::Value>,
 ) -> Json<PrimitiveResponse> {
-    let body = match serde_json::from_value::<RequestPayload>(request.payload.clone()) {
+    // Deserialize by reference: `&Value` implements `Deserializer`, so this
+    // avoids cloning the top-level `Value` tree (individual string/array fields
+    // are still copied into `RequestPayload` by serde). The payload stays intact
+    // for the parse-failure log below.
+    let body = match RequestPayload::deserialize(&request.payload) {
         Ok(payload) => match payload {
             RequestPayload::Execute(exec_request) => {
                 // Validate the execution request before processing

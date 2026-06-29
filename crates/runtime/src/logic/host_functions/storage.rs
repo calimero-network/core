@@ -113,10 +113,13 @@ impl VMHostFunctions<'_> {
             "storage_remove"
         );
 
-        if let Some(value) = logic.storage.get(&key) {
+        // `remove` returns the evicted value, so a single backend write both
+        // deletes the key and yields its prior value — no separate `get` read.
+        let removed = self.with_logic_mut(|logic| logic.storage.remove(&key));
+
+        if let Some(value) = removed {
             let value_len = value.len();
             self.with_logic_mut(|logic| {
-                let _ignored = logic.storage.remove(&key);
                 logic.registers.set(logic.limits, dest_register_id, value)
             })?;
 

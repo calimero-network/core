@@ -2559,8 +2559,14 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `IndexNotFound` if entity exists but has no index
     ///
     pub fn find_by_id<D: Data>(id: Id) -> Result<Option<D>, StorageError> {
+        // Single `EntityIndex` read serves the tombstone check AND supplies the
+        // merkle_hash and metadata below. Loading it once here avoids the
+        // earlier `is_deleted()` + `get_index()` pair, which read and
+        // deserialized the index twice for every child of every collection scan.
+        let index = <Index<S>>::get_index(id)?;
+
         // Check if entity is deleted (tombstone)
-        if <Index<S>>::is_deleted(id)? {
+        if index.as_ref().and_then(|index| index.deleted_at).is_some() {
             return Ok(None); // Entity is deleted
         }
 
@@ -2572,8 +2578,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let mut item = from_slice::<D>(&slice).map_err(StorageError::DeserializationError)?;
 
-        // Single `EntityIndex` read for both merkle_hash and metadata.
-        let index = <Index<S>>::get_index(id)?.ok_or(StorageError::IndexNotFound(id))?;
+        let index = index.ok_or(StorageError::IndexNotFound(id))?;
         item.element_mut().merkle_hash = index.full_hash();
         item.element_mut().metadata = index.metadata;
 
@@ -2947,8 +2952,9 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let incoming_updated_at = metadata.updated_at();
 
-        // Compute incoming data hash for tracing
-        let incoming_hash: [u8; 32] = Sha256::digest(data).into();
+        // `incoming_hash` (Sha256 of `data`) is only consumed by the
+        // root-merge trace logs below, so it's computed lazily inside those
+        // branches rather than on every (hot, non-root) write.
 
         let last_metadata = <Index<S>>::get_metadata(id)?;
         let final_data = if let Some(last_metadata) = &last_metadata {
@@ -2998,6 +3004,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 // and silently dropped one side's writes on bootstrap
                 // and on concurrent root writes. See the doc comment on
                 // `is_app_root_entry` for the regression timeline.
+                let incoming_hash: [u8; 32] = Sha256::digest(data).into();
                 if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
                     let existing_hash: [u8; 32] = Sha256::digest(&existing_data).into();
                     info!(
@@ -3073,6 +3080,7 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         } else {
             if id.is_root() {
+                let incoming_hash: [u8; 32] = Sha256::digest(data).into();
                 info!(
                     target: "storage::root_merge",
                     %id,
