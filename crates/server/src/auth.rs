@@ -4,7 +4,7 @@ use std::task::{Context, Poll};
 
 use axum::body::Body;
 use axum::extract::OriginalUri;
-use axum::http::{Method, Request, StatusCode};
+use axum::http::{HeaderValue, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use eyre::Result;
@@ -37,13 +37,13 @@ fn unauthorized_response(err: &AuthError) -> Response {
         AuthError::TokenExpired => {
             let mut resp = StatusCode::UNAUTHORIZED.into_response();
             resp.headers_mut()
-                .insert("X-Auth-Error", "token_expired".parse().unwrap());
+                .insert("X-Auth-Error", HeaderValue::from_static("token_expired"));
             resp
         }
         AuthError::TokenRevoked => {
             let mut resp = StatusCode::FORBIDDEN.into_response();
             resp.headers_mut()
-                .insert("X-Auth-Error", "token_revoked".parse().unwrap());
+                .insert("X-Auth-Error", HeaderValue::from_static("token_revoked"));
             resp
         }
         _ => StatusCode::UNAUTHORIZED.into_response(),
@@ -240,7 +240,7 @@ where
                     );
                     let mut resp = StatusCode::FORBIDDEN.into_response();
                     resp.headers_mut()
-                        .insert("X-Auth-Error", "permission_denied".parse().unwrap());
+                        .insert("X-Auth-Error", HeaderValue::from_static("permission_denied"));
                     return Ok(resp);
                 }
 
