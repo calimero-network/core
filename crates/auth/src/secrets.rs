@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -66,7 +67,7 @@ impl Default for SecretRotationConfig {
 }
 
 /// A versioned secret with metadata
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct VersionedSecret {
     /// The secret value (base64 encoded)
     pub value: String,
@@ -80,6 +81,22 @@ pub struct VersionedSecret {
     pub is_primary: bool,
     /// The type of secret
     pub secret_type: SecretType,
+}
+
+// Manual `Debug` so the cleartext signing secret in `value` is never dumped by
+// a `{:?}` (e.g. when a containing struct is logged). Everything else is
+// non-sensitive metadata and is shown to keep the impl useful.
+impl fmt::Debug for VersionedSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VersionedSecret")
+            .field("value", &"<redacted>")
+            .field("version", &self.version)
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .field("is_primary", &self.is_primary)
+            .field("secret_type", &self.secret_type)
+            .finish()
+    }
 }
 
 impl VersionedSecret {

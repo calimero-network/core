@@ -2309,6 +2309,14 @@ impl<S: StorageAdaptor> Interface<S> {
         // Get parent ID BEFORE deleting - we need it to update the Merkle tree
         let parent_id = <Index<S>>::get_parent_id(id)?;
 
+        // Tombstone the subtree BEFORE removing this entity, while its
+        // `children` are still readable. The originating node tombstoned the
+        // whole subtree under `id`; replay the same recursion here, with the
+        // same `deleted_at`, so this replica reclaims the descendant rows too
+        // and converges (otherwise they would leak as un-tombstoned orphans
+        // under a tombstoned ancestor).
+        <Index<S>>::tombstone_descendants_of(id, deleted_at)?;
+
         // Deletion wins - apply it
         let _ignored = S::storage_remove(Key::Entry(id));
         let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
@@ -2808,7 +2816,7 @@ impl<S: StorageAdaptor> Interface<S> {
             };
         }
 
-        <Index<S>>::remove_child_from(parent_id, child_id)?;
+        <Index<S>>::remove_child_from(parent_id, child_id, deleted_at)?;
 
         // Use DeleteRef for efficient tombstone-based deletion.
         // More efficient than Delete: only sends ID + timestamp + metadata vs full ancestor tree.

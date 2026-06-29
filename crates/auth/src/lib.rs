@@ -37,8 +37,14 @@ pub enum AuthError {
     InvalidToken(String),
     #[error("Token has expired")]
     TokenExpired,
+    /// The presented token's key has been revoked. Kept distinct from
+    /// [`InvalidToken`](AuthError::InvalidToken) so the HTTP layer maps it to
+    /// `403 Forbidden` via the type, not a substring match on the message
+    /// (renaming the message must never silently downgrade revoked → `401`).
+    #[error("Token has been revoked")]
+    TokenRevoked,
     #[error("Storage error: {0}")]
-    StorageError(String),
+    StorageError(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("Provider error: {0}")]
     ProviderError(String),
     #[error("Signature verification failed: {0}")]
@@ -46,7 +52,7 @@ pub enum AuthError {
     #[error("Key ownership verification failed: {0}")]
     KeyOwnershipFailed(String),
     #[error("Token generation failed: {0}")]
-    TokenGenerationFailed(String),
+    TokenGenerationFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
     #[error("Service unavailable: {0}")]

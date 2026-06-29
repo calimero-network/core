@@ -4,7 +4,7 @@ use std::task::{Context, Poll};
 
 use axum::body::Body;
 use axum::extract::OriginalUri;
-use axum::http::{Method, Request, StatusCode};
+use axum::http::{HeaderValue, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use eyre::Result;
@@ -18,22 +18,36 @@ use tracing::{debug, info, warn};
 
 use crate::config::ServerConfig;
 
-/// Build a 401 response, adding `X-Auth-Error: token_expired` if the error
-/// indicates an expired token. Centralises the logic so the Bearer and
-/// query-param paths stay in sync.
+/// Build the failure response for a rejected token, keeping the Bearer and
+/// query-param paths in sync.
 ///
-/// Only expiry is signalled here. Revoked tokens are intentionally not
-/// distinguished: revoked keys currently surface as "Key not found" because
-/// `KeyManager::get_key` filters them out, so there is no reliable revoked
-/// signal to propagate yet. Fixing that (and adding an `X-Auth-Error:
-/// token_revoked` arm) is tracked separately.
+/// The status and `X-Auth-Error` hint are chosen by matching the typed
+/// [`AuthError`] variant, not by inspecting message text:
+/// - [`AuthError::TokenExpired`] → `401` with `token_expired`
+/// - [`AuthError::TokenRevoked`] → `403` with `token_revoked`
+/// - everything else → bare `401`
+///
+/// Note that a revoked key often still surfaces as a generic "key not found"
+/// because [`KeyManager::get_key`] filters revoked keys out before the
+/// `is_valid` check can run; the dedicated arm here ensures that any path which
+/// *does* produce [`AuthError::TokenRevoked`] is reported as `403` rather than
+/// being collapsed into the generic `401`.
 fn unauthorized_response(err: &AuthError) -> Response {
-    let mut resp = StatusCode::UNAUTHORIZED.into_response();
-    if matches!(err, AuthError::TokenExpired) {
-        resp.headers_mut()
-            .insert("X-Auth-Error", "token_expired".parse().unwrap());
+    match err {
+        AuthError::TokenExpired => {
+            let mut resp = StatusCode::UNAUTHORIZED.into_response();
+            resp.headers_mut()
+                .insert("X-Auth-Error", HeaderValue::from_static("token_expired"));
+            resp
+        }
+        AuthError::TokenRevoked => {
+            let mut resp = StatusCode::FORBIDDEN.into_response();
+            resp.headers_mut()
+                .insert("X-Auth-Error", HeaderValue::from_static("token_revoked"));
+            resp
+        }
+        _ => StatusCode::UNAUTHORIZED.into_response(),
     }
-    resp
 }
 
 /// The authenticated requester's public key, injected into request extensions
@@ -226,7 +240,7 @@ where
                     );
                     let mut resp = StatusCode::FORBIDDEN.into_response();
                     resp.headers_mut()
-                        .insert("X-Auth-Error", "permission_denied".parse().unwrap());
+                        .insert("X-Auth-Error", HeaderValue::from_static("permission_denied"));
                     return Ok(resp);
                 }
 
@@ -353,5 +367,41 @@ mod tests {
             validator.validate_permissions(&admin, &required),
             "an admin token must pass every permission check",
         );
+    }
+
+    /// A revoked token must map to `403 Forbidden` with `X-Auth-Error:
+    /// token_revoked`. Guards against a silent regression to the generic `401`
+    /// if the typed variant is ever removed, renamed, or the arm dropped.
+    #[test]
+    fn revoked_token_maps_to_forbidden() {
+        use axum::http::StatusCode;
+        use mero_auth::AuthError;
+
+        let resp = super::unauthorized_response(&AuthError::TokenRevoked);
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.headers().get("X-Auth-Error").unwrap(), "token_revoked",);
+    }
+
+    /// An expired token maps to `401 Unauthorized` with `X-Auth-Error:
+    /// token_expired`.
+    #[test]
+    fn expired_token_maps_to_unauthorized() {
+        use axum::http::StatusCode;
+        use mero_auth::AuthError;
+
+        let resp = super::unauthorized_response(&AuthError::TokenExpired);
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(resp.headers().get("X-Auth-Error").unwrap(), "token_expired",);
+    }
+
+    /// Any other rejection falls back to a bare `401` with no error hint.
+    #[test]
+    fn other_errors_map_to_bare_unauthorized() {
+        use axum::http::StatusCode;
+        use mero_auth::AuthError;
+
+        let resp = super::unauthorized_response(&AuthError::InvalidToken("nope".to_owned()));
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert!(resp.headers().get("X-Auth-Error").is_none());
     }
 }

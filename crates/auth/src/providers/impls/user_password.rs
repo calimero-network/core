@@ -176,8 +176,9 @@ impl UserPasswordProvider {
             // Existing user - return their key ID and permissions
             let permissions = root_key.permissions.clone();
             debug!(
-                "Existing user authenticated: {} with permissions: {:?}",
-                username, permissions
+                user = %crate::utils::sanitize_for_log(username),
+                ?permissions,
+                "Existing user authenticated"
             );
             return Ok((key_id, permissions));
         }
@@ -191,7 +192,10 @@ impl UserPasswordProvider {
         if existing_keys.is_empty() {
             // Bootstrap case - create the first root key
             let (key_id, root_key) = self.create_root_key(username, password).await?;
-            debug!("Bootstrap: Created first root key for user: {}", username);
+            debug!(
+                user = %crate::utils::sanitize_for_log(username),
+                "Bootstrap: created first root key"
+            );
             Ok((key_id, root_key.permissions))
         } else {
             // Root keys exist but credentials are invalid

@@ -803,9 +803,12 @@ mod mocked {
             .unwrap_or_else(|| EXECUTOR_ID.with(|id| id.get()))
     }
 
-    /// Prints the log
+    /// Routes the log line through `tracing` (this is the host/native build, so
+    /// a subscriber is present) rather than raw stdout, so guest/app logs carry
+    /// the process's structured formatting and can be filtered and redirected
+    /// like every other log instead of bypassing it onto stdout.
     pub(super) fn log(message: &str) {
-        println!("{message}");
+        tracing::info!(target: "calimero_storage::guest", "{message}");
     }
 
     /// Sets the thread-local executor ID. Only callable from this crate

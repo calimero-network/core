@@ -120,25 +120,40 @@ impl TokenManager {
             .or_else(|| headers.get("host"))
             .and_then(|h| h.to_str().ok());
 
-        if let Some(request_host) = request_host {
-            // Skip validation if request is coming from internal auth service.
-            // Only allow exact "auth" hostname or "auth:" followed by a numeric port.
-            // This prevents bypass attacks using forged headers like "auth:malicious.com".
-            if Self::is_internal_auth_service(request_host) {
-                return Ok(());
-            }
+        // This is only reached for a node-bound token (the caller invokes it
+        // exactly when `node_url` is set). If the request carries no
+        // determinable host, we cannot prove it is addressed to the bound node
+        // — fail closed. Letting a `None` host fall through to `Ok(())` would
+        // let any client strip the `Host`/`X-Forwarded-Host` header and bypass
+        // node binding entirely.
+        let Some(request_host) = request_host else {
+            return Err(
+                "Token is node-bound but the request carries no Host or X-Forwarded-Host \
+                 header to validate against"
+                    .to_owned(),
+            );
+        };
 
-            // Extract the host from the token's node URL
-            if let Ok(token_url) = Url::parse(token_node_url) {
-                if let Some(token_host) = token_url.host_str() {
-                    // Compare the hosts (handle both with and without port)
-                    let request_host_without_port =
-                        request_host.split(':').next().unwrap_or(request_host);
-                    if request_host_without_port != token_host && request_host != token_host {
-                        return Err(format!(
-                            "Token is not valid for this host. Token is for '{token_host}' but request is to '{request_host}'"
-                        ));
-                    }
+        // Skip validation if request is coming from internal auth service.
+        // Only allow exact "auth" hostname or "auth:" followed by a numeric port.
+        // This prevents bypass attacks using forged headers like "auth:malicious.com".
+        if Self::is_internal_auth_service(request_host) {
+            return Ok(());
+        }
+
+        // Extract the host from the token's node URL. `node_url` is not always a
+        // URL (it can carry a client name), so an unparseable value is left to
+        // fall through rather than rejected here — the missing-request-host case
+        // above is the binding-bypass this guards.
+        if let Ok(token_url) = Url::parse(token_node_url) {
+            if let Some(token_host) = token_url.host_str() {
+                // Compare the hosts (handle both with and without port)
+                let request_host_without_port =
+                    request_host.split(':').next().unwrap_or(request_host);
+                if request_host_without_port != token_host && request_host != token_host {
+                    return Err(format!(
+                        "Token is not valid for this host. Token is for '{token_host}' but request is to '{request_host}'"
+                    ));
                 }
             }
         }
@@ -193,7 +208,7 @@ impl TokenManager {
             .secret_manager
             .get_jwt_auth_secret()
             .await
-            .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
+            .map_err(|e| AuthError::TokenGenerationFailed(e.into()))?;
 
         let header = Header::new(Algorithm::HS256);
         encode(
@@ -201,7 +216,7 @@ impl TokenManager {
             &claims,
             &EncodingKey::from_secret(secret.as_bytes()),
         )
-        .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))
+        .map_err(|e| AuthError::TokenGenerationFailed(e.into()))
     }
 
     /// Generate a pair of JWT tokens without key validation.
@@ -270,11 +285,11 @@ impl TokenManager {
             .key_manager
             .get_key(&key_id)
             .await
-            .map_err(|e| AuthError::StorageError(e.to_string()))?
+            .map_err(|e| AuthError::StorageError(e.into()))?
             .ok_or_else(|| AuthError::InvalidToken("Key not found".to_string()))?;
 
         if !key.is_valid() {
-            return Err(AuthError::InvalidToken("Key has been revoked".to_string()));
+            return Err(AuthError::TokenRevoked);
         }
 
         let access_expiry = Duration::seconds(self.config.access_token_expiry as i64);
@@ -312,7 +327,7 @@ impl TokenManager {
             .secret_manager
             .get_jwt_auth_secret()
             .await
-            .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
+            .map_err(|e| AuthError::TokenGenerationFailed(e.into()))?;
 
         let mut validation = Validation::new(Algorithm::HS256);
         validation.validate_exp = true;
@@ -374,11 +389,11 @@ impl TokenManager {
             .key_manager
             .get_key(&claims.sub)
             .await
-            .map_err(|e| AuthError::StorageError(e.to_string()))?
+            .map_err(|e| AuthError::StorageError(e.into()))?
             .ok_or_else(|| AuthError::InvalidToken("Key not found".to_string()))?;
 
         if !key.is_valid() {
-            return Err(AuthError::InvalidToken("Key has been revoked".to_string()));
+            return Err(AuthError::TokenRevoked);
         }
 
         Ok(AuthResponse {
@@ -425,7 +440,7 @@ impl TokenManager {
             .key_manager
             .get_key(key_id)
             .await
-            .map_err(|e| AuthError::StorageError(e.to_string()))?
+            .map_err(|e| AuthError::StorageError(e.into()))?
             .ok_or_else(|| AuthError::InvalidToken("Key not found".to_string()))?;
 
         // Revoke the key
@@ -435,7 +450,7 @@ impl TokenManager {
         self.key_manager
             .set_key(key_id, &key)
             .await
-            .map_err(|e| AuthError::StorageError(format!("Failed to update key: {e}")))?;
+            .map_err(|e| AuthError::StorageError(format!("Failed to update key: {e}").into()))?;
 
         Ok(())
     }
@@ -449,7 +464,7 @@ impl TokenManager {
             .key_manager
             .get_key(key_id)
             .await
-            .map_err(|e| AuthError::StorageError(e.to_string()))?;
+            .map_err(|e| AuthError::StorageError(e.into()))?;
         Ok(key.and_then(|k| k.public_key))
     }
 
@@ -480,7 +495,7 @@ impl TokenManager {
             .await
             .map_err(|e| {
                 tracing::error!("Storage error while getting key {}: {}", claims.sub, e);
-                AuthError::StorageError(e.to_string())
+                AuthError::StorageError(e.into())
             })?
             .ok_or_else(|| {
                 tracing::error!("Key not found: {}", claims.sub);
@@ -505,10 +520,12 @@ impl TokenManager {
                 hasher.update(format!("refresh:{}:{}", claims.sub, timestamp).as_bytes());
                 let new_client_id = hex::encode(hasher.finalize());
 
+                // Log only short id prefixes; the full client key ids are
+                // sensitive and add noise to debug logs.
                 tracing::debug!(
-                    "Rotating client key from {} to {}",
-                    claims.sub,
-                    new_client_id
+                    from = claims.sub.get(..8).unwrap_or(claims.sub.as_str()),
+                    to = new_client_id.get(..8).unwrap_or(new_client_id.as_str()),
+                    "Rotating client key (ids truncated)"
                 );
 
                 // Generate tokens FIRST, before any key mutations.
@@ -537,9 +554,9 @@ impl TokenManager {
                     );
                     // Token generation succeeded but key storage failed.
                     // Return error - user's old key is still valid, so no lockout.
-                    return Err(AuthError::StorageError(format!(
-                        "Failed to store new client key during rotation: {e}"
-                    )));
+                    return Err(AuthError::StorageError(
+                        format!("Failed to store new client key during rotation: {e}").into(),
+                    ));
                 }
 
                 tracing::debug!("Successfully stored new client key: {}", new_client_id);
@@ -573,7 +590,7 @@ impl TokenManager {
         // Generate a secure random nonce
         let mut nonce_bytes = [0u8; 32];
         rand::thread_rng().try_fill(&mut nonce_bytes).map_err(|e| {
-            AuthError::TokenGenerationFailed(format!("Failed to generate nonce: {e}"))
+            AuthError::TokenGenerationFailed(format!("Failed to generate nonce: {e}").into())
         })?;
         let nonce = base64::engine::general_purpose::STANDARD.encode(nonce_bytes);
 
@@ -589,7 +606,7 @@ impl TokenManager {
             .secret_manager
             .get_jwt_challenge_secret()
             .await
-            .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
+            .map_err(|e| AuthError::TokenGenerationFailed(e.into()))?;
 
         let header = Header::new(Algorithm::HS256);
         let challenge = encode(
@@ -597,7 +614,7 @@ impl TokenManager {
             &claims,
             &EncodingKey::from_secret(secret.as_bytes()),
         )
-        .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
+        .map_err(|e| AuthError::TokenGenerationFailed(e.into()))?;
 
         Ok(ChallengeResponse { challenge, nonce })
     }
@@ -616,7 +633,7 @@ impl TokenManager {
             .secret_manager
             .get_jwt_challenge_secret()
             .await
-            .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
+            .map_err(|e| AuthError::TokenGenerationFailed(e.into()))?;
 
         let mut validation = Validation::new(Algorithm::HS256);
         validation.validate_exp = true;

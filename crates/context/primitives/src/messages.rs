@@ -127,6 +127,30 @@ impl Message for AcquireContextLockRequest {
     type Result = Option<ContextAtomicKey>;
 }
 
+/// Coarse, stable category attached to [`ExecuteError::InternalError`] so a
+/// caller can tell *which class* of internal failure occurred without parsing
+/// log text. The detailed cause is always logged server-side at the failure
+/// site; this only classifies it on the wire.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum InternalErrorKind {
+    /// Loading or resolving the context, its config, or its identity failed.
+    Context,
+    /// Loading or resolving group / cascade-upgrade metadata failed.
+    Group,
+    /// Resolving or loading a state-delta encryption key failed.
+    Encryption,
+    /// The WASM runtime / execution task failed.
+    Runtime,
+    /// A root-state CRDT merge round-trip (serialize/execute/deserialize) failed.
+    Merge,
+    /// An internal actor channel/mailbox was closed or dropped.
+    Ipc,
+    /// Any other internal failure.
+    Other,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
@@ -142,8 +166,8 @@ pub enum ExecuteError {
     Uninitialized,
     #[error("application not installed: '{application_id}'")]
     ApplicationNotInstalled { application_id: ApplicationId },
-    #[error("internal error")]
-    InternalError,
+    #[error("internal error ({kind:?})")]
+    InternalError { kind: InternalErrorKind },
     #[error("error resolving identity alias '{alias}'")]
     AliasResolutionFailed { alias: Alias<PublicKey> },
     /// Group-context execute attempted before its `KeyDelivery` op

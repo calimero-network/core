@@ -1,7 +1,6 @@
 use calimero_network_primitives::messages::NetworkEvent;
 use libp2p::gossipsub::Event;
 use libp2p_metrics::Recorder;
-use owo_colors::OwoColorize;
 use tracing::{debug, warn};
 
 use super::{EventHandler, NetworkManager};
@@ -9,7 +8,6 @@ use super::{EventHandler, NetworkManager};
 impl EventHandler<Event> for NetworkManager {
     fn handle(&mut self, event: Event) {
         self.metrics.record(&event);
-        debug!("{}: {:?}", "gossipsub".yellow(), event);
 
         match event {
             Event::Message {
@@ -17,6 +15,17 @@ impl EventHandler<Event> for NetworkManager {
                 message,
                 ..
             } => {
+                // Log only non-sensitive metadata. The previous `{:?}` of the
+                // whole event dumped the raw `message.data` payload on a hot
+                // path (data leak) and injected ANSI color codes into the logs.
+                debug!(
+                    target: "network::gossipsub",
+                    message_id = ?id,
+                    source = ?message.source,
+                    topic = ?message.topic,
+                    payload_len = message.data.len(),
+                    "gossipsub message received"
+                );
                 if !self
                     .event_dispatcher
                     .dispatch(NetworkEvent::Message { id, message })
@@ -25,6 +34,7 @@ impl EventHandler<Event> for NetworkManager {
                 }
             }
             Event::Subscribed { peer_id, topic } => {
+                debug!(target: "network::gossipsub", %peer_id, ?topic, "subscribed");
                 if !self
                     .event_dispatcher
                     .dispatch(NetworkEvent::Subscribed { peer_id, topic })
@@ -33,6 +43,7 @@ impl EventHandler<Event> for NetworkManager {
                 }
             }
             Event::Unsubscribed { peer_id, topic } => {
+                debug!(target: "network::gossipsub", %peer_id, ?topic, "unsubscribed");
                 if !self
                     .event_dispatcher
                     .dispatch(NetworkEvent::Unsubscribed { peer_id, topic })
