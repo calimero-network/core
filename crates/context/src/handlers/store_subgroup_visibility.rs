@@ -1,6 +1,5 @@
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::StoreSubgroupVisibilityRequest;
-use calimero_context_config::VisibilityMode;
 use calimero_governance_store::CapabilitiesRepository;
 
 use crate::ContextManager;
@@ -13,12 +12,8 @@ impl Handler<StoreSubgroupVisibilityRequest> for ContextManager {
         StoreSubgroupVisibilityRequest { group_id, mode }: StoreSubgroupVisibilityRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let visibility = match mode {
-            0 => VisibilityMode::Open,
-            _ => VisibilityMode::Restricted,
-        };
-        let result = CapabilitiesRepository::new(&self.datastore)
-            .set_subgroup_visibility(&group_id, visibility);
+        let result =
+            CapabilitiesRepository::new(&self.datastore).set_subgroup_visibility(&group_id, mode);
         ActorResponse::reply(result)
     }
 }
