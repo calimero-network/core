@@ -156,14 +156,14 @@ const GOLDEN_GROUP_OP_GROUP_MIGRATION_SET: &[u8] = &[
     0,  // migration = None
 ];
 
-/// GroupOp ordinal 17 — ContextCapabilityGranted { context_id: [0;32], member: [0;32], capability: 0 }
+/// GroupOp ordinal 17 — ContextCapabilityGranted { context_id: [0;32], member: [0;32], capability: 1 }
 const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_GRANTED: &[u8] = &[
     17, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // context_id
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // member
-    0, // capability
+    1, // capability (must be non-zero: ContextCapabilityBits rejects 0 on the wire)
 ];
 
 /// GroupOp ordinal 18 — ContextCapabilityRevoked (same shape as Granted)
@@ -173,7 +173,7 @@ const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_REVOKED: &[u8] = &[
     0, // context_id
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // member
-    0, // capability
+    1, // capability (must be non-zero: ContextCapabilityBits rejects 0 on the wire)
 ];
 
 /// GroupOp ordinal 19 — TeeAdmissionPolicySet (6 empty Vec<String> + accept_mock=false)
