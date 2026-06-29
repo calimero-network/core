@@ -153,6 +153,13 @@ pub(super) fn handle_specialized_broadcast(
             // CPU verify + outbound PCS request by replaying a real quote under
             // fresh nonces. Guard the spawn synchronously here, on the actor
             // thread, before any verify work is scheduled.
+            // `quote_hash` is the key for both the durable `is_quote_hash_used`
+            // check and the throttle's dedup gate, so it must be computed before
+            // either can run — it cannot be deferred behind the rate/inflight
+            // gates. This is acceptable: `quote_bytes` is bounded to gossipsub's
+            // 64 KiB default at the transport, and SHA-256 over ≤64 KiB is tens
+            // of microseconds, negligible beside the PCS-fetch + DCAP verify the
+            // hash exists to gate.
             let quote_hash: [u8; 32] = Sha256::digest(quote_bytes).into();
             let group_id = ContextGroupId::from(namespace_id_bytes);
 

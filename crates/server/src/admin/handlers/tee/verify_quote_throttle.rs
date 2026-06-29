@@ -116,14 +116,23 @@ impl VerifyQuoteThrottle {
             }
 
             // Acquire the inflight permit while holding the bucket lock so the
-            // token and permit are committed atomically; `try_acquire_owned`
-            // never blocks, so the lock is not held across an await.
+            // token and permit are committed atomically. `try_acquire_owned`
+            // never blocks (and the lock is never held across an await), so the
+            // hold is bounded to a few instructions — releasing and re-taking
+            // the lock around the acquire would instead open a TOCTOU window
+            // where a concurrent grant could be clobbered, so the lock is held
+            // across the acquire intentionally.
             match Arc::clone(&self.inflight).try_acquire_owned() {
                 Ok(permit) => {
+                    // Commit only on success: the token and refill clock advance
+                    // together with the permit grant.
                     bucket.tokens = refilled - 1.0;
                     bucket.last = now;
                     Decision::Proceed(permit)
                 }
+                // AtCapacity: leave the bucket untouched — no token is burned
+                // and `last` is not advanced, so the refill clock keeps running
+                // from the previous grant.
                 Err(_) => Decision::AtCapacity,
             }
         }

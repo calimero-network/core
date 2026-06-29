@@ -84,7 +84,15 @@ pub enum Decision {
 
 struct PeerBucket {
     tokens: f64,
+    /// Time of the last *granted* token. Drives the refill clock and is
+    /// committed only on `Decision::Proceed` (see `check`), so a rejection
+    /// never advances it.
     last: Instant,
+    /// Time this peer was last *seen* (any `check` outcome, including
+    /// rejections). Used as the idle/LRU key for pruning so an active-but-
+    /// throttled peer is retained — evicting it would hand it a fresh full
+    /// bucket and reset its rate limit.
+    last_seen: Instant,
 }
 
 /// Admission-control throttle. See the module docs for the gate ordering and
@@ -201,29 +209,44 @@ impl TeeAdmissionThrottle {
         } else {
             f64::INFINITY
         };
-        let bucket = self.peers.entry(source).or_insert(PeerBucket {
-            tokens: burst,
-            last: now,
-        });
-        let elapsed = now.saturating_duration_since(bucket.last).as_secs_f64();
-        let refilled = (bucket.tokens + elapsed * refill_per_sec).min(burst);
+        // Read the current bucket state *without* inserting. A brand-new peer
+        // is treated as a full bucket, so first contact is never rate-limited;
+        // crucially, a peer is only inserted on the commit (Proceed) path below,
+        // so a flood of unique source peers that never proceed can't grow
+        // `peers`. For an already-tracked peer, refresh `last_seen` on every
+        // call (any outcome) so an active-but-throttled peer isn't LRU-evicted.
+        let (cur_tokens, cur_last) = match self.peers.get_mut(&source) {
+            Some(bucket) => {
+                bucket.last_seen = now;
+                (bucket.tokens, bucket.last)
+            }
+            None => (burst, now),
+        };
+        let elapsed = now.saturating_duration_since(cur_last).as_secs_f64();
+        let refilled = (cur_tokens + elapsed * refill_per_sec).min(burst);
         if refilled < 1.0 {
             return Decision::RateLimited;
         }
 
         // Gate 3: global inflight cap. Acquire last so a rejection here does
-        // not burn a per-peer token. The bucket is still unmodified at this
-        // point, so an `AtCapacity` return advances nothing.
+        // not burn a per-peer token. No bucket has been inserted/mutated for a
+        // refused-here peer, so an `AtCapacity` return advances nothing.
         let permit = match Arc::clone(&self.inflight).try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => return Decision::AtCapacity,
         };
 
-        // All gates passed: commit the side effects atomically. `last` advances
-        // only here, so refill credit accrues from the previous *grant*, never
-        // from an intervening rejection.
+        // All gates passed: commit the side effects atomically. This is the
+        // only path that inserts/advances the bucket, so `tokens`/`last` reflect
+        // the previous *grant* plus this one, never an intervening rejection.
+        let bucket = self.peers.entry(source).or_insert(PeerBucket {
+            tokens: refilled,
+            last: now,
+            last_seen: now,
+        });
         bucket.tokens = refilled - 1.0;
         bucket.last = now;
+        bucket.last_seen = now;
         let _ = self.recent_quotes.insert(key, now);
         Decision::Proceed(permit)
     }
@@ -234,16 +257,29 @@ impl TeeAdmissionThrottle {
         let dedup_ttl = self.dedup_ttl;
         self.recent_quotes
             .retain(|_, seen| now.saturating_duration_since(*seen) < dedup_ttl);
+        // Hard cap. Reaching it requires >MAX_TRACKED_QUOTES *distinct* quotes
+        // admitted within the TTL — and entries are only inserted on the commit
+        // (Proceed) path, gated by the per-peer rate limit and the global
+        // inflight cap, so a rejected flood can't grow this map at all. If the
+        // cap is somehow hit, evicting the oldest *non-expired* entries degrades
+        // dedup to best-effort for those quotes (a replay could trigger one more
+        // verify) — an intentional trade-off: the memory bound is the hard
+        // guarantee, and the rate-limit + inflight gates (plus the durable
+        // `is_quote_hash_used` check for admitted quotes) remain the real DoS
+        // backstop. Do not "fix" this by removing the cap.
         if self.recent_quotes.len() > MAX_TRACKED_QUOTES {
             Self::evict_oldest(&mut self.recent_quotes, MAX_TRACKED_QUOTES);
         }
 
-        // A peer whose bucket has refilled to full and hasn't been seen for a
-        // while carries no state worth keeping.
+        // A peer whose bucket has refilled to full and hasn't been *seen* for a
+        // while carries no state worth keeping. Keyed on `last_seen` (not
+        // `last`), so a peer that is actively announcing but pinned at the rate
+        // limit — recent `last_seen`, stale `last` — is retained. `>=` evicts at
+        // exactly the cutoff, matching the dedup-TTL boundary convention above.
         let burst = self.per_peer_burst;
         let idle_cutoff = self.per_peer_refill.saturating_mul(2);
         self.peers.retain(|_, b| {
-            !(b.tokens >= burst && now.saturating_duration_since(b.last) > idle_cutoff)
+            !(b.tokens >= burst && now.saturating_duration_since(b.last_seen) >= idle_cutoff)
         });
         if self.peers.len() > MAX_TRACKED_PEERS {
             Self::evict_oldest_peers(&mut self.peers, MAX_TRACKED_PEERS);
@@ -256,7 +292,11 @@ impl TeeAdmissionThrottle {
     }
 
     fn evict_oldest_peers(map: &mut HashMap<PeerId, PeerBucket>, keep: usize) {
-        let mut entries: Vec<(PeerId, Instant)> = map.iter().map(|(k, v)| (*k, v.last)).collect();
+        // Key on `last_seen` (last activity), not `last` (last grant), so the
+        // peers dropped under cap pressure are the genuinely-quiet ones rather
+        // than active-but-throttled peers (whose `last` is stale by design).
+        let mut entries: Vec<(PeerId, Instant)> =
+            map.iter().map(|(k, v)| (*k, v.last_seen)).collect();
         Self::evict_oldest_entries(map, &mut entries, keep);
     }
 
@@ -425,8 +465,9 @@ mod tests {
 
         // Spend the single token.
         assert!(matches!(t.check(t0, p, g, [0u8; 32]), Decision::Proceed(_)));
-        // Half a second in: only 0.5 token refilled → rejected, and this call
-        // advances `last` to t0+0.5s.
+        // Half a second in: only 0.5 token refilled → rejected. The bucket is
+        // committed only on Proceed, so this rejection does NOT advance `last`;
+        // the full 1s of elapsed time is therefore credited at t0+1s.
         assert!(matches!(
             t.check(t0 + Duration::from_millis(500), p, g, [1u8; 32]),
             Decision::RateLimited
@@ -437,6 +478,32 @@ mod tests {
             t.check(t0 + Duration::from_secs(1), p, g, [2u8; 32]),
             Decision::Proceed(_)
         ));
+    }
+
+    #[test]
+    fn refused_new_peer_is_not_tracked() {
+        // Inflight cap 1; hold the only permit so a second, brand-new peer can
+        // only ever hit AtCapacity. Generous burst/refill so Gate 2 never bites.
+        let mut t = TeeAdmissionThrottle::new(
+            1,
+            1000.0,
+            Duration::from_millis(1),
+            Duration::from_secs(300),
+        );
+        let now = Instant::now();
+        let g = [1u8; 32];
+        let _held = match t.check(now, peer(1), g, [1u8; 32]) {
+            Decision::Proceed(p) => p,
+            other => panic!("expected Proceed, got {other:?}"),
+        };
+        assert_eq!(t.peers.len(), 1, "the proceeding peer is tracked");
+        // A new peer that is refused at Gate 3 must not be inserted, so a flood
+        // of unique never-proceeding peers can't grow the map.
+        assert!(matches!(
+            t.check(now, peer(2), g, [2u8; 32]),
+            Decision::AtCapacity
+        ));
+        assert_eq!(t.peers.len(), 1, "a refused new peer must not grow the map");
     }
 
     #[test]
