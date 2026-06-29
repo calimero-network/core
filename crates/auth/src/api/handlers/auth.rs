@@ -176,11 +176,24 @@ pub async fn token_handler(
     // raw, attacker-controlled values could otherwise inject a `|` to collide
     // two distinct identities into one bucket (e.g. lock out a victim by
     // polluting their bucket).
+    //
+    // Cap each component before it enters the key: the raw fields are unbounded
+    // attacker input, and an oversized `public_key` (e.g. megabytes) would be
+    // allocated and stored verbatim as a map key — up to MAX_TRACKED_KEYS of
+    // them — turning the limiter into a memory-amplification sink. A real
+    // public key is well under this bound, so capping cannot collapse two
+    // legitimate identities; a forged >cap key only ever collides with another
+    // forged >cap key sharing the same prefix, which is the attacker's own
+    // bucket.
+    const MAX_RL_KEY_FIELD: usize = 256;
+    let cap_field = |s: &str| -> String { s.chars().take(MAX_RL_KEY_FIELD).collect() };
+    let rl_auth_method = cap_field(&token_request.auth_method);
+    let rl_public_key = cap_field(&token_request.public_key);
     let rl_key = format!(
         "{}|{}|{}",
-        token_request.auth_method.len(),
-        token_request.auth_method,
-        token_request.public_key
+        rl_auth_method.len(),
+        rl_auth_method,
+        rl_public_key
     );
 
     // Sanitize string inputs to prevent injection attacks
