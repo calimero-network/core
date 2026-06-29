@@ -602,19 +602,14 @@ impl<'a> NamespaceRepository<'a> {
         let public_key = private_key.public_key();
         let sender_key = PrivateKey::random(&mut OsRng);
 
-        self.store_identity(
-            &ns_id,
-            &public_key,
-            private_key.as_bytes(),
-            sender_key.as_bytes(),
-        )?;
+        self.store_identity(&ns_id, &public_key, &private_key, &sender_key)?;
 
         Ok(ResolvedNamespaceIdentity {
             namespace_id: ns_id,
             identity: NamespaceIdentityRecord {
                 public_key,
-                private_key: *private_key.as_bytes(),
-                sender_key: *sender_key.as_bytes(),
+                private_key: *private_key,
+                sender_key: *sender_key,
             },
         })
     }

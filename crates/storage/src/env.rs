@@ -7,7 +7,7 @@ use mocked as imp;
 
 use std::cell::Cell;
 
-use crate::logical_clock::HybridTimestamp;
+use crate::logical_clock::{ClockUpdateError, HybridTimestamp};
 use crate::store::Key;
 
 // ============================================================================
@@ -353,14 +353,12 @@ pub fn hlc_timestamp() -> HybridTimestamp {
 ///
 /// # Errors
 ///
-/// Error returned by [`update_hlc`] when a remote timestamp is too far in the
-/// future to accept (drift protection).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HlcDriftError;
-
-/// Returns [`HlcDriftError`] if the remote timestamp is >5s in the future (drift protection).
-pub fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), HlcDriftError> {
-    imp::update_hlc(remote_ts).map_err(|()| HlcDriftError)
+/// Returns a [`ClockUpdateError`] describing why the remote timestamp was
+/// rejected — currently [`ClockUpdateError::Drift`] when it is more than 5s in
+/// the future (drift protection). The typed reason is preserved from the clock
+/// itself rather than being flattened into an opaque failure.
+pub fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ClockUpdateError> {
+    imp::update_hlc(remote_ts)
 }
 
 /// Reset for testing.
@@ -442,7 +440,7 @@ mod calimero_vm {
 
     use calimero_sdk::env;
 
-    use crate::logical_clock::{HybridTimestamp, LogicalClock};
+    use crate::logical_clock::{ClockUpdateError, HybridTimestamp, LogicalClock};
     use crate::store::Key;
 
     thread_local! {
@@ -581,7 +579,7 @@ mod calimero_vm {
     }
 
     /// Update HLC with remote timestamp
-    pub(super) fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
+    pub(super) fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ClockUpdateError> {
         ensure_hlc_initialized();
         WASM_HLC.with(|hlc_cell| {
             hlc_cell
@@ -610,7 +608,7 @@ mod mocked {
     use rand::RngCore;
 
     use super::RuntimeEnv;
-    use crate::logical_clock::{HybridTimestamp, LogicalClock};
+    use crate::logical_clock::{ClockUpdateError, HybridTimestamp, LogicalClock};
     use crate::store::{Key, MockedStorage, StorageAdaptor};
 
     thread_local! {
@@ -871,7 +869,7 @@ mod mocked {
     }
 
     /// Update HLC with remote timestamp
-    pub(super) fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
+    pub(super) fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ClockUpdateError> {
         NATIVE_HLC.with(|hlc| hlc.borrow_mut().update(remote_ts, time_now))
     }
 
