@@ -1,9 +1,12 @@
 use actix::{AsyncContext, WrapFuture};
+use calimero_context_config::types::ContextGroupId;
 use calimero_network_primitives::messages::NetworkEvent;
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use calimero_node_primitives::sync::BroadcastMessage;
+use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
 
+use crate::handlers::tee_attestation_throttle::Decision;
 use crate::handlers::{specialized_node_invite, tee_attestation_admission};
 use crate::run::NodeMode;
 use crate::NodeManager;
@@ -143,12 +146,88 @@ pub(super) fn handle_specialized_broadcast(
                 "Received TEE attestation announce on namespace topic"
             );
 
+            // Admission-control gates (TEE-01 / audit #48). The heavy
+            // `verify_attestation` path (outbound Intel-PCS fetch + DCAP
+            // verify) runs BEFORE any policy lookup, so an unguarded announce
+            // lets a malicious mesh peer amplify a 64 KiB gossip frame into a
+            // CPU verify + outbound PCS request by replaying a real quote under
+            // fresh nonces. Guard the spawn synchronously here, on the actor
+            // thread, before any verify work is scheduled.
+            let quote_hash: [u8; 32] = Sha256::digest(quote_bytes).into();
+            let group_id = ContextGroupId::from(namespace_id_bytes);
+
+            // Durable dedup, pulled earlier from `admit_tee_node`: a quote
+            // already admitted to this group never needs re-verifying. A store
+            // read error is non-fatal — the authoritative check still runs in
+            // `admit_tee_node`, so we proceed (the in-memory throttle below
+            // still applies) rather than drop a possibly-legitimate announce.
+            match calimero_governance_store::is_quote_hash_used(
+                &this.datastore,
+                &group_id,
+                &quote_hash,
+            ) {
+                Ok(true) => {
+                    debug!(
+                        %source,
+                        quote_hash = %hex::encode(quote_hash),
+                        "Dropping TeeAttestationAnnounce: quote already admitted to group"
+                    );
+                    return true;
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    warn!(
+                        %source,
+                        error = %err,
+                        "Failed to read quote-hash usage; proceeding to throttle gate"
+                    );
+                }
+            }
+
+            // Per-group quote dedup + per-peer rate limit + global
+            // inflight-verify cap. The returned permit must outlive the verify,
+            // so it is moved into the spawned task and held until completion.
+            let now = std::time::Instant::now();
+            let verify_permit = match this.tee_admission_throttle.check(
+                now,
+                source,
+                namespace_id_bytes,
+                quote_hash,
+            ) {
+                Decision::Proceed(permit) => permit,
+                Decision::Duplicate => {
+                    debug!(
+                        %source,
+                        quote_hash = %hex::encode(quote_hash),
+                        "Dropping TeeAttestationAnnounce: recently-seen quote (dedup)"
+                    );
+                    return true;
+                }
+                Decision::RateLimited => {
+                    warn!(
+                        %source,
+                        "Dropping TeeAttestationAnnounce: per-peer attestation rate limit exceeded"
+                    );
+                    return true;
+                }
+                Decision::AtCapacity => {
+                    warn!(
+                        %source,
+                        "Dropping TeeAttestationAnnounce: attestation verify capacity saturated"
+                    );
+                    return true;
+                }
+            };
+
             let context_client = this.clients.context.clone();
             let quote_bytes = quote_bytes.clone();
             let public_key = *public_key;
             let nonce = *nonce;
             let _ignored = ctx.spawn(
                 async move {
+                    // Hold the inflight permit for the lifetime of the verify so
+                    // the global concurrency cap stays accurate; dropped here.
+                    let _verify_permit = verify_permit;
                     if let Err(err) = tee_attestation_admission::handle_tee_attestation_announce(
                         &context_client,
                         source,
