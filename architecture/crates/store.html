@@ -356,6 +356,7 @@
   <div class="cb">
     <h4>Snapshot Iteration</h4>
     <p style="margin-top:8px;">Iterators are backed by RocksDB snapshots for consistent point-in-time reads. Prefix iteration uses <span class="code">set_iterate_range</span> for efficient scans within a column family.</p>
+    <p style="margin-top:8px;font-size:.82rem;color:var(--text-dim);">Internally, fused iteration is handled by <span class="code">FusedIter</span>, a struct containing the inner iterator and an <span class="code">expended: bool</span> flag. It was previously a three-variant enum (<span class="code">Active</span> / <span class="code">Interregnum</span> / <span class="code">Expended</span>) whose <span class="code">next()</span> created a second <code>&amp;mut Self</code> via <code>ptr::from_mut</code> while the first was still live — aliasing UB. The struct form lets the borrow checker see <span class="code">iter</span> and <span class="code">expended</span> as disjoint fields, eliminating the unsafe block entirely. <span class="code">seek()</span>, <span class="code">read()</span>, and <span class="code">IterPair::new</span> are updated accordingly.</p>
   </div>
   <div class="cb">
     <h4>Pinned Gets</h4>
