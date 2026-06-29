@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Governance — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+<style>
+.roles { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: .86rem; }
+.roles th, .roles td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.roles th { color: var(--text-bright); font-weight: 600; }
+.roles td { color: var(--text-dim); }
+.roles code { white-space: nowrap; }
+.chapter-nav { display: flex; justify-content: space-between; margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border); font-size: .88rem; }
+</style>
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="index.html">Protocol Reference</a><span class="sep">/</span><span>Governance</span></div>
+<h1><em>Governance</em></h1>
+<p class="page-subtitle">Chapter 6 — membership and authority, encoded as operations like everything else.</p>
+
+<div class="card gc">
+<h2>Governance is just operations</h2>
+<p>There is no separate governance engine, no consensus round, and <strong>no quorum</strong>. The access-control, membership, and admin planes from Chapter 3 are governance — they are operations in a governance scope, folded by the same last-writer-wins projection, summarized by the same scope root. A membership change converges exactly the way a data write does.</p>
+<p>What this chapter adds is <em>meaning</em>: what those governance operations say, the structure they maintain, and how the system decides whether an author was allowed to write one.</p>
+</div>
+
+<div class="card ga">
+<h2>The hierarchy</h2>
+<p>Governance scopes form a tree (the scope tree from Chapter 1):</p>
+<ul>
+<li>A <strong>namespace</strong> is the root governance scope — a group with no parent. It anchors identity, admin, and policy for everything beneath it.</li>
+<li><strong>Subgroups</strong> nest under it, each its own scope with its own key and members.</li>
+<li><strong>Contexts</strong> (the running applications) attach to a group; a context's members are the group's members.</li>
+</ul>
+<p>A subgroup is either <strong>Open</strong> or <strong>Restricted</strong>. In an Open subgroup, a parent member who holds the "join open subgroups" capability is a member by <em>inheritance</em> — no explicit operation needed. A Restricted subgroup is closed: membership requires a direct, deliberate admission. Because membership only ever narrows as you descend, pointing an operation "up" the tree never leaks visibility — the property Chapter 1 relied on.</p>
+</div>
+
+<div class="card gb">
+<h2>The founder</h2>
+<p>A scope tree has to start somewhere, and that start can't appeal to a prior admin — there isn't one yet. So a namespace begins with a single <strong>genesis operation</strong> that names its <strong>founder</strong>. It is <strong>self-authorizing</strong>: its only checks are that it is signed by the founder it names and that it has no parents (it is genuinely the first operation). From it, the founder is recorded as admin and owner, and every node that later replays the DAG derives the same founder — authority is established by a replayable operation, not by out-of-band trust.</p>
+</div>
+
+<div class="card gd">
+<h2>Membership: joining</h2>
+<p>Joining is a two-part dance, because a new member needs two things: a row in the membership state, and the <strong>scope key</strong> to actually read the scope's encrypted operations. The key is delivered privately, wrapped to the joiner's public key (ECDH), by existing members who already hold it.</p>
+<div class="diagram-tools"><button class="replay-btn" onclick="replay('d-join')">&#9654; Replay</button></div>
+<div class="diagram-container seq animating" id="d-join"></div>
+<p>The membership operation is public on the governance scope; the key delivery is a private, wrapped envelope. Once the joiner unwraps the key, every prior and future operation in the scope becomes readable, and they fold the scope just like anyone else.</p>
+</div>
+
+<div class="card ga">
+<h2>Membership: leaving and removal</h2>
+<p>There are two ways a member stops being a member, and the difference is entirely about the <strong>scope key</strong>.</p>
+<div class="g2">
+<div class="cb"><h4>Leave (self-initiated)</h4><p>A member removes themselves. No key rotation happens — the leaver already holds the key and could have copied it, so rotating would be theater. Leaving is just a membership operation that drops their own row.</p></div>
+<div class="cb"><h4>Removal (admin-initiated)</h4><p>An admin removes someone else. Here the key <strong>is</strong> rotated: a fresh scope key is generated and delivered, wrapped, to every <em>remaining</em> member — so the removed member can read nothing authored after their removal. This is forward secrecy.</p></div>
+</div>
+<div class="diagram-tools"><button class="replay-btn" onclick="replay('d-remove')">&#9654; Replay</button></div>
+<div class="diagram-container seq animating" id="d-remove"></div>
+<p>Two invariants guard both paths: the scope's <strong>owner</strong> cannot be removed involuntarily and cannot self-leave without first transferring ownership, and a removal that would leave a group with no admin is rejected — the tree can never be orphaned.</p>
+</div>
+
+<div class="card gb">
+<h2>Roles, capabilities, and the owner</h2>
+<p>Authority is layered. A member has a <strong>role</strong> for coarse rights, and fine-grained <strong>capabilities</strong> for specific actions; the <strong>owner</strong> is a distinguished identity sitting above roles.</p>
+<table class="roles">
+<tr><th>Role</th><th>Can do</th></tr>
+<tr><td><code>Admin</code></td><td>All governance operations: manage members, set policy and capabilities, manage subgroups.</td></tr>
+<tr><td><code>Member</code></td><td>Read and write context state. Governance actions only with the matching capability.</td></tr>
+<tr><td><code>ReadOnly</code></td><td>Read state; writes are rejected, locally and on peers.</td></tr>
+<tr><td><code>ReadOnlyTee</code></td><td>A read-only fleet node admitted by hardware attestation; evicted with a self-purge signal.</td></tr>
+</table>
+<p><strong>Capabilities</strong> are individual grants a non-admin can hold — for example: create contexts, invite members, join open subgroups, manage members, manage the application, or create/delete/configure subgroups. Admins pass every capability check implicitly; defaults can be set per group and overridden per member.</p>
+<p>The <strong>owner</strong> is not a role but a stored identity with exclusive rights — transfer ownership, delete the group or namespace — and the removal immunity noted above. Every other admin is a regular admin.</p>
+</div>
+
+<div class="card gd">
+<h2>Authorization: judged at the author's cut</h2>
+<p>The decision "was this author allowed to write this operation?" reuses the primitive from Chapter 4: the projection resolves membership and capabilities at the operation's <strong>causal cut</strong> — the governance state the author had observed — not at the receiver's present.</p>
+<div class="step"><span class="n">the rule</span><h4>Forward-only authority.</h4>
+<p>An operation is authorized against the membership and access-control state that existed at its parents. So a write authored while you were still a member stays valid even if a peer applies your removal first; and a governance action you took as admin stands even if you were later demoted. Every node reaches the same verdict because every node folds the same cut — authority converges for free, with no coordination.</p></div>
+<p>The same mechanism covers data writes: an entity's <strong>writer set</strong> (the access-control plane) is resolved at the cut, and a write is accepted only if its author was an authorized writer at that point.</p>
+</div>
+
+<div class="card ga" id="spec">
+<h2>Specification</h2>
+
+<h3>Capability bits</h3>
+<p>Capabilities are a <code>u32</code> bitmask. Each grant is a fixed bit position:</p>
+<table class="spec-tbl">
+<tr><th>Bit</th><th>Value</th><th>Capability</th></tr>
+<tr><td>0</td><td><code>0x0001</code></td><td><code>CAN_CREATE_CONTEXT</code></td></tr>
+<tr><td>1</td><td><code>0x0002</code></td><td><code>CAN_INVITE_MEMBERS</code></td></tr>
+<tr><td>2</td><td><code>0x0004</code></td><td><code>CAN_JOIN_OPEN_SUBGROUPS</code></td></tr>
+<tr><td>3</td><td><code>0x0008</code></td><td><code>MANAGE_MEMBERS</code></td></tr>
+<tr><td>4</td><td><code>0x0010</code></td><td><code>MANAGE_APPLICATION</code></td></tr>
+<tr><td>5</td><td><code>0x0020</code></td><td><code>CAN_CREATE_SUBGROUP</code></td></tr>
+<tr><td>6</td><td><code>0x0040</code></td><td><code>CAN_DELETE_SUBGROUP</code></td></tr>
+<tr><td>7</td><td><code>0x0080</code></td><td><code>CAN_MANAGE_VISIBILITY</code></td></tr>
+<tr><td>8</td><td><code>0x0100</code></td><td><code>CAN_MANAGE_METADATA</code></td></tr>
+</table>
+<p>Roles are a distinct enum: <code>Admin</code>, <code>Member</code>, <code>ReadOnly</code>, <code>ReadOnlyTee</code>. Admins pass every capability check implicitly.</p>
+
+<h3>The signed governance op</h3>
+<p>Governance operations travel as a signed envelope. The group-scoped form:</p>
+<div class="typedef" aria-label="SignedGroupOp">
+<span class="kw">struct</span> <span class="ty">SignedGroupOp</span> {<br>
+&nbsp;&nbsp;<span class="field">version</span>: <span class="ty">u8</span>,<span style="color:var(--text-dim)">&nbsp;// current schema version = 8</span><br>
+&nbsp;&nbsp;<span class="field">group_id</span>: <span class="ty">[u8; 32]</span>,<br>
+&nbsp;&nbsp;<span class="field">parent_op_hashes</span>: <span class="ty">Vec&lt;[u8; 32]&gt;</span>,<span style="color:var(--text-dim)">&nbsp;// DAG parents</span><br>
+&nbsp;&nbsp;<span class="field">signer</span>: <span class="ty">PublicKey</span>,<br>
+&nbsp;&nbsp;<span class="field">nonce</span>: <span class="ty">u64</span>,<span style="color:var(--text-dim)">&nbsp;// per-signer monotonic, starts at 1</span><br>
+&nbsp;&nbsp;<span class="field">op</span>: <span class="ty">GroupOp</span>,<br>
+&nbsp;&nbsp;<span class="field">signature</span>: <span class="ty">[u8; 64]</span>,<br>
+}
+</div>
+<p>The content hash (and the bytes the signature covers) are <strong>domain-separated</strong>:</p>
+<div class="typedef">
+op_id = <span class="ty">SHA-256</span>( <span class="ty">DOMAIN</span> ‖ borsh(signable) )<span style="color:var(--text-dim)">&nbsp;// signable = all fields except signature</span><br>
+signature = Ed25519_sign( signer_secret, <span class="ty">DOMAIN</span> ‖ borsh(signable) )<br>
+<br>
+<span class="comment">// group ops&nbsp;&nbsp;&nbsp;&nbsp;</span> DOMAIN = b"calimero.group.v1"<br>
+<span class="comment">// namespace ops</span> DOMAIN = b"calimero.namespace.v1"&nbsp;&nbsp;(SignedNamespaceOp, version = 2)
+</div>
+
+<h3>Replay protection</h3>
+<p>Each <em>(group, signer)</em> tracks a <strong>nonce window</strong>: a contiguous applied <code>floor</code> plus a sparse set of out-of-order applied nonces above it. A nonce is a duplicate if <code>nonce ≤ floor</code> or it is already in the set. This is checked <em>before</em> apply, and tolerates concurrent siblings (same author, different parents) arriving out of order without false-flagging them. Nonces start at <code>1</code>; <code>0</code> is never issued.</p>
+
+<h3>Key delivery: the wrapped envelope</h3>
+<p>A scope key is delivered wrapped per recipient:</p>
+<div class="typedef" aria-label="KeyEnvelope">
+<span class="kw">struct</span> <span class="ty">KeyEnvelope</span> {<br>
+&nbsp;&nbsp;<span class="field">recipient</span>: <span class="ty">PublicKey</span>,<br>
+&nbsp;&nbsp;<span class="field">ephemeral_pk</span>: <span class="ty">PublicKey</span>,<span style="color:var(--text-dim)">&nbsp;// sender's ephemeral key for this envelope</span><br>
+&nbsp;&nbsp;<span class="field">nonce</span>: <span class="ty">[u8; 12]</span>,<span style="color:var(--text-dim)">&nbsp;// AES-GCM nonce</span><br>
+&nbsp;&nbsp;<span class="field">ciphertext</span>: <span class="ty">Vec&lt;u8&gt;</span>,<span style="color:var(--text-dim)">&nbsp;// AES-256-GCM(scope_key)</span><br>
+}
+</div>
+<ul>
+<li><strong>Shared secret</strong> — X25519-style ECDH on the Curve25519 form of the two identities (sender ephemeral × recipient): the 32-byte compressed point <em>is</em> the AES-256 key (no separate KDF).</li>
+<li><strong>AEAD</strong> — AES-256-GCM, 12-byte nonce, empty additional data, GCM tag appended inline.</li>
+<li><strong>Rotation</strong> — a removal carries a <code>KeyRotation { new_key_id = SHA-256(new_key), envelopes }</code> with one envelope per <em>remaining</em> member; the removed member gets none.</li>
+</ul>
+<p class="page-subtitle" style="margin-top:0">A scope key is identified on the wire by <code>key_id = SHA-256(scope_key)</code>, so a receiver can look up which delivered key decrypts a given operation.</p>
+
+<h3>Owner vs admin</h3>
+<p>The owner is stored alongside admin in the group metadata (<code>owner_identity</code> vs <code>admin_identity</code>). A group may have several admins but exactly one owner. Only the owner may sign <code>TransferOwnership</code> or delete the group/namespace, and the owner is immune to involuntary removal. Ownership is itself folded into the governance hash, so an op signed before vs after a transfer resolves against different state.</p>
+</div>
+
+<div class="card gc">
+<h2>Where this leads</h2>
+<p>We now have the full meaning of all four planes and the rules that govern who may write them. Everything so far has been <em>local</em> — operations, folds, authority — assuming the operations are simply present. <strong>Chapter 7</strong> turns to how they actually move between nodes: the network and the wire protocol.</p>
+</div>
+
+<div class="chapter-nav">
+<span><a href="execution.html">← Application Execution</a></span>
+<span><a href="networking.html">Networking &amp; the Wire Protocol →</a></span>
+</div>
+
+</div>
+</div>
+<script src="../seq-diagram.js"></script>
+<script>
+  window.SEQ_DIAGRAMS = [
+    {
+      id: 'd-join',
+      title: 'Joining a scope',
+      lanes: [
+        { label: 'Joiner', color: '#58a6ff' },
+        { label: 'Existing member', color: '#3fb950' },
+        { label: 'Governance scope', color: '#a5ff11' }
+      ],
+      steps: [
+        { from: 1, to: 0, label: 'invitation (out of band)', dashed: true },
+        { from: 0, to: 2, label: 'publish MemberJoined (public)' },
+        { from: 2, to: 1, label: 'member observes the join' },
+        { from: 1, to: 0, label: 'KeyDelivery: scope key wrapped to joiner (ECDH)', color: '#a5ff11' },
+        { from: 0, to: 0, label: 'unwrap key → can now decrypt scope ops' },
+        { from: 1, to: 2, label: 'MemberAdded { member, role }' },
+        { type: 'divider', label: 'joiner now folds the scope like any member' }
+      ]
+    },
+    {
+      id: 'd-remove',
+      title: 'Admin removal with key rotation',
+      lanes: [
+        { label: 'Admin', color: '#f0883e' },
+        { label: 'Governance scope', color: '#a5ff11' },
+        { label: 'Remaining members', color: '#3fb950' }
+      ],
+      steps: [
+        { from: 0, to: 1, label: 'MemberRemoved { member }', color: '#a5ff11' },
+        { from: 0, to: 0, label: 'generate fresh scope key' },
+        { from: 0, to: 2, label: 'KeyDelivery: new key wrapped to each remaining member' },
+        { type: 'divider', label: 'removed member cannot read anything authored after this point' }
+      ]
+    }
+  ];
+</script>
+<script src="../nav.js"></script>
+</body>
+</html>

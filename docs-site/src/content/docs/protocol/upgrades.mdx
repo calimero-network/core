@@ -1,0 +1,586 @@
+---
+title: Application Upgrades & Migration
+description: How a versioned WASM application evolves its on-chain state shape convergently across every node in a context.
+sidebar:
+  order: 16
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+An application is a versioned WASM bundle. A context targets one application id and
+runs that bundle's bytecode against the context's state. When you ship a new version
+whose **state shape changes**, the old serialized bytes can no longer be read as the
+new layout — so the upgrade carries a **migration**: a deterministic transform that
+reshapes each context's existing data into the new schema.
+
+This chapter covers how that works at the protocol level: how versions are identified,
+why migrations must be a pure function of prior state (the convergence rule), the two
+ways you author one, how a migration is guarded before it commits, the wire fence that
+keeps a mid-upgrade context from accepting stale-schema writes, and how an admin rolls
+an upgrade across a whole group at once.
+
+## Application versioning
+
+A context binds to an **application id**, and the node loads bytecode for that
+application from a content-addressed blob. Two distinct version markers matter:
+
+| Marker | Where it lives | What it identifies |
+| --- | --- | --- |
+| **Application id** | the context's application binding | which application a context targets; for a bundle this id is **version-stable** across releases |
+| **`app_key`** | `GroupMeta.app_key` = `blob_id(bytecode)` | the exact bytecode/schema a node is executing; changes on every code release |
+| **`state_version`** | embedded ABI manifest (`AppState::SCHEMA_VERSION`, from `#[app::state(version = N)]`) | the schema generation the binary targets; default `1`, readers treat a missing value as `1` |
+
+Because a bundle keeps the **same application id** while its bytecode (and therefore
+its `app_key` and `state_version`) advances, the bytecode blob — not the application id
+— is the real "which version" signal during an upgrade. The embedded ABI also declares
+each retained migration edge:
+
+```rust
+// crates/wasm-abi/src/schema.rs
+pub struct MigrationEdgeAbi {
+    pub method: String,      // the migrate entrypoint for this hop
+    pub from_version: u32,   // migrates from_version -> from_version + 1
+}
+```
+
+Retaining multiple edges lets a node that is several versions behind replay
+`v1→v2` then `v2→v3` rather than jumping the latest edge against older state.
+
+<Aside type="note" title="The `minRuntimeVersion` floor">
+Separate from the `state_version` / `app_key` schema surface above, a signed
+bundle manifest carries an optional **`minRuntimeVersion`** — a floor on the
+node runtime. It is enforced at install: if `min_runtime_version` exceeds the
+node's current runtime version the install **bails** (`"bundle requires runtime
+version X but current runtime is Y"`). This gate applies to signed and
+dev-bundle installs, not to a raw `.wasm` install.
+</Aside>
+
+## Bundles, signing & install
+
+An application ships as an **`.mpk` bundle** (Mero Package Kit): a gzip-compressed
+tar archive whose required entry is `manifest.json`, alongside the WASM / ABI /
+migration artifacts that manifest references. The node reads the manifest straight
+out of the archive in memory — it does not trust a filename or extension for
+content. A blob is treated as a bundle when it contains a `manifest.json` entry
+(`crates/node/primitives/src/client/application/bundle.rs`).
+
+### The manifest
+
+`manifest.json` is camelCase JSON:
+
+| Field | Meaning |
+| --- | --- |
+| `version` | manifest-format version |
+| `package` | application package id — the app id; a human label, **not** a security boundary |
+| `appVersion` | the application's own version string |
+| `signerId` | `did:key` of the signing key, the cryptographic update authority (optional in the type; required for a signed bundle) |
+| `minRuntimeVersion` | floor on the node runtime (see the Aside above) |
+| `metadata` | display info — `name`, `description`, `icon`, `tags`, `license` |
+| `interfaces` | declared `exports` / `uses` intents |
+| `wasm` + `abi` | single-service artifacts, each a `{path, hash, size}` record |
+| `services` | named multi-service modules; overrides `wasm` / `abi` when present and non-empty |
+| `migrations` | migration artifacts |
+| `links` | `frontend` / `github` / `docs` URLs |
+| `signature` | the Ed25519 signature object (below) |
+
+`package` and `appVersion` double as on-disk path components (the bundle extracts to
+`applications/{package}/{appVersion}/extracted`), so both are validated against path
+traversal when the manifest is parsed — a `package`, `appVersion`, or artifact path
+that escapes its directory is rejected
+(`crates/node/primitives/src/client/application/bundle.rs`).
+
+### Signing
+
+A signed bundle carries a `signature` object:
+
+```text
+signature = {
+  algorithm: "ed25519",                // exact, case-sensitive
+  publicKey: <base64url, no padding>,  // 32-byte Ed25519 key
+  signature: <base64url, no padding>,  // 64-byte signature
+  signedAt?: <ISO 8601 timestamp>
+}
+```
+
+The signed payload is **not** the raw archive bytes. It is the SHA-256 of the
+canonical manifest:
+
+```text
+payload = SHA-256( JCS(manifest without `signature` and without any `_`-prefixed field) )
+```
+
+The manifest is canonicalized with RFC 8785 (JCS) — lexicographically ordered keys —
+after dropping the `signature` field and **every** underscore-prefixed field
+(transient markers such as `_binary` / `_overwrite` are excluded so they cannot be
+smuggled into the signed view). The SHA-256 of those canonical bytes is the Ed25519
+signing payload (`crates/node/primitives/src/bundle/signature.rs`).
+
+Verification (`verify_manifest_signature`) is strict:
+
+- `algorithm` must equal `"ed25519"` exactly — `"ED25519"` / `"Ed25519"` are rejected.
+- The signature must verify against `publicKey` over that SHA-256 payload.
+- `signerId` must equal the value **derived from** `publicKey`:
+  `did:key:z{base58btc(0xed01 ‖ pubkey)}` — multibase base58btc of the multicodec
+  `0xed01` (ed25519-pub) tag concatenated with the 32-byte key. A `signerId` the
+  public key does not derive to is a mismatch error.
+
+Signing itself is done out of band by the dedicated **`mero-sign`** CLI (a separate
+workspace tool under `tools/mero-sign`), not by the node or `meroctl` — the node only
+*verifies*. `mero-sign` sets `signerId` from the key, canonicalizes, signs the
+payload, and writes the `signature` object back into the manifest.
+
+### Install trust split
+
+Where a bundle comes from decides whether a signature is mandatory:
+
+| Path | Source | Signature |
+| --- | --- | --- |
+| `install-application` | registry / URL / stored `.mpk` blob | **required** — install bails on a missing or invalid signature (`install_verified_bundle`) |
+| `install-dev-application` | a local filesystem path | **optional** — verified if present; admitted as an unsigned dev build if absent (`install_dev_bundle`) |
+
+An unsigned dev bundle is given the synthetic signer `"dev:unsigned"` and a zero
+bundle hash, so it never collides with a real `did:key` update authority
+(`extract_manifest_allow_unsigned`,
+`crates/node/primitives/src/client/application/bundle.rs`). A signature that **is**
+present is verified on either path — an invalid one is always rejected. Either way the
+`minRuntimeVersion` floor documented above is still enforced.
+
+## What a migration is
+
+A migration is needed only when **old serialized state can no longer be read as the
+new state**. Borsh is positional, so the rule is purely about field layout:
+
+| Change | Migration? |
+| --- | --- |
+| Add a method, fix logic (no field change) | No |
+| Append a variant to an enum (indices kept) | No |
+| Add a field | Yes — old bytes have no value for it |
+| Remove / rename a field | Yes |
+| Change a field's type | Yes |
+
+A migration runs **once per node**, the first time each context is accessed after the
+upgrade, under the `LazyOnAccess` upgrade policy. It reads the old root, transforms it,
+and returns the new root **by value** — there is no `Result`. On unrecoverable input
+(no prior state, undeserializable bytes) the migration `panic!`s, which aborts the
+upgrade and leaves the v1 state intact for a retry: **a failed migration is
+non-destructive.**
+
+## The convergence rule
+
+This is the one rule that actually matters. `#[app::migrate]` runs **independently on
+every node**, against that node's own already-synced, byte-identical v1 state. The
+migrated state is **not** sent over sync — each node re-derives it locally.
+
+:::caution[Normative]
+A migration's output **MUST** be a deterministic, pure function of the old state. Two
+nodes running the same migration on the same v1 bytes **MUST** produce a byte-identical
+v2 root, or they fork and CRDT sync breaks.
+:::
+
+The SDK removes the two structural sources of per-node entropy automatically. A
+migration body runs under storage **merge mode**, and the `#[app::migrate]` macro wraps
+it so that (from `crates/sdk/macros/src/migration.rs`):
+
+<Steps>
+
+1. **Node-local timestamps are zeroed.** `LwwRegister::new(...)` / `.set(...)` and
+   `Element` update times would otherwise stamp this node's clock + identity; merge
+   mode forces the deterministic zero stamp instead.
+
+2. **Random collection ids are made deterministic.** A freshly materialized collection
+   gets an `Id::random()` on the live path; the macro calls
+   `__assign_deterministic_ids()` to re-key every top-level collection field to its
+   `compute_collection_id(field)` id (and `Vector` elements by index).
+
+</Steps>
+
+So a migration that only carries fields through and seeds new ones with `::new()`
+cannot trigger a determinism bug. What you must still avoid is **app-level**
+non-determinism: wall-clock, RNG, or iteration order. If you materialize an ordered
+`Vector` from an unordered map/set, **sort first** — two nodes may iterate the source in
+different orders.
+
+### Data categories
+
+Which moves are safe depends on the field type:
+
+| Category | Types | In a migration |
+| --- | --- | --- |
+| **Convergent** | `UnorderedMap`, `Vector`, `UnorderedSet`, `SortedMap`, `SortedSet`, `UserStorage`, `FrozenStorage` | key/content-addressed — rebuild freely; auto-converges |
+| **Replayable** | `Counter`/`GCounter`/`PNCounter`, `RGA` | carry across, or replay deterministically with the `*_for(id, …)` APIs |
+| **Identity-gated** | `AuthoredMap`, `AuthoredVector`, `SharedStorage` | carry-through only — re-inserting stamps *this* node as owner and diverges |
+
+`Counter::increment` and `RGA::insert` stamp the running node's identity/clock, so the
+SDK makes them **panic during a migration** rather than let them silently fork the
+network. Carry the value through (`field: old.field`) or use the explicit-identity
+replay APIs (`increment_for`, `insert_str_at_timestamp`).
+
+## Declarative vs hand-written
+
+### `#[derive(Migrate)]` — the common case
+
+For add / remove / rename / type-change you don't write the migration body at all.
+Declare the new state, point it at the old layout, and annotate only what changed
+(`crates/sdk/macros/src/migrate_derive.rs`):
+
+```rust
+#[app::state(version = 2)]
+#[derive(app::Migrate)]
+#[migrate(from = DocV1Data)]
+pub struct DocV2 {
+    entries: UnorderedMap<String, LwwRegister<String>>, // carried by name
+    title: LwwRegister<String>,                         // carried by name
+    #[migrate(new = LwwRegister::new("".to_owned()))]
+    notes: LwwRegister<String>,                         // additive: you seed it
+    #[migrate(from = legacy_name)]
+    renamed: LwwRegister<String>,                       // rename: old.legacy_name
+}
+```
+
+| Annotation | Where | Result |
+| --- | --- | --- |
+| _(none)_ | field | carried from the old state by name (`old.field`) |
+| `#[migrate(new = EXPR)]` | field | additive — you provide the seed value |
+| `#[migrate(from = old_name)]` | field | renamed — carry `old.old_name` |
+| `#[migrate(with = EXPR)]` | field | transform — `EXPR(old.field)` (combine with `from` to convert a renamed field) |
+| _field omitted from the new struct_ | — | dropped (the remove case) |
+| `#[migrate(emit = EXPR)]` | struct | emit an app event from the migration |
+
+A new field you forget to annotate is a **compile error** ("no field `notes` on the old
+type") — it cannot silently misbuild. A **dropped** field is silent (that *is* the
+remove case), so review the new field list against the old one deliberately. The
+generated export name defaults to the versioned `migrate_v{N-1}_to_v{N}` so names stay
+unique across releases.
+
+### Hand-written `#[app::migrate]`
+
+When the transform crosses fields — one source feeds many fields, or a new field is
+derived from a field you also keep — write the function yourself. The derive just
+generates this shape:
+
+```rust
+use calimero_sdk::state::read_raw;
+
+#[app::migrate]
+pub fn migrate_v1_to_v2() -> DocV2 {
+    let old_bytes = read_raw().unwrap_or_else(|| panic!("no prior state"));
+    let old: DocV1Data = BorshDeserialize::deserialize(&mut &old_bytes[..])
+        .unwrap_or_else(|e| panic!("v1 deserialize: {e:?}"));
+    DocV2 {
+        entries: old.entries,                       // carry — handle survives
+        title: old.title,
+        notes: LwwRegister::new("".to_owned()),     // seed a new field
+    }
+}
+```
+
+See [the SDK macros reference](/build/sdk-macros/) for the full attribute surface.
+
+## Guarding a migration: `migration_check` + witness
+
+A migration that compiles and runs can still be wrong — drop entries, break an
+invariant, orphan a reference. To catch that **before it commits**, declare an optional
+`#[app::migration_check]`. The runtime invokes it on the produced v2 root, against the
+same in-memory staging buffer the migrate wrote, **before** anything reaches the live
+store. A `false` verdict (or a trap) logically **aborts** the migration: the staging
+buffer is dropped, the context stays on v1 with zero residue, and — because no migration
+marker is recorded — the context re-runs migrate+check on its next access, so a
+transient cause (not-yet-synced v1) self-heals.
+
+```rust
+#[app::migration_check]
+fn check(old: DocV1, new: DocV2) -> bool {
+    // `new` (and its collections) reflect the produced v2 state.
+    // `old`'s scalar fields are pristine v1; do NOT diff old-vs-new
+    // collections — both resolve to the same staged bucket.
+    new.items.get("alpha").map(|v| v.is_some()).unwrap_or(false)
+}
+```
+
+Built-in helpers (`calimero_sdk::migration_check`) compose into the predicate:
+`entity_count_parity(a, b, delta)`, `no_orphaned_refs(refs, keys)`,
+`conservation(old_total, new_total)`.
+
+### The transient migration witness
+
+When the invariant needs a v1 value the v2 schema doesn't keep (e.g. "every item
+survived"), the migrate returns a `(State, Witness)` tuple. The witness is a borsh blob
+that rides out on the runtime `Outcome` and is delivered to the check — **never
+persisted**. The macro emits it via the `emit_migration_witness` host function
+(`crates/runtime/src/logic/host_functions/system.rs`), which captures the blob into the
+transient `Outcome.migration_witness` field:
+
+```rust
+#[app::migrate]
+fn migrate() -> (DocV2, MigrationWitness) {
+    let mut items = old.items;
+    let v1_count = items.len().unwrap_or(0) as u64;  // captured BEFORE any change
+    (DocV2 { items, /* .. */ }, MigrationWitness { v1_count })
+}
+
+#[app::migration_check]
+fn check(_old: DocV1, new: DocV2, witness: MigrationWitness) -> bool {
+    matches!(new.items.len(), Ok(n) if n as u64 == witness.v1_count)
+}
+```
+
+:::caution[Normative]
+The check and any witness **MUST** be a deterministic pure function of the v1 state,
+exactly like the migrate — they run independently on every node against byte-identical
+input, so all nodes reach the same verdict: either all commit or all abort. A
+non-deterministic check or witness is a split-verdict bug.
+:::
+
+A plain `State` return with a 2-arg `check(old, new)` stays valid — the witness is
+opt-in.
+
+### The no-silent-downgrade rail
+
+Changing an identity-gated type to a plain one (`AuthoredMap → UnorderedMap`,
+`SharedStorage → UnorderedMap`, `AuthoredVector → Vector`, or dropping the field) strips
+per-entry authorship / the writer ACL across the **whole network**. This is refused
+twice: in CI by `calimero-abi diff` (an `UNSAFE_IDENTITY_DOWNGRADE` finding,
+`crates/wasm-abi/src/downgrade.rs`), and at the node by the upgrade gate, before the
+upgrade op is even emitted.
+
+## The stale-schema delta fence
+
+A migration is local, but writes still flow over sync. During a rolling upgrade, some
+nodes have migrated and some have not — so a write authored against the **old** schema
+must not be applied on top of **migrated** state, or the v2 reader decodes v1-shaped
+bytes and corrupts.
+
+Two coordinated fences enforce this:
+
+- **`producing_app_key` on the state delta.** Every `StateDelta` broadcast carries the
+  `GroupMeta.app_key` (= `blob_id(bytecode)`) the sender was executing under
+  (`crates/node/primitives/src/sync/snapshot.rs`). A receiver compares it to its local
+  group meta: a delta whose `app_key` no longer matches was authored by a node still on
+  the old schema and is buffered / rejected rather than applied.
+
+  ```rust
+  /// `GroupMeta.app_key` the sender was executing under when this
+  /// delta was produced. Receivers fence stale-schema deltas after a
+  /// cascade migration: a delta whose app_key no longer matches the
+  /// local group meta was authored on the old schema.
+  producing_app_key: Option<[u8; 32]>,
+  ```
+
+- **The `cascade_hlc` HLC fence — absorb, don't drop.** A cascade upgrade stamps a single
+  hybrid-logical-clock boundary (`cascade_hlc`) once, shared by every migrated descendant
+  (see below). The fence decides each incoming context-state delta against three facts: the
+  boundary, the delta's HLC, and — crucially — the **loaded reader** app_key, the bytecode
+  blob the receiver actually executes right now, *not* the replicated `GroupMeta.app_key`
+  migration target. Under `LazyOnAccess` the governance target advances for everyone at
+  cascade-apply while each node's binary swaps lazily, so keying on the target would fence a
+  node against a schema it can already read. The rule (`fence_decision`,
+  `crates/context/src/hlc_fence.rs`):
+
+  | Condition | Decision |
+  | --- | --- |
+  | no `cascade_hlc` boundary | `Apply` |
+  | `delta_hlc <= boundary` — pre-cascade legitimate history | `Apply` |
+  | delta schema matches the loaded reader | `Apply` |
+  | after the boundary **and** schema differs from the loaded reader | `Buffer` |
+
+  A fenced delta is **buffered (absorbed) for verbatim replay** once the local binary
+  catches up to the schema that produced it — it is never dropped. The migration fence never
+  emits `Drop`; that verdict is reserved for unrecoverable, non-absorbable cases. The loaded
+  reader resolves in execution order — the per-context activation marker, then the installed
+  application row's bytecode blob, then the group target as a last resort
+  (`loaded_reader_app_key`). The replicated target is threaded through only so the absorb
+  drain can later tell when the binary has reached it.
+
+## Group-wide cascade upgrade
+
+An admin upgrades a group's target application in one governance operation, and every
+node in (and beneath) that group upgrades and migrates — coordinated so cross-version
+drift is fenced. The operation is `GroupOp::CascadeUpgrade`
+(`crates/governance-types/src/lib.rs`):
+
+```rust
+CascadeUpgrade {
+    from_app_key: [u8; 32],            // the walk predicate: match descendants on this app_key
+    app_key: [u8; 32],                 // the new bytecode blob id
+    target_application_id: ApplicationId,
+    migration: Option<Vec<u8>>,        // the migrate method name (bytes)
+    cascade_hlc: HybridTimestamp,      // the fence boundary, stamped once by the initiator
+}
+```
+
+It is **atomic**: `target_application_id`, `app_key`, and `migration` are all applied in
+a **single walk per matched descendant** (every descendant whose current `app_key`
+equals `from_app_key`), so a receiver cannot reproduce the old out-of-order apply bug
+where target-set ran first and the migration silently matched nothing. The `cascade_hlc`
+is stamped **once** by the initiator so every node records an identical fence boundary.
+
+<SeqDiagram
+  id="d-cascade-upgrade"
+  title="Group-wide cascade upgrade"
+  lanes={[
+    { label: 'Admin', color: '#58a6ff' },
+    { label: 'Governance scope', color: '#a5ff11' },
+    { label: 'Member node', color: '#3fb950' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /groups/:id/upgrade { target_application_id, cascade }' },
+    { from: 1, to: 1, label: 'emit CascadeUpgrade { from_app_key, app_key, target, migration, cascade_hlc }' },
+    { from: 1, to: 2, label: 'op replicates to every member node' },
+    { from: 2, to: 2, label: 'apply: set target + app_key + migration atomically; record cascade_hlc fence' },
+    { type: 'divider', label: 'LazyOnAccess: nothing migrates yet — state is reshaped on first access' },
+    { from: 2, to: 2, label: 'first context access → run migrate (independently, deterministically)' },
+    { from: 2, to: 2, label: 'migration_check passes → commit v2 root; emit AppVersionChanged' },
+    { from: 2, to: 1, label: 'fence: reject deltas with stale producing_app_key / pre-cascade_hlc' },
+    { from: 0, to: 1, label: 'GET /groups/:id/cascade-status → per-subgroup rollout rollup' },
+  ]}
+/>
+
+### Admin endpoints
+
+The cascade is driven and observed through the admin API
+(`crates/server/src/admin/service.rs`):
+
+| Method & path | Purpose |
+| --- | --- |
+| `POST /groups/:group_id/upgrade` | trigger the upgrade (set `cascade: true` for the whole subtree) |
+| `GET /groups/:group_id/upgrade/status` | signed-group upgrade status |
+| `POST /groups/:group_id/upgrade/retry` | re-drive a stalled upgrade |
+| `GET /groups/:namespace_id/cascade-status` | per-subgroup cascade rollout rollup |
+| `GET /groups/:namespace_id/migration-status` | cohort migration rollup (incl. `authored_remaining`) |
+| `POST /groups/:namespace_id/migration/abort` | admin stop of a rolling migration |
+
+`abort` flips the pending target back to the pre-migration app id and drops the pending
+marker, cascading to every descendant carrying the same pending migration. It is a
+forward "stop" (un-migrated contexts stop switching), **not** a rewind of any context
+that already migrated. Operationally these are reachable via
+[meroctl](/operate/meroctl/) and the admin surface.
+
+### Identity-gated data: owner-driven follow-up
+
+A cascade migrates **structural** state, but identity-gated entries
+(`AuthoredMap` / `AuthoredVector` / `SharedStorage`) are only carried through — each
+keeps its v1 `schema_version` tag until its **owner** re-signs it, because nobody can
+re-sign another identity's entry. `#[app::state(version = N)]` auto-generates a
+`migrate_my_entries()` export: one signed call by an owner sweeps every entry that owner
+still holds below `target`, returning `{converted, remaining}`. The
+`migration-status` endpoint's `authored_remaining` count tracks how many cohort members
+still have unconverted entries — `0` means the cohort is fully converted.
+
+The node also fires an `AppVersionChanged` context event (over SSE/WebSocket) when a
+context's application version flips, carrying `fromVersion` / `toVersion` — frontends use
+it to prompt owners to run `migrate_my_entries()` and to avoid bundle skew.
+
+## The in-progress upgrade write gate
+
+An **eager** group upgrade (the `Automatic` policy, driven by a propagator) walks the group
+migrating contexts one at a time. While that walk is mid-flight the group's upgrade row is
+`GroupUpgradeStatus::InProgress`, and a second fence — the execute write-gate — keeps a
+not-yet-migrated context from committing a write that would drift against group-mates
+already on the new schema.
+
+Only `InProgress` blocks, and the gate is deliberately narrow so it cannot deadlock the
+machinery that clears it:
+
+- **Lazy upgrades** write `Completed` directly and never pass through `InProgress`, so a
+  `LazyOnAccess` group is never write-frozen.
+- **The eager propagator** — the task doing the migrating — **bypasses the execute gate**, so
+  the migration commits that retire `InProgress` are never blocked by it.
+
+(`upgrade_blocks_write`, `crates/context/src/handlers/execute/upgrade_gate.rs`.)
+
+The subtle part is that read-vs-write intent does not exist upstream — neither
+`ExecuteRequest`, the RPC layer, the SDK, nor the ABI carries a "this call writes" flag. So
+write-intent is derived **post-execution**:
+
+- A **state-op** is a known write — refused *before* execution with `UpgradeInProgress`.
+- A **user call** is allowed to execute against the **pre-migration root**, then judged on
+  what it produced: a committed `root_hash` or queued `xcalls` means it wrote, and it is
+  rejected after the fact; a pure read produced neither, so its result returns normally
+  (`upgrade_rejects_committed_write`, call site
+  `crates/context/src/handlers/execute/mod.rs`).
+
+So during an eager upgrade a context still serves reads from its old state and only
+side-effecting calls are turned away — for exactly as long as the `InProgress` window lasts.
+
+## Lazy upgrades: replaying the ladder hop by hop
+
+Under `LazyOnAccess` nothing migrates at cascade-apply; a context reshapes its state on its
+**first access** afterward. A context idle through several releases can be many versions
+behind the group target — and it must **not** jump the latest edge against old state. Running
+`migrate_v2_to_v3` on still-`v1` bytes mis-decodes and panics. Instead the node replays the
+upgrade **ladder** one rung at a time: `v1→v2`, then `v2→v3`.
+
+Two facts decide what a stale context does (`maybe_lazy_upgrade`,
+`crates/context/src/handlers/execute/upgrade_gate.rs`):
+
+- The **activation marker** — `ContextActivatedBlob`, the bytecode blob this context last
+  *activated* (a migration commit, or a code-only swap). A context is up to date exactly when
+  its marker equals the group's `app_key` (`crates/context/src/activation.rs`).
+- The **ladder** — the recorded sequence of upgrade rungs (`app_key` paired with
+  `application_id`) the group has climbed.
+
+| Context state | Action |
+| --- | --- |
+| Marker present, behind target | **Replay** the ladder from the marker's blob; each hop's migrate method is resolved from the two blobs' embedded ABIs — the group-level migration *hint* is never run on this arm |
+| No marker, installed row resolves to a blob ≠ target | **Replay** from that installed version (a fresh joiner several versions behind) |
+| No marker, version unresolvable or already at the target | **Single jump** to the target with the group-level migration hint |
+
+`next_rung` positions a context on the ladder by the **last** occurrence of its bound blob,
+so an `A→B→A` re-pin lands it on the later `A`. A bound blob the ladder never recorded (a
+creation version) starts at the first rung; an empty or stale ladder degrades to a single
+synthesized jump to the current target — the pre-ladder behavior
+(`crates/context/src/activation.rs`). The call site seeds the marker to the replay's
+starting blob before running, binding execution to it, so a blocked hop strands the context
+on its real version rather than running target bytecode on un-migrated state.
+
+## Worked example: shipping v2 to a 3-node group
+
+A docs app's state is `DocV1 { entries, title }`. Release 2 adds a field:
+
+```rust
+#[app::state(version = 2)]
+#[derive(app::Migrate)]
+#[migrate(from = DocV1)]
+pub struct DocV2 {
+    entries: UnorderedMap<String, LwwRegister<String>>, // carried
+    title: LwwRegister<String>,                          // carried
+    #[migrate(new = LwwRegister::new("".to_owned()))]
+    notes: LwwRegister<String>,                          // additive
+}
+```
+
+Three nodes — `A`, `B`, `C` — run a context in one group. An admin on `A` ships v2 with
+`POST /groups/:id/upgrade`, emitting one `CascadeUpgrade` that replicates to all three. What
+happens next depends on the group's upgrade policy.
+
+**Eager (`Automatic`).** A propagator walks the group. The upgrade row goes `InProgress`,
+which write-freezes the context on every node: reads of `DocV1` still serve, but a call that
+would write `notes` is refused with `UpgradeInProgress`. Each node independently runs
+`migrate_v1_to_v2` against its own byte-identical `v1` state, the `migration_check` (if any)
+passes, the `v2` root commits, and an `AppVersionChanged { fromVersion: 1, toVersion: 2 }`
+fires. When the last context migrates the row flips to `Completed` and writes reopen.
+
+**Lazy (`LazyOnAccess`).** The `CascadeUpgrade` only records the new target plus the
+`cascade_hlc` fence; nothing migrates yet. `A` and `B`, which are actively used, migrate on
+their next context access; `C`, idle, keeps `DocV1` bytes on disk. The group is never
+write-frozen (lazy writes `Completed` directly).
+
+**The lagging node.** Say `C` stays offline across a *second* release, v3. While `C` is
+behind, the `v2`/`v3`-schema deltas its migrated peers broadcast arrive under a schema that
+`C`'s loaded binary cannot read yet, so `C` **buffers** them — the fence keys on `C`'s own
+loaded reader and absorbs rather than drops. When `C` finally opens the context it is two
+versions behind with no activation marker, so the gate sees its installed blob differ from
+the v3 target and **replays the ladder** — `v1→v2` then `v2→v3` — rather than jumping
+`migrate_v2_to_v3` onto `v1` bytes. Once its binary reaches the target schema the buffered
+deltas replay verbatim.
+
+## Related
+
+- [CRDTs — How They Work](/protocol/crdt-internals/) — the per-type merge machinery
+  the convergence rule depends on, including why a migration must be deterministic.
+- [State & projection](/protocol/projection/) — how the root and child entries are
+  Merkle-folded, which is what the convergence rule preserves.
+- [SDK macros](/build/sdk-macros/) — the `#[app::state]`, `#[app::migrate]`,
+  `#[app::migration_check]`, and `#[derive(Migrate)]` attribute surface.
+- [meroctl](/operate/meroctl/) — driving and observing upgrades from the CLI.

@@ -1,0 +1,50 @@
+---
+title: Operate a Calimero Node
+description: Run and manage a Calimero node — install merod, drive it with meroctl.
+sidebar:
+  label: Overview
+  order: 1
+---
+
+import { CardGrid, LinkCard, Steps, Aside } from '@astrojs/starlight/components';
+
+A node is one `merod` process: it holds keys, runs applications, stores state,
+and gossips with peers. You drive it with the `meroctl` CLI and the admin API.
+
+## Start here
+
+<Steps>
+
+1. **[Install &amp; first run](/operate/install/)** — build/Docker, then `init` → `run` → verify.
+2. Learn the **[`merod`](/operate/merod/)** and **[`meroctl`](/operate/meroctl/)** commands.
+3. When you go to production, work through the **Guides** (deployment, networking, security).
+4. Keep **troubleshooting** and the **runbooks** handy for operations.
+
+</Steps>
+
+## Get started
+
+<CardGrid>
+  <LinkCard title="Install &amp; first run" href="/operate/install/" description="From binaries or Docker, to a running node." />
+</CardGrid>
+
+## Guides
+
+<CardGrid>
+  <LinkCard title="Production deployment" href="/operate/deployment/" description="Long-lived service, volumes, ports, reverse proxy." />
+  <LinkCard title="Networking &amp; discovery" href="/operate/networking/" description="Bootstrap, mDNS, relays, NAT traversal." />
+  <LinkCard title="Security hardening" href="/operate/security/" description="Auth modes, key storage, what to keep private." />
+  <LinkCard title="Observability" href="/operate/observability/" description="Metrics, logging, what divergence looks like." />
+  <LinkCard title="Troubleshooting" href="/operate/troubleshooting/" description="Problem → cause → fix." />
+  <LinkCard title="Runbooks" href="/operate/runbooks/" description="Upgrade, back up, recover, leave safely." />
+</CardGrid>
+
+## Reference
+
+<CardGrid>
+  <LinkCard title="merod" href="/operate/merod/" description="The node daemon CLI." />
+  <LinkCard title="meroctl" href="/operate/meroctl/" description="The control CLI." />
+  <LinkCard title="Configuration" href="/operate/config/" description="The config.toml reference." />
+  <LinkCard title="Admin API" href="/operate/admin-api/" description="The HTTP/JSON-RPC endpoints." />
+  <LinkCard title="Auth service" href="/operate/auth/" description="JWT auth modes and providers." />
+</CardGrid>

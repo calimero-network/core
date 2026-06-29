@@ -1,0 +1,443 @@
+---
+title: Build your first app
+description: A guided path from an empty crate to a running Calimero app you can call from the CLI.
+sidebar:
+  order: 2.5
+---
+
+import { Steps, Aside, Tabs, TabItem, LinkCard } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
+This tutorial walks one path from nothing to a running key-value app. You will
+write a small Rust crate, build it to WebAssembly, install it on a node, attach
+it to a context, and call its methods — checking the output at each step.
+
+The worked example mirrors the in-repo [`apps/kv-store`](/build/examples/) app,
+trimmed to the parts you need the first time through. When you finish you will
+have a context whose state you can read and write from the command line.
+
+<Aside type="note">
+  The Rust code, the build command, and the `meroctl` flags here are taken from
+  the in-repo example (`apps/kv-store/`) and the CLI definitions
+  (`crates/meroctl/src/cli/`). Calimero is pre-1.0, so flags can still change —
+  run `meroctl <command> --help` to confirm them for your build.
+</Aside>
+
+## 1. Prerequisites
+
+<Steps>
+
+1. **Rust with the WASM target.** Calimero apps compile to
+   `wasm32-unknown-unknown`:
+
+   ```sh
+   rustup target add wasm32-unknown-unknown
+   ```
+
+2. **A running node.** You need a `merod` node up and a configured `meroctl`
+   alias pointing at it. If you have not done this yet, follow
+   [Install & run a node](/operate/install/) first. This tutorial assumes the
+   alias `node1`.
+
+   :::tip
+   `wasm-opt` (from [Binaryen](https://github.com/WebAssembly/binaryen)) is
+   optional but recommended — it shrinks the release artifact. The build step
+   below uses it only if it is on your `PATH`.
+   :::
+
+</Steps>
+
+## 2. Create the project
+
+<Steps>
+
+1. Create a new library crate:
+
+   ```sh
+   cargo new --lib kv-store
+   cd kv-store
+   ```
+
+2. Replace `Cargo.toml`. The load-bearing parts are the `cdylib` crate type (so
+   the crate compiles to a WASM module), the two Calimero dependencies, and the
+   `app-release` profile that the build step uses:
+
+   ```toml
+   [package]
+   name = "kv-store"
+   version = "0.1.0"
+   edition = "2021"
+
+   [lib]
+   crate-type = ["cdylib", "rlib"]
+
+   [dependencies]
+   calimero-sdk = { git = "https://github.com/calimero-network/core" }
+   calimero-storage = { git = "https://github.com/calimero-network/core" }
+   thiserror = "1"
+
+   [dev-dependencies]
+   # Native test harness (TestHost) + CRDT merge under `cargo test`.
+   calimero-storage = { git = "https://github.com/calimero-network/core", features = ["testing"] }
+
+   [profile.app-release]
+   inherits = "release"
+   codegen-units = 1
+   opt-level = "z"
+   lto = true
+   debug = false
+   strip = "symbols"
+   panic = "abort"
+   overflow-checks = true
+   ```
+
+   :::note
+   The in-repo example apps use `calimero-sdk.workspace = true` and inherit
+   `app-release` from the workspace `Cargo.toml`. Standalone, you pin the
+   dependencies yourself (a tag, rev, or local path) and define the profile in
+   your own `Cargo.toml`, as above.
+   :::
+
+3. Open `src/lib.rs` and clear it. You will fill it in over the next three
+   steps. The skeleton every Calimero app follows is: imports, a state struct, a
+   logic block with an `init`, and method definitions.
+
+   ```rust
+   use calimero_sdk::app;
+   use calimero_storage::collections::{LwwRegister, UnorderedMap};
+   ```
+
+</Steps>
+
+## 3. Define the state
+
+Your app's persistent state is a single struct annotated with `#[app::state]`.
+Its fields are CRDT [collections](/build/collections/) — replicated types that
+merge cleanly when two nodes change them concurrently.
+
+Here the state is a map from `String` keys to `LwwRegister<String>` values. An
+`LwwRegister` ("last-writer-wins") holds one value and keeps the most recent
+write when nodes diverge.
+
+```rust
+#[app::state(emits = for<'a> Event<'a>)]
+pub struct KvStore {
+    items: UnorderedMap<String, LwwRegister<String>>,
+}
+```
+
+The `emits = ...` part declares that this app emits the `Event` type you define
+next. If your app does not emit events, you can write just `#[app::state]`.
+
+## 4. Add logic and events
+
+<Steps>
+
+1. Declare the events your app emits with `#[app::event]`. Events are how an app
+   tells the outside world what changed — clients can subscribe to them:
+
+   ```rust
+   #[app::event]
+   pub enum Event<'a> {
+       Inserted { key: &'a str, value: &'a str },
+       Updated { key: &'a str, value: &'a str },
+   }
+   ```
+
+2. Add the logic block. Every app needs exactly one `#[app::init]` that returns
+   the initial state. Then add a setter that mutates state (`&mut self`) and a
+   getter that only reads it (`&self`):
+
+   ```rust
+   #[app::logic]
+   impl KvStore {
+       #[app::init]
+       pub fn init() -> KvStore {
+           KvStore {
+               items: UnorderedMap::new(),
+           }
+       }
+
+       pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
+           app::log!("Setting key: {:?} to value: {:?}", key, value);
+
+           if self.items.contains(&key)? {
+               app::emit!(Event::Updated { key: &key, value: &value });
+           } else {
+               app::emit!(Event::Inserted { key: &key, value: &value });
+           }
+
+           self.items.insert(key, value.into())?;
+           Ok(())
+       }
+
+       pub fn get(&self, key: &str) -> app::Result<Option<String>> {
+           app::log!("Getting key: {:?}", key);
+           Ok(self.items.get(key)?.map(|v| v.get().clone()))
+       }
+   }
+   ```
+
+   A few things to notice, all real SDK API:
+
+   - `app::log!` writes to the node's execution log.
+   - `app::emit!` emits one of your declared events.
+   - Collection calls (`contains`, `insert`, `get`) return `Result`, so they
+     end in `?`.
+   - `value.into()` turns the `String` into an `LwwRegister<String>`; `v.get()`
+     reads the register's current value back out.
+
+</Steps>
+
+<Aside type="tip" title="Test before you build">
+  The SDK ships a native in-process harness — `calimero_sdk::testing::TestHost`,
+  enabled by the `calimero-storage` `testing` feature you added under
+  `[dev-dependencies]`. You can drive your methods and assert on state under
+  plain `cargo test`, with no node and no WASM build:
+
+  ```rust
+  #[cfg(test)]
+  mod tests {
+      use calimero_sdk::testing::TestHost;
+      use super::*;
+
+      #[test]
+      fn set_then_get() {
+          let mut app = TestHost::new(KvStore::init);
+          app.call(|s| s.set("k".into(), "v".into())).unwrap();
+          assert_eq!(app.view(|s| s.get("k")).unwrap(), Some("v".to_owned()));
+      }
+  }
+  ```
+</Aside>
+
+## 5. Build to WASM
+
+Compile the crate for the WASM target using the `app-release` profile:
+
+```sh
+cargo build --target wasm32-unknown-unknown --profile app-release
+```
+
+The artifact lands at:
+
+```
+target/wasm32-unknown-unknown/app-release/kv_store.wasm
+```
+
+:::note
+The filename is the crate name with hyphens turned into underscores — crate
+`kv-store` produces `kv_store.wasm`.
+:::
+
+Optionally shrink it with `wasm-opt` (this is exactly what the example's
+`build.sh` does when `wasm-opt` is installed):
+
+```sh
+wasm-opt -Oz --enable-bulk-memory \
+  target/wasm32-unknown-unknown/app-release/kv_store.wasm \
+  -o kv_store.wasm
+```
+
+## 6. Install and run
+
+`meroctl` talks to your running node. Select it with `--node node1`. Each
+command below prints a table by default; pass `--output-format json` to get the
+machine-readable form shown here.
+
+<Steps>
+
+1. **Install** the WASM module. The node returns an application id:
+
+   ```sh
+   meroctl --node node1 app install \
+     --path ./kv_store.wasm \
+     --package com.example.kvstore \
+     --version 0.1.0
+   ```
+
+   ```json
+   {"data":{"applicationId":"<app-id>"}}
+   ```
+
+   Copy the `applicationId` — you need it next. You can list installed apps any
+   time with `meroctl --node node1 app ls`.
+
+2. **Create a namespace** bound to that application id. A namespace is a root
+   group; creating one bootstraps the group you will attach a context to:
+
+   ```sh
+   meroctl --node node1 namespace create --application-id <app-id>
+   ```
+
+   ```json
+   {"data":{"namespaceId":"<namespace-id>"}}
+   ```
+
+   The returned `namespaceId` is the id of that root group — you pass it as the
+   `--group-id` in the next step.
+
+3. **Create a context.** A context is a running instance of your app over a
+   shared state. `context create` needs both the application id and a group id
+   to attach to, so pass the namespace id from the previous step. Give the
+   context a memorable alias with `--name`:
+
+   ```sh
+   meroctl --node node1 context create \
+     --application-id <app-id> \
+     --group-id <namespace-id> \
+     --name my-kv
+   ```
+
+   ```json
+   {"data":{"contextId":"<context-id>","memberPublicKey":"<public-key>"}}
+   ```
+
+   You now have a live context. The `--name my-kv` alias lets you refer to it as
+   `my-kv` instead of the raw `contextId`.
+
+4. **Call the setter** to write a key. Mutations and views both go through the
+   top-level `call` command — whether a call mutates or only reads is decided by
+   the method itself, not a CLI flag. `--args` is JSON matching the method's
+   parameters:
+
+   ```sh
+   meroctl --node node1 call set \
+     --context my-kv \
+     --args '{"key": "hello", "value": "world"}' \
+     --output-format json
+   ```
+
+   `set` returns `()`, so the result output is `null`:
+
+   ```json
+   {"jsonrpc":"2.0","id":null,"result":{"output":null}}
+   ```
+
+5. **Call the getter** to read it back:
+
+   ```sh
+   meroctl --node node1 call get \
+     --context my-kv \
+     --args '{"key": "hello"}' \
+     --output-format json
+   ```
+
+   ```json
+   {"jsonrpc":"2.0","id":null,"result":{"output":"world"}}
+   ```
+
+   The value you stored comes back under `result.output`. Your first app works.
+
+</Steps>
+
+:::caution
+The exact JSON envelope (`jsonrpc` / `id` / `result`) comes from the node's
+JSON-RPC response and may gain fields between pre-1.0 releases. The value your
+method returned is always under `result.output`. Without `--output-format json`,
+`meroctl` prints a human-readable table instead.
+:::
+
+Here is what that single `call set` does once it reaches the node — the method
+runs inside the WASM app, touches storage, emits its event, and the committed
+delta is what later flows to peers:
+
+<SeqDiagram id="d-build-tutorial-exec" title="One method, end to end"
+  lanes={[
+    { label: 'Caller', color: '#3fb950' },
+    { label: 'Node', color: '#58a6ff' },
+    { label: 'WASM app', color: '#a371f7' },
+    { label: 'Storage', color: '#39d0d8' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'call set --args {"key","value"}' },
+    { from: 1, to: 2, label: 'invoke set(key, value)' },
+    { from: 2, to: 3, label: 'insert into UnorderedMap' },
+    { from: 2, to: 2, label: 'emit Inserted event' },
+    { from: 3, to: 2, label: 'ok', dashed: true },
+    { from: 2, to: 1, label: 'commit state delta', dashed: true },
+    { from: 1, to: 0, label: 'result: null', dashed: true },
+    { type: 'divider', label: 'delta broadcast to peers, replicas converge' },
+  ]} />
+
+## 7. Make it multi-user
+
+So far one node owns the context. The payoff of a Calimero app is that a second
+node can hold the **same** context and the two converge automatically — that is
+the "replicas converge" divider in the diagram above. With a second node `node2`
+running, bring it into your context:
+
+<Steps>
+
+1. On `node1` (the context owner), create a group invitation for the namespace.
+   A namespace is its own group, so pass the `namespaceId` from step 6 as the
+   group id. The command prints an invitation JSON blob:
+
+   ```sh
+   meroctl --node node1 group invite <namespace-id>
+   ```
+
+2. On `node2`, redeem that blob to join the group, then join the context itself:
+
+   ```sh
+   meroctl --node node2 group join '<invitation-json>'
+   meroctl --node node2 group join-context <context-id>
+   ```
+
+3. Now both nodes hold the context. Write from `node2` and read it back on
+   `node1` — once the delta has synced, the value is there:
+
+   ```sh
+   meroctl --node node2 call set \
+     --context <context-id> --args '{"key": "from", "value": "node2"}'
+
+   meroctl --node node1 call get \
+     --context <context-id> --args '{"key": "from"}' --output-format json
+   ```
+
+   ```json
+   {"jsonrpc":"2.0","id":null,"result":{"output":"node2"}}
+   ```
+
+</Steps>
+
+Both nodes wrote and read the same key with no central server. Because `items`
+is a CRDT map, concurrent writes from both nodes merge instead of clobbering —
+that is what makes the convergence safe, not just eventual.
+
+<Aside type="note">
+  The exact `group`/`namespace` membership flags are still settling pre-1.0; run
+  `meroctl group --help` and `meroctl namespace --help` to confirm them for your
+  build. The convergence behavior itself — two holders of one context reaching
+  the same state — is the stable part.
+</Aside>
+
+## 8. Next steps
+
+You have the full loop: write, build, install, attach, call. From here:
+
+<LinkCard
+  title="Collections"
+  href="/build/collections/"
+  description="The CRDT types your state is built from — UnorderedMap, LwwRegister, and their merge semantics."
+/>
+<LinkCard
+  title="SDK macros"
+  href="/build/sdk-macros/"
+  description="The full set of #[app::*] attributes: state, logic, init, event, and the function-like macros."
+/>
+<LinkCard
+  title="Example apps"
+  href="/build/examples/"
+  description="A tour of the in-repo apps under apps/ — including the complete kv-store this tutorial trims down."
+/>
+<LinkCard
+  title="How-to guides"
+  href="/build/guides/"
+  description="Task-focused recipes: events, blobs, access control, cross-context calls, and more."
+/>
+<LinkCard
+  title="Quickstart"
+  href="/build/quickstart/"
+  description="The condensed version of this path, plus running a node from scratch with merod."
+/>

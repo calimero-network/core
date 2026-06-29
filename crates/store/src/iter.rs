@@ -1,9 +1,8 @@
 use core::convert::Infallible;
+use core::fmt;
 use core::fmt::{Debug, Formatter};
-use core::hint::unreachable_unchecked;
 use core::marker::PhantomData;
-use core::mem::{replace, transmute};
-use core::{fmt, ptr};
+use core::mem::transmute;
 
 use calimero_primitives::reflect::Reflect;
 use eyre::{Report, Result as EyreResult};
@@ -460,44 +459,43 @@ impl<'a> TryIntoValue<'a> for Unstructured {
 }
 
 #[derive(Debug)]
-enum FusedIter<I> {
-    Active(I),
-    Interregnum,
-    Expended(I),
+struct FusedIter<I> {
+    iter: I,
+    /// Set once the underlying iterator is exhausted, so subsequent
+    /// `seek`/`next`/`read` calls don't touch the spent iterator.
+    expended: bool,
 }
 
 impl<I: DBIter> FusedIter<I> {
     fn seek(&mut self, key: Key<'_>) -> EyreResult<Option<Key<'_>>> {
-        if let Self::Active(iter) = self {
-            return iter.seek(key);
+        if self.expended {
+            return Ok(None);
         }
 
-        Ok(None)
+        self.iter.seek(key)
     }
 
     fn next(&mut self) -> EyreResult<Option<Key<'_>>> {
-        let this = unsafe { &mut *ptr::from_mut::<Self>(self) };
-
-        if let Self::Active(iter) = this {
-            if let Some(key) = iter.next()? {
+        if !self.expended {
+            // `self.iter` and `self.expended` are disjoint fields, so returning
+            // a key borrowed from `self.iter` in one branch while writing
+            // `self.expended` in the other is sound without any reborrowing.
+            if let Some(key) = self.iter.next()? {
                 return Ok(Some(key));
             }
 
-            match replace(self, Self::Interregnum) {
-                Self::Active(iter) => *self = Self::Expended(iter),
-                Self::Expended(_) | Self::Interregnum => unsafe { unreachable_unchecked() },
-            }
+            self.expended = true;
         }
 
         Ok(None)
     }
 
     fn read(&self) -> EyreResult<Option<Value<'_>>> {
-        if let Self::Active(iter) = self {
-            return iter.read().map(Some);
+        if self.expended {
+            return Ok(None);
         }
 
-        Ok(None)
+        self.iter.read().map(Some)
     }
 }
 
@@ -506,7 +504,13 @@ pub struct IterPair<A, B>(FusedIter<A>, B);
 
 impl<A, B> IterPair<A, B> {
     pub const fn new(iter: A, other: B) -> Self {
-        Self(FusedIter::Active(iter), other)
+        Self(
+            FusedIter {
+                iter,
+                expended: false,
+            },
+            other,
+        )
     }
 }
 

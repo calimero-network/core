@@ -1,0 +1,327 @@
+---
+title: Governance
+description: Membership and authority, encoded as operations like everything else.
+sidebar:
+  order: 7
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
+## Governance is just operations
+
+There is no separate governance engine, no consensus round, and **no quorum**. The access-control, membership, and admin planes of [the operation model](/protocol/operations/) are governance — they are operations in a governance scope, folded by the same last-writer-wins projection, summarized by the same scope root. A membership change converges exactly the way a data write does.
+
+What this chapter adds is _meaning_: what those governance operations say, the structure they maintain, and how the system decides whether an author was allowed to write one.
+
+## The hierarchy
+
+Governance scopes form a tree (the scope tree from [Concepts & Scopes](/protocol/concepts/)):
+
+- A **namespace** is the root governance scope — a group with no parent. It anchors identity, admin, and policy for everything beneath it.
+- **Subgroups** nest under it, each its own scope with its own key and members.
+- **Contexts** (the running applications) attach to a group; a context's members are the group's members.
+
+A subgroup is either **Open** or **Restricted**. In an Open subgroup, a parent member who holds the "join open subgroups" capability is a member by _inheritance_ — no explicit operation needed. A Restricted subgroup is closed: membership requires a direct, deliberate admission. Because membership only ever narrows as you descend, pointing an operation "up" the tree never leaks visibility — the property [Concepts & Scopes](/protocol/concepts/) relied on.
+
+## The founder
+
+A scope tree has to start somewhere, and that start can't appeal to a prior admin — there isn't one yet. So a namespace begins with a single **genesis operation** that names its **founder**. It is **self-authorizing**: its only checks are that it is signed by the founder it names and that it has no parents (it is genuinely the first operation). From it, the founder is recorded as admin and owner, and every node that later replays the DAG derives the same founder — authority is established by a replayable operation, not by out-of-band trust.
+
+## Membership: joining
+
+Joining is a two-part dance, because a new member needs two things: a row in the membership state, and the **scope key** to actually read the scope's encrypted operations. The key is delivered privately, wrapped to the joiner's public key (ECDH), by existing members who already hold it.
+
+<SeqDiagram
+  id="d-join"
+  title="Joining a scope"
+  lanes={[
+    { label: 'Joiner', color: '#58a6ff' },
+    { label: 'Existing member', color: '#3fb950' },
+    { label: 'Governance scope', color: '#a5ff11' },
+  ]}
+  steps={[
+    { from: 1, to: 0, label: 'invitation (out of band)', dashed: true },
+    { from: 0, to: 2, label: 'publish MemberJoined (public)' },
+    { from: 2, to: 1, label: 'member observes the join' },
+    { from: 1, to: 0, label: 'KeyDelivery: scope key wrapped to joiner (ECDH)', color: '#a5ff11' },
+    { from: 0, to: 0, label: 'unwrap key → can now decrypt scope ops' },
+    { from: 1, to: 2, label: 'MemberAdded { member, role }' },
+    { type: 'divider', label: 'joiner now folds the scope like any member' },
+  ]}
+/>
+
+The membership operation is public on the governance scope; the key delivery is a private, wrapped envelope. Once the joiner unwraps the key, every prior and future operation in the scope becomes readable, and they fold the scope just like anyone else.
+
+## Membership: leaving and removal
+
+There are two ways a member stops being a member, and the difference is entirely about the **scope key**.
+
+| Path | Description |
+| --- | --- |
+| **Leave (self-initiated)** | A member removes themselves. No key rotation happens — the leaver already holds the key and could have copied it, so rotating would be theater. Leaving is just a membership operation that drops their own row. |
+| **Removal (admin-initiated)** | An admin removes someone else. Here the key **is** rotated: a fresh scope key is generated and delivered, wrapped, to every _remaining_ member — so the removed member can read nothing authored after their removal. This is forward secrecy. |
+
+<SeqDiagram
+  id="d-remove"
+  title="Admin removal with key rotation"
+  lanes={[
+    { label: 'Admin', color: '#f0883e' },
+    { label: 'Governance scope', color: '#a5ff11' },
+    { label: 'Remaining members', color: '#3fb950' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'MemberRemoved { member }', color: '#a5ff11' },
+    { from: 0, to: 0, label: 'generate fresh scope key' },
+    { from: 0, to: 2, label: 'KeyDelivery: new key wrapped to each remaining member' },
+    { type: 'divider', label: 'removed member cannot read anything authored after this point' },
+  ]}
+/>
+
+Two invariants guard both paths: the scope's **owner** cannot be removed involuntarily and cannot self-leave without first transferring ownership, and a removal that would leave a group with no admin is rejected — the tree can never be orphaned.
+
+### Worked example: promote a member, then remove one
+
+Two operations, both signed by an admin, show how a role change and a removal compose. First promote Bob to admin with `MemberRoleSet { member, role: Admin }` (the upsert-role op); later remove Carol with `MemberRemoved`. Promotion is a plain membership write — no key changes. Removal is admin-initiated, so it carries a fresh scope key wrapped to every _remaining_ member (Bob now included, Carol excluded), the `KeyRotation { new_key_id, envelopes }` bundle attached to the op.
+
+<SeqDiagram
+  id="d-promote-remove"
+  title="Promote a member to admin, then remove a member"
+  lanes={[
+    { label: 'Admin', color: '#f0883e' },
+    { label: 'Governance scope', color: '#a5ff11' },
+    { label: 'Remaining members', color: '#3fb950' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'MemberRoleSet { member: Bob, role: Admin }', color: '#a5ff11' },
+    { from: 1, to: 2, label: 'fold at the op cut → Bob is now an admin' },
+    { type: 'divider', label: 'later: remove Carol (admin-initiated → key rotation)' },
+    { from: 0, to: 1, label: 'MemberRemoved { member: Carol, expected_group_state_hash, ... }', color: '#a5ff11' },
+    { from: 0, to: 0, label: 'generate fresh scope key' },
+    { from: 0, to: 2, label: 'KeyRotation { new_key_id, envelopes } — one per remaining member (Bob in, Carol out)' },
+    { type: 'divider', label: 'Carol cannot read anything authored after this point' },
+  ]}
+/>
+
+Because authority is judged at each op's causal cut, the ordering is robust: the promotion stands on every node that folds it, and the removal's rotation reaches exactly the members who held a row at the cut it was signed against — including a member who was just promoted, and excluding the one being removed.
+
+## Auto-follow: turning membership into replication
+
+Membership is a row in governance state; it is not, by itself, replicated data. Auto-follow is the mechanism that closes that gap — it is the answer to "I joined the group but no data synced." A member row carries two **auto-follow flags**, and when they are set the node automatically joins the contexts (and, eventually, subgroups) it is already entitled to, so membership turns into an actual replicating context on disk.
+
+The flags are stored per member, per group:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `contexts` | `true` | Auto-join every context registered in this group. |
+| `subgroups` | `false` | Auto-join subgroups this node is entitled to. |
+
+`contexts` defaults to `true` because joining a group implies wanting the group's data — the user's mental model is "I'm in this namespace, I want its contexts." Opting out is an explicit per-member, per-group set-auto-follow operation flipping `contexts` to `false`. `subgroups` defaults to `false` and is currently inert for ordinary roles (it requires an admission op that does not yet exist); the TEE fleet-join path is the one place that sets both flags, via the replica's own self-signed op after admission.
+
+### Event-driven join
+
+Auto-follow is purely event-driven — there is no startup re-scan. When a `ContextRegistered` op applies in a group, the handler asks one question: is this node a member of that group with `auto_follow.contexts = true` (and has it not opted out — see below)? If so, it emits a `JoinContext` for the new context. That single decision point is what keeps a member's replica set in step with the group as new contexts appear.
+
+### Backfill when the flag flips on
+
+Event-driven join only covers contexts that register _after_ the flag is on. To cover contexts that already exist when `auto_follow.contexts` flips to `true`, flipping the flag synthesizes an `AutoFollowSet` event: the handler enumerates the group's existing contexts and joins any it has not already joined. This backfill is a **single pass** capped at `BACKFILL_LIMIT = 1000` contexts. If a group holds more than that at flip-time, the remainder are picked up event-driven as their `ContextRegistered` ops continue to apply, or by re-flipping the flag.
+
+### The fresh-joiner cascade
+
+The implicit trigger is what makes a brand-new member backfill contexts that existed _before_ it joined. The auto-follow handler does not subscribe to `MemberAdded` at all — it subscribes to `AutoFollowSet`. So when a member is added with `auto_follow.contexts` set (the default), the `MemberAdded` apply site synthesizes an `AutoFollowSet` event for that member. This routes a fresh joiner through the exact same backfill cascade as an explicit flag flip, closing the regression where the UI showed group membership but no data synced. The handler short-circuits as "not for self" on every node except the joiner, so the cascade fires exactly once per membership change.
+
+<SeqDiagram
+  id="d-autofollow"
+  title="A fresh joiner backfills pre-existing contexts"
+  lanes={[
+    { label: 'MemberAdded apply', color: '#f0883e' },
+    { label: 'Op-event channel', color: '#a5ff11' },
+    { label: 'Auto-follow handler', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'member row written with auto_follow.contexts = true' },
+    { from: 0, to: 1, label: 'synthesize AutoFollowSet { member = joiner }', color: '#f0883e' },
+    { from: 1, to: 2, label: 'AutoFollowSet delivered' },
+    { from: 2, to: 2, label: 'self? yes → enumerate existing contexts (≤ 1000)' },
+    { from: 2, to: 2, label: 'emit JoinContext for each not-yet-joined', color: '#58a6ff' },
+    { type: 'divider', label: 'future contexts arrive as ContextRegistered → join event-driven' },
+  ]}
+/>
+
+### Inherited members: the anchor rule
+
+A node need not hold a direct member row in a group to auto-follow it. In an Open subgroup, membership flows down by inheritance from an ancestor that granted `CAN_JOIN_OPEN_SUBGROUPS` (the [capability inheritance](/protocol/capability-inheritance/) model). When a node has no direct row in the group, auto-follow walks up the Open-visibility chain to the **anchor** — the nearest ancestor where the node holds a real direct row — and honours _that_ row's `auto_follow.contexts` flag. This is depth-independent: the anchor is always a genuine direct-row member, so its flag is authoritative.
+
+This rule is what lets a root-admitted `ReadOnlyTee` replicate Open-subgroup contexts. The TEE replica holds only a root row, so for every Open subgroup beneath the root the anchor resolves to the namespace root, and the root row's flag drives replication into subgroups where the replica was never explicitly admitted.
+
+### Opting out of a single context
+
+Auto-follow is a group-level intent, but a node can suppress it for one context. Calling `leave_context` writes a node-local `ContextLeftMarker` for `(member, context)` into a local-only column — it is **never synced to peers**. While that marker is present, auto-follow skips the context even though `auto_follow.contexts` is still `true` at the group level, so a later `ContextRegistered` (or backfill) will not silently rejoin it. The marker is cleared only by an explicit user-initiated join request for that context.
+
+## Startup self-heal
+
+Governance apply is online and event-driven, but two crash/race windows can leave a node holding work that no future event will re-trigger. Both are swept once, on the way up.
+
+### Re-driving stranded buffered ops
+
+A governance op a node receives before it holds the scope key is **buffered** awaiting that key. The race: the op (e.g. a `ContextRegistered`) arrives and buffers, `GroupCreated` applies, the live one-shot `KeyDelivery` retry then runs and _fails_ (the key has not landed yet), and nothing remains to re-drive the buffered op. On startup the node sweeps every namespace it holds an identity for, and for every group whose key it **already holds** that still has buffered ops, it re-drives them (`crates/context/src/self_purge.rs`).
+
+The sweep is a **fixpoint loop**, because applying one op can unblock a later op from a _different_ signer (the nonce window is tracked per `(group, signer)`, so one pass orders only within a signer). It re-runs until a full pass applies nothing new — narrowing each pass to only the groups that just made progress — bounded by `MAX_PASSES = 64` as a defensive cap against a logic bug. It runs before the event loop and after the op-event subscription, so any `ContextRegistered` events it emits drive [auto-follow](#auto-follow-turning-membership-into-replication) rather than being lost. It is best-effort: per-group errors are logged and swallowed, and the next restart re-runs it.
+
+### Re-spawning interrupted eager upgrades
+
+An eager (`Automatic`) [group upgrade](/protocol/upgrades/) is driven by an in-memory propagator; a crash mid-walk leaves the upgrade row `InProgress` with no task pushing it. On actor startup the `ContextManager` scans the store for in-progress upgrades and re-spawns a propagator for each (`recover_in_progress_upgrades`, `crates/context/src/lifecycle.rs`). `LazyOnAccess` groups are skipped — they never enter `InProgress`, so there is nothing to resume.
+
+## Roles, capabilities, and the owner
+
+Authority is layered. A member has a **role** for coarse rights, and fine-grained **capabilities** for specific actions; the **owner** is a distinguished identity sitting above roles.
+
+| Role | Can do |
+| --- | --- |
+| `Admin` | All governance operations: manage members, set policy and capabilities, manage subgroups. |
+| `Member` | Read and write context state. Governance actions only with the matching capability. |
+| `ReadOnly` | Read state; writes are rejected, locally and on peers. |
+| `ReadOnlyTee` | A read-only fleet node admitted by hardware attestation; evicted with a self-purge signal. |
+
+**Capabilities** are individual grants a non-admin can hold — for example: create contexts, invite members, join open subgroups, manage members, manage the application, or create/delete/configure subgroups. Admins pass every capability check implicitly; defaults can be set per group and overridden per member.
+
+The **owner** is not a role but a stored identity with exclusive rights — transfer ownership, delete the group or namespace — and the removal immunity noted above. Every other admin is a regular admin.
+
+## Authorization: judged at the author's cut
+
+The decision "was this author allowed to write this operation?" reuses the primitive from [Projection](/protocol/projection/): the projection resolves membership and capabilities at the operation's **causal cut** — the governance state the author had observed — not at the receiver's present.
+
+:::note[The rule]
+**Forward-only authority.**
+
+An operation is authorized against the membership and access-control state that existed at its parents. So a write authored while you were still a member stays valid even if a peer applies your removal first; and a governance action you took as admin stands even if you were later demoted. Every node reaches the same verdict because every node folds the same cut — authority converges for free, with no coordination.
+:::
+
+The same mechanism covers data writes: an entity's **writer set** (the access-control plane) is resolved at the cut, and a write is accepted only if its author was an authorized writer at that point.
+
+## The algorithm: authorization at the cut
+
+Below is the whole security model in two folds — the governance plane and the data plane — written to match the code, so it is reimplementation-grade. Both resolve authority at the **cut the op references**, never at the receiver's present.
+
+The governance plane is a single fold (`authorize`) over the op's payload, decided against an `AclView` the projection resolves at the op's causal parents (`acl_view_at(op.parents)`). It is the one causal-auth boundary; it never walks the DAG itself.
+
+```text
+// view = ScopeState::acl_view_at(op.parents)
+//        -> membership + capabilities + per-object ACL, as of the op's causal cut
+fn authorize(op, view) -> Result<(), Rejected>:
+    match op.payload:
+        Put{entity}          => require view.may(op.author, entity, WRITE)    // else NotPermitted
+        Delete{entity}       => require view.may(op.author, entity, DELETE)   // else NotPermitted
+        SetWriters{object}   => require view.is_owner(op.author, object)      // = may(.., ADMIN); else NotOwner
+        MemberAdded|MemberRemoved{group}                  => require view.is_group_admin(op.author, group)  // else NotGroupAdmin
+        SubgroupVisibilitySet{scope}                      => require view.is_group_admin(op.author, scope)
+        DefaultCapabilitiesSet|MemberCapabilitySet{group} => require view.is_group_admin(op.author, group)
+        AdminChanged|PolicyUpdated|SubgroupCreated|SubgroupReparented|SubgroupDeleted
+                             => require view.is_root_admin(op.author)         // else NotRootAdmin
+        Noop                 => Ok
+
+// The writer-set check (default-write = membership), two-tier:
+fn may(author, entity, required: OpMask) -> bool:
+    if let Some(writers) = view.acl.get(entity):    // restricted object: explicit ACL is authoritative
+        return writers.get(author).is_some_and(|held| held.contains(required))
+    // non-restricted: any scope member implicitly holds WRITE|DELETE — but NOT ADMIN,
+    // so a plain member can write/delete default data yet cannot rotate its writer set.
+    return view.is_scope_member(author) and (WRITE|DELETE).contains(required)
+```
+
+Note what the fold actually keys on: governance ops are gated by **role at the cut** (group admin, or root admin for namespace-level ops), and the `u32` capability bitmask gates membership inheritance (the `CAN_JOIN_OPEN_SUBGROUPS` bit on the open-subgroup walk), not these admin ops. A capability is read as `view.capability(group, member)` = explicit per-member override, else the group default, else `0`, then bit-tested.
+
+The data plane (`apply_action`) is the writer-set analogue: it resolves the authoritative writer set per `StorageType` and verifies a **per-action signature** against it, then enforces the operation's required bit. The writer set is resolved at the **delta's own causal parents** (`effective_writers = writers_at(delta.parents)`), the data-DAG cut, while the delta separately carries a `governance_position` (the governance heads at sign time) so receivers gate membership at the governance cut too.
+
+```text
+fn apply_action(action, ctx):
+    required = required_op_mask(action)         // Add|Update => WRITE, DeleteRef => DELETE
+    match action.storage_type:
+        Public  => accept                       // no signature; membership is the only gate
+        Frozen  => verify content hash          // immutable, content-addressed (no signature)
+        User{owner} =>
+            require ed25519_verify(sig, owner, payload_for_signing)   // exactly one writer: the owner
+        Shared{writers} | SharedMember{anchor} =>
+            set    = ctx.effective_writers ?? stored_writers          // writers at the delta's cut
+            signer = set.keys().find(|w| ed25519_verify(sig, w, payload_for_signing))
+            require signer.is_some()                                  // else InvalidSignature
+            require set[signer].contains(required)                   // op-granularity bit; else ActionNotAllowed
+```
+
+**Why the cut, not "now":** because every input is resolved at the op's referenced causal position, the verdict is a pure function of state the author had already observed. Two nodes that fold the same DAG reach the same answer regardless of receive order, so authority converges with no coordination. And it is forward-only: a write authored before a revocation stays valid even if a peer applies the revocation first — the revocation is not in the write's causal past, so it cannot retroactively un-authorize it.
+
+## Specification
+
+### Capability bits
+
+Capabilities are a `u32` bitmask. Each grant is a fixed bit position:
+
+| Bit | Value | Capability |
+| --- | --- | --- |
+| 0 | `0x0001` | `CAN_CREATE_CONTEXT` |
+| 1 | `0x0002` | `CAN_INVITE_MEMBERS` |
+| 2 | `0x0004` | `CAN_JOIN_OPEN_SUBGROUPS` |
+| 3 | `0x0008` | `MANAGE_MEMBERS` |
+| 4 | `0x0010` | `MANAGE_APPLICATION` |
+| 5 | `0x0020` | `CAN_CREATE_SUBGROUP` |
+| 6 | `0x0040` | `CAN_DELETE_SUBGROUP` |
+| 7 | `0x0080` | `CAN_MANAGE_VISIBILITY` |
+| 8 | `0x0100` | `CAN_MANAGE_METADATA` |
+
+Roles are a distinct enum: `Admin`, `Member`, `ReadOnly`, `ReadOnlyTee`. Admins pass every capability check implicitly.
+
+### The signed governance op
+
+Governance operations travel as a signed envelope. The group-scoped form:
+
+```rust
+struct SignedGroupOp {
+  version: u8,  // current schema version = 8
+  group_id: [u8; 32],
+  parent_op_hashes: Vec<[u8; 32]>,  // DAG parents
+  signer: PublicKey,
+  nonce: u64,  // per-signer monotonic, starts at 1
+  op: GroupOp,
+  signature: [u8; 64],
+}
+```
+
+The content hash (and the bytes the signature covers) are **domain-separated**:
+
+```text
+op_id = SHA-256( DOMAIN ‖ borsh(signable) )  // signable = all fields except signature
+signature = Ed25519_sign( signer_secret, DOMAIN ‖ borsh(signable) )
+
+// group ops     DOMAIN = b"calimero.group.v1"
+// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 2)
+```
+
+### Replay protection
+
+Each _(group, signer)_ tracks a **nonce window**: a contiguous applied `floor` plus a sparse set of out-of-order applied nonces above it. A nonce is a duplicate if `nonce ≤ floor` or it is already in the set. This is checked _before_ apply, and tolerates concurrent siblings (same author, different parents) arriving out of order without false-flagging them. Nonces start at `1`; `0` is never issued.
+
+### Key delivery: the wrapped envelope
+
+A scope key is delivered wrapped per recipient:
+
+```rust
+struct KeyEnvelope {
+  recipient: PublicKey,
+  ephemeral_pk: PublicKey,  // sender's ephemeral key for this envelope
+  nonce: [u8; 12],  // AES-GCM nonce
+  ciphertext: Vec<u8>,  // AES-256-GCM(scope_key)
+}
+```
+
+- **Shared secret** — X25519-style ECDH on the Curve25519 form of the two identities (sender ephemeral × recipient): the 32-byte compressed point _is_ the AES-256 key (no separate KDF).
+- **AEAD** — AES-256-GCM, 12-byte nonce, empty additional data, GCM tag appended inline.
+- **Rotation** — a removal carries a `KeyRotation { new_key_id = SHA-256(new_key), envelopes }` with one envelope per _remaining_ member; the removed member gets none.
+
+A scope key is identified on the wire by `key_id = SHA-256(scope_key)`, so a receiver can look up which delivered key decrypts a given operation.
+
+### Owner vs admin
+
+The owner is stored alongside admin in the group metadata (`owner_identity` vs `admin_identity`). A group may have several admins but exactly one owner. Only the owner may sign `TransferOwnership` or delete the group/namespace, and the owner is immune to involuntary removal. Ownership is itself folded into the governance hash, so an op signed before vs after a transfer resolves against different state.
+
+## Where this leads
+
+We now have the full meaning of all four planes and the rules that govern who may write them. Next, **[Capability & Membership Inheritance](/protocol/capability-inheritance/)** follows membership down the scope tree — how an Open subgroup inherits its parent's members with no operation written, where the Restricted wall stops that flow, and how capabilities resolve per member.

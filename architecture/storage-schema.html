@@ -689,6 +689,34 @@
 </details>
 </div>
 
+<div class="card ga"><h2>Transaction Merge: Key vs. Value Correction</h2>
+<p>Prior to this fix, <code>Transaction::merge</code> contained two bugs in the inner map insert logic that corrupted the column keyspace and caused panics during transaction composition.</p>
+
+<h3>What Was Wrong</h3>
+<ul>
+  <li><strong>Put branch:</strong> The map insert used the <em>value</em> bytes from <code>Operation::Put</code> as the map key instead of the entry's actual store key. Because multiple distinct store entries can share the same value bytes, this caused key collisions — different entries would overwrite each other in the merged map.</li>
+  <li><strong>Delete branch:</strong> The code called <code>unreachable!()</code> for <code>Operation::Delete</code>, producing a panic whenever a delete operation was present in the transaction being merged. Deletes were never propagated.</li>
+</ul>
+
+<h3>The Fix</h3>
+<p>Both branches are replaced with a single insert that uses <code>entry.key().to_owned()</code> (wrapped in <code>Slice</code>) as the map key and <code>op.clone()</code> as the value. This correctly handles all operation variants:</p>
+<pre class="code">// Before (wrong — uses value as map key, panics on Delete)
+Operation::Put { value } => map.insert(Slice(value.to_owned()), op.clone()),
+Operation::Delete    => unreachable!(),
+
+// After (correct — uses the entry's store key for both variants)
+map.insert(Slice(entry.key().to_owned()), op.clone())</pre>
+
+<h3>Why This Matters</h3>
+<ul>
+  <li>A store entry's <strong>key</strong> and <strong>value</strong> are entirely separate concepts. The key identifies the row inside a column family (e.g. a <code>GroupMember</code> key laid out as <code>0x21 || group_id || identity</code>); the value is the Borsh-serialized payload stored at that row. Using the value as the map key violates the column keyspace structure described in the Key Model section above.</li>
+  <li>With the value-as-key bug in place, any two entries that happened to serialise to the same bytes (e.g. two members with identical role values) would silently collapse into one row during a merge, causing silent data loss for the second entry.</li>
+  <li>Deletes are a legitimate and necessary operation — for example, removing a member (<code>0x21</code> prefix row) must propagate through merged transactions to be applied atomically. Panicking on delete made any transaction that mixed puts and deletes impossible to merge.</li>
+</ul>
+
+<h3>Correctness Invariant</h3>
+<p>After the fix, <code>Transaction::merge</code> preserves the following invariant: for every column family, the merged map contains exactly one <code>Operation</code> per distinct store key, and that operation is either <code>Put</code> or <code>Delete</code>. Later operations on the same key win (last-write semantics within the transaction), which is the expected behaviour for an in-memory transaction accumulator.</p>
+</div>
 </div>
 </div>
 <script src="nav.js"></script>

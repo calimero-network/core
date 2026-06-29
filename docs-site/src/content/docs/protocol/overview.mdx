@@ -1,0 +1,120 @@
+---
+title: Protocol Reference — Overview
+description: How a Calimero node works, told as the life of one operation — enough to reimplement the protocol from scratch.
+sidebar:
+  label: Overview
+  order: 1
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
+This is the **implementation reference** — a design-level description of the
+Calimero protocol aimed at building an independent node. It follows one
+**operation** from birth to convergence rather than touring the Rust crates.
+
+:::tip[New here? Read the core model first, in order]
+[Concepts &amp; Scopes](/protocol/concepts/) → [Identities &amp; Keys](/protocol/identities/) → [Operations &amp; the Causal DAG](/protocol/operations/) → [State, Projection &amp; the Root Hash](/protocol/projection/). Everything else builds on those four.
+:::
+
+## The one idea everything hangs on
+
+A Calimero node runs **sandboxed WASM applications** over **replicated,
+causally-consistent shared state**. There is **no global consensus and no
+quorum**. Every change — a data write, an access-control change, a membership
+change, an admin action — is a **signed operation** in a **content-addressed
+DAG**.
+
+Each node **folds that DAG deterministically** into materialized state. Because
+the fold is order-independent (last-writer-wins per slot, keyed on a hybrid
+clock), any two nodes that have seen the same set of operations compute the same
+state and the same **scope root** hash. Nodes don't _prevent_ divergence — they
+_detect_ it by comparing scope roots, and _heal_ it by syncing missing
+operations.
+
+> Hold onto that sentence — _"a signed op DAG that folds to a state plus a root
+> hash, with divergence detected, not prevented"_ — and every chapter is a
+> detail of it.
+
+## The life of an operation
+
+The whole reference follows one operation from birth to convergence. This is the
+spine — and the diagram below is the **bespoke animated engine running as an
+Astro island**, the thing this spike set out to prove:
+
+<SeqDiagram
+  id="d-op-life"
+  title="The life of an operation"
+  lanes={[
+    { label: 'Author node', color: '#3fb950' },
+    { label: 'Gossip (scope topic)', color: '#a371f7' },
+    { label: 'Peer node', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'app execution / governance action' },
+    { from: 0, to: 0, label: 'build Op { scope, parents, hlc, payload }' },
+    { from: 0, to: 0, label: 'sign id with member key' },
+    { from: 0, to: 0, label: 'append to local DAG → fold → scope_root' },
+    { from: 0, to: 1, label: 'broadcast Op (encrypted under scope key)', color: '#a5ff11' },
+    { from: 1, to: 2, label: 'deliver Op' },
+    { from: 2, to: 2, label: 'verify signature' },
+    { from: 2, to: 2, label: 'authorize at the causal cut' },
+    { from: 2, to: 2, label: 'decrypt; buffer if parent / key missing' },
+    { from: 2, to: 2, label: 'append to DAG → fold → scope_root′' },
+    { type: 'divider', label: 'scope_root == scope_root′  ⇒  converged' },
+  ]}
+/>
+
+The write half (build → sign → persist → broadcast), the receive half (verify →
+authorize → decrypt → fold), and the repair channel (compare roots → transfer
+what differs) are the substance of this reference.
+
+## How this reference is organized
+
+Read it **top to bottom**. Each part answers the next question you'd naturally
+ask, and each goes one level deeper than the last — so you can stop wherever
+your need does.
+
+1. **The replication loop** — the heart. An app runs locally and produces a
+   change, that change broadcasts as a signed _state delta_, and peers verify and
+   apply it **without re-running the app**. _Application Execution_, _The Write
+   Path_, _The Receive & Apply Path_.
+2. **What gets replicated** — what's actually inside a delta: the _Operations &
+   the Causal DAG_ (the history) and the _State, Projection & the Root Hash_ it
+   folds to, with a visual _Anatomy of State_.
+3. **How it is organized** — how data is sharded and access-controlled into a
+   tree of scopes: _Concepts & Scopes_ (namespaces, groups, contexts),
+   _Governance_, and _Capability & Membership Inheritance_.
+4. **Confidentiality & identity** — who can read and write: _Identities & Keys_,
+   _Encryption_, _Key Rotation_, and the _Security & Threat Model_.
+5. **Staying in sync** — how nodes that drift apart converge again: _Networking_,
+   _Sync & Convergence_, _Sync Internals_, and _Divergence & Recovery_.
+6. **Subsystems** — features built on the loop: _Blob Transport_, _Cross-Context
+   Calls_, _TEE Attestation_, and _Application Upgrades_.
+7. **Deep internals & reference** — exact rules to look up: _CRDT Internals_, the
+   _Hybrid Logical Clock_, the on-disk _Storage Schema_, _Limits_, governance
+   _edge cases_, and the _Glossary_.
+
+The first three parts are the model; the rest is detail you reach for when you
+need it.
+
+## Status, versioning & conformance
+
+:::caution[Pre-1.0 specification]
+This reference describes the unified model and is being hardened toward a
+normative specification — it is not yet a frozen standard. Treat the byte-level
+details as accurate-to-current-code but subject to change pre-1.0.
+:::
+
+- **Normative requirements** appear in **`Normative`** callouts using RFC 2119
+  wording (MUST / SHOULD / MAY). Everything else is explanatory — an
+  implementer may read only the Normative callouts plus the byte-level
+  `Specification` sections and build a conformant node.
+- **Version pinning.** Wire and signing formats are versioned. At the time of
+  writing: the signed group op is **schema version 8**, the signed namespace op
+  is **schema version 2**, and the libp2p sync/blob stream protocols are
+  `…/0.0.2`. A conformant implementation MUST match these for the versions it
+  claims to support.
+- **Conformance, in one line.** A node interoperates if it reproduces the
+  operation **id** computation, the **scope&nbsp;root** fold, and the
+  authorization-at-the-cut rule exactly — everything else is a consequence of
+  those three.

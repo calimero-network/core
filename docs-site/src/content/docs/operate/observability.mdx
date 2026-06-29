@@ -1,0 +1,287 @@
+---
+title: Observability
+description: Where merod exposes Prometheus metrics, the key metric families, what healthy vs divergent looks like, and how to set log levels.
+sidebar:
+  order: 7
+---
+
+import { Aside, Tabs, TabItem, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+A `merod` node is observable through two channels: a Prometheus `/metrics`
+endpoint for numeric time series, and structured `tracing` logs for
+event-level detail. This page documents both, grounded in the metric families
+the node actually registers.
+
+## The metrics endpoint
+
+The metrics service is mounted on the node's **HTTP server** (the same listener
+as the admin API and JSON-RPC), at the fixed path `/metrics`. With the default
+`[server]` config that is:
+
+```sh
+curl http://127.0.0.1:2528/metrics
+```
+
+The body is Prometheus / OpenMetrics text format, produced by the
+`prometheus-client` crate. All node, sync, and HTTP metrics register against a
+single registry that the server encodes on each scrape.
+
+<Aside type="note">
+The path is currently hard-coded to `/metrics` (not yet config-driven). Point
+your scraper at each node's server `listen` address. Every scrape also emits a
+`debug`-level `metrics scrape served` log line with the response size, which is
+useful when triaging "scraper reaches the node but the body looks empty".
+</Aside>
+
+<Aside type="caution" title="/metrics is always unauthenticated">
+Unlike the admin API, JSON-RPC, WebSocket, and SSE surfaces, `/metrics` is
+mounted **without** the auth guard. It stays open **even when embedded auth is
+enabled** on the same listener — enabling auth does not protect it. Treat the
+metrics endpoint as public on its listener: bind the server to a private
+interface, or firewall `/metrics` so only your scraper can reach it. Do not
+expose it to the public internet.
+</Aside>
+
+<Aside type="caution">
+Counter families export with a `_total` suffix appended by the exporter, while
+gauges and histograms keep their registered name. The tables below show the
+**registered** base name; for counters, query `<name>_total` (e.g.
+`sync_failures` registers, `sync_failures_total` is what you scrape). Histogram
+families additionally export `_bucket`, `_sum`, and `_count` series.
+</Aside>
+
+## Key metric families
+
+### Sync protocol
+
+Registered in `crates/node/src/sync/prometheus_metrics.rs`. `protocol` labels
+are sanitised against an allow-list (`Snapshot`, `HashComparison`, `DeltaSync`,
+`SubtreePrefetch`, `LevelWise`, `BloomFilter`, `None`), so cardinality stays
+bounded.
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `sync_messages_sent` | Counter | `protocol` | Sync protocol messages sent. |
+| `sync_bytes_sent` | Counter | `protocol` | Bytes sent, by protocol. |
+| `sync_round_trips` | Counter | `protocol` | Round trips, by protocol. |
+| `sync_entities_transferred` | Counter | — | Entities transferred during sync. Near-zero in steady state. |
+| `sync_merges` | Counter | `crdt_type` | CRDT merge operations (conflict resolutions). |
+| `sync_comparisons` | Counter | — | Entity hash comparisons performed. |
+| `sync_phase_duration_seconds` | Histogram | `phase` | Per-phase duration (buckets 1ms–16s). |
+| `sync_duration_seconds` | Histogram | `protocol`, `outcome` | End-to-end session duration (buckets 10ms–160s). |
+| `sync_attempts` | Counter | `protocol` | Sync attempts started. |
+| `sync_successes` | Counter | `protocol` | Successful syncs. |
+| `sync_failures` | Counter | `protocol` | Failed syncs. |
+| `sync_protocol_selections` | Counter | `protocol` | Which protocol the adaptive selector chose. |
+
+**Safety / invariant counters** (all should sit at zero in normal operation):
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `sync_snapshot_blocked` | Counter | Snapshot attempt blocked on an already-initialised node. Any increment warrants investigation. |
+| `sync_verification_failures` | Counter | Post-snapshot state-hash mismatch — possible corruption or non-determinism. |
+| `sync_lww_fallback` | Counter | Last-writer-wins fallback when CRDT-type metadata is missing. Occasional is tolerable; sustained growth is a bug signal. |
+| `sync_buffer_drops` | Counter | Deltas dropped from a bounded buffer (arriving faster than they apply). Any increment can mean catch-up sync is needed. |
+
+### DAG / delta application (node)
+
+Registered in `crates/node/src/node_metrics.rs`. These are node-wide sums (no
+per-context label, by design — a node can host hundreds of contexts).
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `delta_outcomes_total` | Counter | `outcome` | DAG delta-apply outcomes. `outcome` ∈ `applied`, `pending`, `cascaded`, `duplicate`, `error`, plus `absorbed_leaf_future_schema` / `absorbed_snapshot_entity_future_schema` for stragglers buffered by a stale-schema reader. |
+| `delta_cascade_size` | Histogram | — | Pending deltas unblocked when a parent finally lands. |
+| `delta_missing_parents_total` | Counter | — | Missing-parent requests issued to peers. |
+| `dag_heads_count` | Histogram | — | Concurrent DAG heads after each apply (buckets 1–256). Steady state is low (1–2). |
+| `dag_compaction_deltas_pruned_total` | Counter | — | Delta rows reclaimed by DAG compaction. |
+| `hc_leaf_drops_total` | Counter | `reason` | Leaves dropped by the apply-time membership check. `reason` ∈ `unauthorized` (expected under churn) / `lookup_error` (rare, an I/O signal). |
+| `delta_stores_count` | Gauge | — | Contexts with a live in-memory delta store. |
+| `sync_sessions_active` | Gauge | — | Contexts with an open snapshot-sync session (buffering deltas). |
+
+### Governance buffer
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `governance_pending_contexts` | Gauge | — | Contexts holding at least one delta in the governance-pending buffer. |
+| `governance_pending_queue_depth` | Gauge | — | Sum of pending-buffer depths across contexts. **Monotonic growth means the buffer cannot drain** (governance has not caught up). |
+| `governance_drain_outcomes_total` | Counter | `outcome` | Per-delta drain outcomes. `outcome` ∈ `applied`, `removed`, `never_member`, `rebuffered`, `dropped_max_attempts`, `lookup_error`. |
+
+<Aside type="caution">
+A dedicated `calimero_governance_*` family (ops applied/rejected, DAG heads,
+heartbeat mismatches) is listed in the architecture metrics reference as
+**planned** — those names are not registered in the node today. Track
+governance health through `governance_pending_queue_depth`,
+`governance_drain_outcomes_total`, and the divergence signals below until the
+governance family ships.
+</Aside>
+
+### Blob transport
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `blob_cache_entries` | Gauge | Blobs in the in-memory cache. |
+| `blob_cache_size_bytes` | Gauge | Resident bytes across the blob cache. |
+| `blob_cache_evictions_age_total` | Counter | Evicted for exceeding max age. |
+| `blob_cache_evictions_count_total` | Counter | Evicted to keep entry count under the cap. |
+| `blob_cache_evictions_memory_total` | Counter | Evicted to keep resident bytes under the cap. |
+
+### Network, HTTP, process
+
+| Metric | Type | Labels | Source | Meaning |
+| --- | --- | --- | --- | --- |
+| `network_event_channel_depth` | Gauge | — | network channel | Events waiting in the network→node channel. Sustained high depth means the node manager can't keep up. |
+| `network_event_channel_dropped_total` | Counter | — | network channel | Events dropped because the channel was full. Any increment can mean missed gossip / delayed sync. |
+| `network_event_channel_processing_latency_seconds` | Histogram | — | network channel | Enqueue-to-dequeue latency. |
+| `http_requests_total` | Counter | `method`, `path`, `status` | server | HTTP requests, by matched route template and status class (`2xx`/`4xx`/`5xx`). |
+| `http_request_duration_seconds` | Histogram | `method`, `path`, `status` | server | Request latency. |
+| `merod_build_info` | Gauge | `version`, `peer_id` | node | Constant-`1` beacon. Confirms the scrape pipeline works and which build / identity answered. |
+| `process_resident_memory_bytes` | Gauge | — | node | RSS of the merod process (**Linux only**; `0` elsewhere). |
+| `process_virtual_memory_bytes` | Gauge | — | node | Virtual memory size (Linux only). |
+| `process_threads` | Gauge | — | node | Thread count (Linux only). |
+| `process_open_fds` | Gauge | — | node | Open file descriptors (Linux only). |
+
+<Aside type="note">
+The exact exported prefix for the network channel and context-execution
+families depends on the sub-registry they register under (the architecture
+reference documents them as the `network_event_channel` sub-registry and a
+`context_group_store_`-prefixed self-purge family). Confirm the precise series
+names against a live `/metrics` scrape before wiring alerts.
+</Aside>
+
+## Healthy vs divergent
+
+A node and its peers converge on a shared **root hash** per context; group and
+namespace **heartbeats** periodically exchange those roots (and DAG heads) so
+that divergence is detected without a full sync. See
+[Sync &amp; Convergence](/protocol/sync/) and
+[Governance](/protocol/governance/) for the protocol detail.
+
+<Tabs>
+<TabItem label="Healthy">
+
+- `dag_heads_count` histogram sits in the low buckets (1–2 concurrent heads).
+- `sync_buffer_drops_total`, `sync_snapshot_blocked_total`,
+  `sync_verification_failures_total` all stay at **0**.
+- `governance_pending_queue_depth` is flat or trending to **0** (the buffer
+  drains as governance catches up).
+- `sync_successes_total / sync_attempts_total` is high; the selector mostly
+  picks `HashComparison`.
+- `delta_outcomes_total{outcome="error"}` and
+  `hc_leaf_drops_total{reason="lookup_error"}` are near zero.
+- `merod_build_info` is present (scrape pipeline alive, identity confirmed).
+
+</TabItem>
+<TabItem label="Divergent">
+
+- Heartbeats report a root-hash / `scope_root` mismatch against the signed
+  canonical expected; the node's reconciler kicks in (see
+  [Troubleshooting](/operate/troubleshooting/)).
+- `sync_protocol_selections_total{protocol="Snapshot"}` starts rising —
+  growing snapshot selection means growing state divergence across the cluster.
+- `sync_failures_total` climbs and `sync_duration_seconds` p99 stretches out.
+- `governance_pending_queue_depth` grows monotonically — deltas are buffered
+  because the node has not yet applied the governance that authorises them.
+- `dag_heads_count` fans out into the higher buckets after a partition.
+
+</TabItem>
+</Tabs>
+
+<Aside type="caution">
+The `scope_root` and per-context root hash are internal convergence values, not
+(yet) exported as their own Prometheus gauges. Today they surface in logs and in
+the reconciler's divergence handling rather than as a scrape-able heartbeat
+metric. Treat root-hash agreement as a log/RPC signal, and use the sync /
+governance counters above as the numeric proxy.
+</Aside>
+
+## Sync status & readiness
+
+Not every convergence signal is a Prometheus series. Two typed state machines
+surface a node's sync health at finer granularity than the counters above — both
+are pushed as events and readable on demand, so a client or operator can tell
+"actively syncing" from "waiting for a peer" from "stuck behind backoff".
+
+### Per-context sync phase
+
+Each context reports a coarse `sync_status` phase, published both as the
+`sync_status` JSON-RPC response and as a `SyncStatus` WebSocket event. The phase
+is recomputed from the context's `SyncState` and only re-emitted on a real
+transition, so the event stream stays quiet between changes
+(`crates/node/src/sync/session.rs`, produced from
+`crates/primitives/src/sync_status.rs`).
+
+| Phase | Carries | Meaning |
+| --- | --- | --- |
+| `Idle` | — | Settled — no sync in flight, nothing pending. |
+| `WaitingForPeers` | — | Not yet initialized and nothing actively syncing — typically waiting for a co-member peer to appear. Set explicitly on the benign `NoPeersAvailable` / `PeerNotMaterialized` outcomes, which otherwise look idle. |
+| `Syncing` | — | A sync attempt is in flight (handshake / delta exchange). |
+| `ReceivingSnapshot` | `records_received`, `percent`, `eta_secs` | Receiving an initial-state snapshot. `percent` / `eta_secs` are `None` against a peer too old to advertise the snapshot's total entity count, degrading to the raw `records_received` liveness count. |
+| `BackingOff` | `retry_in_secs` | The last attempt failed; the next retry is gated behind the [exponential backoff](/protocol/sync/) — `retry_in_secs` is the estimated wait. |
+
+### Per-namespace readiness tier
+
+Separately, each namespace runs a readiness FSM that governs when the node will
+participate in the three-phase governance contract. Peers exchange signed
+*beacons* advertising how far each has applied; the tier is a pure function of
+local progress, peer beacons, and elapsed boot grace
+(`crates/node/src/readiness.rs`, `evaluate_readiness`).
+
+| Tier | Carries | Meaning |
+| --- | --- | --- |
+| `Bootstrapping` | — | Just subscribed — no peer beacon yet and still within `boot_grace`, or an empty-DAG joiner with no known target. |
+| `LocallyReady` | — | Boot grace elapsed with no peer beacons; the node self-promotes on local state alone. |
+| `PeerValidatedReady` | — | Heard a fresh peer beacon and the local `applied_through` is within `applied_through_grace` of the peer's tip. The fully-converged tier. |
+| `CatchingUp` | `target_applied_through` | A peer beacon names a tip the node is still behind; carries the target to catch up to. |
+| `Degraded` | `reason` | Demoted — `PendingOps(n)` while ops are blocking promotion, or `NoRecentPeers` when a once-fresh namespace has heard no beacon within `ttl_heartbeat`. |
+
+Readiness config defaults (`ReadinessConfig::default`): `beacon_interval` **5 s**,
+`ttl_heartbeat` **60 s**, `boot_grace` **10 s**, `applied_through_grace` **2**
+ops. Any local pending op demotes to `Degraded` immediately — pending ops always
+win over a tip-fresh peer comparison.
+
+## Logging
+
+`merod` initialises `tracing` with an `EnvFilter` driven by the **`RUST_LOG`**
+environment variable. When `RUST_LOG` is unset or empty, the default directive
+is:
+
+```sh
+RUST_LOG="merod=info,calimero_=info"
+```
+
+Set it to raise or lower verbosity per module before launching the node:
+
+<Tabs>
+<TabItem label="Verbose node + sync">
+
+```sh
+RUST_LOG="merod=debug,calimero_node=debug,calimero_=info" \
+  merod --home data/ --node node1 run
+```
+
+</TabItem>
+<TabItem label="Quiet, warnings only">
+
+```sh
+RUST_LOG="warn" merod --home data/ --node node1 run
+```
+
+</TabItem>
+</Tabs>
+
+<Aside type="note">
+Log level is **environment-driven only** — there is no `config.toml` key for it.
+`RUST_LOG` uses standard `tracing` directive syntax (`crate=level`,
+comma-separated; `target[span]=level` for finer control). Panics are captured by
+a custom hook that logs a structured message plus backtrace before exiting, so
+crash diagnostics survive even without `RUST_BACKTRACE` set.
+</Aside>
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Troubleshooting" href="/operate/troubleshooting/" description="Map the metrics and logs here to concrete symptoms and fixes." />
+  <LinkCard title="Runbooks" href="/operate/runbooks/" description="Operational procedures that lean on these counters and logs." />
+  <LinkCard title="Production deployment" href="/operate/deployment/" description="Wire /metrics and logs into a real monitoring stack." />
+</CardGrid>

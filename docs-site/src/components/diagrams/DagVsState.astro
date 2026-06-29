@@ -1,0 +1,88 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-dag-vs-state">
+<svg viewBox="0 0 760 380" role="img" aria-label="The operation DAG versus the materialized state" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="dvs-up" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker>
+    <marker id="dvs-fold" markerWidth="10" markerHeight="10" refX="7" refY="3.2" orient="auto"><path d="M0,0 L7,3.2 L0,6.4 Z" fill="#a5ff11"/></marker>
+    <marker id="dvs-tree" markerWidth="8" markerHeight="8" refX="5.5" refY="2.6" orient="auto"><path d="M0,0 L5.5,2.6 L0,5.2 Z" fill="#39d0d8"/></marker>
+  </defs>
+  <rect x="0" y="0" width="760" height="380" rx="10" fill="#0f0f16"/>
+
+  <!-- LEFT: operation DAG — the authority -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="24" y="52" width="296" height="248" rx="11" fill="#10210f" stroke="#3fb950" stroke-width="1.4"/>
+    <text x="172" y="42" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="12" font-weight="700">Operation DAG</text>
+    <text x="296" y="42" text-anchor="end" font-size="13">&#128272;</text>
+
+    <!-- op nodes (content-addressed) -->
+    <line x1="172" y1="128" x2="172" y2="112" stroke="#8b949e" stroke-width="1.4" marker-end="url(#dvs-up)"/>
+    <line x1="120" y1="188" x2="150" y2="164" stroke="#8b949e" stroke-width="1.4" marker-end="url(#dvs-up)"/>
+    <line x1="234" y1="188" x2="194" y2="164" stroke="#8b949e" stroke-width="1.4" marker-end="url(#dvs-up)"/>
+
+    <rect x="130" y="78" width="84" height="32" rx="8" fill="#161b22" stroke="#444c56" stroke-width="1.3"/>
+    <text x="172" y="98" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">op 7c4a</text>
+    <rect x="220" y="82" width="36" height="16" rx="4" fill="#10210f" stroke="#3fb950" stroke-width="1"/>
+    <text x="238" y="94" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700">sig</text>
+
+    <rect x="130" y="128" width="84" height="32" rx="8" fill="#161b22" stroke="#444c56" stroke-width="1.3"/>
+    <text x="172" y="148" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">op b1e9</text>
+
+    <rect x="64" y="186" width="84" height="32" rx="8" fill="#161b22" stroke="#444c56" stroke-width="1.3"/>
+    <text x="106" y="206" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">op c2d8</text>
+
+    <rect x="196" y="186" width="84" height="32" rx="8" fill="#161b22" stroke="#444c56" stroke-width="1.3"/>
+    <text x="238" y="206" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">op 95af</text>
+
+    <text x="172" y="256" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="9.5">append-only &#183; signed &#183; replicated</text>
+    <text x="172" y="272" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">the history &amp; the authority</text>
+  </g>
+
+  <!-- CENTER: fold / projection -->
+  <g class="seq-step" style="--step-i:1">
+    <line x1="322" y1="150" x2="436" y2="150" stroke="#a5ff11" stroke-width="3" marker-end="url(#dvs-fold)"/>
+    <text x="380" y="138" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">fold / projection</text>
+    <text x="380" y="170" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">DAG &#8594; state</text>
+  </g>
+
+  <!-- RIGHT: materialized state — a cache -->
+  <g class="seq-step" style="--step-i:2">
+    <rect x="440" y="52" width="296" height="248" rx="11" fill="#10151c" stroke="#58a6ff" stroke-width="1.4"/>
+    <text x="588" y="42" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="12" font-weight="700">Materialized state</text>
+
+    <!-- root hash atop the entity tree -->
+    <rect x="508" y="70" width="160" height="38" rx="9" fill="#10201f" stroke="#39d0d8" stroke-width="1.4"/>
+    <text x="588" y="86" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">root_hash</text>
+    <text x="588" y="100" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">3e9c 1f&#8230;</text>
+
+    <!-- entity tree -->
+    <line x1="588" y1="108" x2="588" y2="125" stroke="#39d0d8" stroke-width="1.3" marker-end="url(#dvs-tree)"/>
+    <circle cx="588" cy="134" r="9" fill="#16222e" stroke="#39d0d8" stroke-width="1.3"/>
+    <line x1="582" y1="142" x2="546" y2="166" stroke="#39d0d8" stroke-width="1.2"/>
+    <line x1="594" y1="142" x2="630" y2="166" stroke="#39d0d8" stroke-width="1.2"/>
+    <circle cx="540" cy="176" r="9" fill="#16222e" stroke="#39d0d8" stroke-width="1.3"/>
+    <circle cx="636" cy="176" r="9" fill="#16222e" stroke="#39d0d8" stroke-width="1.3"/>
+    <line x1="534" y1="184" x2="522" y2="208" stroke="#39d0d8" stroke-width="1.2"/>
+    <line x1="546" y1="184" x2="576" y2="208" stroke="#39d0d8" stroke-width="1.2"/>
+    <line x1="630" y1="184" x2="634" y2="208" stroke="#39d0d8" stroke-width="1.2"/>
+    <line x1="642" y1="184" x2="686" y2="208" stroke="#39d0d8" stroke-width="1.2"/>
+
+    <rect x="500" y="210" width="44" height="22" rx="6" fill="#161b22" stroke="#444c56" stroke-width="1.2"/>
+    <text x="522" y="225" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">e1</text>
+    <rect x="556" y="210" width="44" height="22" rx="6" fill="#161b22" stroke="#444c56" stroke-width="1.2"/>
+    <text x="578" y="225" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">e2</text>
+    <rect x="612" y="210" width="44" height="22" rx="6" fill="#161b22" stroke="#444c56" stroke-width="1.2"/>
+    <text x="634" y="225" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">e3</text>
+    <rect x="668" y="210" width="44" height="22" rx="6" fill="#161b22" stroke="#444c56" stroke-width="1.2"/>
+    <text x="690" y="225" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">e4</text>
+
+    <text x="588" y="256" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="9.5">derived &#183; queryable &#183; rebuildable</text>
+    <text x="588" y="272" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">a cache of the DAG</text>
+  </g>
+
+  <!-- caption -->
+  <text x="380" y="346" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5">Keep the DAG; recompute the state. The DAG proves how you got here;</text>
+  <text x="380" y="362" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="9.5">the state is just where you are now.</text>
+</svg>
+</Figure>

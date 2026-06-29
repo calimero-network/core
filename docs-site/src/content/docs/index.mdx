@@ -1,0 +1,46 @@
+---
+title: Calimero Core
+description: Build, operate, and reimplement Calimero — a peer-to-peer framework for sandboxed WASM apps over causally-consistent shared state.
+template: splash
+hero:
+  tagline: A peer-to-peer framework for sandboxed WASM apps over causally-consistent shared state. No consensus, no quorum — a signed operation DAG that folds to a state and a root hash.
+  actions:
+    - text: Read the Protocol Reference
+      link: /protocol/overview/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/calimero-network/core
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import ArchMap from '../../components/ArchMap.astro';
+
+{/* Audience-routed landing (Tailscale/Vercel pattern) — pick your track. */}
+
+<CardGrid>
+  <Card title="Build" icon="rocket">
+    Write a WASM app on the SDK. Quickstart, the SDK macros, and the collection
+    types. [Start building →](/build/)
+  </Card>
+  <Card title="Operate" icon="setting">
+    Run, configure, and monitor nodes. Install, the `merod`/`meroctl` CLI
+    reference, config, and the admin API. [Run a node →](/operate/)
+  </Card>
+  <Card title="Protocol" icon="open-book">
+    Reimplement a node from scratch. Concept explainers and a normative,
+    versioned spec. [Read the reference →](/protocol/overview/)
+  </Card>
+  <Card title="Contribute" icon="puzzle">
+    Work on Calimero core itself. Architecture orientation, the crate map, and
+    the development workflow. [Get oriented →](/contribute/)
+  </Card>
+</CardGrid>
+
+## Architecture at a glance
+
+<ArchMap />
+
+New here? [How to use these docs](/using-the-docs/) · [Journeys by goal](/journeys/) · [Browse by topic](/topics/)

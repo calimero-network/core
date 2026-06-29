@@ -1,0 +1,125 @@
+---
+title: Crate guide
+description: A layer-by-layer reference of the Calimero Core workspace crates — what each one is, who uses it, and the facts a contributor needs to orient.
+sidebar:
+  label: Crate guide
+---
+
+import { Aside, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+A reference table of the workspace crates, grouped by layer, so you can find the
+crate you need and know who it serves before you open `src/lib.rs`. This
+complements the [architecture orientation](/contribute/architecture/), which
+explains the **actor model** and the **dependency layering** these crates fit
+into. For the model the code implements, see the
+[Protocol Reference](/protocol/overview/).
+
+The **Audience** column is a hint, not a hard boundary: `app-dev` crates surface
+to people building apps, `operator` crates to people running nodes, and
+`internal` crates are workspace plumbing you touch when changing the core.
+
+<Aside type="note">
+  Crate purposes are grounded in each crate's `src/lib.rs` module docs and the
+  workspace `Cargo.toml`. Where a crate has no module doc, the one-liner is
+  inferred from its modules and the architecture map — treat those as
+  orienting, not authoritative, and read the source before relying on a
+  boundary.
+</Aside>
+
+## App-facing SDK
+
+What an application author compiles against, plus the host/guest boundary.
+
+| Crate | Audience | What it is | Key facts |
+| --- | --- | --- | --- |
+| `sdk` (+ `sdk/macros`) | app-dev | Proc-macro SDK for building CRDT apps: `#[app::state]`, `#[app::logic]`, `#[app::event]`, `#[app::migrate]`. | Compiles to WASM. Event handlers may run in **parallel** — handlers must be commutative, idempotent, and pure. Ships the `TestHost` unit-test harness. |
+| `prelude` | internal | Common re-exports for ergonomic imports across crates. | Convenience surface; no logic of its own. |
+| `wasm-abi` | internal | The WASM ABI shared between host and guest. | Holds schema, embed, normalize, validate, and downgrade of the app ABI. |
+| `sys` | internal | Low-level system / host ABI bindings at the SDK–runtime boundary. | Thin type definitions; the contract the runtime's host functions implement. |
+
+## Protocol core
+
+The deterministic engine: shared types, execution, and the unified causal log.
+
+| Crate | Audience | What it is | Key facts |
+| --- | --- | --- | --- |
+| `primitives` | internal | Core shared types used across the workspace. | `ContextId`, identities, blobs, CRDT, events, hashes. The layer everything converges on. |
+| `crypto` | internal | Cryptographic primitives: keys, signing, hashing, shared-key derivation. | Underpins identity and delta signing. |
+| `runtime` | internal | Wasmer + Cranelift WASM execution engine. | Builds a `VMLogic` per call, runs the exported method, returns an `Outcome` (return value, logs, events, storage delta). 50+ host functions. |
+| `dag` | internal | Pure causal DAG for delta tracking with automatic dependency resolution. | No network or storage deps. Orders changes correctly even when messages arrive out of order. |
+| `op` | internal | The one `Op` envelope for the unified causal log. | A data write, writer-set rotation, membership change, or policy change are all the same `Op`. Defines canonical id and `scope_root` hashing. |
+| `projection` | internal | `ScopeState` — the single deterministic projection of a scope's op-log. | Same ops, any order, deduped by id, yield the same state and `root`. `acl_view_at` resolves the causal-honor authorization view. |
+| `authz` | internal | The one authorization fold over the op-log. | `authorize` is a single match over the op payload against an `AclView` resolved at the op's causal cut — the forward-only / causal-honor property. |
+| `op-adapter` | internal | Transitional bridge mapping per-plane operation types onto the unified `OpPayload`. | **Explicitly transitional** — slated for deletion once everything runs on the unified payload. Treat its boundaries as moving. |
+
+<Aside type="caution">
+  `op` / `projection` / `authz` / `op-adapter` are part of the in-progress
+  **unified causal log** migration. Their exact boundaries are moving targets —
+  check the source before relying on them.
+</Aside>
+
+## Governance
+
+Local (no-chain) group governance.
+
+| Crate | Audience | What it is | Key facts |
+| --- | --- | --- | --- |
+| `governance-types` | internal | Signed group-operation types for **local** governance (no chain). | A leaf crate, so `governance-store` can depend on the op types without pulling in `actix`. |
+| `governance-store` | internal | Apply pipeline, broadcast / ack flow, metrics, and notifications for local group governance. | Extracted from `calimero-context`; callers still reach it via re-export shims in that crate. |
+
+## Networking & node
+
+The running node: orchestration, contexts, transport, and config.
+
+| Crate | Audience | What it is | Key facts |
+| --- | --- | --- | --- |
+| `node` (+ `node/primitives`) | internal | Node runtime coordinating sync, storage, networking, and events. | Hosts the `NodeManager` actor, the `SyncManager` task, and the `GarbageCollector`. Owns delta handling and blob caching. |
+| `context` (+ `context/primitives`) | internal | The `ContextManager` actor: contexts, groups, and per-namespace governance DAGs. | 30+ message handlers covering execution, governance, membership, and upgrades. |
+| `network` (+ `network/primitives`) | internal | The `NetworkManager` actor wrapping the composed libp2p behaviour stack. | gossipsub, Kademlia, mDNS, relay, rendezvous, hole-punching, streams. Moves **opaque bytes only** — never imports app types. |
+| `config` | operator / internal | Node configuration (`config.toml`) types and loading. | Includes the libp2p network identity config. |
+
+## Storage
+
+Persistence: the CRDT collections down to the key-value backend.
+
+| Crate | Audience | What it is | Key facts |
+| --- | --- | --- | --- |
+| `storage` | app-dev / internal | CRDT storage collections and the interface over the underlying store. | `UnorderedMap` / `UnorderedSet` / `Counter` / registers; the per-entity merge that drives convergence. Ships the `converge` property-test harness. |
+| `storage-macros` | app-dev / internal | Derive macros that wire app state into the storage subtree. | Derives `AtomicUnit` and friends so `#[app::state]` structs become storage entities. |
+| `store` | internal | Column-family key-value abstraction over RocksDB via the `Database` trait. | Typed keys with compile-time size / column guarantees. Sibling crates add the RocksDB impl, blob store, and at-rest encryption. |
+
+<Aside type="note">
+  Three sibling crates round out the storage backend: `store/impl/rocksdb` (the
+  RocksDB `Database` implementation), `store/blobs` (`calimero-blobstore` for
+  large binaries), and `store/encryption` (optional transparent AES-GCM at
+  rest).
+</Aside>
+
+## Server & tooling
+
+External surfaces, auth, attestation, and the binaries.
+
+| Crate | Audience | What it is | Key facts |
+| --- | --- | --- | --- |
+| `server` (+ `server/primitives`) | operator / internal | Single Axum HTTP server mounting all public surfaces. | Admin REST, JSON-RPC 2.0, WebSocket, SSE, Prometheus metrics, embedded dashboard SPA. Holds no business logic — delegates to clients. |
+| `auth` (`mero-auth`) | operator | Forward-auth service: JWT issue / verify, pluggable providers, wallet challenge auth. | Runs embedded in the server or behind a reverse proxy. NEAR / Ethereum / custom providers. |
+| `client` | app-dev | Trait-based client library for talking to Calimero APIs. | Abstract interfaces for auth, token storage, and API comms; used by tooling and integrations. |
+| `meroctl` | operator / app-dev | The operator / developer CLI. | Drives nodes: install contexts, call methods, inspect state. |
+| `merod` | operator | The node daemon binary. | `merod --node <name> init` then `run`. Supports `--no-default-features` for a local-only init build. |
+| `tee-attestation` | operator / internal | Platform-agnostic TEE attestation generation and verification. | Generates / verifies TDX quotes (Linux with TDX); mock attestation on other platforms for development. |
+
+## Build / util
+
+Shared plumbing for build scripts and runtime glue.
+
+| Crate | Audience | What it is | Key facts |
+| --- | --- | --- | --- |
+| `build-utils` | internal | Shared build-script utilities for Calimero binaries and crates. | Workspace version reading and git metadata, so build scripts stay DRY. |
+| `utils` (`utils/actix`) | internal | Actix helper utilities reused across the actor crates. | Small glue layer for the actor-model code. |
+
+## Related
+
+<CardGrid>
+  <LinkCard title="Architecture orientation" href="/contribute/architecture/" description="The actor model and the dependency layering these crates fit into." />
+  <LinkCard title="Protocol Reference" href="/protocol/overview/" description="The signed-op DAG and deterministic fold the codebase implements." />
+</CardGrid>

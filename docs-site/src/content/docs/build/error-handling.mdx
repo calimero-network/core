@@ -1,0 +1,242 @@
+---
+title: Error handling
+description: How errors work in a Calimero app — app::Result, the Error type, the bail!/err! macros, and what a returned error looks like to a JSON-RPC caller.
+sidebar:
+  label: Error handling
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+A Calimero app method reports failure the way idiomatic Rust does: it returns a
+`Result`. The SDK serializes the error, hands it back to the runtime, and the
+node surfaces it to whoever made the call. This page covers the `Error` type,
+the macros that build it, and what the caller actually sees.
+
+## `app::Result` and `Error`
+
+The SDK defines a `Result` alias and an `Error` type in `crates/sdk/src/lib.rs`
+and `crates/sdk/src/types.rs`:
+
+```rust
+pub type Result<T, E = Error> = core::result::Result<T, E>;
+```
+
+`Error` is transparent over a `serde_json::Value` — an error is *just JSON*. It
+serializes to whatever value you put in it: a string, a formatted message, or a
+whole structured object.
+
+```rust
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+pub struct Error {
+    error: serde_json::Value,
+    // ...
+}
+```
+
+Write your methods to return `app::Result<T>`:
+
+```rust
+use calimero_sdk::app;
+
+#[app::logic]
+impl Counter {
+    pub fn increment(&mut self, by: u32) -> app::Result<u32> {
+        let next = self.count.checked_add(by).ok_or_else(|| {
+            app::err!("counter overflow")
+        })?;
+        self.count = next;
+        Ok(next)
+    }
+}
+```
+
+### `?` just works
+
+`Error` has a blanket `impl<T: core::error::Error> From<T>`, so any standard
+error converts with the `?` operator — no manual mapping:
+
+```rust
+pub fn parse_amount(&self, raw: &str) -> app::Result<u64> {
+    // `ParseIntError` implements `std::error::Error`, so `?` converts it
+    // into `app::Error` automatically.
+    let amount: u64 = raw.parse()?;
+    Ok(amount)
+}
+```
+
+The conversion stores the error's `Display` string as the JSON value.
+
+## `bail!` and `err!`
+
+Two macros, re-exported under `calimero_sdk::app`, build an `Error` from a range
+of inputs (defined in `crates/sdk/macros` over `crates/sdk/src/macros.rs`):
+
+- `app::err!(..)` evaluates to an `Error` value.
+- `app::bail!(..)` returns early — it expands to `return Err(app::err!(..))`.
+
+Both accept the same four input shapes:
+
+```rust
+use calimero_sdk::app;
+
+// 1. A string literal.
+app::bail!("insufficient balance");
+
+// 2. A format string with arguments.
+app::bail!("insufficient balance: need {}, have {}", need, have);
+
+// 3. A `Serialize`-able value — becomes a structured JSON error.
+app::bail!(TransferError::Insufficient { need, have });
+
+// 4. Any `std::error::Error` — stored as its `Display` string.
+app::bail!(some_std_error);
+```
+
+Use `err!` when you need the value (e.g. inside `.ok_or_else(..)` or
+`.map_err(..)`), and `bail!` for an early return on a guard:
+
+```rust
+pub fn withdraw(&mut self, amount: u64) -> app::Result<()> {
+    if amount > self.balance {
+        app::bail!(TransferError::Insufficient {
+            need: amount,
+            have: self.balance,
+        });
+    }
+    self.balance -= amount;
+    Ok(())
+}
+```
+
+## Structured errors with `thiserror`
+
+Because `Error` carries arbitrary JSON, you can return a typed error enum and
+have it reach the caller as a structured object. Pair a `thiserror`-derived enum
+with `serde::Serialize`:
+
+```rust
+use calimero_sdk::{app, serde::Serialize};
+use thiserror::Error;
+
+#[derive(Debug, Error, Serialize)]
+#[serde(crate = "calimero_sdk::serde", tag = "kind")]
+pub enum TransferError {
+    #[error("insufficient balance: need {need}, have {have}")]
+    Insufficient { need: u64, have: u64 },
+    #[error("account is frozen")]
+    Frozen,
+}
+```
+
+Passing a `TransferError` value to `bail!`/`err!` takes the `Serialize` path, so
+the caller receives the full object (e.g. `{"kind":"Insufficient","need":100,
+"have":40}`) rather than just a message. Passing it where a `std::error::Error`
+is expected instead yields its `Display` text.
+
+<Aside type="note">
+  The selection between "serialize the struct" and "use the `Display` string" is
+  resolved at compile time by the macro. A value that is `Serialize` is encoded
+  as JSON; a bare `&str` / `format_args!` becomes a string; a plain
+  `std::error::Error` becomes its `Display`.
+</Aside>
+
+## Worked example: a token-transfer app
+
+A typed error enum makes each failure mode a distinct, machine-readable object.
+Here a transfer can fail two ways — the caller is not allowed, or they don't have
+the funds — and each carries the data a client needs to react:
+
+```rust
+use calimero_sdk::{app, env, serde::Serialize};
+use thiserror::Error;
+
+#[derive(Debug, Error, Serialize)]
+#[serde(crate = "calimero_sdk::serde", tag = "kind")]
+pub enum TransferError {
+    #[error("insufficient balance: need {need}, have {have}")]
+    InsufficientBalance { need: u64, have: u64 },
+    #[error("caller is not authorized to transfer")]
+    Unauthorized,
+}
+
+#[app::logic]
+impl Token {
+    pub fn transfer(&mut self, to: String, amount: u64) -> app::Result<()> {
+        // `executor_id()` is the unforgeable actor for per-user logic.
+        let caller = env::executor_id();
+        if !self.is_member(&caller) {
+            app::bail!(TransferError::Unauthorized);
+        }
+        let have = self.balance_of(&caller);
+        if amount > have {
+            app::bail!(TransferError::InsufficientBalance { need: amount, have });
+        }
+        // ... debit `caller`, credit `to` ...
+        Ok(())
+    }
+}
+```
+
+Because the variant is `Serialize`, `bail!` takes the structured path: the client
+receives the whole object, `kind` tag included, not just a flattened message.
+
+## What the caller sees
+
+When your method returns `Err`, the SDK serializes the error as the `Err`
+variant of the return value. The runtime carries it out on the execution
+outcome, and `crates/server` turns it into a JSON-RPC error response. Through the
+JSON-RPC `execute` path it arrives as a `FunctionCallError`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "type": "FunctionCallError",
+    "data": "insufficient balance: need 100, have 40"
+  }
+}
+```
+
+The `data` field holds your serialized error — a string for the message forms,
+or the JSON object for the `Serialize` form. The `TransferError` above, returned
+when the balance is too low, arrives as a structured object the client can branch
+on by `kind`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "type": "FunctionCallError",
+    "data": { "kind": "InsufficientBalance", "need": 100, "have": 40 }
+  }
+}
+```
+
+Decoding failures and lower-level execution faults arrive under their own
+variants (`SerdeError`, `ExecuteError`).
+
+## Traps and panics discard everything
+
+A returned `Err` is a *value* — the method ran to completion and chose to fail.
+A **trap or panic** is different: it aborts the WASM execution. When that
+happens the runtime produces an error outcome and **no state is committed** —
+there is no partial write. Either a mutating call commits its full state or it
+commits nothing.
+
+<Aside type="caution">
+  Don't use `panic!`/`unwrap()`/`expect()` as a control-flow shortcut to "return
+  an error". A panic gives the caller an opaque execution fault and throws away
+  the outcome. For an error you want the caller to handle, return `Err`
+  (via `bail!`/`err!`) so it serializes cleanly and reaches them as
+  `FunctionCallError`.
+</Aside>
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="SDK macros" href="/build/sdk-macros/" description="The #[app::*] and function-like macros, including err! and bail!." />
+  <LinkCard title="Admin API" href="/operate/admin-api/" description="How a client invokes a method and reads back results or errors." />
+</CardGrid>

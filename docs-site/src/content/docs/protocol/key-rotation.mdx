@@ -1,0 +1,251 @@
+---
+title: Identity & Key Rotation
+description: How Calimero rotates a scope's symmetric encryption key when a member is involuntarily removed, why self-leave does not rotate, and how a member that missed a delivery pulls the key back.
+sidebar:
+  order: 17
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+A scope (a group or a namespace; see [Identities](/protocol/identities/) and [Governance](/protocol/governance/)) protects its replicated data with a single **symmetric scope key**. Every governance op and state delta written into the scope is encrypted under that key, so holding the key is what lets a node read the scope at all. This chapter is about the one event that forces that key to change — an _involuntary_ member removal — and the self-healing path a member uses to acquire a key it is entitled to but does not yet hold.
+
+<Aside type="note">
+The code names this symmetric key the **group key** (`group_key`, `GroupKeyring`, `GroupKeyEntry`). A namespace is its own root group, so the same machinery covers both a subgroup's key and a namespace-root key. This chapter says **scope key** for the concept and uses the code's `group_key` / `group_id` names when quoting types.
+</Aside>
+
+## Two keys, two lifetimes
+
+Calimero keeps two cryptographic objects per member, and only one of them rotates:
+
+| | Member identity | Scope key |
+| --- | --- | --- |
+| What it is | The member's per-root-group Ed25519 keypair (its **namespace identity**) | A 32-byte symmetric AES-256-GCM key for one scope |
+| Who holds it | Only that member (the private half never leaves the node) | Every current member of the scope |
+| What it signs / does | Signs the member's governance ops and state deltas; is the ECDH wrap recipient | Encrypts/decrypts every op and delta in the scope |
+| Rotates on removal? | **No** — the member's identity is stable | **Yes** — a fresh key is minted, locking the removed member out |
+
+The member key is never rotated by this mechanism. Removal does not (and cannot) change another node's keypair; it changes the _symmetric_ key everyone shares, and simply declines to hand the new one to the removed member. The member identity is what the new key is ECDH-wrapped _to_.
+
+:::caution[Normative]
+Rotation MUST replace only the scope's symmetric key. A member's identity keypair MUST NOT be altered by any removal or rotation — identity stability is what lets a still-present member keep authoring and lets the rotation be addressed to each remaining member by public key.
+:::
+
+## Why a scope key rotates
+
+A removed member still has, on its disk, the old scope key and every byte it ever decrypted. Rotation cannot retract that. What it _can_ guarantee is **forward secrecy on new writes**: a member removed at epoch _N_ must not be able to read anything authored at epoch _N+1_ or later.
+
+The mechanism is to make the old key a dead end. On an involuntary removal the scope mints a brand-new symmetric key, hands it to every _remaining_ member, and from that moment encrypts all new ops under the new key. The removed member, holding only the old key, can decrypt the history it already had but nothing written after its eviction.
+
+This is the cryptographic half of removal. The governance half — dropping the membership row and deny-listing the member so its state deltas are refused at the receive entry point — happens in the same `MemberRemoved` apply (`crates/governance-store/src/ops/group/member_removed.rs`). Rotation is what makes the eviction _cryptographic_ rather than merely _authorizational_.
+
+## Key identification on the wire
+
+A scope accumulates more than one key over its lifetime (the genesis key plus one per rotation), so every encrypted op must say _which_ key it is under. The identifier is the SHA-256 of the key itself:
+
+```rust
+pub fn key_id_for(group_key: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(group_key);
+    hasher.finalize().into()
+}
+```
+
+Every encrypted group op travels as `NamespaceOp::Group { group_id, key_id, encrypted, key_rotation }`. A receiver resolves `key_id` against its keyring (`load_key_by_id`) and decrypts with whatever key hashes to it — so an op encrypted under an _old_ key still decodes for a node that retained that key, and a node that has only the new key transparently fails to read superseded epochs it was never meant to. The `KeyRotation` bundle carries the next epoch's id as `new_key_id = sha256(new_group_key)`.
+
+<Aside type="note">
+`key_id` is a non-secret label: it is a hash of the key, not the key. It leaks nothing usable — you cannot invert SHA-256 to recover the 32-byte key — but it lets every node agree on epoch boundaries without a separate counter.
+</Aside>
+
+## How the scope key is wrapped: ECDH per member
+
+The new key is never broadcast in the clear. It is wrapped once **per remaining member** using an ECDH-derived shared secret, so only the intended recipient can unwrap it. The wrap and unwrap are duals over the same curve25519 agreement (`crates/crypto`, `SharedKey::new`):
+
+```rust
+// sender side: wrap the scope key for one recipient
+let shared = SharedKey::new(sender_sk, recipient_pk)?;   // ECDH(sender_sk, recipient_pk)
+let ciphertext = shared.encrypt(group_key.to_vec(), nonce)?;
+KeyEnvelope { recipient, ephemeral_pk: sender_sk.public_key(), nonce, ciphertext }
+
+// recipient side: unwrap with the mirror agreement
+let shared = SharedKey::new(recipient_sk, &envelope.ephemeral_pk)?;  // same shared secret
+let key = shared.decrypt(envelope.ciphertext.clone(), envelope.nonce)?;
+```
+
+`SharedKey::new` decompresses the peer's Ed25519 public key to its Edwards point and multiplies by our scalar; both sides reach the identical shared secret, which is then used as an AES-256-GCM key. The result is a `KeyEnvelope`:
+
+```rust
+pub struct KeyEnvelope {
+    pub recipient: PublicKey,     // the member this envelope is for
+    pub ephemeral_pk: PublicKey,  // the sender's public key (the ECDH counterpart)
+    pub nonce: [u8; 12],
+    pub ciphertext: Vec<u8>,      // AES-256-GCM(group_key) under the ECDH secret
+}
+```
+
+<Aside type="caution">
+Despite the field name `ephemeral_pk`, the wrap uses the sender's **namespace identity** public key, not a freshly-generated ephemeral key — `wrap_for_member` sets `ephemeral_pk: sender_sk.public_key()` where `sender_sk` is the sender's identity. The recipient needs that public key to reconstruct the shared secret. Read it as "the sender's ECDH public key for this envelope," not as a per-message ephemeral.
+</Aside>
+
+The scope-key-to-data step is plain symmetric AES-256-GCM: `encrypt_op` builds `SharedKey::from_sk(group_key)`, which uses the 32-byte scope key directly as the AES key, then seals the borsh-encoded op. ECDH is used only to _wrap the scope key for a member_; the scope key itself encrypts the bulk data symmetrically.
+
+## The rotation mechanism on `MemberRemoved`
+
+Rotation is built and attached at publish time, not in the generic apply handler. When the admin publishes the removal (`sign_apply_and_publish_removal`), the group-governance publisher mints a fresh key and builds a `KeyRotation` bundle for the remaining members (`crates/governance-store/src/group_governance_publisher.rs`):
+
+```rust
+let new_group_key: [u8; 32] = OsRng.gen();
+let _ = GroupKeyring::new(self.store, self.group_id).store_key(&new_group_key)?;
+Some(GroupKeyring::new(self.store, self.group_id).build_rotation(
+    &new_group_key,
+    signer_sk,
+    Some(removed),   // the removed member is excluded
+)?)
+```
+
+`build_rotation` lists the scope's members, skips the `excluded_member`, and emits one `KeyEnvelope` per survivor:
+
+```rust
+for (member_pk, _) in &members {
+    if excluded_member == Some(member_pk) {
+        continue;                         // the removed member gets no envelope
+    }
+    envelopes.push(Self::wrap_for_member(sender_sk, member_pk, new_group_key)?);
+}
+Ok(KeyRotation { new_key_id, envelopes })
+```
+
+The bundle rides on the same `NamespaceOp::Group { .. , key_rotation: Some(rotation) }` that carries the encrypted `MemberRemoved` op. On apply, each receiver scans the envelopes for the one addressed to _its_ namespace identity, unwraps it, and stores the new key (`crates/governance-store/src/namespace/governance.rs`):
+
+```rust
+for envelope in &rotation.envelopes {
+    if envelope.recipient == recipient_sk.public_key() {
+        let new_key = GroupKeyring::unwrap_for_recipient(&recipient_sk, envelope)?;
+        let _ = GroupKeyring::new(self.store, group_id_typed).store_key(&new_key)?;
+        break;
+    }
+}
+```
+
+<SeqDiagram
+  id="d-rotate-on-removal"
+  title="Scope-key rotation on involuntary removal"
+  lanes={[
+    { label: 'Admin (publisher)', color: '#58a6ff' },
+    { label: 'Scope governance DAG', color: '#a5ff11' },
+    { label: 'Remaining member', color: '#3fb950' },
+    { label: 'Removed member', color: '#f85149' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'mint new_group_key = OsRng; store_key → new_key_id = sha256(key)' },
+    { from: 0, to: 0, label: 'build_rotation: one KeyEnvelope per member EXCEPT the removed one' },
+    { from: 0, to: 1, label: 'publish NamespaceOp::Group { MemberRemoved, key_rotation }', color: '#a5ff11' },
+    { from: 1, to: 2, label: 'apply MemberRemoved (drop row + deny-list)' },
+    { from: 1, to: 2, label: 'find envelope for my identity → unwrap → store new key', color: '#3fb950' },
+    { from: 1, to: 3, label: 'apply MemberRemoved; NO envelope addressed to me', color: '#f85149' },
+    { type: 'divider', label: 'new writes encrypt under new_key_id — removed member holds only the old key' },
+  ]}
+/>
+
+:::caution[Normative]
+On an involuntary removal that rotates, the publisher MUST mint a fresh key and emit exactly one `KeyEnvelope` for every remaining member and none for the removed member. A receiver MUST store a rotated key only after unwrapping the envelope addressed to its own identity; an unwrap failure MUST be surfaced (it is recorded as a `KeyUnwrapFailure`) rather than silently dropped, since it means that node is about to fall behind the epoch.
+:::
+
+### What the removed member can still read
+
+Rotation is forward-only. The removed member keeps the old key and the plaintext history it already decrypted — Calimero does not and cannot claw that back. The guarantee is strictly that **data authored after the rotation is unreadable** to it, because that data is encrypted under a key it was never handed.
+
+## Why self-leave does not rotate
+
+A voluntary `MemberLeft` deliberately does **not** rotate the scope key. The reasoning is in the apply handler (`crates/governance-store/src/ops/group/member_left.rs`):
+
+> this op deliberately does NOT trigger the key-rotation pipeline that `MemberRemoved` does, because the publisher (the leaver) cannot generate the new key without also retaining it — which would defeat forward secrecy.
+
+The leaver is the one publishing the op. If the leaver minted the new key, it would by construction know that key, so wrapping it for the remaining members would buy nothing — the departing node could read every "post-leave" write. Worse, the leaver already holds the _current_ key, so there is no read it can do after leaving that it could not already do. A self-leave therefore removes the membership row and deny-lists the leaver (the governance-level departure) but leaves the key untouched.
+
+The cryptographically-complete path is an _admin-initiated_ `MemberRemoved`, where the publisher is a remaining member who can keep the new key secret from the departing one. A proper forward-secret self-leave would need a two-phase follow-up (a remaining admin's apply hook publishing the new key after the leave); that is noted as deferred in the code and is not implemented today.
+
+<Aside type="note">
+This is also why TEE fleet eviction is driven by an owner-side `remove_group_members` (which rotates) rather than a fleet-initiated leave. [ADR 0002](/protocol/tee-attestation/) records that a `fleet_leave` self-leave would give _worse_ forward secrecy than the owner-side removal, so the owner-side `MemberRemoved` is the correct eviction primitive.
+</Aside>
+
+:::caution[Normative]
+A self-leave (`MemberLeft`) MUST NOT be relied on for forward secrecy: it does not rotate the scope key, and the leaver retains a key that decrypts subsequent writes. Cryptographic eviction MUST go through an admin-published `MemberRemoved`.
+:::
+
+## When rotation is skipped even on removal
+
+Not every removal rotates, and the publisher decides by which key encrypted the op:
+
+- **Restricted subgroup** (the op was encrypted under the subgroup's _own_ key): rotate. This is the standard forward-secrecy path described above.
+- **Open subgroup** (the op was encrypted under the _namespace_ key, because an Open subgroup inherits the namespace's key): **skip rotation**. The removed member's namespace membership is unaffected by a subgroup removal, so it still holds the namespace key — a per-subgroup rotation would mint a key that nothing uses while the subgroup stays Open. An Open-subgroup removal revokes _authorization_ (the membership row is gone, so the removed identity can no longer pass the membership walk) but not cryptographic _read access_; revoking that would require rotating the namespace key (a broad blast radius) or flipping the subgroup to Restricted.
+
+This is the documented trade-off in `group_governance_publisher.rs`; the choice keys off whether the encrypting group is the subgroup itself or the namespace root.
+
+## Pull-based key recovery
+
+Key delivery to a newly-admitted member is a one-shot push (`RootOp::KeyDelivery`, or the rotation envelopes above): an existing key-holder wraps the key once when it first applies the join. A single gossip publish into an intermittent mesh can be missed, and gossipsub has no replay. So the _durable_ path is the opposite direction — a member that is online and syncing **pulls** any key it is entitled to but lacks, every sync round, until it has it.
+
+The requester enumerates the scopes it is a member of but holds no key for (`namespace_groups_awaiting_key`) and asks a candidate peer — the peer it just synced with first, then namespace-mesh subscribers (`recover_missing_group_keys`, `crates/node/src/sync/manager/namespace_sync.rs`):
+
+```rust
+InitPayload::GroupKeyRequest {
+    namespace_id,
+    group_id,
+    requester_public_key,   // membership-checked AND the ECDH wrap recipient
+}
+```
+
+The responder authorizes the request before serving anything (`build_group_key_delivery`). Two gates must both pass:
+
+<Steps>
+
+1. **Cross-namespace pin.** The requested `group_id` must resolve to the `namespace_id` the requester named — otherwise an attacker in namespace A could elicit a key for a group in namespace B.
+
+2. **Membership.** `requester_public_key` must be a current member of `group_id` (`is_member`).
+
+</Steps>
+
+Only then does the responder load the current key, ECDH-wrap it for the requester, and reply with `GroupKeyResponse { key_envelope_bytes, responder_identity }`. **Every non-deliverable case replies with an empty envelope** — not an error and not a rejection — so the exchange leaks no membership oracle, and the requester simply tries another peer next round.
+
+<SeqDiagram
+  id="d-key-recovery-pull"
+  title="Pull-based key recovery"
+  lanes={[
+    { label: 'Member missing the key', color: '#58a6ff' },
+    { label: 'Key-holding peer', color: '#3fb950' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'namespace_groups_awaiting_key → scopes I am in but lack a key for' },
+    { from: 0, to: 1, label: 'GroupKeyRequest { namespace_id, group_id, requester_public_key }', dashed: true },
+    { from: 1, to: 1, label: 'gate 1: group_id resolves to this namespace (cross-namespace pin)' },
+    { from: 1, to: 1, label: 'gate 2: is_member(group_id, requester)?' },
+    { from: 1, to: 1, label: 'both pass → wrap_for_member(responder_sk, requester, group_key)' },
+    { from: 1, to: 0, label: 'GroupKeyResponse { key_envelope_bytes, responder_identity }' },
+    { from: 0, to: 0, label: 'unwrap_for_recipient → store_key; replay ops buffered awaiting the key' },
+    { type: 'divider', label: 'empty envelope on any failure ⇒ requester retries another peer next round' },
+  ]}
+/>
+
+When a key finally lands, `apply_received_group_key` stores it and replays any encrypted ops that were buffered awaiting it — governance ops that had been frozen as undecodable now decode to their real payload, so the membership projection catches up.
+
+A keyless bootstrap joiner does **not** trust the key deliverer as the namespace admin. Instead it seeds the namespace root with an all-zeros **placeholder admin** that grants authority to nobody; the replayable `NamespaceCreated` genesis op later overwrites the placeholder with the real founder, and the two converge regardless of arrival order (seed-first or genesis-first). The all-zeros key is a safe sentinel because it decodes outside the Ed25519 prime-order subgroup, so no real key can collide. This replaced an earlier scheme that trusted the `responder_identity` to seed the admin — which could pin the wrong admin and wedge backfill.
+
+<Aside type="note">
+The same pull answers the rotation case too. A member that was _offline_ during a `MemberRemoved` rotation comes back lacking the new key; on its next sync it appears in `namespace_groups_awaiting_key` and pulls the new epoch key from any current holder. Recovery is one self-healing loop, not a special path per delivery type.
+</Aside>
+
+:::caution[Normative]
+A `GroupKeyRequest` responder MUST verify both that the requested group belongs to the named namespace and that the requester is a current member before wrapping the key. A request that fails either check MUST be answered with an empty envelope (indistinguishable from "I don't hold the key"), never with an error that confirms membership status.
+:::
+
+## Related
+
+- [Identities](/protocol/identities/) — the namespace-identity keypair model that rotation wraps to.
+- [Governance](/protocol/governance/) — the `MemberRemoved` / `MemberLeft` ops and the membership projection.
+- [TEE Attestation & Fleet Admission](/protocol/tee-attestation/) — fleet eviction routes through the owner-side rotating removal; self-purge deletes the evicted node's now-orphaned old key but rotates nothing.
+
+---
+
+Next: **[Security & Threat Model](/protocol/security-model/)** — how signatures, membership, and keys combine into the full trust model.
+

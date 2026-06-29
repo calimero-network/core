@@ -1,0 +1,219 @@
+---
+title: Access-controlled storage
+description: Restrict who can write a piece of state with the Shared, User, and Frozen wrappers.
+sidebar:
+  order: 6
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+**Task:** keep a piece of state but limit who is allowed to change it.
+
+By default any context member can write any field. Wrapping a field in one of
+three collections from `calimero_storage::collections` adds an authorization rule
+that is enforced when edits merge across nodes:
+
+| Wrapper | Who can write | Read |
+| --- | --- | --- |
+| `SharedStorage<T>` | only members of the writer set | anyone |
+| `UserStorage<T>` | each user writes only their own slot | anyone |
+| `FrozenStorage<T>` | write-once, then immutable | anyone |
+
+<Aside type="caution" title="Merge is the real boundary">
+  Each wrapper checks permission locally so bad writes fail fast, but the
+  authoritative enforcement is at **merge time** on peer nodes: a forged delta
+  from an unauthorized writer is rejected when peers verify it. The local check is
+  a convenience, not the security boundary.
+</Aside>
+
+## SharedStorage — a writer set
+
+A group-writable value. Only public keys in the writer set may `insert`; a
+current writer can `rotate_writers` to change the set. This is
+`apps/kv-store-with-shared-storage`:
+
+```rust
+use std::collections::BTreeSet;
+use calimero_sdk::{app, PublicKey};
+use calimero_storage::collections::{LwwRegister, SharedStorage};
+
+#[app::state]
+pub struct KvStore {
+    shared_value: SharedStorage<LwwRegister<String>>,
+}
+
+#[app::logic]
+impl KvStore {
+    #[app::init]
+    pub fn init() -> KvStore {
+        // seed the writer set with whoever installed the app
+        let initializer: PublicKey = calimero_sdk::env::executor_id().into();
+        let mut writers = BTreeSet::new();
+        writers.insert(initializer);
+        // second arg `frozen`: once true, the writer set can never rotate
+        KvStore { shared_value: SharedStorage::new(writers, false) }
+    }
+
+    pub fn set_shared(&mut self, value: String) -> app::Result<()> {
+        self.shared_value.insert(LwwRegister::new(value))?; // rejected if caller isn't a writer
+        Ok(())
+    }
+
+    pub fn rotate_writers(&mut self, new_writers: Vec<PublicKey>) -> app::Result<()> {
+        self.shared_value.rotate_writers(new_writers.into_iter().collect())?;
+        Ok(())
+    }
+}
+```
+
+## UserStorage — per-user slots
+
+Internally a map keyed by `PublicKey`. `insert` always writes the **current
+executor's** slot, so users can't overwrite each other. Reads can target any
+user. This is `apps/kv-store-with-user-and-frozen-storage`:
+
+```rust
+use calimero_sdk::{app, PublicKey};
+use calimero_storage::collections::{LwwRegister, UserStorage};
+
+#[app::state]
+pub struct KvStore {
+    user_items: UserStorage<LwwRegister<String>>,
+}
+
+#[app::logic]
+impl KvStore {
+    pub fn set_user(&mut self, value: String) -> app::Result<()> {
+        self.user_items.insert(value.into())?; // writes the caller's own slot
+        Ok(())
+    }
+
+    pub fn get_user(&self) -> app::Result<Option<String>> {
+        Ok(self.user_items.get()?.map(|v| v.get().clone()))
+    }
+
+    // read another user's slot by their public key
+    pub fn get_user_for(&self, user_key: PublicKey) -> app::Result<Option<String>> {
+        Ok(self.user_items.get_for_user(&user_key)?.map(|v| v.get().clone()))
+    }
+}
+```
+
+## FrozenStorage — write-once
+
+Content-addressed and immutable: `insert` returns the value's hash and is
+idempotent (the same value inserts once); there is no remove or overwrite. Read
+back by that hash. Same example app:
+
+```rust
+use calimero_sdk::app;
+use calimero_storage::collections::FrozenStorage;
+
+#[app::state]
+pub struct KvStore {
+    frozen_items: FrozenStorage<String>,
+}
+
+#[app::logic]
+impl KvStore {
+    pub fn add_frozen(&mut self, value: String) -> app::Result<String> {
+        let hash = self.frozen_items.insert(value)?; // [u8; 32] content hash
+        Ok(hex::encode(hash))
+    }
+
+    pub fn get_frozen(&self, hash_hex: String) -> app::Result<Option<String>> {
+        let mut hash = [0u8; 32];
+        hex::decode_to_slice(hash_hex, &mut hash[..])?;
+        Ok(self.frozen_items.get(&hash)?)
+    }
+}
+```
+
+## Worked example: a shared team document
+
+These wrappers compose. A real "team document" wants two different rules in one
+state struct: the document **settings** (its title) should be editable only by
+owners, while any member should be able to **append a comment** — and edit only
+their own. That is `SharedStorage` for the first field and `AuthoredVector` for
+the second.
+
+`AuthoredVector<T>` is an append-only list that stamps each entry with the
+public key of whoever pushed it. Anyone may `push`, but `update`/`tombstone` on
+an entry are gated to its original author, enforced the same way — locally for a
+fast failure, authoritatively at merge:
+
+```rust
+use calimero_sdk::{app, PublicKey};
+use calimero_storage::collections::{AuthoredVector, LwwRegister, SharedStorage};
+
+#[app::state]
+pub struct TeamDoc {
+    title: SharedStorage<LwwRegister<String>>, // owner-only: writer set
+    comments: AuthoredVector<String>,          // any member appends; author owns each
+}
+
+#[app::logic]
+impl TeamDoc {
+    #[app::init]
+    pub fn init() -> TeamDoc {
+        let owner: PublicKey = calimero_sdk::env::executor_id().into();
+        let mut writers = std::collections::BTreeSet::new();
+        writers.insert(owner);
+        TeamDoc {
+            title: SharedStorage::new(writers, false),
+            comments: AuthoredVector::new(),
+        }
+    }
+
+    // settings edit — rejected unless caller is in the title's writer set
+    pub fn set_title(&mut self, title: String) -> app::Result<()> {
+        self.title.insert(LwwRegister::new(title))?;
+        Ok(())
+    }
+
+    // grant edit rights to another teammate (only a current writer can rotate)
+    pub fn add_owner(&mut self, who: Vec<PublicKey>) -> app::Result<()> {
+        let mut writers = self.title.writers();
+        writers.extend(who);
+        self.title.rotate_writers(writers)?;
+        Ok(())
+    }
+
+    // any member may append a comment; the push stamps them as its author
+    pub fn add_comment(&mut self, text: String) -> app::Result<usize> {
+        Ok(self.comments.push(text)?) // returns the new entry index
+    }
+
+    // edit a comment — rejected unless the caller authored entry `idx`
+    pub fn edit_comment(&mut self, idx: usize, text: String) -> app::Result<()> {
+        self.comments.update(idx, text)?;
+        Ok(())
+    }
+
+    pub fn list_comments(&self) -> app::Result<Vec<String>> {
+        Ok(self.comments.iter()?.collect()) // reads are open to anyone
+    }
+}
+```
+
+The two roles fall out of the wrapper choice, not from any if-statement you
+write: a non-owner calling `set_title` is rejected because they are not in the
+writer set, and a member editing someone else's comment is rejected because
+`AuthoredVector::update` checks the per-entry author stamp. Owners change over
+time via `rotate_writers`; comment authorship is fixed at push.
+
+## Exercise it
+
+```sh
+# allowed only if the caller is in the writer set
+meroctl --node node1 call set_shared \
+  --context <context-id> --args '{"value": "agreed"}'
+```
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Access-controlled storage (deep dive)" href="/build/permissioned-storage/" description="The two planes, op masks, and how writes are enforced at merge." />
+  <LinkCard title="Collections" href="/build/collections/" description="The full set of CRDT and access-controlled collection types." />
+  <LinkCard title="Governance" href="/protocol/governance/" description="How context membership and roles drive the write boundary." />
+</CardGrid>

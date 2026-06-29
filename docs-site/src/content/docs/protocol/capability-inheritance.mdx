@@ -1,0 +1,304 @@
+---
+title: Capability & Membership Inheritance
+description: How membership flows down the scope tree, where the Open/Restricted wall stops it, and how capabilities resolve per member.
+sidebar:
+  order: 20
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+This chapter builds on the scope tree from [Concepts & Scopes](/protocol/concepts/) and the membership model from [Governance](/protocol/governance/). It explains a single idea in depth: **membership is not always written down**. A member of a parent group can be a member of a child subgroup *by inheritance*, with no operation recorded for that child — and the protocol resolves it by walking the tree at query time.
+
+## The scope tree narrows as you descend
+
+Governance scopes form a tree: a **namespace** at the root, **subgroups** nested beneath it, each its own encryption and convergence domain. The defining property is that **membership only ever narrows as you descend**. Whoever can act inside a child is a subset of whoever can act in its parent chain — never a superset.
+
+This is what makes "pointing an operation up the tree" safe: an inner scope can name an outer one without leaking, because the outer scope's audience is always at least as large.
+
+Two things flow *down* the tree, and they are deliberately separate:
+
+- **Membership** — being part of the audience that can read and write a scope.
+- **Capabilities** — the specific fine-grained rights a member holds *within* a group.
+
+The first can be inherited from an ancestor. The second is resolved per group, with a default fallback. The rest of this chapter takes each in turn.
+
+## Open vs Restricted: the visibility wall
+
+Every subgroup carries one bit of visibility state, [`VisibilityMode`](/protocol/governance/):
+
+| Mode | Meaning |
+| --- | --- |
+| `Open` | Parent-group members are inherited as members of this subgroup — and transitively of any contexts it contains — provided they hold the join capability at the anchor parent. No explicit operation per inheritor. |
+| `Restricted` | A wall. Membership requires a direct, deliberate admission. The subgroup's existence and membership are hidden from non-members. |
+
+An **absent** visibility setting is read as `Restricted` — the safer default. The store helper collapses a missing key to `Restricted`, and a test pins this: an unwritten subgroup is closed, not open.
+
+```rust
+pub fn subgroup_visibility(&self, group_id: &ContextGroupId) -> EyreResult<VisibilityMode> {
+    let handle = self.store.handle();
+    let key = GroupSubgroupVis::new(group_id.to_bytes());
+    let value = handle.get(&key)?;
+    Ok(match value.map(|v| v.mode) {
+        Some(0) => VisibilityMode::Open,
+        _ => VisibilityMode::Restricted,
+    })
+}
+```
+
+The crucial structural fact: **a `Restricted` subgroup is a wall regardless of what sits above it.** Inheritance climbing up from a deeper scope stops the moment it hits a `Restricted` boundary — it never sees the members on the far side. A `Restricted` subgroup nested inside an `Open` chain still blocks; an `Open` subgroup nested inside a `Restricted` one inherits nothing through the wall.
+
+:::caution[Normative]
+The membership walk MUST treat an absent visibility key as `Restricted`, and MUST stop ascending at the first non-`Open` ancestor. A subgroup is a member-inheritance conduit only while it — and every ancestor between it and the anchor — is explicitly `Open`.
+:::
+
+## How the membership-path walk actually runs
+
+Resolving "is this identity a member of this subgroup?" is a parent-chain walk. The live implementation is `MembershipRepository::check_path`; it returns a `MembershipPath` describing *how* the decision was reached:
+
+```rust
+pub enum MembershipPath {
+    /// Not a member, directly or by inheritance.
+    None,
+    /// Has a direct membership row in the subgroup.
+    Direct,
+    /// Inherits from the closest ancestor where they hold a direct row (`anchor`).
+    /// `via_admin` is true for an admin grant; false for CAN_JOIN_OPEN_SUBGROUPS.
+    Inherited { anchor: ContextGroupId, via_admin: bool },
+}
+```
+
+The walk proceeds in this order:
+
+<Steps>
+
+1. **Direct row first.** If the identity has a membership row written directly in the target subgroup, return `Direct` immediately. No walking.
+
+2. **Climb while Open.** Otherwise, starting at the target group, check the subgroup's visibility. If it is not `Open`, stop — the identity is not a member (subject to step 4's recorded decision). This is the wall.
+
+3. **Step to the parent.** If there is no parent, stop. Otherwise look at the parent:
+   - If the identity is an **admin** of that parent, return `Inherited { via_admin: true }` right away — admin authority flows down an Open chain unconditionally.
+   - If the identity holds a **direct member row** in that parent, record a tentative decision (the first such ancestor wins): they are an inherited member **iff** they hold `CAN_JOIN_OPEN_SUBGROUPS` at that anchor; otherwise the recorded decision is `None`.
+
+4. **Continue or return.** Keep climbing. When the chain ends (a non-`Open` boundary or no parent), return the recorded decision if one was made, else `None`.
+
+</Steps>
+
+Here is the load-bearing part of the loop, verbatim:
+
+```rust
+let mut anchor_decision: Option<MembershipPath> = None;
+let mut current = *group_id;
+for _ in 0..=MAX_NAMESPACE_DEPTH {
+    if CapabilitiesRepository::new(self.store).subgroup_visibility(&current)?
+        != VisibilityMode::Open
+    {
+        return Ok(anchor_decision.unwrap_or(MembershipPath::None));
+    }
+    let Some(parent) = NamespaceRepository::new(self.store).parent(&current)? else {
+        return Ok(anchor_decision.unwrap_or(MembershipPath::None));
+    };
+    if self.is_admin(&parent, identity)? {
+        return Ok(MembershipPath::Inherited { anchor: parent, via_admin: true });
+    }
+    if has_direct_member(self.store, &parent, identity)? && anchor_decision.is_none() {
+        let caps = CapabilitiesRepository::new(self.store)
+            .member_capability(&parent, identity)?
+            .unwrap_or(0);
+        anchor_decision =
+            Some(if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS != 0 {
+                MembershipPath::Inherited { anchor: parent, via_admin: false }
+            } else {
+                MembershipPath::None
+            });
+    }
+    current = parent;
+}
+```
+
+Two subtleties worth calling out:
+
+- **The capability is checked at the *anchor*, not the target.** Whether you inherit into a deep Open subgroup depends on the `CAN_JOIN_OPEN_SUBGROUPS` bit you hold in the ancestor where your direct row lives — not on anything written at the subgroup you are being tested against.
+- **An admin grant short-circuits; a non-admin member is tentative.** An admin of any Open ancestor is a member of everything below on the chain. A non-admin member's inheritance is decided by the *first* direct-row ancestor encountered and may resolve to `None` (the bit is missing) even though they are a member higher up — that is the per-member deny-list use of the bit, described below.
+
+The loop is bounded by `MAX_NAMESPACE_DEPTH` (16); exceeding it is treated as a corrupt store (a possible cycle) and bails rather than looping forever.
+
+<SeqDiagram
+  id="d-inherit"
+  title="Inherited membership: walking the open-ancestor chain"
+  lanes={[
+    { label: 'Query', color: '#58a6ff' },
+    { label: 'Target subgroup', color: '#a5ff11' },
+    { label: 'Open parent', color: '#3fb950' },
+    { label: 'Anchor (direct row)', color: '#f0883e' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'is identity a member of target?' },
+    { from: 1, to: 1, label: 'no direct row; visibility = Open', color: '#a5ff11' },
+    { from: 1, to: 2, label: 'step up: parent is Open' },
+    { from: 2, to: 3, label: 'step up: identity has a direct row here' },
+    { from: 3, to: 3, label: 'holds CAN_JOIN_OPEN_SUBGROUPS?', color: '#f0883e' },
+    { from: 3, to: 0, label: 'yes → Inherited { anchor, via_admin: false }' },
+    { type: 'divider', label: 'no operation was ever written on the target subgroup' },
+  ]}
+/>
+
+### The same walk, off the projection
+
+The live walk above reads the store. Sync and delta-authorization need the *same answer* resolved from the unified projection at a causal cut, so `AclView::is_member_at_cut` ports the walk faithfully over the folded view — no store reads. It mirrors `check_path` edge for edge: direct/admin short-circuit, then climb while `!edge.restricted`, recording the first direct-row ancestor's `CAN_JOIN_OPEN_SUBGROUPS` decision.
+
+```rust
+let mut anchor_is_member: Option<bool> = None;
+let mut current = group;
+for _ in 0..=MAX_NAMESPACE_DEPTH {
+    let Some(edge) = self.subgroups.get(&ScopeId::from(current.to_bytes())) else {
+        return anchor_is_member.unwrap_or(false);
+    };
+    if edge.restricted {
+        return anchor_is_member.unwrap_or(false);
+    }
+    let parent = ContextGroupId::from(*edge.parent.as_bytes());
+    if is_admin(parent) {
+        return true;
+    }
+    if anchor_is_member.is_none()
+        && self.groups.get(&parent).is_some_and(|m| m.contains_key(author))
+    {
+        anchor_is_member = Some(effective_cap(&parent) & CAN_JOIN_OPEN_SUBGROUPS != 0);
+    }
+    current = parent;
+}
+```
+
+In the projection, the subgroup tree is materialized as edges `child → (parent, restricted)`, one `SubgroupEdge` per **live** subgroup (latest `exists` is `true`). The `restricted` flag is exactly the visibility wall: its doc comment names it "a visibility wall that blocks inheritance through it."
+
+<Aside type="note" title="Why inherited membership carries no row">
+An Open-subgroup inheritance is deliberately **not** folded as a direct membership row. There is no persistent row to remove, so when the anchor membership is revoked, the inherited membership simply stops resolving on the next walk. Inheritance is re-derived, never stored — which is what keeps revocation honest across the tree.
+</Aside>
+
+## The capability bitmask
+
+A member's capabilities are a `u32` bitfield, `MemberCapabilities`. The bits relevant to the tree and to inheritance:
+
+| Bit | Constant | Value | What it permits |
+| --- | --- | --- | --- |
+| 0 | `CAN_CREATE_CONTEXT` | `1 << 0` | Create a context within the group. |
+| 1 | `CAN_INVITE_MEMBERS` | `1 << 1` | Invite new members. |
+| 2 | `CAN_JOIN_OPEN_SUBGROUPS` | `1 << 2` | Be inherited as a member of any `Open` subgroup beneath this group (and its contexts). The inheritance gate. |
+| 3 | `MANAGE_MEMBERS` | `1 << 3` | Manage the group's members. |
+| 4 | `MANAGE_APPLICATION` | `1 << 4` | Manage the group's application. |
+| 5 | `CAN_CREATE_SUBGROUP` | `1 << 5` | Non-admin creation of a subgroup **directly under the namespace root** only. |
+| 6 | `CAN_DELETE_SUBGROUP` | `1 << 6` | Non-admin deletion of a subgroup and its subtree (checked at the root). |
+| 7 | `CAN_MANAGE_VISIBILITY` | `1 << 7` | Flip a subgroup's `Open` ↔ `Restricted` without full admin. |
+| 8 | `CAN_MANAGE_METADATA` | `1 << 8` | Set group/member/context metadata without full admin. |
+
+`CAN_JOIN_OPEN_SUBGROUPS` is the bit that drives inheritance. Its design is a **deny-list**, not an allow-list: it is granted by default to non-admin members, and an admin *revokes* it per member when they want a specific user kept out of Open subgroups even though that user stays in the parent. So the common case is "everyone inherits"; clearing the bit is the deliberate exception.
+
+`CAN_CREATE_SUBGROUP` and `CAN_DELETE_SUBGROUP` are checked at the **namespace root** on purpose: the apply-side authorization runs on every peer, and a peer can only verify the creator's bit if it can read the parent group's member-capability rows. Every namespace member holds the root group's key, but not necessarily a deeper subgroup's — so non-admin create/delete is scoped to root-level subgroups, while admins act at any depth.
+
+<Aside type="caution" title="Admins bypass the bitmask">
+Capability bits gate **non-admins**. The `is_admin_or_has_capability` check returns `true` for any admin regardless of which bits are set — an admin always passes. The bitmask is the mechanism for delegating slivers of admin authority to ordinary members, not a constraint on admins themselves.
+</Aside>
+
+## Default vs per-member capability resolution
+
+Capabilities resolve at two levels per group:
+
+- **Default capabilities** (`DefaultCapabilitiesSet` → `GroupDefaultCaps`) — a single `u32` for the group, applied to *new* members as they join.
+- **Per-member capabilities** (`MemberCapabilitySet` → `GroupMemberCapability`) — an explicit `u32` override for one identity in one group.
+
+The resolution rule is **override-or-default**: a member's effective bitmask is their explicit per-member value if one exists, otherwise the group default, otherwise zero. The live read is `member_capability(group, member).unwrap_or(default)`; the projection mirrors it with a `default_cap_base` fallback when nothing explicit is folded.
+
+When a non-admin member is added, the group's default capabilities are stamped onto their per-member row at join time (admins are skipped — they bypass the bitmask anyway):
+
+```rust
+if !is_admin {
+    let capabilities = CapabilitiesRepository::new(self.store);
+    if let Some(defaults) = capabilities.default_capabilities(group_id)? {
+        if defaults != 0 {
+            capabilities.set_member_capability(group_id, identity, defaults)?;
+        }
+    }
+}
+```
+
+<Aside type="note" title="Creation default is base state, not an op">
+A group's *creation-time* default capability is materialized store state, not a folded operation. So when the projection finds nothing folded for an anchor, it falls back to `default_cap_base` — the immutable base default — rather than treating the member as having zero caps. This is what keeps the at-cut walk's inheritance decision identical to the live store's.
+</Aside>
+
+### Effective capabilities of an inherited member
+
+What capabilities does an *inherited* member hold in the subgroup they inherited into? The answer is read from the **target subgroup's** capability rows, with one asymmetry for the deny-list: an inherited member who is on the subgroup's deny-list resolves to no capabilities at all.
+
+```rust
+pub fn effective_capabilities(&self, group_id, identity) -> EyreResult<Option<u32>> {
+    match self.check_path(group_id, identity)? {
+        MembershipPath::None => Ok(None),
+        MembershipPath::Inherited { .. }
+            if DenyListRepository::new(self.store).is_denied(group_id, identity)? =>
+        {
+            Ok(None)
+        }
+        MembershipPath::Direct | MembershipPath::Inherited { .. } => Ok(Some(
+            CapabilitiesRepository::new(self.store)
+                .member_capability(group_id, identity)?
+                .unwrap_or(0),
+        )),
+    }
+}
+```
+
+A direct member is never short-circuited by the deny-list here; only inherited membership is. An inherited member who has no explicit capability row in the target resolves to `0` — they are present in the audience, but hold no delegated rights at that subgroup unless something was written for them there.
+
+## Visibility of subgroups in listings
+
+The wall also governs what shows up when a caller lists subgroups. `subgroup_visible_to` decides:
+
+- An `Open` subgroup is visible to everyone.
+- A `Restricted` subgroup is visible only to a caller who is an inherited admin of the parent, or who is a member of the subgroup itself. To everyone else it is hidden — its existence is part of what the wall conceals.
+
+```rust
+pub fn subgroup_visible_to(&self, parent_group_id, child_group_id, caller) -> EyreResult<bool> {
+    if CapabilitiesRepository::new(self.store).subgroup_visibility(child_group_id)?
+        == VisibilityMode::Open
+    {
+        return Ok(true);
+    }
+    let Some(caller_pk) = caller else { return Ok(false) };
+    if self.is_inherited_admin(parent_group_id, caller_pk)? {
+        return Ok(true);
+    }
+    self.is_member(child_group_id, caller_pk)
+}
+```
+
+## Worked example: Open auto-join vs Restricted admission
+
+Take a namespace `acme` with three members and two subgroups:
+
+- Members of `acme`: **Alice** (admin), **Bob** (ordinary member, holds the default `CAN_JOIN_OPEN_SUBGROUPS`), **Mallory** (ordinary member whose `CAN_JOIN_OPEN_SUBGROUPS` an admin has revoked — the deny-list case).
+- Subgroups: **`eng`** is `Open`; **`payroll`** is `Restricted`.
+
+No membership op is ever written on either subgroup for these three. Resolving each identity against each subgroup runs the parent-chain walk above:
+
+| Identity | `eng` (Open) | `payroll` (Restricted) |
+| --- | --- | --- |
+| Alice (admin of `acme`) | `Inherited { anchor: acme, via_admin: true }` — admin flows down the Open chain | not an inherited member; the wall returns before any parent is consulted. She can _see_ and admit (inherited admin of the parent), but is not herself a member until admitted |
+| Bob (holds the bit) | `Inherited { anchor: acme, via_admin: false }` — auto-joined, no op | `None` — the wall stops the walk at the target; the subgroup is hidden from him entirely |
+| Mallory (bit revoked) | `None` — the anchor row exists but the bit is clear, so the recorded decision denies | `None` — same wall |
+
+**Open `eng`: auto-join, no op.** Bob and Alice replicate `eng`'s contexts without any operation naming them in `eng`. [Auto-follow](/protocol/governance/) walks up to the anchor — their direct row in `acme` — and honours that row's `auto_follow.contexts` flag. Revoking Bob's `acme` membership makes his `eng` inheritance simply stop resolving on the next walk; there is no `eng` row to clean up.
+
+**Restricted `payroll`: explicit admission.** For anyone to join `payroll`, an admin must write a direct `MemberAdded` row in `payroll` itself and deliver its scope key. Until then the subgroup's very existence is concealed from non-members: `subgroup_visible_to` returns `true` only for a member of `payroll` or an inherited admin of its parent. Flipping `payroll` to `Open` later would open inheritance to every parent member who holds the bit — which is why the flip is gated behind admin or `CAN_MANAGE_VISIBILITY`.
+
+## Summary
+
+- Membership narrows as you descend the scope tree; it is never widened by a child.
+- An `Open` subgroup inherits parent members who hold `CAN_JOIN_OPEN_SUBGROUPS` at their anchor — **no operation is written** for the inheritance; it is resolved at query time by walking the open-ancestor chain.
+- A `Restricted` subgroup is a **wall**: membership needs a direct admission, and the subgroup is hidden from non-members.
+- The walk stops at the first non-`Open` boundary; the live `check_path` and the projection's `is_member_at_cut` implement the identical walk so live and at-cut answers agree.
+- Capabilities resolve per group as **override-or-default**; `CAN_JOIN_OPEN_SUBGROUPS` is a default-on, admin-revocable deny-list bit; admins bypass the bitmask entirely.
+
+## Where this leads
+
+That completes the governance picture — who is a member, how membership flows down the tree, and how capabilities resolve. Next, **[Applications, Bundles & Services](/protocol/applications/)**: the code a context actually runs, and how it is packaged and bound.
