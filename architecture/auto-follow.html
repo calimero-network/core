@@ -317,6 +317,20 @@ to retrieve the candidate's <em>actual</em> role at the anchor group, falling ba
   <li><b>Observability.</b> Every auto-join emits a structured <code>info!</code> log line
   with <code>group_id</code> and <code>context_id</code>. Failures emit <code>warn!</code> with
   the underlying error. No new metrics — the log stream is enough for postmortems.</li>
+  <li><b>Typed <code>MembershipError</code> variants for ownership transfer.</b>
+  <code>MembershipError</code> gains two new variants:
+  <code>TransferTargetNotAdmin { group, role }</code> (emitted when the proposed new owner holds
+  a <code>Member</code> role rather than <code>Admin</code>) and
+  <code>TransferTargetNotMember(group)</code> (emitted when the proposed new owner is not in the
+  group at all). These replace the previous bare <code>bail!</code> strings in
+  <code>transfer_ownership::apply</code>; error message text is unchanged, but callers can now
+  downcast to these variants. Five new rejection-path tests cover: non-owner admin attempting
+  <code>TransferOwnership</code> (<code>OnlyOwnerCanTransfer</code>); owner transferring to a
+  plain member (<code>TransferTargetNotAdmin</code>); owner transferring to a non-member
+  (<code>TransferTargetNotMember</code>); plain member attempting
+  <code>ContextCapabilityGranted</code> (<code>CapabilitiesError::Unauthorized</code>, no grant
+  written); plain member attempting <code>ContextCapabilityRevoked</code>
+  (<code>CapabilitiesError::Unauthorized</code>, pre-existing grant preserved).</li>
   <li><b><code>state_hash</code> mismatch warnings.</b> In
   <code>apply_local_signed_group_op_at_cut</code>, a mismatch between the op's signed
   <code>state_hash</code> and the recomputed current hash previously caused a hard error that
