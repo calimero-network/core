@@ -35,6 +35,7 @@ These bound a single WASM execution. Defaults live in `crates/runtime/src/logic.
 | `max_blob_chunk_size` | **10 MiB** | Per read/write chunk against a blob. |
 | `max_method_name_length` | **256 bytes** | Entrypoint method name. |
 | `max_module_size` | **20 MiB** | WASM module size before compilation (anti-DoS). |
+| `max_artifact_size` | **16 MiB** | Commit artifact copied out of guest memory onto the `Outcome` (anti-DoS); over-size traps with `ArtifactSizeOverflow`. |
 
 ## Wire limits
 

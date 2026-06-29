@@ -183,7 +183,7 @@ impl Alias {
     pub fn scope<T: Aliasable<Scope: StoreScopeCompat>>(&self) -> Option<T::Scope> {
         let bytes = self.0.as_bytes();
 
-        (bytes[0] == PublicKey::KIND).then_some(())?;
+        (bytes[0] == T::KIND).then_some(())?;
 
         let mut scope = [0; SCOPE_SIZE];
 
