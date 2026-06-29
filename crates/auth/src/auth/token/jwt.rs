@@ -141,10 +141,14 @@ impl TokenManager {
             return Ok(());
         }
 
-        // Extract the host from the token's node URL. `node_url` is not always a
-        // URL (it can carry a client name), so an unparseable value is left to
-        // fall through rather than rejected here — the missing-request-host case
-        // above is the binding-bypass this guards.
+        // Security contract: only a URL-shaped `node_url` is bound to a host. A
+        // `node_url` that isn't a parseable URL (it can legitimately carry a
+        // client name, see `api/handlers/auth.rs`) is intentionally NOT
+        // host-bound — the comparison below is skipped and the token validates
+        // for any host. This is deliberate, not an oversight: host binding is a
+        // property of node-URL tokens specifically. The bypass this function
+        // closes is the missing-request-host one handled above; an unparseable
+        // `node_url` is a separate, explicitly-unbound case.
         if let Ok(token_url) = Url::parse(token_node_url) {
             if let Some(token_host) = token_url.host_str() {
                 // Compare the hosts (handle both with and without port)
