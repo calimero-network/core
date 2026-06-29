@@ -471,7 +471,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                     handle.put(
                                         &ci_key,
                                         &calimero_store::types::ContextIdentity {
-                                            private_key: Some(*sk.as_bytes()),
+                                            private_key: Some(*sk),
                                             sender_key: None,
                                         },
                                     )?;

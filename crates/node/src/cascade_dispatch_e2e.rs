@@ -286,7 +286,7 @@ fn provision_namespace(
     // descendant `save_group_upgrade` writes don't need a per-group
     // signing key.
     SigningKeysRepository::new(store)
-        .store_key(&ns, &admin_pk, admin_sk.as_bytes())
+        .store_key(&ns, &admin_pk, admin_sk)
         .expect("store signing key");
 
     CascadeFixture {
@@ -831,7 +831,7 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
         UpgradePolicy::LazyOnAccess,
     );
     SigningKeysRepository::new(&node.store)
-        .store_key(&gid, &admin_pk, admin_sk.as_bytes())
+        .store_key(&gid, &admin_pk, &admin_sk)
         .expect("store signing key");
 
     let response = node
@@ -897,7 +897,7 @@ async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
     );
     register_context_for(&node.store, &gid, ContextId::from([0xC6; 32]), app_id);
     SigningKeysRepository::new(&node.store)
-        .store_key(&gid, &admin_pk, admin_sk.as_bytes())
+        .store_key(&gid, &admin_pk, &admin_sk)
         .expect("store signing key");
 
     let err = node

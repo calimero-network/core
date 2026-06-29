@@ -2806,7 +2806,7 @@ mod tests {
             .add_member(&ns_gid, &owner_pk, GroupMemberRole::Admin)
             .expect("add owner admin");
         NamespaceRepository::new(&store)
-            .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
+            .store_identity(&ns_gid, &member_pk, &member_sk, &[0u8; 32])
             .expect("store our ns identity");
 
         // The stranded subgroup + its key + the context it registers.
