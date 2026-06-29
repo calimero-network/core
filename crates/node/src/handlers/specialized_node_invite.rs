@@ -212,7 +212,7 @@ pub async fn handle_verification_request(
                 warn!(
                     quote_verified = verification_result.quote_verified,
                     nonce_verified = verification_result.nonce_verified,
-                    app_hash_verified = ?verification_result.application_hash_verified,
+                    app_hash_verified = verification_result.application_hash_verified,
                     is_mock = is_mock,
                     "TEE attestation verification failed"
                 );

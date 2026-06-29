@@ -1043,7 +1043,7 @@ async fn verify_kms_attestation(
 
     if !verification_result.is_valid() {
         bail!(
-            "KMS attestation verification failed: quote_verified={}, nonce_verified={}, app_hash_verified={:?}",
+            "KMS attestation verification failed: quote_verified={}, nonce_verified={}, app_hash_verified={}",
             verification_result.quote_verified,
             verification_result.nonce_verified,
             verification_result.application_hash_verified
