@@ -721,11 +721,19 @@ impl<S: StorageAdaptor> Index<S> {
     pub(crate) fn mark_deleted(id: Id, deleted_at: u64) -> Result<(), StorageError> {
         let _mutation_guard = index_mutation_guard();
         if let Some(mut index) = Self::get_index(id)? {
+            // The tombstone time is a LWW CRDT nonce: never regress it. An
+            // out-of-order, older `DeleteRef` must not roll back a newer
+            // tombstone, which would also weaken replay protection via the
+            // `updated_at` nonce below. Keep the latest of the two.
+            let deleted_at = index
+                .deleted_at
+                .map_or(deleted_at, |existing| existing.max(deleted_at));
             index.deleted_at = Some(deleted_at);
 
-            // Also update the `updated_at` timestamp to this nonce.
-            // This is critical for replay protection on delete actions.
-            *index.metadata.updated_at = deleted_at;
+            // Also advance the `updated_at` timestamp toward this nonce.
+            // This is critical for replay protection on delete actions, and is
+            // likewise monotonic — an older delete never lowers it.
+            *index.metadata.updated_at = (*index.metadata.updated_at).max(deleted_at);
 
             Self::save_index(&index)?;
         }
