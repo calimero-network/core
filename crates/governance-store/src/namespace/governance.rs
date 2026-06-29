@@ -261,11 +261,37 @@ impl<'a> NamespaceGovernance<'a> {
                             }
                         }
                     }
-                    RootOp::MemberJoined { .. } => {
+                    RootOp::MemberJoined {
+                        member,
+                        signed_invitation,
+                    }
+                    | RootOp::MemberJoinedAt {
+                        member,
+                        signed_invitation,
+                        ..
+                    } => {
                         // The joiner obtains the group key via the direct
                         // join response and the joiner-side pull
                         // (`recover_missing_group_keys`); no delivery is
                         // triggered from this apply path.
+                        //
+                        // Clear the deny-list on EVERY peer, not just the
+                        // local rejoiner — same rationale as the
+                        // `MemberJoinedOpen` arm below and the sibling
+                        // `MemberAdded` (`mod.rs:1215`) /
+                        // `MemberJoinedViaTeeAttestation` (`mod.rs:1502`)
+                        // arms. A prior `MemberLeft` (or `MemberRemoved`)
+                        // stamped this member on each peer's per-subgroup
+                        // deny-list; re-joining via an open invitation must
+                        // clear that stale `GroupDeniedMember` row, or peers
+                        // keep dropping the rejoiner's state-delta traffic at
+                        // the receive filter forever. `MemberJoined` /
+                        // `MemberJoinedAt` were the missing arms. Idempotent
+                        // on a member who was never denied. The group key is
+                        // the invitation's `group_id`, the subgroup the
+                        // joiner materialized a direct membership row in.
+                        let group_id = signed_invitation.invitation.group_id;
+                        DenyListRepository::new(self.store).clear(&group_id, member)?;
                     }
                     RootOp::MemberJoinedOpen { member, group_id } => {
                         // The joiner pulls the subgroup key directly from a
