@@ -13,6 +13,7 @@ use calimero_primitives::context::{ContextId, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{self, GroupUpgradeStatus, GroupUpgradeValue};
 use calimero_wasm_abi::downgrade::identity_downgrades;
+use calimero_wasm_abi::embed::{read_embedded_state_schema_versioned, EmbeddedSchema};
 use calimero_wasm_abi::schema::Manifest;
 use eyre::bail;
 use tracing::{debug, error, info, warn};
@@ -187,10 +188,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         for rung in &rungs {
                             let next_schema = resolve_blob_schema(&node_client, rung.app_key).await;
                             if rung.migration.is_some() {
-                                verify_no_identity_downgrade(
-                                    prev_schema.as_ref(),
-                                    next_schema.as_ref(),
-                                )?;
+                                verify_no_identity_downgrade(&prev_schema, &next_schema)?;
                             }
                             prev_schema = next_schema;
                         }
@@ -559,11 +557,29 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
 /// to deserialize rather than silently re-interpreting identity-gated entries as
 /// plain. Extending the gate to code-only app swaps is a possible defence-in-depth
 /// follow-up (tracked under #2587).
-fn verify_no_identity_downgrade(
-    old: Option<&Manifest>,
-    new: Option<&Manifest>,
-) -> eyre::Result<()> {
-    let (Some(old), Some(new)) = (old, new) else {
+fn verify_no_identity_downgrade(old: &EmbeddedSchema, new: &EmbeddedSchema) -> eyre::Result<()> {
+    // A schema present but tagged with a newer major than this build understands
+    // is opaque: we cannot enumerate its identity-gated fields, so we cannot
+    // prove the upgrade is not an identity downgrade. Fail CLOSED rather than
+    // waving it through as if no schema were present (which is what collapsing it
+    // to `None` would do).
+    for (side, schema) in [("current", old), ("target", new)] {
+        if let EmbeddedSchema::UnsupportedVersion(version) = schema {
+            tracing::warn!(
+                side, %version,
+                "L1 identity-downgrade gate: refusing upgrade — app carries an unsupported future ABI schema version this node cannot evaluate"
+            );
+            eyre::bail!(
+                "identity-downgrade gate: the {side} app embeds an unsupported ABI schema version \
+                 '{version}' that this node cannot evaluate; refusing the migration upgrade \
+                 (upgrade this node to a build that understands it first)"
+            );
+        }
+    }
+
+    let (EmbeddedSchema::Supported(old), EmbeddedSchema::Supported(new)) = (old, new) else {
+        // One side has no embedded ABI (absent / malformed / legacy app): keep
+        // the documented fail-open — there is nothing to compare against.
         tracing::warn!(
             "L1 identity-downgrade gate: skipped (one side has no embedded ABI / legacy app); allowing upgrade"
         );
@@ -583,8 +599,10 @@ fn verify_no_identity_downgrade(
     Ok(())
 }
 
-/// Read a context application's embedded state schema, or None if unavailable
-/// (no blob, no embedded section, or a read error — all fail-open).
+/// Read a context application's embedded state schema as an [`EmbeddedSchema`].
+/// `Absent` if unavailable (no blob, no embedded section, or a read error — all
+/// fail-open); `UnsupportedVersion` if the section is from a newer toolchain (the
+/// gate fails closed on that).
 /// "From" side of the L1 gate. An in-place (same-id) bundle install leaves
 /// the application row already on the NEW wasm — comparing row-to-row would
 /// diff a manifest against itself and wave a downgrade through. The group's
@@ -596,11 +614,11 @@ async fn resolve_pre_upgrade_schema(
     node_client: &calimero_node_primitives::client::NodeClient,
     current_app_key: [u8; 32],
     current_application_id: &ApplicationId,
-) -> Option<Manifest> {
+) -> EmbeddedSchema {
     if current_app_key != [0u8; 32] {
         let blob = calimero_primitives::blobs::BlobId::from(current_app_key);
         match node_client.application_bytes_from_blob(&blob, None).await {
-            Ok(Some(bytes)) => return calimero_wasm_abi::embed::read_embedded_state_schema(&bytes),
+            Ok(Some(bytes)) => return read_embedded_state_schema_versioned(&bytes),
             Ok(None) => {}
             Err(err) => {
                 tracing::warn!(
@@ -658,19 +676,21 @@ async fn blob_max_state_version(
     max_sv
 }
 
-/// The blob's embedded manifest (single/first service), for the per-rung
-/// identity-downgrade gate.
+/// The blob's embedded schema (single/first service), for the per-rung
+/// identity-downgrade gate. `Absent` when the blob is missing/unreadable.
 async fn resolve_blob_schema(
     node_client: &calimero_node_primitives::client::NodeClient,
     blob: [u8; 32],
-) -> Option<Manifest> {
+) -> EmbeddedSchema {
     use calimero_primitives::blobs::BlobId;
 
-    let bytes = node_client
+    let Ok(Some(bytes)) = node_client
         .application_bytes_from_blob(&BlobId::from(blob), None)
         .await
-        .ok()??;
-    calimero_wasm_abi::embed::read_embedded_state_schema(&bytes)
+    else {
+        return EmbeddedSchema::Absent;
+    };
+    read_embedded_state_schema_versioned(&bytes)
 }
 
 /// Resolve the full emission ladder current -> target. Code-only, one-hop
@@ -988,19 +1008,19 @@ pub(crate) async fn resolve_upgrade_from_abis(
 async fn resolve_embedded_schema(
     node_client: &calimero_node_primitives::client::NodeClient,
     application_id: &ApplicationId,
-) -> Option<Manifest> {
+) -> EmbeddedSchema {
     match node_client
         .get_application_bytes(application_id, None)
         .await
     {
-        Ok(Some(bytes)) => calimero_wasm_abi::embed::read_embedded_state_schema(&bytes),
-        Ok(None) => None,
+        Ok(Some(bytes)) => read_embedded_state_schema_versioned(&bytes),
+        Ok(None) => EmbeddedSchema::Absent,
         Err(err) => {
             tracing::warn!(
                 %application_id, error = %err,
                 "L1 gate: failed to fetch application bytes; treating as no embedded ABI (fail-open)"
             );
-            None
+            EmbeddedSchema::Absent
         }
     }
 }
@@ -1609,7 +1629,7 @@ fn dispatch_cascade(
             .await;
             let new =
                 resolve_embedded_schema(&node_client_for_publish, &target_application_id).await;
-            verify_no_identity_downgrade(old.as_ref(), new.as_ref())?;
+            verify_no_identity_downgrade(&old, &new)?;
         }
 
         let sk = PrivateKey::from(effective_signing_key);
@@ -1834,6 +1854,12 @@ mod tests {
     };
     use calimero_context_config::types::ContextGroupId;
     use calimero_primitives::context::UpgradePolicy;
+    use calimero_wasm_abi::embed::EmbeddedSchema;
+
+    /// Wrap a downgrade-test manifest as a supported embedded schema.
+    fn supported(fields: &str) -> EmbeddedSchema {
+        EmbeddedSchema::Supported(dg_manifest(fields))
+    }
 
     fn gid(b: u8) -> ContextGroupId {
         ContextGroupId::from([b; 32])
@@ -1849,27 +1875,57 @@ mod tests {
 
     #[test]
     fn gate_refuses_identity_downgrade() {
-        let err = super::verify_no_identity_downgrade(
-            Some(&dg_manifest(DG_AUTH)),
-            Some(&dg_manifest(DG_PLAIN)),
-        )
-        .unwrap_err();
+        let err = super::verify_no_identity_downgrade(&supported(DG_AUTH), &supported(DG_PLAIN))
+            .unwrap_err();
         let s = err.to_string();
         assert!(s.contains("identity downgrade forbidden"), "{s}");
         assert!(s.contains("wiki"), "{s}");
     }
     #[test]
     fn gate_allows_carry_through() {
-        assert!(super::verify_no_identity_downgrade(
-            Some(&dg_manifest(DG_AUTH)),
-            Some(&dg_manifest(DG_AUTH))
-        )
-        .is_ok());
+        assert!(
+            super::verify_no_identity_downgrade(&supported(DG_AUTH), &supported(DG_AUTH)).is_ok()
+        );
     }
     #[test]
     fn gate_fails_open_when_schema_absent() {
-        assert!(super::verify_no_identity_downgrade(None, Some(&dg_manifest(DG_PLAIN))).is_ok());
-        assert!(super::verify_no_identity_downgrade(Some(&dg_manifest(DG_AUTH)), None).is_ok());
+        assert!(
+            super::verify_no_identity_downgrade(&EmbeddedSchema::Absent, &supported(DG_PLAIN))
+                .is_ok()
+        );
+        assert!(
+            super::verify_no_identity_downgrade(&supported(DG_AUTH), &EmbeddedSchema::Absent)
+                .is_ok()
+        );
+    }
+    #[test]
+    fn gate_fails_closed_on_unsupported_future_version() {
+        // A newer-major schema on EITHER side is opaque, so the gate must refuse
+        // the upgrade rather than fail open as it would for an absent schema.
+        let unsupported = || EmbeddedSchema::UnsupportedVersion("wasm-abi/2".to_owned());
+
+        let target_err =
+            super::verify_no_identity_downgrade(&supported(DG_AUTH), &unsupported()).unwrap_err();
+        assert!(
+            target_err
+                .to_string()
+                .contains("unsupported ABI schema version"),
+            "{target_err}"
+        );
+
+        let current_err =
+            super::verify_no_identity_downgrade(&unsupported(), &supported(DG_PLAIN)).unwrap_err();
+        assert!(
+            current_err
+                .to_string()
+                .contains("unsupported ABI schema version"),
+            "{current_err}"
+        );
+
+        // Unsupported takes precedence even when the other side is absent.
+        assert!(
+            super::verify_no_identity_downgrade(&unsupported(), &EmbeddedSchema::Absent).is_err()
+        );
     }
 
     #[test]
