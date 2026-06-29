@@ -1,6 +1,6 @@
 use calimero_config::{
     BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, IdentityConfig, NetworkConfig,
-    NodeMode, ServerConfig, SyncConfig,
+    NodeMode, ServerConfig, SyncConfig, CONFIG_FILE,
 };
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client_config::{ClientConfig, ClientSigner, LocalConfig};
@@ -31,22 +31,60 @@ use tracing::{info, warn};
 use super::auth_mode::AuthModeArg;
 use crate::cli;
 
-/// Restrict a directory to owner-only access (`0700`) so the Ed25519 private
-/// key in `config.toml` and the datastore underneath it are not readable or
-/// traversable by other local users. No-op on non-Unix platforms, which lack
-/// POSIX mode bits.
+/// Forces a restrictive `umask` (`0077`) for the lifetime of the guard so every
+/// file and directory created during node initialization — the node home, the
+/// `config.toml` holding the Ed25519 private key, and the RocksDB datastore with
+/// all of its files and sub-directories — is owner-only from the moment it is
+/// created. This closes the window between creation and an after-the-fact
+/// `chmod`, and protects the contents even if a parent directory's permissions
+/// are later relaxed. `init` is a one-shot command that does no other concurrent
+/// filesystem work, so mutating the process-wide `umask` here is safe.
 #[cfg(unix)]
-async fn restrict_dir_to_owner(dir: impl AsRef<Path>) -> EyreResult<()> {
-    use std::os::unix::fs::PermissionsExt;
+struct OwnerOnlyUmask(libc::mode_t);
 
-    let dir = dir.as_ref();
-    fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-        .await
-        .wrap_err_with(|| format!("failed to restrict permissions on {dir:?}"))
+#[cfg(unix)]
+impl OwnerOnlyUmask {
+    fn set() -> Self {
+        // SAFETY: `umask` only swaps the process file-creation mask and always
+        // succeeds, returning the previous mask.
+        Self(unsafe { libc::umask(0o077) })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for OwnerOnlyUmask {
+    fn drop(&mut self) {
+        // SAFETY: restore the mask captured in `set`; same contract as above.
+        let _ = unsafe { libc::umask(self.0) };
+    }
 }
 
 #[cfg(not(unix))]
-async fn restrict_dir_to_owner(_dir: impl AsRef<Path>) -> EyreResult<()> {
+struct OwnerOnlyUmask;
+
+#[cfg(not(unix))]
+impl OwnerOnlyUmask {
+    fn set() -> Self {
+        Self
+    }
+}
+
+/// Restrict an existing path to owner-only access. The restrictive `umask`
+/// covers everything created during init, but a directory that already existed
+/// keeps its old mode, so tighten those explicitly. No-op on non-Unix platforms,
+/// which lack POSIX mode bits.
+#[cfg(unix)]
+async fn restrict_to_owner(path: impl AsRef<Path>, mode: u32) -> EyreResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = path.as_ref();
+    fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .await
+        .wrap_err_with(|| format!("failed to restrict permissions on {path:?}"))
+}
+
+#[cfg(not(unix))]
+async fn restrict_to_owner(_path: impl AsRef<Path>, _mode: u32) -> EyreResult<()> {
     Ok(())
 }
 
@@ -189,6 +227,9 @@ impl InitCommand {
 
         let path = root_args.home.join(root_args.node_name);
 
+        // Create everything below owner-only from the start; dropped at end of init.
+        let _umask = OwnerOnlyUmask::set();
+
         if ConfigFile::exists(&path) {
             if let Err(err) = ConfigFile::load(&path).await {
                 if self.force {
@@ -213,8 +254,8 @@ impl InitCommand {
                 .wrap_err_with(|| format!("failed to create directory {path:?}"))?;
         }
 
-        // The node home holds the private key in config.toml; keep it owner-only.
-        restrict_dir_to_owner(&path).await?;
+        // The umask covers a freshly created home; tighten a pre-existing one too.
+        restrict_to_owner(&path, 0o700).await?;
 
         let identity = Keypair::generate_ed25519();
         info!("Generated identity: {:?}", identity.public().to_peer_id());
@@ -327,13 +368,18 @@ impl InitCommand {
 
         config.save(&path).await?;
 
+        // The file itself holds the private key; keep it owner-only even if its
+        // parent directory's permissions are ever loosened.
+        restrict_to_owner(path.join(CONFIG_FILE), 0o600).await?;
+
         let datastore_path = path.join(&config.datastore.path);
         drop(Store::open::<RocksDB>(&StoreConfig::new(
             datastore_path.clone(),
         ))?);
 
-        // RocksDB creates the datastore dir with the default umask; restrict it too.
-        restrict_dir_to_owner(&datastore_path).await?;
+        // The umask keeps RocksDB's contents owner-only; tighten a pre-existing
+        // datastore directory too.
+        restrict_to_owner(&datastore_path, 0o700).await?;
 
         info!("Initialized a node in {:?}", path);
 
