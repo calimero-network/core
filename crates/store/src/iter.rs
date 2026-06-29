@@ -2,7 +2,6 @@ use core::convert::Infallible;
 use core::fmt;
 use core::fmt::{Debug, Formatter};
 use core::marker::PhantomData;
-use core::mem::transmute;
 
 use calimero_primitives::reflect::Reflect;
 use eyre::{Report, Result as EyreResult};
@@ -262,8 +261,13 @@ where
         while !self.iter.done {
             match self.iter.inner.next() {
                 Ok(Some(key)) => {
-                    // safety: key only needs to live as long as the iterator, not it's reference
-                    let key = unsafe { transmute::<Slice<'_>, Slice<'_>>(key) };
+                    // The slice yielded by the underlying iterator borrows its
+                    // internal buffer, which the next `next()` call invalidates.
+                    // `Iterator::next` does not tie the yielded item to the
+                    // `&mut self` borrow, so callers may retain it across
+                    // iterations (e.g. `collect`). Copy into an owned buffer to
+                    // sever that aliasing — see the module note on `Slice`.
+                    let key: Slice<'b> = key.into_boxed().into();
                     match K::try_into_key(key) {
                         Ok(key) => return Some(Ok(key)),
                         // Skip keys with mismatched sizes (different key type in same column)
@@ -324,8 +328,11 @@ where
 
                 match self.iter.inner.next() {
                     Ok(Some(raw_key)) => {
-                        // safety: key only needs to live as long as the iterator, not it's reference
-                        let raw_key = unsafe { transmute::<Slice<'_>, Slice<'_>>(raw_key) };
+                        // Copy into an owned buffer before yielding: the borrowed
+                        // slice points into the underlying iterator's buffer, which
+                        // is invalidated by the next `next()`/`read()` call. See the
+                        // matching note in `IterKeys::next`.
+                        let raw_key: Slice<'b> = raw_key.into_boxed().into();
                         match K::try_into_key(raw_key) {
                             Ok(key) => break key,
                             // Skip keys with mismatched sizes (different key type in same column)
@@ -357,8 +364,11 @@ where
                 }
             };
 
-            // safety: value only needs to live as long as the iterator, not it's reference
-            let value = unsafe { transmute::<Slice<'_>, Slice<'_>>(value) };
+            // Copy into an owned buffer before yielding: the borrowed slice
+            // points into the underlying iterator's buffer, which is invalidated
+            // by the next `next()`/`read()` call. See the matching note in
+            // `IterKeys::next`.
+            let value: Slice<'b> = value.into_boxed().into();
 
             V::try_into_value(value).map_err(Into::into)
         };
