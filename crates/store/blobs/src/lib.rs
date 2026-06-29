@@ -474,9 +474,13 @@ impl FileSystem {
     /// # Errors
     /// Returns an error if `package` or `version` is not a safe path component.
     pub fn version_path(&self, package: &str, version: &str) -> EyreResult<Utf8PathBuf> {
+        // Validate both components explicitly so the path-traversal contract is
+        // self-contained here, rather than leaning on `package_path` to guard
+        // `package` indirectly (matches `application_blob_path`).
+        utils::validate_path_component(package, Some("package"))?;
         utils::validate_path_component(version, Some("version"))?;
 
-        Ok(self.package_path(package)?.join(version))
+        Ok(self.root.join("applications").join(package).join(version))
     }
 
     /// Get the root/base path of the blobstore
