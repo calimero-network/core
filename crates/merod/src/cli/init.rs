@@ -25,7 +25,7 @@ use mero_auth::config::{AuthConfig as EmbeddedAuthConfig, StorageConfig as AuthS
 use multiaddr::{Multiaddr, Protocol};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use tokio::fs::{self, create_dir_all};
+use tokio::fs;
 use tracing::{info, warn};
 
 use super::auth_mode::AuthModeArg;
@@ -83,6 +83,24 @@ async fn restrict_tree_to_owner(root: impl AsRef<Path>) -> EyreResult<()> {
 #[cfg(not(unix))]
 async fn restrict_tree_to_owner(_root: impl AsRef<Path>) -> EyreResult<()> {
     Ok(())
+}
+
+/// Create `path` and any missing parents, with directories created owner-only
+/// (`0700`) on Unix. Using the mode at creation time means the node home is
+/// never momentarily visible to other users with permissive bits — the window a
+/// create-then-`chmod` would leave open. Pre-existing components keep their mode.
+async fn create_dir_owner_only(path: impl AsRef<Path>) -> EyreResult<()> {
+    let path = path.as_ref();
+
+    let mut builder = fs::DirBuilder::new();
+    let _ = builder.recursive(true);
+    #[cfg(unix)]
+    let _ = builder.mode(0o700);
+
+    builder
+        .create(path)
+        .await
+        .wrap_err_with(|| format!("failed to create directory {path:?}"))
 }
 
 // Sync configuration - aggressive defaults for fast CRDT convergence
@@ -243,13 +261,11 @@ impl InitCommand {
         }
 
         if !path.exists() {
-            create_dir_all(&path)
-                .await
-                .wrap_err_with(|| format!("failed to create directory {path:?}"))?;
+            create_dir_owner_only(&path).await?;
         }
 
-        // Lock the node home down to owner-only before anything sensitive (the
-        // private key in config.toml, the datastore) is written into it.
+        // A freshly created home is already 0700 (above); tighten a pre-existing
+        // one so the private key and datastore land in an owner-only directory.
         restrict_to_owner(&path, 0o700).await?;
 
         let identity = Keypair::generate_ed25519();
@@ -367,13 +383,18 @@ impl InitCommand {
         // parent directory's permissions are ever loosened.
         restrict_to_owner(path.join(CONFIG_FILE), 0o600).await?;
 
+        // `config` is fully consumed below; `datastore_path` is cloned so the
+        // store's owned copy is independent.
         let datastore_path = path.join(&config.datastore.path);
         drop(Store::open::<RocksDB>(&StoreConfig::new(
             datastore_path.clone(),
         ))?);
 
-        // The store is now closed, so no writer races us: recursively make the
-        // datastore and all of RocksDB's files owner-only.
+        // RocksDB creates these files under the process umask, but they live
+        // inside the now-0700 node home, so they were never reachable by other
+        // users. With the store closed (no writer racing us), recursively pin the
+        // datastore and every RocksDB file to owner-only as defense in depth, so
+        // the contents stay private even if the home's mode is later loosened.
         restrict_tree_to_owner(&datastore_path).await?;
 
         info!("Initialized a node in {:?}", path);
