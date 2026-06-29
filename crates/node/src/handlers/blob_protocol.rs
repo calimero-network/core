@@ -5,6 +5,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use calimero_context::group_store::{get_group_for_context, MembershipRepository};
 use calimero_context_client::client::{ContextClient, ContextRegistry};
 use calimero_network_primitives::{
     blob_types::{BlobAuthPayload, BlobChunk, BlobRequest, BlobResponse},
@@ -346,6 +347,10 @@ fn is_signed_context_member(
     }
 
     // Verify Context Membership — direct OR inherited (see the doc comment).
+    //
+    // `ContextRegistry::new` takes the `Store` by value, whereas the inherited
+    // check below borrows it — hence the asymmetry. `Store` is `Arc`-backed, so
+    // `clone()` is a cheap ref-count bump, not a deep copy.
     let mut is_member =
         ContextRegistry::new(store.clone()).has_member(&request.context_id, &auth.public_key)?;
     if !is_member {
@@ -381,8 +386,6 @@ fn is_inherited_context_member(
     context_id: &calimero_primitives::context::ContextId,
     public_key: &calimero_primitives::identity::PublicKey,
 ) -> eyre::Result<bool> {
-    use calimero_context::group_store::{get_group_for_context, MembershipRepository};
-
     let Some(group_id) = get_group_for_context(store, context_id)? else {
         return Ok(false);
     };
@@ -392,13 +395,12 @@ fn is_inherited_context_member(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use calimero_context::group_store::{
         register_context_in_group, CapabilitiesRepository, MembershipRepository,
         NamespaceRepository,
     };
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
     use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload, BlobRequest};
