@@ -65,7 +65,10 @@ pub async fn auth_middleware(
                     method, path, required_permissions, auth_response.permissions
                 );
                 let mut headers = HeaderMap::new();
-                headers.insert("X-Auth-Error", HeaderValue::from_static("permission_denied"));
+                headers.insert(
+                    "X-Auth-Error",
+                    HeaderValue::from_static("permission_denied"),
+                );
                 return Err((StatusCode::FORBIDDEN, headers));
             }
 
