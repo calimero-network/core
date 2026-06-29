@@ -269,6 +269,13 @@ pub(super) fn handle_specialized_broadcast(
                         // A genuinely invalid quote stays deduped, and the
                         // per-peer rate limit + inflight cap still bound any
                         // replay-driven re-verification.
+                        //
+                        // This `.map` runs only if the spawned future completes.
+                        // The sole way it is dropped first is the actor stopping
+                        // — but the throttle (and its in-memory dedup map) lives
+                        // on this actor, so it is torn down together; a stale
+                        // entry can't outlive its map to suppress a post-restart
+                        // re-announce (a restarted node starts with an empty map).
                         actor
                             .tee_admission_throttle
                             .forget_quote(group_key, quote_hash);

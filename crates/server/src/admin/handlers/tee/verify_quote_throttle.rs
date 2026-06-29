@@ -122,6 +122,13 @@ impl VerifyQuoteThrottle {
             // the lock around the acquire would instead open a TOCTOU window
             // where a concurrent grant could be clobbered, so the lock is held
             // across the acquire intentionally.
+            //
+            // Lock ordering: this is the only place the bucket mutex and the
+            // semaphore's internal lock are held together, and the order is
+            // always bucket-mutex → semaphore (via `try_acquire_owned`). The
+            // permit is released only by dropping it in the request handler /
+            // spawned verify, which never holds the bucket mutex, so the
+            // ordering is never inverted and there is no deadlock risk.
             match Arc::clone(&self.inflight).try_acquire_owned() {
                 Ok(permit) => {
                     // Commit only on success: the token and refill clock advance
