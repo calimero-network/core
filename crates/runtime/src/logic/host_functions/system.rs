@@ -113,6 +113,16 @@ thread_local! {
 /// later execution that happens to reuse the same thread. Save-and-restore
 /// (rather than unconditionally clearing) also keeps re-entrant executions
 /// correct: a nested run restores the outer run's value when it finishes.
+///
+/// # Usage
+///
+/// Multiple guards on the same thread must be released in strictly nested
+/// (LIFO) order, since each restores the value it observed at `enter()`. Held
+/// as ordinary locals — the way `Module::run` uses it — Rust's LIFO drop order
+/// guarantees this; restoring guards out of order would clobber the saved
+/// value. The value must also actually be held: `#[must_use]` flags the
+/// `enter();`-and-discard mistake, which would drop the guard immediately and
+/// leave nothing scoped.
 #[must_use = "the guard must be held for the duration of the execution"]
 pub struct CallbackHandlerGuard {
     previous: Option<String>,
