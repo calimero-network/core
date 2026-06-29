@@ -226,20 +226,21 @@ trait ToResponseBody {
 
 impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, RpcError<E>> {
     fn to_res_body(self) -> ResponseBody {
-        let err = match self {
+        match self {
             Ok(r) => match serde_json::to_value(r) {
                 Ok(v) => return ResponseBody::Result(ResponseBodyResult(v)),
-                Err(err) => err.into(),
+                Err(err) => error!(%err, "Failed to serialize response"),
             },
             Err(RpcError::MethodCallError(err)) => match serde_json::to_value(err) {
                 Ok(v) => return ResponseBody::Error(ResponseBodyError::HandlerError(v)),
-                Err(err) => err.into(),
+                Err(err) => error!(%err, "Failed to serialize handler error"),
             },
-            Err(RpcError::InternalError(err)) => err,
-        };
+            Err(RpcError::InternalError(err)) => error!(%err, "Internal server error"),
+        }
 
+        // All non-returning arms above log their error and fall through here.
         ResponseBody::Error(ResponseBodyError::ServerError(
-            ServerResponseError::InternalError { err: Some(err) },
+            ServerResponseError::InternalError { err: None },
         ))
     }
 }
