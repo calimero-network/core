@@ -13,6 +13,20 @@ use calimero_tee_attestation::{is_mock_quote, verify_attestation, verify_mock_at
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
+/// Compute the application-hash binding that ties a TEE attestation to a node
+/// identity.
+///
+/// The attestation generator and every verifier must hash the public key the
+/// exact same way, otherwise the mandatory app-hash binding check fails. The
+/// `**public_key` below derefs twice — `&PublicKey` -> `PublicKey`, then the
+/// `PublicKey` newtype (over `[u8; 32]`) -> its raw 32-byte ed25519 key material —
+/// so the hash is taken over the canonical key bytes. Centralizing it here keeps
+/// the generation and verification sides from silently diverging if `PublicKey`'s
+/// representation ever changes.
+pub(crate) fn public_key_binding_hash(public_key: &PublicKey) -> [u8; 32] {
+    Sha256::digest(**public_key).into()
+}
+
 /// Handle a `TeeAttestationAnnounce` broadcast on a namespace gossip topic.
 ///
 /// Verifies the TDX quote, checks measurements against the group's TEE admission
@@ -29,13 +43,13 @@ pub async fn handle_tee_attestation_announce(
 
     let is_mock = is_mock_quote(&quote_bytes);
 
-    let pk_hash: [u8; 32] = Sha256::digest(*public_key).into();
+    let pk_hash = public_key_binding_hash(&public_key);
 
     let verification_result = if is_mock {
         warn!("Verifying MOCK attestation for TEE admission");
-        verify_mock_attestation(&quote_bytes, &nonce, Some(&pk_hash))?
+        verify_mock_attestation(&quote_bytes, &nonce, &pk_hash)?
     } else {
-        verify_attestation(&quote_bytes, &nonce, Some(&pk_hash)).await?
+        verify_attestation(&quote_bytes, &nonce, &pk_hash).await?
     };
 
     if !verification_result.is_valid() {
