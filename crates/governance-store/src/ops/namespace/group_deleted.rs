@@ -131,9 +131,21 @@ pub(crate) fn apply(
     }
 
     // Children-first deletion: descendants then root.
-    let all_groups_iter = cascade_group_ids
+    //
+    // We delete only the subtree we recomputed locally
+    // (`local_payload.descendant_groups`), never the ids carried in the op
+    // payload. The payload is authored by the (possibly hostile) signing
+    // peer and is only authorized against `root_group_id`; trusting its
+    // `cascade_group_ids` / `cascade_context_ids` would let a leaf-subgroup
+    // owner cascade-delete arbitrary, even cross-namespace, groups and
+    // contexts. The subset check above already guarantees every local
+    // descendant is covered by the op (so we don't under-delete relative to
+    // what the network agreed on); the payload extras are deliberately
+    // ignored here. `descendant_groups` is in children-first order.
+    let all_groups_iter = local_payload
+        .descendant_groups
         .iter()
-        .copied()
+        .map(ContextGroupId::to_bytes)
         .chain(std::iter::once(root_group_id));
     for gid_bytes in all_groups_iter {
         let gid = ContextGroupId::from(gid_bytes);
@@ -155,8 +167,8 @@ pub(crate) fn apply(
 
     tracing::info!(
         ?root_gid,
-        deleted_groups = cascade_group_ids.len() + 1,
-        deleted_contexts = cascade_context_ids.len(),
+        deleted_groups = local_payload.descendant_groups.len() + 1,
+        deleted_contexts = local_payload.contexts.len(),
         "cascade-deleted group subtree"
     );
     Ok(())
