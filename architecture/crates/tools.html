@@ -517,6 +517,7 @@ merod --home /data --node mynode init \
 </div>
 <p><span class="code">--group-governance local</span> is the default (and only) governance mode.</p>
 <p>For read-only nodes, add <span class="code">--mode read-only</span>.</p>
+<p>On Unix, <span class="code">init</span> runs under a restrictive <span class="code">umask</span> (<span class="code">0077</span>) so the node home, <span class="code">config.toml</span> (which holds the Ed25519 private key), and the datastore — including every RocksDB file — are created owner-only. <span class="code">config.toml</span> is pinned to <span class="code">0600</span> and the directories to <span class="code">0700</span>, keeping the key unreadable by other local users.</p>
 </div>
 </details>
 </div>
