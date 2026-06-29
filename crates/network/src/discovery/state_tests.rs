@@ -743,6 +743,91 @@ fn test_independent_addresses_track_failures_separately() {
 }
 
 #[test]
+fn test_add_peer_addr_caps_addresses_per_peer() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+
+    // Advertise far more distinct addresses than the cap allows.
+    for port in 0..(MAX_ADDRS_PER_PEER as u16 + 5) {
+        let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", 4001 + port)
+            .parse()
+            .unwrap();
+        state.add_peer_addr(peer, &addr);
+    }
+
+    assert_eq!(
+        state.peers[&peer].addrs.len(),
+        MAX_ADDRS_PER_PEER,
+        "per-peer address book must be capped"
+    );
+}
+
+#[test]
+fn test_add_peer_addr_evicts_worst_address_when_capped() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+
+    // Fill the book to capacity.
+    let mut addrs = Vec::new();
+    for port in 0..(MAX_ADDRS_PER_PEER as u16) {
+        let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", 4001 + port)
+            .parse()
+            .unwrap();
+        state.add_peer_addr(peer, &addr);
+        addrs.push(addr);
+    }
+
+    // Give the first address some (sub-threshold) dial failures so it is
+    // the worst — but not enough to be evicted by the failure path.
+    let worst = &addrs[0];
+    for _ in 0..(DIAL_FAILURE_EVICTION_THRESHOLD - 1) {
+        let _ = state.record_dial_failure(&peer, worst);
+    }
+
+    // Adding a fresh address must evict the worst one, not a healthy one.
+    let fresh: Multiaddr = "/ip4/127.0.0.1/tcp/5999".parse().unwrap();
+    state.add_peer_addr(peer, &fresh);
+
+    assert_eq!(state.peers[&peer].addrs.len(), MAX_ADDRS_PER_PEER);
+    assert!(
+        !state.peers[&peer].addrs.contains_key(worst),
+        "the address with the most failures must be evicted first"
+    );
+    assert!(
+        state.peers[&peer].addrs.contains_key(&fresh),
+        "the freshly added address must be retained"
+    );
+}
+
+#[test]
+fn test_add_peer_addr_refresh_of_existing_does_not_evict() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+
+    // Fill the book to capacity.
+    let mut addrs = Vec::new();
+    for port in 0..(MAX_ADDRS_PER_PEER as u16) {
+        let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", 4001 + port)
+            .parse()
+            .unwrap();
+        state.add_peer_addr(peer, &addr);
+        addrs.push(addr);
+    }
+
+    // Re-adding an address that is already present is a refresh: it resets
+    // the counter without evicting any sibling, and the book stays full
+    // with the same membership.
+    let _ = state.record_dial_failure(&peer, &addrs[0]);
+    state.add_peer_addr(peer, &addrs[0]);
+
+    assert_eq!(state.peers[&peer].addrs.len(), MAX_ADDRS_PER_PEER);
+    for addr in &addrs {
+        assert!(state.peers[&peer].addrs.contains_key(addr));
+    }
+    assert_eq!(state.peers[&peer].addrs[&addrs[0]], 0);
+}
+
+#[test]
 fn test_take_relay_listener_returns_recorded_peer_and_removes_entry() {
     let mut state = DiscoveryState::default();
     let relay = PeerId::random();

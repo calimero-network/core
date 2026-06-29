@@ -26,6 +26,25 @@ const RENDEZVOUS_PROTOCOL_NAME: StreamProtocol = StreamProtocol::new("/rendezvou
 /// to waste many rendezvous-tick dial attempts.
 pub(crate) const DIAL_FAILURE_EVICTION_THRESHOLD: u8 = 3;
 
+/// Maximum number of direct-dial addresses retained per peer in the live
+/// address book. Mirrors the persistent peer-cache cap
+/// ([`crate::discovery::peer_cache`]'s `MAX_ADDRS_PER_PEER`): a peer
+/// rarely needs more than one good address, and a small cap tolerates an
+/// in-flight IP change (old + new both present briefly).
+///
+/// The per-address dial-failure eviction
+/// ([`DIAL_FAILURE_EVICTION_THRESHOLD`]) already trims *dead* addresses,
+/// but it never bounds the count of *live* ones: a peer — honest with
+/// many interfaces, or adversarial — can advertise an unbounded list of
+/// listen addresses via identify, and without a cap [`add_peer_addr`]
+/// would grow the per-peer map one entry per distinct address ever seen.
+/// When the cap is reached, the address with the most consecutive dial
+/// failures is evicted to make room, preferentially keeping addresses
+/// that still work.
+///
+/// [`add_peer_addr`]: DiscoveryState::add_peer_addr
+pub(crate) const MAX_ADDRS_PER_PEER: usize = 4;
+
 /// Rendezvous-key prefixes for per-overlay registration/discovery.
 ///
 /// Instead of one global rendezvous namespace (which returns every node
@@ -330,12 +349,32 @@ impl DiscoveryState {
     /// directly — most notably relayed multiaddrs (`/p2p-circuit/`) for
     /// inbound connection records.
     pub(crate) fn add_peer_addr(&mut self, peer_id: PeerId, addr: &Multiaddr) {
-        let _ = self
-            .peers
-            .entry(peer_id)
-            .or_default()
-            .addrs
-            .insert(addr.clone(), 0);
+        let addrs = &mut self.peers.entry(peer_id).or_default().addrs;
+
+        // Existing address: reset its failure counter and return. This is
+        // a refresh, not growth, so it must bypass the cap — never evict a
+        // sibling to "make room" for an address that's already present.
+        if let Some(count) = addrs.get_mut(addr) {
+            *count = 0;
+            return;
+        }
+
+        // New address: enforce the per-peer cap before inserting so the
+        // map can't grow without bound. Evict the worst (highest
+        // consecutive-failure count) existing address to make room — ties
+        // broken arbitrarily — keeping the healthiest addresses and the
+        // fresh one we're about to add.
+        if addrs.len() >= MAX_ADDRS_PER_PEER {
+            if let Some(worst) = addrs
+                .iter()
+                .max_by_key(|(_, &count)| count)
+                .map(|(worst_addr, _)| worst_addr.clone())
+            {
+                let _ = addrs.remove(&worst);
+            }
+        }
+
+        let _ = addrs.insert(addr.clone(), 0);
     }
 
     /// Mark a dial failure for `addr` under `peer_id`. Increments the
