@@ -68,9 +68,7 @@ where
             .inner
             .entries_with_storage_type()
             .expect("read set elements for re-key");
-        self.inner
-            .clear_for_rekey()
-            .expect("clear set for re-key");
+        self.inner.clear_for_rekey().expect("clear set for re-key");
         self.inner.reassign_deterministic_id_under(
             Some(parent_id),
             "__set",

@@ -88,9 +88,7 @@ where
             .iter_unordered()
             .expect("read set elements for re-key")
             .collect();
-        self.inner
-            .clear_for_rekey()
-            .expect("clear set for re-key");
+        self.inner.clear_for_rekey().expect("clear set for re-key");
         self.inner.reassign_deterministic_id_under(
             Some(parent_id),
             "__sorted_set",

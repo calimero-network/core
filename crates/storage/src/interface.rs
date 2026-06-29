@@ -2700,10 +2700,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// # Errors
     /// Returns error if parent or child doesn't exist.
     ///
-    pub(crate) fn relocate_child_from(
-        parent_id: Id,
-        child_id: Id,
-    ) -> Result<bool, StorageError> {
+    pub(crate) fn relocate_child_from(parent_id: Id, child_id: Id) -> Result<bool, StorageError> {
         Self::remove_child_from_inner(parent_id, child_id, false)
     }
 
