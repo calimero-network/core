@@ -5,7 +5,7 @@
 ///
 /// # Allowed format
 ///
-/// * Alphanumeric characters (`a-z`, `A-Z`, `0-9`);
+/// * ASCII alphanumeric characters (`a-z`, `A-Z`, `0-9`);
 /// * Hyphens (`-`);
 /// * Single dots (`.`), but not at the start or end of the string.
 ///
@@ -15,126 +15,161 @@
 /// * `component_label`: An optional description of what is being validated (e.g., "package name", "version name").
 ///   Used for error messaging. If `None`, the default value "component" will be used for errors.
 ///
-/// # Panics
+/// # Errors
 ///
-/// This function panics if the `component`:
+/// Returns an error if the `component`:
 /// * Is empty;
-/// * Contains characters other than alphanumeric, hyphens, or dots (blocks `/`, `\`, etc.);
+/// * Contains characters other than ASCII alphanumeric, hyphens, or dots (blocks `/`, `\`, etc.);
 /// * Contains consecutive dots (`..`);
 /// * Starts or ends with a dot.
-pub fn validate_path_component(component: &str, component_label: Option<&str>) {
+pub fn validate_path_component(
+    component: &str,
+    component_label: Option<&str>,
+) -> eyre::Result<()> {
     let component_label = component_label.unwrap_or("component");
 
     // Ensure the component is not empty.
     if component.is_empty() {
-        panic!("{component_label} cannot be empty");
+        eyre::bail!("{component_label} cannot be empty");
     }
 
     // Prevent path traversal.
     if component.contains("..") {
-        panic!("{component_label} cannot contain '..': '{component}'");
+        eyre::bail!("{component_label} cannot contain '..': '{component}'");
     }
 
-    // Allow only alphanumeric characters, hyphen, and dot.
+    // Allow only ASCII alphanumeric characters, hyphen, and dot. The check is
+    // deliberately ASCII-restricted: a Unicode-aware `is_alphanumeric` would
+    // admit homoglyphs and full-width digits that can confuse path handling.
     if component
         .chars()
-        .any(|c| !c.is_alphanumeric() && c != '-' && c != '.')
+        .any(|c| !c.is_ascii_alphanumeric() && c != '-' && c != '.')
     {
-        panic!(
-            "invalid character in {component_label}: '{component}'. Only alphanumeric, '-', and '.' are allowed.",
+        eyre::bail!(
+            "invalid character in {component_label}: '{component}'. Only ASCII alphanumeric, '-', and '.' are allowed.",
         );
     }
 
     // Forbid using dots at boundaries.
     if component.starts_with('.') || component.ends_with('.') {
-        panic!("{component_label} cannot start or end with '.': '{component}'");
+        eyre::bail!("{component_label} cannot start or end with '.': '{component}'");
     }
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Asserts the component is rejected and the error message contains `needle`.
+    fn assert_rejected(component: &str, label: Option<&str>, needle: &str) {
+        let err = validate_path_component(component, label)
+            .expect_err("expected component to be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(needle),
+            "error {msg:?} should contain {needle:?}",
+        );
+    }
+
     #[test]
     fn test_validate_path_component_success() {
         // Valid cases
-        validate_path_component("calimero", None);
-        validate_path_component("calimero-network", Some("package"));
-        validate_path_component("v1.0.0", Some("version"));
-        validate_path_component("1.2.3", None);
-        validate_path_component("calimero.world-controller-app", None);
-        validate_path_component("0123456789", None);
+        validate_path_component("calimero", None).unwrap();
+        validate_path_component("calimero-network", Some("package")).unwrap();
+        validate_path_component("v1.0.0", Some("version")).unwrap();
+        validate_path_component("1.2.3", None).unwrap();
+        validate_path_component("calimero.world-controller-app", None).unwrap();
+        validate_path_component("0123456789", None).unwrap();
     }
 
     #[test]
-    #[should_panic(expected = "package cannot be empty")]
     fn test_validate_path_component_empty_package() {
-        validate_path_component("", Some("package"));
+        assert_rejected("", Some("package"), "package cannot be empty");
     }
 
     #[test]
-    #[should_panic(expected = "version cannot be empty")]
     fn test_validate_path_component_empty_version() {
-        validate_path_component("", Some("version"));
+        assert_rejected("", Some("version"), "version cannot be empty");
     }
 
     #[test]
-    #[should_panic(expected = "component cannot be empty")]
     fn test_validate_path_component_empty_default() {
-        validate_path_component("", None);
+        assert_rejected("", None, "component cannot be empty");
     }
 
     #[test]
-    #[should_panic(expected = "invalid character in package name")]
     fn test_validate_path_component_slash() {
-        validate_path_component("calimero/network", Some("package name"));
+        assert_rejected(
+            "calimero/network",
+            Some("package name"),
+            "invalid character in package name",
+        );
     }
 
     #[test]
-    #[should_panic(expected = "invalid character")]
     fn test_validate_path_component_backslash() {
-        validate_path_component("calimero\\network", None);
+        assert_rejected("calimero\\network", None, "invalid character");
     }
 
     #[test]
-    #[should_panic(expected = "invalid character")]
     fn test_validate_path_component_space() {
-        validate_path_component("calimero network", None);
+        assert_rejected("calimero network", None, "invalid character");
     }
 
     #[test]
-    #[should_panic(expected = "invalid character")]
     fn test_validate_path_component_special_chars() {
-        validate_path_component("calimero@network", None);
+        assert_rejected("calimero@network", None, "invalid character");
     }
 
     #[test]
-    #[should_panic(expected = "package name cannot contain '..'")]
+    fn test_validate_path_component_non_ascii_alphanumeric() {
+        // Unicode alphanumerics (e.g. full-width digits, accented letters) are
+        // ASCII-restricted out, where the old `is_alphanumeric` check let them
+        // through.
+        assert_rejected("ｃalimero", None, "invalid character");
+        assert_rejected("café", None, "invalid character");
+    }
+
+    #[test]
     fn test_validate_path_component_traversal() {
-        validate_path_component("../etc", Some("package name"));
+        assert_rejected("../etc", Some("package name"), "package name cannot contain '..'");
     }
 
     #[test]
-    #[should_panic(expected = "version name cannot contain '..'")]
     fn test_validate_path_component_double_dot_middle() {
-        validate_path_component("calimero..network", Some("version name"));
+        assert_rejected(
+            "calimero..network",
+            Some("version name"),
+            "version name cannot contain '..'",
+        );
     }
 
     #[test]
-    #[should_panic(expected = "version name cannot contain '..'")]
     fn test_validate_path_component_multiple_dots() {
-        validate_path_component("calimero...network", Some("version name"));
+        assert_rejected(
+            "calimero...network",
+            Some("version name"),
+            "version name cannot contain '..'",
+        );
     }
 
     #[test]
-    #[should_panic(expected = "package name cannot start or end with '.'")]
     fn test_validate_path_component_start_dot() {
-        validate_path_component(".calimero", Some("package name"));
+        assert_rejected(
+            ".calimero",
+            Some("package name"),
+            "package name cannot start or end with '.'",
+        );
     }
 
     #[test]
-    #[should_panic(expected = "version name cannot start or end with '.'")]
     fn test_validate_path_component_end_dot() {
-        validate_path_component("calimero.", Some("version name"));
+        assert_rejected(
+            "calimero.",
+            Some("version name"),
+            "version name cannot start or end with '.'",
+        );
     }
 }

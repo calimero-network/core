@@ -90,12 +90,18 @@ impl BlobManager {
     }
 
     /// Get the package directory path
-    pub fn package_path(&self, package: &str) -> Utf8PathBuf {
+    ///
+    /// # Errors
+    /// Returns an error if `package` is not a safe path component.
+    pub fn package_path(&self, package: &str) -> EyreResult<Utf8PathBuf> {
         self.blob_store.package_path(package)
     }
 
     /// Get the version directory path
-    pub fn version_path(&self, package: &str, version: &str) -> Utf8PathBuf {
+    ///
+    /// # Errors
+    /// Returns an error if `package` or `version` is not a safe path component.
+    pub fn version_path(&self, package: &str, version: &str) -> EyreResult<Utf8PathBuf> {
         self.blob_store.version_path(package, version)
     }
 
@@ -105,7 +111,15 @@ impl BlobManager {
     }
 
     /// Get the path for a blob stored in a package/version directory
-    pub fn application_blob_path(&self, package: &str, version: &str, id: BlobId) -> Utf8PathBuf {
+    ///
+    /// # Errors
+    /// Returns an error if `package` or `version` is not a safe path component.
+    pub fn application_blob_path(
+        &self,
+        package: &str,
+        version: &str,
+        id: BlobId,
+    ) -> EyreResult<Utf8PathBuf> {
         self.blob_store.application_blob_path(package, version, id)
     }
 
@@ -424,30 +438,45 @@ impl FileSystem {
     }
 
     /// Get the path for a blob stored in a package/version directory
-    pub fn application_blob_path(&self, package: &str, version: &str, id: BlobId) -> Utf8PathBuf {
-        utils::validate_path_component(package, Some("package"));
-        utils::validate_path_component(version, Some("version"));
+    ///
+    /// # Errors
+    /// Returns an error if `package` or `version` is not a safe path component.
+    pub fn application_blob_path(
+        &self,
+        package: &str,
+        version: &str,
+        id: BlobId,
+    ) -> EyreResult<Utf8PathBuf> {
+        utils::validate_path_component(package, Some("package"))?;
+        utils::validate_path_component(version, Some("version"))?;
 
-        self.root
+        Ok(self
+            .root
             .join("applications")
             .join(package)
             .join(version)
             .join("blobs")
-            .join(id.to_string())
+            .join(id.to_string()))
     }
 
     /// Get the package directory path
-    pub fn package_path(&self, package: &str) -> Utf8PathBuf {
-        utils::validate_path_component(package, Some("package"));
+    ///
+    /// # Errors
+    /// Returns an error if `package` is not a safe path component.
+    pub fn package_path(&self, package: &str) -> EyreResult<Utf8PathBuf> {
+        utils::validate_path_component(package, Some("package"))?;
 
-        self.root.join("applications").join(package)
+        Ok(self.root.join("applications").join(package))
     }
 
     /// Get the version directory path
-    pub fn version_path(&self, package: &str, version: &str) -> Utf8PathBuf {
-        utils::validate_path_component(version, Some("version"));
+    ///
+    /// # Errors
+    /// Returns an error if `package` or `version` is not a safe path component.
+    pub fn version_path(&self, package: &str, version: &str) -> EyreResult<Utf8PathBuf> {
+        utils::validate_path_component(version, Some("version"))?;
 
-        self.package_path(package).join(version)
+        Ok(self.package_path(package)?.join(version))
     }
 
     /// Get the root/base path of the blobstore

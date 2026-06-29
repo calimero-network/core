@@ -298,22 +298,23 @@ where
     /// so a later call does not collide with a still-held `RefCell` borrow.
     /// Sound because storage values are never aliased (each read deserializes a
     /// fresh copy) and execution is single-threaded WASM.
-    #[expect(
-        clippy::mut_from_ref,
-        clippy::expect_used,
-        reason = "lazy cache, mirrors Root::get"
-    )]
-    fn load_value(&self) -> &mut T {
+    #[expect(clippy::mut_from_ref, reason = "lazy cache, mirrors Root::get")]
+    fn load_value(&self) -> Result<&mut T, StoreError> {
         let mut slot = self.value.borrow_mut();
-        let value = slot.get_or_insert_with(|| {
-            self.inner
-                .get(self.value_id())
-                .expect("read WriterSetCell value")
-                .unwrap_or_default()
-        });
+        // The lazy initializer reads storage and is fallible, so this can't use
+        // `Option::get_or_insert_with`. `load_value` runs on *every* `get`, so a
+        // transient store error must propagate as a `Result` rather than panic.
+        if slot.is_none() {
+            let loaded = self.inner.get(self.value_id())?.unwrap_or_default();
+            *slot = Some(loaded);
+        }
+        // The slot is populated above, so this closure never runs — it only
+        // hands back the cached `&mut T` while keeping the borrow checker happy
+        // without a panicking `unwrap`.
+        let value = slot.get_or_insert_with(T::default);
         #[expect(unsafe_code, reason = "necessary for caching, mirrors Root::get")]
         let value = unsafe { &mut *core::ptr::from_mut(value) };
-        value
+        Ok(value)
     }
 }
 
@@ -334,10 +335,10 @@ where
     /// edited via [`insert`](WriterSetCell::insert) instead.
     ///
     /// # Errors
-    /// Currently infallible; the `Result` is preserved for forward compatibility.
+    /// Returns any underlying storage error from loading the value entry.
     pub fn get_mut(&mut self) -> Result<&mut T, StoreError> {
         let anchor = self.inner.id();
-        let value = self.load_value();
+        let value = self.load_value()?;
         // Stamp the value-collection element as a member anchored to the
         // wrapper. `Collection::insert` clones this element's `storage_type`
         // onto every entry, so all entries (at any depth) inherit the SAME
@@ -361,9 +362,9 @@ where
     /// Get a reference to the current value (anyone can read).
     ///
     /// # Errors
-    /// Currently infallible; the `Result` is preserved for forward compatibility.
+    /// Returns any underlying storage error from loading the value entry.
     pub fn get(&self) -> Result<&T, StoreError> {
-        Ok(self.load_value())
+        self.load_value().map(|value| &*value)
     }
 
     /// Returns the value entry's stamped `schema_version`, or `None` if no value
