@@ -1249,6 +1249,78 @@ fn transfer_ownership_rejects_new_owner_not_member() {
     );
 }
 
+/// `TransferOwnership` must move the meta `admin_identity` pin to the
+/// successor, not just `owner_identity`. `is_admin` honors
+/// `meta.admin_identity` as an always-admin that no member-row change can
+/// revoke, so leaving it on the old owner would grant the former owner
+/// permanent, unrevokable admin after handover. This pins the fix: after a
+/// transfer the former owner's admin authority is only as durable as their
+/// member row, so removing that row revokes their admin entirely.
+#[test]
+fn transfer_ownership_moves_admin_identity_to_new_owner() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    // Genesis shape: creator is owner_identity == admin_identity, with an
+    // explicit Admin member row (mirrors `GroupCreated`/namespace genesis).
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+    let successor_pk = PrivateKey::random(&mut rng).public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(owner_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &owner_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &successor_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let op = SignedGroupOp::sign(
+        &owner_sk,
+        gid_bytes,
+        vec![],
+        1,
+        GroupOp::TransferOwnership {
+            new_owner: successor_pk,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &op).unwrap();
+
+    // Both pins moved to the successor.
+    let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+    assert_eq!(meta.owner_identity, successor_pk, "owner moved");
+    assert_eq!(meta.admin_identity, successor_pk, "admin pin moved");
+
+    // The former owner's admin is now backed solely by their (revokable)
+    // member row — removing it strips their admin entirely. Before the fix
+    // the lingering `admin_identity` pin would keep them admin forever.
+    MembershipRepository::new(&store)
+        .remove_member(&gid, &owner_pk)
+        .unwrap();
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_admin(&gid, &owner_pk)
+            .unwrap(),
+        "former owner must lose admin once their member row is removed"
+    );
+    // The successor remains admin (member row + meta pin).
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&gid, &successor_pk)
+            .unwrap(),
+        "successor must still be admin after the transfer"
+    );
+}
+
 /// `ContextCapabilityGranted` is gated by `require_manage_members`. A
 /// plain member without the `MANAGE_MEMBERS` capability (and not an
 /// admin) cannot grant a context capability — and the grant must not be
