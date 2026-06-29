@@ -236,10 +236,7 @@ impl Engine {
     /// It is intentionally separate from (and larger than)
     /// [`VMLimits::max_module_size`], since a serialized artifact is bigger than
     /// the source WASM it came from.
-    pub unsafe fn from_precompiled(
-        &self,
-        bytes: &[u8],
-    ) -> Result<Module, PrecompiledModuleError> {
+    pub unsafe fn from_precompiled(&self, bytes: &[u8]) -> Result<Module, PrecompiledModuleError> {
         // Note: `as u64` is safe because usize <= u64 on all supported platforms.
         let size = bytes.len() as u64;
         if size > self.limits.max_precompiled_module_size {
