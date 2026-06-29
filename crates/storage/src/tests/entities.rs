@@ -511,3 +511,37 @@ mod metadata__needs_owner_convert {
         assert!(!needs_owner_convert(&user_meta(None), 0));
     }
 }
+
+mod op_mask__borsh {
+    use borsh::{from_slice, to_vec, BorshDeserialize};
+
+    use crate::entities::OpMask;
+
+    #[test]
+    fn defined_masks_round_trip() {
+        for mask in [
+            OpMask::NONE,
+            OpMask::WRITE,
+            OpMask::DELETE,
+            OpMask::ADMIN,
+            OpMask::FULL,
+            OpMask::WRITE.union(OpMask::DELETE),
+        ] {
+            let bytes = to_vec(&mask).unwrap();
+            assert_eq!(from_slice::<OpMask>(&bytes).unwrap(), mask);
+        }
+    }
+
+    #[test]
+    fn undefined_high_bits_are_rejected() {
+        // Every encoding with a bit outside FULL must fail to deserialize, so a
+        // peer cannot smuggle a non-canonical byte that is equal under
+        // `contains` but alters the signed authorization payload and id.
+        for bits in (0u8..=u8::MAX).filter(|b| b & !OpMask::FULL.bits() != 0) {
+            assert!(
+                OpMask::try_from_slice(&[bits]).is_err(),
+                "byte {bits:#010b} with undefined bits should be rejected"
+            );
+        }
+    }
+}
