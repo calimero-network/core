@@ -138,6 +138,10 @@ impl AsRef<[u8]> for ArcSlice<'_> {
     }
 }
 
+// The `Send + Sync` bounds are load-bearing: `Database` requires `Send + Sync +
+// 'static`, and `InMemoryDB<T>` is only `Send`/`Sync` when `T` is. They were
+// previously masked by an unconditional (unsound) `unsafe impl Send/Sync` — don't
+// drop them as "redundant with auto-derivation".
 impl<'a, T: InMemoryDBImpl<'a> + Debug + Send + Sync + 'static> Database<'a> for InMemoryDB<T>
 where
     T::Key: Ord + Clone + Borrow<[u8]>,
