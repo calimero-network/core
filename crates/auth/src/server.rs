@@ -25,6 +25,8 @@ pub struct AppState {
     pub config: AuthConfig,
     /// Metrics
     pub metrics: AuthMetrics,
+    /// Brute-force throttling for the login/token endpoint.
+    pub login_rate_limiter: Arc<crate::auth::rate_limit::LoginRateLimiter>,
 }
 
 /// Start the authentication service
@@ -54,6 +56,7 @@ pub async fn start_server(
         token_generator: auth_service.get_token_manager().clone(),
         config: config.clone(),
         metrics,
+        login_rate_limiter: Arc::new(crate::auth::rate_limit::LoginRateLimiter::default()),
     });
 
     // Create the session store

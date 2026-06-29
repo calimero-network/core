@@ -194,6 +194,28 @@ pub async fn token_handler(
         );
     }
 
+    // Brute-force throttle, keyed by the request identity. If this caller has
+    // exceeded the failed-attempt budget, reject with 429 + Retry-After before
+    // doing any credential work.
+    let rl_key = format!(
+        "{}|{}|{}",
+        token_request.auth_method, token_request.public_key, token_request.client_name
+    );
+    if let Some(retry_after) = state.0.login_rate_limiter.check(&rl_key) {
+        warn!("Login rate limit exceeded for identity {rl_key}");
+        let mut headers = HeaderMap::new();
+        let _ = headers.insert(
+            "Retry-After",
+            HeaderValue::from_str(&retry_after.to_string())
+                .unwrap_or_else(|_| HeaderValue::from_static("60")),
+        );
+        return error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many failed login attempts; please try again later",
+            Some(headers),
+        );
+    }
+
     // Authenticate directly using the token request with node context
     let auth_response = match state
         .0
@@ -204,6 +226,7 @@ pub async fn token_handler(
         Ok(response) => response,
         Err(err) => {
             error!("Authentication failed: {}", err);
+            state.0.login_rate_limiter.record_failure(&rl_key);
             return error_response(
                 StatusCode::UNAUTHORIZED,
                 format!("Authentication failed: {err}"),
@@ -214,12 +237,16 @@ pub async fn token_handler(
 
     // Ensure authentication was successful
     if !auth_response.is_valid {
+        state.0.login_rate_limiter.record_failure(&rl_key);
         return error_response(
             StatusCode::UNAUTHORIZED,
             "Authentication failed: Invalid credentials",
             None,
         );
     }
+
+    // Successful authentication clears the failed-attempt counter.
+    state.0.login_rate_limiter.reset(&rl_key);
 
     let key_id = auth_response.key_id;
 
