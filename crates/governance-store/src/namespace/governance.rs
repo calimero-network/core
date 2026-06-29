@@ -162,6 +162,14 @@ impl<'a> NamespaceGovernance<'a> {
         // idempotency guard's invariant ("op in the log ⟹ its head advance
         // already ran") intact: a wrong-namespace op is rejected before it can
         // touch anything.
+        //
+        // The public free-function entry points are safe by construction —
+        // `apply_signed_namespace_op_at_cut` builds the `NamespaceGovernance`
+        // handle with `op.namespace_id`, and the publisher path
+        // (`publish_post_gate`) signs with `self.namespace_id` — so this guard
+        // is dormant for them and exists to defend against direct misuse of the
+        // struct API (`NamespaceGovernance::new(store, X).apply_signed_op(op)`
+        // with `op.namespace_id != X`).
         if op.namespace_id != self.namespace_id {
             return Err(eyre::eyre!(
                 "namespace mismatch in apply_signed_op: handle={}, op={}",
