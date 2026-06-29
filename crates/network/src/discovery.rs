@@ -28,6 +28,13 @@ pub mod state;
 /// aging out peers that have genuinely left.
 const PEER_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 
+/// Most-recently-seen cached peers to dial in the startup reconnect burst.
+/// The cache can hold thousands of entries; reconnect only needs the few
+/// peers we last collaborated with (rendezvous rediscovers the rest), so this
+/// bounds the startup dial fan-out well below `connection_limits` rather than
+/// emitting a dial storm from a full or poisoned cache.
+const MAX_STARTUP_CACHE_DIALS: usize = 32;
+
 /// Fixed node-local datastore key for the single peer-cache blob. The
 /// whole relevant-peer set is stored as one value under this key in the
 /// `Generic` column (raw-bytes codec).
@@ -265,8 +272,19 @@ impl NetworkManager {
         };
         self.peer_cache = PeerAddrCache::from_persisted(records, now, PEER_CACHE_TTL_SECS);
 
-        let candidates = self.peer_cache.dial_candidates(now, PEER_CACHE_TTL_SECS);
-        let count = candidates.len();
+        // Cap the startup dial burst. The cache holds up to
+        // `MAX_PEER_CACHE_ENTRIES` (4096) peers; firing a dial at every one
+        // at once — e.g. when the cache is full of stale/unreachable
+        // addresses — is a self-inflicted dial storm that can exhaust file
+        // descriptors before `connection_limits` even denies the overflow.
+        // Reconnect only needs the handful of peers we most recently
+        // collaborated with (most-recent-first are the likeliest still
+        // reachable), so dial those and let rendezvous rediscover the rest.
+        let total = self.peer_cache.fresh_count(now, PEER_CACHE_TTL_SECS);
+        let candidates =
+            self.peer_cache
+                .startup_dial_set(now, PEER_CACHE_TTL_SECS, MAX_STARTUP_CACHE_DIALS);
+        let dialed = candidates.len();
         for candidate in candidates {
             let opts = DialOpts::peer_id(candidate.peer_id)
                 .condition(PeerCondition::DisconnectedAndNotDialing)
@@ -276,8 +294,13 @@ impl NetworkManager {
                 debug!(peer_id = %candidate.peer_id, ?err, "peer-cache startup dial skipped");
             }
         }
-        if count > 0 {
-            info!(count, "dialing cached peers on startup for fast reconnect");
+        if total > 0 {
+            info!(
+                dialed,
+                total,
+                dropped = total.saturating_sub(dialed),
+                "dialing cached peers on startup for fast reconnect (most-recent-first, capped)"
+            );
         }
     }
 
