@@ -1816,6 +1816,7 @@ dependencies = [
  "eyre",
  "hex",
  "reqwest 0.12.28",
+ "subtle",
  "tdx-quote",
  "tdx_workload_attestation",
  "tracing",

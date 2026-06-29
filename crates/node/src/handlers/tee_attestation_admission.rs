@@ -52,7 +52,7 @@ pub async fn handle_tee_attestation_announce(
         verify_attestation(&quote_bytes, &nonce, &pk_hash).await?
     };
 
-    if !verification_result.is_valid() {
+    if !verification_result.crypto_valid() {
         warn!(
             %source,
             quote_verified = verification_result.quote_verified,

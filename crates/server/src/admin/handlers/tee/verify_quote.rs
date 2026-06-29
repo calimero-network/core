@@ -100,7 +100,7 @@ async fn verify_quote(req: TeeVerifyQuoteRequest) -> Result<TeeVerifyQuoteRespon
             }
         })?;
 
-    let is_valid = result.is_valid();
+    let is_valid = result.crypto_valid();
 
     let response_data = TeeVerifyQuoteResponseData {
         quote_verified: result.quote_verified,

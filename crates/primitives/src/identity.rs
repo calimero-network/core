@@ -6,6 +6,8 @@ use core::str::FromStr;
 use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+#[cfg(feature = "rand")]
+use zeroize::Zeroize;
 
 use crate::context::ContextId;
 use crate::hash::{Hash, HashError};

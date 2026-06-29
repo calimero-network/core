@@ -674,7 +674,7 @@ async fn verify_kms_attestation_from_release_policy(
             .context("KMS attestation verification failed")?
     };
 
-    if !verification_result.is_valid() {
+    if !verification_result.crypto_valid() {
         error!(
             quote_verified = verification_result.quote_verified,
             nonce_verified = verification_result.nonce_verified,
@@ -1041,7 +1041,7 @@ async fn verify_kms_attestation(
             .context("Failed to verify KMS attestation quote")?
     };
 
-    if !verification_result.is_valid() {
+    if !verification_result.crypto_valid() {
         bail!(
             "KMS attestation verification failed: quote_verified={}, nonce_verified={}, app_hash_verified={}",
             verification_result.quote_verified,

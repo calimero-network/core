@@ -30,7 +30,7 @@
 //! } else {
 //!     verify_attestation(&result.quote_bytes, &nonce, &app_hash).await?
 //! };
-//! assert!(verification.is_valid());
+//! assert!(verification.crypto_valid());
 //! ```
 //!
 //! # Platform Behavior

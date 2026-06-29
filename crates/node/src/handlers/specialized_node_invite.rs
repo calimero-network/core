@@ -208,7 +208,7 @@ pub async fn handle_verification_request(
                 }
             };
 
-            if !verification_result.is_valid() {
+            if !verification_result.crypto_valid() {
                 warn!(
                     quote_verified = verification_result.quote_verified,
                     nonce_verified = verification_result.nonce_verified,
