@@ -376,6 +376,14 @@ pub async fn sse_handler(
     // Spawn event handler (after stream setup to ensure command channel is ready).
     // The handler is bound to this connection's command channel and exits on its
     // own when the connection closes, so there is no separate cleanup task to spawn.
+    //
+    // `commands_sender` is moved (not cloned) into the task on purpose: the only
+    // remaining sender then lives inside the handler, while the receiver is owned
+    // by the SSE response stream (`command_stream` above). When the client
+    // disconnects, axum drops the response body and therefore the receiver, which
+    // makes `command_sender.closed()` resolve and the handler exit. (axum streams
+    // the SSE body lazily via `Sse::new`, so the receiver is not held alive by the
+    // handler future itself.)
     drop(tokio::spawn(handle_node_events(
         session_id,
         Arc::clone(&state),

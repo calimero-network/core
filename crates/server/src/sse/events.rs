@@ -48,6 +48,11 @@ pub async fn handle_node_events(
 
     loop {
         let event = tokio::select! {
+            // Poll the close branch first so a closed connection is detected
+            // promptly even when the event stream is producing faster than the
+            // channel drains; otherwise random branch selection could keep
+            // starving the close branch and delay task exit.
+            biased;
             // Stop as soon as the connection goes away so we don't leak the
             // broadcast receiver subscription (and this task) for the process
             // lifetime. The session itself persists for reconnection; a new
