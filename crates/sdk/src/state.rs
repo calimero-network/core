@@ -85,6 +85,15 @@ impl MigrateMyEntriesSummary {
 ///
 /// * `Some(Vec<u8>)` - The raw serialized state bytes (user data only) if state exists
 /// * `None` - If no state has been stored yet
+///
+/// # Panics
+///
+/// Panics (aborting the guest) if the stored root entry is shorter than the
+/// 32-byte `Element.id` suffix. That is structurally impossible for a valid
+/// `Entry<T>`, so it indicates corrupt storage — an unrecoverable condition,
+/// not a "no state yet" (`None`) one. Migration is the only caller and cannot
+/// meaningfully proceed from a corrupt root, so this aborts rather than handing
+/// back the truncated id bytes as if they were user state.
 #[must_use]
 pub fn read_raw() -> Option<Vec<u8>> {
     let root_key = root_storage_key();
@@ -99,12 +108,13 @@ pub fn read_raw() -> Option<Vec<u8>> {
         // A valid Entry<T> always carries the 32-byte Element.id suffix, so a
         // shorter blob is corrupt storage — not user data. Returning these
         // bytes would hand the truncated id back to migration code as if it
-        // were state; fail loudly instead. (Exactly 32 bytes is the legitimate
-        // "0-byte user state" case and falls through to an empty Vec below.)
+        // were state; abort instead (see the `# Panics` section).
         crate::env::panic_str(
             "root state entry is smaller than the 32-byte Element.id suffix; storage is corrupt",
         );
     }
+    // When len == ELEMENT_SUFFIX_LEN the slice is empty, yielding `Some(vec![])`
+    // — the legitimate "0-byte user state" case.
     Some(bytes[..bytes.len() - ELEMENT_SUFFIX_LEN].to_vec())
 }
 

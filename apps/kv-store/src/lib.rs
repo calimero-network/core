@@ -161,7 +161,7 @@ impl KvStore {
 
         // Only emit `Cleared` when the map had entries, and only after the
         // clear succeeds.
-        let was_non_empty = self.items.len()? > 0;
+        let was_non_empty = !self.items.is_empty()?;
         self.items.clear()?;
         if was_non_empty {
             app::emit!(Event::Cleared);
