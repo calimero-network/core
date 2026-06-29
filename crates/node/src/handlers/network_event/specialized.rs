@@ -194,11 +194,15 @@ pub(super) fn handle_specialized_broadcast(
             // Per-group quote dedup + per-peer rate limit + global
             // inflight-verify cap. The returned permit must outlive the verify,
             // so it is moved into the spawned task and held until completion.
+            // Key the throttle on `group_id.to_bytes()` — the *same*
+            // `ContextGroupId` the durable `is_quote_hash_used` check used above
+            // — so the two dedup mechanisms can never key on divergent bytes if
+            // `ContextGroupId`'s representation ever changes.
             let now = std::time::Instant::now();
             let verify_permit = match this.tee_admission_throttle.check(
                 now,
                 source,
-                namespace_id_bytes,
+                group_id.to_bytes(),
                 quote_hash,
             ) {
                 Decision::Proceed(permit) => permit,

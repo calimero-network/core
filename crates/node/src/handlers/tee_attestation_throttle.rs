@@ -161,6 +161,16 @@ impl TeeAdmissionThrottle {
         }
     }
 
+    /// Tokens restored per second. A non-positive refill interval means
+    /// "unbounded" (one token back instantly), modelled as `f64::INFINITY`.
+    fn refill_per_sec(&self) -> f64 {
+        if self.per_peer_refill.as_secs_f64() > 0.0 {
+            1.0 / self.per_peer_refill.as_secs_f64()
+        } else {
+            f64::INFINITY
+        }
+    }
+
     /// Consult all three gates for an announce observed at `now`.
     ///
     /// On `Decision::Proceed` the `(group, quote_hash)` is recorded for dedup
@@ -204,11 +214,7 @@ impl TeeAdmissionThrottle {
         // (here or at Gate 3) therefore leaves `tokens` and `last` untouched, so
         // it neither burns a token nor advances the peer's refill clock.
         let burst = self.per_peer_burst;
-        let refill_per_sec = if self.per_peer_refill.as_secs_f64() > 0.0 {
-            1.0 / self.per_peer_refill.as_secs_f64()
-        } else {
-            f64::INFINITY
-        };
+        let refill_per_sec = self.refill_per_sec();
         // Read the current bucket state *without* inserting. A brand-new peer
         // is treated as a full bucket, so first contact is never rate-limited;
         // crucially, a peer is only inserted on the commit (Proceed) path below,
@@ -271,15 +277,27 @@ impl TeeAdmissionThrottle {
             Self::evict_oldest(&mut self.recent_quotes, MAX_TRACKED_QUOTES);
         }
 
-        // A peer whose bucket has refilled to full and hasn't been *seen* for a
-        // while carries no state worth keeping. Keyed on `last_seen` (not
-        // `last`), so a peer that is actively announcing but pinned at the rate
-        // limit — recent `last_seen`, stale `last` — is retained. `>=` evicts at
-        // exactly the cutoff, matching the dedup-TTL boundary convention above.
+        // A peer whose bucket would have refilled to full and hasn't been *seen*
+        // for a while carries no state worth keeping (it is indistinguishable
+        // from a fresh peer). Two subtleties:
+        //   * Fullness is computed from elapsed time since the last grant, not
+        //     read from `b.tokens`: tokens are written only on `Proceed`
+        //     (transactional), so the stored value is stale between grants and
+        //     `b.tokens >= burst` would essentially never hold for a peer that
+        //     was ever granted. A partially-refilled (still-throttled) peer is
+        //     therefore correctly retained.
+        //   * Idleness is keyed on `last_seen` (every-call activity), not `last`
+        //     (grant time), so an active-but-throttled peer is kept rather than
+        //     evicted and handed a fresh full bucket. `>=` evicts at exactly the
+        //     cutoff, matching the dedup-TTL boundary convention above.
         let burst = self.per_peer_burst;
+        let refill_per_sec = self.refill_per_sec();
         let idle_cutoff = self.per_peer_refill.saturating_mul(2);
         self.peers.retain(|_, b| {
-            !(b.tokens >= burst && now.saturating_duration_since(b.last_seen) >= idle_cutoff)
+            let would_be_full = b.tokens
+                + now.saturating_duration_since(b.last).as_secs_f64() * refill_per_sec
+                >= burst;
+            !(would_be_full && now.saturating_duration_since(b.last_seen) >= idle_cutoff)
         });
         if self.peers.len() > MAX_TRACKED_PEERS {
             Self::evict_oldest_peers(&mut self.peers, MAX_TRACKED_PEERS);
@@ -504,6 +522,41 @@ mod tests {
             Decision::AtCapacity
         ));
         assert_eq!(t.peers.len(), 1, "a refused new peer must not grow the map");
+    }
+
+    #[test]
+    fn idle_prune_drops_recovered_peer_keeps_throttled_peer() {
+        // burst 5, refill 1 token/sec → idle_cutoff = 2s. Generous inflight +
+        // dedup so only the per-peer bucket state varies.
+        let mut t =
+            TeeAdmissionThrottle::new(1000, 5.0, Duration::from_secs(1), Duration::from_secs(300));
+        let now = Instant::now();
+        let g = [0u8; 32];
+
+        // Recovered peer: a single grant, then idle — its bucket stays near full.
+        assert!(matches!(
+            t.check(now, peer(1), g, [1u8; 32]),
+            Decision::Proceed(_)
+        ));
+        // Throttled peer: spend its whole burst so it is depleted to ~0 tokens.
+        for i in 0..5u8 {
+            let _ = t.check(now, peer(2), g, [10 + i; 32]);
+        }
+        assert!(t.peers.contains_key(&peer(1)) && t.peers.contains_key(&peer(2)));
+
+        // After the idle window, peer 1 would be fully refilled (drop it), but
+        // the depleted peer 2 would only have ~2 tokens (< burst) — its throttle
+        // state must be retained. This also guards against the stored-`tokens`
+        // staleness that a naive `b.tokens >= burst` check would suffer.
+        t.prune(now + Duration::from_secs(2));
+        assert!(
+            !t.peers.contains_key(&peer(1)),
+            "fully-recovered idle peer should be pruned"
+        );
+        assert!(
+            t.peers.contains_key(&peer(2)),
+            "still-throttled peer must be retained"
+        );
     }
 
     #[test]
