@@ -17,14 +17,17 @@ pub(crate) fn sanitize_for_log(input: &str) -> String {
     const MAX_LEN: usize = 256;
 
     let mut out = String::with_capacity(input.len().min(MAX_LEN));
-    for ch in input.chars().take(MAX_LEN) {
+    let mut chars = input.chars();
+    for ch in chars.by_ref().take(MAX_LEN) {
         if ch.is_control() {
             out.extend(ch.escape_default());
         } else {
             out.push(ch);
         }
     }
-    if input.chars().nth(MAX_LEN).is_some() {
+    // `chars` resumes right after the `take(MAX_LEN)`, so a remaining char means
+    // the input was longer than the cap — O(1), no second scan of the input.
+    if chars.next().is_some() {
         out.push('…');
     }
     out
