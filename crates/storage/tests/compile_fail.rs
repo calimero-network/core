@@ -14,5 +14,21 @@
 #[test]
 fn compile_fail() {
     let t = trybuild::TestCases::new();
-    t.compile_fail("tests/compile_fail/*.rs");
+
+    // Feature-stable cases: their `.stderr` is identical regardless of which
+    // crate features are active, so they run under every feature set.
+    t.compile_fail("tests/compile_fail/derive_mergeable_enum.rs");
+    t.compile_fail("tests/compile_fail/derive_mergeable_hashmap.rs");
+    t.compile_fail("tests/compile_fail/state_bare_primitive.rs");
+    t.compile_fail("tests/compile_fail/state_bare_string.rs");
+    t.compile_fail("tests/compile_fail/state_hashmap_field.rs");
+    t.compile_fail("tests/compile_fail/state_hashmap_in_lww.rs");
+
+    // Feature-SENSITIVE: rustc's "other types implement `RekeyTarget`" help block
+    // lists implementors alphabetically (truncated at 8), and the `testing` feature
+    // changes that set, so the `.stderr` differs between feature sets. CI builds the
+    // workspace with `testing` on (feature unification), so the snapshot is blessed
+    // for that and gated to it — keeping the default `-p calimero-storage` run clean.
+    #[cfg(feature = "testing")]
+    t.compile_fail("tests/compile_fail/mergeable_without_rekeytarget.rs");
 }

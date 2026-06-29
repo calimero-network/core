@@ -67,7 +67,14 @@ pub trait CrdtMeta {
     }
 }
 
-/// Marker trait for types that can be merged (all CRDTs)
+/// Marker trait for types that can be merged (all CRDTs).
+///
+/// `RekeyTarget` is a **supertrait**: a `Mergeable` type that nests a collection
+/// must re-key it deterministically or it diverges permanently with no runtime
+/// error. The bound forces a hand-written `impl Mergeable` to also `impl
+/// RekeyTarget` — but only checks the impl EXISTS, not that its body re-keys
+/// every field or that the type is registered (a runtime lookup; see `rekey`).
+/// `#[derive(Mergeable)]` / `#[app::state]` generate both; leaves no-op.
 #[diagnostic::on_unimplemented(
     message = "(calimero)> `{Self}` cannot be stored in replicated state — it is not a CRDT",
     label = "this type has no merge semantics",
@@ -76,13 +83,23 @@ pub trait CrdtMeta {
             use `UnorderedMap`/`UnorderedSet`/`Vector` for collections; or `#[derive(Mergeable)]` \
             on your own struct (every field must itself be `Mergeable`)."
 )]
-pub trait Mergeable {
+pub trait Mergeable: crate::collections::rekey::RekeyTarget {
     /// Merge with another instance of the same type
     ///
     /// # Errors
     ///
     /// Returns error if merge fails (e.g., incompatible states)
     fn merge(&mut self, other: &Self) -> Result<(), MergeError>;
+}
+
+// Feature-insensitive compile guard for the `Mergeable: RekeyTarget` supertrait.
+// This body type-checks only while the bound holds; removing it breaks the build
+// in every feature set. Complements the `testing`-gated trybuild negative case
+// (which only runs when `testing` is on). Never called.
+#[allow(dead_code)]
+fn _mergeable_requires_rekeytarget<T: Mergeable>() {
+    fn assert_rekey<U: crate::collections::rekey::RekeyTarget>() {}
+    assert_rekey::<T>();
 }
 
 /// Marker for types usable as a **key** in a Calimero collection
@@ -258,6 +275,47 @@ macro_rules! is_crdt {
     };
 }
 
+/// Whole-record last-write-wins `Mergeable` for a leaf struct stored as a
+/// collection value but NOT made of CRDT fields (e.g. an immutable upload record
+/// keyed by a monotonic `uploaded_at`). Emits the LWW `Mergeable` and a matching
+/// no-op `RekeyTarget` in one line.
+///
+/// MUST only be used on a struct with NO collection fields: the emitted
+/// `RekeyTarget` is an unconditional no-op, so a nested collection would silently
+/// never re-key (the #2577 divergence) and the macro can't check this.
+///
+/// `$t: Clone`, `$tie` monotonic; `other` replaces `self` iff `other.$tie > self.$tie`.
+///
+/// ```ignore
+/// calimero_storage::impl_atomic_lww_leaf!(FileRecord, uploaded_at);
+/// ```
+#[macro_export]
+macro_rules! impl_atomic_lww_leaf {
+    ($t:ty, $tie:ident) => {
+        impl $crate::collections::Mergeable for $t {
+            fn merge(
+                &mut self,
+                other: &Self,
+            ) -> ::core::result::Result<(), $crate::collections::crdt_meta::MergeError> {
+                // Last-write-wins by the monotonic tie-breaker. Strict `>` keeps
+                // `self` on ties, so the merge is idempotent and the outcome is
+                // independent of which side is `self` for distinct tie values.
+                if other.$tie > self.$tie {
+                    *self = ::core::clone::Clone::clone(other);
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+
+        // Whole-record-LWW leaf: no nested collection id to re-key, so the
+        // no-op `rekey_relative_to` is correct. Emitted here (not by the app)
+        // so the author writes no `RekeyTarget` code.
+        impl $crate::collections::rekey::RekeyTarget for $t {
+            fn rekey_relative_to(&mut self, _parent_id: $crate::address::Id) {}
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +342,63 @@ mod tests {
             }
             other => panic!("expected MergeError::StorageError, got {other:?}"),
         }
+    }
+
+    // A leaf record merged by `impl_atomic_lww_leaf!`, mirroring an app upload record:
+    // plain non-CRDT fields, replaced atomically by a monotonic tie-breaker.
+    #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+    struct Upload {
+        name: String,
+        size: u64,
+        uploaded_at: u64,
+    }
+    crate::impl_atomic_lww_leaf!(Upload, uploaded_at);
+
+    #[test]
+    fn impl_atomic_lww_leaf_is_last_write_wins_by_tie_field() {
+        use crate::collections::Mergeable;
+
+        let older = Upload {
+            name: "a".to_owned(),
+            size: 1,
+            uploaded_at: 10,
+        };
+        let newer = Upload {
+            name: "b".to_owned(),
+            size: 2,
+            uploaded_at: 20,
+        };
+
+        // Newer (higher tie) wins regardless of merge direction.
+        let mut x = older.clone();
+        x.merge(&newer).unwrap();
+        assert_eq!(x, newer, "higher uploaded_at must replace self");
+
+        let mut y = newer.clone();
+        y.merge(&older).unwrap();
+        assert_eq!(y, newer, "lower uploaded_at must NOT replace a newer self");
+
+        // Idempotent / order-independent for distinct tie values.
+        let mut z = older.clone();
+        z.merge(&newer).unwrap();
+        z.merge(&newer).unwrap();
+        assert_eq!(z, newer, "repeated merge stays at the winner");
+    }
+
+    #[test]
+    fn impl_atomic_lww_leaf_emits_a_noop_rekey_target() {
+        // The macro emits `RekeyTarget` (supertrait of `Mergeable`); a leaf has
+        // no nested id to re-key, so `rekey_relative_to` is a no-op that leaves
+        // the value byte-identical.
+        use crate::collections::rekey::RekeyTarget;
+
+        let mut u = Upload {
+            name: "x".to_owned(),
+            size: 7,
+            uploaded_at: 3,
+        };
+        let before = u.clone();
+        u.rekey_relative_to(crate::address::Id::root());
+        assert_eq!(u, before, "atomic-LWW leaf re-key must be a no-op");
     }
 }

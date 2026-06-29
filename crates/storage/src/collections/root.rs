@@ -327,6 +327,22 @@ where
             StorageDelta::Comparisons(_) => "Comparisons",
         };
 
+        // Observe the remote delta's HLC before applying, so a later local insert
+        // sorts after the remote char it follows (CausalActions carries the HLC;
+        // Actions don't). A drift-rejected (>5s ahead) HLC is logged, not fatal —
+        // the actions are still valid state.
+        if let StorageDelta::CausalActions { delta_hlc, .. } = &artifact {
+            if let Err(e) = crate::env::update_hlc(delta_hlc) {
+                tracing::warn!(
+                    target: "storage::root",
+                    %delta_hlc,
+                    error = %e,
+                    "Root::sync: remote delta HLC rejected (drift guard); \
+                     applying without advancing the local clock"
+                );
+            }
+        }
+
         // `match` is an expression — assign directly. `inspect_err` then
         // logs without rewriting the Result; `?` propagates the Err to
         // the caller (the SDK macro's `.expect("fatal: sync failed")`).

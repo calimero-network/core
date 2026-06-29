@@ -36,23 +36,12 @@ pub struct Person {
     age: u32,
 }
 
-// Profile with all CRDT fields (can be used directly in UnorderedMap)
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
+// Profile with all CRDT fields (can be used directly in UnorderedMap).
+#[derive(Debug, BorshSerialize, BorshDeserialize, calimero_storage::collections::Mergeable)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct Profile {
     bio: LwwRegister<Option<String>>,
     visit_count: Counter,
-}
-
-impl calimero_storage::collections::Mergeable for Profile {
-    fn merge(
-        &mut self,
-        other: &Self,
-    ) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
-        self.bio.merge(&other.bio);
-        self.visit_count.merge(&other.visit_count)?;
-        Ok(())
-    }
 }
 
 // Variant types

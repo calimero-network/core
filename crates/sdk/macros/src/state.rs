@@ -63,6 +63,10 @@ impl ToTokens for StateImpl<'_> {
         let rekey_register_method = generate_rekey_register_method(ident, generics, orig);
         let rekey_call = quote! { <#ident #ty_generics>::__calimero_register_rekey(); };
 
+        // Generate the `RekeyTarget` impl (supertrait of the `Mergeable` impl
+        // above). Without it, the supertrait bound fails to compile.
+        let rekey_target_impl = generate_rekey_target_impl(ident, generics, orig);
+
         // Generate registration hook
         let registration_hook = generate_registration_hook(ident, &ty_generics, &rekey_call);
 
@@ -98,6 +102,10 @@ impl ToTokens for StateImpl<'_> {
 
             // Auto-generated CRDT merge support
             #merge_impl
+
+            // Auto-generated deterministic re-key support (RekeyTarget — the
+            // supertrait of the Mergeable impl above)
+            #rekey_target_impl
 
             // Auto-generated registration hook
             #registration_hook
@@ -763,6 +771,83 @@ fn generate_rekey_register_method(
                 #calls
             }
         }
+    }
+}
+
+/// Generate the `RekeyTarget` impl for the state struct (the supertrait of the
+/// `Mergeable` impl `#[app::state]` also generates).
+///
+/// Mirrors `#[derive(Mergeable)]`: `rekey_relative_to` cascades over the fields
+/// (`rekey_field_if_supported!` — real re-key for `RekeyTarget` fields, no-op
+/// for leaves) and `register_nested_value_types` re-runs the same per-field scan
+/// (`rekey_register_calls`). Enums get no impl (they get no `Mergeable` impl).
+fn generate_rekey_target_impl(
+    ident: &Ident,
+    generics: &Generics,
+    orig: &StructOrEnumItem,
+) -> TokenStream {
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    let fields = match orig {
+        StructOrEnumItem::Struct(s) => &s.fields,
+        StructOrEnumItem::Enum(_) => return quote! {},
+    };
+
+    let rekey_body = generate_struct_rekey(fields);
+    let register_body = rekey_register_calls(fields);
+
+    quote! {
+        impl #impl_generics ::calimero_storage::collections::rekey::RekeyTarget
+            for #ident #ty_generics #where_clause
+        {
+            fn rekey_relative_to(
+                &mut self,
+                parent_id: ::calimero_storage::address::Id,
+            ) {
+                #rekey_body
+            }
+
+            fn register_nested_value_types() {
+                #register_body
+            }
+        }
+    }
+}
+
+/// Emit the per-field re-key cascade for a struct's `rekey_relative_to`, mirroring
+/// `#[derive(Mergeable)]`: each field is re-keyed under a field-namespaced child id
+/// (`rekey_field_if_supported!` autoref-dispatches — real re-key for `RekeyTarget`
+/// fields, no-op for leaves). Each expansion stays in its own block (the macro
+/// defines per-invocation helper traits).
+fn generate_struct_rekey(fields: &syn::Fields) -> TokenStream {
+    match fields {
+        syn::Fields::Named(named) => {
+            let calls = named.named.iter().map(|f| {
+                let name = f.ident.as_ref().expect("named field has ident");
+                let name_str = name.to_string();
+                quote! {
+                    ::calimero_storage::rekey_field_if_supported!(
+                        &mut self.#name,
+                        ::calimero_storage::collections::rekey::field_child_id(parent_id, #name_str)
+                    );
+                }
+            });
+            quote! { #(#calls)* }
+        }
+        syn::Fields::Unnamed(unnamed) => {
+            let calls = unnamed.unnamed.iter().enumerate().map(|(i, _)| {
+                let idx = syn::Index::from(i);
+                let name_str = i.to_string();
+                quote! {
+                    ::calimero_storage::rekey_field_if_supported!(
+                        &mut self.#idx,
+                        ::calimero_storage::collections::rekey::field_child_id(parent_id, #name_str)
+                    );
+                }
+            });
+            quote! { #(#calls)* }
+        }
+        syn::Fields::Unit => quote! {},
     }
 }
 

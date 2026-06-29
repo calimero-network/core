@@ -517,6 +517,17 @@ where
         }
     }
 
+    /// The deterministic storage entity id this `key` maps to. Exposed so the RGA
+    /// blob-merge tombstone check (`Index::is_deleted`) addresses the entry without
+    /// re-deriving `compute_id` and drifting from the map's own keying.
+    pub(crate) fn entry_id<Q>(&self, key: &Q) -> Id
+    where
+        K: Borrow<Q>,
+        Q: AsRef<[u8]> + ?Sized,
+    {
+        compute_id(self.inner.id(), key.as_ref())
+    }
+
     /// Check if the map contains a key.
     ///
     /// # Errors

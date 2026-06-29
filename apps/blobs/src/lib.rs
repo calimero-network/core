@@ -54,25 +54,9 @@ pub struct FileRecord {
     pub uploaded_at: u64,
 }
 
-// Manual `Mergeable` impl for `FileRecord` — opaque LWW per file ID.
-//
-// Why manual instead of `#[derive(Mergeable)]`? `FileRecord` is treated
-// atomically (one full record per file_id). Deriving would require every
-// inner field (`String`, `u64`, ...) to be Mergeable, forcing each to be
-// wrapped in `LwwRegister` / `Counter` — overkill for an immutable upload
-// record. The hand-rolled impl uses `uploaded_at` as the LWW tiebreaker,
-// which is correct for atomic uploads.
-impl calimero_storage::collections::Mergeable for FileRecord {
-    fn merge(
-        &mut self,
-        other: &Self,
-    ) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
-        if other.uploaded_at > self.uploaded_at {
-            *self = other.clone();
-        }
-        Ok(())
-    }
-}
+// Atomic whole-record LWW by `uploaded_at` (see `impl_atomic_lww_leaf!`); not a
+// struct of CRDT fields, so `#[derive(Mergeable)]` doesn't apply.
+calimero_storage::impl_atomic_lww_leaf!(FileRecord, uploaded_at);
 
 /// Application state for the file sharing system.
 #[app::state(emits = FileShareEvent)]

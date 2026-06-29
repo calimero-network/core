@@ -28,21 +28,11 @@ pub struct KvStore {
     frozen_items: FrozenStorage<String>,
 }
 
-// Define the nested map type for user_items_nested
-// It must implement Mergeable, Borsh, and Default
-#[derive(Debug, BorshSerialize, BorshDeserialize, Default)]
+// Nested map type for `user_items_nested`.
+#[derive(Debug, BorshSerialize, BorshDeserialize, Default, Mergeable)]
 #[borsh(crate = "calimero_sdk::borsh")]
 struct NestedMap {
     map: UnorderedMap<String, LwwRegister<String>>,
-}
-
-impl Mergeable for NestedMap {
-    fn merge(
-        &mut self,
-        other: &Self,
-    ) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
-        self.map.merge(&other.map)
-    }
 }
 
 #[app::event]

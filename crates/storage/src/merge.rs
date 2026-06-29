@@ -659,6 +659,16 @@ mod typed_dispatch_tests {
         counter: Counter,
     }
 
+    // RekeyTarget supertrait of Mergeable.
+    impl crate::collections::rekey::RekeyTarget for DispatchTestApp {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.counter,
+                crate::collections::rekey::field_child_id(parent_id, "counter")
+            );
+        }
+    }
+
     impl Mergeable for DispatchTestApp {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.counter.merge(&other.counter)

@@ -189,6 +189,17 @@ where
     }
 }
 
+// RekeyTarget supertrait — delegate to the inner collection.
+impl<T, S> crate::collections::rekey::RekeyTarget for FrozenStorage<T, S>
+where
+    T: BorshSerialize + BorshDeserialize + 'static,
+    S: StorageAdaptor,
+{
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        self.inner.rekey_relative_to(parent_id);
+    }
+}
+
 // Implement Mergeable so it correctly merges in #[app::state]
 #[diagnostic::do_not_recommend]
 impl<T, S> Mergeable for FrozenStorage<T, S>

@@ -72,6 +72,21 @@ use crate::store::StorageAdaptor;
 // Bonus: it makes the `error_non_mergeable_field` golden drift-proof as new
 // `Mergeable` impls land. `do_not_recommend` only affects diagnostics, never
 // trait resolution.
+// `RekeyTarget` is a supertrait of `Mergeable`. `Option`/`Box` delegate
+// re-keying to the inner value so a nested collection inside an `Option`/`Box`
+// field is still registered.
+impl<T: super::rekey::RekeyTarget + 'static> super::rekey::RekeyTarget for Option<T> {
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        if let Some(inner) = self.as_mut() {
+            inner.rekey_relative_to(parent_id);
+        }
+    }
+
+    fn register_nested_value_types() {
+        T::register_nested_value_types();
+    }
+}
+
 #[diagnostic::do_not_recommend]
 impl<T: Mergeable + Clone> Mergeable for Option<T> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
@@ -97,6 +112,16 @@ impl<T: Mergeable + Clone> Mergeable for Option<T> {
 // through (`Box` is in the lint's pass-through list) only for the trait bound
 // to fail later with an unhelpful diagnostic. Trivial delegation makes the
 // claim honest.
+impl<T: super::rekey::RekeyTarget + 'static> super::rekey::RekeyTarget for Box<T> {
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        (**self).rekey_relative_to(parent_id);
+    }
+
+    fn register_nested_value_types() {
+        T::register_nested_value_types();
+    }
+}
+
 #[diagnostic::do_not_recommend]
 impl<T: Mergeable> Mergeable for Box<T> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
@@ -123,8 +148,14 @@ impl<T: 'static> CrdtMeta for LwwRegister<T> {
     }
 }
 
+// LwwRegister wraps a single value and contains no nested collection
+// (`can_contain_crdts() == false`), so re-keying is a no-op.
+impl<T: 'static> super::rekey::RekeyTarget for LwwRegister<T> {
+    fn rekey_relative_to(&mut self, _parent_id: crate::address::Id) {}
+}
+
 #[diagnostic::do_not_recommend]
-impl<T: Clone + borsh::BorshSerialize> Mergeable for LwwRegister<T> {
+impl<T: Clone + borsh::BorshSerialize + 'static> Mergeable for LwwRegister<T> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // Use existing merge implementation
         LwwRegister::merge(self, other);
@@ -230,26 +261,16 @@ impl CrdtMeta for ReplicatedGrowableArray {
 impl Mergeable for ReplicatedGrowableArray {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // RGA is built on UnorderedMap which has element-level DAG synchronization.
-        // During root-level merge (e.g., periodic full state sync or conflict resolution),
-        // we need to merge the RGA contents by ensuring both nodes have all characters.
+        // During root-level merge (e.g., periodic full state sync or conflict
+        // resolution), we merge the RGA contents by ensuring both nodes have all
+        // characters that neither has tombstoned.
         //
         // We can't use `chars.merge()` because RgaChar doesn't implement Mergeable
-        // (it's a simple data struct, not a CRDT). Instead, we copy all characters
-        // from `other` that we don't have yet.
-        let other_chars = other.chars.entries()?;
-
-        for (key, char_data) in other_chars {
-            // Propagate a read error instead of swallowing it: `.ok().flatten()`
-            // would treat a transient storage failure as "char absent" and
-            // re-insert, corrupting the array. A genuine absence is `Ok(None)`.
-            if self.chars.get(&key)?.is_none() {
-                // Character exists in other but not in self - add it
-                let _ = self.chars.insert(key, char_data)?;
-            }
-            // If character exists in both, keep ours (they should be identical anyway,
-            // since characters are immutable once inserted)
-        }
-
+        // (it's a simple data struct, not a CRDT). `merge_chars_from` copies each
+        // char from `other` that `self` neither holds live nor has TOMBSTONED —
+        // so a concurrently-deleted char is never resurrected. Delegated to
+        // a generic method so it is unit-testable across isolated storage scopes.
+        self.merge_chars_from(other)?;
         Ok(())
     }
 }
