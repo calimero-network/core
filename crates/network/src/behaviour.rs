@@ -36,6 +36,12 @@ const CALIMERO_KAD_PROTO_NAME: StreamProtocol = StreamProtocol::new("/calimero/k
 // `max_pending_outgoing` is the dial-storm cap: excess concurrent dials are
 // denied (not queued) rather than opening an unbounded number of sockets. The
 // startup cache redial also caps how many it issues at the source.
+//
+// Fixed constants by design (a safety backstop, not per-deployment tuning). If
+// an infrastructure node — a bootstrap or relay serving many peers — needs a
+// higher ceiling, promote these to `SwarmConfig` fields with these values as
+// defaults; `SwarmConfig` is `#[non_exhaustive]`, so adding them stays
+// backwards-compatible.
 const MAX_PENDING_INCOMING: u32 = 128;
 const MAX_PENDING_OUTGOING: u32 = 128;
 // A peer legitimately holds a few simultaneous connections (TCP + QUIC, plus a
