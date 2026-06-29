@@ -4,7 +4,7 @@ use calimero_store::Store;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 
-use super::session::{ActiveConnection, SessionState};
+use super::session::SessionState;
 
 /// Global SSE service state
 pub struct ServiceState {
@@ -12,8 +12,6 @@ pub struct ServiceState {
     pub store: Store,
     /// Session state persists across reconnections (in-memory cache)
     pub sessions: RwLock<HashMap<ConnectionId, SessionState>>,
-    /// Active connections track current SSE streams
-    pub active_connections: RwLock<HashMap<ConnectionId, ActiveConnection>>,
 }
 
 impl ServiceState {
@@ -24,7 +22,6 @@ impl ServiceState {
             node_client,
             store,
             sessions: RwLock::default(),
-            active_connections: RwLock::default(),
         }
     }
 }
