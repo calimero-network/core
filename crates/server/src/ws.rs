@@ -389,11 +389,12 @@ async fn handle_node_events(
 
         let body = match to_json_value(event) {
             Ok(v) => ResponseBody::Result(v),
-            Err(err) => ResponseBody::Error(ResponseBodyError::ServerError(
-                ServerResponseError::InternalError {
-                    err: Some(err.into()),
-                },
-            )),
+            Err(err) => {
+                error!(%connection_id, %err, "Failed to serialize node event");
+                ResponseBody::Error(ResponseBodyError::ServerError(
+                    ServerResponseError::InternalError { err: None },
+                ))
+            }
         };
 
         let response = Response { id: None, body };
@@ -637,23 +638,26 @@ impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, WsError<E>> {
         match self {
             Ok(r) => match to_json_value(r) {
                 Ok(v) => ResponseBody::Result(v),
-                Err(err) => ResponseBody::Error(ResponseBodyError::ServerError(
-                    ServerResponseError::InternalError {
-                        err: Some(err.into()),
-                    },
-                )),
+                Err(err) => {
+                    error!(%err, "Failed to serialize response");
+                    ResponseBody::Error(ResponseBodyError::ServerError(
+                        ServerResponseError::InternalError { err: None },
+                    ))
+                }
             },
             Err(WsError::MethodCallError(err)) => match to_json_value(err) {
                 Ok(v) => ResponseBody::Error(ResponseBodyError::HandlerError(v)),
-                Err(err) => ResponseBody::Error(ResponseBodyError::ServerError(
-                    ServerResponseError::InternalError {
-                        err: Some(err.into()),
-                    },
-                )),
+                Err(err) => {
+                    error!(%err, "Failed to serialize handler error");
+                    ResponseBody::Error(ResponseBodyError::ServerError(
+                        ServerResponseError::InternalError { err: None },
+                    ))
+                }
             },
             Err(WsError::InternalError(err)) => {
+                error!(%err, "Internal server error");
                 ResponseBody::Error(ResponseBodyError::ServerError(
-                    ServerResponseError::InternalError { err: Some(err) },
+                    ServerResponseError::InternalError { err: None },
                 ))
             }
         }

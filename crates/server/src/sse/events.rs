@@ -8,7 +8,7 @@ use futures_util::StreamExt;
 use serde_json::to_value as to_json_value;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, error};
 
 use super::session::SessionState;
 use super::state::ServiceState;
@@ -66,11 +66,12 @@ pub async fn handle_node_events(
 
         let body = match to_json_value(event) {
             Ok(v) => ResponseBody::Result(v),
-            Err(err) => ResponseBody::Error(ResponseBodyError::ServerError(
-                ServerResponseError::InternalError {
-                    err: Some(err.into()),
-                },
-            )),
+            Err(err) => {
+                error!(%session_id, %err, "Failed to serialize node event");
+                ResponseBody::Error(ResponseBodyError::ServerError(
+                    ServerResponseError::InternalError { err: None },
+                ))
+            }
         };
 
         let response = Response { body };

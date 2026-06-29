@@ -18,6 +18,20 @@ use crate::NetworkManager;
 const BLOB_TRANSFER_TIMEOUT: Duration = Duration::from_secs(60); // 1 minute per operation
 const CHUNK_RECEIVE_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds per chunk
 
+// Hard upper bound on a single inbound blob, regardless of the size a peer
+// advertises. Without this, a malicious or buggy peer can stream chunks
+// indefinitely and exhaust this node's memory. Mirrors the node crate's
+// `MAX_BLOB_STREAM_SIZE_BYTES` (500 MiB); kept local because `network` is a
+// lower-level crate that `node` depends on, not the other way around.
+const MAX_BLOB_SIZE_BYTES: u64 = 500 * 1024 * 1024;
+
+/// Resolve the number of bytes we are willing to buffer for a single blob.
+/// Trust the peer's advertised size only up to the hard limit; if the size is
+/// unknown, fall back to the hard limit alone.
+fn effective_max_size(advertised: Option<u64>) -> u64 {
+    advertised.map_or(MAX_BLOB_SIZE_BYTES, |size| size.min(MAX_BLOB_SIZE_BYTES))
+}
+
 impl Handler<RequestBlob> for NetworkManager {
     type Result = ResponseFuture<<RequestBlob as Message>::Result>;
 
@@ -160,6 +174,12 @@ impl Handler<RequestBlob> for NetworkManager {
                     let mut chunk_count = 0;
                     let start_time = std::time::Instant::now();
 
+                    // Cap the amount of data we are willing to buffer. Trust the
+                    // peer's advertised size only up to the hard limit; if the size
+                    // is unknown, fall back to the hard limit alone. This prevents an
+                    // unbounded `collected_data` from exhausting memory.
+                    let max_size = effective_max_size(blob_response.size);
+
                     debug!(
                         blob_id = %request.blob_id,
                         peer_id = %request.peer_id,
@@ -252,6 +272,25 @@ impl Handler<RequestBlob> for NetworkManager {
 
                         // Get chunk size before moving the data
                         let chunk_size = blob_chunk.data.len();
+
+                        // Enforce the size cap *before* buffering this chunk, so a
+                        // peer cannot push us past the limit by a full chunk's worth
+                        // of data. `collected_data.len()` is bounded by `max_size`
+                        // (<= u64::MAX) on each prior iteration, so the cast is safe.
+                        if collected_data.len() as u64 + chunk_size as u64 > max_size {
+                            let _ignored = event_dispatcher.dispatch(NetworkEvent::BlobDownloadFailed {
+                                blob_id: request.blob_id,
+                                context_id: request.context_id,
+                                from_peer: request.peer_id,
+                                error: format!(
+                                    "Blob exceeds maximum allowed size of {max_size} bytes"
+                                ),
+                            });
+                            return Err(eyre!(
+                                "Blob exceeds maximum allowed size of {max_size} bytes"
+                            ));
+                        }
+
                         // Add chunk data to collection (move semantics, no clone)
                         collected_data.extend(blob_chunk.data);
                         chunk_count += 1;
@@ -366,5 +405,27 @@ mod tests {
                 "Serialized size should match expected for chunk {i}"
             );
         }
+    }
+
+    #[test]
+    fn test_effective_max_size_caps_oversized_advertisement() {
+        // A peer advertising more than the hard limit is clamped to the limit.
+        assert_eq!(
+            effective_max_size(Some(MAX_BLOB_SIZE_BYTES * 4)),
+            MAX_BLOB_SIZE_BYTES
+        );
+    }
+
+    #[test]
+    fn test_effective_max_size_trusts_smaller_advertisement() {
+        // A peer advertising less than the limit is taken at face value.
+        assert_eq!(effective_max_size(Some(1024)), 1024);
+        assert_eq!(effective_max_size(Some(0)), 0);
+    }
+
+    #[test]
+    fn test_effective_max_size_unknown_falls_back_to_limit() {
+        // An unknown size (size == 0/None) still caps at the hard limit.
+        assert_eq!(effective_max_size(None), MAX_BLOB_SIZE_BYTES);
     }
 }
