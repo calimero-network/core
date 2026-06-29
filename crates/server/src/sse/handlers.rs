@@ -349,9 +349,11 @@ pub async fn sse_handler(
                                 ServerResponseError::InternalError { err: None },
                             )),
                         };
-                        let data = to_json_string(&error_response).unwrap_or_else(|_| {
-                            r#"{"error":{"type":"InternalError","data":{}}}"#.to_owned()
-                        });
+                        // This is a static struct with no dynamic fields and
+                        // the only non-trivial field is #[serde(skip)], so
+                        // serialization cannot fail.
+                        let data = to_json_string(&error_response)
+                            .expect("static InternalError response must serialize");
                         Ok::<Event, Infallible>(
                             Event::default()
                                 .event(SseEvent::Message.as_str())
