@@ -200,7 +200,11 @@ fn test_rocksdb_entries_survive_collection() {
     assert_eq!(collected.len(), expected.len());
     for ((key, value), bytes) in collected.iter().zip(&expected) {
         assert_eq!(key.as_ref(), &bytes[..], "collected key was invalidated");
-        assert_eq!(value.as_ref(), &bytes[..], "collected value was invalidated");
+        assert_eq!(
+            value.as_ref(),
+            &bytes[..],
+            "collected value was invalidated"
+        );
     }
 
     // Same expectation for `keys()`.
