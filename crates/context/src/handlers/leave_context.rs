@@ -1,7 +1,5 @@
 //! Local-only opt-out from a single context.
 //!
-//! See `architecture/membership-and-leave.html` § 4 for the design.
-//!
 //! Mechanism:
 //!   1. Look up ALL of the context's local signing identities by scanning
 //!      `ContextIdentity` rows for `(context_id, *)` and collecting every

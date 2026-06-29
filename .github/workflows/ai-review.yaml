@@ -12,9 +12,7 @@ on:
     # by the Doc Auto-Update workflow.
     paths-ignore:
       - 'docs/**'
-      - 'architecture/**'
       - 'docs-static/**'
-      - 'docs-site/**'
   workflow_dispatch:
     inputs:
       pr_number:

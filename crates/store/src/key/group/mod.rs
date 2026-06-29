@@ -1234,7 +1234,6 @@ pub struct GroupMetaValue {
     /// pre-existing groups). The Owner has exclusive privileges no other
     /// admin can perform: `TransferOwnership`, `DeleteGroup`/
     /// `DeleteNamespace`, and immunity from involuntary `MemberRemoved`.
-    /// See `architecture/membership-and-leave.html` § 7.
     ///
     /// Set to the signer of `CreateGroupRequest` on group creation. New
     /// groups have `owner_identity == admin_identity` initially.
@@ -1252,8 +1251,6 @@ pub struct GroupMetaValue {
 /// - `subgroups`: when a subgroup is nested under a group where this member
 ///   is present, the handler emits a self-admission op in the child carrying
 ///   the member's inherited role.
-///
-/// See `architecture/auto-follow.html` for the full design.
 ///
 /// # Default
 ///

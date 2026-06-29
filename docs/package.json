@@ -1,0 +1,19 @@
+{
+  "name": "calimero-docs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Calimero Core documentation site (Astro Starlight).",
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "check": "astro build && node scripts/check-links.mjs"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.41.3",
+    "astro": "^7.1.2",
+    "sharp": "^0.35.3"
+  }
+}
