@@ -797,6 +797,51 @@ fn test_add_peer_addr_evicts_worst_address_when_capped() {
         state.peers[&peer].addrs.contains_key(&fresh),
         "the freshly added address must be retained"
     );
+    // The healthy addresses must be untouched — only `worst` was evicted.
+    for addr in &addrs[1..] {
+        assert!(
+            state.peers[&peer].addrs.contains_key(addr),
+            "healthy address {addr:?} must survive eviction"
+        );
+    }
+}
+
+#[test]
+fn test_add_peer_addr_refresh_moves_address_to_newest_end() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+
+    // Fill the book to capacity with all-healthy addresses.
+    let mut addrs = Vec::new();
+    for port in 0..(MAX_ADDRS_PER_PEER as u16) {
+        let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", 4001 + port)
+            .parse()
+            .unwrap();
+        state.add_peer_addr(peer, &addr);
+        addrs.push(addr);
+    }
+
+    // Re-confirm the oldest address. Eviction order is keyed on last
+    // confirmation, so this address is now the freshest — no longer the
+    // first eviction candidate.
+    state.add_peer_addr(peer, &addrs[0]);
+
+    // Overflow with a new address. With all counts equal, the
+    // least-recently-confirmed entry is dropped — now addrs[1], because
+    // the just-refreshed addrs[0] moved to the most-recent end.
+    let fresh: Multiaddr = "/ip4/127.0.0.1/tcp/5999".parse().unwrap();
+    state.add_peer_addr(peer, &fresh);
+
+    assert_eq!(state.peers[&peer].addrs.len(), MAX_ADDRS_PER_PEER);
+    assert!(
+        state.peers[&peer].addrs.contains_key(&addrs[0]),
+        "a re-confirmed address must survive as most-recently-confirmed"
+    );
+    assert!(
+        !state.peers[&peer].addrs.contains_key(&addrs[1]),
+        "the least-recently-confirmed address must be evicted"
+    );
+    assert!(state.peers[&peer].addrs.contains_key(&fresh));
 }
 
 #[test]

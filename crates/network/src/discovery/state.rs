@@ -352,29 +352,38 @@ impl DiscoveryState {
     pub(crate) fn add_peer_addr(&mut self, peer_id: PeerId, addr: &Multiaddr) {
         let addrs = &mut self.peers.entry(peer_id).or_default().addrs;
 
-        // Existing address: reset its failure counter and return. This is
-        // a refresh, not growth, so it must bypass the cap — never evict a
-        // sibling to "make room" for an address that's already present.
-        if let Some(count) = addrs.get_mut(addr) {
-            *count = 0;
+        // Existing address: a refresh, not growth. Reset its failure
+        // counter and move it to the most-recent end of the order by
+        // re-inserting. This keeps the ordering keyed on *last
+        // confirmation* rather than first insertion, so a long-lived
+        // address that keeps getting re-confirmed (identify push or
+        // successful dial) is treated as freshest and is the last to be
+        // evicted — faithful to the peer-cache's newest-first policy,
+        // which likewise moves an address to the front on every record.
+        // Bypasses the cap: membership is unchanged, so no sibling is
+        // evicted to "make room" for an address that's already present.
+        if addrs.shift_remove(addr).is_some() {
+            let _ = addrs.insert(addr.clone(), 0);
             return;
         }
 
         // New address: enforce the per-peer cap before inserting so the
         // map can't grow without bound. Evict the *worst* existing address
         // — highest consecutive-failure count, ties broken toward the
-        // oldest (lowest insertion index). `IndexMap` preserves insertion
-        // order, so this is deterministic (no HashMap iteration-order
-        // randomness) and mirrors the peer-cache's newest-first policy: the
-        // freshly added address is always kept, and when everything is
-        // equally healthy we drop the stalest entry — which is what lets us
-        // pick up a peer's new address after an IP change instead of
-        // pinning to its first-seen one.
+        // least-recently-confirmed (front of the insertion order; refreshes
+        // above move entries to the back). `min_by_key` over
+        // `(Reverse(count), idx)` reads unambiguously: smallest key wins, so
+        // the highest `count` and then the lowest `idx` are selected. This
+        // is deterministic (no HashMap iteration-order randomness) and
+        // mirrors the peer-cache's newest-first policy: the freshly added
+        // address is always kept, and when everything is equally healthy we
+        // drop the stalest entry — which is what lets us pick up a peer's
+        // new address after an IP change instead of pinning to an old one.
         if addrs.len() >= MAX_ADDRS_PER_PEER {
             if let Some(evict_idx) = addrs
                 .iter()
                 .enumerate()
-                .max_by_key(|(idx, (_, &count))| (count, core::cmp::Reverse(*idx)))
+                .min_by_key(|(idx, (_, &count))| (core::cmp::Reverse(count), *idx))
                 .map(|(idx, _)| idx)
             {
                 let _ = addrs.shift_remove_index(evict_idx);
