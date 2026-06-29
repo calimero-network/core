@@ -190,8 +190,11 @@ impl TeeAdmissionThrottle {
             }
         }
 
-        // Gate 2: per-peer rate limit. Compute available tokens lazily from
-        // elapsed time; do NOT consume yet (a later gate may still reject).
+        // Gate 2: per-peer rate limit. Compute the lazily-refilled token count
+        // but do NOT write it back yet — the bucket is mutated transactionally,
+        // only on `Proceed` (see the commit block below). A rejected announce
+        // (here or at Gate 3) therefore leaves `tokens` and `last` untouched, so
+        // it neither burns a token nor advances the peer's refill clock.
         let burst = self.per_peer_burst;
         let refill_per_sec = if self.per_peer_refill.as_secs_f64() > 0.0 {
             1.0 / self.per_peer_refill.as_secs_f64()
@@ -203,21 +206,24 @@ impl TeeAdmissionThrottle {
             last: now,
         });
         let elapsed = now.saturating_duration_since(bucket.last).as_secs_f64();
-        bucket.tokens = (bucket.tokens + elapsed * refill_per_sec).min(burst);
-        bucket.last = now;
-        if bucket.tokens < 1.0 {
+        let refilled = (bucket.tokens + elapsed * refill_per_sec).min(burst);
+        if refilled < 1.0 {
             return Decision::RateLimited;
         }
 
         // Gate 3: global inflight cap. Acquire last so a rejection here does
-        // not burn a per-peer token.
+        // not burn a per-peer token. The bucket is still unmodified at this
+        // point, so an `AtCapacity` return advances nothing.
         let permit = match Arc::clone(&self.inflight).try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => return Decision::AtCapacity,
         };
 
-        // All gates passed: commit the side effects.
-        bucket.tokens -= 1.0;
+        // All gates passed: commit the side effects atomically. `last` advances
+        // only here, so refill credit accrues from the previous *grant*, never
+        // from an intervening rejection.
+        bucket.tokens = refilled - 1.0;
+        bucket.last = now;
         let _ = self.recent_quotes.insert(key, now);
         Decision::Proceed(permit)
     }

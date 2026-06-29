@@ -104,10 +104,14 @@ impl VerifyQuoteThrottle {
                 .bucket
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // Compute the lazily-refilled token count but do NOT write it back
+            // yet — the bucket is mutated transactionally, only on `Proceed`. A
+            // rejected request (RateLimited or AtCapacity) leaves `tokens` and
+            // `last` untouched, so it neither burns a token nor advances the
+            // refill clock; the bucket keeps refilling from the last *grant*.
             let elapsed = now.saturating_duration_since(bucket.last).as_secs_f64();
-            bucket.tokens = (bucket.tokens + elapsed * refill_per_sec).min(self.burst);
-            bucket.last = now;
-            if bucket.tokens < 1.0 {
+            let refilled = (bucket.tokens + elapsed * refill_per_sec).min(self.burst);
+            if refilled < 1.0 {
                 return Decision::RateLimited;
             }
 
@@ -116,7 +120,8 @@ impl VerifyQuoteThrottle {
             // never blocks, so the lock is not held across an await.
             match Arc::clone(&self.inflight).try_acquire_owned() {
                 Ok(permit) => {
-                    bucket.tokens -= 1.0;
+                    bucket.tokens = refilled - 1.0;
+                    bucket.last = now;
                     Decision::Proceed(permit)
                 }
                 Err(_) => Decision::AtCapacity,
@@ -161,6 +166,28 @@ mod tests {
         assert!(matches!(
             t.check_at(now + Duration::from_secs(1)),
             Decision::RateLimited
+        ));
+    }
+
+    #[test]
+    fn rejections_do_not_slow_token_recovery() {
+        // Regression guard for the transactional bucket: `tokens`/`last` are
+        // committed only on `Proceed`, so a rejected request must not steal
+        // refill credit. Burst 1, refill 1 token/sec, generous inflight.
+        let t = VerifyQuoteThrottle::new(1000, 1.0, Duration::from_secs(1));
+        let t0 = Instant::now();
+        assert!(matches!(t.check_at(t0), Decision::Proceed(_)));
+        // Half a second in: only 0.5 token → rejected, and this call must NOT
+        // advance the refill clock.
+        assert!(matches!(
+            t.check_at(t0 + Duration::from_millis(500)),
+            Decision::RateLimited
+        ));
+        // At exactly t0+1s a full token is back despite the intervening
+        // rejection — recovery tracks wall-clock from the last grant.
+        assert!(matches!(
+            t.check_at(t0 + Duration::from_secs(1)),
+            Decision::Proceed(_)
         ));
     }
 
