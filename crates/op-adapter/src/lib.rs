@@ -148,7 +148,7 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
         // Live mode byte: 0 = Open, anything else = Restricted.
         GroupOp::SubgroupVisibilitySet { mode } => Some(OpPayload::SubgroupVisibilitySet {
             scope: ScopeId::from(group.to_bytes()),
-            restricted: matches!(mode, calimero_context_config::VisibilityMode::Restricted),
+            restricted: *mode != 0,
         }),
         _ => None,
     }
