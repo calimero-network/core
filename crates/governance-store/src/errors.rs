@@ -52,6 +52,7 @@
 //! the variant matches); callers that just bubble errors stay unchanged.
 //! See #2305 issue discussion.
 
+use calimero_primitives::context::GroupMemberRole;
 use thiserror::Error;
 
 /// Errors raised by `MembershipRepository` and the membership-policy
@@ -158,6 +159,25 @@ pub enum MembershipError {
     /// Only the current owner can transfer ownership of a group.
     #[error("only the current owner of group {0} can transfer ownership")]
     OnlyOwnerCanTransfer(String),
+
+    /// `TransferOwnership` target is a member but not an Admin. The
+    /// successor must already hold the Admin tier — Owner carries all
+    /// Admin privileges, so a plain-Member owner would be a confusing
+    /// "owner with reduced capabilities". Promote, then transfer.
+    #[error(
+        "new owner of group {group} must be an Admin, but is currently {role:?}; \
+         promote them to Admin before transferring ownership"
+    )]
+    TransferTargetNotAdmin {
+        group: String,
+        role: GroupMemberRole,
+    },
+
+    /// `TransferOwnership` target is not a member of the group at all —
+    /// transferring would create an absentee owner. Invite and promote
+    /// them first.
+    #[error("new owner is not a member of group {0}; invite and promote them first")]
+    TransferTargetNotMember(String),
 
     /// Only the current owner can delete a group. Distinct from
     /// [`OnlyOwnerCanTransfer`] so callers can route delete-rejection
