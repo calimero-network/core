@@ -9,6 +9,7 @@ use tracing::{debug, info, warn};
 
 use crate::auth::permissions::PermissionValidator;
 use crate::server::AppState;
+use crate::utils::sanitize_for_log;
 use crate::AuthError;
 
 /// Permissions of the authenticated caller.
@@ -41,14 +42,18 @@ pub async fn auth_middleware(
     // Extract request details for logging
     let method = request.method().clone();
     let path = request.uri().path().to_string();
+    // Sanitized copy used for every log line below; `path` itself stays raw for
+    // routing logic. `method` is an `http::Method` (validated token, no control
+    // chars), so only `path` needs escaping.
+    let safe_path = sanitize_for_log(&path);
     let start_time = std::time::Instant::now();
 
     // Skip authentication for public endpoints
     if path.starts_with("/public") {
-        info!("Skipping auth for public endpoint {} {}", method, path);
+        info!(method = %method, path = %safe_path, "Skipping auth for public endpoint");
         let response = next.run(request).await;
         let duration = start_time.elapsed();
-        debug!("Request {} {} completed in {:?}", method, path, duration);
+        debug!(method = %method, path = %safe_path, ?duration, "Request completed");
         return Ok(response);
     }
 
@@ -57,8 +62,10 @@ pub async fn auth_middleware(
     match state.auth_service.verify_token_from_headers(&headers).await {
         Ok(auth_response) => {
             debug!(
-                "Successful authentication for {} {} by user {}",
-                method, path, auth_response.key_id
+                method = %method,
+                path = %safe_path,
+                user = %auth_response.key_id,
+                "Successful authentication"
             );
 
             let validator = PermissionValidator::new();
@@ -70,8 +77,11 @@ pub async fn auth_middleware(
 
             if !has_permission {
                 warn!(
-                    "Permission denied for {} {} - required: {:?}, had: {:?}",
-                    method, path, required_permissions, auth_response.permissions
+                    method = %method,
+                    path = %safe_path,
+                    ?required_permissions,
+                    had = ?auth_response.permissions,
+                    "Permission denied"
                 );
                 let mut headers = HeaderMap::new();
                 headers.insert(
@@ -90,14 +100,15 @@ pub async fn auth_middleware(
 
             let mut response = next.run(request).await;
             let duration = start_time.elapsed();
-            debug!("Request {} {} completed in {:?}", method, path, duration);
+            debug!(method = %method, path = %safe_path, ?duration, "Request completed");
 
             if let Ok(user_value) = HeaderValue::from_str(&auth_response.key_id) {
                 response.headers_mut().insert("X-Auth-User", user_value);
             } else {
                 warn!(
-                    "Skipping X-Auth-User header: key_id is not a valid header value for {} {}",
-                    method, path
+                    method = %method,
+                    path = %safe_path,
+                    "Skipping X-Auth-User header: key_id is not a valid header value"
                 );
             }
 
@@ -109,8 +120,9 @@ pub async fn auth_middleware(
                         .insert("X-Auth-Permissions", permissions_value);
                 } else {
                     warn!(
-                        "Skipping X-Auth-Permissions header: invalid header value for {} {}",
-                        method, path
+                        method = %method,
+                        path = %safe_path,
+                        "Skipping X-Auth-Permissions header: invalid header value"
                     );
                 }
             }
@@ -123,33 +135,36 @@ pub async fn auth_middleware(
 
             match err {
                 AuthError::TokenExpired => {
-                    warn!(
-                        "Token expired for {} {} (took {:?})",
-                        method, path, duration
-                    );
+                    warn!(method = %method, path = %safe_path, ?duration, "Token expired");
                     headers.insert("X-Auth-Error", HeaderValue::from_static("token_expired"));
                     Err((StatusCode::UNAUTHORIZED, headers))
                 }
-                AuthError::InvalidToken(msg) if msg.contains("revoked") => {
-                    warn!(
-                        "Token revoked for {} {} (took {:?})",
-                        method, path, duration
-                    );
+                // Decided by the error *type*, not a substring match on the
+                // message — renaming the message can never downgrade a revoked
+                // token to 401.
+                AuthError::TokenRevoked => {
+                    warn!(method = %method, path = %safe_path, ?duration, "Token revoked");
                     headers.insert("X-Auth-Error", HeaderValue::from_static("token_revoked"));
                     Err((StatusCode::FORBIDDEN, headers))
                 }
                 AuthError::InvalidRequest(_) => {
                     warn!(
-                        "Invalid request for {} {}: {} (took {:?})",
-                        method, path, err, duration
+                        method = %method,
+                        path = %safe_path,
+                        error = %err,
+                        ?duration,
+                        "Invalid request"
                     );
                     headers.insert("X-Auth-Error", HeaderValue::from_static("invalid_request"));
                     Err((StatusCode::BAD_REQUEST, headers))
                 }
                 _ => {
                     warn!(
-                        "Authentication failed for {} {}: {} (took {:?})",
-                        method, path, err, duration
+                        method = %method,
+                        path = %safe_path,
+                        error = %err,
+                        ?duration,
+                        "Authentication failed"
                     );
                     headers.insert("X-Auth-Error", HeaderValue::from_static("invalid_token"));
                     Err((StatusCode::UNAUTHORIZED, headers))
@@ -719,14 +734,11 @@ mod tests {
     #[tokio::test]
     async fn test_error_response_revoked_token_format() {
         // Verify that revoked token errors produce correct header format
-        let err = crate::AuthError::InvalidToken("Key has been revoked".to_string());
+        let err = crate::AuthError::TokenRevoked;
 
         let mut headers = HeaderMap::new();
-        match &err {
-            crate::AuthError::InvalidToken(msg) if msg.contains("revoked") => {
-                headers.insert("X-Auth-Error", "token_revoked".parse().unwrap());
-            }
-            _ => {}
+        if let crate::AuthError::TokenRevoked = &err {
+            headers.insert("X-Auth-Error", "token_revoked".parse().unwrap());
         }
 
         assert_eq!(
@@ -757,13 +769,10 @@ mod tests {
         let err = crate::AuthError::InvalidToken("Some other error".to_string());
 
         let mut headers = HeaderMap::new();
-        match &err {
-            // Expiry is now its own variant, so the generic arm no longer needs
-            // to exclude "expired" messages.
-            crate::AuthError::InvalidToken(msg) if !msg.contains("revoked") => {
-                headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
-            }
-            _ => {}
+        // Revocation and expiry are now their own variants, so a generic
+        // `InvalidToken` needs no message-substring exclusions.
+        if let crate::AuthError::InvalidToken(_) = &err {
+            headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
         }
 
         assert_eq!(
@@ -785,9 +794,9 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
 
         // Revoked token -> 403 Forbidden
-        let revoked_err = crate::AuthError::InvalidToken("Key has been revoked".to_string());
+        let revoked_err = crate::AuthError::TokenRevoked;
         let status = match &revoked_err {
-            crate::AuthError::InvalidToken(msg) if msg.contains("revoked") => StatusCode::FORBIDDEN,
+            crate::AuthError::TokenRevoked => StatusCode::FORBIDDEN,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         assert_eq!(status, StatusCode::FORBIDDEN);
@@ -803,11 +812,9 @@ mod tests {
         // Generic invalid token -> 401 Unauthorized
         let generic_err = crate::AuthError::InvalidToken("Malformed".to_string());
         let status = match &generic_err {
-            // Expiry is now its own variant, so the generic arm no longer needs
-            // to exclude "expired" messages.
-            crate::AuthError::InvalidToken(msg) if !msg.contains("revoked") => {
-                StatusCode::UNAUTHORIZED
-            }
+            // Revocation and expiry are now their own variants, so a generic
+            // `InvalidToken` maps straight to 401.
+            crate::AuthError::InvalidToken(_) => StatusCode::UNAUTHORIZED,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -1101,11 +1108,11 @@ mod tests {
             crate::AuthError::AuthenticationFailed("test".to_string()),
             crate::AuthError::AuthorizationFailed("test".to_string()),
             crate::AuthError::InvalidToken("test".to_string()),
-            crate::AuthError::StorageError("test".to_string()),
+            crate::AuthError::StorageError("test".into()),
             crate::AuthError::ProviderError("test".to_string()),
             crate::AuthError::SignatureVerificationFailed("test".to_string()),
             crate::AuthError::KeyOwnershipFailed("test".to_string()),
-            crate::AuthError::TokenGenerationFailed("test".to_string()),
+            crate::AuthError::TokenGenerationFailed("test".into()),
             crate::AuthError::InvalidRequest("test".to_string()),
             crate::AuthError::ServiceUnavailable("test".to_string()),
         ];
@@ -1134,22 +1141,17 @@ mod tests {
     }
 
     #[test]
-    fn test_revoked_token_message_variations() {
-        // Test various messages that indicate revocation
-        let revoked_messages = vec![
-            "Key has been revoked",
-            "revoked",
-            "token revoked",
-            "key revoked",
-        ];
+    fn test_revoked_token_detected_by_variant_not_message() {
+        // Revocation is now identified by the dedicated `TokenRevoked` variant,
+        // not by substring-matching an error message — so renaming the message
+        // can never silently downgrade a revoked token's 403 to a 401.
+        let revoked = crate::AuthError::TokenRevoked;
+        assert!(matches!(&revoked, crate::AuthError::TokenRevoked));
 
-        for msg in revoked_messages {
-            let contains_revoked = msg.to_lowercase().contains("revoked");
-            assert!(
-                contains_revoked,
-                "Message '{msg}' should be detected as revoked"
-            );
-        }
+        // A generic `InvalidToken` whose message merely mentions "revoked" must
+        // NOT be treated as a revocation.
+        let lookalike = crate::AuthError::InvalidToken("looks revoked but isn't".to_string());
+        assert!(!matches!(&lookalike, crate::AuthError::TokenRevoked));
     }
 
     // ==========================================================================

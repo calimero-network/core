@@ -77,13 +77,20 @@ fn upgrade_info_to_api_data(info: &GroupUpgradeInfo) -> GroupUpgradeStatusApiDat
 }
 
 pub fn parse_group_id(s: &str) -> Result<ContextGroupId, ApiError> {
-    let bytes = hex::decode(s).map_err(|_| ApiError {
-        status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid group id format: expected hex-encoded 32 bytes".into(),
+    let bytes = hex::decode(s).map_err(|e| {
+        // Keep the client message generic but preserve the parse cause server-side.
+        tracing::debug!(error = %e, "parse_group_id: hex decode failed");
+        ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Invalid group id format: expected hex-encoded 32 bytes".into(),
+        }
     })?;
-    let arr: [u8; 32] = bytes.try_into().map_err(|_| ApiError {
-        status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid group id: must be exactly 32 bytes".into(),
+    let arr: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+        tracing::debug!(len = bytes.len(), "parse_group_id: wrong byte length");
+        ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Invalid group id: must be exactly 32 bytes".into(),
+        }
     })?;
     Ok(ContextGroupId::from(arr))
 }
@@ -93,13 +100,19 @@ pub(crate) fn parse_context_id(s: &str) -> Result<ContextId, ApiError> {
         return Ok(context_id);
     }
 
-    let bytes = hex::decode(s).map_err(|_| ApiError {
-        status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid context id format: expected base58 or hex-encoded 32 bytes".into(),
+    let bytes = hex::decode(s).map_err(|e| {
+        tracing::debug!(error = %e, "parse_context_id: hex decode failed");
+        ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Invalid context id format: expected base58 or hex-encoded 32 bytes".into(),
+        }
     })?;
-    let arr: [u8; 32] = bytes.try_into().map_err(|_| ApiError {
-        status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid context id: must be exactly 32 bytes".into(),
+    let arr: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+        tracing::debug!(len = bytes.len(), "parse_context_id: wrong byte length");
+        ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Invalid context id: must be exactly 32 bytes".into(),
+        }
     })?;
     Ok(ContextId::from(arr))
 }
