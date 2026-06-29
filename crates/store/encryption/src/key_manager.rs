@@ -199,10 +199,12 @@ impl KeyManager {
         }
 
         let version = ciphertext[0];
-        // The length check above guarantees these slices are exactly sized.
+        // The MIN_CIPHERTEXT_SIZE guard above guarantees this slice is exactly
+        // NONCE_SIZE bytes, so the conversion cannot fail in practice; map the
+        // error anyway to avoid an `expect` per project convention.
         let nonce_bytes: [u8; NONCE_SIZE] = ciphertext[1..1 + NONCE_SIZE]
             .try_into()
-            .expect("slice is NONCE_SIZE bytes");
+            .map_err(|_| eyre!("nonce slice is not NONCE_SIZE bytes"))?;
         let nonce = Nonce::from_slice(&nonce_bytes);
         let encrypted_data = &ciphertext[1 + NONCE_SIZE..];
 
