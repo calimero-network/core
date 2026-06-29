@@ -199,6 +199,18 @@ impl<'a> CapabilitiesRepository<'a> {
         Ok(())
     }
 
+    pub fn delete_context_member(
+        &self,
+        group_id: &ContextGroupId,
+        context_id: &ContextId,
+        member: &PublicKey,
+    ) -> EyreResult<()> {
+        let mut handle = self.store.handle();
+        let key = GroupContextMemberCap::new(group_id.to_bytes(), *context_id, *member);
+        handle.delete(&key)?;
+        Ok(())
+    }
+
     pub fn set_context_member(
         &self,
         group_id: &ContextGroupId,

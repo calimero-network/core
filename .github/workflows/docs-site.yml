@@ -1,0 +1,61 @@
+name: Deploy Docs Site (Starlight)
+
+# Builds the Astro Starlight documentation site (docs-site/) and deploys it to
+# GitHub Pages — this is now the PUBLISHED docs (it replaced the legacy
+# architecture/ site). It publishes Starlight at the Pages root and preserves
+# the old hand-built site under /architecture-legacy/ so nothing is lost.
+# Rollback: run the (now manual-only) `pages.yml` to republish architecture/.
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'docs-site/**'
+      - 'architecture/**'
+      - '.github/workflows/docs-site.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Shares the `pages` concurrency group with pages.yml so the two never race.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+
+      - name: Install
+        working-directory: docs-site
+        run: npm ci
+
+      - name: Build
+        working-directory: docs-site
+        run: npm run build
+
+      # Keep the legacy hand-built site reachable during migration.
+      - name: Bundle legacy architecture site
+        run: |
+          mkdir -p docs-site/dist/architecture-legacy
+          cp -r architecture/* docs-site/dist/architecture-legacy/
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-site/dist
+      - id: deployment
+        uses: actions/deploy-pages@v4

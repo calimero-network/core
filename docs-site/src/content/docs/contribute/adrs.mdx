@@ -1,0 +1,39 @@
+---
+title: Architecture Decision Records
+description: The accepted ADRs that record why key design choices were made.
+sidebar:
+  label: Decision Records
+  order: 5
+---
+
+import { LinkCard, Aside } from '@astrojs/starlight/components';
+
+**Architecture Decision Records (ADRs)** capture a significant design decision,
+the context behind it, and its consequences. They live in
+[`docs/adr/`](https://github.com/calimero-network/core/tree/master/docs/adr) and
+are the authoritative record of _why_ the system is the way it is — read the
+relevant ADR before changing the subsystem it covers.
+
+<Aside type="tip">
+Proposing a design change? Add an ADR (copy the format of an existing one) so the
+decision and its trade-offs are recorded alongside the code. Exploratory designs
+live in [`docs/design/`](https://github.com/calimero-network/core/tree/master/docs/design).
+</Aside>
+
+## Accepted ADRs
+
+<LinkCard
+  title="ADR 0001 — Concurrent rotation semantics for SharedStorage<T>"
+  description="The merge rule for concurrent writer-set rotations: causal-first last-writer-wins with a hybrid-clock tiebreak."
+  href="https://github.com/calimero-network/core/blob/master/docs/adr/0001-shared-storage-concurrent-rotation.md"
+/>
+<LinkCard
+  title="ADR 0002 — Fleet TEE leave hygiene (post-eviction cleanup)"
+  description="How a TEE fleet node leaves: key rotation and the post-eviction cleanup that follows."
+  href="https://github.com/calimero-network/core/blob/master/docs/adr/0002-fleet-tee-leave-protocol.md"
+/>
+
+## Related
+
+<LinkCard title="Protocol Reference" href="/protocol/overview/" />
+<LinkCard title="Development workflow" href="/contribute/development/" />

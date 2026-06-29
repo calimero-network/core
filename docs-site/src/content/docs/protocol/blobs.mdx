@@ -1,0 +1,376 @@
+---
+title: Blob Transport
+description: Content-addressed binaries that live outside the state tree, and how nodes announce and transfer them.
+sidebar:
+  order: 13
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Steps } from '@astrojs/starlight/components';
+
+## What a blob is
+
+A **blob** is an opaque, content-addressed byte string. It is identified by a
+`BlobId` — a 32-byte hash derived from the blob's content — and it is displayed
+as a base58 string. Because the identifier _is_ a hash of the bytes, a `BlobId`
+both names a blob and lets any holder verify that the bytes it received are the
+bytes that were asked for.
+
+Blobs are the protocol's mechanism for moving payloads that are too large, too
+binary, or too rarely-read to belong inside replicated state: WASM application
+bundles, file attachments, media, and similar. The state tree carries the small,
+hot, causally-ordered data; blobs carry the bulk, referenced by id.
+
+```rust
+// crates/primitives/src/blobs.rs
+pub struct BlobId(Hash);   // 32-byte digest, base58 on display
+```
+
+:::note
+A blob is immutable. "Editing" a blob produces different bytes, hence a
+different `BlobId`. There is no in-place mutation and no version chain at this
+layer — references in state simply point at the new id.
+:::
+
+## Where blobs sit relative to state
+
+Blobs are **not** folded into a scope's Merkle root. The convergence machinery
+described in [Storage](/protocol/storage/) and [Sync](/protocol/sync/) compares
+`scope_root` over state entities; blob bytes never enter that hash. State
+references a blob only by storing its `BlobId` as a value. Two consequences
+follow:
+
+- Announcing, transferring, or garbage-collecting a blob does not change any
+  scope root and cannot, by itself, cause or repair state divergence.
+- A node can hold a `BlobId` in state without holding the bytes. The bytes are
+  fetched lazily, on demand, over the transfer paths below — and a peer that
+  serves them is checked against the referencing context, not against the state
+  root.
+
+Blob bytes live in their own storage, separate from the replicated entity tree:
+metadata in the `Blobs` column and the raw chunk files on disk.
+
+```rust
+// crates/store/src/types/blobs.rs — value stored in the `Blobs` column
+pub struct BlobMeta {
+    pub size: u64,            // total size in bytes
+    pub hash: [u8; 32],       // SHA-256 over the whole file content
+    pub links: Box<[key::BlobMeta]>,  // chunk blobs, in order (empty for a leaf chunk)
+}
+```
+
+### Chunked storage layout
+
+On write, the blob store reads the input stream in fixed `CHUNK_SIZE = 1 MiB`
+pieces. Each chunk is persisted as its own blob whose `BlobId` is the hash of
+that chunk's bytes. The **root** blob is then the ordered list of those chunk
+ids: its `BlobId` is the hash of the concatenated chunk ids, and its `BlobMeta`
+carries the total `size`, the whole-content `hash`, and the `links` to the
+chunk blobs. A blob that fits in a single chunk still gets a root whose id is
+derived from its one chunk id.
+
+```text
+root BlobId  = hash( chunk_id[0] ‖ chunk_id[1] ‖ … )   // BlobMeta.links
+chunk BlobId = hash( chunk_bytes )                       // 1 MiB each, last may be short
+BlobMeta.hash = hash( whole file content )               // distinct from BlobId
+```
+
+:::caution
+`BlobId` and `BlobMeta.hash` are different values. `BlobId` addresses the blob
+through its chunk-id list; `BlobMeta.hash` is the digest of the raw content.
+Code that wants "the hash of the bytes" must read `hash`, not reuse the id.
+:::
+
+Because a chunk's id is the hash of its bytes, two blobs that share identical
+1 MiB chunks resolve to the **same chunk `BlobId`** and are stored once —
+deduplication falls out of content addressing with no extra bookkeeping. A
+`delete(blob_id)` path exists to drop a blob's stored bytes
+(`crates/store/blobs/src/lib.rs`), but content-addressed **garbage collection** of
+chunks no longer referenced from state is **not yet implemented**: removing a state
+reference does not by itself reclaim the bytes.
+
+## The guest blob API
+
+Applications never touch storage or the network directly. They use host
+functions exposed to the WASM guest. Writing is a streaming
+`create → write* → close` sequence that yields a `BlobId`; reading is
+`open → read*`. A blob can be published to a context for discovery with
+`announce_to_context`.
+
+```text
+blob_create() -> fd
+blob_write(fd, src: Buffer)                 -> bytes_written
+blob_close(fd, dst: BufferMut[32]) -> 1     // writes the final BlobId into dst[0..32]
+blob_open(blob_id: Buffer[32])              -> fd
+blob_read(fd, dst: BufferMut)               -> bytes_read   // 0 at end of blob
+blob_announce_to_context(blob_id: Buffer[32], context_id: Buffer[32]) -> 1
+```
+
+<Steps>
+
+1. **`blob_create()`** opens a write handle and returns an integer file
+   descriptor (`fd`). Internally this spins up a background task that consumes
+   written chunks and feeds them into the blob store.
+
+2. **`blob_write(fd, src)`** appends one chunk. The number of bytes written
+   equals the source buffer length. Each call's buffer must not exceed
+   `max_blob_chunk_size`.
+
+3. **`blob_close(fd, dst)`** finalises the upload, computes the `BlobId`, and
+   writes those 32 bytes into the guest buffer `dst`. The handle is consumed.
+   For a read handle, `close` simply releases it.
+
+4. **`blob_open(blob_id)`** opens a read handle for an existing blob and returns
+   an `fd`. The bytes are streamed lazily — opening does not yet fetch anything.
+
+5. **`blob_read(fd, dst)`** copies the next bytes into `dst` and returns the
+   count, which may be less than the buffer (a partial chunk is buffered
+   internally and carried to the next call). A return of `0` means end of blob.
+   The read position only advances after the copy into guest memory succeeds, so
+   a failed copy can be retried without losing data.
+
+</Steps>
+
+### Limits and errors
+
+| Limit | Default | Enforced by |
+| --- | --- | --- |
+| `max_blob_handles` | `100` | `blob_create` / `blob_open` (open handles per execution) |
+| `max_blob_chunk_size` | `10 MiB` | `blob_write` (per-write) and `blob_read` (per-read buffer) |
+
+The host functions surface these errors:
+
+- `BlobsNotSupported` — the node is configured without a blob/network client
+  (the API is unavailable, e.g. in a bare VM).
+- `TooManyBlobHandles` — opening would exceed `max_blob_handles`.
+- `InvalidBlobHandle` — unknown `fd`, or using a write handle where a read
+  handle is required (or vice versa).
+- `BlobWriteTooLarge` / `BlobBufferTooLarge` — the write chunk or the read
+  buffer exceeds `max_blob_chunk_size`.
+- `InvalidMemoryAccess` — a descriptor buffer is out of bounds, or the `BlobId`
+  destination for `blob_close` is not exactly 32 bytes.
+
+:::note
+These per-call limits (`max_blob_chunk_size`) are independent of the on-disk
+`CHUNK_SIZE` (1 MiB). The guest may write in any chunk size up to the limit; the
+blob store re-chunks the resulting byte stream into 1 MiB storage chunks itself.
+:::
+
+## Announce and discover
+
+A blob is **announced** so peers in a context can locate the bytes.
+`blob_announce_to_context(blob_id, context_id)` looks up the blob's size from
+local metadata and publishes a record to the Kademlia DHT
+([Networking](/protocol/networking/)).
+
+```text
+DHT key   = context_id ‖ blob_id
+DHT value = local_peer_id ‖ size   (size as little-endian u64)
+```
+
+The record is stored with `Quorum::One`. The key is scoped by `context_id`, so
+the same blob announced into different contexts is discovered independently, and
+a discovery query is always made in the context of a specific context.
+
+Discovery is the mirror: a node that holds a `BlobId` in state but not the bytes
+queries the DHT for the same `context_id ‖ blob_id` key to learn which peers
+advertised it. The lookup is retried with exponential backoff — up to **6
+attempts**, starting at **100 ms** and doubling to a **2 s** cap — because a
+freshly announced record may take a few hundred milliseconds to become visible.
+Each returned peer is then asked for the bytes over the transfer protocol below;
+the first peer that delivers a blob whose recomputed id matches wins, and the
+bytes are stored locally for reuse.
+
+:::note
+Global (context-less) blob queries are not supported — discovery always names a
+context. New nodes that cannot yet sign requests are still bootstrapped because
+a context's application-bundle blobs are served as public (see authorization
+below).
+:::
+
+## Point-to-point transfer over the dedicated stream
+
+Once a provider peer is known, the bytes move over a **dedicated libp2p stream
+protocol**, separate from the sync stream:
+
+```rust
+// crates/network/primitives/src/stream.rs
+pub const CALIMERO_BLOB_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/calimero/blob/0.0.2");
+pub const MAX_MESSAGE_SIZE: usize = 8 * 1_024 * 1_024;  // 8 MiB framed-message cap
+```
+
+The requester opens a stream on `CALIMERO_BLOB_PROTOCOL`, sends a single
+`BlobRequest`, and reads a `BlobResponse` header followed by a sequence of
+`BlobChunk` frames terminated by an **empty** chunk.
+
+```rust
+// crates/network/primitives/src/blob_types.rs
+struct BlobRequest  { blob_id: BlobId, context_id: ContextId, auth: Option<BlobAuth> } // JSON
+struct BlobResponse { found: bool, size: Option<u64> }                                  // JSON
+struct BlobChunk    { data: Vec<u8> }                                                   // Borsh
+```
+
+<SeqDiagram
+  id="d-blob-xfer"
+  title="Dedicated blob transfer (/calimero/blob/0.0.2)"
+  lanes={[
+    { label: 'Requester', color: '#3fb950' },
+    { label: 'Provider', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'open stream on /calimero/blob/0.0.2' },
+    { from: 0, to: 1, label: 'BlobRequest { blob_id, context_id, auth? }' },
+    { from: 1, to: 1, label: 'authorize: public bundle or signed member', color: '#a5ff11' },
+    { from: 1, to: 0, label: 'BlobResponse { found, size }' },
+    { from: 1, to: 0, label: 'BlobChunk { data } …', dashed: true },
+    { from: 1, to: 0, label: 'BlobChunk { data: [] }  (end of stream)' },
+    { type: 'divider', label: 'requester recomputes id, stores bytes locally' },
+  ]}
+/>
+
+The provider streams its stored chunks straight from the blob store, one
+`BlobChunk` per stored chunk, then sends an empty `BlobChunk` to mark the end.
+If the provider does not hold the blob it replies `BlobResponse { found: false }`
+and sends no chunks.
+
+### Authorization
+
+Blob bytes are not served to anyone who asks. The provider authorizes each
+`BlobRequest` before streaming:
+
+- **Public bundles.** If the requested `blob_id` is the context's application
+  bytecode or compiled artifact (per the authoritative context config), access
+  is granted with no signature. This is what lets a joining node fetch the code
+  it needs before it has an identity in the context.
+- **Signed member requests.** Otherwise the request must carry a `BlobAuth`: the
+  requester's `public_key`, a Unix `timestamp`, and an Ed25519 `signature` over
+  the `BlobAuthPayload { blob_id, context_id, timestamp }`. The provider checks
+  the signature, checks that the timestamp falls inside the replay window
+  (**30 s** in the past, **10 s** in the future), and checks that the public key
+  is a current member of the context. Any failure denies access.
+
+```rust
+// crates/network/primitives/src/blob_types.rs
+struct BlobAuth        { public_key: PublicKey, signature: [u8; 64], timestamp: u64 }
+struct BlobAuthPayload { blob_id: [u8; 32], context_id: [u8; 32], timestamp: u64 }
+```
+
+:::caution[Normative]
+A provider MUST deny a non-public blob request that lacks a valid `BlobAuth`,
+whose signature does not verify, whose timestamp is outside the replay window,
+or whose signer is not a current member of `context_id`. A requester SHOULD
+attach `BlobAuth` for any blob that is not the context's application bundle; a
+node that owns no identity in the context can only fetch public bundles.
+:::
+
+### Timeouts and framing
+
+Both ends bound the transfer so a stalled peer cannot pin resources:
+
+| Side | Bound | Value |
+| --- | --- | --- |
+| Requester | whole transfer | 60 s |
+| Requester | per chunk received | 30 s |
+| Provider | whole serve | 300 s |
+| Provider | per chunk sent | 30 s |
+
+Every frame is length-delimited and capped at `MAX_MESSAGE_SIZE` (8 MiB) by the
+stream codec. Since stored chunks are 1 MiB, a `BlobChunk` frame stays well
+under that cap.
+
+## Worked example: a 5 MB image
+
+To see the pieces fit together, follow a 5 MB image from the app that stores it
+to a peer that fetches it.
+
+<Steps>
+
+1. **Store it.** The producing app calls `blob_create()`, streams the image in
+   with repeated `blob_write(fd, …)`, and calls `blob_close(fd, dst)`. The blob
+   store re-chunks the byte stream into roughly five 1 MiB storage chunks (the
+   last one short), and `close` writes back the root `BlobId` — the hash of the
+   ordered chunk-id list. The app keeps that id (typically by storing it in
+   state).
+
+2. **Announce it.** `blob_announce_to_context(blob_id, context_id)` looks up the
+   blob's size locally and `put_record`s a Kademlia record keyed
+   `context_id ‖ blob_id` with value `local_peer_id ‖ size` at `Quorum::One`. The
+   image is now discoverable by any member of that context.
+
+3. **Discover it.** A second node holds the `BlobId` in state (it synced the
+   reference) but not the bytes. It `get_record`s the same `context_id ‖ blob_id`
+   key — retried with backoff, since a fresh record takes a moment to propagate —
+   and learns the announcing peer and the size.
+
+4. **Fetch it.** The fetcher opens `/calimero/blob/0.0.2` to that peer and sends a
+   `BlobRequest { blob_id, context_id, auth? }`. The provider authorizes the
+   request, replies `BlobResponse { found: true, size }`, then streams its stored
+   chunks as `BlobChunk` frames — one per 1 MiB chunk — and a final empty
+   `BlobChunk` to mark the end.
+
+5. **Verify it.** The fetcher concatenates the chunks, recomputes the `BlobId`,
+   and accepts the bytes only if it matches the id it asked for. It stores the
+   image locally and can now serve (and announce) it itself.
+
+</Steps>
+
+## Blob transfer during sync
+
+Blobs can also move **inside** a sync session over the sync stream
+(`/calimero/stream/0.0.2`), rather than the dedicated blob protocol. This path
+is used when a sync needs a blob it does not yet hold — for example staging an
+application upgrade. It rides the same encrypted, sequenced envelope as every
+other sync exchange ([Sync](/protocol/sync/)), so the wire messages differ from
+the dedicated protocol:
+
+```rust
+// crates/node/primitives/src/sync/wire.rs
+InitPayload::BlobShare    { blob_id: BlobId }        // request (and the responder's ack)
+MessagePayload::BlobShare { chunk: Cow<'a, [u8]> }   // each chunk; empty chunk ends the stream
+```
+
+The initiator sends an `Init` carrying `BlobShare { blob_id }`; the responder
+acks with the same `blob_id`, then streams `Message` frames each carrying a
+`BlobShare` chunk, ending with an empty chunk. Unlike the dedicated protocol,
+these frames are encrypted under the per-session shared key and ordered by the
+sync sequencer, and the chunk payload is raw bytes (not a Borsh `BlobChunk`). A
+responder that does not hold the blob replies with an opaque error so the
+initiator fails fast and retries after its backoff rather than blocking.
+
+<SeqDiagram
+  id="d-blob-share"
+  title="Blob share inside a sync session (/calimero/stream/0.0.2)"
+  lanes={[
+    { label: 'Initiator', color: '#3fb950' },
+    { label: 'Responder', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'Init: BlobShare { blob_id }' },
+    { from: 1, to: 0, label: 'Init ack: BlobShare { blob_id }  (+ nonce)' },
+    { from: 1, to: 0, label: 'Message: BlobShare { chunk } … (encrypted, sequenced)', dashed: true },
+    { from: 1, to: 0, label: 'Message: BlobShare { chunk: [] }  (end)' },
+    { type: 'divider', label: 'initiator stores blob; id must match request' },
+  ]}
+/>
+
+:::note
+Both transfer paths converge on the same guarantee: the receiver recomputes the
+`BlobId` from the bytes it assembled and rejects the result if it does not match
+the id it asked for. Content addressing makes the transfer self-verifying — a
+wrong or tampered payload cannot masquerade as the requested blob.
+:::
+
+## Summary
+
+- A blob is content-addressed immutable bytes named by `BlobId`, stored outside
+  the state tree in the `Blobs` column plus on-disk chunk files, and re-chunked
+  to 1 MiB internally.
+- Blobs are referenced from state by id only; they are never folded into
+  `scope_root`, so blob movement neither creates nor repairs state divergence.
+- Guests use `create → write → close` (yields a `BlobId`), `open → read`, and
+  `announce_to_context`, bounded by `max_blob_handles` and `max_blob_chunk_size`.
+- Discovery is a context-scoped Kademlia lookup; transfer runs either over the
+  dedicated `/calimero/blob/0.0.2` stream (`BlobRequest` → `BlobResponse` →
+  `BlobChunk*`) or, during sync, as encrypted `BlobShare` frames — both gated by
+  context-membership authorization and both self-verifying by content address.

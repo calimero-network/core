@@ -128,6 +128,8 @@ pub enum HostError {
     XCallFunctionSizeOverflow,
     #[error("xcall params size overflow")]
     XCallParamsSizeOverflow,
+    #[error("commit artifact size overflow (size: {size}, max: {max})")]
+    ArtifactSizeOverflow { size: u64, max: u64 },
     #[error("blob operations not supported (NodeClient not available)")]
     BlobsNotSupported,
     #[error("invalid blob handle")]

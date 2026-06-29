@@ -1,0 +1,371 @@
+---
+title: Admin & JSON-RPC API Reference
+description: Real endpoint paths, methods, and purposes for the merod HTTP server.
+sidebar:
+  order: 6
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
+The node's HTTP server (default bind `/ip4/127.0.0.1/tcp/2528` and
+`/ip6/::1/tcp/2528`) exposes four
+surfaces: a REST-style **admin API**, a **JSON-RPC** endpoint for app
+execution, a **WebSocket** stream, and a **Server-Sent Events** stream. Every
+path below is taken directly from the axum routers in the server crate.
+
+## Base paths
+
+| Surface | Base path | Enabled by |
+| --- | --- | --- |
+| Admin API | `/admin-api` | `[server.admin] enabled = true` |
+| JSON-RPC | `/jsonrpc` | `[server.jsonrpc] enabled = true` |
+| WebSocket | `/ws` | `[server.websocket] enabled = true` |
+| Server-Sent Events | `/sse` | `[server.sse] enabled = true` |
+| Admin dashboard UI | `/admin-dashboard` | `[server.admin] enabled = true` |
+
+<Aside type="note">
+Every base path can be prefixed by setting the `NODE_PATH_PREFIX` environment
+variable. For example `NODE_PATH_PREFIX=/node1` makes the admin API live at
+`/node1/admin-api`. The tables below show the unprefixed paths.
+</Aside>
+
+## Choosing an API surface
+
+All four surfaces are mounted on a single HTTP server and wrapped by the **same
+optional auth layer** — when embedded auth is on, every one of them is guarded
+identically; when it is off, all four are open. They differ in shape, not in how
+they authenticate:
+
+| Surface | Path | Shape | Use it for |
+| --- | --- | --- | --- |
+| Admin REST | `/admin-api` | Request/response | Node management: install apps, create contexts and groups, manage members and aliases, inspect state. |
+| JSON-RPC | `/jsonrpc` | Request/response | One-shot app calls. `execute` (run a method) and `sync_status`. |
+| WebSocket | `/ws` | Bidirectional, long-lived | App calls plus live updates over one connection: `execute`, `subscribe`, `unsubscribe`. |
+| SSE | `/sse` | Server→client stream | A read-only event feed when you only need to *receive* events (no custom request headers needed). |
+
+Two practical notes:
+
+- **There is one execute, reached two ways.** The `execute` over JSON-RPC and the
+  `execute` over WebSocket resolve to the **same execution kernel** — same
+  executor resolution, same runtime invocation, same result envelope. Pick
+  JSON-RPC for a single stateless call; pick WebSocket when you also want to
+  subscribe to events on the same connection.
+- **Query vs. mutate is not a flag you set.** Whether an `execute` call only
+  reads state or commits a change is decided by the target method's own
+  `#[app::view]` declaration in the app, not by the transport or any request
+  field. The same `execute` request shape covers both.
+
+## Authentication
+
+Admin routes split into **protected** and **public** sets. The protected set is
+wrapped in an auth guard whose behavior depends on `[server] auth_mode`:
+
+- `proxy` (default) — the node expects an external auth proxy in front of it.
+- `embedded` — the bundled `mero-auth` service enforces auth in-process.
+
+The public routes below carry no auth guard and are always reachable when the
+admin API is enabled.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/admin-api/health` | Liveness/health check. |
+| GET | `/admin-api/is-authed` | Reports whether the caller is authenticated. |
+| GET | `/admin-api/certificate` | Returns the node's TLS/admin certificate. |
+
+### CORS and browser / Tauri clients
+
+The server applies one CORS layer to every mounted route. It allows `Any`
+origin, `Any` request header, the methods `GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`OPTIONS`,
+and sets `allow_private_network(true)` so requests from a public-origin page to
+a loopback node pass the browser's private-network preflight.
+
+Because the response uses `Any` origin, `allow_credentials` is **intentionally
+not set** (the two are incompatible per the CORS spec, so enabling it would be a
+no-op for browsers). Cookie/credentialed auth therefore does not work against
+the default configuration; pass tokens via the `Authorization` header instead.
+
+Cross-origin clients (browser SPAs, Tauri webviews) can only read response
+headers that the server explicitly exposes. The layer exposes exactly three:
+
+| Exposed header | Use |
+| --- | --- |
+| `x-auth-error` | Signals the auth-failure reason. A 401 from an expired-but-refreshable token carries `X-Auth-Error: token_expired`. |
+| `x-auth-user` | The authenticated user/key. |
+| `x-auth-permissions` | The caller's resolved permissions. |
+
+To implement transparent refresh-on-401, read `X-Auth-Error` on a 401: if it is
+`token_expired`, refresh the access token and retry; otherwise treat it as a
+hard auth failure. If these headers are not exposed (e.g. behind a proxy that
+strips them), every access-token expiry surfaces as a hard logout instead.
+
+## JSON-RPC
+
+A single endpoint accepts JSON-RPC 2.0 requests. The `method` field selects the
+operation; `params` carries its arguments.
+
+<SeqDiagram
+  id="d-op-jsonrpc"
+  title="A JSON-RPC execute request"
+  lanes={[
+    { label: 'Client', color: '#f0883e' },
+    { label: 'Server', color: '#58a6ff' },
+    { label: 'Context', color: '#3fb950' },
+    { label: 'Network', color: '#a371f7' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /jsonrpc { method: "execute", params }' },
+    { from: 1, to: 1, label: 'dispatch on method = execute' },
+    { from: 1, to: 2, label: 'execute(contextId, method, argsJson)' },
+    { from: 2, to: 2, label: 'run app method → state delta', color: '#a5ff11' },
+    { from: 2, to: 3, label: 'broadcast op (state delta) on context topic' },
+    { from: 2, to: 1, label: 'outcome { returns }', dashed: true },
+    { from: 1, to: 0, label: 'JSON-RPC 2.0 result', dashed: true },
+  ]}
+/>
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/jsonrpc` | JSON-RPC 2.0 request dispatch. |
+
+Supported `method` values:
+
+| `method` | Purpose |
+| --- | --- |
+| `execute` | Execute an application method against a context (mutating or query). Params: `contextId`, `method`, `argsJson`, optional `substitute` aliases. |
+| `sync_status` | Report sync status. |
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "execute",
+  "params": {
+    "contextId": "<context-id>",
+    "method": "set",
+    "argsJson": { "key": "a", "value": "b" },
+    "substitute": []
+  }
+}
+```
+
+## WebSocket
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/ws` | WebSocket upgrade. Carries `execute`, `subscribe`, and `unsubscribe` messages over the socket. |
+
+When embedded auth is enabled, the auth guard runs at the HTTP **upgrade**
+request, before the socket is established — an unauthenticated upgrade is
+rejected with a 401 and never becomes a WebSocket. The guard resolves the token
+in this order:
+
+1. An `Authorization: Bearer <jwt>` header. If present, it is validated
+   exclusively — even an invalid token here is rejected rather than retried.
+2. Only if no `Authorization` header is present, a `?token=<jwt>` query
+   parameter. This fallback exists because the browser `WebSocket` and
+   `EventSource` APIs cannot set custom headers.
+
+If the `Authorization` header is present, the `?token=` query parameter is
+ignored entirely.
+
+## Server-Sent Events
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/sse` | Open an SSE event stream. |
+| GET | `/sse/session/:session_id` | Fetch/attach to an existing SSE session. |
+| POST | `/sse/subscription` | Manage subscriptions for an SSE session. |
+
+### SSE durability and reconnection
+
+The SSE stream uses a **skip-on-disconnect** delivery model: there is no replay
+buffer. Sessions persist (subscriptions and a monotonic event counter survive a
+reconnect), but any event emitted while a client is disconnected is **lost** and
+never redelivered. Event IDs are sequential, so a gap in the IDs a client
+receives is the signal that events were missed.
+
+On connect the response carries two headers for the client to track its session:
+
+| Response header | Meaning |
+| --- | --- |
+| `X-SSE-Session-ID` | The session ID assigned to (or resumed by) this stream. |
+| `X-SSE-Reconnect` | `true` if this connection resumed an existing session, `false` for a fresh one. |
+
+To reconnect, the client sends the `Last-Event-ID` header. Event IDs have the
+format `{session_id}-{n}`; the server parses the `session_id` prefix to restore
+the session. Sessions expire after **24 hours** of inactivity, after which a
+reconnect attempt starts a fresh session. The stream also advertises a retry
+hint of **3000ms** in its initial event.
+
+<Aside type="caution">
+Because missed events are never replayed, consumers must **reconcile state on
+reconnect** (for example, re-query the relevant context/application state)
+rather than assume the event stream is a complete, gap-free log.
+</Aside>
+
+## Admin API — Applications
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/admin-api/install-application` | Install an application from a package/URL. |
+| POST | `/admin-api/install-dev-application` | Install a local dev application. |
+| GET | `/admin-api/applications` | List installed applications. |
+| GET | `/admin-api/applications/:application_id` | Get one application. |
+| DELETE | `/admin-api/applications/:application_id` | Uninstall an application. |
+| GET | `/admin-api/applications/:application_id/versions` | List versions of an installed application. |
+
+### Packages
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/admin-api/packages` | List known packages. |
+| GET | `/admin-api/packages/:package/versions` | List versions of a package. |
+| GET | `/admin-api/packages/:package/latest` | Get the latest version of a package. |
+
+## Admin API — Contexts
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/admin-api/contexts` | List context IDs. |
+| POST | `/admin-api/contexts` | Create a context. |
+| POST | `/admin-api/contexts/invite-specialized-node` | Invite a specialized (e.g. read-only) node into a context. |
+| GET | `/admin-api/contexts/:context_id` | Get a context. |
+| DELETE | `/admin-api/contexts/:context_id` | Delete a context. |
+| POST | `/admin-api/contexts/:context_id/application` | Update the context's application. |
+| POST | `/admin-api/contexts/:context_id/resync` | Force a resync of the context. |
+| GET | `/admin-api/contexts/for-application/:application_id` | List contexts for an application. |
+| GET | `/admin-api/contexts/with-executors/for-application/:application_id` | List contexts with their executors for an application. |
+| GET | `/admin-api/contexts/:context_id/storage` | Get context storage info. |
+| GET | `/admin-api/contexts/:context_id/identities` | List identities in the context. |
+| GET | `/admin-api/contexts/:context_id/identities-owned` | List identities the node owns in the context. |
+| GET | `/admin-api/contexts/:context_id/group` | Get the context's group. |
+| POST | `/admin-api/contexts/:context_id/join` | Join a context. |
+| POST | `/admin-api/contexts/:context_id/leave` | Leave a context. |
+| POST | `/admin-api/contexts/sync` | Trigger sync across all contexts. |
+| POST | `/admin-api/contexts/sync/:context_id` | Trigger sync for one context. |
+
+## Admin API — Groups
+
+<Aside type="caution">
+The groups surface is the largest and most actively evolving part of the admin
+API (governance: members, capabilities, metadata, upgrades, migrations,
+ownership proofs). Several paths use `:namespace_id` rather than `:group_id` as
+the path parameter — these are reproduced exactly as routed below.
+</Aside>
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/admin-api/groups` | Create a group. |
+| GET | `/admin-api/groups/:group_id` | Get group info. |
+| PATCH | `/admin-api/groups/:group_id` | Update group settings. |
+| DELETE | `/admin-api/groups/:group_id` | Delete a group. |
+| GET | `/admin-api/groups/:group_id/contexts` | List contexts in a group. |
+| POST | `/admin-api/groups/:group_id/reparent` | Re-parent a group. |
+| GET | `/admin-api/groups/:group_id/subgroups` | List subgroups. |
+| GET | `/admin-api/groups/:group_id/members` | List group members. |
+| POST | `/admin-api/groups/:group_id/members` | Add group members. |
+| POST | `/admin-api/groups/:group_id/members/remove` | Remove group members. |
+| POST | `/admin-api/groups/:group_id/leave` | Leave a group. |
+| PUT | `/admin-api/groups/:group_id/members/:identity/role` | Update a member's role. |
+| GET | `/admin-api/groups/:group_id/metadata` | Get group metadata. |
+| PUT | `/admin-api/groups/:group_id/metadata` | Set group metadata. |
+| GET | `/admin-api/groups/:group_id/members/:identity/metadata` | Get member metadata. |
+| PUT | `/admin-api/groups/:group_id/members/:identity/metadata` | Set member metadata. |
+| GET | `/admin-api/groups/:group_id/contexts/:context_id/metadata` | Get context-in-group metadata. |
+| PUT | `/admin-api/groups/:group_id/contexts/:context_id/metadata` | Set context-in-group metadata. |
+| POST | `/admin-api/groups/:group_id/contexts/:context_id/remove` | Detach a context from a group. |
+| POST | `/admin-api/groups/:group_id/upgrade` | Upgrade a group. |
+| GET | `/admin-api/groups/:group_id/upgrade/status` | Get group upgrade status. |
+| POST | `/admin-api/groups/:group_id/upgrade/retry` | Retry a group upgrade. |
+| GET | `/admin-api/groups/:namespace_id/cascade-status` | Get cascade status (by namespace). |
+| GET | `/admin-api/groups/:namespace_id/migration-status` | Get migration status (by namespace). |
+| POST | `/admin-api/groups/:namespace_id/migration/abort` | Abort a migration (by namespace). |
+| POST | `/admin-api/groups/:group_id/signing-key` | Register a signing key. |
+| POST | `/admin-api/groups/:group_id/issue-ownership-proof` | Issue a group ownership proof. |
+| POST | `/admin-api/groups/:group_id/issue-namespace-ownership-proof` | Issue a namespace ownership proof. |
+| POST | `/admin-api/groups/:group_id/sync` | Sync a group. |
+| POST | `/admin-api/groups/:group_id/join-via-inheritance` | Join a subgroup via inheritance. |
+| GET | `/admin-api/groups/:group_id/members/:identity/capabilities` | Get a member's capabilities. |
+| PUT | `/admin-api/groups/:group_id/members/:identity/capabilities` | Set a member's capabilities. |
+| PUT | `/admin-api/groups/:group_id/members/:identity/auto-follow` | Set a member's auto-follow flag. |
+| PUT | `/admin-api/groups/:group_id/settings/default-capabilities` | Set group default capabilities. |
+| GET | `/admin-api/groups/:group_id/settings/tee-admission-policy` | Get the group's TEE admission policy. |
+| PUT | `/admin-api/groups/:group_id/settings/tee-admission-policy` | Set the group's TEE admission policy. |
+| PUT | `/admin-api/groups/:group_id/settings/subgroup-visibility` | Set subgroup visibility. |
+| POST | `/admin-api/groups/:group_id/invite` | Create a group invitation (legacy). |
+| POST | `/admin-api/groups/join` | Join a group (legacy). |
+
+## Admin API — Namespaces
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/admin-api/namespaces` | List namespaces. |
+| POST | `/admin-api/namespaces` | Create a namespace. |
+| GET | `/admin-api/namespaces/:namespace_id` | Get a namespace. |
+| DELETE | `/admin-api/namespaces/:namespace_id` | Delete a namespace. |
+| POST | `/admin-api/namespaces/:namespace_id/invite` | Invite into a namespace. |
+| POST | `/admin-api/namespaces/:namespace_id/join` | Join a namespace. |
+| POST | `/admin-api/namespaces/:namespace_id/leave` | Leave a namespace. |
+| GET | `/admin-api/namespaces/:namespace_id/identity` | Get the node's identity in a namespace. |
+| GET | `/admin-api/namespaces/for-application/:application_id` | List namespaces for an application. |
+| GET | `/admin-api/namespaces/:namespace_id/groups` | List groups in a namespace. |
+| POST | `/admin-api/namespaces/:namespace_id/groups` | Create a group inside a namespace. |
+
+## Admin API — Blobs
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| PUT | `/admin-api/blobs` | Upload a blob. |
+| GET | `/admin-api/blobs` | List blobs. |
+| GET | `/admin-api/blobs/:blob_id` | Download a blob. |
+| HEAD | `/admin-api/blobs/:blob_id` | Get blob info/metadata (headers only). |
+| DELETE | `/admin-api/blobs/:blob_id` | Delete a blob. |
+
+## Admin API — TEE
+
+| Method | Path | Purpose | Auth |
+| --- | --- | --- | --- |
+| GET | `/admin-api/tee/info` | TEE info. | Public |
+| POST | `/admin-api/tee/attest` | Produce/verify an attestation. | Public |
+| POST | `/admin-api/tee/verify-quote` | Verify a TEE quote. | Public |
+| POST | `/admin-api/tee/fleet-join` | Join a TEE fleet. | Protected |
+
+## Admin API — Identity & Alias
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/admin-api/identity/context` | Generate a new context identity (keypair). |
+| POST | `/admin-api/alias/create/context` | Create an alias for a context. |
+| POST | `/admin-api/alias/create/application` | Create an alias for an application. |
+| POST | `/admin-api/alias/create/identity/:context` | Create an alias for an identity within a context. |
+| POST | `/admin-api/alias/lookup/context/:name` | Resolve a context alias. |
+| POST | `/admin-api/alias/lookup/application/:name` | Resolve an application alias. |
+| POST | `/admin-api/alias/lookup/identity/:context/:name` | Resolve an identity alias within a context. |
+| POST | `/admin-api/alias/delete/context/:name` | Delete a context alias. |
+| POST | `/admin-api/alias/delete/application/:name` | Delete an application alias. |
+| POST | `/admin-api/alias/delete/identity/:context/:name` | Delete an identity alias within a context. |
+| GET | `/admin-api/alias/list/context` | List context aliases. |
+| GET | `/admin-api/alias/list/application` | List application aliases. |
+| GET | `/admin-api/alias/list/identity/:context` | List identity aliases within a context. |
+
+<Aside type="note">
+Alias `lookup` and `delete` are routed as `POST` (not `GET`/`DELETE`) — the
+name to resolve is a path segment and the handlers are registered with `post`.
+</Aside>
+
+## Admin API — Network & Usage
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/admin-api/network/status` | libp2p connectivity snapshot (relays, rendezvous, DCUtR, AutoNAT). |
+| GET | `/admin-api/peers` | Connected peers count. |
+| GET | `/admin-api/usage` | Per-namespace usage (counts and on-disk bytes). |
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Auth service & providers" href="/operate/auth/" description="How the protected admin routes are authenticated." />
+  <LinkCard title="meroctl reference" href="/operate/meroctl/" description="The CLI wrapping most of these endpoints." />
+  <LinkCard title="Production deployment" href="/operate/deployment/" description="Front the HTTP server with a reverse proxy and keep it private." />
+</CardGrid>

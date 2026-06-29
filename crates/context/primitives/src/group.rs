@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use actix::Message;
 use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
+use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::PublicKey;
@@ -723,7 +724,7 @@ impl Message for SetSubgroupVisibilityRequest {
 #[derive(Debug)]
 pub struct StoreSubgroupVisibilityRequest {
     pub group_id: ContextGroupId,
-    pub mode: u8,
+    pub mode: VisibilityMode,
 }
 
 impl Message for StoreSubgroupVisibilityRequest {

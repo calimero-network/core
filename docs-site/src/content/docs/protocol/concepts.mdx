@@ -1,0 +1,73 @@
+---
+title: Concepts & Scopes
+description: The scope model the rest of the reference builds on.
+sidebar:
+  order: 2
+---
+
+import Figure from '../../../components/Figure.astro';
+import ScopeTree from '../../../components/diagrams/ScopeTree.astro';
+import ScopeHierarchy from '../../../components/diagrams/ScopeHierarchy.astro';
+
+## The nouns
+
+Five words carry the whole model. Get these straight and the rest of the reference reads easily.
+
+- **Node** — A single peer process. It holds keys, runs applications, stores state, and talks to other nodes over a peer-to-peer network. One machine can run one node.
+- **Application** — A WASM module that defines the rules of a shared state machine — its data types and the methods that mutate them. Apps are sandboxed and deterministic.
+- **Identity** — An Ed25519 key. Two layers exist (covered in [Identities & Keys](/protocol/identities/)): a _transport_ identity that names a node on the network, and a _member_ identity that authors and authorizes operations.
+- **Operation** — The atomic, signed unit of change. Every mutation — to data, access, membership, or admin state — is an operation in a causal DAG. The [operation chapter](/protocol/operations/) dissects it.
+- **Scope** — The unit of "stuff that replicates and converges together." This is the load-bearing abstraction, and the rest of this page is about it.
+
+## What a scope is
+
+A **scope** is a self-contained **replication, encryption, and convergence domain**. It is one node in a tree of scopes. Every scope owns exactly four things:
+
+| A scope owns | What it is |
+| --- | --- |
+| An op-log (its own DAG) | The causally-ordered set of signed operations that belong to this scope, and only this scope. |
+| A key | Operations in the scope are encrypted under the scope's key. Only members hold the key, so only members can read the operations. |
+| A membership set | Who may author and read operations here. Membership is itself maintained by operations (see [Governance](/protocol/governance/)). |
+| A scope root | One 32-byte hash summarising the scope's entire state. Convergence is always checked **per scope** by comparing scope roots. |
+
+A scope is named by a stable 32-byte `ScopeId`. Everything in the protocol — operations, encryption, sync, convergence — is parameterised by scope.
+
+## What is actually a scope
+
+The things you already think of as nouns are each a scope:
+
+- The **root governance scope** of a namespace — where membership, admin, and policy live — is one scope.
+- Each **subgroup** is its own scope, with its own key, its own members, and its own operations.
+- Each **context** — a running application's replicated state — is its own scope.
+
+So what you informally call "a context" is really a small **tree of scopes**: the governance scope(s) above it, plus the context's own data scope.
+
+<ScopeTree />
+
+_Each box is an independent scope: its own op-log, key, members, and scope root. The edges form the scope tree._
+
+### Concretely: an org
+
+Make it real. An org — call it **Acme** — is one **namespace** (its root governance scope). Inside it sit **groups** like _Engineering_ and _Sales_; a group can hold **subgroups** that are either **Open** (members of the parent flow in automatically) or **Restricted** (admission is explicit); and the leaves are **contexts** — the running apps whose CRDT state actually replicates.
+
+<ScopeHierarchy />
+
+Membership and keys flow **downward**. A member at one scope is automatically a member of its **Open** children — provided they hold the open-join capability — so they receive those scopes' keys and replicate their data without a separate invite. A **Restricted** subgroup is a wall: you are in only if explicitly admitted. (Namespaces, groups, subgroups, and contexts are all scopes; a namespace is simply the **root group** — a group with no parent. A context attaches to a group, and its governance membership _is_ that group's membership.)
+
+## Why the concept exists
+
+This is the part worth internalising. Earlier, Calimero had **three different kinds of log** with three different convergence signals: a data-delta log per context, a governance DAG per namespace, and a separate access-control rotation log. Three mechanisms, three hashes, three sync paths — and bugs hid in the seams between them.
+
+The scope abstraction collapses all of that into one idea: **a scope is anything that has its own op-log and converges on its own.** Data writes, access-control changes, membership changes, and admin actions are all just operations living in some scope. One DAG structure, one fold, one scope root, one sync engine — applied uniformly to contexts _and_ governance. **That generalisation is what makes the operation log "unified,"** and `scope` is the noun that made it possible.
+
+## The one subtlety: scopes form a tree, and operations can cross scope edges
+
+An operation's **parents** are normally other operations _in the same scope_. But an operation may _also_ reference the current head of its **parent** governance scope.
+
+This is safe because membership is nested: a subgroup's members are always a subset of its ancestor's members, so pointing "up" the tree never reveals anything a reader couldn't already see. That cross-scope parent link is what causally ties a child scope to the governance that authorises it — for example, a context write can pin the exact membership state it was authored under.
+
+That single mechanism is the foundation of **authorization at the causal cut** ("forward-only" authorization): a write authored before a member was revoked stays valid regardless of the order in which a peer receives the two operations. [Governance](/protocol/governance/) builds the full rule on top of this; for now, just hold the shape: _one parent set, one causal model, spanning data and governance._
+
+## Where this leads
+
+With _scope_ in hand, the rest of the reference falls into place. The [operation that lives in a scope](/protocol/operations/) and the [fold from its DAG to state and a scope root](/protocol/projection/) are the machinery the following chapters build on. Next comes **[Governance](/protocol/governance/)** — membership and authority, encoded as operations like everything else — and from there the reference is variations on one idea: operations move between scopes, and scopes converge.

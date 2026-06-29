@@ -5119,7 +5119,7 @@ fn curative_sweep_redrives_stranded_context() {
     // This receiver node's namespace identity — makes the namespace a "known"
     // one for `iter_identities`/`known_namespace_identities`.
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, &member_sk, &[0u8; 32])
+        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
         .unwrap();
 
     // ---- The stranded subgroup: pick id + mint its key ---------------------

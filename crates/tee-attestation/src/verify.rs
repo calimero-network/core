@@ -16,8 +16,8 @@ pub struct VerificationResult {
     pub quote_verified: bool,
     /// Whether the nonce in the report data matches the expected value.
     pub nonce_verified: bool,
-    /// Whether the application hash matches (if an expected hash was provided).
-    pub application_hash_verified: Option<bool>,
+    /// Whether the application hash matches the expected (mandatory) value.
+    pub application_hash_verified: bool,
     /// TCB status reported by DCAP verification (for policy decisions).
     pub tcb_status: Option<String>,
     /// Advisory IDs reported by DCAP verification.
@@ -29,7 +29,7 @@ pub struct VerificationResult {
 impl VerificationResult {
     /// Check if all verification checks passed.
     pub fn is_valid(&self) -> bool {
-        self.quote_verified && self.nonce_verified && self.application_hash_verified.unwrap_or(true)
+        self.quote_verified && self.nonce_verified && self.application_hash_verified
     }
 }
 
@@ -38,7 +38,9 @@ impl VerificationResult {
 /// # Arguments
 /// * `quote_bytes` - Raw quote bytes to verify.
 /// * `nonce` - Expected 32-byte nonce that should be in report_data[0..32].
-/// * `expected_app_hash` - Optional expected 32-byte app hash that should be in report_data[32..64].
+/// * `expected_app_hash` - Mandatory expected 32-byte app hash that must be in report_data[32..64].
+///   Binding the attestation to an application/identity is required; there is no
+///   "skip" path that would otherwise leave the quote unbound yet considered valid.
 ///
 /// # Returns
 /// A `VerificationResult` with the verification status for each check.
@@ -48,7 +50,7 @@ impl VerificationResult {
 pub async fn verify_attestation(
     quote_bytes: &[u8],
     nonce: &[u8; 32],
-    expected_app_hash: Option<&[u8; 32]>,
+    expected_app_hash: &[u8; 32],
 ) -> Result<VerificationResult, AttestationError> {
     // Parse TDX quote
     let tdx_quote = TdxQuote::from_bytes(quote_bytes).map_err(|err| {
@@ -112,21 +114,18 @@ pub async fn verify_attestation(
         );
     }
 
-    // Verify application hash if provided
-    let application_hash_verified = expected_app_hash.map(|expected_hash| {
-        let actual_hash = &report_data[32..64];
-        let verified = actual_hash == expected_hash;
-        if verified {
-            info!("Application hash verification: PASSED");
-        } else {
-            error!(
-                expected=%hex::encode(expected_hash),
-                actual=%hex::encode(actual_hash),
-                "Application hash verification: FAILED"
-            );
-        }
-        verified
-    });
+    // Verify application hash matches report_data[32..64] (mandatory binding)
+    let actual_hash = &report_data[32..64];
+    let application_hash_verified = actual_hash == expected_app_hash;
+    if application_hash_verified {
+        info!("Application hash verification: PASSED");
+    } else {
+        error!(
+            expected=%hex::encode(expected_app_hash),
+            actual=%hex::encode(actual_hash),
+            "Application hash verification: FAILED"
+        );
+    }
 
     // Convert tdx_quote to our serializable Quote type
     let quote = Quote::try_from(tdx_quote).map_err(|err| {
@@ -161,7 +160,7 @@ pub async fn verify_attestation(
 /// # Arguments
 /// * `quote_bytes` - Raw mock quote bytes.
 /// * `nonce` - Expected 32-byte nonce.
-/// * `expected_app_hash` - Optional expected 32-byte app hash.
+/// * `expected_app_hash` - Mandatory expected 32-byte app hash.
 ///
 /// # Returns
 /// A `VerificationResult` where `quote_verified` is always `true` for mock quotes
@@ -173,7 +172,7 @@ pub async fn verify_attestation(
 pub fn verify_mock_attestation(
     quote_bytes: &[u8],
     nonce: &[u8; 32],
-    expected_app_hash: Option<&[u8; 32]>,
+    expected_app_hash: &[u8; 32],
 ) -> Result<VerificationResult, AttestationError> {
     use crate::generate::create_mock_quote;
 
@@ -211,21 +210,18 @@ pub fn verify_mock_attestation(
         );
     }
 
-    // Verify application hash if provided
-    let application_hash_verified = expected_app_hash.map(|expected_hash| {
-        let actual_hash = &report_data[32..64];
-        let verified = actual_hash == expected_hash;
-        if verified {
-            info!("Application hash verification: PASSED");
-        } else {
-            error!(
-                expected=%hex::encode(expected_hash),
-                actual=%hex::encode(actual_hash),
-                "Application hash verification: FAILED"
-            );
-        }
-        verified
-    });
+    // Verify application hash matches report_data[32..64] (mandatory binding)
+    let actual_hash = &report_data[32..64];
+    let application_hash_verified = actual_hash == expected_app_hash;
+    if application_hash_verified {
+        info!("Application hash verification: PASSED");
+    } else {
+        error!(
+            expected=%hex::encode(expected_app_hash),
+            actual=%hex::encode(actual_hash),
+            "Application hash verification: FAILED"
+        );
+    }
 
     // Create a mock quote structure with the report data
     let mut mock_report_data = [0u8; 64];

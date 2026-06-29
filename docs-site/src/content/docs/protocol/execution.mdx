@@ -1,0 +1,155 @@
+---
+title: Application Execution
+description: Where data operations come from — running a WASM application.
+sidebar:
+  order: 6
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import Figure from '../../../components/Figure.astro';
+import AbiBoundary from '../../../components/diagrams/AbiBoundary.astro';
+
+## What an execution is
+
+An **application** is a WASM module that defines a state machine: data types and the methods that mutate them. An **execution** is one method call. It reads the context's current state, runs deterministic guest code, and produces a set of state changes plus a fresh root hash. Those state changes are the data-plane [operations](/protocol/operations/) that fold into the [projection](/protocol/projection/).
+
+Crucially, execution is **sandboxed and self-contained**: the guest cannot touch the network, the clock, or the disk directly. It can only call back into the host through a fixed set of functions — the ABI. Everything the guest does is therefore observable, bounded, and reproducible.
+
+<SeqDiagram
+  id="d-exec"
+  title="One application method call"
+  lanes={[
+    { label: 'Caller', color: '#f0883e' },
+    { label: 'Runtime', color: '#3fb950' },
+    { label: 'WASM guest', color: '#58a6ff' },
+    { label: 'Storage', color: '#39d0d8' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'execute(method, input)' },
+    { from: 1, to: 1, label: 'instantiate module' },
+    { from: 1, to: 2, label: 'call method()' },
+    { from: 2, to: 1, label: 'input() → read args', dashed: true },
+    { from: 2, to: 3, label: 'storage_read(k)' },
+    { from: 3, to: 2, label: 'value', dashed: true },
+    { from: 2, to: 2, label: 'storage_write(k, v) → buffered', color: '#f0883e' },
+    { from: 2, to: 1, label: 'emit(event) / log' },
+    { from: 2, to: 2, label: 'commit()', color: '#a5ff11' },
+    { from: 1, to: 3, label: 'persist writes → new root_hash' },
+    { from: 1, to: 0, label: 'Outcome { returns, events, artifact, root_hash }', dashed: true },
+  ]}
+/>
+
+## The host ABI boundary
+
+The guest and the host share nothing but a block of **linear memory** and a set of numbered **registers**. Arguments cross the boundary as `(pointer, length)` descriptors into guest memory; the host reads or writes those bytes, and hands larger results back through registers the guest then reads. The host bounds-checks every access.
+
+<AbiBoundary />
+
+## What the host offers
+
+The ABI is a fixed catalog of host functions. The guest never does anything outside this list — which is exactly why execution stays deterministic and bounded. The families:
+
+| Family | Examples | Purpose |
+| --- | --- | --- |
+| Context / input | `context_id`, `executor_id`, `input`, `read_register` | Read who is calling, in which context, with what arguments. |
+| State | `storage_read`, `storage_write`, `storage_remove` | Read and mutate replicated context state. Writes are buffered (below). |
+| Output | `value_return`, `log`, `emit` | Return a result, log a line, emit an application event. |
+| Commit | `commit` / root-state functions | Finalize buffered writes into a new state root and an artifact. |
+| Crypto | `ed25519_verify` | Verify signatures inside guest logic (deterministic). |
+| Host-provided | `time_now`, `random_bytes` | The _only_ sources of non-determinism — injected by the host, never read by the guest itself. |
+| Cross-context | `xcall` | Queue a fire-and-forget call into another context on the same node. |
+| Blobs | `blob_*` | Stream large binary artifacts outside the state tree. |
+
+## Three storage layers
+
+Not everything a guest writes should replicate. The ABI exposes three distinct layers, and the guest chooses per write:
+
+| Layer | Description |
+| --- | --- |
+| **Replicated** | The shared context state. Writes here become operations that sync to every member and fold into the scope root. This is "the app's state." |
+| **Private** | Node-local state that never leaves the machine and never enters the scope root. For per-node caches and secrets. |
+| **Ordered index** | A node-local, byte-ordered secondary index for range and prefix queries — a local accelerator, also never replicated. |
+
+Only the **replicated** layer produces operations. The other two are conveniences that stay on one node and have no effect on convergence.
+
+## Determinism is the contract
+
+Every node that applies the same operation must reach the same state, so execution must be a pure function of _(prior state, input, injected host values)_. The runtime enforces this:
+
+- **Writes buffer, then commit.** A `storage_write` updates an in-execution buffer that later reads can see, but nothing is persisted until `commit`. If the guest traps or never commits, every change is discarded — execution is transactional.
+- **Non-determinism is injected, not reached.** A guest can't read the clock or an RNG on its own; it asks the host via `time_now` / `random_bytes`, so those values are controlled and recorded rather than free.
+- **Resources are bounded.** Memory pages, stack depth, and the counts and sizes of logs, events, cross-calls, and storage keys/values are all capped. Exceeding a limit traps the execution — which, being uncommitted, changes nothing.
+- **The method shape is fixed.** Exported methods take no arguments and return nothing; input arrives through `input()` and results leave through `value_return`, so a method signature can't smuggle in hidden state.
+
+## From execution to operations
+
+A successful `commit` yields an **outcome**: the return value, any logs and events, the cross-context calls to dispatch, the new state **root hash**, and an **artifact** describing the committed state changes.
+
+That artifact is the bridge back to the core: its committed writes are packaged as **data-plane operations** (`Put` / `Delete`) in the context scope — each stamped with the executor's identity, the scope's current heads as parents, and a hybrid timestamp. From there they are exactly the same [operations](/protocol/operations/): appended to the DAG, folded into the [root](/protocol/projection/), and ready to broadcast.
+
+:::note[Handoff]
+**Execution ends where the write path begins.**
+
+This chapter stops at "an outcome exists." **The [write path](/protocol/write-path/)** picks it up: how the outcome is signed, persisted atomically, and broadcast to the context's members.
+:::
+
+## Specification
+
+The exact host ABI. All host functions live in the WASM `env` namespace. Pointers and lengths are `u64` offsets into the guest's linear memory; all integers are little-endian.
+
+### Calling convention
+
+- A buffer is passed as a 16-byte descriptor `{ ptr: u64, len: u64 }` at a guest memory offset — the host reads `len` bytes from `ptr`.
+- Larger results are staged in host **registers** addressed by a `u64` id. `register_len(id)` returns the length or `u64::MAX` if absent; `read_register(id, dest_ptr)` copies it into guest memory and returns `1` on success, `0` on a size mismatch.
+- A return value is written by the guest as a `ValueReturn` tagged union — a 1-byte tag (`0`=Ok, `1`=Err) then, at offset 8, a 16-byte buffer descriptor.
+
+### Host functions (the `env` namespace)
+
+| Family | Signature |
+| --- | --- |
+| Input | `context_id(reg: u64)`, `executor_id(reg: u64)`, `input(reg: u64)`, `xcall_origin(reg: u64) -> u32` |
+| Registers | `register_len(id: u64) -> u64`, `read_register(id: u64, dest: u64) -> u32` |
+| Replicated state | `storage_read(key: u64, reg: u64) -> u32`, `storage_write(key: u64, val: u64, reg: u64) -> u32`, `storage_remove(key: u64, reg: u64) -> u32` |
+| Private state | `private_storage_read / write / remove(…)` — same shapes, node-local |
+| Ordered index | `storage_index_set / remove / remove_prefix / scan / last(…)` — node-local |
+| Output | `value_return(ptr: u64)`, `log_utf8(ptr: u64)`, `emit(ptr: u64)`, `emit_with_handler(ptr, handler)` |
+| Commit | `commit(root_hash: u64, artifact: u64)` |
+| Crypto | `ed25519_verify(sig: u64, pk: u64, msg: u64) -> u32` |
+| Host-provided | `time_now(dest: u64)`, `random_bytes(dest: u64)` |
+| Cross-context | `xcall(ptr: u64)` |
+| Blobs | `blob_create() -> u64`, `blob_write / read / open / close(…)`, `blob_announce_to_context(…)` |
+| Panic | `panic(loc: u64)`, `panic_utf8(msg: u64, loc: u64)` |
+
+A storage read/write/remove returns `1` on hit and `0` on miss. The index scan result is encoded as `u32` count, then for each pair `u32` key-len ‖ key ‖ `u32` value-len ‖ value.
+
+### Resource limits (defaults)
+
+| Limit | Default | Limit | Default |
+| --- | --- | --- | --- |
+| memory pages | 1024 (64 MiB) | stack size | 200 KiB |
+| registers | 100 | register capacity | 1 GiB total |
+| max register | 100 MiB | logs | 1024 × 16 KiB |
+| events | 100 × 16 KiB | xcalls | 100 × 16 KiB |
+| storage key | 1 MiB | storage value | 10 MiB |
+| blob handles | 100 | blob chunk | 10 MiB |
+| method name | 256 B | module size | 20 MiB |
+
+Exceeding any limit traps the execution; because nothing has committed, the trap leaves state unchanged.
+
+### Outcome
+
+```rust
+struct Outcome {
+  returns: Result<Option<Vec<u8>>, FunctionCallError>,
+  logs: Vec<String>,
+  events: Vec<Event>,  // { kind: String, data: Vec<u8>, handler: Option<String> }
+  xcalls: Vec<XCall>,  // { context_id: [u8;32], function: String, params: Vec<u8> }
+  root_hash: Option<[u8; 32]>,
+  artifact: Vec<u8>,
+  migration_witness: Option<Vec<u8>>,
+}
+```
+
+## Where this leads
+
+We now know where data operations originate. **[The Write Path](/protocol/write-path/)** follows one out of the runtime: how an outcome becomes a signed, durably persisted, broadcast operation.

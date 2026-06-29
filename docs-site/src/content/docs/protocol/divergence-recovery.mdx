@@ -1,0 +1,221 @@
+---
+title: Divergence & Partition Recovery
+description: How a partition produces divergent scope roots, how Calimero detects it, and how recovery converges — eventually, order-independently, with no quorum and no data loss.
+sidebar:
+  order: 18
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+The [sync chapter](/protocol/sync/) establishes the happy path: compare one 32-byte scope root, and if it differs, transfer exactly what is missing. This chapter goes deeper on the cases that chapter only names — what actually happens when two nodes hold genuinely different histories after a network partition, how that condition surfaces, and the several distinct repair paths that drive it back to agreement. The throughline is that divergence is **detected, not prevented**, and recovery is **eventual and order-independent**: there is no quorum, no agreed order, and no point at which a write is discarded to force agreement.
+
+## How a partition produces divergence
+
+A context's state is a fold over a signed operation DAG. Two nodes agree exactly when their **scope roots** are equal — the single hash that folds the entity (storage Merkle) root together with the governance plane's access-control and membership/admin hashes (see [the projection chapter](/protocol/projection/)).
+
+During a partition, each side keeps accepting writes from the members it can still reach. The two sides accrue **different operation sets**: node A folds operations B never saw, and vice versa. Because the scope root is a deterministic fold of the operation set, different sets fold to **different scope roots**. Nothing is wrong yet — each side is internally consistent — but the two roots no longer match. The partition has produced divergence.
+
+Divergence can live on either plane independently, and the distinction drives which repair runs:
+
+- **Data divergence** — the entity (storage Merkle) roots differ. Each side folded writes the other lacks.
+- **Governance divergence** — the entity roots are equal but the scope roots differ. This is the *hash-neutral* case the bare entity root hides: an access-control or membership change (for example, a concurrent writer-set rotation) that does not touch any entity's bytes. Only the full scope root catches it.
+
+## How divergence is detected
+
+There is no global observer. Each node reaches the conclusion locally, from one of these signals.
+
+### The scope verdict (authoritative)
+
+When a sync session opens, the two peers exchange their heads and both roots, and each computes a single verdict from the local and peer `(scope_root, entity_root)` pairs. This is the one decision every sync protocol routes off — the single source of truth in `scope_verdict`:
+
+```rust
+match (local_scope_root, peer_scope_root) {
+    (Some(local), Some(peer)) if local == peer => ScopeVerdict::Converged,
+    (Some(local), Some(peer)) if local_entity_root == peer_entity_root => {
+        ScopeVerdict::GovDiverged(local, peer)
+    }
+    (Some(_), Some(_)) => ScopeVerdict::DataDiverged,
+    // Asymmetric `None` (one side has a cold projection / non-group context)
+    // falls back to the bare entity-root compare rather than crying governance
+    // divergence on a partially-warmed node.
+    _ if local_entity_root == peer_entity_root => ScopeVerdict::Converged,
+    _ => ScopeVerdict::DataDiverged,
+}
+```
+
+Comparing the *full* scope root first is what catches governance divergence the data plane alone would hide. The asymmetric-`None` arm matters for partition recovery specifically: a node that just rejoined may not have folded its governance projection yet, and we must not mistake a cold projection for a real divergence — so when exactly one side can fold a scope root, the verdict falls back to the entity-root compare instead of raising a false governance alarm.
+
+### The divergence report (signed expected hash)
+
+The heavier trigger arrives with a **signed namespace governance op**. When a node applies a signed `MemberRemoved` / `MemberLeft`, a cross-DAG convergence check compares the op's signed claims against local post-apply state. A mismatch produces a `DivergenceReport`:
+
+```rust
+pub struct DivergenceReport {
+    pub group_id: ContextGroupId,
+    pub op_kind: &'static str,
+    pub group_hash_diverges: bool,
+    pub hash_differs: Vec<(ContextId, [u8; 32])>,
+    pub only_in_expected: Vec<ContextId>,
+    pub only_in_actual: Vec<ContextId>,
+}
+```
+
+What makes this report load-bearing is that `hash_differs` carries the **signed expected** root hash alongside each divergent `ContextId`. Recovery later verifies the repaired state against *this* value — a hash a quorum of writers signed — not against whatever an anchor peer claims. The signature is the trust anchor, not the peer.
+
+The `only_in_expected` / `only_in_actual` buckets (namespace-DAG drift — a registration one side hasn't seen) are deliberately **not** routed through anchor sync. They are left to the catch-up paths below, which already handle them; routing them through anchor sync would burn bandwidth on cases that converge for free.
+
+### Liveness signals that nudge a sync
+
+Two lighter signals exist to keep a partitioned namespace from sitting idle once connectivity returns:
+
+- **Readiness beacon** — a peer's beacon carries its `applied_through` and governance `dag_head`. `beacon_indicates_divergence` fires only when the local node already holds state and the beacon's head op is **not present locally** — a confirmed gap that picks a sync partner. The check runs against a fresh DAG read, never at receive time.
+- **Namespace state heartbeat** — advertises a peer's governance heads. In the current code this is **liveness-only**: a head-set mismatch is logged at debug for operators chasing a wedged namespace, but no remediation runs from it. Recovery is delegated to publish-and-ack, the on-receive parent pull, and the beacon above.
+
+<Aside type="note">
+The sync landing page describes a heartbeat that advertises heads *and a root* as a direct reconcile trigger. In the code today the namespace heartbeat is liveness-only and the authoritative triggers are the sync-handshake scope verdict and the signed-op divergence report. Treat "heartbeat root mismatch" as an observational signal, not the remediation path.
+</Aside>
+
+### Beacon debounce and anti-abuse
+
+A `Ready` peer beacons roughly every beacon interval, so the beacon-divergence trigger is rate-limited on both sides to keep a recovering namespace from melting into sync traffic:
+
+- **Debounce on the consumer.** A beacon that indicates divergence fires at most one namespace governance sync per `NS_BEACON_SYNC_DEBOUNCE` (5 s) **per namespace** — without it a behind node would launch one sync per beacon per peer (`crates/node/src/handlers/network_event/readiness.rs:28-71`).
+- **Probe-response rate-limit on the producer.** A peer answers readiness probes at most once per `beacon_interval / 2` per `(peer, namespace)` pair. This closes both a traffic-amplification path (one small probe otherwise pulls a signed beacon from every Ready peer on the topic) and a mailbox-CPU path; the budget keys on `(peer, namespace)`, so varying the probe nonce can't bypass it (`crates/node/src/readiness.rs:759-808`).
+- **Clock-drift rejection.** A beacon whose timestamp is more than `MAX_BEACON_CLOCK_DRIFT_MS` (60 s) ahead of local wall-clock is rejected outright. The window tolerates legitimate NTP-synced drift while closing a cache-poisoning vector — a forged far-future beacon that would otherwise lodge in the readiness cache and never age out (`crates/node/src/readiness.rs:206-213`).
+
+## How divergence is repaired
+
+Repair is layered. Ordinary divergence heals through the normal sync session; the signed-op path adds a stronger, anchor-verified recovery; and a final governance pull closes the plane the data protocols can't reach.
+
+### Reconcile from a trusted anchor
+
+A `DivergenceReport` routes into `reconcile_after_divergence`, which handles each divergent context independently.
+
+<Steps>
+
+1. **Pick a trusted anchor.** The group's trusted-anchor identity set is looked up by the `group_id` carried in the report (not re-derived from the context — a late joiner can have a missing context-to-group mapping while the group's anchors are still well-defined). The node then walks its gossipsub mesh on the context's topic in **randomised** order, choosing the first peer whose verified identities intersect the anchor set. Randomisation distributes load across honest anchors and stops a single mesh-order-first anchor from monopolising reconcile syncs.
+
+2. **Pull canonical state.** The node opens a sync session against the anchor through the standard handshake — typically tree comparison or delta sync between two initialised peers. Snapshot overwrite is **not** used here: it is gated by a `force = false` invariant and will not run on an initialised divergent node, because after-the-fact snapshot adoption needs transactional staging the store layer doesn't yet provide.
+
+3. **Verify against the signed expected.** After the sync, the node re-reads its own root and compares it to the **signed expected** hash from the report — never to the anchor's claim. On a match it logs convergence and clears the context's backoff state. On a mismatch it logs at error (a confirmed, non-transient split-brain: a trusted anchor served state that still doesn't fold to the signed hash) and records a failure.
+
+</Steps>
+
+<SeqDiagram
+  id="d-reconcile"
+  title="Reconcile-after-divergence from a trusted anchor"
+  lanes={[
+    { label: 'Divergent node', color: '#3fb950' },
+    { label: 'Trusted anchor', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'signed op → DivergenceReport (signed expected hash)', color: '#a5ff11' },
+    { from: 0, to: 0, label: 'cooldown active? skip until backoff lapses' },
+    { from: 0, to: 0, label: 'pick anchor: group anchor set ∩ mesh, shuffled' },
+    { from: 0, to: 1, label: 'open sync session (handshake: tree / delta)' },
+    { from: 1, to: 0, label: 'transfer canonical state', dashed: true },
+    { from: 0, to: 0, label: 're-read root; compare to SIGNED expected', color: '#f0883e' },
+    { type: 'divider', label: 'match ⇒ clear backoff · mismatch ⇒ record failure, back off' },
+  ]}
+/>
+
+Reconcile is **best-effort and self-retrying**. A failed attempt imposes an exponential per-context cooldown — base 30 s, doubling, capped at 30 min after seven consecutive failures — and within that window the trigger is a no-op; the next signed op or sync tick re-attempts once the cooldown lapses. A successful verify clears the backoff immediately:
+
+```rust
+pub(crate) fn reconcile_cooldown(consecutive_failures: u32) -> Duration {
+    const BASE_SECS: u64 = 30;
+    const MAX: Duration = Duration::from_secs(30 * 60);
+    let exp = consecutive_failures.saturating_sub(1).min(8);
+    let secs = BASE_SECS.saturating_mul(1u64 << u64::from(exp));
+    Duration::from_secs(secs).min(MAX)
+}
+```
+
+### Pull missing parents
+
+A divergent node is frequently missing not just heads but the **ancestors** that make those heads applicable. Both the data-delta and governance-op paths run a cross-peer parent-pull loop over a small budget machine (`ParentPullBudget`): it seeds with the peer that served the initial backfill (never re-tried), then hands out the next untried mesh peer until the local DAG has no more pending ops, the additional-peer cap is hit, or the wall-clock budget elapses. When the current mesh snapshot is exhausted it re-fetches the mesh once before giving up. This is what lets a node that returns from a long partition fill in deep ancestry from several peers rather than stalling on the first one that can't serve everything.
+
+### Fold and re-check
+
+Transferred entities are merged through the same conflict-free fold as every other operation, and the receiver recomputes its root afterward. Pushed leaves pass an authorization gate first — `is_leaf_currently_authorized` drops any leaf whose claimed author is no longer a member of the context's group, and per-operation signatures are still verified on apply — so recovery can never smuggle in a write the author wasn't entitled to make. The fold is the only way state enters storage; sync is just a faster delivery channel for operations gossip missed.
+
+### Close the governance gap
+
+Data and governance converge independently, so a successful *data* sync does not by itself prove the governance planes agree. After **any** data backend runs (tree comparison, level-wise, snapshot, or delta sync), the manager re-reads the now-merged local root, recomputes the scope root, and — if it **still** differs from the peer's scope root — pulls governance operations from that peer:
+
+```rust
+if let Some(local_sr) = local_scope_root {
+    if local_sr != peer_scope_root {
+        let ops_pulled = self
+            .pull_namespace_governance(context_id, chosen_peer)
+            .await;
+    }
+}
+```
+
+The decision is a **direct scope-root inequality**, deliberately not a `GovDiverged`-vs-`DataDiverged` sub-classification. The manager holds only the peer's *handshake* entity root, and the peer may have advanced during the sync — so an entity-root compare here could misclassify a real governance divergence as "data" and skip the pull, which is the dangerous direction (a permanent governance stall). A governance pull is **idempotent** and returns zero operations against an already-agreeing peer, so pulling whenever the authoritative scope root still differs over-pulls at worst during a still-converging data plane — harmless and self-limiting. This single centralised hook is what converges the governance plane even after a snapshot or delta sync, which never walk it.
+
+## The absorb buffer: deltas that can't apply yet
+
+Some operations are correct and authorised but **not yet applicable on the receiver** — they reference state the node hasn't reached. The cardinal rule is that these are **buffered verbatim and drained later, never dropped and never translated**. Translating the bytes would break each operation's `payload_for_signing` signature; dropping them would lose a write gossip won't resend.
+
+Two distinct prerequisites send an operation to the buffer:
+
+- **Future schema.** A sync-repair leaf, a snapshot entity, or a state delta authored under a **newer app schema** than the receiver's *loaded* reader can read. Storing the bytes would be the "v1-binary-fed-v2-bytes" corruption hazard, so the receiver declines and buffers instead. The schema gate keys on the receiver's loaded reader, and on a store error resolving that reader it **fails closed** — skipping the batch rather than risk an ungated apply.
+- **Missing governance prerequisite.** A state delta whose author's membership can't yet be confirmed because the cited governance ancestry isn't fully folded (the governance-pending buffer). It re-buffers with an attempt counter until the governance plane catches up.
+
+The buffer is **durable** — a record persisted before a crash survives the restart and is reconsidered on the next boot. The same `AbsorbRecord` shape carries deltas, leaves, and snapshot entities, tagged so the drain dispatches each correctly:
+
+```rust
+pub struct AbsorbRecord {
+    pub id: [u8; 32],
+    // ... delta fields (parents, hlc, payload, nonce, author_id, ...) ...
+    pub producing_app_key: Option<[u8; 32]>,
+    pub leaf: Option<AbsorbedLeaf>,     // buffered sync-repair leaf
+    pub entity: Option<AbsorbedEntity>, // buffered snapshot entity
+}
+```
+
+Draining is **delete-after-success**: a record is removed only once its verbatim replay succeeds, keyed by its id, so a crash mid-drain just replays the survivor (replay is convergent). A delta replays through the authorised apply path; a leaf re-applies through the same convergent CRDT merge the live sync path uses; a snapshot entity is re-verified and persisted. Records still behind the loaded reader are left pending — the pass is a no-op for them — and re-evaluated when a binary-advance hook fires or the next operation for that context arrives. The buffer is therefore the mechanism that makes recovery **order-independent on the time axis**: an operation that arrives before its prerequisite simply waits, and lands the moment the prerequisite does.
+
+## Concurrent writer-set rotation
+
+The hardest partition case is two current writers rotating the **writer set** concurrently — siblings in the DAG, neither in the other's causal history, both validly signed. The merge has to pick a deterministic, information-preserving-where-possible outcome with no coordination. [ADR 0001](/protocol/governance/) fixes the rule: **causal-first last-writer-wins, with an HLC tiebreak, then a signer-pubkey tiebreak.**
+
+Given two rotations `R1` (in delta `D1`) and `R2` (in delta `D2`) on the same entity:
+
+<Steps>
+
+1. **Causal precedence wins, unconditionally.** If `R1 happens-before R2` (that is, `D1.id` is in the transitive parents of `D2`), then `R2` wins. Its author saw `R1`'s reality and chose to rotate from it; overriding that would discard an informed decision.
+
+2. **Truly concurrent rotations** are ordered by the larger delta `hlc`. `HybridTimestamp` is a total order embedding both wall-time and a node id, so every node picks the same winner.
+
+3. **HLC tie (vanishingly rare)** breaks by lexicographic comparison of the signing writer's pubkey bytes — smaller wins. Spelled out for completeness; the embedded node id makes a genuine tie astronomically unlikely.
+
+</Steps>
+
+A worked sibling case from the ADR: from a root writer set `(Wa, Wb)`, `Wa` rotates `Wb` out at HLC 20 while `Wb` rotates `Wa` out at HLC 21. The two are concurrent; HLC 21 > 20, so the result is `(Wb)` — `Wa` is rotated out and its rotation is discarded. This is the accepted, unavoidable information loss of any non-union rule; quorum / union-with-re-election schemes were considered and rejected for the operational complexity they impose on every app.
+
+The rule is **stateless beyond a per-entity rotation log** sorted by causal order. `writers_at(entity_id, causal_parents)` walks the log filtered to entries causally visible from a given cut and applies the rule above. The verifier validates a write's signature against `writers_at(entity, the_author's_causal_parents)` — **not** the current writer set — which is the guarantee that makes concurrent operation safe: a write signed by the writer set as the author saw it never gets retroactively rejected by a later rotation. Two nodes that see `D1` then `D2` versus `D2` then `D1` converge to the same writer set, because the rule depends only on immutable per-delta facts (causal relation, HLC, signer hash). The deeper rationale for routing the wrapper's state through a verified per-entity entity (rather than letting it ride unverified in the root-state blob) is in [the storage chapter](/protocol/storage/) and the shared-wrapper verification design.
+
+## Why recovery always converges
+
+Pulling the threads together, recovery is **eventual** and **order-independent**, with **no quorum** and **no data loss**:
+
+- **No quorum, no agreed order.** Every node folds the same signed operation DAG to the same state. Convergence is a property of the fold and the deterministic merge rules (CRDT merge for data, ADR 0001 for rotations), not of any vote or leader. Nodes that receive operations in different orders reach the same scope root.
+- **No data loss.** An operation that can't apply yet is buffered verbatim and drained when its prerequisite lands — never dropped, never rewritten. A write signed at the author's causal cut is authorised at that cut forever, immune to later rotation. Snapshot overwrite is refused on an initialised node precisely so recovery never clobbers a write the node already holds.
+- **Eventual, self-retrying.** Each trigger is best-effort and re-armed: the periodic sync tick, the next signed op, the parent-pull budget, the backoff schedule, the binary-advance drain, and the idempotent governance pull all keep firing until the scope roots agree. Once they agree, every retry path becomes a cheap no-op.
+
+:::caution[Normative]
+- Two nodes are converged **if and only if** their scope roots are equal. A bare entity-root match is **not** convergence — governance divergence is hash-neutral on the entity plane and must be closed by the post-sync governance pull.
+- Reconcile-after-divergence MUST verify repaired state against the **signed expected** root hash carried in the `DivergenceReport`, never against an anchor peer's claimed hash.
+- Operations that cannot apply yet (future schema, or unconfirmed governance prerequisite) MUST be buffered **verbatim** and drained later. They MUST NOT be dropped, and their bytes MUST NOT be translated (translation breaks `payload_for_signing`).
+- Buffered records MUST be deleted only **after** a successful replay (delete-after-success), so a crash mid-drain re-replays the survivor rather than losing it.
+- Concurrent writer-set rotations MUST resolve by causal-first last-writer-wins, then HLC, then signer-pubkey bytes (ADR 0001). A write MUST be authorised against `writers_at(entity, author's causal parents)`, not the current writer set.
+- Recovery MUST require no quorum and no agreed delivery order, and MUST NOT discard a validly-signed write to force agreement.
+:::
+
+## Where this leads
+
+That completes the convergence loop — detection, the layered repair paths, and the guarantees that make it always converge. Next, [**Blob Transport**](/protocol/blobs/) and the chapters that follow cover the subsystems built on the loop.

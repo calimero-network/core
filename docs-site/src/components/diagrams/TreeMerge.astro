@@ -1,0 +1,109 @@
+---
+/**
+ * TreeMerge — how two divergent entity trees merge into one.
+ *
+ * Tree A and Tree B have the same shape but one leaf was written
+ * concurrently on two nodes (different full_hash). Merging is per-entity:
+ * Last-Writer-Wins by Hybrid Logical Clock with a content-hash tiebreak;
+ * children form an add-wins union; deletes are tombstones. Because the rule
+ * is deterministic and order-independent, every node recomputes the same
+ * merged root full_hash. Hashes are short hex (illustrative values).
+ *
+ * Hand-authored structural SVG; pages reference <TreeMerge /> directly.
+ */
+---
+<div class="tree-merge">
+<svg viewBox="0 0 760 350" role="img" aria-label="Merging two entity trees" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="tm-head" markerWidth="8" markerHeight="8" refX="5.5" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#6b7280"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="760" height="350" rx="12" fill="#0d1117"/>
+
+  <text x="20" y="26" fill="#f0f6fc" font-family="ui-sans-serif, system-ui" font-size="13" font-weight="600">Merging two divergent trees — one leaf written concurrently on two nodes</text>
+
+  <!-- ===== Tree A (blue) ===== -->
+  <text x="125" y="46" text-anchor="middle" fill="#58a6ff" font-family="ui-sans-serif, system-ui" font-size="11" font-weight="700">Tree A</text>
+  <line x1="125" y1="102" x2="75" y2="158" stroke="#6b7280" stroke-width="1.1" marker-end="url(#tm-head)"/>
+  <line x1="125" y1="102" x2="175" y2="158" stroke="#6b7280" stroke-width="1.1" marker-end="url(#tm-head)"/>
+  <g>
+    <rect x="55" y="56" width="140" height="46" rx="8" fill="#10151c" stroke="#58a6ff" stroke-width="1.5"/>
+    <text x="125" y="76" text-anchor="middle" fill="#f0f6fc" font-family="ui-monospace, monospace" font-size="11" font-weight="700">root</text>
+    <text x="125" y="93" text-anchor="middle" fill="#58a6ff" font-family="ui-monospace, monospace" font-size="9.5">full a3f1…9c</text>
+  </g>
+  <g>
+    <rect x="29" y="158" width="92" height="46" rx="8" fill="#10151c" stroke="#58a6ff" stroke-width="1.4"/>
+    <text x="75" y="178" text-anchor="middle" fill="#f0f6fc" font-family="ui-monospace, monospace" font-size="9.5" font-weight="700">aa10…3f</text>
+    <text x="75" y="194" text-anchor="middle" fill="#8b949e" font-family="ui-monospace, monospace" font-size="9">8c01…b9</text>
+  </g>
+  <g>
+    <rect x="129" y="158" width="92" height="46" rx="8" fill="#10151c" stroke="#e3b341" stroke-width="1.6"/>
+    <text x="175" y="178" text-anchor="middle" fill="#f0f6fc" font-family="ui-monospace, monospace" font-size="9.5" font-weight="700">bb21…4c</text>
+    <text x="175" y="194" text-anchor="middle" fill="#e3b341" font-family="ui-monospace, monospace" font-size="9">33aa…91</text>
+  </g>
+  <text x="175" y="220" text-anchor="middle" fill="#e3b341" font-family="ui-monospace, monospace" font-size="8.5">write @ HLC T1</text>
+
+  <!-- ===== merge operator ===== -->
+  <circle cx="262" cy="130" r="16" fill="#161b22" stroke="#f0f6fc" stroke-width="1.4"/>
+  <text x="262" y="136" text-anchor="middle" fill="#f0f6fc" font-family="ui-sans-serif, system-ui" font-size="18" font-weight="700">⊕</text>
+
+  <!-- ===== Tree B (violet) ===== -->
+  <text x="385" y="46" text-anchor="middle" fill="#a371f7" font-family="ui-sans-serif, system-ui" font-size="11" font-weight="700">Tree B</text>
+  <line x1="385" y1="102" x2="335" y2="158" stroke="#6b7280" stroke-width="1.1" marker-end="url(#tm-head)"/>
+  <line x1="385" y1="102" x2="435" y2="158" stroke="#6b7280" stroke-width="1.1" marker-end="url(#tm-head)"/>
+  <g>
+    <rect x="315" y="56" width="140" height="46" rx="8" fill="#1a1430" stroke="#a371f7" stroke-width="1.5"/>
+    <text x="385" y="76" text-anchor="middle" fill="#f0f6fc" font-family="ui-monospace, monospace" font-size="11" font-weight="700">root</text>
+    <text x="385" y="93" text-anchor="middle" fill="#a371f7" font-family="ui-monospace, monospace" font-size="9.5">full c4d2…7e</text>
+  </g>
+  <g>
+    <rect x="289" y="158" width="92" height="46" rx="8" fill="#1a1430" stroke="#a371f7" stroke-width="1.4"/>
+    <text x="335" y="178" text-anchor="middle" fill="#f0f6fc" font-family="ui-monospace, monospace" font-size="9.5" font-weight="700">aa10…3f</text>
+    <text x="335" y="194" text-anchor="middle" fill="#8b949e" font-family="ui-monospace, monospace" font-size="9">8c01…b9</text>
+  </g>
+  <g>
+    <rect x="389" y="158" width="92" height="46" rx="8" fill="#1a1430" stroke="#e3b341" stroke-width="1.6"/>
+    <text x="435" y="178" text-anchor="middle" fill="#f0f6fc" font-family="ui-monospace, monospace" font-size="9.5" font-weight="700">bb21…4c</text>
+    <text x="435" y="194" text-anchor="middle" fill="#e3b341" font-family="ui-monospace, monospace" font-size="9">7c4e…0d</text>
+  </g>
+  <text x="435" y="220" text-anchor="middle" fill="#e3b341" font-family="ui-monospace, monospace" font-size="8.5">write @ HLC T2  (T2 &gt; T1)</text>
+
+  <!-- ===== equals ===== -->
+  <text x="512" y="138" text-anchor="middle" fill="#8b949e" font-family="ui-sans-serif, system-ui" font-size="20" font-weight="700">=</text>
+
+  <!-- ===== Merged tree (green) ===== -->
+  <text x="640" y="46" text-anchor="middle" fill="#3fb950" font-family="ui-sans-serif, system-ui" font-size="11" font-weight="700">Merged</text>
+  <line x1="640" y1="102" x2="590" y2="158" stroke="#6b7280" stroke-width="1.1" marker-end="url(#tm-head)"/>
+  <line x1="640" y1="102" x2="690" y2="158" stroke="#6b7280" stroke-width="1.1" marker-end="url(#tm-head)"/>
+  <g>
+    <rect x="570" y="56" width="140" height="46" rx="8" fill="#10210f" stroke="#3fb950" stroke-width="1.6"/>
+    <text x="640" y="76" text-anchor="middle" fill="#f0f6fc" font-family="ui-monospace, monospace" font-size="11" font-weight="700">root</text>
+    <text x="640" y="93" text-anchor="middle" fill="#3fb950" font-family="ui-monospace, monospace" font-size="9.5">full f0e1…45  (new)</text>
+  </g>
+  <g>
+    <rect x="544" y="158" width="92" height="46" rx="8" fill="#10210f" stroke="#3fb950" stroke-width="1.4"/>
+    <text x="590" y="178" text-anchor="middle" fill="#f0f6fc" font-family="ui-monospace, monospace" font-size="9.5" font-weight="700">aa10…3f</text>
+    <text x="590" y="194" text-anchor="middle" fill="#8b949e" font-family="ui-monospace, monospace" font-size="9">8c01…b9</text>
+  </g>
+  <g>
+    <rect x="644" y="158" width="92" height="46" rx="8" fill="#10210f" stroke="#e3b341" stroke-width="1.6"/>
+    <text x="690" y="178" text-anchor="middle" fill="#f0f6fc" font-family="ui-monospace, monospace" font-size="9.5" font-weight="700">bb21…4c</text>
+    <text x="690" y="194" text-anchor="middle" fill="#e3b341" font-family="ui-monospace, monospace" font-size="9">7c4e…0d</text>
+  </g>
+  <text x="690" y="220" text-anchor="middle" fill="#e3b341" font-family="ui-monospace, monospace" font-size="8.5">LWW → T2 wins</text>
+
+  <!-- ===== resolution rules ===== -->
+  <rect x="30" y="236" width="700" height="76" rx="9" fill="#0d1117" stroke="#30363d" stroke-width="1.2"/>
+  <text x="46" y="258" fill="#f0f6fc" font-family="ui-sans-serif, system-ui" font-size="11" font-weight="600">Merge resolution</text>
+  <text x="46" y="280" fill="#c9d1d9" font-family="ui-sans-serif, system-ui" font-size="10.5"><tspan fill="#e3b341" font-weight="700">per-entity</tspan>  ·  Last-Writer-Wins by HLC (Hybrid Logical Clock), content-hash tiebreak when clocks tie</text>
+  <text x="46" y="300" fill="#c9d1d9" font-family="ui-sans-serif, system-ui" font-size="10.5"><tspan fill="#39d0d8" font-weight="700">children</tspan>  ·  add-wins union of child sets        <tspan fill="#a371f7" font-weight="700">deletes</tspan>  ·  recorded as tombstones</text>
+
+  <text x="380" y="334" text-anchor="middle" fill="#6b7280" font-family="ui-sans-serif, system-ui" font-size="10.5">Merge is deterministic and order-independent ⇒ every node computes the same root.</text>
+</svg>
+</div>
+
+<style>
+  .tree-merge { margin: 1.5rem 0; }
+  .tree-merge svg { width: 100%; height: auto; border-radius: 12px; }
+</style>

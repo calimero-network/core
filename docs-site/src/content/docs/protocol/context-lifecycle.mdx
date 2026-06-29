@@ -1,0 +1,130 @@
+---
+title: Context Lifecycle
+description: The end-to-end journey of a context — create, invite, join, use, leave, and delete — and the load-bearing distinction between the three kinds of leave, deletion, and tombstone GC.
+sidebar:
+  label: Context lifecycle
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+A **context** is the protocol's central noun: a single shared application instance, with its own membership, its own encrypted state, and its own delta DAG. Every other chapter touches contexts, but none follows one from birth to death. This page does.
+
+The journey has six stations — **create → invite → join → use → leave → delete** — and the interesting part is the tail. There is not one way to stop participating, there are several, and they differ enormously in blast radius: some are silent and local to one node, one cascades across an entire scope subtree, and none of them erases the immutable DAG history. Getting that distinction right is the whole point of the chapter.
+
+This builds on the scope tree from [Governance](/protocol/governance/), the bytecode binding from [Applications](/protocol/applications/), and the inheritance rules from [Capability & Membership Inheritance](/protocol/capability-inheritance/).
+
+## Create — a context is born bound to an application
+
+A context is never free-floating. It is created **inside a governance group** and **bound to an application id** from its first instruction. The creator must be a member of the target group and hold the `CAN_CREATE_CONTEXT` capability (or be an admin); a non-member or under-capable identity is rejected before any state is written.
+
+Creation does the following, in order:
+
+- Derives a fresh context id from a random context secret (retried up to five times to avoid collision).
+- Resolves the application to init with. A group can be **pinned to a specific bytecode version** — if the group's `app_key` names a blob the node holds, the context inits on *that* bytecode, not the application row's current blob. This positions every new context on its group's upgrade ladder from birth. (See [Upgrades](/protocol/upgrades/).)
+- Runs the application's `init` method, producing the context's first state and a **genesis delta** whose parent is `[0; 32]`. The genesis delta is persisted even when state is empty, so the DAG always has a head.
+- Writes local `ContextConfig`, `ContextMeta`, and a `ContextIdentity` row holding the creator's keys.
+- Publishes a `ContextRegistered` governance op into the group, then subscribes to the context and namespace gossipsub topics.
+
+A context may optionally carry a `service_name` (binding it to a node-side service) and a human-readable `name`, the latter published as a `ContextMetadataSet` op. The genesis governance scope is the group it was created in — that scope owns its membership and its encryption domain from here on.
+
+<Aside type="note">
+The `init` artifact is signed with the creator's identity key **before** it goes into the broadcast delta. Peers verify those signatures when they apply the genesis delta, so an unsigned or placeholder-signed genesis would be rejected network-wide. Creation bails rather than ship an unusable context.
+</Aside>
+
+## Invite — a signed, expiring bearer credential
+
+To bring a new member in, an admin (or a member holding `CAN_INVITE_MEMBERS`) produces a **`SignedGroupOpenInvitation`**. This is a self-contained bearer credential — there is no commitment published to the network at invite time, and nothing to redeem against. Whoever holds the bytes can present them.
+
+The credential carries:
+
+- **`inviter_signature`** — the inviter signs a SHA-256 of the serialized invitation with their group signing key, so any receiver can verify it came from an authorized member.
+- **`group_id`** and an **`expiration_timestamp`** — the invitation is scoped to one group and expires (default **365 days**, configurable at creation). Expiry is checked both locally as a fast-fail and authoritatively on apply.
+- **`application_id`** and **`app_key`** — the real target application and its pinned bytecode key. Carrying these lets the joiner **align on the same app schema** the inviter is on. Without them the joiner would seed its group metadata to zero and diverge from the inviter's state-hash view permanently.
+- A random `secret_salt` and an `invited_role` (Member).
+
+The invitation is handed to the joiner out of band. Redemption is a **separate join step** — issuing the credential and acting on it are decoupled.
+
+## Join — two gates, in order
+
+Joining is **two distinct admissions**, not one. A node first becomes a member of the **group / namespace**, then joins **each context** it wants to follow inside that group.
+
+**Gate 1 — namespace/group membership** (`crates/node/src/join_namespace.rs`). The joiner provisions a namespace identity, subscribes to the namespace topic, publishes a `ReadinessProbe` to find a synced peer, backfills the namespace governance DAG against that peer, then publishes `RootOp::MemberJoined` carrying the signed invitation. Peers holding the group key respond with a `KeyDelivery` so the joiner can decrypt shared state.
+
+**Gate 2 — per-context join** (`crates/context/src/handlers/join_context.rs`). With group membership in place, the joiner resolves the **context → group mapping** (waiting on a registration signal, kicking namespace sync if the mapping hasn't landed locally yet), verifies its membership path (direct, or **inherited** through an `Open` subgroup), writes a `ContextIdentity` row, subscribes to the context topic, and syncs the delta DAG. Joining also **clears any leave tombstone** for this `(identity, context)` pair — an explicit rejoin re-arms auto-follow.
+
+A node that is a group member can follow the group's contexts; auto-follow registers contexts as it learns of them, except those the node has explicitly left.
+
+<SeqDiagram id="ctx-invite-join" title="Invite → join handshake"
+  lanes={[
+    {label:'Admin / inviter', color:'#3fb950'},
+    {label:'Joiner node', color:'#58a6ff'},
+    {label:'Namespace peers', color:'#d29922'}
+  ]}
+  steps={[
+    {from:0,to:0,label:'create_group_invitation → SignedGroupOpenInvitation (signed, expiring; carries group_id, app_id, app_key)'},
+    {from:0,to:1,label:'hand off invitation out-of-band', dashed:true},
+    {from:1,to:2,label:'Gate 1: join_namespace — provision identity, subscribe, publish ReadinessProbe + MemberJoined'},
+    {from:2,to:1,label:'KeyDelivery (group key) + namespace DAG backfill', dashed:true},
+    {from:1,to:1,label:'Gate 2: join_context — resolve context→group, write ContextIdentity, clear leave marker'},
+    {from:1,to:2,label:'subscribe context topic + sync delta DAG'},
+    {from:2,to:1,label:'genesis + deltas applied → local root_hash converges', dashed:true}
+  ]} />
+
+## Use
+
+Once joined, the node executes methods against the context, producing signed deltas that propagate over the context's gossipsub topic and converge via the CRDT delta DAG. This is the steady state — covered in depth by [Write path](/protocol/write-path/), [Sync](/protocol/sync/), and [Execution](/protocol/execution/). The lifecycle picks back up when a participant wants out.
+
+## Leave — three forms, three blast radii
+
+This is the load-bearing distinction of the chapter. "Leaving" can mean three different things, and they are *not* interchangeable.
+
+### `leave-context` — unilateral, local-only opt-out
+
+`leave_context` is a **node-local soft opt-out from a single context**. It writes a `ContextLeftMarker` tombstone in the node-local `Column::ContextLocal`, deletes the local `ContextIdentity` row (which stops sync), and unsubscribes from the context's gossipsub topic. It publishes **no governance op**.
+
+The consequences are precise: **peers never learn** the node left — the leaver still appears in member lists elsewhere. Auto-follow consults the marker and **won't re-add** the context on future registration events. The reversal is a plain `JoinContextRequest`, which deletes the marker as a side effect. Nothing about the group, the namespace, or any other context is touched.
+
+### `leave-group` / `leave-namespace` — published, with cascade
+
+These publish a real governance op — `GroupOp::MemberLeft` signed by the leaver — so **peers do observe the departure**. Apply-side validation (direct-row, owner, last-admin checks) runs identically on every receiver and on the publisher, so a leave that would orphan a group is rejected the same way everywhere.
+
+- **`leave-group`** leaves one subgroup. It rejects being called on a namespace root (routing you to `leave_namespace`) and deliberately does **not** unsubscribe from the namespace topic, because the leaver may still belong to other groups under it. For a regular `Admin`/`Member`/`Observer` self-leave, local rows are preserved as soft-leave residue that rejoin/re-keyshare paths depend on; only a `ReadOnlyTee` self-leave purges local rows.
+- **`leave-namespace`** leaves the root group and **cascades** to every descendant where the leaver holds a direct row — owner and last-admin checks across all of them upfront, then a row-removal cascade. It additionally issues `unsubscribe_namespace`, since the member is leaving the entire subtree.
+
+Neither leave attaches key rotation; forward secrecy after a departure is a deferred admin follow-up.
+
+## Delete — admin teardown, not history erasure
+
+`delete-context` is an **admin action** (for a grouped context the requester must be a group admin). It deletes the local `ContextMeta`, `ContextConfig`, all `ContextIdentity` rows, and all `ContextState` for the context, unsubscribes from the topic, and — for a grouped context — publishes a `ContextDetached` governance op so peers detach it too.
+
+It explicitly **never deletes the `ContextDagDelta` entries**. The delta DAG is immutable distributed history: other nodes may still be syncing parents from it, and removing it would surface `DeltaNotFound` errors across the network. Deletion is therefore a teardown of *this node's working copy plus a detach signal*, not an erasure of the shared past.
+
+### Delete is not GC
+
+These are completely separate mechanisms — do not conflate them:
+
+- **Delete** is an explicit, user-triggered, admin-gated teardown of a *context*.
+- **GC** (`crates/node/src/gc.rs`) is an automatic, periodic, node-local sweep of expired *CRDT tombstones* within the `ContextState` of every context. The GC actor **runs on an interval defaulting to 12h**, and within each run it collects entity tombstones whose `deleted_at` age exceeds the **retention period of 24h** (`TOMBSTONE_RETENTION_NANOS`, one day). It reclaims storage for deleted *entities inside a live context*; it has nothing to do with deleting contexts.
+
+## What each teardown does — at a glance
+
+| Action | Local effect | Network effect | Recoverable? |
+| --- | --- | --- | --- |
+| **`leave-context`** | Writes `ContextLeftMarker`, deletes local `ContextIdentity`, unsubscribes topic | None — no op published; peers never learn | Yes — rejoin via `JoinContextRequest` clears the marker |
+| **`leave-group`** | Publishes `MemberLeft`; local rows kept as soft-leave residue (TEE role purges them) | Peers see the leave for that one subgroup | Yes — re-add / rejoin via inheritance |
+| **`leave-namespace`** | Publishes `MemberLeft`, unsubscribes namespace; cascades row removal across descendants | Peers see the leave across the whole subtree | Yes, but the whole subtree must be re-admitted |
+| **`delete-context`** | Deletes local `ContextMeta`/`Config`/`Identity`/`State` | Publishes `ContextDetached` (grouped contexts) | DAG deltas survive; state must be re-synced from peers |
+| **Tombstone GC** | Removes expired entity tombstones inside live contexts' state (~12h interval, 24h retention) | None — purely node-local | No — but only ever reclaims already-deleted entities |
+
+The throughline: **nothing here erases the delta DAG**. Every recoverable path recovers by re-syncing that immutable history; the only thing that ever truly disappears is a CRDT tombstone past its retention window, and that is by design.
+
+## Operating it
+
+Operators drive this lifecycle through the CLI — context creation, invitation issuance, join, leave, and delete all have [`meroctl`](/operate/meroctl/) commands.
+
+## Where this leads
+
+A context's membership, invitations, and per-context join all hinge on **identities and keys** — who signs an invitation, which identity a join provisions, and which key decrypts shared state.
+
+→ [Identities & Keys](/protocol/identities/)

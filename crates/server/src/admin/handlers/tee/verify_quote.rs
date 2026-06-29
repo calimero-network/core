@@ -35,7 +35,6 @@ pub async fn handler(
 ) -> impl IntoResponse {
     info!(
         nonce=%req.nonce,
-        has_expected_hash=%req.expected_application_hash.is_some(),
         "Verifying TDX quote"
     );
 
@@ -81,9 +80,10 @@ async fn verify_quote(req: TeeVerifyQuoteRequest) -> Result<TeeVerifyQuoteRespon
         }
     })?;
 
-    // Decode and validate expected application hash if provided
-    let expected_app_hash = if let Some(hash_hex) = &req.expected_application_hash {
-        let h = hex::decode(hash_hex).map_err(|_| {
+    // Decode and validate the mandatory expected application hash. The attestation
+    // is only meaningful when bound to an expected app hash, so this is required.
+    let expected_app_hash: [u8; 32] = {
+        let h = hex::decode(&req.expected_application_hash).map_err(|_| {
             error!("Invalid application hash format");
             ApiError {
                 status_code: StatusCode::BAD_REQUEST,
@@ -91,17 +91,13 @@ async fn verify_quote(req: TeeVerifyQuoteRequest) -> Result<TeeVerifyQuoteRespon
             }
         })?;
 
-        let hash_array: [u8; 32] = h.try_into().map_err(|_| {
-            error!(hash_len=%hash_hex.len() / 2, "Invalid application hash length");
+        h.try_into().map_err(|_| {
+            error!(hash_len=%req.expected_application_hash.len() / 2, "Invalid application hash length");
             ApiError {
                 status_code: StatusCode::BAD_REQUEST,
                 message: "Application hash must be exactly 32 bytes (64 hex characters)".to_owned(),
             }
-        })?;
-
-        Some(hash_array)
-    } else {
-        None
+        })?
     };
 
     // Decode base64 quote
@@ -116,7 +112,7 @@ async fn verify_quote(req: TeeVerifyQuoteRequest) -> Result<TeeVerifyQuoteRespon
     info!(quote_size=%quote_bytes.len(), "Quote decoded successfully");
 
     // 4. Verify using tee-attestation crate
-    let result = verify_attestation(&quote_bytes, &nonce_array, expected_app_hash.as_ref())
+    let result = verify_attestation(&quote_bytes, &nonce_array, &expected_app_hash)
         .await
         .map_err(|err| {
             // Always log the real error server-side; never put it in the

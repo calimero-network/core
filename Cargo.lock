@@ -1303,6 +1303,7 @@ dependencies = [
  "rand 0.8.5",
  "ring",
  "thiserror 1.0.69",
+ "zeroize",
 ]
 
 [[package]]
@@ -1336,6 +1337,7 @@ dependencies = [
  "calimero-context-config",
  "calimero-crypto",
  "calimero-dag",
+ "calimero-governance-types",
  "calimero-network-primitives",
  "calimero-node-primitives",
  "calimero-op",
