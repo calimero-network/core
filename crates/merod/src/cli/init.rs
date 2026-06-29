@@ -31,48 +31,9 @@ use tracing::{info, warn};
 use super::auth_mode::AuthModeArg;
 use crate::cli;
 
-/// Forces a restrictive `umask` (`0077`) for the lifetime of the guard so every
-/// file and directory created during node initialization — the node home, the
-/// `config.toml` holding the Ed25519 private key, and the RocksDB datastore with
-/// all of its files and sub-directories — is owner-only from the moment it is
-/// created. This closes the window between creation and an after-the-fact
-/// `chmod`, and protects the contents even if a parent directory's permissions
-/// are later relaxed. `init` is a one-shot command that does no other concurrent
-/// filesystem work, so mutating the process-wide `umask` here is safe.
-#[cfg(unix)]
-struct OwnerOnlyUmask(libc::mode_t);
-
-#[cfg(unix)]
-impl OwnerOnlyUmask {
-    fn set() -> Self {
-        // SAFETY: `umask` only swaps the process file-creation mask and always
-        // succeeds, returning the previous mask.
-        Self(unsafe { libc::umask(0o077) })
-    }
-}
-
-#[cfg(unix)]
-impl Drop for OwnerOnlyUmask {
-    fn drop(&mut self) {
-        // SAFETY: restore the mask captured in `set`; same contract as above.
-        let _ = unsafe { libc::umask(self.0) };
-    }
-}
-
-#[cfg(not(unix))]
-struct OwnerOnlyUmask;
-
-#[cfg(not(unix))]
-impl OwnerOnlyUmask {
-    fn set() -> Self {
-        Self
-    }
-}
-
-/// Restrict an existing path to owner-only access. The restrictive `umask`
-/// covers everything created during init, but a directory that already existed
-/// keeps its old mode, so tighten those explicitly. No-op on non-Unix platforms,
-/// which lack POSIX mode bits.
+/// Restrict a single path to the given owner-only `mode` (`0700` for
+/// directories, `0600` for files). No-op on non-Unix platforms, which lack
+/// POSIX mode bits.
 #[cfg(unix)]
 async fn restrict_to_owner(path: impl AsRef<Path>, mode: u32) -> EyreResult<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -85,6 +46,42 @@ async fn restrict_to_owner(path: impl AsRef<Path>, mode: u32) -> EyreResult<()> 
 
 #[cfg(not(unix))]
 async fn restrict_to_owner(_path: impl AsRef<Path>, _mode: u32) -> EyreResult<()> {
+    Ok(())
+}
+
+/// Recursively restrict a directory tree to owner-only access: `0700` for every
+/// directory and `0600` for every file. RocksDB creates the datastore's files
+/// and sub-directories with the process umask (typically world-readable), so
+/// walking the tree after the store is closed makes the raw data — and any
+/// content left by a previous partial init — unreadable to other local users
+/// rather than relying solely on the top-level directory's mode. Symlinks are
+/// left untouched (RocksDB creates none here).
+#[cfg(unix)]
+async fn restrict_tree_to_owner(root: impl AsRef<Path>) -> EyreResult<()> {
+    let mut stack = vec![root.as_ref().to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        restrict_to_owner(&dir, 0o700).await?;
+
+        let mut entries = fs::read_dir(&dir)
+            .await
+            .wrap_err_with(|| format!("failed to read directory {dir:?}"))?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let file_type = entry.file_type().await?;
+            if file_type.is_dir() {
+                stack.push(entry.path());
+            } else if file_type.is_file() {
+                restrict_to_owner(entry.path(), 0o600).await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn restrict_tree_to_owner(_root: impl AsRef<Path>) -> EyreResult<()> {
     Ok(())
 }
 
@@ -227,9 +224,6 @@ impl InitCommand {
 
         let path = root_args.home.join(root_args.node_name);
 
-        // Create everything below owner-only from the start; dropped at end of init.
-        let _umask = OwnerOnlyUmask::set();
-
         if ConfigFile::exists(&path) {
             if let Err(err) = ConfigFile::load(&path).await {
                 if self.force {
@@ -254,7 +248,8 @@ impl InitCommand {
                 .wrap_err_with(|| format!("failed to create directory {path:?}"))?;
         }
 
-        // The umask covers a freshly created home; tighten a pre-existing one too.
+        // Lock the node home down to owner-only before anything sensitive (the
+        // private key in config.toml, the datastore) is written into it.
         restrict_to_owner(&path, 0o700).await?;
 
         let identity = Keypair::generate_ed25519();
@@ -377,9 +372,9 @@ impl InitCommand {
             datastore_path.clone(),
         ))?);
 
-        // The umask keeps RocksDB's contents owner-only; tighten a pre-existing
-        // datastore directory too.
-        restrict_to_owner(&datastore_path, 0o700).await?;
+        // The store is now closed, so no writer races us: recursively make the
+        // datastore and all of RocksDB's files owner-only.
+        restrict_tree_to_owner(&datastore_path).await?;
 
         info!("Initialized a node in {:?}", path);
 
