@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Networking &amp; the Wire Protocol — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+<style>
+.msgs { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: .85rem; }
+.msgs th, .msgs td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.msgs th { color: var(--text-bright); font-weight: 600; }
+.msgs td { color: var(--text-dim); }
+.msgs code { white-space: nowrap; font-size: .82rem; }
+.chapter-nav { display: flex; justify-content: space-between; margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border); font-size: .88rem; }
+</style>
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="index.html">Protocol Reference</a><span class="sep">/</span><span>Networking &amp; the Wire Protocol</span></div>
+<h1>Networking &amp; the <em>Wire Protocol</em></h1>
+<p class="page-subtitle">Chapter 7 — how operations actually move between nodes.</p>
+
+<div class="card gc">
+<h2>The transport stack</h2>
+<p>Calimero is built on <strong>libp2p</strong>. Nodes connect over TCP (with Noise/TLS) or QUIC, multiplex streams with Yamux, and run a set of behaviours for discovery, gossip, and direct exchange. The application logic sits on top and never touches sockets directly — it speaks in terms of topics and streams.</p>
+<div class="diagram-tools"><button class="replay-btn" onclick="replay('d-stack')">&#9654; Replay</button></div>
+<div class="diagram-container" id="d-stack">
+<svg viewBox="0 0 760 320" role="img" aria-label="The libp2p transport stack" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="760" height="320" rx="10" fill="#0f0f16"/>
+  <g class="seq-step" style="--step-i:0">
+    <rect x="60" y="36" width="640" height="46" rx="9" fill="#13160f" stroke="#a5ff11" stroke-width="1.4"/>
+    <text x="380" y="63" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">Calimero node logic — contexts · governance · sync</text>
+  </g>
+  <g class="seq-step" style="--step-i:1">
+    <rect x="60" y="96" width="312" height="80" rx="9" fill="#10151c" stroke="#58a6ff" stroke-width="1.3"/>
+    <text x="216" y="118" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">gossipsub</text>
+    <text x="216" y="136" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">eager broadcast (topics)</text>
+    <text x="216" y="158" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">deltas · governance · heartbeats</text>
+    <rect x="388" y="96" width="312" height="80" rx="9" fill="#16222e" stroke="#39d0d8" stroke-width="1.3"/>
+    <text x="544" y="118" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">streams · request-response</text>
+    <text x="544" y="136" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">pull, point-to-point</text>
+    <text x="544" y="158" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">sync · snapshots · blobs · key recovery</text>
+  </g>
+  <g class="seq-step" style="--step-i:2">
+    <rect x="60" y="190" width="640" height="44" rx="9" fill="#161b22" stroke="#444c56" stroke-width="1.3"/>
+    <text x="380" y="217" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">discovery — rendezvous · mDNS · Kademlia DHT · relay / hole-punch for NAT</text>
+  </g>
+  <g class="seq-step" style="--step-i:3">
+    <rect x="60" y="248" width="640" height="44" rx="9" fill="#161b22" stroke="#444c56" stroke-width="1.3"/>
+    <text x="380" y="269" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">transport — TCP + Noise/TLS · QUIC · Yamux multiplexing</text>
+    <text x="380" y="284" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">authenticated by transport identity (Chapter 2)</text>
+  </g>
+</svg>
+</div>
+</div>
+
+<div class="card ga">
+<h2>Two channels: gossip and streams</h2>
+<p>Everything on the wire travels one of two ways, and the choice is about <em>eager vs. on-demand</em>:</p>
+<div class="g2">
+<div class="cb"><h4>Gossip (eager broadcast)</h4><p>A node publishes to a <strong>topic</strong>; every subscriber receives it through the gossipsub mesh. This is how fresh operations propagate the instant they're created — fire it once, the mesh fans it out. Best-effort: a node that was offline simply misses it.</p></div>
+<div class="cb"><h4>Streams (pull, point-to-point)</h4><p>A node opens a direct, length-delimited stream to one peer and asks for something specific — missing operations, a snapshot, a blob, a key. This is how a node <em>catches up</em> on anything gossip didn't deliver. Reliable and targeted.</p></div>
+</div>
+<p>Gossip keeps everyone roughly current; streams make them exactly current. Chapter 10 is essentially "the stream channel, driven by the scope-root comparison."</p>
+</div>
+
+<div class="card gb">
+<h2>Topics follow the scope tree</h2>
+<p>Subscriptions map directly onto scopes, so a node only hears about what it belongs to:</p>
+<ul>
+<li><code>context/&lt;id&gt;</code> — a context's data operations and heartbeats.</li>
+<li><code>group/&lt;id&gt;</code> — a group's governance operations.</li>
+<li><code>ns/&lt;id&gt;</code> — a namespace's root governance operations and heartbeats.</li>
+</ul>
+<p>Gossip's mesh is <strong>membership-biased</strong>: peers known to be members are preferred when forming the mesh, while unknown peers are never penalized — so a healthy cluster stays well-connected without excluding newcomers during cold start.</p>
+</div>
+
+<div class="card gd">
+<h2>The message catalog</h2>
+<p>All messages are <strong>Borsh</strong>-encoded (compact, deterministic binary). They fall into the two channels:</p>
+<table class="msgs">
+<tr><th>Channel</th><th>Message</th><th>Carries</th></tr>
+<tr><td>Gossip</td><td><code>StateDelta</code></td><td>a context's data operation(s): author, parents, hlc, encrypted artifact, new root, signature.</td></tr>
+<tr><td>Gossip</td><td><code>GovernanceDelta</code></td><td>a governance operation (root op in clear, group op encrypted).</td></tr>
+<tr><td>Gossip</td><td><code>Heartbeat</code></td><td>current DAG heads + root, published periodically for divergence detection.</td></tr>
+<tr><td>Stream</td><td><code>DeltaRequest / Response</code></td><td>fetch a specific operation by id.</td></tr>
+<tr><td>Stream</td><td><code>DagHeadsRequest / Response</code></td><td>exchange heads + roots during a sync handshake.</td></tr>
+<tr><td>Stream</td><td><code>TreeNode / LevelWise</code></td><td>compare state trees to locate exactly what differs (Chapter 10).</td></tr>
+<tr><td>Stream</td><td><code>Snapshot*</code></td><td>transfer a full materialized scope when incremental sync isn't enough.</td></tr>
+<tr><td>Stream</td><td><code>KeyRequest / Response</code></td><td>recover a scope key wrapped to the requester.</td></tr>
+</table>
+</div>
+
+<div class="card ga">
+<h2>Three layers of encryption</h2>
+<p>Confidentiality is defense-in-depth, and the three layers map exactly onto Chapter 2's three keys:</p>
+<ul>
+<li><strong>Transport</strong> — Noise/TLS encrypts every connection, authenticated by the peers' <em>transport</em> identities.</li>
+<li><strong>Payload</strong> — an operation's sensitive content is encrypted under its <em>scope</em> key, so even a subscribed non-member on the topic sees only ciphertext.</li>
+<li><strong>Key wrapping</strong> — scope keys themselves move ECDH-wrapped to a recipient's <em>member</em> key, never in the clear.</li>
+</ul>
+<p>Root operations that must be readable by everyone in a namespace (a join announcement, a key delivery envelope) travel in clear at the payload layer but are still inside the encrypted transport.</p>
+</div>
+
+<div class="card ga" id="spec">
+<h2>Specification</h2>
+<p>Every message is Borsh. Recall the encoding: an enum is a single-byte variant index then its fields in order; a <code>Vec&lt;u8&gt;</code> is a <code>u32</code> little-endian length then the bytes; an <code>Option</code> is a 1-byte present/absent flag.</p>
+
+<h3>Stream envelope</h3>
+<p>Point-to-point messages are wrapped in a <code>StreamMessage</code> with a rolling nonce:</p>
+<table class="spec-tbl">
+<tr><th>Variant</th><th>Fields</th></tr>
+<tr><td><code>Init</code></td><td class="wrap"><code>context_id: ContextId</code>, <code>party_id: PublicKey</code>, <code>payload: InitPayload</code>, <code>next_nonce: Nonce</code></td></tr>
+<tr><td><code>Message</code></td><td class="wrap"><code>sequence_id: u64</code>, <code>payload: MessagePayload</code>, <code>next_nonce: Nonce</code></td></tr>
+<tr><td><code>OpaqueError</code></td><td>— (failure without leaking state)</td></tr>
+<tr><td><code>NotMaterialized</code></td><td>— (member, but hasn't joined this context yet)</td></tr>
+</table>
+
+<h3>Stream requests (<code>InitPayload</code>) and responses (<code>MessagePayload</code>)</h3>
+<table class="spec-tbl">
+<tr><th>Request</th><th>Response</th><th>Purpose</th></tr>
+<tr><td><code>DagHeadsRequest</code></td><td><code>DagHeadsResponse { dag_heads: Vec&lt;[u8;32]&gt;, root_hash: Hash, scope_root: Option&lt;Hash&gt; }</code></td><td>sync handshake</td></tr>
+<tr><td><code>DeltaRequest { delta_id }</code></td><td><code>DeltaResponse { delta, author_id, governance_position_blob?, delta_signature?: [u8;64] }</code></td><td>fetch one op</td></tr>
+<tr><td><code>TreeNodeRequest { node_id, max_depth?: u8 }</code></td><td><code>TreeNodeResponse { nodes: Vec&lt;TreeNode&gt;, not_found }</code></td><td>tree-diff sync</td></tr>
+<tr><td><code>LevelWiseRequest { level: u32, parent_ids? }</code></td><td><code>LevelWiseResponse { level, nodes, has_more_levels, deleted_children }</code></td><td>level-wise sync</td></tr>
+<tr><td><code>SnapshotStreamRequest { boundary_root_hash, page_limit: u16, byte_limit: u32, resume_cursor? }</code></td><td><code>SnapshotPage { payload (lz4), uncompressed_len, cursor?, total_records }</code></td><td>full transfer</td></tr>
+<tr><td><code>GroupKeyRequest { group_id, requester_public_key }</code></td><td><code>GroupKeyResponse { key_envelope_bytes, responder_identity }</code></td><td>key recovery</td></tr>
+</table>
+
+<h3>Gossip broadcasts (<code>BroadcastMessage</code>)</h3>
+<p>The data-plane broadcast carries the operation and everything a peer needs to verify, decrypt, and authorize it:</p>
+<div class="typedef" aria-label="StateDelta">
+<span class="kw">StateDelta</span> {<br>
+&nbsp;&nbsp;<span class="field">context_id</span>: <span class="ty">ContextId</span>, <span class="field">author_id</span>: <span class="ty">PublicKey</span>,<br>
+&nbsp;&nbsp;<span class="field">delta_id</span>: <span class="ty">[u8;32]</span>, <span class="field">parent_ids</span>: <span class="ty">Vec&lt;[u8;32]&gt;</span>, <span class="field">hlc</span>: <span class="ty">HybridTimestamp</span>,<br>
+&nbsp;&nbsp;<span class="field">root_hash</span>: <span class="ty">Hash</span>,<br>
+&nbsp;&nbsp;<span class="field">artifact</span>: <span class="ty">bytes</span>,<span style="color:var(--text-dim)">&nbsp;// ENCRYPTED under the scope key</span><br>
+&nbsp;&nbsp;<span class="field">nonce</span>: <span class="ty">Nonce</span>, <span class="field">events</span>: <span class="ty">Option&lt;bytes&gt;</span>,<span style="color:var(--text-dim)">&nbsp;// events also encrypted</span><br>
+&nbsp;&nbsp;<span class="field">governance_position</span>: <span class="ty">Option&lt;GovernanceParentEdge&gt;</span>,<span style="color:var(--text-dim)">&nbsp;// the authorization cut</span><br>
+&nbsp;&nbsp;<span class="field">key_id</span>: <span class="ty">[u8;32]</span>,<span style="color:var(--text-dim)">&nbsp;// = SHA-256(scope_key)</span><br>
+&nbsp;&nbsp;<span class="field">delta_signature</span>: <span class="ty">Option&lt;[u8;64]&gt;</span>, <span class="field">producing_app_key</span>: <span class="ty">Option&lt;[u8;32]&gt;</span>,<br>
+}
+</div>
+<table class="spec-tbl">
+<tr><th>Other broadcast</th><th>Fields</th></tr>
+<tr><td><code>HashHeartbeat</code></td><td class="wrap"><code>context_id</code>, <code>root_hash: Hash</code>, <code>dag_heads: Vec&lt;[u8;32]&gt;</code></td></tr>
+<tr><td><code>NamespaceGovernanceDelta</code></td><td class="wrap"><code>namespace_id</code>, <code>delta_id</code>, <code>parent_ids</code>, <code>payload: Vec&lt;u8&gt;</code> (signed gov op)</td></tr>
+<tr><td><code>NamespaceStateHeartbeat</code></td><td class="wrap"><code>namespace_id</code>, <code>dag_heads: Vec&lt;[u8;32]&gt;</code></td></tr>
+</table>
+
+<h3>Wire limits</h3>
+<table class="spec-tbl">
+<tr><th>Constant</th><th>Value</th><th>Constant</th><th>Value</th></tr>
+<tr><td>tree request depth</td><td>16</td><td>DAG heads / msg</td><td>100</td></tr>
+<tr><td>signed gov op payload</td><td>64&nbsp;KiB</td><td>snapshot page (default)</td><td>256&nbsp;KiB</td></tr>
+<tr><td>entities / page</td><td>1000</td><td>decompressed page cap</td><td>8&nbsp;MiB</td></tr>
+</table>
+<p class="page-subtitle" style="margin-top:0">Signatures are fixed <code>[u8;64]</code> (Ed25519); hashes and ids are <code>[u8;32]</code>; a <code>Nonce</code> is the crypto-layer nonce, distinct from the raw <code>[u8;32]</code> nonces used by node-discovery messages.</p>
+</div>
+
+<div class="card gc">
+<h2>Where this leads</h2>
+<p>We can now move operations between nodes. The next three chapters trace the round trip end to end: <strong>Chapter 8</strong> creates and broadcasts an operation, <strong>Chapter 9</strong> receives and applies one, and <strong>Chapter 10</strong> reconciles whatever the eager channel missed.</p>
+</div>
+
+<div class="chapter-nav">
+<span><a href="governance.html">← Governance</a></span>
+<span><a href="write-path.html">The Write Path →</a></span>
+</div>
+
+</div>
+</div>
+<script src="../seq-diagram.js"></script>
+<script src="../nav.js"></script>
+</body>
+</html>

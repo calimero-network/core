@@ -32,14 +32,21 @@ pub(crate) fn mount_runtime_services(
     } = deps;
     let mut app = app;
     let mut service_count = 0usize;
+    let auth_enabled = auth_service.is_some();
 
-    if let Some((path, router)) = jsonrpc::service(config, ctx_client.clone(), node_client.clone())
-    {
+    if let Some((path, router)) = jsonrpc::service(
+        config,
+        ctx_client.clone(),
+        node_client.clone(),
+        auth_enabled,
+    ) {
         app = app.nest(&path, with_optional_auth(router, auth_service.clone()));
         service_count += 1;
     }
 
-    if let Some((path, handler)) = ws::service(config, node_client.clone(), ctx_client) {
+    if let Some((path, handler)) =
+        ws::service(config, node_client.clone(), ctx_client, auth_enabled)
+    {
         app = app.route(&path, with_optional_auth(handler, auth_service.clone()));
         service_count += 1;
     }

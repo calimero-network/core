@@ -1,0 +1,120 @@
+---
+title: Call another context
+description: Dispatch a cross-context call, gate the entry point, and verify the caller's origin.
+sidebar:
+  order: 4
+---
+
+import { Aside, Steps, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../../components/SeqDiagram.astro';
+
+**Task:** have a method in one context invoke a method in another context.
+
+A cross-context call (`xcall`) is one-way and asynchronous: you queue a call to a
+target context's method, and the node delivers it. The model — and why origin is
+trustworthy — is in the [cross-context reference](/protocol/xcall/). This guide
+is the three moving parts from `apps/xcall-example`.
+
+## 1. Dispatch the call
+
+`env::xcall(context_id, function, params)` queues a call. Encode arguments as the
+JSON the target method expects:
+
+```rust
+use calimero_sdk::{app, ContextId};
+
+fn xcall_to(&mut self, target_context: ContextId, method: &str) -> app::Result<()> {
+    let current_context = ContextId::from(calimero_sdk::env::context_id());
+
+    #[derive(calimero_sdk::serde::Serialize)]
+    #[serde(crate = "calimero_sdk::serde")]
+    struct Params {
+        from_context: ContextId,
+    }
+
+    let params = calimero_sdk::serde_json::to_vec(&Params {
+        from_context: current_context,
+    })?;
+
+    calimero_sdk::env::xcall(target_context.as_ref(), method, &params);
+    Ok(())
+}
+```
+
+## 2. Gate the entry point
+
+A method is only reachable by `xcall` if you mark it `#[app::xcall]`. The node
+refuses to dispatch a cross-context call to any method without this attribute —
+so undecorated methods stay private to direct callers.
+
+## 3. Verify the origin
+
+`env::xcall_origin()` returns the calling context id — set by the node, so it
+**cannot be forged**. It is `None` for a direct (non-xcall) call. Use it to
+reject direct calls and to confirm the caller is who the payload claims:
+
+```rust
+#[app::xcall]
+pub fn pong(&mut self, from_context: ContextId) -> app::Result<()> {
+    let origin = calimero_sdk::env::xcall_origin().map(ContextId::from);
+
+    let Some(origin) = origin else {
+        app::bail!("pong is xcall-only: no cross-context origin (direct call rejected)");
+    };
+    if origin != from_context {
+        app::bail!(
+            "xcall provenance mismatch: node-set origin {} != claimed from_context {}",
+            origin,
+            from_context
+        );
+    }
+
+    self.counter.increment()?;
+    Ok(())
+}
+```
+
+<Aside type="caution" title="Don't trust the payload alone">
+  `from_context` here is self-reported by the caller. The trustworthy value is
+  `env::xcall_origin()`; comparing the two is what makes the call authentic.
+</Aside>
+
+Putting the three parts together — dispatch queues the call, the node delivers
+it, and the gated entry point verifies the node-set origin before doing any
+work. The call is one-way: nothing returns to the caller.
+
+<SeqDiagram id="d-build-xcall-dispatch" title="Dispatch a cross-context call"
+  lanes={[
+    { label: 'Caller ctx', color: '#3fb950' },
+    { label: 'Runtime', color: '#a371f7' },
+    { label: 'Target ctx', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'env::xcall(target, "pong", params)' },
+    { from: 1, to: 1, label: 'queue call (one-way, async)' },
+    { from: 1, to: 2, label: 'dispatch pong(from_context)' },
+    { from: 2, to: 2, label: 'check #[app::xcall] gate' },
+    { from: 2, to: 1, label: 'xcall_origin()', dashed: true },
+    { from: 1, to: 2, label: 'node-set caller ctx id', dashed: true },
+    { from: 2, to: 2, label: 'verify origin == from_context' },
+    { from: 2, to: 2, label: 'counter.increment()' },
+    { type: 'divider', label: 'one-way: no return to caller' },
+  ]} />
+
+## Exercise it
+
+```sh
+# from the source context, ping the target's `pong` entry point
+meroctl --node node1 call ping \
+  --context <source-context-id> --args '{"target_context": "<target-context-id>"}'
+```
+
+The two contexts must run the same application and share a namespace.
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Cross-context calls reference" href="/protocol/xcall/" description="The dispatch model and why the origin is trustworthy." />
+  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="Fire-and-forget queueing, gating, and origin internals." />
+  <LinkCard title="Example apps" href="/build/examples/" description="The full ping-pong xcall-example with provenance checks." />
+</CardGrid>

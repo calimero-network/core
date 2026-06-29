@@ -1,0 +1,64 @@
+---
+/**
+ * A clickable "architecture at a glance" map for the home page. Each layer
+ * links into the relevant docs section. Authored as an Astro component so the
+ * raw SVG (with hyphenated attrs) is first-class; the site middleware adds the
+ * `/core` base to the internal hrefs.
+ */
+---
+<div class="archmap">
+<svg viewBox="0 0 760 372" role="img" aria-label="Calimero architecture map" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="760" height="372" rx="12" fill="#0d1117"/>
+
+  <a href="/build/">
+    <rect x="20" y="18" width="720" height="46" rx="9" fill="#13160f" stroke="#a5ff11" stroke-width="1.4"/>
+    <text x="380" y="46" text-anchor="middle" fill="#d9f99d" font-family="ui-sans-serif, system-ui" font-size="14" font-weight="600">Your app — WASM module on the SDK</text>
+  </a>
+
+  <a href="/operate/admin-api/">
+    <rect x="20" y="76" width="720" height="44" rx="9" fill="#231708" stroke="#f0883e" stroke-width="1.3"/>
+    <text x="380" y="103" text-anchor="middle" fill="#f0883e" font-family="ui-sans-serif, system-ui" font-size="12.5">Server &amp; API — HTTP · JSON-RPC · WebSocket</text>
+  </a>
+
+  <a href="/protocol/write-path/">
+    <rect x="20" y="132" width="720" height="44" rx="9" fill="#10210f" stroke="#3fb950" stroke-width="1.3"/>
+    <text x="380" y="159" text-anchor="middle" fill="#3fb950" font-family="ui-sans-serif, system-ui" font-size="12.5">Node — execute · authorize · broadcast · sync</text>
+  </a>
+
+  <a href="/protocol/execution/">
+    <rect x="20" y="188" width="171" height="64" rx="9" fill="#10151c" stroke="#58a6ff" stroke-width="1.3"/>
+    <text x="105" y="216" text-anchor="middle" fill="#58a6ff" font-family="ui-sans-serif, system-ui" font-size="11.5">Runtime</text>
+    <text x="105" y="232" text-anchor="middle" fill="#8b949e" font-family="ui-sans-serif, system-ui" font-size="9.5">WASM execution</text>
+  </a>
+  <a href="/protocol/governance/">
+    <rect x="203" y="188" width="171" height="64" rx="9" fill="#13160f" stroke="#a5ff11" stroke-width="1.3"/>
+    <text x="288" y="216" text-anchor="middle" fill="#a5ff11" font-family="ui-sans-serif, system-ui" font-size="11.5">Governance</text>
+    <text x="288" y="232" text-anchor="middle" fill="#8b949e" font-family="ui-sans-serif, system-ui" font-size="9.5">members · access</text>
+  </a>
+  <a href="/protocol/sync/">
+    <rect x="386" y="188" width="171" height="64" rx="9" fill="#231708" stroke="#e3b341" stroke-width="1.3"/>
+    <text x="471" y="216" text-anchor="middle" fill="#e3b341" font-family="ui-sans-serif, system-ui" font-size="11.5">Sync</text>
+    <text x="471" y="232" text-anchor="middle" fill="#8b949e" font-family="ui-sans-serif, system-ui" font-size="9.5">convergence</text>
+  </a>
+  <a href="/protocol/networking/">
+    <rect x="569" y="188" width="171" height="64" rx="9" fill="#1a1430" stroke="#a371f7" stroke-width="1.3"/>
+    <text x="654" y="216" text-anchor="middle" fill="#a371f7" font-family="ui-sans-serif, system-ui" font-size="11.5">Network</text>
+    <text x="654" y="232" text-anchor="middle" fill="#8b949e" font-family="ui-sans-serif, system-ui" font-size="9.5">libp2p gossip</text>
+  </a>
+
+  <a href="/protocol/crdt-internals/">
+    <rect x="20" y="264" width="720" height="46" rx="9" fill="#10201f" stroke="#39d0d8" stroke-width="1.3"/>
+    <text x="380" y="292" text-anchor="middle" fill="#39d0d8" font-family="ui-sans-serif, system-ui" font-size="12.5">Storage — CRDT collections · operation DAG · Merkle root</text>
+  </a>
+
+  <text x="380" y="338" text-anchor="middle" fill="#6b7280" font-family="ui-sans-serif, system-ui" font-size="10.5">Each layer is a link — click to dive in.</text>
+</svg>
+</div>
+
+<style>
+  .archmap { margin: 1.5rem 0; }
+  .archmap svg { width: 100%; height: auto; border-radius: 12px; }
+  .archmap a rect { transition: stroke-width .12s, filter .12s; }
+  .archmap a:hover rect { stroke-width: 2.2; filter: brightness(1.25); }
+  .archmap a { cursor: pointer; }
+</style>

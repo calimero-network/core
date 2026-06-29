@@ -1065,6 +1065,320 @@ fn apply_local_signed_group_op_rejects_last_admin_removal() {
 }
 
 // -----------------------------------------------------------------------
+// Governance-op rejection paths
+//
+// These pin the authorization gates of the per-op apply handlers
+// (`ops/group/transfer_ownership.rs`, `context_capability_{granted,
+// revoked}.rs`). There is no top-level admin gate in
+// `apply_local_signed_group_op` — every op carries its own check — so
+// these tests drive the full signed-op path and assert both that the
+// op is rejected AND that it is rejected for the intended reason.
+// -----------------------------------------------------------------------
+
+/// `TransferOwnership` is owner-only. An admin who is *not* the current
+/// owner cannot transfer ownership, even though they otherwise pass
+/// every member-management gate.
+#[test]
+fn transfer_ownership_rejects_non_owner_signer() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+    // A second admin — privileged, but not the owner.
+    let other_admin_sk = PrivateKey::random(&mut rng);
+    let other_admin_pk = other_admin_sk.public_key();
+    // A third admin standing by as a valid successor, so the op fails on
+    // the owner check rather than the new-owner-role check.
+    let successor_pk = PrivateKey::random(&mut rng).public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(owner_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &owner_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &other_admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &successor_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let op = SignedGroupOp::sign(
+        &other_admin_sk,
+        gid_bytes,
+        vec![],
+        1,
+        GroupOp::TransferOwnership {
+            new_owner: successor_pk,
+        },
+    )
+    .unwrap();
+    let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::OnlyOwnerCanTransfer(_))
+        ),
+        "expected OnlyOwnerCanTransfer, got: {err}"
+    );
+    // Ownership is unchanged.
+    assert_eq!(
+        MetaRepository::new(&store)
+            .load(&gid)
+            .unwrap()
+            .unwrap()
+            .owner_identity,
+        owner_pk
+    );
+}
+
+/// `TransferOwnership` requires the successor to already be an Admin.
+/// Transferring to a plain Member is rejected (the handler refuses to
+/// create an "owner with reduced capabilities" state).
+#[test]
+fn transfer_ownership_rejects_new_owner_not_admin() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+    let plain_member_pk = PrivateKey::random(&mut rng).public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(owner_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &owner_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &plain_member_pk, GroupMemberRole::Member)
+        .unwrap();
+
+    let op = SignedGroupOp::sign(
+        &owner_sk,
+        gid_bytes,
+        vec![],
+        1,
+        GroupOp::TransferOwnership {
+            new_owner: plain_member_pk,
+        },
+    )
+    .unwrap();
+    let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::TransferTargetNotAdmin {
+                role: GroupMemberRole::Member,
+                ..
+            })
+        ),
+        "expected TransferTargetNotAdmin(Member), got: {err}"
+    );
+    assert_eq!(
+        MetaRepository::new(&store)
+            .load(&gid)
+            .unwrap()
+            .unwrap()
+            .owner_identity,
+        owner_pk
+    );
+}
+
+/// `TransferOwnership` rejects a successor who is not a member of the
+/// group at all (would otherwise create an absentee owner).
+#[test]
+fn transfer_ownership_rejects_new_owner_not_member() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+    let outsider_pk = PrivateKey::random(&mut rng).public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(owner_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &owner_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let op = SignedGroupOp::sign(
+        &owner_sk,
+        gid_bytes,
+        vec![],
+        1,
+        GroupOp::TransferOwnership {
+            new_owner: outsider_pk,
+        },
+    )
+    .unwrap();
+    let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::TransferTargetNotMember(_))
+        ),
+        "expected TransferTargetNotMember, got: {err}"
+    );
+    assert_eq!(
+        MetaRepository::new(&store)
+            .load(&gid)
+            .unwrap()
+            .unwrap()
+            .owner_identity,
+        owner_pk
+    );
+}
+
+/// `ContextCapabilityGranted` is gated by `require_manage_members`. A
+/// plain member without the `MANAGE_MEMBERS` capability (and not an
+/// admin) cannot grant a context capability — and the grant must not be
+/// written.
+#[test]
+fn context_capability_granted_rejects_unauthorized_signer() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    let context_id = ContextId::from([0x44; 32]);
+    let target_pk = PrivateKey::random(&mut rng).public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member_pk, GroupMemberRole::Member)
+        .unwrap();
+
+    let op = SignedGroupOp::sign(
+        &member_sk,
+        gid_bytes,
+        vec![],
+        1,
+        GroupOp::ContextCapabilityGranted {
+            context_id,
+            member: target_pk,
+            capability: 0b1,
+        },
+    )
+    .unwrap();
+    let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<CapabilitiesError>(),
+            Some(CapabilitiesError::Unauthorized { operation, .. })
+                if operation == "grant context capability"
+        ),
+        "expected Unauthorized(grant context capability), got: {err}"
+    );
+    // Nothing was granted.
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .context_member_capability(&gid, &context_id, &target_pk)
+            .unwrap(),
+        None
+    );
+}
+
+/// `ContextCapabilityRevoked` shares the same `require_manage_members`
+/// gate. A plain member cannot revoke a context capability, and an
+/// existing grant must survive the rejected op untouched.
+#[test]
+fn context_capability_revoked_rejects_unauthorized_signer() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    let context_id = ContextId::from([0x55; 32]);
+    let target_pk = PrivateKey::random(&mut rng).public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member_pk, GroupMemberRole::Member)
+        .unwrap();
+    // Pre-existing grant that the unauthorized revoke must not disturb.
+    CapabilitiesRepository::new(&store)
+        .set_context_member(&gid, &context_id, &target_pk, 0b11)
+        .unwrap();
+
+    let op = SignedGroupOp::sign(
+        &member_sk,
+        gid_bytes,
+        vec![],
+        1,
+        GroupOp::ContextCapabilityRevoked {
+            context_id,
+            member: target_pk,
+            capability: 0b1,
+        },
+    )
+    .unwrap();
+    let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<CapabilitiesError>(),
+            Some(CapabilitiesError::Unauthorized { operation, .. })
+                if operation == "revoke context capability"
+        ),
+        "expected Unauthorized(revoke context capability), got: {err}"
+    );
+    // The grant is untouched — the rejected op wrote nothing.
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .context_member_capability(&gid, &context_id, &target_pk)
+            .unwrap(),
+        Some(0b11)
+    );
+}
+
+// -----------------------------------------------------------------------
 // Signing key tests
 // -----------------------------------------------------------------------
 

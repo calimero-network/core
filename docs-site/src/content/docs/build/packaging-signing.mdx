@@ -1,0 +1,137 @@
+---
+title: Packaging & signing your app
+description: The builder workflow that turns a compiled WASM module into an installable, signed .mpk bundle — build, extract the ABI, sign with mero-sign, and install with meroctl.
+sidebar:
+  label: Packaging & signing
+---
+
+import { Aside, Steps, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Once your app compiles, it still has to become something a node can install. That
+deliverable is an **`.mpk` bundle**: a single archive carrying your WASM, its ABI,
+the state schema, a `manifest.json`, and an Ed25519 signature. This page walks the
+builder workflow that produces one.
+
+The signing tool is `mero-sign` (`tools/mero-sign/`). The node side — how a bundle
+is parsed, verified, and trusted on install — lives in
+[Upgrades & migration](/protocol/upgrades/); this page does not duplicate that
+detail.
+
+## The workflow
+
+<Steps>
+
+1. **Build the WASM and extract the ABI.**
+
+   Compile your app to `wasm32-unknown-unknown`, then produce the ABI artifacts.
+   The ABI manifest (methods, events, types) and the state schema are generated
+   from your annotated source at build time — see
+   [App interface (ABI)](/build/app-abi/).
+
+   ```bash
+   ./build.sh                       # compile to wasm32-unknown-unknown
+   calimero-abi extract app.wasm \
+     --output bundle-temp/abi.json  # the full ABI manifest
+   ```
+
+   The bundle directory ends up holding the WASM, `abi.json`, an optional
+   `state-schema.json`, and the `manifest.json` you sign in step 3. Most apps wrap
+   all of this in a `build-bundle.sh` script.
+
+2. **Generate a signing key (one-time).**
+
+   `mero-sign generate-key` creates an Ed25519 keypair and derives your **signer
+   id** — a `did:key` identifier built from the public key (the `0xed01`
+   ed25519-pub multicodec tag plus the 32-byte key, base58btc-encoded under the
+   `did:key:` prefix).
+
+   ```bash
+   mero-sign generate-key --output my-signing-key.json
+   # Generated new keypair: my-signing-key.json
+   #   signerId: did:key:z6Mkrb81NKkv7Mw4dZAWA5PTuwBhbq9u9eCPuby3icBUdirg
+   ```
+
+   The key file is JSON with base64url-encoded `privateKey` and `publicKey` plus
+   the derived `signerId`. **Keep it secret and out of version control** — it is
+   your update authority (see below).
+
+   <Aside type="caution">
+   For local development you can sign with the built-in well-known dev key via
+   `mero-sign sign <manifest> --dev` instead of `--key`. A dev-signed bundle is
+   marked as such and **cannot be published to the registry** — use a generated
+   key for anything real.
+   </Aside>
+
+3. **Sign the manifest and create the `.mpk`.**
+
+   Point `mero-sign sign` at your `manifest.json`. It derives the `signerId` from
+   the key, sets `minRuntimeVersion` if absent, canonicalizes the manifest with
+   RFC 8785 (JCS), signs the SHA-256 of those canonical bytes, and writes a
+   `signature` object back into the manifest. It then packages the bundle
+   directory into an `.mpk`.
+
+   ```bash
+   mero-sign sign bundle-temp/manifest.json --key my-signing-key.json
+   # Signed manifest: bundle-temp/manifest.json
+   #    signerId: did:key:z6Mkm9KCceaDHiwAuYM7y3HteaCHSEkPzACySDkqkXTK6nWd
+   #  Bundle created: res/kv-store-1.0.0.mpk
+   ```
+
+   The resulting `.mpk` is a gzip-compressed tar archive whose required entry is
+   `manifest.json`, alongside the WASM, ABI, state-schema, and migration artifacts
+   the manifest references.
+
+4. **Install with `meroctl`.**
+
+   ```bash
+   meroctl --node node1 app install \
+     --path res/kv-store-1.0.0.mpk \
+     --package com.calimero.kv-store \
+     --version 1.0.0
+   ```
+
+   The node reads `manifest.json` straight out of the archive and verifies the
+   signature before admitting the app. Installing the bundle is what *produces* an
+   application: the manifest's `package` and `signerId` fix the application id.
+
+</Steps>
+
+## The signer key is the update authority
+
+For a bundle, the application id is derived from the `package` **and** the
+`signerId` together — not from the bytecode. That makes the application id
+**version-stable**: a new release signed by the *same* key under the *same*
+package keeps the same application id and is recognized as an upgrade of the
+existing app.
+
+The corollary is the rule to remember: **a new signed version must use the same
+signer key.** Sign a new release with a different key and the node computes a
+different application id — it is a *different application*, not an upgrade, and
+existing contexts will not pick it up. Treat the signing key as the long-lived
+identity of your app and guard it accordingly.
+
+<Aside type="note" title="Signing vs. install trust">
+Signing a bundle and *requiring* a valid signature are separate concerns. A
+registry install demands a valid signature; a local dev install can admit an
+unsigned bundle as a synthetic dev identity. That install-time trust split, and
+the exact verification rules, are documented in
+[Upgrades & migration](/protocol/upgrades/).
+</Aside>
+
+<CardGrid>
+  <LinkCard
+    title="App interface (ABI)"
+    description="What the extracted abi.json contains and how it's embedded in the WASM."
+    href="/build/app-abi/"
+  />
+  <LinkCard
+    title="Upgrades & migration"
+    description="The manifest/signing format, signature verification, and the install trust split."
+    href="/protocol/upgrades/"
+  />
+  <LinkCard
+    title="Applications (protocol)"
+    description="How a signed bundle becomes an application with a version-stable id."
+    href="/protocol/applications/"
+  />
+</CardGrid>

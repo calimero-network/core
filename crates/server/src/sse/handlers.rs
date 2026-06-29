@@ -56,8 +56,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info, warn};
 
 use super::config::{retry_timeout, COMMAND_CHANNEL_BUFFER_SIZE, SESSION_EXPIRY_SECS};
-use super::events::{handle_connection_cleanup, handle_node_events};
-use super::session::{now_secs, ActiveConnection, SessionState, SessionStateInner};
+use super::events::handle_node_events;
+use super::session::{now_secs, SessionState, SessionStateInner};
 use super::state::ServiceState;
 use super::storage::{delete_session, load_session, save_session};
 
@@ -293,16 +293,6 @@ pub async fn sse_handler(
         create_new_session(&state).await
     };
 
-    // Register active connection
-    let mut active_connections = state.active_connections.write().await;
-    drop(active_connections.insert(
-        session_id,
-        ActiveConnection {
-            commands: commands_sender.clone(),
-        },
-    ));
-    drop(active_connections);
-
     if is_reconnect {
         info!(%session_id, "Client reconnected, subscriptions restored");
     } else {
@@ -343,16 +333,22 @@ pub async fn sse_handler(
                             .data(message),
                     ),
                     Err(err) => {
-                        error!("Failed to serialize SseResponse: {}", err);
-                        let error_data = serde_json::json!({
-                            "type": "error",
-                            "message": "Failed to serialize SseResponse"
-                        });
+                        error!(%err, "Failed to serialize SseResponse");
+                        let error_response = SseResponse {
+                            body: ResponseBody::Error(ResponseBodyError::ServerError(
+                                ServerResponseError::InternalError { err: None },
+                            )),
+                        };
+                        // This is a static struct with no dynamic fields and
+                        // the only non-trivial field is #[serde(skip)], so
+                        // serialization cannot fail.
+                        let data = to_json_string(&error_response)
+                            .expect("static InternalError response must serialize");
                         Ok::<Event, Infallible>(
                             Event::default()
                                 .event(SseEvent::Message.as_str())
                                 .id(id_str)
-                                .data(error_data.to_string()),
+                                .data(data),
                         )
                     }
                 },
@@ -377,18 +373,22 @@ pub async fn sse_handler(
 
     let stream = initial_stream.chain(command_stream);
 
-    // Spawn event handler (after stream setup to ensure command channel is ready)
+    // Spawn event handler (after stream setup to ensure command channel is ready).
+    // The handler is bound to this connection's command channel and exits on its
+    // own when the connection closes, so there is no separate cleanup task to spawn.
+    //
+    // `commands_sender` is moved (not cloned) into the task on purpose: the only
+    // remaining sender then lives inside the handler, while the receiver is owned
+    // by the SSE response stream (`command_stream` above). When the client
+    // disconnects, axum drops the response body and therefore the receiver, which
+    // makes `command_sender.closed()` resolve and the handler exit. (axum streams
+    // the SSE body lazily via `Sse::new`, so the receiver is not held alive by the
+    // handler future itself.)
     drop(tokio::spawn(handle_node_events(
         session_id,
         Arc::clone(&state),
         session_state.clone(),
-    )));
-
-    // Spawn cleanup handler
-    drop(tokio::spawn(handle_connection_cleanup(
-        session_id,
-        Arc::clone(&state),
-        commands_sender.clone(),
+        commands_sender,
     )));
 
     // Build response with session ID in header for easy client access
@@ -512,7 +512,7 @@ pub async fn get_session_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(SseResponse {
                     body: ResponseBody::Error(ResponseBodyError::ServerError(
-                        ServerResponseError::InternalError { err: Some(err) },
+                        ServerResponseError::InternalError { err: None },
                     )),
                 }),
             )

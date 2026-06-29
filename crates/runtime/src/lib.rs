@@ -22,7 +22,7 @@ pub mod store;
 pub use config::{RuntimeConfig, RuntimeLimitsConfig};
 pub use constraint::Constraint;
 use errors::{FunctionCallError, HostError, Location, PanicContext, VMRuntimeError};
-use logic::{Outcome, VMContext, VMLimits, VMLogic, VMLogicError};
+use logic::{CallbackHandlerGuard, Outcome, VMContext, VMLimits, VMLogic, VMLogicError};
 use memory::WasmerTunables;
 use store::Storage;
 
@@ -314,6 +314,13 @@ impl Module {
         context.xcall_origin = xcall_origin.map(|origin| *origin);
 
         let mut logic = VMLogic::new(storage, private_storage, context, &self.limits, node_client);
+
+        // Scope the callback-handler thread-local to this execution. The runtime
+        // reuses OS threads, so without this guard a handler name set while
+        // running one context could leak into a later execution and misattribute
+        // its events. The guard clears any stale value on entry and restores the
+        // prior one on drop (kept until the end of this fn, past `finish`).
+        let _callback_handler_scope = CallbackHandlerGuard::enter();
 
         let mut store = Store::new(self.engine.clone());
 

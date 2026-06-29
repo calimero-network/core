@@ -1,0 +1,50 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-abi">
+<svg viewBox="0 0 760 330" role="img" aria-label="The host ABI boundary" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="ba" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="330" rx="10" fill="#0f0f16"/>
+  <!-- guest -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="28" y="60" width="220" height="200" rx="10" fill="#10151c" stroke="#58a6ff" stroke-width="1.4"/>
+    <text x="138" y="48" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">WASM guest (sandbox)</text>
+    <rect x="48" y="86" width="180" height="50" rx="7" fill="#161b22" stroke="#30363d"/>
+    <text x="138" y="108" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">linear memory</text>
+    <text x="138" y="124" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">(ephemeral, per execution)</text>
+    <rect x="48" y="150" width="180" height="42" rx="7" fill="#161b22" stroke="#30363d"/>
+    <text x="138" y="168" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">export: method() -&gt; ()</text>
+    <text x="138" y="182" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">no args, no return</text>
+    <text x="138" y="224" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">cannot reach network /</text>
+    <text x="138" y="237" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">clock / disk directly</text>
+  </g>
+  <!-- boundary -->
+  <g class="seq-step" style="--step-i:1">
+    <line x1="300" y1="50" x2="300" y2="280" stroke="#a5ff11" stroke-width="1.3" stroke-dasharray="5 4"/>
+    <text x="300" y="300" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="9">ABI boundary</text>
+    <line x1="248" y1="120" x2="358" y2="120" stroke="#8b949e" stroke-width="1.3" marker-end="url(#ba)"/>
+    <text x="303" y="112" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">host call (ptr,len)</text>
+    <line x1="358" y1="150" x2="248" y2="150" stroke="#8b949e" stroke-width="1.3" marker-end="url(#ba)"/>
+    <text x="303" y="166" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">result via register</text>
+  </g>
+  <!-- host -->
+  <g class="seq-step" style="--step-i:2">
+    <rect x="360" y="60" width="180" height="86" rx="10" fill="#13160f" stroke="#a5ff11" stroke-width="1.4"/>
+    <text x="450" y="48" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">Host runtime</text>
+    <text x="450" y="92" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">registers · buffers</text>
+    <text x="450" y="110" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">bounds checks · limits</text>
+    <text x="450" y="128" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">crypto · time · random</text>
+  </g>
+  <!-- storage layers -->
+  <g class="seq-step" style="--step-i:3">
+    <line x1="560" y1="103" x2="600" y2="103" stroke="#8b949e" stroke-width="1.3" marker-end="url(#ba)"/>
+    <rect x="600" y="62" width="138" height="34" rx="7" fill="#16222e" stroke="#39d0d8"/>
+    <text x="669" y="83" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="9">replicated state</text>
+    <rect x="600" y="104" width="138" height="34" rx="7" fill="#161b22" stroke="#444c56"/>
+    <text x="669" y="125" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">private state</text>
+    <rect x="600" y="146" width="138" height="34" rx="7" fill="#161b22" stroke="#444c56"/>
+    <text x="669" y="167" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">ordered index</text>
+    <text x="669" y="200" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">node storage</text>
+  </g>
+</svg>
+</Figure>

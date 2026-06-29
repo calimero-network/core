@@ -11,19 +11,25 @@
 //! (see `service_mounts`), and individual messages are not re-authenticated, so
 //! `execute` here runs with the same authority as the connection's subscriptions.
 
+use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::ExecutionRequest;
 use calimero_server_primitives::validation::Validate;
 use calimero_server_primitives::ws::{ResponseBody, ResponseBodyError, ServerResponseError};
-use tracing::{error, field, info, Span};
+use tracing::{error, field, info, warn, Span};
 
-use crate::execute::execute_request;
+use crate::execute::{execute_request, CallerIdentity};
 use crate::ws::ServiceState;
 
 /// Validate and run an `execute` request, producing the response body to send
 /// back over the socket. Mirrors the JSON-RPC handler's mapping: validation
 /// failures become `ParseError`s, handler failures become `HandlerError`s, and
 /// serialization failures become `InternalError`s.
-pub(crate) async fn handle(state: &ServiceState, request: ExecutionRequest) -> ResponseBody {
+pub(crate) async fn handle(
+    state: &ServiceState,
+    caller: Option<PublicKey>,
+    node_owner: bool,
+    request: ExecutionRequest,
+) -> ResponseBody {
     let validation_errors = request.validate();
     if !validation_errors.is_empty() {
         let message = match validation_errors.as_slice() {
@@ -52,7 +58,19 @@ pub(crate) async fn handle(state: &ServiceState, request: ExecutionRequest) -> R
 
     info!("Received execution request");
 
-    match execute_request(&state.ctx_client, request).await {
+    let caller_identity = match caller.as_ref() {
+        Some(key) => CallerIdentity::Key(key),
+        None => {
+            if !node_owner && state.auth_enabled {
+                warn!("No auth extensions on WebSocket execute — auth guard may not be running");
+                return ResponseBody::Error(ResponseBodyError::ServerError(
+                    ServerResponseError::InternalError { err: None },
+                ));
+            }
+            CallerIdentity::NodeOwner
+        }
+    };
+    match execute_request(&state.ctx_client, caller_identity, request).await {
         Ok(response) => match serde_json::to_value(response) {
             Ok(value) => {
                 info!("Request completed successfully");
@@ -71,9 +89,8 @@ pub(crate) async fn handle(state: &ServiceState, request: ExecutionRequest) -> R
 }
 
 fn internal_error(err: serde_json::Error) -> ResponseBody {
+    error!(%err, "Internal server error");
     ResponseBody::Error(ResponseBodyError::ServerError(
-        ServerResponseError::InternalError {
-            err: Some(err.into()),
-        },
+        ServerResponseError::InternalError { err: None },
     ))
 }

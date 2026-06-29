@@ -1,0 +1,136 @@
+---
+/**
+ * ScopeHierarchy — the namespace → group → subgroup → context containment tree,
+ * made concrete with an example org ("Acme"). Every box is a *scope*: its own
+ * signed op DAG (or, for a context, its unified-op DAG) plus its own scope_root.
+ * Shows the Open vs Restricted subgroup wall and how membership + keys inherit
+ * downward into Open children but stop at a Restricted boundary.
+ *
+ * Authored as raw SVG so hyphenated attrs (stroke-width, text-anchor, …) pass
+ * through untouched, and wrapped in Figure for the step-cascade + Replay.
+ */
+import Figure from '../Figure.astro';
+---
+<Figure id="d-scope-hierarchy">
+<svg width="100%" viewBox="0 0 760 582" role="img" aria-label="The namespace, group, subgroup and context containment tree, with Open vs Restricted subgroups and downward inheritance of membership and keys" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="sh-a" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker>
+    <marker id="sh-inh" markerWidth="10" markerHeight="10" refX="5" refY="8" orient="auto"><path d="M1,0 L9,0 L5,8 Z" fill="#a5ff11"/></marker>
+  </defs>
+  <rect x="0" y="0" width="760" height="582" rx="10" fill="#0d1117"/>
+
+  <!-- inheritance band (left): membership + keys flow down -->
+  <g class="seq-step" style="--step-i:7">
+    <line x1="32" y1="80" x2="32" y2="446" stroke="#a5ff11" stroke-width="2" stroke-dasharray="2 5" marker-end="url(#sh-inh)"/>
+    <text transform="rotate(-90 21 268)" x="21" y="268" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">membership &amp; keys inherit downward</text>
+  </g>
+
+  <!-- edges: namespace -> groups -->
+  <g class="seq-step" style="--step-i:1">
+    <line x1="401" y1="114" x2="234" y2="156" stroke="#8b949e" stroke-width="1.3" marker-end="url(#sh-a)"/>
+    <line x1="401" y1="114" x2="571" y2="156" stroke="#8b949e" stroke-width="1.3" marker-end="url(#sh-a)"/>
+  </g>
+
+  <!-- NAMESPACE (root scope) -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="271" y="56" width="260" height="58" rx="11" fill="#10210f" stroke="#3fb950" stroke-width="1.5"/>
+    <circle cx="519" cy="68" r="3.6" fill="#a5ff11"/>
+    <text x="401" y="82" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="14" font-weight="700">Acme</text>
+    <text x="401" y="101" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="10">namespace &#183; root governance scope</text>
+  </g>
+
+  <!-- edges: groups -> subgroups / context -->
+  <g class="seq-step" style="--step-i:3">
+    <line x1="230" y1="216" x2="167" y2="268" stroke="#8b949e" stroke-width="1.3" marker-end="url(#sh-a)"/>
+    <line x1="230" y1="216" x2="358" y2="268" stroke="#8b949e" stroke-width="1.3" marker-end="url(#sh-a)"/>
+    <!-- Sales holds a context directly (skips the subgroup level) -->
+    <line x1="575" y1="216" x2="575" y2="384" stroke="#8b949e" stroke-width="1.3" stroke-dasharray="5 3" marker-end="url(#sh-a)"/>
+  </g>
+
+  <!-- GROUPS -->
+  <g class="seq-step" style="--step-i:2">
+    <rect x="130" y="158" width="200" height="58" rx="11" fill="#1a1430" stroke="#a371f7" stroke-width="1.5"/>
+    <circle cx="318" cy="170" r="3.6" fill="#a5ff11"/>
+    <text x="230" y="184" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="700">Engineering</text>
+    <text x="230" y="203" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5">group &#183; own governance scope</text>
+
+    <rect x="475" y="158" width="200" height="58" rx="11" fill="#1a1430" stroke="#a371f7" stroke-width="1.5"/>
+    <circle cx="663" cy="170" r="3.6" fill="#a5ff11"/>
+    <text x="575" y="184" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="700">Sales</text>
+    <text x="575" y="203" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5">group &#183; own governance scope</text>
+  </g>
+
+  <!-- SUBGROUPS: Open vs Restricted -->
+  <g class="seq-step" style="--step-i:4">
+    <!-- Open subgroup: members flow in by inheritance -->
+    <rect x="82" y="270" width="170" height="64" rx="11" fill="#13160f" stroke="#a5ff11" stroke-width="1.5"/>
+    <circle cx="240" cy="282" r="3.6" fill="#a5ff11"/>
+    <text x="167" y="294" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="12.5" font-weight="700">backend</text>
+    <text x="167" y="312" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">subgroup &#183; Open</text>
+    <text x="167" y="327" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">parent members inherited (read)</text>
+
+    <!-- Restricted subgroup: a wall -->
+    <rect x="273" y="270" width="170" height="64" rx="11" fill="#231708" stroke="#e3b341" stroke-width="1.5"/>
+    <circle cx="431" cy="282" r="3.6" fill="#a5ff11"/>
+    <text x="358" y="294" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="12.5" font-weight="700">security</text>
+    <text x="358" y="312" text-anchor="middle" fill="#e3b341" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">subgroup &#183; Restricted</text>
+    <text x="358" y="327" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">explicit admission required</text>
+  </g>
+
+  <!-- the wall: inheritance stops at the Restricted boundary -->
+  <g class="seq-step" style="--step-i:4">
+    <line x1="284" y1="232" x2="316" y2="254" stroke="#e3b341" stroke-width="2.4" stroke-dasharray="3 2"/>
+    <text x="332" y="246" fill="#e3b341" font-family="'JetBrains Mono', monospace" font-size="8" font-weight="700">wall</text>
+  </g>
+
+  <!-- edges: subgroups -> contexts -->
+  <g class="seq-step" style="--step-i:5">
+    <line x1="167" y1="334" x2="150" y2="384" stroke="#8b949e" stroke-width="1.3" marker-end="url(#sh-a)"/>
+    <line x1="358" y1="334" x2="360" y2="384" stroke="#8b949e" stroke-width="1.3" marker-end="url(#sh-a)"/>
+  </g>
+
+  <!-- CONTEXTS: where app state + the CRDT tree live -->
+  <g class="seq-step" style="--step-i:6">
+    <rect x="65" y="386" width="170" height="62" rx="11" fill="#10201f" stroke="#39d0d8" stroke-width="1.5"/>
+    <circle cx="223" cy="398" r="3.6" fill="#a5ff11"/>
+    <text x="150" y="412" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="12" font-weight="700">deploys-chat</text>
+    <text x="150" y="430" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">context</text>
+    <text x="150" y="443" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">app state &#183; CRDT tree</text>
+
+    <rect x="275" y="386" width="170" height="62" rx="11" fill="#10201f" stroke="#39d0d8" stroke-width="1.5"/>
+    <circle cx="433" cy="398" r="3.6" fill="#a5ff11"/>
+    <text x="360" y="412" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="12" font-weight="700">incident-log</text>
+    <text x="360" y="430" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">context</text>
+    <text x="360" y="443" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">app state &#183; CRDT tree</text>
+
+    <rect x="490" y="386" width="170" height="62" rx="11" fill="#10201f" stroke="#39d0d8" stroke-width="1.5"/>
+    <circle cx="648" cy="398" r="3.6" fill="#a5ff11"/>
+    <text x="575" y="412" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="12" font-weight="700">leads-board</text>
+    <text x="575" y="430" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">context</text>
+    <text x="575" y="443" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">app state &#183; CRDT tree</text>
+  </g>
+
+  <!-- legend -->
+  <g class="seq-step" style="--step-i:8">
+    <rect x="56" y="466" width="648" height="86" rx="10" fill="#0c1014" stroke="#30363d" stroke-width="1.2"/>
+
+    <rect x="72" y="480" width="13" height="13" rx="3" fill="#10210f" stroke="#3fb950" stroke-width="1.4"/>
+    <text x="93" y="490" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">Namespace &#8212; root governance scope</text>
+    <rect x="402" y="480" width="13" height="13" rx="3" fill="#1a1430" stroke="#a371f7" stroke-width="1.4"/>
+    <text x="423" y="490" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">Group &#8212; governance scope; holds contexts</text>
+
+    <rect x="72" y="502" width="13" height="13" rx="3" fill="#13160f" stroke="#a5ff11" stroke-width="1.4"/>
+    <text x="93" y="512" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">Open subgroup &#8212; parent members inherited</text>
+    <rect x="402" y="502" width="13" height="13" rx="3" fill="#231708" stroke="#e3b341" stroke-width="1.4"/>
+    <text x="423" y="512" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">Restricted subgroup &#8212; explicit admission</text>
+
+    <rect x="72" y="524" width="13" height="13" rx="3" fill="#10201f" stroke="#39d0d8" stroke-width="1.4"/>
+    <text x="93" y="534" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">Context &#8212; app state + CRDT tree</text>
+    <circle cx="408.5" cy="530" r="3.6" fill="#a5ff11"/>
+    <text x="423" y="534" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">= scope: own op DAG + scope_root</text>
+  </g>
+
+  <!-- caption -->
+  <text x="380" y="572" text-anchor="middle" fill="#6b7280" font-family="ui-sans-serif, system-ui" font-size="10.5">Every box is a scope (own op DAG + scope_root). Members &amp; keys flow down into Open children; a Restricted subgroup is a wall.</text>
+</svg>
+</Figure>

@@ -3,12 +3,14 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
+use axum::extract::OriginalUri;
 use axum::http::{Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use eyre::Result;
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
+use mero_auth::auth::permissions::PermissionValidator;
 use mero_auth::embedded::{build_app, default_config, EmbeddedAuthApp};
 use mero_auth::{AuthError, AuthService};
 use tower::{Layer, Service};
@@ -41,6 +43,19 @@ fn unauthorized_response(err: &AuthError) -> Response {
 /// the effective requester instead of trusting the value from the request body.
 #[derive(Clone, Debug)]
 pub struct AuthenticatedKey(pub calimero_primitives::identity::PublicKey);
+
+/// Marker injected by [`AuthGuardService`] when a request carries a valid token
+/// but the auth method does not produce a cryptographic public key (e.g.
+/// embedded username/password). The presence of this extension tells handlers
+/// that the caller is the node owner, positively confirmed by the auth layer.
+///
+/// Using an explicit marker instead of relying on `Option<AuthenticatedKey>`
+/// being `None` makes the bypass path auditable: `None` for both extensions
+/// means the auth guard did not run (no-auth mode), not that a specific auth
+/// method was used. Handlers can match on both extensions and reason about
+/// exactly which auth path was taken.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedNodeOwner;
 
 /// Wrapper around the embedded authentication application, keeping the router and shared state.
 pub struct BundledAuth {
@@ -174,6 +189,47 @@ where
                         }
                     };
 
+                // Authorisation. Authenticating the token is not enough: a valid
+                // but under-privileged token must not reach privileged handlers.
+                // Previously this guard stopped at verification, so any valid
+                // token could hit every /admin-api/* and /jsonrpc endpoint. Run
+                // the same determine + validate pass the auth crate's
+                // `auth_middleware` uses, against the permissions carried by the
+                // verified token, so the two enforcement paths stay in sync.
+                //
+                // `PermissionValidator` matches full request paths (e.g.
+                // `/admin-api/contexts`, `/jsonrpc`). This guard runs inside a
+                // nested router, so `parts.uri` has had the mount prefix stripped
+                // (`/contexts`, `/`); recover the full path from `OriginalUri`,
+                // which axum's `nest` inserts. Non-nested mounts (e.g. the `/ws`
+                // route) have no `OriginalUri`, so fall back to the request URI,
+                // which is already the full path there.
+                let full_uri = parts
+                    .extensions
+                    .get::<OriginalUri>()
+                    .map_or_else(|| uri.clone(), |original| original.0.clone());
+
+                let perm_request = Request::builder()
+                    .method(method.clone())
+                    .uri(full_uri)
+                    .body(Body::empty())
+                    .expect("request built from an already-validated method and URI");
+
+                let validator = PermissionValidator::new();
+                let required = validator.determine_required_permissions(&perm_request);
+                if !validator.validate_permissions(&auth_response.permissions, &required) {
+                    warn!(
+                        key_id = %auth_response.key_id,
+                        ?required,
+                        granted = ?auth_response.permissions,
+                        "permission denied: token lacks the permissions this route requires",
+                    );
+                    let mut resp = StatusCode::FORBIDDEN.into_response();
+                    resp.headers_mut()
+                        .insert("X-Auth-Error", "permission_denied".parse().unwrap());
+                    return Ok(resp);
+                }
+
                 // Attempt to resolve the authenticated public key and inject it so
                 // handlers can use it as the effective requester without trusting the
                 // caller-supplied value.
@@ -184,14 +240,49 @@ where
                             Ok(pk) => {
                                 parts.extensions.insert(AuthenticatedKey(pk));
                             }
-                            Err(err) => {
-                                warn!(key_id=%auth_response.key_id, %err, "auth key_id public_key is not a valid PublicKey; skipping extension injection");
+                            Err(_) => {
+                                // The stored value is not a valid Ed25519/base58 public
+                                // key. This is expected for username/password auth: the
+                                // user_password provider stores the username in the
+                                // `public_key` field as a human-readable identifier, not
+                                // a real cryptographic key. Treat this path identically
+                                // to Ok(None) — the auth layer confirmed a valid session;
+                                // the caller is the node owner.
+                                debug!(key_id=%auth_response.key_id, "non-key auth (parse failure): granting NodeOwner");
+                                parts.extensions.insert(AuthenticatedNodeOwner);
                             }
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        // No Ed25519 public key is stored for this key_id. The only
+                        // legitimate case is a client key (`KeyType::Client`): created
+                        // via the `/auth/client-keys` API by the node owner for their
+                        // own applications and provisioned with `public_key: None` by
+                        // design (see `Key::new_client_key`). Client keys are always
+                        // issued by and to the node owner; treating them as NodeOwner
+                        // matches the intended access model.
+                        //
+                        // Note: username/password root keys do NOT reach this arm.
+                        // The `user_password` provider stores the username as a
+                        // non-base58 string in `public_key`, so `get_key_public_key`
+                        // returns `Ok(Some(username))` and `PublicKey::from_str` fails
+                        // → that path is handled by the `Err(_)` arm above.
+                        //
+                        // No other key type with `public_key = None` should exist in
+                        // the store. This is a schema guarantee in the auth crate:
+                        // `new_root_key_with_permissions` always sets `public_key` to
+                        // a non-empty string, and `new_client_key` is the only other
+                        // constructor.
+                        warn!(key_id=%auth_response.key_id, "non-key auth (absent public key): granting NodeOwner");
+                        parts.extensions.insert(AuthenticatedNodeOwner);
+                    }
                     Err(err) => {
-                        warn!(key_id=%auth_response.key_id, %err, "failed to look up public key for auth key_id");
+                        // A store or network error during key lookup is an
+                        // infrastructure failure, not a known auth path. Fail
+                        // closed rather than failing open: do NOT grant
+                        // node-owner access on a transient error.
+                        warn!(key_id=%auth_response.key_id, %err, "failed to look up public key for auth key_id; rejecting request");
+                        return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
                     }
                 }
             }
@@ -201,5 +292,66 @@ where
             Ok(response)
         }
         .boxed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Method, Request};
+    use mero_auth::auth::permissions::PermissionValidator;
+
+    /// Build the request the guard hands to the validator: only the method and
+    /// the full path are read by `determine_required_permissions`.
+    fn request(method: Method, path: &str) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    /// The guard resolves the *full* request path (via `OriginalUri`) precisely
+    /// because the validator's mappings are keyed on the server's mount paths.
+    /// If these stopped yielding a required permission, enforcement would
+    /// silently degrade to "any valid token", which is the bug being fixed.
+    #[test]
+    fn server_mount_paths_require_permissions() {
+        let validator = PermissionValidator::new();
+
+        for (method, path) in [
+            (Method::GET, "/admin-api/contexts"),
+            (Method::POST, "/admin-api/contexts"),
+            (Method::GET, "/admin-api/applications"),
+            (Method::POST, "/jsonrpc"),
+        ] {
+            let required = validator.determine_required_permissions(&request(method.clone(), path));
+            assert!(
+                !required.is_empty(),
+                "{method} {path} must map to a required permission for the guard to enforce it",
+            );
+        }
+    }
+
+    /// End-to-end of the guard's authorisation decision: an authenticated token
+    /// with no permissions is rejected for a privileged route, while a token
+    /// holding `admin` is allowed.
+    #[test]
+    fn underprivileged_token_is_denied_admin_token_allowed() {
+        let validator = PermissionValidator::new();
+        let required =
+            validator.determine_required_permissions(&request(Method::GET, "/admin-api/contexts"));
+
+        let no_permissions: Vec<String> = Vec::new();
+        assert!(
+            !validator.validate_permissions(&no_permissions, &required),
+            "a token with no permissions must not pass the contexts-list check",
+        );
+
+        let admin = vec!["admin".to_owned()];
+        assert!(
+            validator.validate_permissions(&admin, &required),
+            "an admin token must pass every permission check",
+        );
     }
 }
