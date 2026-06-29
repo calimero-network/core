@@ -22,10 +22,7 @@
 /// * Contains characters other than ASCII alphanumeric, hyphens, or dots (blocks `/`, `\`, etc.);
 /// * Contains consecutive dots (`..`);
 /// * Starts or ends with a dot.
-pub fn validate_path_component(
-    component: &str,
-    component_label: Option<&str>,
-) -> eyre::Result<()> {
+pub fn validate_path_component(component: &str, component_label: Option<&str>) -> eyre::Result<()> {
     let component_label = component_label.unwrap_or("component");
 
     // Ensure the component is not empty.
@@ -138,7 +135,11 @@ mod tests {
 
     #[test]
     fn test_validate_path_component_traversal() {
-        assert_rejected("../etc", Some("package name"), "package name cannot contain '..'");
+        assert_rejected(
+            "../etc",
+            Some("package name"),
+            "package name cannot contain '..'",
+        );
     }
 
     #[test]
