@@ -643,6 +643,24 @@ pub fn check_snapshot_safety(has_local_state: bool) -> Result<(), SnapshotError>
 /// Maximum byte length for governance op payloads in [`BroadcastMessage::NamespaceGovernanceDelta`].
 pub const MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES: usize = 64 * 1024;
 
+/// Upper bound on a decrypted [`SealedDeltaPayload`]'s `artifact` (the
+/// borsh-encoded storage delta).
+///
+/// This is a defense-in-depth backstop, NOT the primary limit: an inbound
+/// gossip message is already capped at gossipsub's default
+/// `max_transmit_size` (64 KiB), so a network-delivered delta's plaintext is
+/// bounded well below this before it reaches decryption. The cap matters for
+/// the buffered-replay path (which decrypts payloads loaded from local
+/// storage) and as a hard ceiling against a malicious group-key holder, who
+/// can seal an arbitrarily large payload that still passes AEAD.
+///
+/// Deliberately distinct from [`MAX_COMPRESSED_PAYLOAD_SIZE`], which bounds
+/// *compressed* snapshot pages and is intentionally looser to absorb
+/// compression expansion. A state-delta plaintext is uncompressed, so it gets
+/// its own, tighter, named bound. Sized generously above any legitimate delta
+/// (16× the gossip transmit cap) but far below a memory-exhaustion payload.
+pub const MAX_STATE_DELTA_PLAINTEXT_BYTES: usize = 1024 * 1024;
+
 /// Plaintext that gets encrypted into the `artifact` field of a
 /// [`BroadcastMessage::StateDelta`].
 ///
@@ -664,6 +682,18 @@ pub struct SealedDeltaPayload {
     /// dependency on the storage-delta layout; the receiver deserializes it
     /// after decryption.
     pub artifact: Vec<u8>,
+}
+
+impl SealedDeltaPayload {
+    /// Size guard for the wrapped `artifact`, mirroring the `is_valid()`
+    /// convention the other wire types in this module follow. Callers that
+    /// deserialize a `SealedDeltaPayload` from untrusted (post-decryption)
+    /// bytes should reject it when this returns `false` before deserializing
+    /// the inner storage delta. See [`MAX_STATE_DELTA_PLAINTEXT_BYTES`].
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.artifact.len() <= MAX_STATE_DELTA_PLAINTEXT_BYTES
+    }
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]

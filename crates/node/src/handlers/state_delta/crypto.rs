@@ -6,7 +6,7 @@
 
 use calimero_context::group_store::{GroupKeyring, NamespaceRepository};
 use calimero_crypto::Nonce;
-use calimero_node_primitives::sync::{SealedDeltaPayload, MAX_COMPRESSED_PAYLOAD_SIZE};
+use calimero_node_primitives::sync::{SealedDeltaPayload, MAX_STATE_DELTA_PLAINTEXT_BYTES};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PrivateKey;
 use calimero_storage::action::Action;
@@ -132,23 +132,22 @@ pub(super) fn decrypt_delta_actions(
         .decrypt(artifact, nonce)
         .ok_or_eyre("failed to decrypt delta payload")?;
 
-    // Bound the plaintext before deserializing it. AEAD proves the payload
-    // came from a group-key holder, but a *malicious member* still holds the
-    // key and can seal an arbitrarily large `SealedDeltaPayload` (outer +
-    // inner `artifact`). Cap it at the same ceiling the snapshot path uses so
-    // a crafted delta can't drive unbounded borsh allocation — this mirrors
-    // the `is_valid()` / `MAX_*` convention the other wire types in this
-    // module follow. One check on the outer plaintext transitively bounds the
-    // inner `artifact`, so both deserializations below are covered.
-    if decrypted.len() > MAX_COMPRESSED_PAYLOAD_SIZE {
+    // AEAD proves the payload came from a group-key holder, but a *malicious
+    // member* still holds the key and can seal an arbitrarily large artifact.
+    // Bound the inner artifact via the type's own `is_valid()` contract before
+    // deserializing the storage delta, so a crafted payload can't drive
+    // unbounded borsh allocation. (Deserializing the outer `SealedDeltaPayload`
+    // is itself bounded: `decrypted` came from an inbound gossip message capped
+    // at gossipsub's transmit size, or from a previously network-bounded delta
+    // on the buffered-replay path.)
+    let sealed: SealedDeltaPayload = borsh::from_slice(&decrypted)?;
+    if !sealed.is_valid() {
         bail!(
-            "decrypted state-delta payload too large: {} bytes (max {})",
-            decrypted.len(),
-            MAX_COMPRESSED_PAYLOAD_SIZE
+            "state-delta artifact too large: {} bytes (max {})",
+            sealed.artifact.len(),
+            MAX_STATE_DELTA_PLAINTEXT_BYTES
         );
     }
-
-    let sealed: SealedDeltaPayload = borsh::from_slice(&decrypted)?;
 
     let storage_delta: calimero_storage::delta::StorageDelta = borsh::from_slice(&sealed.artifact)?;
 
@@ -213,12 +212,16 @@ mod tests {
         let shared_key = SharedKey::from_sk(&sender_key);
         let nonce = [3u8; NONCE_LEN];
 
-        // A group-key holder seals a plaintext just past the cap. The bytes
-        // need not be a valid SealedDeltaPayload: the size guard must reject
-        // them BEFORE any borsh deserialization is attempted.
-        let oversized = vec![0u8; MAX_COMPRESSED_PAYLOAD_SIZE + 1];
+        // A group-key holder seals a well-formed SealedDeltaPayload whose inner
+        // artifact is just past the cap. The `is_valid()` guard must reject it
+        // before the inner storage-delta deserialization is attempted.
+        let sealed = SealedDeltaPayload {
+            root_hash: Hash::from([0u8; 32]),
+            artifact: vec![0u8; MAX_STATE_DELTA_PLAINTEXT_BYTES + 1],
+        };
+        let plaintext = borsh::to_vec(&sealed).expect("serialize");
         let cipher = shared_key
-            .encrypt(oversized, nonce)
+            .encrypt(plaintext, nonce)
             .expect("encryption failed");
 
         let err = decrypt_delta_actions(cipher, nonce, sender_key)
