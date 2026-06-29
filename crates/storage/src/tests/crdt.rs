@@ -191,6 +191,33 @@ fn tombstone_allows_newer_update() {
 }
 
 #[test]
+fn tombstone_does_not_regress_on_out_of_order_delete() {
+    let mut page = Page::new_from_element("Test Page", Element::root());
+    let id = page.id();
+
+    assert!(TestInterface::save(&mut page).unwrap());
+
+    // Apply a newer tombstone first.
+    let newer = time_now();
+    let older = newer - 1_000_000_000; // 1s earlier nonce
+    Index::<TestStorage>::mark_deleted(id, newer).unwrap();
+
+    // An out-of-order, OLDER DeleteRef must not roll the tombstone back.
+    Index::<TestStorage>::mark_deleted(id, older).unwrap();
+
+    let index = Index::<TestStorage>::get_index(id).unwrap().unwrap();
+    assert_eq!(
+        index.deleted_at,
+        Some(newer),
+        "older delete must not regress the tombstone nonce"
+    );
+    assert_eq!(
+        *index.metadata.updated_at, newer,
+        "older delete must not regress the updated_at nonce (replay protection)"
+    );
+}
+
+#[test]
 fn delete_vs_update_conflict() {
     // Test LWW conflict resolution between delete and update
     let mut page = Page::new_from_element("Test Page", Element::root());
