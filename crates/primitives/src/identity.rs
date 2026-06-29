@@ -26,6 +26,11 @@ use ed25519_dalek::{Signature, SignatureError, Signer, SigningKey, Verifier, Ver
 // padding or extra field added to `Hash` would have silently left key material
 // un-zeroized. `#[derive(ZeroizeOnDrop)]` over `[u8; 32]` removes the `unsafe`
 // and tracks the field layout automatically.
+//
+// `Clone` and `Copy` are deliberately NOT derived: either would hand out a copy
+// of the secret that is not tracked by `ZeroizeOnDrop`, reintroducing exactly
+// the leak this type guards against. Code that genuinely needs the bytes goes
+// through `as_bytes` at a reviewed call site.
 #[derive(zeroize::ZeroizeOnDrop)]
 pub struct PrivateKey([u8; 32]);
 
