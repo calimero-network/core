@@ -968,6 +968,7 @@ impl SyncManager {
                 std::time::Duration::from_millis(
                     crate::sync::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
                 ),
+                self.sync_config.namespace_discovery_wait,
                 &rejected_peers,
             )
             .await
