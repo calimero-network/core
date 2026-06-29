@@ -753,7 +753,11 @@ pub async fn verify_challenge_handler(
         ),
         Err(err @ AuthError::ChallengeReplay(_)) => {
             warn!("Rejected challenge verification: {}", err);
-            error_response(StatusCode::CONFLICT, format!("Challenge rejected: {err}"), None)
+            error_response(
+                StatusCode::CONFLICT,
+                format!("Challenge rejected: {err}"),
+                None,
+            )
         }
         Err(err) => {
             warn!("Invalid challenge verification: {}", err);

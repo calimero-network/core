@@ -686,7 +686,9 @@ impl TokenManager {
                     }
                 }
                 Ok(None) => {}
-                Err(e) => tracing::warn!("Failed to read challenge record {key} during cleanup: {e}"),
+                Err(e) => {
+                    tracing::warn!("Failed to read challenge record {key} during cleanup: {e}")
+                }
             }
         }
     }
