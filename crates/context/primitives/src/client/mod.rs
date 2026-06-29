@@ -112,12 +112,14 @@ pub struct RootSelfDump {
 /// and [`ContextRegistry::dump_root`] to decode the index without pulling
 /// in the full `calimero-storage` types (which would force a dep cycle).
 ///
-/// **SYNC NOTE**: When `calimero_storage::index::EntityIndex` or its
-/// transitively-borshed children change, update these mirrors *and*
-/// `calimero-storage/src/tests/index.rs::minimal_struct_layout_compat`.
-/// A missed update produces silent misdeserialization on a diagnostic
-/// path that fires only during rare divergence events — exactly when
-/// correct output matters most.
+/// **SYNC NOTE**: These structs mirror the canonical types by hand. The
+/// [`borsh_layout_round_trip`] test module below serialises the *real*
+/// `calimero_storage` types and decodes them through these mirrors, so a
+/// field-type or field-order drift fails the test run rather than silently
+/// misdeserialising on the rare divergence-diagnostic path (which is exactly
+/// when correct output matters most). When you change `EntityIndex` or its
+/// borshed children, update these mirrors; the test will flag a child layout
+/// that drifted.
 mod borsh_layout {
     use borsh::BorshDeserialize;
     use calimero_primitives::crdt::CrdtType;
@@ -189,6 +191,170 @@ mod borsh_layout {
         pub(super) signature: [u8; 64],
         pub(super) nonce: u64,
         pub(super) signer: Option<[u8; 32]>,
+    }
+}
+
+/// Mechanically guards the hand-written mirrors in [`borsh_layout`] against
+/// silent drift from the canonical `calimero_storage` types. The mirrors decode
+/// `EntityIndex` on a rare diagnostic path, so a layout mismatch would
+/// mis-deserialise precisely during divergence events. Each test serialises a
+/// *real* `ChildInfo` (the drift-prone, previously-broken part: its embedded
+/// `Metadata`/`StorageType`/`SignatureData`) with borsh and decodes it through
+/// the production mirror, asserting the bytes round-trip and are fully consumed.
+#[cfg(test)]
+mod borsh_layout_round_trip {
+    use std::collections::BTreeMap;
+
+    use borsh::BorshDeserialize;
+    use calimero_primitives::crdt::CrdtType;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_storage::address::Id;
+    use calimero_storage::entities::{ChildInfo, Metadata, OpMask, SignatureData, StorageType};
+
+    use super::borsh_layout;
+
+    fn metadata_with(storage_type: StorageType) -> Metadata {
+        let mut md = Metadata::new(1000, 2000);
+        md.storage_type = storage_type;
+        md.crdt_type = Some(CrdtType::LwwRegister {
+            inner_type: "u64".to_owned(),
+        });
+        md.field_name = Some("field".to_owned());
+        md.schema_version = Some(7);
+        md
+    }
+
+    /// Serialise a canonical `ChildInfo` carrying `storage_type` and decode it
+    /// through the production mirror. Asserts the scalar fields survive and the
+    /// whole byte stream is consumed — a width/order drift either errors or
+    /// leaves trailing bytes.
+    fn round_trip(storage_type: StorageType) -> borsh_layout::ChildInfo {
+        let id = [0xAB; 32];
+        let merkle_hash = [0xCD; 32];
+        let child = ChildInfo::new(Id::new(id), merkle_hash, metadata_with(storage_type));
+
+        let bytes = borsh::to_vec(&child).expect("serialize canonical ChildInfo");
+        let mut reader: &[u8] = &bytes;
+        let decoded = borsh_layout::ChildInfo::deserialize_reader(&mut reader)
+            .expect("mirror failed to decode canonical ChildInfo — borsh layout drifted");
+        assert!(
+            reader.is_empty(),
+            "mirror left {} trailing byte(s) — borsh layout drifted",
+            reader.len()
+        );
+
+        assert_eq!(decoded.id, id);
+        assert_eq!(decoded.merkle_hash, merkle_hash);
+        assert_eq!(decoded.metadata.created_at, 1000);
+        assert_eq!(decoded.metadata.updated_at, 2000);
+        assert_eq!(decoded.metadata.field_name.as_deref(), Some("field"));
+        assert_eq!(decoded.metadata.schema_version, Some(7));
+        // The mirror decodes `crdt_type` as the canonical `CrdtType`, so this
+        // also guards the `CrdtType` borsh layout against drift.
+        assert_eq!(
+            decoded.metadata.crdt_type,
+            Some(CrdtType::LwwRegister {
+                inner_type: "u64".to_owned()
+            })
+        );
+        decoded
+    }
+
+    #[test]
+    fn public_round_trips() {
+        let decoded = round_trip(StorageType::Public);
+        assert!(matches!(
+            decoded.metadata.storage_type,
+            borsh_layout::StorageType::Public
+        ));
+    }
+
+    #[test]
+    fn frozen_round_trips() {
+        let decoded = round_trip(StorageType::Frozen);
+        assert!(matches!(
+            decoded.metadata.storage_type,
+            borsh_layout::StorageType::Frozen
+        ));
+    }
+
+    #[test]
+    fn user_round_trips() {
+        let owner = [0x11; 32];
+        let decoded = round_trip(StorageType::User {
+            owner: PublicKey::from(owner),
+            signature_data: Some(SignatureData {
+                signature: [0x22; 64],
+                nonce: 42,
+                signer: Some(PublicKey::from([0x33; 32])),
+            }),
+        });
+        match decoded.metadata.storage_type {
+            borsh_layout::StorageType::User {
+                owner: decoded_owner,
+                signature_data,
+            } => {
+                assert_eq!(decoded_owner, owner);
+                let sig = signature_data.expect("signature_data present");
+                assert_eq!(sig.nonce, 42);
+                assert_eq!(sig.signer, Some([0x33; 32]));
+            }
+            _ => panic!("expected User variant"),
+        }
+    }
+
+    #[test]
+    fn shared_writers_map_round_trips() {
+        // Previously-broken case: `writers` is `BTreeMap<PublicKey, OpMask>`
+        // (32-byte key + 1-byte mask), not `BTreeSet<[u8; 32]>`. A set-shaped
+        // mirror under-reads one byte per writer and misaligns everything after.
+        let mut writers: BTreeMap<PublicKey, OpMask> = BTreeMap::new();
+        let _ = writers.insert(PublicKey::from([0x44; 32]), OpMask::FULL);
+        let _ = writers.insert(PublicKey::from([0x55; 32]), OpMask::WRITE);
+
+        let decoded = round_trip(StorageType::Shared {
+            writers,
+            signature_data: None,
+        });
+        match decoded.metadata.storage_type {
+            borsh_layout::StorageType::Shared {
+                writers: decoded_writers,
+                signature_data,
+            } => {
+                assert_eq!(decoded_writers.len(), 2);
+                assert_eq!(
+                    decoded_writers.get(&[0x44; 32]).copied(),
+                    Some(OpMask::FULL.bits())
+                );
+                assert_eq!(
+                    decoded_writers.get(&[0x55; 32]).copied(),
+                    Some(OpMask::WRITE.bits())
+                );
+                assert!(signature_data.is_none());
+            }
+            _ => panic!("expected Shared variant"),
+        }
+    }
+
+    #[test]
+    fn shared_member_round_trips() {
+        // Previously-broken case: the mirror was missing this variant entirely,
+        // so any root with a member child failed to decode (cold-join failure).
+        let anchor = [0x66; 32];
+        let decoded = round_trip(StorageType::SharedMember {
+            anchor: Id::new(anchor),
+            signature_data: None,
+        });
+        match decoded.metadata.storage_type {
+            borsh_layout::StorageType::SharedMember {
+                anchor: decoded_anchor,
+                signature_data,
+            } => {
+                assert_eq!(decoded_anchor, anchor);
+                assert!(signature_data.is_none());
+            }
+            _ => panic!("expected SharedMember variant"),
+        }
     }
 }
 

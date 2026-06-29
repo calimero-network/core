@@ -184,6 +184,10 @@ impl VMHostFunctions<'_> {
     /// * `HostError::Panic` if the panic action was successfully executed.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn panic(&mut self, src_location_ptr: u64) -> VMLogicResult<()> {
+        // SAFETY: `sys::Location<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let location =
             unsafe { self.read_guest_memory_typed::<sys::Location<'_>>(src_location_ptr)? };
 
@@ -234,8 +238,16 @@ impl VMHostFunctions<'_> {
             src_location_ptr,
             "panic_utf8 invoked"
         );
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let panic_message_buf =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_panic_msg_ptr)? };
+        // SAFETY: `sys::Location<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let location =
             unsafe { self.read_guest_memory_typed::<sys::Location<'_>>(src_location_ptr)? };
 
@@ -306,6 +318,10 @@ impl VMHostFunctions<'_> {
     /// * `HostError::InvalidRegisterId` if the register does not exist.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn read_register(&self, register_id: u64, dest_data_ptr: u64) -> VMLogicResult<u32> {
+        // SAFETY: `sys::BufferMut<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let dest_data =
             unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_data_ptr)? };
 
@@ -508,6 +524,10 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn value_return(&mut self, src_value_ptr: u64) -> VMLogicResult<()> {
+        // SAFETY: `sys::ValueReturn<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let result =
             unsafe { self.read_guest_memory_typed::<sys::ValueReturn<'_>>(src_value_ptr)? };
 
@@ -548,6 +568,10 @@ impl VMHostFunctions<'_> {
     /// * `HostError::ValueLengthOverflow` if the witness exceeds the value-size limit.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for the buffer descriptor.
     pub fn emit_migration_witness(&mut self, src_ptr: u64) -> VMLogicResult<()> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let src_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_ptr)? };
         let bytes = self.read_guest_memory_slice(&src_buf)?.to_vec();
 
@@ -588,6 +612,10 @@ impl VMHostFunctions<'_> {
             "log_utf8 invoked"
         );
 
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let src_log_buf =
             match unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_log_ptr) } {
                 Ok(buf) => buf,
@@ -660,6 +688,10 @@ impl VMHostFunctions<'_> {
     /// * `HostError::EventsOverflow` if the maximum number of events has been reached.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn emit(&mut self, src_event_ptr: u64) -> VMLogicResult<()> {
+        // SAFETY: `sys::Event<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let event = unsafe { self.read_guest_memory_typed::<sys::Event<'_>>(src_event_ptr)? };
 
         let kind_len = event.kind().len();
@@ -732,6 +764,10 @@ impl VMHostFunctions<'_> {
         src_event_ptr: u64,
         src_handler_ptr: u64,
     ) -> VMLogicResult<()> {
+        // SAFETY: `sys::Event<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let event = unsafe { self.read_guest_memory_typed::<sys::Event<'_>>(src_event_ptr)? };
 
         let kind_len = event.kind().len();
@@ -761,6 +797,10 @@ impl VMHostFunctions<'_> {
             None
         } else {
             // Read the handler buffer from guest memory
+            // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+            //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+            //         it is sound; the guest SDK wrote a well-formed instance at this
+            //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
             let handler_buffer =
                 unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_handler_ptr)? };
             match self.read_guest_memory_str(&handler_buffer) {
@@ -800,6 +840,10 @@ impl VMHostFunctions<'_> {
     /// * `HostError::XCallsOverflow` if the maximum number of xcalls has been reached.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn xcall(&mut self, src_xcall_ptr: u64) -> VMLogicResult<()> {
+        // SAFETY: `sys::XCall<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let xcall = unsafe { self.read_guest_memory_typed::<sys::XCall<'_>>(src_xcall_ptr)? };
 
         let function_len = xcall.function().len();
@@ -859,8 +903,16 @@ impl VMHostFunctions<'_> {
     ///   access fails for descriptor buffers.
     /// * `HostError::ArtifactSizeOverflow` if the artifact exceeds `max_artifact_size`.
     pub fn commit(&mut self, src_root_hash_ptr: u64, src_artifact_ptr: u64) -> VMLogicResult<()> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let root_hash =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_root_hash_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let artifact =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_artifact_ptr)? };
 
@@ -908,6 +960,10 @@ impl VMHostFunctions<'_> {
         created_at: u64,
         updated_at: u64,
     ) -> VMLogicResult<()> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_doc_ptr)? };
         let payload = self.read_guest_memory_slice(&buffer)?.to_vec();
 
@@ -1021,6 +1077,10 @@ impl VMHostFunctions<'_> {
     /// will deserialize the actions and feed them into the storage interface so that
     /// CRDT entities and the root document are updated atomically.
     pub fn apply_storage_delta(&mut self, src_delta_ptr: u64) -> VMLogicResult<()> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_delta_ptr)? };
         let payload = self.read_guest_memory_slice(&buffer)?.to_vec();
         let delta_len = payload.len();

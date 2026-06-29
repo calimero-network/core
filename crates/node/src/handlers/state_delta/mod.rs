@@ -33,7 +33,9 @@ use buffering::{drain_governance_pending, fence_and_maybe_absorb, FenceOutcome};
 // reach these internally within `buffering`).
 #[cfg(test)]
 use buffering::{drain_absorbed_records, recover_absorbed_records};
-use crypto::{decrypt_delta_actions, lookup_group_key_with_wait, STATE_DELTA_KEY_LOOKUP_WAIT};
+use crypto::{
+    decrypt_delta_actions, lookup_group_key_with_wait, DecryptedDelta, STATE_DELTA_KEY_LOOKUP_WAIT,
+};
 use events::{
     emit_state_mutation_event_parsed, execute_cascaded_events, execute_event_handlers_parsed,
     parse_events_payload, CascadeOutcome,
@@ -50,10 +52,12 @@ pub(crate) struct StateDeltaMessage {
     pub(crate) delta_id: [u8; 32],
     pub(crate) parent_ids: Vec<[u8; 32]>,
     pub(crate) hlc: calimero_storage::logical_clock::HybridTimestamp,
-    pub(crate) root_hash: Hash,
+    /// Encrypted delta payload — a borsh-encoded `SealedDeltaPayload`. The
+    /// expected post-apply root hash AND the execution events are sealed
+    /// inside this ciphertext (not separate fields) and recovered when the
+    /// payload is decrypted.
     pub(crate) artifact: Vec<u8>,
     pub(crate) nonce: Nonce,
-    pub(crate) events: Option<Vec<u8>>,
     pub(crate) governance_position: Option<GovernanceParentEdge>,
     pub(crate) key_id: [u8; 32],
     pub(crate) delta_signature: Option<[u8; 64]>,
@@ -87,10 +91,8 @@ fn state_delta_message_from_buffered(
         delta_id: buffered.id,
         parent_ids: buffered.parents,
         hlc: buffered.hlc,
-        root_hash: buffered.root_hash,
         artifact: buffered.payload,
         nonce: buffered.nonce,
-        events: buffered.events,
         governance_position: buffered.governance_position,
         key_id: buffered.key_id,
         delta_signature: buffered.delta_signature,
@@ -158,10 +160,8 @@ pub(crate) async fn apply_authorized_state_delta(
         delta_id,
         parent_ids,
         hlc,
-        root_hash,
         artifact,
         nonce,
-        events,
         governance_position,
         key_id,
         delta_signature,
@@ -234,8 +234,6 @@ pub(crate) async fn apply_authorized_state_delta(
                 payload: artifact.clone(),
                 nonce,
                 author_id,
-                root_hash,
-                events: events.clone(),
                 source_peer: source,
                 key_id,
                 governance_position: governance_position.clone(),
@@ -284,7 +282,6 @@ pub(crate) async fn apply_authorized_state_delta(
             %context_id,
             delta_id = ?delta_id,
             is_uninitialized,
-            has_events = events.is_some(),
             "Buffering delta (sync in progress or context uninitialized)"
         );
 
@@ -295,8 +292,6 @@ pub(crate) async fn apply_authorized_state_delta(
             payload: artifact.clone(),
             nonce,
             author_id,
-            root_hash,
-            events: events.clone(),
             source_peer: source,
             key_id,
             governance_position: governance_position.clone(),
@@ -332,8 +327,6 @@ pub(crate) async fn apply_authorized_state_delta(
                 payload: artifact.clone(),
                 nonce,
                 author_id,
-                root_hash,
-                events: events.clone(),
                 source_peer: source,
                 key_id,
                 governance_position: governance_position.clone(),
@@ -408,7 +401,15 @@ pub(crate) async fn apply_authorized_state_delta(
         }
     };
 
-    let actions = decrypt_delta_actions(artifact, nonce, group_key)?;
+    // The expected root hash and the execution events ride sealed inside the
+    // encrypted payload (they are not cleartext wire fields), so they become
+    // available here alongside the decrypted actions rather than at
+    // message-receive time.
+    let DecryptedDelta {
+        root_hash,
+        actions,
+        events,
+    } = decrypt_delta_actions(artifact, nonce, group_key)?;
 
     let delta = calimero_dag::CausalDelta {
         id: delta_id,
@@ -906,10 +907,8 @@ pub async fn handle_state_delta(
         delta_id,
         parent_ids,
         hlc,
-        root_hash,
         artifact,
         nonce,
-        events,
         governance_position,
         key_id,
         delta_signature,
@@ -991,7 +990,6 @@ pub async fn handle_state_delta(
         %author_id,
         delta_id = ?delta_id,
         parent_count = parent_ids.len(),
-        expected_root_hash = %root_hash,
         current_root_hash = %context.root_hash,
         governance_dag_heads = governance_position
             .as_ref()
@@ -1122,8 +1120,6 @@ pub async fn handle_state_delta(
                 payload: artifact.clone(),
                 nonce,
                 author_id,
-                root_hash,
-                events: events.clone(),
                 source_peer: source,
                 key_id,
                 governance_position: governance_position.clone(),
@@ -1155,10 +1151,8 @@ pub async fn handle_state_delta(
             delta_id,
             parent_ids,
             hlc,
-            root_hash,
             artifact,
             nonce,
-            events,
             governance_position,
             key_id,
             delta_signature,
@@ -1722,7 +1716,6 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         %context_id,
         delta_id = ?delta_id,
         author = %buffered.author_id,
-        has_events = buffered.events.is_some(),
         "Replaying buffered delta"
     );
 
@@ -1938,14 +1931,21 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         }
     };
 
-    let actions = decrypt_delta_actions(buffered.payload, buffered.nonce, group_key)?;
+    // The expected root hash and the execution events are sealed inside the
+    // buffered (encrypted) payload, so they come back from decryption here
+    // rather than from stored fields.
+    let DecryptedDelta {
+        root_hash,
+        actions,
+        events,
+    } = decrypt_delta_actions(buffered.payload, buffered.nonce, group_key)?;
 
     let delta = calimero_dag::CausalDelta {
         id: buffered.id,
         parents: buffered.parents,
         payload: actions,
         hlc: buffered.hlc,
-        expected_root_hash: *buffered.root_hash,
+        expected_root_hash: *root_hash,
         kind: calimero_dag::DeltaKind::Regular,
     };
 
@@ -2039,7 +2039,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         delta_store
             .add_delta_with_events(
                 delta.clone(),
-                buffered.events.clone(),
+                events.clone(),
                 Some(buffered.author_id),
                 buffered_gov_blob,
                 buffered.delta_signature,
@@ -2061,7 +2061,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         add_result.applied || is_checkpoint_match || is_covered_by_checkpoint;
 
     if should_execute_handlers {
-        if let Some(events_data) = &buffered.events {
+        if let Some(events_data) = &events {
             let events_payload: Option<Vec<ExecutionEvent>> =
                 match serde_json::from_slice(events_data) {
                     Ok(events) => Some(events),
@@ -2119,19 +2119,14 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                 }
 
                 // Emit to WebSocket clients
-                emit_state_mutation_event_parsed(
-                    &node_client,
-                    &context_id,
-                    buffered.root_hash,
-                    events,
-                );
+                emit_state_mutation_event_parsed(&node_client, &context_id, root_hash, events);
             }
         }
     } else {
         debug!(
             %context_id,
             delta_id = ?delta_id,
-            has_events = buffered.events.is_some(),
+            has_events = events.is_some(),
             "Skipping handler execution for pending delta (will execute when delta is applied)"
         );
     }
@@ -2308,7 +2303,6 @@ mod tests {
 
         use calimero_context::group_store::{AbsorbRecord, AbsorbRepository};
         use calimero_node_primitives::delta_buffer::BufferedDelta;
-        use calimero_primitives::hash::Hash;
 
         use super::super::{fence_and_maybe_absorb, FenceOutcome};
 
@@ -2323,8 +2317,6 @@ mod tests {
                 payload: vec![1, 2, 3],
                 nonce: [0; 12],
                 author_id: PublicKey::from([0xAB; 32]),
-                root_hash: Hash::default(),
-                events: None,
                 source_peer: libp2p::PeerId::random(),
                 key_id: [0; 32],
                 governance_position: None,

@@ -1070,16 +1070,19 @@ impl<S: StorageAdaptor> Index<S> {
     /// println!("Garbage collected {} tombstones", collected);
     /// ```
     ///
-    /// # Future Enhancements
+    /// # Errors
     ///
-    /// - Add metrics/logging for GC operations
-    /// - Support batched deletion for large tombstone counts
-    /// - [ ] Consider partial GC (limit number of items per run to avoid blocking)
-    /// - [ ] Add GC scheduling mechanism (auto-run periodically)
-    /// - [ ] Add GC configuration (min age, batch size, etc.)
+    /// Returns [`StorageError`] if an index entry cannot be loaded while
+    /// scanning. Failure to remove an individual tombstone key is ignored so a
+    /// single bad key does not abort the whole sweep.
     ///
-    #[allow(dead_code, reason = "planned feature for tombstone cleanup")]
-    pub(crate) fn garbage_collect_tombstones(retention_nanos: u64) -> Result<usize, StorageError>
+    /// # Scheduling
+    ///
+    /// This is a manually-invoked maintenance operation: it performs one full
+    /// pass over the index keys and returns. It is intentionally not
+    /// auto-scheduled — when and how often to reclaim tombstones (and any
+    /// batching or rate-limiting) is a policy decision left to the caller.
+    pub fn garbage_collect_tombstones(retention_nanos: u64) -> Result<usize, StorageError>
     where
         S: IterableStorage,
     {

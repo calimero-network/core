@@ -146,6 +146,10 @@ impl VMHostFunctions<'_> {
     /// * `HostError::InvalidBlobHandle` if the `fd` is invalid or not a write handle.
     /// * `HostError::BlobWriteTooLarge` if the data chunk exceeds `max_blob_chunk_size`.
     pub fn blob_write(&mut self, fd: u64, src_data_ptr: u64) -> VMLogicResult<u64> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let data = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_data_ptr)? };
         let data_len = data.len();
 
@@ -218,6 +222,10 @@ impl VMHostFunctions<'_> {
     /// * `HostError::InvalidBlobHandle` if the `fd` is invalid.
     /// * `HostError::BlobsNotSupported` if the node client is not supported or upload operation fails.
     pub fn blob_close(&mut self, fd: u64, dest_blob_id_ptr: u64) -> VMLogicResult<u32> {
+        // SAFETY: `sys::BufferMut<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let guest_blob_id_ptr =
             unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_blob_id_ptr)? };
 
@@ -291,7 +299,15 @@ impl VMHostFunctions<'_> {
             None => return Err(VMLogicError::HostError(HostError::BlobsNotSupported)),
         };
 
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let blob_id = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_blob_id_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let context_id =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_context_id_ptr)? };
 
@@ -335,6 +351,10 @@ impl VMHostFunctions<'_> {
     /// * `HostError::TooManyBlobHandles` if the maximum number of handles is exceeded.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn blob_open(&mut self, src_blob_id_ptr: u64) -> VMLogicResult<u64> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let blob_id = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_blob_id_ptr)? };
 
         if self.borrow_logic().node_client.is_none() {
@@ -403,6 +423,10 @@ impl VMHostFunctions<'_> {
     /// * `HostError::BlobBufferTooLarge` if the guest buffer exceeds `max_blob_chunk_size`.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn blob_read(&mut self, fd: u64, dest_data_ptr: u64) -> VMLogicResult<u64> {
+        // SAFETY: `sys::BufferMut<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let dest_data =
             unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_data_ptr)? };
         let data_len = dest_data.len();

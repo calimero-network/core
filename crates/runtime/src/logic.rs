@@ -18,7 +18,6 @@
 //! `event!`) appears inside. Use explicit counters or eager
 //! instrumentation *outside* the hot path instead.
 #![allow(single_use_lifetimes, unused_lifetimes, reason = "False positive")]
-#![allow(clippy::mem_forget, reason = "Safe for now")]
 
 use core::mem::MaybeUninit;
 use core::num::NonZeroU64;
@@ -551,6 +550,13 @@ impl VMLogic<'_> {
 /// This structure is necessary to safely provide guest access to host functions,
 /// hold the reference to guest memory (`MemoryView`) simultaneously. The `ouroboros`
 /// crate ensures that the lifetimes are managed correctly.
+// ouroboros' generated constructor/`into_heads` glue calls `mem::forget`;
+// scope the lint allow to this one self-referential struct rather than blanket
+// it across the whole module (where any future genuine leak would slip by).
+#[allow(
+    clippy::mem_forget,
+    reason = "ouroboros-generated self-referential glue uses mem::forget"
+)]
 #[self_referencing]
 pub struct VMHostFunctions<'a> {
     logic: &'a mut VMLogic<'a>,
@@ -560,6 +566,47 @@ pub struct VMHostFunctions<'a> {
     #[borrows(store)]
     memory: wasmer::MemoryView<'this>,
 }
+
+/// Marker for types that may be reinterpreted from raw guest memory bytes by
+/// [`VMHostFunctions::read_guest_memory_typed`].
+///
+/// That function copies `size_of::<T>()` bytes out of guest linear memory and
+/// `assume_init`s them as a `T`, so a `T` whose validity depends on its bit
+/// pattern (a `bool`, a non-`#[repr(C)]` enum with niches, a `NonNull`, an
+/// `enum` discriminant the guest could set out of range) would be instant UB.
+/// This trait is the compile-time allow-list: only the fixed set of
+/// host/guest ABI descriptor types defined in `calimero-sys` may be read this
+/// way, so adding a `read_guest_memory_typed::<SomethingElse>()` call fails to
+/// compile rather than silently introducing UB.
+///
+/// `bytemuck::Pod` would be the natural bound but is inapplicable here: every
+/// ABI descriptor carries a lifetime (`Buffer<'a>`, …) so cannot be `'static`,
+/// and `ValueReturn` is a `#[repr(C, u64)]` enum — both are disqualifying for
+/// `Pod`.
+///
+/// # Safety
+///
+/// Implementors are part of the stable `calimero-sys` host/guest ABI: they are
+/// `#[repr(C)]`/`#[repr(C, u64)]`, contain only `u64`-shaped fields
+/// (pointers/lengths/discriminants), and the guest SDK writes a well-formed
+/// instance at the descriptor offset before passing it. Reading is still
+/// bounds-checked by the underlying memory access; this trait asserts only that
+/// the *layout* is ABI-stable, not that an adversarial guest cannot supply an
+/// out-of-range discriminant (that remains the ABI's existing trust assumption,
+/// unchanged here).
+pub(crate) unsafe trait GuestAbiType {}
+
+// The `calimero-sys` ABI descriptor types read out of guest memory. The
+// orphan rule permits these because `GuestAbiType` is local to this crate.
+// SAFETY: each is a `#[repr(C)]` ABI descriptor of `u64`-shaped fields per the
+//         shared host/guest contract in `calimero-sys`.
+// `sys::Buffer` and `sys::BufferMut` are both aliases of `sys::Slice<'_, u8>`,
+// so a single impl covers every buffer read.
+unsafe impl GuestAbiType for sys::Buffer<'_> {}
+unsafe impl GuestAbiType for sys::Event<'_> {}
+unsafe impl GuestAbiType for sys::Location<'_> {}
+unsafe impl GuestAbiType for sys::ValueReturn<'_> {}
+unsafe impl GuestAbiType for sys::XCall<'_> {}
 
 // Private helper functions for memory access.
 impl VMHostFunctions<'_> {
@@ -756,8 +803,13 @@ impl VMHostFunctions<'_> {
     /// 1. It reads raw bytes from guest memory and interprets them as type `T`. The caller
     ///    must ensure that the bytes at `ptr` represent a valid instance of `T`.
     /// 2. It relies on `ptr` being a valid, aligned pointer within the guest memory.
+    ///
+    /// The `T: GuestAbiType` bound restricts `T` to the vetted `calimero-sys`
+    /// ABI descriptor types whose layout is valid to reinterpret from raw guest
+    /// bytes — see [`GuestAbiType`]. Without it, an `assume_init` of a type with
+    /// bit-pattern validity requirements would be UB.
     //TODO: refactor to use `sys::Buffer` instead of `ptr`.
-    unsafe fn read_guest_memory_typed<T>(&self, ptr: u64) -> VMLogicResult<T> {
+    unsafe fn read_guest_memory_typed<T: GuestAbiType>(&self, ptr: u64) -> VMLogicResult<T> {
         let mut value = MaybeUninit::<T>::uninit();
 
         let raw = slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), size_of::<T>());
