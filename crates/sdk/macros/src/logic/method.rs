@@ -22,6 +22,14 @@ pub enum LogicMethod<'a> {
 /// macro rejects it. Add to this list if codegen introduces new prefixes.
 const RESERVED_METHOD_PREFIXES: &[&str] = &["__calimero"];
 
+/// Exact method names the SDK emits as its own `#[no_mangle]` wasm exports.
+/// Unlike the reserved *prefixes* above, these carry no `__calimero` marker, so
+/// an app method sharing one of these names would silently produce a duplicate
+/// export symbol — a confusing linker error far from the cause. Reserving them
+/// here surfaces a clear, spanned diagnostic at the offending method instead.
+/// Kept in sync with the exports generated in `state.rs`.
+const RESERVED_METHOD_NAMES: &[&str] = &["migrate_my_entries", "count_my_pending"];
+
 pub enum Modifer {
     Init,
     /// `#[app::view]` — app author declares the method read-only. Stored in
@@ -538,6 +546,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         if RESERVED_METHOD_PREFIXES
             .iter()
             .any(|prefix| name_str.starts_with(prefix))
+            || RESERVED_METHOD_NAMES.contains(&name_str.as_str())
         {
             errors.subsume(SynError::new_spanned(name, ParseError::ReservedMethodName));
         }

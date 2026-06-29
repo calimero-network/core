@@ -234,11 +234,15 @@ pub fn register_len(register_id: RegisterId) -> Option<usize> {
 pub fn read_register(register_id: RegisterId) -> Option<Vec<u8>> {
     let len = register_len(register_id)?;
 
-    let mut buffer = Vec::with_capacity(len);
+    // Zero-initialize rather than `with_capacity` + `set_len`: the host fills the
+    // buffer during the call below, but the `BufferMut` descriptor must already
+    // advertise `len` bytes for the host to write into. Exposing uninitialized
+    // capacity as the live slice (via `set_len`) before the host writes is UB if
+    // the host writes fewer bytes than advertised and still reports success —
+    // the unwritten tail would be read as initialized. `vec![0; len]` is sound.
+    let mut buffer = vec![0_u8; len];
 
     let succeed: bool = unsafe {
-        buffer.set_len(len);
-
         sys::read_register(register_id, Ref::new(&BufferMut::new(&mut buffer)))
             .try_into()
             .unwrap_or_else(expected_boolean)
@@ -834,17 +838,26 @@ fn decode_index_pairs(buf: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
         let Some(klen) = take_u32(buf, &mut pos) else {
             break;
         };
-        let Some(key) = buf.get(pos..pos + klen).map(<[u8]>::to_vec) else {
+        // `pos + klen` can overflow `usize` on a 32-bit (wasm32) host for a
+        // hostile/corrupt length prefix; `checked_add` makes that a clean stop
+        // rather than a wrapping read or a debug-build panic before `.get`.
+        let Some(kend) = pos.checked_add(klen) else {
             break;
         };
-        pos += klen;
+        let Some(key) = buf.get(pos..kend).map(<[u8]>::to_vec) else {
+            break;
+        };
+        pos = kend;
         let Some(vlen) = take_u32(buf, &mut pos) else {
             break;
         };
-        let Some(value) = buf.get(pos..pos + vlen).map(<[u8]>::to_vec) else {
+        let Some(vend) = pos.checked_add(vlen) else {
             break;
         };
-        pos += vlen;
+        let Some(value) = buf.get(pos..vend).map(<[u8]>::to_vec) else {
+            break;
+        };
+        pos = vend;
         out.push((key, value));
     }
     out
@@ -1068,6 +1081,17 @@ pub fn ed25519_verify(signature: &[u8; 64], public_key: &[u8; 32], message: &[u8
 // STREAMING BLOB API
 // ========================================
 
+/// Narrow a public `u64` blob file descriptor to the pointer-sized integer the
+/// host ABI expects. On a 32-bit (wasm32) host a plain `as usize` would silently
+/// truncate the high bits, potentially aliasing a *different*, live descriptor.
+/// A value that doesn't fit (one the host could never have issued) instead
+/// collapses to an all-ones sentinel the host rejects as invalid.
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn blob_fd(fd: u64) -> PtrSizedInt {
+    PtrSizedInt::new(usize::try_from(fd).unwrap_or(usize::MAX))
+}
+
 /// Create a new blob write handle for streaming data.
 /// Returns a file descriptor that can be used with blob_write() and blob_close().
 pub fn blob_create() -> u64 {
@@ -1097,13 +1121,7 @@ pub fn blob_open(blob_id: &[u8; 32]) -> u64 {
 pub fn blob_read(fd: u64, buffer: &mut [u8]) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        unsafe {
-            sys::blob_read(
-                PtrSizedInt::new(fd as usize),
-                Ref::new(&BufferMut::new(buffer)),
-            )
-        }
-        .as_usize() as u64
+        unsafe { sys::blob_read(blob_fd(fd), Ref::new(&BufferMut::new(buffer))) }.as_usize() as u64
     }
     #[cfg(not(target_arch = "wasm32"))]
     host::blob_read(fd, buffer)
@@ -1114,8 +1132,7 @@ pub fn blob_read(fd: u64, buffer: &mut [u8]) -> u64 {
 pub fn blob_write(fd: u64, data: &[u8]) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        unsafe { sys::blob_write(PtrSizedInt::new(fd as usize), Ref::new(&Buffer::from(data))) }
-            .as_usize() as u64
+        unsafe { sys::blob_write(blob_fd(fd), Ref::new(&Buffer::from(data))) }.as_usize() as u64
     }
     #[cfg(not(target_arch = "wasm32"))]
     host::blob_write(fd, data)
@@ -1131,11 +1148,7 @@ pub fn blob_close(fd: u64) -> [u8; 32] {
     {
         let mut blob_id_buf = [0_u8; 32];
         let success: bool = unsafe {
-            sys::blob_close(
-                PtrSizedInt::new(fd as usize),
-                Ref::new(&BufferMut::new(&mut blob_id_buf)),
-            )
-            .try_into()
+            sys::blob_close(blob_fd(fd), Ref::new(&BufferMut::new(&mut blob_id_buf))).try_into()
         }
         .unwrap_or_else(expected_boolean);
 

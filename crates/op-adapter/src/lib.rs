@@ -55,17 +55,6 @@ pub fn set_writers_payload(object: Id, entry: &RotationLogEntry) -> OpPayload {
     }
 }
 
-/// Map an invitation's `invited_role` byte (0 = Admin, 2 = ReadOnly, else
-/// Member) to a [`GroupMemberRole`] — the same mapping governance-store uses
-/// (reimplemented here so the adapter doesn't depend on a `pub(crate)` helper).
-fn role_from_invited_role(value: u8) -> GroupMemberRole {
-    match value {
-        0 => GroupMemberRole::Admin,
-        2 => GroupMemberRole::ReadOnly,
-        _ => GroupMemberRole::Member,
-    }
-}
-
 /// Encode a per-group governance op ([`GroupOp`], already decrypted) as an
 /// [`OpPayload`] for `group`.
 ///
@@ -203,7 +192,7 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
         } => Some(OpPayload::MemberAdded {
             group: signed_invitation.invitation.group_id,
             member: *member,
-            role: role_from_invited_role(signed_invitation.invitation.invited_role),
+            role: GroupMemberRole::from_invited_role(signed_invitation.invitation.invited_role),
         }),
         RootOp::MemberJoinedOpen { member, group_id } => Some(OpPayload::MemberAdded {
             group: ContextGroupId::from(*group_id),

@@ -16,8 +16,11 @@ pub use r#ref::*;
 pub use register::*;
 pub use xcall::*;
 
+// Not `Copy`/`Clone`: it wraps a move-only `Buffer` (see `buffer.rs` for why the
+// descriptor must be move-only). It is only ever borrowed (`Ref::new(&…)`) or
+// destructured by value, so neither is needed.
 #[repr(C, u64)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum ValueReturn<'a> {
     Ok(Buffer<'a>),
     Err(Buffer<'a>),

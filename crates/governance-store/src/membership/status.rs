@@ -11,18 +11,15 @@
 use calimero_primitives::context::GroupMemberRole;
 
 /// Map the `invited_role: u8` byte from `GroupInvitationFromAdmin` to the typed
-/// [`GroupMemberRole`]. The encoding is documented at the source struct
-/// (0 = Admin, 1 = Member, 2 = ReadOnly).
+/// [`GroupMemberRole`], used by the `MemberJoined` apply path in
+/// `namespace/membership.rs`.
 ///
-/// Used by the `MemberJoined` apply path in `namespace/membership.rs`. Unknown
-/// values default to `Member` (least-privilege) rather than `Admin`, so an
-/// attacker injecting an out-of-range value cannot silently escalate.
+/// Thin alias for the canonical [`GroupMemberRole::from_invited_role`] so this
+/// apply path and the op-adapter share one decoding and cannot drift. The
+/// canonical mapping documents the encoding (0 = Admin, 1 = Member, 2 = ReadOnly)
+/// and the least-privilege default for unknown bytes.
 pub(crate) fn role_from_invited_role(value: u8) -> GroupMemberRole {
-    match value {
-        0 => GroupMemberRole::Admin,
-        2 => GroupMemberRole::ReadOnly,
-        _ => GroupMemberRole::Member,
-    }
+    GroupMemberRole::from_invited_role(value)
 }
 
 #[cfg(test)]

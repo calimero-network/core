@@ -191,7 +191,7 @@ impl VMHostFunctions<'_> {
         let location =
             unsafe { self.read_guest_memory_typed::<sys::Location<'_>>(src_location_ptr)? };
 
-        let file = self.read_guest_memory_str(&location.file())?.to_owned();
+        let file = self.read_guest_memory_str(location.file())?.to_owned();
         let line = location.line();
         let column = location.column();
 
@@ -252,7 +252,7 @@ impl VMHostFunctions<'_> {
             unsafe { self.read_guest_memory_typed::<sys::Location<'_>>(src_location_ptr)? };
 
         let panic_message = self.read_guest_memory_str(&panic_message_buf)?.to_owned();
-        let file = self.read_guest_memory_str(&location.file())?.to_owned();
+        let file = self.read_guest_memory_str(location.file())?.to_owned();
         let line = location.line();
         let column = location.column();
 

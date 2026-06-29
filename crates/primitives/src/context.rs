@@ -293,6 +293,25 @@ pub enum GroupMemberRole {
     ReadOnlyTee,
 }
 
+impl GroupMemberRole {
+    /// Map an invitation's `invited_role: u8` byte to a role. This is the single
+    /// canonical decoding of the on-the-wire invitation encoding
+    /// (`0 = Admin`, `1 = Member`, `2 = ReadOnly`); both the governance apply
+    /// path and the op-adapter route through it so the two cannot drift.
+    ///
+    /// Unknown/out-of-range values default to [`GroupMemberRole::Member`]
+    /// (least privilege) rather than `Admin`, so a malformed or hostile byte
+    /// cannot silently escalate.
+    #[must_use]
+    pub fn from_invited_role(value: u8) -> Self {
+        match value {
+            0 => Self::Admin,
+            2 => Self::ReadOnly,
+            _ => Self::Member,
+        }
+    }
+}
+
 /// A serialized and encoded payload for inviting a user to join a Context Group.
 ///
 /// Internally Borsh-serialized for compact, deterministic representation and
