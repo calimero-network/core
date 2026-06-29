@@ -21,7 +21,7 @@ impl<'a> XCall<'a> {
     #[inline]
     pub fn function(&self) -> &str {
         self.function
-            .try_into()
+            .as_str()
             .expect("function should always be a valid utf8 string")
     }
 

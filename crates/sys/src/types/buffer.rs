@@ -10,8 +10,15 @@ mod guest;
 #[cfg(not(target_arch = "wasm32"))]
 mod host;
 
+// Deliberately NOT `Copy`/`Clone`. The descriptor owns a raw pointer plus a
+// lifetime, and `as_mut_slice` hands out `&mut [T]` over that pointer. If the
+// descriptor were duplicable, safe code could copy it and call `as_mut_slice`
+// on each copy to obtain two independent `&mut [T]` aliasing the same memory
+// (or a shared `into_slice` alongside a `&mut`) — UB the per-borrow lifetimes
+// alone cannot prevent. Being move-only makes "I hold this descriptor" unique,
+// so the borrow checker can actually serialize access through it.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct Slice<'a, T> {
     ptr: Pointer<T>,
     len: u64,
@@ -20,6 +27,16 @@ pub struct Slice<'a, T> {
 
 pub type Buffer<'a> = Slice<'a, u8>;
 pub type BufferMut<'a> = Buffer<'a>;
+
+impl Buffer<'_> {
+    /// Borrow the buffer's bytes as a UTF-8 `str`, tied to this borrow of
+    /// `self`. The sound replacement for the by-value `TryFrom<Buffer> for &str`
+    /// when you only have a `&Buffer` (e.g. a field of `Event`/`Location`).
+    #[inline]
+    pub fn as_str(&self) -> Result<&str, Utf8Error> {
+        from_utf8(self.as_slice())
+    }
+}
 
 impl<T> AsRef<[T]> for Slice<'_, T> {
     #[inline]
@@ -69,9 +86,11 @@ impl<'a> TryFrom<Buffer<'a>> for &'a str {
     type Error = Utf8Error;
 
     fn try_from(buf: Buffer<'a>) -> Result<Self, Self::Error> {
-        // The descriptor is consumed by value, so the `'a` slice cannot alias a
-        // live borrow of `buf`. `into_slice` is the only path that hands out the
-        // full `'a` lifetime; the borrowing accessors stay tied to `self`.
+        // Sound because `Slice` is move-only: consuming `buf` by value leaves no
+        // other live descriptor that could hand out a `&mut` aliasing this `'a`
+        // slice. `into_slice` is the only path that yields the full `'a`
+        // lifetime; the borrowing accessors stay tied to `self`. For a `&Buffer`
+        // (no ownership to consume), use [`Buffer::as_str`] instead.
         from_utf8(buf.into_slice())
     }
 }

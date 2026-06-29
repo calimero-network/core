@@ -22,7 +22,7 @@ impl Location<'_> {
     #[inline]
     pub fn file(&self) -> &str {
         self.file
-            .try_into()
+            .as_str()
             .expect("this should always be a valid utf8 string") // todo! test if this pulls in format code
     }
 }
