@@ -562,3 +562,123 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         "projection must DEFER to live (None) on a partially-folded cut, not deny"
     );
 }
+
+/// The governance-pending drain authorizes a buffered delta with
+/// `member_at_cut_authoritative` against the in-memory projection. That
+/// projection can lag the durable op-store: the apply path folds an op into the
+/// projection only on a real `Applied`, not on the "already applied" dedup path,
+/// and ops arriving via the namespace-governance backfill pull take that dedup
+/// path. So the author's membership op can be durably present in the op-store
+/// yet absent from the projection — the drain then reads `None` ("cut ancestry
+/// not fully folded") on every pass and eventually drops a valid delta.
+///
+/// The fix refreshes the projection from the op-store at the cut before
+/// authorizing (`refresh_projection_for_cut`, the same step the gossip path runs
+/// via `resolve_cut_membership`). This test pins the mechanism that refresh
+/// relies on: with the author's root-membership ancestor missing from the
+/// projection the authoritative resolver abstains, and folding that ancestor —
+/// exactly what a refresh-from-store does — flips the verdict to a grant.
+#[test]
+fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
+    let store = store();
+    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin = admin_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner = joiner_sk.public_key();
+
+    let ns = ContextGroupId::from([0x51; 32]);
+    let subgroup = ContextGroupId::from([0x52; 32]);
+
+    // Genesis base state (store seeds, as `create_group` writes).
+    for g in [&ns, &subgroup] {
+        MetaRepository::new(&store).save(g, &meta(admin)).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(g, &admin, GroupMemberRole::Admin)
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&ns, &subgroup)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .unwrap();
+
+    // Both join ops are durably applied to the op-store — the state a node holds
+    // after the backfill pull delivered them.
+    let join_ns = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns.to_bytes(),
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoined {
+            member: joiner,
+            signed_invitation: sign_invitation(&admin_sk, ns, 1),
+        }),
+    )
+    .unwrap();
+    group_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
+    let join_sub = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns.to_bytes(),
+        vec![],
+        2,
+        NamespaceOp::Root(RootOp::MemberJoinedOpen {
+            member: joiner,
+            group_id: subgroup.to_bytes(),
+        }),
+    )
+    .unwrap();
+    group_store::apply_signed_namespace_op(&store, &join_sub).unwrap();
+
+    let id_root_join = [0x5A; 32];
+    let id_sub_join = [0x5B; 32];
+
+    // Stale projection: the subgroup structure and the joiner's subgroup-join are
+    // folded, but the joiner's ROOT-membership ancestor (`id_root_join`) is not —
+    // the drain's view when the backfill applied the ops via the dedup path.
+    let mut proj = ScopeProjections::new();
+    let s2 = fold_subgroup_structure(
+        &mut proj,
+        ns.to_bytes(),
+        admin,
+        subgroup,
+        [0x50; 32],
+        [0x5F; 32],
+    );
+    proj.ingest_op(&op_from_namespace_op(
+        &join_sub,
+        None,
+        id_sub_join,
+        hlc(2),
+        &[id_root_join], // parent is the root join — deliberately not folded yet
+    ));
+
+    // The drain's authorization fails: the cut's ancestry is incomplete, so it
+    // abstains and re-buffers — even though `join_ns` is durable in the store.
+    assert_eq!(
+        proj.member_at_cut_authoritative(&store, subgroup, &joiner, &[id_sub_join]),
+        None,
+        "stale projection: authoritative resolver must abstain while the ancestor is unfolded"
+    );
+
+    // Refresh folds the missing ancestor from the op-store (what
+    // `refresh_projection_for_cut` does before the drain authorizes).
+    proj.ingest_op(&op_from_namespace_op(
+        &join_ns,
+        None,
+        id_root_join,
+        hlc(1),
+        &[s2],
+    ));
+
+    // Now the cut's ancestry is complete and the inherited membership resolves —
+    // the drain authorizes and re-applies the delta instead of dropping it.
+    assert_eq!(
+        proj.member_at_cut_authoritative(&store, subgroup, &joiner, &[id_sub_join]),
+        Some(true),
+        "after refreshing the durable ancestor, the authoritative resolver must grant"
+    );
+}

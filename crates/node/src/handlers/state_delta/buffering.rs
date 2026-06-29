@@ -12,8 +12,8 @@ use eyre::Result;
 use tracing::{debug, info, warn};
 
 use super::{
-    apply_authorized_state_delta, choose_owned_identity, state_delta_message_from_buffered,
-    StateDeltaContext,
+    apply_authorized_state_delta, choose_owned_identity, refresh_projection_for_cut,
+    state_delta_message_from_buffered, StateDeltaContext,
 };
 
 /// Drain the governance-pending buffer for `context_id`, re-evaluating each
@@ -136,6 +136,27 @@ pub(super) async fn drain_governance_pending(input: &StateDeltaContext, context_
         //
         // F5 #29b: the drain is fully projection-sourced now — the last live
         // `acl_view_at` read (which only named the drop metric label) is gone.
+        //
+        // Refresh the projection from the durable op-store at this cut BEFORE
+        // authorizing — mirroring the gossip path (`resolve_cut_membership` →
+        // `refresh_projection_for_cut`). A governance op can be present in the
+        // op-store yet absent from the in-memory projection: the apply path
+        // folds an op into the projection only on `AddDeltaOutcome::Applied`,
+        // not on the "already applied" dedup path — and ops arriving via the
+        // namespace-governance backfill pull take exactly that dedup path. The
+        // drain runs after such a pull (`drain_governance_pending_after_sync`),
+        // so without this refresh it reads a stale projection and
+        // `member_at_cut_authoritative` returns `None` ("cut ancestry not fully
+        // folded") on every pass — re-buffering then permanently dropping a
+        // delta whose cited ancestry is in fact durably present. The refresh is
+        // cheap in steady state (a point lookup + a folded-head set check; the
+        // DAG re-walk runs only when the cut actually cites an unfolded head).
+        refresh_projection_for_cut(
+            &input.node_state,
+            datastore,
+            owning_group,
+            &pos.governance_dag_heads,
+        );
         let proj = input
             .node_state
             .read_scope_projections()
