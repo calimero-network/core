@@ -5,6 +5,31 @@ use std::time::Instant;
 
 use tokio::sync::RwLock;
 
+/// Escape control characters from a possibly user-controlled string before it
+/// reaches a log line.
+///
+/// Values such as a request path, a method token, or a username are user
+/// input. Logged raw, a crafted value can inject CR/LF (forging fake log
+/// records) or ANSI escape sequences (rewriting a terminal that reads the
+/// logs). Control characters are rendered in escaped form and the output is
+/// length-bounded so an oversized value can't flood the log sink.
+pub(crate) fn sanitize_for_log(input: &str) -> String {
+    const MAX_LEN: usize = 256;
+
+    let mut out = String::with_capacity(input.len().min(MAX_LEN));
+    for ch in input.chars().take(MAX_LEN) {
+        if ch.is_control() {
+            out.extend(ch.escape_default());
+        } else {
+            out.push(ch);
+        }
+    }
+    if input.chars().nth(MAX_LEN).is_some() {
+        out.push('…');
+    }
+    out
+}
+
 /// Basic metrics collector for auth operations
 #[derive(Debug, Clone)]
 pub struct AuthMetrics {
