@@ -210,6 +210,40 @@ fn test_rocksdb_entries_survive_collection() {
     for (key, bytes) in collected_keys.iter().zip(&expected) {
         assert_eq!(key.as_ref(), &bytes[..], "collected key was invalidated");
     }
+
+    // Directly model the use-after-free: retain entry N, advance to N+1, then
+    // read the retained N. The underlying RocksDB cursor has moved on by then,
+    // so an unowned slice would be reading overwritten buffer memory.
+    let mut iter = db.iter(Column::Identity).expect("iter should succeed");
+    let mut entries = iter.entries();
+    let mut prev: Option<(Slice<'_>, Slice<'_>, [u8; 2])> = None;
+    for bytes in &expected {
+        let (key, value) = entries
+            .next()
+            .map(|(k, v)| {
+                (
+                    k.expect("key should be valid"),
+                    v.expect("value should be valid"),
+                )
+            })
+            .expect("entry should exist");
+
+        // Assert the *previous* entry (retained across this advance) is intact.
+        if let Some((prev_key, prev_value, prev_bytes)) = &prev {
+            assert_eq!(
+                prev_key.as_ref(),
+                &prev_bytes[..],
+                "retained key was invalidated by the next advance"
+            );
+            assert_eq!(
+                prev_value.as_ref(),
+                &prev_bytes[..],
+                "retained value was invalidated by the next advance"
+            );
+        }
+
+        prev = Some((key, value, *bytes));
+    }
 }
 
 #[test]
