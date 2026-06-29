@@ -18,22 +18,36 @@ use tracing::{debug, info, warn};
 
 use crate::config::ServerConfig;
 
-/// Build a 401 response, adding `X-Auth-Error: token_expired` if the error
-/// indicates an expired token. Centralises the logic so the Bearer and
-/// query-param paths stay in sync.
+/// Build the failure response for a rejected token, keeping the Bearer and
+/// query-param paths in sync.
 ///
-/// Only expiry is signalled here. Revoked tokens are intentionally not
-/// distinguished: revoked keys currently surface as "Key not found" because
-/// `KeyManager::get_key` filters them out, so there is no reliable revoked
-/// signal to propagate yet. Fixing that (and adding an `X-Auth-Error:
-/// token_revoked` arm) is tracked separately.
+/// The status and `X-Auth-Error` hint are chosen by matching the typed
+/// [`AuthError`] variant, not by inspecting message text:
+/// - [`AuthError::TokenExpired`] → `401` with `token_expired`
+/// - [`AuthError::TokenRevoked`] → `403` with `token_revoked`
+/// - everything else → bare `401`
+///
+/// Note that a revoked key often still surfaces as a generic "key not found"
+/// because [`KeyManager::get_key`] filters revoked keys out before the
+/// `is_valid` check can run; the dedicated arm here ensures that any path which
+/// *does* produce [`AuthError::TokenRevoked`] is reported as `403` rather than
+/// being collapsed into the generic `401`.
 fn unauthorized_response(err: &AuthError) -> Response {
-    let mut resp = StatusCode::UNAUTHORIZED.into_response();
-    if matches!(err, AuthError::TokenExpired) {
-        resp.headers_mut()
-            .insert("X-Auth-Error", "token_expired".parse().unwrap());
+    match err {
+        AuthError::TokenExpired => {
+            let mut resp = StatusCode::UNAUTHORIZED.into_response();
+            resp.headers_mut()
+                .insert("X-Auth-Error", "token_expired".parse().unwrap());
+            resp
+        }
+        AuthError::TokenRevoked => {
+            let mut resp = StatusCode::FORBIDDEN.into_response();
+            resp.headers_mut()
+                .insert("X-Auth-Error", "token_revoked".parse().unwrap());
+            resp
+        }
+        _ => StatusCode::UNAUTHORIZED.into_response(),
     }
-    resp
 }
 
 /// The authenticated requester's public key, injected into request extensions

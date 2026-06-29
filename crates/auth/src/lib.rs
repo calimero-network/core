@@ -37,8 +37,23 @@ pub enum AuthError {
     InvalidToken(String),
     #[error("Token has expired")]
     TokenExpired,
-    #[error("Storage error: {0}")]
-    StorageError(String),
+    /// The presented token's key has been revoked. Kept distinct from
+    /// [`AuthError::InvalidToken`] so the HTTP layer can map it to `403
+    /// Forbidden` by matching the variant rather than sniffing the message
+    /// text — renaming a message can no longer silently downgrade a revoked
+    /// token to a generic `401`.
+    #[error("Token has been revoked")]
+    TokenRevoked,
+    #[error("Storage error: {message}")]
+    StorageError {
+        message: String,
+        /// The underlying storage-layer error, preserved so the full cause
+        /// chain survives (e.g. for `tracing`'s `error = %err` rendering and
+        /// `std::error::Error::source` walking) instead of being flattened to
+        /// a string.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
     #[error("Provider error: {0}")]
     ProviderError(String),
     #[error("Signature verification failed: {0}")]
@@ -51,4 +66,30 @@ pub enum AuthError {
     InvalidRequest(String),
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
+}
+
+impl AuthError {
+    /// Wrap a concrete error as a [`AuthError::StorageError`], keeping it as the
+    /// error `source` so the cause chain is not lost.
+    pub fn storage<E>(source: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        AuthError::StorageError {
+            message: source.to_string(),
+            source: Some(Box::new(source)),
+        }
+    }
+
+    /// Like [`AuthError::storage`] but prefixes a human-readable context onto
+    /// the message while still preserving the original error as the `source`.
+    pub fn storage_context<E>(context: impl AsRef<str>, source: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        AuthError::StorageError {
+            message: format!("{}: {source}", context.as_ref()),
+            source: Some(Box::new(source)),
+        }
+    }
 }

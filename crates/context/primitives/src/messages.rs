@@ -127,6 +127,40 @@ impl Message for AcquireContextLockRequest {
     type Result = Option<ContextAtomicKey>;
 }
 
+/// Diagnostic category attached to [`ExecuteError::InternalError`].
+///
+/// The execute path has roughly a dozen distinct internal failure sites
+/// (datastore lookups, config/identity reads, encryption-key resolution, actor
+/// plumbing, …). Collapsing them all into a single opaque `InternalError` makes
+/// failures indistinguishable to clients and to anyone reading a bug report.
+/// This category gives each site a stable, machine-readable label without
+/// leaking internal error detail to the wire. Every variant denotes a
+/// permanent, non-retryable failure (the retryable conditions have their own
+/// dedicated [`ExecuteError`] variants).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum InternalErrorKind {
+    /// Resolving the context from the local datastore failed.
+    ContextResolution,
+    /// Reading group / upgrade governance state failed.
+    GovernanceLookup,
+    /// Loading the context configuration failed (missing or unreadable).
+    ContextConfig,
+    /// Reading the executor identity failed.
+    IdentityLookup,
+    /// Deciding or loading the state-delta encryption key failed.
+    StateDeltaEncryption,
+    /// A failure occurred while performing post-execution external actions.
+    ExternalActions,
+    /// Resolving an identity alias during payload substitution failed.
+    AliasResolution,
+    /// The context-manager actor mailbox or response channel was unavailable.
+    ActorUnavailable,
+    /// Invoking the app's root-state CRDT merge entry point failed.
+    RootStateMerge,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
@@ -142,8 +176,8 @@ pub enum ExecuteError {
     Uninitialized,
     #[error("application not installed: '{application_id}'")]
     ApplicationNotInstalled { application_id: ApplicationId },
-    #[error("internal error")]
-    InternalError,
+    #[error("internal error: {0:?}")]
+    InternalError(InternalErrorKind),
     #[error("error resolving identity alias '{alias}'")]
     AliasResolutionFailed { alias: Alias<PublicKey> },
     /// Group-context execute attempted before its `KeyDelivery` op

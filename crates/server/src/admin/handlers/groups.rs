@@ -77,13 +77,16 @@ fn upgrade_info_to_api_data(info: &GroupUpgradeInfo) -> GroupUpgradeStatusApiDat
 }
 
 pub fn parse_group_id(s: &str) -> Result<ContextGroupId, ApiError> {
-    let bytes = hex::decode(s).map_err(|_| ApiError {
+    let bytes = hex::decode(s).map_err(|err| ApiError {
         status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid group id format: expected hex-encoded 32 bytes".into(),
+        message: format!("Invalid group id format: expected hex-encoded 32 bytes: {err}"),
     })?;
-    let arr: [u8; 32] = bytes.try_into().map_err(|_| ApiError {
+    let arr: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| ApiError {
         status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid group id: must be exactly 32 bytes".into(),
+        message: format!(
+            "Invalid group id: must be exactly 32 bytes, got {}",
+            bytes.len()
+        ),
     })?;
     Ok(ContextGroupId::from(arr))
 }
@@ -93,13 +96,18 @@ pub(crate) fn parse_context_id(s: &str) -> Result<ContextId, ApiError> {
         return Ok(context_id);
     }
 
-    let bytes = hex::decode(s).map_err(|_| ApiError {
+    let bytes = hex::decode(s).map_err(|err| ApiError {
         status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid context id format: expected base58 or hex-encoded 32 bytes".into(),
+        message: format!(
+            "Invalid context id format: expected base58 or hex-encoded 32 bytes: {err}"
+        ),
     })?;
-    let arr: [u8; 32] = bytes.try_into().map_err(|_| ApiError {
+    let arr: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| ApiError {
         status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid context id: must be exactly 32 bytes".into(),
+        message: format!(
+            "Invalid context id: must be exactly 32 bytes, got {}",
+            bytes.len()
+        ),
     })?;
     Ok(ContextId::from(arr))
 }
@@ -109,13 +117,18 @@ fn parse_identity(s: &str) -> Result<PublicKey, ApiError> {
         return Ok(identity);
     }
 
-    let bytes = hex::decode(s).map_err(|_| ApiError {
+    let bytes = hex::decode(s).map_err(|err| ApiError {
         status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid identity format: expected public key or hex-encoded 32 bytes".into(),
+        message: format!(
+            "Invalid identity format: expected public key or hex-encoded 32 bytes: {err}"
+        ),
     })?;
-    let arr: [u8; 32] = bytes.try_into().map_err(|_| ApiError {
+    let arr: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| ApiError {
         status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid identity: must be exactly 32 bytes".into(),
+        message: format!(
+            "Invalid identity: must be exactly 32 bytes, got {}",
+            bytes.len()
+        ),
     })?;
     Ok(PublicKey::from(arr))
 }

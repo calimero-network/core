@@ -14,7 +14,7 @@ use rust_embed::{EmbeddedFile, RustEmbed};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string as to_json_string};
 use tower_sessions::{MemoryStore, SessionManagerLayer};
-use tracing::info;
+use tracing::{error, info};
 
 use super::handlers::{alias, blob, groups, namespaces, tee};
 use super::storage::ssl::get_ssl;
@@ -507,7 +507,10 @@ fn serve_file(file: EmbeddedFile) -> Result<impl IntoResponse, StatusCode> {
         .status(StatusCode::OK)
         .header("Content-Type", file.metadata.mimetype())
         .body(Body::from(content))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|err| {
+            error!(error = %err, "failed to build static file response");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -612,12 +615,11 @@ async fn is_authed_handler() -> impl IntoResponse {
 }
 
 async fn certificate_handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
-    #[expect(clippy::print_stderr, reason = "Acceptable for CLI")]
     let certificate = match get_ssl(&state.store) {
         Ok(Some(cert)) => Some(cert),
         Ok(None) => None,
         Err(err) => {
-            eprintln!("Failed to get the certificate: {err}");
+            error!(error = %err, "failed to get the certificate");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to get the certificate",

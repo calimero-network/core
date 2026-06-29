@@ -66,7 +66,11 @@ impl Default for SecretRotationConfig {
 }
 
 /// A versioned secret with metadata
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Debug` is implemented manually so that the signing `value` is never written
+/// to logs or error output. A derived `Debug` would print the cleartext secret
+/// anywhere the struct is formatted with `{:?}`.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct VersionedSecret {
     /// The secret value (base64 encoded)
     pub value: String,
@@ -80,6 +84,19 @@ pub struct VersionedSecret {
     pub is_primary: bool,
     /// The type of secret
     pub secret_type: SecretType,
+}
+
+impl std::fmt::Debug for VersionedSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VersionedSecret")
+            .field("value", &"<redacted>")
+            .field("version", &self.version)
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .field("is_primary", &self.is_primary)
+            .field("secret_type", &self.secret_type)
+            .finish()
+    }
 }
 
 impl VersionedSecret {
