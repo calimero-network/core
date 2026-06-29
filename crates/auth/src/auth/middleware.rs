@@ -11,6 +11,15 @@ use crate::auth::permissions::PermissionValidator;
 use crate::server::AppState;
 use crate::AuthError;
 
+/// Permissions of the authenticated caller.
+///
+/// Injected into the request extensions by [`auth_middleware`] so that
+/// downstream handlers can perform fine-grained, caller-aware authorization
+/// (for example, preventing a caller from granting permissions they do not
+/// themselves hold).
+#[derive(Debug, Clone)]
+pub struct CallerPermissions(pub Vec<String>);
+
 /// Authentication middleware for protected routes
 ///
 /// This middleware validates JWT tokens and enforces permissions for protected API endpoints.
@@ -26,7 +35,7 @@ use crate::AuthError;
 /// * `Result<Response, (StatusCode, HeaderMap)>` - The response or error with headers
 pub async fn auth_middleware(
     state: Extension<Arc<AppState>>,
-    request: Request<Body>,
+    mut request: Request<Body>,
     next: Next,
 ) -> Result<Response, (StatusCode, HeaderMap)> {
     // Extract request details for logging
@@ -68,6 +77,13 @@ pub async fn auth_middleware(
                 headers.insert("X-Auth-Error", "permission_denied".parse().unwrap());
                 return Err((StatusCode::FORBIDDEN, headers));
             }
+
+            // Make the caller's permissions available to downstream handlers
+            // so they can enforce caller-aware authorization (e.g. preventing
+            // privilege escalation when updating another key's permissions).
+            request
+                .extensions_mut()
+                .insert(CallerPermissions(auth_response.permissions.clone()));
 
             let mut response = next.run(request).await;
             let duration = start_time.elapsed();
