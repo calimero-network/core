@@ -689,6 +689,24 @@
 </details>
 </div>
 
+<div class="card gb"><h2>FusedIter: Remove Aliasing UB via Struct Refactor</h2>
+<p><code>FusedIter</code> was previously a three-variant enum (<code>Active</code>, <code>Interregnum</code>, <code>Expended</code>). Its <code>next()</code> method worked around a borrow-checker limitation by creating a second <code>&amp;mut Self</code> via <code>&amp;mut *ptr::from_mut(self)</code>, then calling <code>replace(self, Interregnum)</code> while the first <code>&amp;mut Self</code> was still live — producing two aliasing mutable references, which is undefined behavior.</p>
+
+<h3>The Fix</h3>
+<p>The enum is replaced with a struct containing the inner iterator and an <code>expended: bool</code> flag. Because <code>iter</code> and <code>expended</code> are disjoint struct fields, the borrow checker allows borrowing from <code>iter</code> in the <code>Some</code> branch while writing <code>expended</code> in the <code>None</code> branch without any unsafe reborrowing. The unsafe block and the now-unused imports (<code>ptr</code>, <code>replace</code>, <code>unreachable_unchecked</code>) are removed entirely.</p>
+
+<h3>Affected Symbols</h3>
+<ul>
+  <li><strong><code>FusedIter</code></strong> — changed from a three-variant enum to a struct with fields <code>iter</code> and <code>expended: bool</code>.</li>
+  <li><strong><code>FusedIter::next()</code></strong> — no longer uses unsafe aliasing; checks/sets <code>expended</code> directly.</li>
+  <li><strong><code>FusedIter::seek()</code></strong> and <strong><code>FusedIter::read()</code></strong> — updated to check <code>expended</code> flag instead of pattern-matching on the former enum variant.</li>
+  <li><strong><code>IterPair::new</code></strong> — updated to construct the new struct form.</li>
+</ul>
+
+<h3>Note for Contributors</h3>
+<p>This is an internal implementation detail with no public API change. Code reviewers should be aware that <code>FusedIter</code> is now a struct with an <code>expended</code> flag rather than a three-variant enum. Any code that previously matched on <code>FusedIter::Active</code>, <code>FusedIter::Interregnum</code>, or <code>FusedIter::Expended</code> must be updated to use the struct field form.</p>
+</div>
+
 <div class="card ga"><h2>Transaction Merge: Key vs. Value Correction</h2>
 <p>Prior to this fix, <code>Transaction::merge</code> contained two bugs in the inner map insert logic that corrupted the column keyspace and caused panics during transaction composition.</p>
 
