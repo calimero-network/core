@@ -2342,8 +2342,8 @@ fn auto_group_node_identity_is_admin_member() {
             &auto_group_id,
             &node_pk,
             GroupMemberRole::Admin,
-            Some(*node_sk.as_bytes()),
-            Some(*sender_key.as_bytes()),
+            Some(*node_sk),
+            Some(*sender_key),
         )
         .unwrap();
 
@@ -3498,7 +3498,7 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
     );
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
-    let member_sk_bytes = *member_sk.as_bytes();
+    let member_sk_bytes = *member_sk;
     NamespaceRepository::new(&store)
         .store_identity(&gid, &member_pk, &member_sk_bytes, &[0u8; 32])
         .unwrap();
@@ -3625,7 +3625,7 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
     // the namespace identity from there.
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
-    let member_sk_bytes: [u8; 32] = *member_sk.as_bytes();
+    let member_sk_bytes: [u8; 32] = *member_sk;
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32])
         .unwrap();
@@ -3745,7 +3745,7 @@ fn member_joined_open_clears_deny_list_and_restores_context_identity() {
     // not a direct subgroup member (post-leave / post-kick state).
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
-    let member_sk_bytes: [u8; 32] = *member_sk.as_bytes();
+    let member_sk_bytes: [u8; 32] = *member_sk;
     MembershipRepository::new(&store)
         .add_member(&ns_gid, &member_pk, GroupMemberRole::Member)
         .unwrap();
@@ -3940,7 +3940,7 @@ fn member_added_does_nothing_for_non_rejoiner_peers() {
 
     // This node IS the admin — its namespace identity is admin_pk, not
     // the rejoiner's pk.
-    let admin_sk_bytes = *admin_sk.as_bytes();
+    let admin_sk_bytes = *admin_sk;
     NamespaceRepository::new(&store)
         .store_identity(&gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
         .unwrap();
@@ -6330,7 +6330,7 @@ mod auto_follow_tests {
 
         let mut rng = OsRng;
         let admin_sk = PrivateKey::random(&mut rng);
-        let admin_sk_bytes: [u8; 32] = *admin_sk.as_bytes();
+        let admin_sk_bytes: [u8; 32] = *admin_sk;
         let admin_pk = admin_sk.public_key();
 
         let ns_id = [0xA0u8; 32];

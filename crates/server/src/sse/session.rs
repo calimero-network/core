@@ -1,11 +1,10 @@
 use calimero_primitives::context::ContextId;
-use calimero_server_primitives::sse::Command;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::RwLock;
 
 use super::config::SESSION_EXPIRY_SECS;
 
@@ -83,12 +82,6 @@ impl SessionStateInner {
 #[derive(Clone, Debug)]
 pub struct SessionState {
     pub inner: Arc<RwLock<SessionStateInner>>,
-}
-
-/// Active SSE connection
-#[derive(Clone, Debug)]
-pub struct ActiveConnection {
-    pub commands: mpsc::Sender<Command>,
 }
 
 /// Get current timestamp in seconds since UNIX epoch

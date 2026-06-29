@@ -68,7 +68,7 @@ impl ContextClient {
         handle.put(
             &key::ContextIdentity::new(ContextId::zero(), public_key),
             &types::ContextIdentity {
-                private_key: Some(*private_key.as_bytes()),
+                private_key: Some(*private_key),
                 sender_key: None,
             },
         )?;
@@ -142,18 +142,10 @@ impl ContextClient {
             );
         };
 
-        identity.sender_key = new_identity
-            .sender_key
-            .as_ref()
-            .map(PrivateKey::as_bytes)
-            .copied();
+        identity.sender_key = new_identity.sender_key.as_deref().copied();
         // TODO: what we are updating the private key for? if we got here, the datastore already
         // has the `identity.private_key` set.
-        identity.private_key = new_identity
-            .private_key
-            .as_ref()
-            .map(PrivateKey::as_bytes)
-            .copied();
+        identity.private_key = new_identity.private_key.as_deref().copied();
 
         handle.put(&key, &identity)?;
 
