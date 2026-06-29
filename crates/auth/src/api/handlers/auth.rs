@@ -839,12 +839,7 @@ pub async fn mock_token_handler(
 
         if let Some(required_value) = &state.0.config.development.mock_auth_header_value {
             match auth_header {
-                Some(value)
-                    if value
-                        .as_bytes()
-                        .ct_eq(required_value.as_bytes())
-                        .into() =>
-                {
+                Some(value) if value.as_bytes().ct_eq(required_value.as_bytes()).into() => {
                     // Authorization header matches, continue
                 }
                 _ => {
