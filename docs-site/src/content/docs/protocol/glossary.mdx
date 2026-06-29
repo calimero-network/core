@@ -1,0 +1,153 @@
+---
+title: Glossary
+description: Precise definitions of the terms the protocol reference and code use throughout.
+sidebar: { order: 80 }
+---
+
+The reference reuses a small, load-bearing vocabulary. This page collects those terms in one place, grouped by theme, each defined in a sentence or two and cross-linked to the chapter that develops it. Where a term is used loosely in conversation but precisely in the code, the precise meaning is the one given here.
+
+## Core nouns
+
+**Node** — A single peer process: it holds keys, runs WASM applications, stores state, and talks to other nodes over libp2p. One machine runs one node. See [Concepts & Scopes](/protocol/concepts/).
+
+**Application** — A sandboxed, deterministic WASM module defining a shared state machine — its data types and the methods that mutate them. A versioned bundle keeps a stable application id while its bytecode advances. See [Application Execution](/protocol/execution/).
+
+**Context** — A running application's replicated state, modeled as its own scope (op-log, key, members, scope root). A context attaches to a group, and its members are that group's members. See [Concepts & Scopes](/protocol/concepts/).
+
+**Group** — A governance scope: a set of members with roles and capabilities, its own key, and its own op-log. A namespace is the root group; subgroups nest beneath it. See [Governance](/protocol/governance/).
+
+**Subgroup** — A group nested under another, with its own scope, key, and members. It is either **Open** (a parent member holding the "join open subgroups" capability is a member by inheritance) or **Restricted** (membership requires a deliberate admission). Membership only ever narrows as you descend. See [Governance](/protocol/governance/).
+
+**Namespace** — The root governance scope: a group with no parent that anchors identity, admin, and policy for everything beneath it. A namespace *is* its own root group, so its id is also the root group id. See [Governance](/protocol/governance/).
+
+**Scope** — A self-contained replication, encryption, and convergence domain with its own op-log (DAG), key, members, and scope root, named by a stable 32-byte `ScopeId`. Everything in the protocol — operations, encryption, sync, convergence — is parameterized by scope. See [Concepts & Scopes](/protocol/concepts/).
+
+**Scope tree** — The tree scopes form: the governance scope(s) above a context plus the context's own data scope below. Operations normally reference parents in the same scope, but may also reference the head of their parent governance scope, tying a child scope to the governance that authorizes it. See [Concepts & Scopes](/protocol/concepts/).
+
+## Operations & the causal DAG
+
+**Operation (op)** — The atomic, signed, content-addressed unit of change in a scope. One envelope — `{ scope, parents, author, hlc, payload, signature }` — carries any of the four planes of change; there is only one kind of envelope. See [Operations & the Causal DAG](/protocol/operations/).
+
+**Content address / op id** — An operation's `id`, *derived* (not assigned) by SHA-256 over its contents — `scope`, sorted `parents`, `author`, `hlc`, `payload` — so identical contents produce an identical id on every node. The signature is excluded from the preimage. See [Operations & the Causal DAG](/protocol/operations/).
+
+**Payload** — The change an operation carries, a single enum spanning the four planes (plus the trivial `Noop`). The payload is what says which plane the operation belongs to. See [Operations & the Causal DAG](/protocol/operations/).
+
+**The four planes** — The kinds of change a payload expresses, all folded by the same projection: **data** (`state` — `Put` / `Delete`), **access-control** (`acl` — writer sets and capability masks), **membership** (`who` — `MemberAdded` / `MemberRemoved`), and **admin / structure** (`gov` — admin, policy, subgroup, and capability changes). See [Operations & the Causal DAG](/protocol/operations/).
+
+**Parents** — An operation's causal predecessors and the edges of the DAG — the heads its author had already seen. Parents are sorted before hashing, so the *set* (not the order) fixes the id; an op may also list its parent governance scope's head. See [Operations & the Causal DAG](/protocol/operations/).
+
+**Causal DAG** — The directed acyclic graph a scope's operations form via their parents. It is what lets independent authors write concurrently and still converge. See [Operations & the Causal DAG](/protocol/operations/).
+
+**Head** — A current tip of a scope's DAG: an operation no later operation references yet. A newly authored operation takes the current heads as its parents. See [Operations & the Causal DAG](/protocol/operations/).
+
+**Genesis** — The zero hash (`∅`) that every scope's history roots at and that is always considered applied. For a namespace, genesis is also the self-authorizing first operation that names the founder. See [Operations & the Causal DAG](/protocol/operations/).
+
+**Causal cut** — An operation's parents plus everything those parents transitively descend from, and nothing later. Folding only the cut reconstructs the membership and access-control state "as of" that point — the basis of authorization at the cut. See [State, Projection & the Root Hash](/protocol/projection/).
+
+**Concurrency** — Two operations where neither is an ancestor of the other. The fold resolves them deterministically, so concurrent authors converge without coordinating an order. See [Operations & the Causal DAG](/protocol/operations/).
+
+**Noop** — A trivial payload variant that carries no change and folds to nothing. It exists only so the DAG can have a node that merges several heads without asserting anything. See [Operations & the Causal DAG](/protocol/operations/).
+
+## Clocks & ordering
+
+**Hybrid logical clock (HLC)** — A causally-monotonic timestamp (a 64-bit NTP64 value plus a per-clock node id) that tracks wall-clock time but is nudged forward whenever a higher clock is observed, so causally-related operations stay ordered without synchronized clocks. Governance operations are authored with a **zero** HLC, deferring their ordering to generation. See [Operations & the Causal DAG](/protocol/operations/).
+
+**Generation** — An operation's depth in the DAG (its longest path from genesis). It breaks ties the HLC alone can't — notably the zero-HLC governance operations, where a later structural change always sits deeper than the state it supersedes. See [State, Projection & the Root Hash](/protocol/projection/).
+
+**Stamp** — The triple `(hlc, generation, id)`, compared left to right, that the projection records for each slot. A write takes effect only if its stamp beats the slot's current stamp. See [State, Projection & the Root Hash](/protocol/projection/).
+
+**Last-writer-wins** — The per-slot conflict rule: among writes to the same slot, the one with the highest stamp wins. Resolving every slot this way is what makes the fold order-independent. See [State, Projection & the Root Hash](/protocol/projection/).
+
+## Projection & convergence
+
+**Projection** — The deterministic function that replays a scope's DAG into materialized state (a set of slots per plane) plus a single summary hash, the scope root. See [State, Projection & the Root Hash](/protocol/projection/).
+
+**Fold** — The act of replaying operations through the projection. Its essential property is **order-independence**: any replay order of the same operation set yields identical state and an identical scope root. See [State, Projection & the Root Hash](/protocol/projection/).
+
+**Scope root** — The one 32-byte hash that summarizes a scope's whole state: `H(entities_root ‖ acl_hash ‖ governance_hash)`. Convergence is just a scope-root comparison. On the wire, the entities input is the storage Merkle root. See [State, Projection & the Root Hash](/protocol/projection/).
+
+**Entities root** — The data-plane component of the scope root. For the convergence signal exchanged on the wire it is the storage layer's Merkle root over entity state (the `root_hash` in `ContextMeta`), not a re-hash of the projection's own entity map. See [State, Projection & the Root Hash](/protocol/projection/).
+
+**Hash-neutral change** — A change with no data effect that still moves the scope root — for example rotating an object's writers or removing a member. Because `acl_hash` and `governance_hash` fold into the root, such a change cannot hide behind byte-identical application data. See [State, Projection & the Root Hash](/protocol/projection/).
+
+## Identities & keys
+
+**Member identity** — A per-namespace Ed25519 keypair that authors operations and signs each operation's `id`. Membership, roles, and capabilities are all expressed in terms of member public keys; the same node in two namespaces presents two unrelated member keys. See [Identities & Keys](/protocol/identities/).
+
+**Transport identity** — A node's Ed25519 keypair used only by the network layer; its public key is the node's peer id — the address other nodes dial and the identity the encrypted transport authenticates. It names a box, not authority. See [Identities & Keys](/protocol/identities/).
+
+**Scope key** — The symmetric key under which a scope's operations are encrypted, at rest and on the wire. Holding it is what lets a member *read* a scope; lacking it, a node sees only ciphertext. A key is identified on the wire by `key_id = SHA-256(scope_key)`. See [Identities & Keys](/protocol/identities/).
+
+**Key delivery (ECDH)** — Handing a scope key to a member by wrapping it to that member's public key via an X25519-style ECDH exchange (AES-256-GCM), never in the clear. It is the private half of the join flow. See [Governance](/protocol/governance/).
+
+**Key rotation** — Generating a fresh scope key and re-wrapping it to every *remaining* member. It happens on an admin-initiated removal (but not on a self-leave, where the leaver already held the key). See [Governance](/protocol/governance/).
+
+**Forward secrecy** — The guarantee that a removed member can read nothing authored after their removal, enforced by rotating the scope key and delivering the new one only to those who remain. See [Governance](/protocol/governance/).
+
+## Governance, roles & authority
+
+**Role** — A member's coarse authority within a group: `Admin` (all governance operations), `Member` (read/write state, governance only with the matching capability), `ReadOnly` (reads; writes rejected locally and on peers), and `ReadOnlyTee` (a read-only, hardware-attested fleet node, evicted via self-purge). See [Governance](/protocol/governance/).
+
+**Capability** — A fine-grained grant a non-admin can hold for a specific action (create contexts, invite members, join open subgroups, manage members / application / subgroups, etc.), encoded as a bit in a `u32` mask. Admins pass every capability check implicitly; defaults are per-group and overridable per member. See [Governance](/protocol/governance/).
+
+**Owner** — A distinguished stored identity (not a role) with exclusive rights — transfer ownership, delete the group or namespace — and immunity from involuntary removal. A group may have several admins but exactly one owner. See [Governance](/protocol/governance/).
+
+**Founder** — The identity a namespace's self-authorizing genesis operation names, recorded as the initial admin and owner. Every node that replays the DAG re-derives the same founder, so authority is established by a replayable operation, not out-of-band trust. See [Governance](/protocol/governance/).
+
+**Authorization at the cut / forward-only** — The rule that an operation is judged against the membership and access-control state resolved at its **parents** (the author's causal cut), never the receiver's present. So a write authored while you were authorized stays valid even if a peer applies your removal first, and every node reaches the same verdict because every node folds the same cut. See [Governance](/protocol/governance/).
+
+## Networking
+
+**Gossip** — Eager, best-effort broadcast: a node publishes once to a topic and the gossipsub mesh fans it out to subscribers. It keeps everyone roughly current; an offline node simply misses a message. See [Networking & the Wire Protocol](/protocol/networking/).
+
+**Topic** — A gossip subscription channel mapped directly onto the scope tree — `context/<id>`, `group/<id>`, `ns/<id>` — so a node only hears about scopes it belongs to. See [Networking & the Wire Protocol](/protocol/networking/).
+
+**Broadcast** — A message published to a gossip topic — for example `StateDelta`, `GovernanceDelta`, or `Heartbeat` — carrying everything a peer needs to verify, decrypt, and authorize the operation. See [Networking & the Wire Protocol](/protocol/networking/).
+
+**Stream** — A direct, length-delimited, point-to-point libp2p channel used to pull something specific on demand — missing operations, a snapshot, a blob, a key. It is how a node *catches up* on whatever gossip didn't deliver. See [Networking & the Wire Protocol](/protocol/networking/).
+
+**Heartbeat** — A broadcast published periodically that advertises a scope's current DAG heads and root. A peer whose root doesn't match ours is a direct signal to start a sync. See [Networking & the Wire Protocol](/protocol/networking/).
+
+## Sync & convergence
+
+**Sync** — The reliable, stream-based channel that closes gaps gossip missed. Its whole job: compare scope roots, and if they differ, find and transfer exactly what's missing. See [Sync & Convergence](/protocol/sync/).
+
+**Divergence** — The condition where two nodes hold different operation sets and therefore different scope roots. Calimero *detects* divergence (by comparing roots) rather than preventing it. See [Sync & Convergence](/protocol/sync/).
+
+**Convergence** — The state in which two nodes hold equal scope roots and thus identical state, reached by detecting divergence and healing it through sync — with no consensus, quorum, or agreed order. See [Sync & Convergence](/protocol/sync/).
+
+**Convergence verdict** — The outcome a sync handshake computes from the exchanged (scope_root, entity_root) pairs: **converged** (`Converged` — roots equal, nothing to do), **governance-diverged** (`GovDiverged` — entities agree but governance differs, so pull governance ops), or **data-diverged** (`DataDiverged` — entities differ, so run a state-transfer protocol). See [Sync & Convergence](/protocol/sync/).
+
+**Reconciliation** — Post-sync governance reconciliation: after a data transfer completes, the node recomputes its scope root and, if it still differs from the peer's, pulls governance operations. The pull is idempotent (it returns nothing against an agreeing peer), so it is safe to run whenever the root still differs. See [Sync & Convergence](/protocol/sync/).
+
+## Blobs
+
+**Blob** — Opaque, immutable, content-addressed bytes stored *outside* the state tree (WASM bundles, attachments, media). State references a blob only by id, and blob bytes are never folded into a scope root, so moving or garbage-collecting a blob can neither cause nor repair divergence. See [Blob Transport](/protocol/blobs/).
+
+**BlobId** — A blob's 32-byte content hash (shown as base58) that both names the blob and lets any holder verify the bytes it received. It is distinct from `BlobMeta.hash` (the digest of the raw content); the `BlobId` addresses the blob through its chunk-id list. See [Blob Transport](/protocol/blobs/).
+
+## TEE attestation & fleet nodes
+
+**Attestation** — A cryptographic proof, checked against the hardware (Intel DCAP), that a node runs an approved measurement inside a Trusted Execution Environment. It substitutes for a human invitation when admitting a fleet node, against a measurement allowlist the namespace's admins set ahead of time. See [TEE Attestation & Fleet Admission](/protocol/tee-attestation/).
+
+**Quote** — A TDX quote: a signed measurement of a confidential VM, carrying `mrtd`, `rtmr0`–`rtmr3`, `tcb_status`, and 64 bytes of `report_data` (a nonce plus a public-key hash) that admission verifies and matches against the admission policy. See [TEE Attestation & Fleet Admission](/protocol/tee-attestation/).
+
+**Fleet node** — A hardware-attested read replica admitted as a `ReadOnlyTee` member: it can decrypt and serve a namespace's data but can never write. It keeps data available and queryable when the human-operated owner node is offline. See [TEE Attestation & Fleet Admission](/protocol/tee-attestation/).
+
+**Self-purge** — The node-local hard-delete an evicted `ReadOnlyTee` node performs on receiving a `TeeMemberRemoved` event for *its own* identity, wiping the group's local data and key material. A TEE node has no rejoin path (re-admission needs a fresh attestation), so leaving key material behind only hurts forward-secrecy hygiene. See [TEE Attestation & Fleet Admission](/protocol/tee-attestation/).
+
+## Application upgrades
+
+**Migration** — A deterministic, pure transform that reshapes a context's existing state into a new schema when a code release changes the state shape. It runs once per node on first access and is re-derived locally on every node — the migrated state is never sent over sync. See [Application Upgrades & Migration](/protocol/upgrades/).
+
+**Schema / app version** — The markers that identify which bytecode and schema a node runs: `state_version` (the embedded schema generation, from `#[app::state(version = N)]`) and the governance `app_key` (the `blob_id` of the active bytecode). Both advance on each release while the **application id** stays version-stable. Don't confuse that per-release `app_key` field with the Rust `AppKey` type — `(package, signerId)` — which is the version-stable application identity, not the bytecode pointer. See [Application Upgrades & Migration](/protocol/upgrades/).
+
+**Cascade upgrade** — A single governance operation (`GroupOp::CascadeUpgrade`) by which an admin atomically retargets a group and every matching descendant to new bytecode plus a migration, stamping one `cascade_hlc` fence boundary so every node records an identical fence. See [Application Upgrades & Migration](/protocol/upgrades/).
+
+**Migration witness** — A transient borsh blob the migrate returns alongside the new state, carrying a v1 value the v2 schema no longer keeps so a `migration_check` can assert an invariant. It rides out on the runtime outcome to the check and is **never persisted**. See [Application Upgrades & Migration](/protocol/upgrades/).
+
+## Encoding & primitives
+
+**Borsh** — The compact, deterministic binary encoding used both on the wire and on disk: an enum is a 1-byte variant index then its fields; a `Vec<u8>` is a `u32` little-endian length then the bytes; a map is iterated in ascending key order. Its determinism is what lets independent nodes produce identical ids and roots. See [Operations & the Causal DAG](/protocol/operations/).
+
+**Merkle root** — The storage layer's hash over a context's entity state. It is authoritative for the data plane and is the value folded into the scope root as the entities root (and stored as `root_hash` in `ContextMeta`). See [Storage Schema](/protocol/storage/).

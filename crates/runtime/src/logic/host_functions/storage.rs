@@ -113,10 +113,13 @@ impl VMHostFunctions<'_> {
             "storage_remove"
         );
 
-        if let Some(value) = logic.storage.get(&key) {
+        // `remove` returns the evicted value, so a single backend write both
+        // deletes the key and yields its prior value — no separate `get` read.
+        let removed = self.with_logic_mut(|logic| logic.storage.remove(&key));
+
+        if let Some(value) = removed {
             let value_len = value.len();
             self.with_logic_mut(|logic| {
-                let _ignored = logic.storage.remove(&key);
                 logic.registers.set(logic.limits, dest_register_id, value)
             })?;
 
@@ -543,7 +546,7 @@ impl VMHostFunctions<'_> {
             "storage_index_scan"
         );
 
-        let encoded = encode_index_pairs(&pairs);
+        let encoded = encode_index_pairs(&pairs)?;
         self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, encoded))?;
         Ok(1)
     }
@@ -581,7 +584,7 @@ impl VMHostFunctions<'_> {
             "storage_index_last"
         );
 
-        let encoded = encode_index_pairs(&pairs);
+        let encoded = encode_index_pairs(&pairs)?;
         self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, encoded))?;
         Ok(1)
     }
@@ -590,16 +593,19 @@ impl VMHostFunctions<'_> {
 /// Encode ordered-index scan results into the length-prefixed wire format the
 /// guest (`calimero_sdk::env`) decodes: `count:u32`, then per pair
 /// `key_len:u32, key, value_len:u32, value` — all little-endian.
-fn encode_index_pairs(pairs: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+fn encode_index_pairs(pairs: &[(Vec<u8>, Vec<u8>)]) -> VMLogicResult<Vec<u8>> {
     let mut out = Vec::new();
-    out.extend_from_slice(&(pairs.len() as u32).to_le_bytes());
+    let count = u32::try_from(pairs.len()).map_err(|_| HostError::IntegerOverflow)?;
+    out.extend_from_slice(&count.to_le_bytes());
     for (key, value) in pairs {
-        out.extend_from_slice(&(key.len() as u32).to_le_bytes());
+        let key_len = u32::try_from(key.len()).map_err(|_| HostError::IntegerOverflow)?;
+        out.extend_from_slice(&key_len.to_le_bytes());
         out.extend_from_slice(key);
-        out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        let value_len = u32::try_from(value.len()).map_err(|_| HostError::IntegerOverflow)?;
+        out.extend_from_slice(&value_len.to_le_bytes());
         out.extend_from_slice(value);
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]

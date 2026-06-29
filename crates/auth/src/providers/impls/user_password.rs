@@ -381,8 +381,14 @@ impl AuthProvider for UserPasswordProvider {
         provider_data: Value,
         node_url: Option<&str>,
     ) -> eyre::Result<bool> {
-        let username = provider_data.get("username").unwrap().as_str().unwrap();
-        let password = provider_data.get("password").unwrap().as_str().unwrap();
+        let username = provider_data
+            .get("username")
+            .and_then(Value::as_str)
+            .ok_or_else(|| eyre::eyre!("Missing or invalid 'username' in provider data"))?;
+        let password = provider_data
+            .get("password")
+            .and_then(Value::as_str)
+            .ok_or_else(|| eyre::eyre!("Missing or invalid 'password' in provider data"))?;
 
         // Generate key ID from username/password
         let key_id = self.generate_key_id(username, password);

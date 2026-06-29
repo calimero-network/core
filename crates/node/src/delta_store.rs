@@ -316,6 +316,28 @@ struct ContextStorageApplier {
     apply_lock_slot: std::sync::Mutex<Option<ContextAtomicKey>>,
 }
 
+impl ContextStorageApplier {
+    /// Lock the apply-lock relay slot, recovering the guard if a prior holder
+    /// panicked.
+    ///
+    /// The slot only ever holds an `Option<ContextAtomicKey>` that every access
+    /// takes or replaces wholesale, so a poisoned guard never exposes a torn
+    /// value. Recovering it (rather than `.expect()`-ing) keeps a transient
+    /// panic in one apply from poisoning the mutex and turning every later
+    /// apply on this context into a crash.
+    ///
+    /// If a holder panicked after `take()`-ing the key but before replacing it,
+    /// the recovered slot is observed empty, so the next apply acquires a fresh
+    /// `ContextAtomic::Lock` instead of reusing a held one. That is safe and
+    /// leaks nothing: the panicked holder's `ContextAtomicKey` is an owned
+    /// `RwLock` guard, so it was dropped during unwind and its lock released.
+    fn lock_apply_slot(&self) -> std::sync::MutexGuard<'_, Option<ContextAtomicKey>> {
+        self.apply_lock_slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 #[async_trait::async_trait]
 impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
     async fn apply(&self, delta: &CausalDelta<Vec<Action>>) -> Result<(), ApplyError> {
@@ -425,17 +447,10 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             .retain_apply_lock
             .load(std::sync::atomic::Ordering::Acquire);
         let atomic = if retain_lock {
-            Some(
-                match self
-                    .apply_lock_slot
-                    .lock()
-                    .expect("apply_lock_slot poisoned")
-                    .take()
-                {
-                    Some(key) => ContextAtomic::Held(key),
-                    None => ContextAtomic::Lock,
-                },
-            )
+            Some(match self.lock_apply_slot().take() {
+                Some(key) => ContextAtomic::Held(key),
+                None => ContextAtomic::Lock,
+            })
         } else {
             None
         };
@@ -470,10 +485,7 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         // completed, so the slot stays empty and the caller commits heads
         // unlocked — safe, because a failed apply advances no heads.
         if retain_lock {
-            *self
-                .apply_lock_slot
-                .lock()
-                .expect("apply_lock_slot poisoned") = outcome.atomic.take();
+            *self.lock_apply_slot() = outcome.atomic.take();
         }
 
         let wasm_elapsed_ms = wasm_start.elapsed().as_secs_f64() * 1000.0;
@@ -1700,12 +1712,7 @@ impl DeltaStore {
             .store(false, std::sync::atomic::Ordering::Release);
         // Take the retained guard (if any apply acquired one) to hold across the
         // `dag_heads` commit below; dropped right after the persist.
-        let batch_apply_lock_guard = self
-            .applier
-            .apply_lock_slot
-            .lock()
-            .expect("apply_lock_slot poisoned")
-            .take();
+        let batch_apply_lock_guard = self.applier.lock_apply_slot().take();
 
         let heads = dag.get_heads();
         let heads_count = heads.len();
@@ -2097,6 +2104,12 @@ impl DeltaStore {
         let actions_for_db = delta.payload.clone();
         let hlc = delta.hlc;
 
+        // Borsh-serialize the actions at most once. Both the events pre-persist
+        // (below) and the applied-record (further down) write the same bytes;
+        // without this memo, a delta that has events AND applies would re-encode
+        // the identical payload twice.
+        let mut serialized_actions: Option<Vec<u8>> = None;
+
         // Store the mapping before applying
         {
             let mut head_hashes = self.head_root_hashes.write().await;
@@ -2107,8 +2120,9 @@ impl DeltaStore {
         // This ensures events are available if the delta cascades during add_delta()
         if events.is_some() {
             let mut handle = self.applier.context_client.datastore_handle();
-            let serialized_actions = borsh::to_vec(&actions_for_db)
+            let encoded = borsh::to_vec(&actions_for_db)
                 .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?;
+            serialized_actions = Some(encoded.clone());
 
             handle
                 .put(
@@ -2116,7 +2130,7 @@ impl DeltaStore {
                     &calimero_store::types::ContextDagDelta {
                         delta_id,
                         parents: parents.clone(),
-                        actions: serialized_actions,
+                        actions: encoded,
                         hlc,
                         applied: false, // Not applied yet, will update if it applies
                         expected_root_hash,
@@ -2189,12 +2203,7 @@ impl DeltaStore {
         // committed by then, which is all a concurrent local write needs to
         // observe. While held, the only work is the direct-datastore head
         // persist (no executor re-entry), so holding it cannot deadlock.
-        let apply_lock_guard = self
-            .applier
-            .apply_lock_slot
-            .lock()
-            .expect("apply_lock_slot poisoned")
-            .take();
+        let apply_lock_guard = self.applier.lock_apply_slot().take();
         let result = add_outcome?;
 
         // Update context's dag_heads after the DAG has been updated
@@ -2245,8 +2254,13 @@ impl DeltaStore {
             calimero_store::key::ContextDagDelta,
             calimero_store::types::ContextDagDelta,
         )> = if result {
-            let serialized_actions = borsh::to_vec(&actions_for_db)
-                .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?;
+            // Reuse the pre-persist encoding when it ran (events path); only
+            // serialize here if this delta had no events to pre-persist.
+            let serialized_actions = match serialized_actions {
+                Some(bytes) => bytes,
+                None => borsh::to_vec(&actions_for_db)
+                    .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?,
+            };
             Some((
                 calimero_store::key::ContextDagDelta::new(self.applier.context_id, delta_id),
                 calimero_store::types::ContextDagDelta {

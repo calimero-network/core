@@ -1063,6 +1063,394 @@ fn apply_local_signed_group_op_rejects_last_admin_removal() {
 }
 
 // -----------------------------------------------------------------------
+// Governance-op rejection paths
+//
+// These pin the authorization gates of the per-op apply handlers
+// (`ops/group/transfer_ownership.rs`, `context_capability_{granted,
+// revoked}.rs`). There is no top-level admin gate in
+// `apply_local_signed_group_op` — every op carries its own check — so
+// these tests drive the full signed-op path and assert both that the
+// op is rejected AND that it is rejected for the intended reason.
+// -----------------------------------------------------------------------
+
+/// `TransferOwnership` is owner-only. An admin who is *not* the current
+/// owner cannot transfer ownership, even though they otherwise pass
+/// every member-management gate.
+#[test]
+fn transfer_ownership_rejects_non_owner_signer() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+    // A second admin — privileged, but not the owner.
+    let other_admin_sk = PrivateKey::random(&mut rng);
+    let other_admin_pk = other_admin_sk.public_key();
+    // A third admin standing by as a valid successor, so the op fails on
+    // the owner check rather than the new-owner-role check.
+    let successor_pk = PrivateKey::random(&mut rng).public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(owner_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &owner_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &other_admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &successor_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let op = SignedGroupOp::sign(
+        &other_admin_sk,
+        gid_bytes,
+        vec![],
+        1,
+        GroupOp::TransferOwnership {
+            new_owner: successor_pk,
+        },
+    )
+    .unwrap();
+    let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::OnlyOwnerCanTransfer(_))
+        ),
+        "expected OnlyOwnerCanTransfer, got: {err}"
+    );
+    // Ownership is unchanged.
+    assert_eq!(
+        MetaRepository::new(&store)
+            .load(&gid)
+            .unwrap()
+            .unwrap()
+            .owner_identity,
+        owner_pk
+    );
+}
+
+/// `TransferOwnership` requires the successor to already be an Admin.
+/// Transferring to a plain Member is rejected (the handler refuses to
+/// create an "owner with reduced capabilities" state).
+#[test]
+fn transfer_ownership_rejects_new_owner_not_admin() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+    let plain_member_pk = PrivateKey::random(&mut rng).public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(owner_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &owner_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &plain_member_pk, GroupMemberRole::Member)
+        .unwrap();
+
+    let op = SignedGroupOp::sign(
+        &owner_sk,
+        gid_bytes,
+        vec![],
+        1,
+        GroupOp::TransferOwnership {
+            new_owner: plain_member_pk,
+        },
+    )
+    .unwrap();
+    let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::TransferTargetNotAdmin {
+                role: GroupMemberRole::Member,
+                ..
+            })
+        ),
+        "expected TransferTargetNotAdmin(Member), got: {err}"
+    );
+    assert_eq!(
+        MetaRepository::new(&store)
+            .load(&gid)
+            .unwrap()
+            .unwrap()
+            .owner_identity,
+        owner_pk
+    );
+}
+
+/// `TransferOwnership` rejects a successor who is not a member of the
+/// group at all (would otherwise create an absentee owner).
+#[test]
+fn transfer_ownership_rejects_new_owner_not_member() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+    let outsider_pk = PrivateKey::random(&mut rng).public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(owner_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &owner_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let op = SignedGroupOp::sign(
+        &owner_sk,
+        gid_bytes,
+        vec![],
+        1,
+        GroupOp::TransferOwnership {
+            new_owner: outsider_pk,
+        },
+    )
+    .unwrap();
+    let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::TransferTargetNotMember(_))
+        ),
+        "expected TransferTargetNotMember, got: {err}"
+    );
+    assert_eq!(
+        MetaRepository::new(&store)
+            .load(&gid)
+            .unwrap()
+            .unwrap()
+            .owner_identity,
+        owner_pk
+    );
+}
+
+/// `TransferOwnership` must move the meta `admin_identity` pin to the
+/// successor, not just `owner_identity`. `is_admin` honors
+/// `meta.admin_identity` as an always-admin that no member-row change can
+/// revoke, so leaving it on the old owner would grant the former owner
+/// permanent, unrevokable admin after handover. This pins the fix: after a
+/// transfer the former owner's admin authority is only as durable as their
+/// member row, so removing that row revokes their admin entirely.
+#[test]
+fn transfer_ownership_moves_admin_identity_to_new_owner() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    // Genesis shape: creator is owner_identity == admin_identity, with an
+    // explicit Admin member row (mirrors `GroupCreated`/namespace genesis).
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+    let successor_pk = PrivateKey::random(&mut rng).public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(owner_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &owner_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &successor_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let op = SignedGroupOp::sign(
+        &owner_sk,
+        gid_bytes,
+        vec![],
+        1,
+        GroupOp::TransferOwnership {
+            new_owner: successor_pk,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &op).unwrap();
+
+    // Both pins moved to the successor.
+    let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+    assert_eq!(meta.owner_identity, successor_pk, "owner moved");
+    assert_eq!(meta.admin_identity, successor_pk, "admin pin moved");
+
+    // The former owner's admin is now backed solely by their (revokable)
+    // member row — removing it strips their admin entirely. Before the fix
+    // the lingering `admin_identity` pin would keep them admin forever.
+    MembershipRepository::new(&store)
+        .remove_member(&gid, &owner_pk)
+        .unwrap();
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_admin(&gid, &owner_pk)
+            .unwrap(),
+        "former owner must lose admin once their member row is removed"
+    );
+    // The successor remains admin (member row + meta pin).
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&gid, &successor_pk)
+            .unwrap(),
+        "successor must still be admin after the transfer"
+    );
+}
+
+/// `ContextCapabilityGranted` is gated by `require_manage_members`. A
+/// plain member without the `MANAGE_MEMBERS` capability (and not an
+/// admin) cannot grant a context capability — and the grant must not be
+/// written.
+#[test]
+fn context_capability_granted_rejects_unauthorized_signer() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    let context_id = ContextId::from([0x44; 32]);
+    let target_pk = PrivateKey::random(&mut rng).public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member_pk, GroupMemberRole::Member)
+        .unwrap();
+
+    let op = SignedGroupOp::sign(
+        &member_sk,
+        gid_bytes,
+        vec![],
+        1,
+        GroupOp::ContextCapabilityGranted {
+            context_id,
+            member: target_pk,
+            capability: calimero_governance_types::ContextCapabilityBits::new(0b1)
+                .expect("capability bitmask is non-zero"),
+        },
+    )
+    .unwrap();
+    let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<CapabilitiesError>(),
+            Some(CapabilitiesError::Unauthorized { operation, .. })
+                if operation == "grant context capability"
+        ),
+        "expected Unauthorized(grant context capability), got: {err}"
+    );
+    // Nothing was granted.
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .context_member_capability(&gid, &context_id, &target_pk)
+            .unwrap(),
+        None
+    );
+}
+
+/// `ContextCapabilityRevoked` shares the same `require_manage_members`
+/// gate. A plain member cannot revoke a context capability, and an
+/// existing grant must survive the rejected op untouched.
+#[test]
+fn context_capability_revoked_rejects_unauthorized_signer() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    let context_id = ContextId::from([0x55; 32]);
+    let target_pk = PrivateKey::random(&mut rng).public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member_pk, GroupMemberRole::Member)
+        .unwrap();
+    // Pre-existing grant that the unauthorized revoke must not disturb.
+    CapabilitiesRepository::new(&store)
+        .set_context_member(&gid, &context_id, &target_pk, 0b11)
+        .unwrap();
+
+    let op = SignedGroupOp::sign(
+        &member_sk,
+        gid_bytes,
+        vec![],
+        1,
+        GroupOp::ContextCapabilityRevoked {
+            context_id,
+            member: target_pk,
+            capability: calimero_governance_types::ContextCapabilityBits::new(0b1)
+                .expect("capability bitmask is non-zero"),
+        },
+    )
+    .unwrap();
+    let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<CapabilitiesError>(),
+            Some(CapabilitiesError::Unauthorized { operation, .. })
+                if operation == "revoke context capability"
+        ),
+        "expected Unauthorized(revoke context capability), got: {err}"
+    );
+    // The grant is untouched — the rejected op wrote nothing.
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .context_member_capability(&gid, &context_id, &target_pk)
+            .unwrap(),
+        Some(0b11)
+    );
+}
+
+// -----------------------------------------------------------------------
 // Signing key tests
 // -----------------------------------------------------------------------
 
@@ -2028,8 +2416,8 @@ fn auto_group_node_identity_is_admin_member() {
             &auto_group_id,
             &node_pk,
             GroupMemberRole::Admin,
-            Some(*node_sk),
-            Some(*sender_key),
+            Some(*node_sk.as_bytes()),
+            Some(*sender_key.as_bytes()),
         )
         .unwrap();
 
@@ -3184,7 +3572,7 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
     );
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
-    let member_sk_bytes = *member_sk;
+    let member_sk_bytes = *member_sk.as_bytes();
     NamespaceRepository::new(&store)
         .store_identity(&gid, &member_pk, &member_sk_bytes, &[0u8; 32])
         .unwrap();
@@ -3311,7 +3699,7 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
     // the namespace identity from there.
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
-    let member_sk_bytes: [u8; 32] = *member_sk;
+    let member_sk_bytes: [u8; 32] = *member_sk.as_bytes();
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32])
         .unwrap();
@@ -3431,7 +3819,7 @@ fn member_joined_open_clears_deny_list_and_restores_context_identity() {
     // not a direct subgroup member (post-leave / post-kick state).
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
-    let member_sk_bytes: [u8; 32] = *member_sk;
+    let member_sk_bytes: [u8; 32] = *member_sk.as_bytes();
     MembershipRepository::new(&store)
         .add_member(&ns_gid, &member_pk, GroupMemberRole::Member)
         .unwrap();
@@ -3506,6 +3894,105 @@ fn member_joined_open_clears_deny_list_and_restores_context_identity() {
 }
 
 #[test]
+fn member_joined_clears_deny_list_for_rejoiner() {
+    // An open-invitation re-join (`RootOp::MemberJoined`) must clear the
+    // per-group deny-list entry stamped by a prior `MemberLeft` /
+    // `MemberRemoved`, exactly like its sibling arms (`MemberAdded`,
+    // `MemberJoinedViaTeeAttestation`, `MemberJoinedOpen`). Pre-fix the
+    // `MemberJoined` arm was a no-op, so a rejoined member kept a stale
+    // `GroupDeniedMember` row and every peer permanently dropped the
+    // rejoiner's state-delta traffic at the receive filter.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::types::{
+        GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+    use sha2::{Digest, Sha256};
+
+    let mut rng = OsRng;
+    let store = test_store();
+
+    // namespace (root) ── subgroup; the member re-joins the subgroup via
+    // an admin-signed open invitation.
+    let ns_id = [0xB0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let subgroup = ContextGroupId::from([0xB1u8; 32]);
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    MetaRepository::new(&store)
+        .save(&subgroup, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup)
+        .unwrap();
+
+    // Rejoiner: signs their own `MemberJoined` op, not yet a direct member.
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+
+    // Pre-state from a prior `MemberLeft` / `MemberRemoved` cascade: the
+    // member is stamped on the subgroup deny-list.
+    DenyListRepository::new(&store)
+        .mark(&subgroup, &member_pk)
+        .unwrap();
+    assert!(DenyListRepository::new(&store)
+        .is_denied(&subgroup, &member_pk)
+        .unwrap());
+
+    // Admin-signed open invitation for the subgroup (no expiry).
+    let invitation = GroupInvitationFromAdmin {
+        inviter_identity: SignerId::from(*admin_pk.digest()),
+        group_id: subgroup,
+        expiration_timestamp: 0,
+        secret_salt: [0x42; 32],
+        invited_role: 1,
+    };
+    let inv_bytes = borsh::to_vec(&invitation).unwrap();
+    let inv_sig = admin_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
+    let signed_invitation = SignedGroupOpenInvitation {
+        invitation,
+        inviter_signature: hex::encode(inv_sig.to_bytes()),
+        application_id: None,
+        app_key: None,
+    };
+
+    let signed = SignedNamespaceOp::sign(
+        &member_sk,
+        ns_id,
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoined {
+            member: member_pk,
+            signed_invitation,
+        }),
+    )
+    .unwrap();
+    apply_signed_namespace_op(&store, &signed).unwrap();
+
+    // The join materialized the joiner's direct membership row...
+    assert!(
+        MembershipRepository::new(&store)
+            .has_direct_member(&subgroup, &member_pk)
+            .unwrap(),
+        "MemberJoined must materialize the joiner's direct membership row"
+    );
+    // ...and cleared the stale deny-list entry so peers stop dropping the
+    // rejoiner's state-deltas at the receive filter.
+    assert!(
+        !DenyListRepository::new(&store)
+            .is_denied(&subgroup, &member_pk)
+            .unwrap(),
+        "MemberJoined apply MUST clear the per-group deny-list entry for \
+         the rejoiner so peers stop dropping their state-deltas"
+    );
+}
+
+#[test]
 fn member_added_does_nothing_for_non_rejoiner_peers() {
     // On peers whose local namespace identity is NOT the rejoiner,
     // applying MemberAdded must NOT create a ContextIdentity row for
@@ -3527,7 +4014,7 @@ fn member_added_does_nothing_for_non_rejoiner_peers() {
 
     // This node IS the admin — its namespace identity is admin_pk, not
     // the rejoiner's pk.
-    let admin_sk_bytes = *admin_sk;
+    let admin_sk_bytes = *admin_sk.as_bytes();
     NamespaceRepository::new(&store)
         .store_identity(&gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
         .unwrap();
@@ -5917,7 +6404,7 @@ mod auto_follow_tests {
 
         let mut rng = OsRng;
         let admin_sk = PrivateKey::random(&mut rng);
-        let admin_sk_bytes: [u8; 32] = *admin_sk;
+        let admin_sk_bytes: [u8; 32] = *admin_sk.as_bytes();
         let admin_pk = admin_sk.public_key();
 
         let ns_id = [0xA0u8; 32];

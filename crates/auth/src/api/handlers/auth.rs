@@ -7,6 +7,8 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(debug_assertions)]
+use subtle::ConstantTimeEq;
 use tracing::{debug, error, info, warn};
 use validator::Validate;
 
@@ -837,7 +839,7 @@ pub async fn mock_token_handler(
 
         if let Some(required_value) = &state.0.config.development.mock_auth_header_value {
             match auth_header {
-                Some(value) if value == required_value => {
+                Some(value) if value.as_bytes().ct_eq(required_value.as_bytes()).into() => {
                     // Authorization header matches, continue
                 }
                 _ => {

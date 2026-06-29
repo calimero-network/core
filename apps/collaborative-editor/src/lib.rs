@@ -94,8 +94,16 @@ impl EditorState {
         app::log!("Initializing collaborative editor: {} by {}", title, owner);
 
         let mut metadata = UnorderedMap::new();
-        let _ = metadata.insert("title".to_string(), title.clone().into());
-        let _ = metadata.insert("owner".to_string(), owner.clone().into());
+        // `#[app::init]` must return `Self`, so it can't propagate a failure
+        // with `?`. Surface a storage error loudly rather than silently
+        // dropping the write (which would leave the document with no title or
+        // owner recorded).
+        metadata
+            .insert("title".to_string(), title.clone().into())
+            .expect("failed to write initial title metadata");
+        metadata
+            .insert("owner".to_string(), owner.clone().into())
+            .expect("failed to write initial owner metadata");
 
         let state = EditorState {
             document: ReplicatedGrowableArray::new(),
@@ -208,7 +216,7 @@ impl EditorState {
         let editor_id = env::executor_id();
         let editor = encode_identity(&editor_id);
 
-        let old_title = self.get_title();
+        let old_title = self.get_title()?;
 
         self.metadata
             .insert("title".to_string(), new_title.clone().into())?;
@@ -232,14 +240,20 @@ impl EditorState {
     /// Get the document title
     ///
     /// # Returns
-    /// * `String` - The current document title
-    pub fn get_title(&self) -> String {
-        self.metadata
-            .get("title")
-            .ok()
-            .flatten()
+    /// * `Ok(String)` - The current document title (the default
+    ///   "Untitled Document" if no title has been set yet)
+    /// * `Err(app::Error)` - Error if the metadata read fails
+    ///
+    /// A storage read failure is propagated rather than collapsed into the
+    /// default: callers like `set_title` record the returned value as the
+    /// `old_title` of a `TitleChanged` event, so a fabricated default would be
+    /// silently written into the event history.
+    pub fn get_title(&self) -> app::Result<String> {
+        Ok(self
+            .metadata
+            .get("title")?
             .map(|v| v.get().clone())
-            .unwrap_or_else(|| "Untitled Document".to_string())
+            .unwrap_or_else(|| "Untitled Document".to_string()))
     }
 
     /// Get document statistics
@@ -260,12 +274,10 @@ impl EditorState {
         let length = self.get_length()?;
         let total_edits = self.edit_count.value()?;
 
-        let title = self.get_title();
+        let title = self.get_title()?;
         let owner = self
             .metadata
-            .get("owner")
-            .ok()
-            .flatten()
+            .get("owner")?
             .map(|v| v.get().clone())
             .unwrap_or_else(|| "Unknown".to_string());
 
@@ -363,6 +375,6 @@ mod tests {
         let mut app = TestHost::new(EditorState::init);
 
         app.call(|s| s.set_title("My Doc".into())).unwrap();
-        assert_eq!(app.view(|s| s.get_title()), "My Doc");
+        assert_eq!(app.view(|s| s.get_title()).unwrap(), "My Doc");
     }
 }

@@ -153,6 +153,31 @@ impl<'a> NamespaceGovernance<'a> {
     }
 
     pub fn apply_signed_op(&self, op: &SignedNamespaceOp) -> EyreResult<ApplyNamespaceOpResult> {
+        // Validate the op's namespace BEFORE any side effects. The op-log write
+        // (`store_signed_operation`) already rejects a namespace mismatch, but
+        // it runs only *after* `advance_dag_head` and the per-op-kind side
+        // effects below — so a mismatched op would mutate state and advance the
+        // DAG head, then fail at store time, leaving the head advanced for an op
+        // that was never logged (and never can be). Checking here keeps the
+        // idempotency guard's invariant ("op in the log ⟹ its head advance
+        // already ran") intact: a wrong-namespace op is rejected before it can
+        // touch anything.
+        //
+        // The public free-function entry points are safe by construction —
+        // `apply_signed_namespace_op_at_cut` builds the `NamespaceGovernance`
+        // handle with `op.namespace_id`, and the publisher path
+        // (`publish_post_gate`) signs with `self.namespace_id` — so this guard
+        // is dormant for them and exists to defend against direct misuse of the
+        // struct API (`NamespaceGovernance::new(store, X).apply_signed_op(op)`
+        // with `op.namespace_id != X`).
+        if op.namespace_id != self.namespace_id {
+            return Err(eyre::eyre!(
+                "namespace mismatch in apply_signed_op: handle={}, op={}",
+                hex::encode(self.namespace_id),
+                hex::encode(op.namespace_id)
+            ));
+        }
+
         op.verify_signature()
             .map_err(|e| eyre::eyre!("signed namespace op: {e}"))?;
 
@@ -216,8 +241,8 @@ impl<'a> NamespaceGovernance<'a> {
                         // a failure here must not block the DAG (every later
                         // op would orphan), so errors are logged, not
                         // propagated.
-                        let envelope_bytes = borsh::to_vec(envelope).unwrap_or_default();
-                        match self.apply_received_group_key(*group_id, &envelope_bytes, op.signer) {
+                        match self.apply_received_group_key_envelope(*group_id, envelope, op.signer)
+                        {
                             Ok(retry_divergence) => {
                                 if retry_divergence.is_some() {
                                     result.divergence = retry_divergence;
@@ -236,11 +261,37 @@ impl<'a> NamespaceGovernance<'a> {
                             }
                         }
                     }
-                    RootOp::MemberJoined { .. } => {
+                    RootOp::MemberJoined {
+                        member,
+                        signed_invitation,
+                    }
+                    | RootOp::MemberJoinedAt {
+                        member,
+                        signed_invitation,
+                        ..
+                    } => {
                         // The joiner obtains the group key via the direct
                         // join response and the joiner-side pull
                         // (`recover_missing_group_keys`); no delivery is
                         // triggered from this apply path.
+                        //
+                        // Clear the deny-list on EVERY peer, not just the
+                        // local rejoiner — same rationale as the
+                        // `MemberJoinedOpen` arm below and the sibling
+                        // `MemberAdded` (`mod.rs:1215`) /
+                        // `MemberJoinedViaTeeAttestation` (`mod.rs:1502`)
+                        // arms. A prior `MemberLeft` (or `MemberRemoved`)
+                        // stamped this member on each peer's per-subgroup
+                        // deny-list; re-joining via an open invitation must
+                        // clear that stale `GroupDeniedMember` row, or peers
+                        // keep dropping the rejoiner's state-delta traffic at
+                        // the receive filter forever. `MemberJoined` /
+                        // `MemberJoinedAt` were the missing arms. Idempotent
+                        // on a member who was never denied. The group key is
+                        // the invitation's `group_id`, the subgroup the
+                        // joiner materialized a direct membership row in.
+                        let group_id = signed_invitation.invitation.group_id;
+                        DenyListRepository::new(self.store).clear(&group_id, member)?;
                     }
                     RootOp::MemberJoinedOpen { member, group_id } => {
                         // The joiner pulls the subgroup key directly from a
@@ -1031,8 +1082,6 @@ impl<'a> NamespaceGovernance<'a> {
         envelope_bytes: &[u8],
         responder_identity: PublicKey,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
-        let ns_id = ContextGroupId::from(self.namespace_id);
-
         let envelope: KeyEnvelope = match borsh::from_slice(envelope_bytes) {
             Ok(env) => env,
             Err(e) => {
@@ -1040,6 +1089,20 @@ impl<'a> NamespaceGovernance<'a> {
                 return Ok(None);
             }
         };
+        self.apply_received_group_key_envelope(group_id, &envelope, responder_identity)
+    }
+
+    /// Like [`apply_received_group_key`](Self::apply_received_group_key) but
+    /// takes an already-decoded [`KeyEnvelope`]. The local `KeyDelivery` apply
+    /// path holds the envelope in hand, so it calls this directly instead of
+    /// serializing it only to immediately re-decode the bytes.
+    pub(crate) fn apply_received_group_key_envelope(
+        &self,
+        group_id: [u8; 32],
+        envelope: &KeyEnvelope,
+        responder_identity: PublicKey,
+    ) -> EyreResult<Option<super::super::DivergenceReport>> {
+        let ns_id = ContextGroupId::from(self.namespace_id);
 
         let Some(identity) = NamespaceRepository::new(self.store).identity_record(&ns_id)? else {
             return Ok(None);
@@ -1053,7 +1116,7 @@ impl<'a> NamespaceGovernance<'a> {
             return Ok(None);
         }
 
-        let group_key = match GroupKeyring::unwrap_for_recipient(&recipient_sk, &envelope) {
+        let group_key = match GroupKeyring::unwrap_for_recipient(&recipient_sk, envelope) {
             Ok(k) => k,
             Err(e) => {
                 tracing::warn!(?e, "failed to unwrap received group key envelope");

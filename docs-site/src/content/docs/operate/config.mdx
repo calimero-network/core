@@ -1,0 +1,412 @@
+---
+title: Configuration Reference
+description: Section-by-section reference for the merod node config.toml.
+sidebar:
+  order: 5
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+A node reads a single TOML file, `config.toml`, from its home directory
+(written by `merod init` and re-read on `merod run`). This page documents every
+section, key, type, default, and meaning, grounded in the structs the node
+actually deserializes.
+
+<Aside type="note">
+Calimero is pre-1.0. Keys can be added, renamed, or removed between releases.
+Treat the defaults here as the values `merod init` writes today, not a frozen
+contract. The parser is lenient: unknown keys are ignored rather than rejected.
+</Aside>
+
+## Top-level keys
+
+These live at the root of the file, outside any section.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `mode` | `"standard"` \| `"readonly"` | `"standard"` | Node role. `readonly` disables JSON-RPC execution and is used for observer / TEE nodes. (The values serialize lowercase; the `merod init --mode` flag spells the read-only value `read-only`.) |
+
+## `[identity]`
+
+The libp2p transport identity for the node. Generated automatically on
+`merod init`; you normally never hand-edit it.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `peer_id` | string (base58) | generated | Libp2p peer ID derived from the keypair. Must match `keypair`. |
+| `keypair` | string (base58) | generated | Base58-encoded protobuf libp2p keypair (the node's private key). |
+
+```toml
+[identity]
+peer_id = "12D3KooWQrRJCnybfvLGZ7d4iaqGkGHpjLAB7PG6sFtXrHbkPMFc"
+keypair = "23jhTbrf...redacted...CyLA"
+```
+
+## `[swarm]`
+
+libp2p listen addresses for peer-to-peer traffic.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `listen` | array of multiaddr | `["/ip4/0.0.0.0/tcp/2428", "/ip4/0.0.0.0/udp/2428/quic-v1", "/ip6/::/tcp/2428", "/ip6/::/udp/2428/quic-v1"]` | Addresses the swarm binds for inbound peer connections. `merod init` seeds TCP and QUIC on both IPv4 (`0.0.0.0`) and IPv6 (`::`). Default port is `2428`. |
+
+## `[server]`
+
+The local HTTP server: admin API, JSON-RPC, WebSocket, and SSE. Default port is
+`2528`.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `listen` | array of multiaddr | `["/ip4/127.0.0.1/tcp/2528", "/ip6/::1/tcp/2528"]` | Addresses the HTTP server binds. `merod init` seeds both IPv4 (`127.0.0.1`) and IPv6 (`::1`) loopback. |
+| `auth_mode` | `"proxy"` \| `"embedded"` | `"proxy"` | How auth is enforced. `proxy` expects an external auth proxy in front of the node; `embedded` runs the bundled auth service (see `[server.embedded_auth]`). |
+
+### `[server.admin]`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | bool | `true` | Enables the admin API (and admin dashboard UI). When `false`, none of the admin routes are mounted. |
+
+### `[server.jsonrpc]`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | bool | `true` | Enables the JSON-RPC endpoint at `/jsonrpc`. |
+
+### `[server.websocket]`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | bool | `true` | Enables the WebSocket endpoint at `/ws`. |
+| `ping_interval_secs` | integer (seconds) | `30` | Interval between server-initiated pings. `0` disables server pings (rely on client pings). |
+| `pong_timeout_secs` | integer (seconds) | `10` | If no pong arrives within this window after a ping, the connection is closed. |
+
+### `[server.sse]`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | bool | `true` | Enables the Server-Sent Events endpoint at `/sse`. |
+
+### `[server.embedded_auth]`
+
+Present only when `auth_mode = "embedded"`. Carries the bundled auth service
+configuration (storage backend, etc.).
+
+<Aside type="caution">
+The embedded-auth schema lives in the auth crate (`mero-auth`) rather than the
+node config crate and is broader than this page covers. If you run
+`auth_mode = "embedded"`, consult the auth service configuration directly.
+</Aside>
+
+## `[bootstrap]`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `nodes` | array of multiaddr | `[]` | Bootstrap peers to dial on startup for initial network entry. `merod init --network` can seed this with IPFS or Calimero dev boot nodes. |
+
+## `[discovery]`
+
+Peer discovery and NAT-traversal behavior.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `mdns` | bool | `true` | Enables local-network mDNS peer discovery. |
+| `advertise_address` | bool | `false` | Whether to advertise external addresses to peers. Gates `external_address`. |
+| `external_address` | array of multiaddr | `[]` | Operator-supplied external addresses, seeded into the swarm's confirmed external-address set (used for static-IP / hosted deployments instead of AutoNAT discovery). |
+
+### `[discovery.rendezvous]`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `namespace` | string | `"/calimero/devnet/global"` | Rendezvous namespace used for peer registration/discovery. |
+| `discovery_rpm` | float | `0.5` | Discovery queries per minute (throttle floor; `0.5` ≈ one query per 120s per peer in steady state). |
+| `discovery_interval` | duration table | `{ secs = 15, nanos = 0 }` | Interval between rendezvous discovery ticks. Serialized as a nested `[discovery.rendezvous.discovery_interval]` table with `secs` / `nanos`. |
+| `registrations_limit` | integer | `3` | Max rendezvous registrations to hold. |
+
+### `[discovery.relay]`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `registrations_limit` | integer | `3` | Max relay reservations to hold. |
+
+### `[discovery.autonat]`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `max_candidates` | integer | `5` | Max AutoNAT server candidates probed for external-address confirmation. |
+| `probe_interval` | duration table | `{ secs = 10, nanos = 0 }` | Interval between AutoNAT probes. Serialized as a nested table with `secs` / `nanos`. |
+
+<Aside type="caution">
+Older `config.toml` files may show `[discovery.autonat]` with a
+`confidence_threshold` key instead of `max_candidates` / `probe_interval`. The
+current node reads the fields documented above; regenerate or update old files
+to match.
+</Aside>
+
+### `[specialized_node]`
+
+Settings for specialized (e.g. read-only / observer) nodes.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `invite_topic` | string | `"mero_specialized_node_invites"` | Gossip topic used for specialized-node invite discovery. |
+| `accept_mock_tee` | bool | `false` | Accept mock TEE attestation. Testing only — never enable in production. |
+
+## `[sync]`
+
+State-sync timing. Durations are expressed in milliseconds via the `_ms`
+suffixed keys.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `timeout_ms` | integer (ms) | `30000` | Per-request sync timeout. |
+| `session_deadline_ms` | integer (ms) | `30000` (falls back to `timeout_ms`) | Outer deadline for one sync session run. Optional; lower it to fail-fast on stuck sessions when not doing cold-start snapshot syncs. |
+| `interval_ms` | integer (ms) | `5000` | Interval between sync attempts. |
+| `frequency_ms` | integer (ms) | `10000` | Sync scheduling frequency. |
+
+## `[datastore]`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `path` | path | `"data"` | RocksDB datastore directory, relative to the node home. |
+
+## `[blobstore]`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `path` | path | `"blobs"` | On-disk blob storage directory, relative to the node home. |
+
+## `[context]`
+
+Context client configuration (the local signer used for group governance).
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `migration_v2` | bool | `true` | Master switch for the hybrid zero-downtime migration framework. Pin `false` to restore the legacy namespace-cascade write-freeze. |
+
+### `[context.config]`
+
+The client signer config. The minimal form selects the local self-signer:
+
+```toml
+[context.config.signer.self]
+```
+
+<Aside type="caution">
+`[context.config]` can also carry per-protocol external-chain signer blocks
+(e.g. `[context.config.near.testnet]`, `[context.config.signer.relayer]`). That
+surface is large, deployment-specific, and largely legacy for chainless local
+group governance — it is not enumerated here. Use the minimal self-signer form
+unless you have a specific external-chain requirement.
+</Aside>
+
+## `[runtime]`
+
+Operator-tunable WASM VM limits. Every key is optional; an absent `[runtime]`
+section (or any absent sub-key) keeps the built-in default behavior.
+
+### `[runtime.limits]`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `max_logs` | integer | built-in `VMLimits` default | Max log entries one execution may emit. Capped at `1_000_000`; exceeding the limit traps the execution. |
+| `max_log_size` | integer (bytes) | built-in `VMLimits` default | Max size of a single log line. Capped at 10 MiB; an over-long line traps the execution. |
+
+<Aside type="note">
+The transient per-execution log buffer is bounded by the product
+`max_logs * max_log_size`. Raising both multiplies the worst-case memory
+ceiling, so tune them together.
+</Aside>
+
+## `[dag_compaction]`
+
+Bounds on-disk delta-log growth by pruning history older than a recent retain
+window. Enabled by default; set `enabled = false` to opt out.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | bool | `true` | Whether periodic DAG compaction runs. |
+| `min_deltas_before_compact` | integer | `10000` | Minimum delta rows a context must hold before it is eligible for compaction. |
+| `retain_recent_count` | integer | `1000` | Number of most-recent deltas retained after a sweep. Must be strictly below `min_deltas_before_compact`. |
+| `check_interval` | duration (seconds) | `3600` | Interval between compaction sweeps. Serialized as a plain integer count of seconds (e.g. `check_interval = 3600`), not a `{ secs, nanos }` table. Must be non-zero. |
+
+### Tuning compaction for a high-write node
+
+The defaults keep ~1000 recent deltas per context and only start pruning once a
+context holds 10000 — fine for a quiet node, but a busy data-plane context can
+accumulate that history quickly. A production excerpt that prunes more
+aggressively on a high-write deployment:
+
+```toml
+[dag_compaction]
+enabled = true
+# Start pruning sooner on a high-write context...
+min_deltas_before_compact = 4000
+# ...but keep a generous recent window so peers can still catch up via deltas
+# instead of falling back to a full snapshot.
+retain_recent_count = 1500
+# Sweep more often than the 1h default so growth is bounded between checks.
+check_interval = 900
+```
+
+Keep `retain_recent_count` comfortably above the largest delta gap a lagging
+peer is expected to close incrementally: prune below that and the peer can only
+reconverge via a full snapshot. `retain_recent_count` must stay strictly below
+`min_deltas_before_compact`, and `check_interval` must be non-zero — the node
+**refuses to start** with `[dag_compaction] enabled = true` and either invariant
+violated, rather than silently letting the delta log grow unbounded.
+
+## Background tombstone GC (not configurable)
+
+DAG compaction is one of **two** independent background maintenance loops; the
+other is the **tombstone garbage collector**, and the two reclaim different
+things:
+
+| Loop | Reclaims | Cadence | Operator-tunable? |
+| --- | --- | --- | --- |
+| DAG compaction | old delta-log **history** older than the recent retain window | `[dag_compaction] check_interval` (default 1h) | Yes — the `[dag_compaction]` keys above. |
+| Tombstone GC | expired CRDT **tombstones** (the markers a deleted entity leaves behind) | fixed **12h** | No — not a `config.toml` key. |
+
+When an entity is deleted, the CRDT layer keeps a **tombstone** so the deletion
+can win against a concurrent or out-of-order write that arrives later. A
+tombstone is retained for a fixed **24h** before it becomes eligible for
+collection, and the GC loop runs every **12h**, scanning each context and
+deleting tombstones older than that window. Both durations are compile-time
+constants, not config keys — there is no `[gc]` section and no `gc_interval`
+knob, so nothing here needs (or accepts) tuning. The retention window is
+deliberately longer than the GC interval, and shorter than the offline window
+that forces a full resync, so a node that reconnects within the window can still
+reconcile deletions incrementally.
+
+## `[tee]`
+
+Trusted Execution Environment configuration. The entire section is optional and
+absent on non-TEE deployments.
+
+### `[tee.kms.phala]`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `url` | URL | — (required if present) | URL of the Phala Cloud KMS service. |
+
+#### `[tee.kms.phala.tls]`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `ca_cert_path` | path | unset | PEM CA certificate added to the KMS TLS trust store. Absolute path to an existing file. |
+| `client_cert_path` | path | unset | PEM client certificate for mTLS. Must be set together with `client_key_path`. |
+| `client_key_path` | path | unset | PEM client private key for mTLS. Must be set together with `client_cert_path`. |
+
+#### `[tee.kms.phala.attestation]`
+
+Policy for verifying KMS self-attestation before requesting storage keys.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | Enable KMS attestation verification before requesting keys. |
+| `accept_mock` | bool | `false` | Accept mock quotes (development only). Bypasses real attestation guarantees. |
+| `allowed_tcb_statuses` | array of string | `["UpToDate"]` | Allowed TCB statuses for quote verification. Required non-empty when `enabled` and not `accept_mock`. |
+| `allowed_mrtd` | array of string (hex) | `[]` | Allowed KMS MRTD measurement values. Required non-empty when enforcing real attestation. |
+| `allowed_rtmr0` | array of string (hex) | `[]` | Allowed KMS RTMR0 values. Required when `enabled` and not `accept_mock`. |
+| `allowed_rtmr1` | array of string (hex) | `[]` | Allowed KMS RTMR1 values. Required when `enabled` and not `accept_mock`. |
+| `allowed_rtmr2` | array of string (hex) | `[]` | Allowed KMS RTMR2 values. Required when `enabled` and not `accept_mock`. |
+| `allowed_rtmr3` | array of string (hex) | `[]` | Allowed KMS RTMR3 values. Required when `enabled` and not `accept_mock`. |
+| `binding_b64` | string (base64) | unset | Optional 32-byte binding value for the `/attest` call. Defaults to the domain-separator binding. |
+| `policy_json_path` | path | unset | Path to an externally-generated attestation policy JSON (for startup scripts that fetch/verify signed policy artifacts). |
+
+## Representative `config.toml`
+
+A complete, typical single-node config (chainless local self-signer):
+
+```toml
+mode = "standard"
+
+[identity]
+peer_id = "12D3KooWQrRJCnybfvLGZ7d4iaqGkGHpjLAB7PG6sFtXrHbkPMFc"
+keypair = "23jhTbrf...redacted...CyLA"
+
+[swarm]
+listen = [
+    "/ip4/0.0.0.0/tcp/2428",
+    "/ip4/0.0.0.0/udp/2428/quic-v1",
+    "/ip6/::/tcp/2428",
+    "/ip6/::/udp/2428/quic-v1",
+]
+
+[server]
+listen = ["/ip4/127.0.0.1/tcp/2528", "/ip6/::1/tcp/2528"]
+auth_mode = "proxy"
+
+[server.admin]
+enabled = true
+
+[server.jsonrpc]
+enabled = true
+
+[server.websocket]
+enabled = true
+ping_interval_secs = 30
+pong_timeout_secs = 10
+
+[server.sse]
+enabled = true
+
+[bootstrap]
+nodes = []
+
+[discovery]
+mdns = true
+advertise_address = false
+
+[discovery.rendezvous]
+namespace = "/calimero/devnet/global"
+discovery_rpm = 0.5
+registrations_limit = 3
+
+[discovery.rendezvous.discovery_interval]
+secs = 15
+nanos = 0
+
+[discovery.relay]
+registrations_limit = 3
+
+[discovery.autonat]
+max_candidates = 5
+
+[discovery.autonat.probe_interval]
+secs = 10
+nanos = 0
+
+[sync]
+timeout_ms = 30000
+session_deadline_ms = 30000
+interval_ms = 5000
+frequency_ms = 10000
+
+[datastore]
+path = "data"
+
+[blobstore]
+path = "blobs"
+
+[context]
+migration_v2 = true
+
+[context.config.signer.self]
+
+[runtime.limits]
+max_logs = 2048
+max_log_size = 32768
+
+[dag_compaction]
+enabled = true
+min_deltas_before_compact = 10000
+retain_recent_count = 1000
+```
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Networking & discovery" href="/operate/networking/" description="What the [swarm], [bootstrap], and [discovery] keys actually do." />
+  <LinkCard title="Hardening & security" href="/operate/security/" description="Which settings keep the admin API and keys safe in production." />
+  <LinkCard title="Production deployment" href="/operate/deployment/" description="Put this config behind a reverse proxy and run it as a service." />
+</CardGrid>

@@ -2,6 +2,8 @@
 
 This document describes the wire protocols, message formats, and communication patterns used by the Calimero network layer.
 
+> **Scope note.** This reference covers the core transport, stream, gossipsub, and discovery protocols. It predates several later networking features — gossipsub peer scoring, mesh tuning, `flood_publish`, the persistent peer-address cache, ping-failure connection reaping, AutoNAT v2, DCUtR hole-punching, and the specialized-node-invite request-response protocol. For those, see the docs site: [Networking & the wire protocol](https://calimero.network/protocol/networking/) and [Networking & Discovery](https://calimero.network/operate/networking/).
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -120,19 +122,25 @@ Protocol ID: /calimero/blob/0.0.2
 - Large state snapshots
 - Media/file transfers within contexts
 
-**Message Format**: Same as `CALIMERO_STREAM_PROTOCOL`
+**Message Format**: Length-delimited frames (same codec as `CALIMERO_STREAM_PROTOCOL`). The first frame each way is a JSON `BlobRequest` / `BlobResponse` header; the payload that follows is a **stream of Borsh `BlobChunk` frames**, not a single response.
 
-**Flow**:
+**Flow** (chunked stream):
 
 ```text
 Requester                              Provider
     │                                      │
-    │──── BlobRequest(blob_id, ctx) ──────►│
+    │── BlobRequest { blob_id, ctx, auth? }►│
     │                                      │
-    │◄──── BlobResponse(data) ─────────────│
-    │      or BlobNotFound                 │
+    │◄── BlobResponse { found, size? } ─────│
+    │                                      │
+    │◄── BlobChunk { data } ────────────────│  (one per stored chunk)
+    │◄── BlobChunk { data } ────────────────│
+    │              ...                      │
+    │◄── BlobChunk { data: [] } ────────────│  (empty chunk = end of stream)
     │                                      │
 ```
+
+If the provider does not hold the blob it replies `BlobResponse { found: false }` and sends no chunks. The requester bounds the transfer with a 60s overall and 30s per-chunk timeout, and recomputes the `BlobId` from the assembled bytes before accepting them. Non-public blobs require a signed `BlobAuth` (member of `context_id`) on the request.
 
 ### CALIMERO_KAD_PROTO_NAME
 
@@ -146,8 +154,10 @@ Protocol ID: /calimero/kad/1.0.0
 
 **Use Cases**:
 - Peer discovery
-- Blob provider discovery (which peers have a specific blob)
+- Blob discovery via **custom Kademlia records** (see below) — *not* libp2p provider records
 - Distributed peer routing
+
+**Blob discovery uses ordinary Kad records, not `StartProviding` / `GetProviders`.** To announce a blob, a node `put_record`s a record keyed by `context_id ‖ blob_id` whose value is `local_peer_id ‖ size` (size as little-endian `u64`), with `Quorum::One`. To discover, a node `get_record`s the same `context_id ‖ blob_id` key and dials the advertised peer. Keys are always context-scoped — global (context-less) blob queries are not supported.
 
 ## Gossipsub Topics
 
@@ -155,12 +165,15 @@ Calimero uses [Gossipsub](https://github.com/libp2p/specs/blob/master/pubsub/gos
 
 ### Topic Structure
 
+A node subscribes to a topic per overlay it belongs to, not just one per context:
+
 ```
-Topic ID: <context_id_hex>
-Example:  "a1b2c3d4e5f6..."  (64 hex chars for 32-byte ContextId)
+Topic ID: <context_id>       a context's data operations and heartbeats
+          ns/<hex>           a namespace's root governance operations
+          group/<hex>        a group's governance operations
 ```
 
-**One topic per context**: Each context (application instance) has exactly one gossip topic.
+So a single node typically holds several topics at once — one per context, namespace, and group it follows.
 
 ### Message Format
 
@@ -197,10 +210,16 @@ gossipsub::MessageAuthenticity::Signed(keypair)
 ### Rendezvous Protocol
 
 ```
-Namespace: /calimero/devnet/global
+Configured namespace: /calimero/devnet/global   (bootstrap / namespace-join path)
+Per-overlay namespaces (derived from the subscribed gossipsub topic):
+    ns/<hex>      → /calimero/ns/<hex>
+    group/<hex>   → /calimero/grp/<hex>
+    <context-id>  → /calimero/ctx/<id>
 ```
 
 **Purpose**: Peer discovery through known rendezvous points.
+
+**Per-overlay, not one global namespace.** Beyond the configured global namespace, a node registers and discovers under one key *per overlay it follows*, derived deterministically from the gossipsub topic string. `discover` on such a key returns only co-members of that exact namespace, group, or context — relevant peers by construction. The global namespace is used for the bootstrap / namespace-join path (finding the members of a namespace the node does not belong to yet).
 
 **Flow**:
 
@@ -302,23 +321,23 @@ Requester                      DHT                       Provider
     │                           │                            │
     │  1. Need blob_id for context                           │
     │                                                        │
-    │── Kad.GetProviders(key) ─►│                            │
+    │── Kad.get_record(ctx‖blob_id) ►│                       │
     │                           │                            │
-    │◄─ Providers [peer_ids] ───│                            │
+    │◄─ Record(peer_id‖size) ───│                            │
     │                           │                            │
-    │  2. Choose provider                                    │
+    │  2. Dial the advertised peer                           │
     │                                                        │
     │── OpenStream(CALIMERO_BLOB_PROTOCOL) ─────────────────►│
+    │── BlobRequest { blob_id, context_id, auth? } ─────────►│
     │                                                        │
-    │── BlobRequest(blob_id, context_id) ──────────────────►│
+    │◄─ BlobResponse { found, size? } ───────────────────────│
+    │◄─ BlobChunk { data } ... BlobChunk { data: [] } ───────│
     │                                                        │
-    │◄─ BlobData(bytes) ─────────────────────────────────────│
-    │                                                        │
-    │  3. Verify hash matches blob_id                        │
+    │  3. Verify recomputed id matches blob_id               │
     │  4. Store locally                                      │
-    │  5. Announce as provider                               │
+    │  5. Announce own record                                │
     │                                                        │
-    │── Kad.StartProviding(key) ►│                           │
+    │── Kad.put_record(ctx‖blob_id, peer_id‖size) ►│         │
     │                            │                           │
 ```
 

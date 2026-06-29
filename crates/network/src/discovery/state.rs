@@ -7,6 +7,7 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
+use indexmap::IndexMap;
 use libp2p::core::transport::ListenerId;
 use libp2p::relay::HOP_PROTOCOL_NAME;
 use libp2p::rendezvous::{Cookie, Namespace};
@@ -25,6 +26,25 @@ const RENDEZVOUS_PROTOCOL_NAME: StreamProtocol = StreamProtocol::new("/rendezvou
 /// race) without keeping a permanently broken address around long enough
 /// to waste many rendezvous-tick dial attempts.
 pub(crate) const DIAL_FAILURE_EVICTION_THRESHOLD: u8 = 3;
+
+/// Maximum number of direct-dial addresses retained per peer in the live
+/// address book. Mirrors the persistent peer-cache cap
+/// ([`crate::discovery::peer_cache`]'s `MAX_ADDRS_PER_PEER`): a peer
+/// rarely needs more than one good address, and a small cap tolerates an
+/// in-flight IP change (old + new both present briefly).
+///
+/// The per-address dial-failure eviction
+/// ([`DIAL_FAILURE_EVICTION_THRESHOLD`]) already trims *dead* addresses,
+/// but it never bounds the count of *live* ones: a peer — honest with
+/// many interfaces, or adversarial — can advertise an unbounded list of
+/// listen addresses via identify, and without a cap [`add_peer_addr`]
+/// would grow the per-peer map one entry per distinct address ever seen.
+/// When the cap is reached, the address with the most consecutive dial
+/// failures is evicted to make room, preferentially keeping addresses
+/// that still work.
+///
+/// [`add_peer_addr`]: DiscoveryState::add_peer_addr
+pub(crate) const MAX_ADDRS_PER_PEER: usize = 4;
 
 /// Rendezvous-key prefixes for per-overlay registration/discovery.
 ///
@@ -330,12 +350,47 @@ impl DiscoveryState {
     /// directly — most notably relayed multiaddrs (`/p2p-circuit/`) for
     /// inbound connection records.
     pub(crate) fn add_peer_addr(&mut self, peer_id: PeerId, addr: &Multiaddr) {
-        let _ = self
-            .peers
-            .entry(peer_id)
-            .or_default()
-            .addrs
-            .insert(addr.clone(), 0);
+        let addrs = &mut self.peers.entry(peer_id).or_default().addrs;
+
+        // Existing address: a refresh, not growth. Reset its failure
+        // counter and move it to the most-recent end of the order by
+        // re-inserting. This keeps the ordering keyed on *last
+        // confirmation* rather than first insertion, so a long-lived
+        // address that keeps getting re-confirmed (identify push or
+        // successful dial) is treated as freshest and is the last to be
+        // evicted — faithful to the peer-cache's newest-first policy,
+        // which likewise moves an address to the front on every record.
+        // Bypasses the cap: membership is unchanged, so no sibling is
+        // evicted to "make room" for an address that's already present.
+        if addrs.shift_remove(addr).is_some() {
+            let _ = addrs.insert(addr.clone(), 0);
+            return;
+        }
+
+        // New address: enforce the per-peer cap before inserting so the
+        // map can't grow without bound. Evict the *worst* existing address
+        // — highest consecutive-failure count, ties broken toward the
+        // least-recently-confirmed (front of the insertion order; refreshes
+        // above move entries to the back). `min_by_key` over
+        // `(Reverse(count), idx)` reads unambiguously: smallest key wins, so
+        // the highest `count` and then the lowest `idx` are selected. This
+        // is deterministic (no HashMap iteration-order randomness) and
+        // mirrors the peer-cache's newest-first policy: the freshly added
+        // address is always kept, and when everything is equally healthy we
+        // drop the stalest entry — which is what lets us pick up a peer's
+        // new address after an IP change instead of pinning to an old one.
+        if addrs.len() >= MAX_ADDRS_PER_PEER {
+            if let Some(evict_idx) = addrs
+                .iter()
+                .enumerate()
+                .min_by_key(|(idx, (_, &count))| (core::cmp::Reverse(count), *idx))
+                .map(|(idx, _)| idx)
+            {
+                let _ = addrs.shift_remove_index(evict_idx);
+            }
+        }
+
+        let _ = addrs.insert(addr.clone(), 0);
     }
 
     /// Mark a dial failure for `addr` under `peer_id`. Increments the
@@ -353,7 +408,10 @@ impl DiscoveryState {
 
         *count = count.saturating_add(1);
         if *count >= DIAL_FAILURE_EVICTION_THRESHOLD {
-            let _ = peer_info.addrs.remove(addr);
+            // `shift_remove` (not `swap_remove`) so the remaining addresses
+            // keep their insertion order, which the cap-eviction tie-break
+            // relies on.
+            let _ = peer_info.addrs.shift_remove(addr);
             true
         } else {
             false
@@ -408,7 +466,7 @@ impl DiscoveryState {
                 let _ = discoveries.insert(mechanism);
 
                 let _ = entry.insert(PeerInfo {
-                    addrs: HashMap::default(),
+                    addrs: IndexMap::default(),
                     discoveries,
                     relay: None,
                     rendezvous: None,
@@ -779,7 +837,12 @@ impl DiscoveryState {
 /// counter at zero indefinitely.
 #[derive(Clone, Debug, Default)]
 pub struct PeerInfo {
-    addrs: HashMap<Multiaddr, u8>,
+    /// Known direct-dial addresses mapped to their consecutive
+    /// dial-failure count. An `IndexMap` (insertion-ordered) rather than a
+    /// `HashMap` so cap eviction is deterministic and can break failure-
+    /// count ties by age — see [`MAX_ADDRS_PER_PEER`] and
+    /// [`DiscoveryState::add_peer_addr`].
+    addrs: IndexMap<Multiaddr, u8>,
     discoveries: HashSet<PeerDiscoveryMechanism>,
     relay: Option<PeerRelayInfo>,
     rendezvous: Option<PeerRendezvousInfo>,

@@ -48,7 +48,7 @@ mod imports;
 mod registers;
 
 pub use errors::VMLogicError;
-pub use host_functions::{BlobHandle, Event, XCall};
+pub use host_functions::{BlobHandle, CallbackHandlerGuard, Event, XCall};
 use registers::Registers;
 
 /// A specialized `Result` type for VMLogic operations.
@@ -155,6 +155,22 @@ const DEFAULT_MAX_BLOB_CHUNK_SIZE_MIB: u64 = 10;
 const DEFAULT_MAX_METHOD_NAME_LENGTH: u64 = 256;
 /// Default maximum WASM module size in MiB (20 MiB).
 const DEFAULT_MAX_MODULE_SIZE_MIB: u64 = 20;
+/// Default maximum commit-artifact size in MiB (16 MiB).
+///
+/// Bounds the binary artifact a guest hands to `env::commit`. The artifact is
+/// read out of guest memory and copied onto the host `Outcome` (then broadcast
+/// in receipts), so without a cap a contract could force a copy as large as
+/// guest memory itself (~64 MiB). 16 MiB sits above the 10 MiB
+/// `max_storage_value_size` single-value cap — so a max-size value committed as
+/// an artifact still fits — while staying well under the guest-memory ceiling.
+const DEFAULT_MAX_ARTIFACT_SIZE_MIB: u64 = 16;
+/// Default maximum *precompiled* (serialized) module size in MiB (256 MiB).
+///
+/// Generously larger than [`DEFAULT_MAX_MODULE_SIZE_MIB`] because a serialized
+/// artifact (native code + relocations + metadata) is materially bigger than
+/// the source WASM it was compiled from. This is a defense-in-depth ceiling on
+/// deserialization input, not a tight functional limit.
+const DEFAULT_MAX_PRECOMPILED_MODULE_SIZE_MIB: u64 = 256;
 
 /// Defines the resource limits for a VM instance.
 ///
@@ -211,6 +227,27 @@ pub struct VMLimits {
     /// The default of 10 MiB accommodates most applications while preventing memory
     /// exhaustion. Consider reducing for memory-constrained environments.
     pub max_module_size: u64,
+    /// The maximum size, in bytes, of the binary artifact a guest may commit via
+    /// `env::commit`. The artifact is copied out of guest memory onto the
+    /// `Outcome`; without this cap the only bound is guest memory itself
+    /// (~64 MiB). Exceeding it traps the execution with
+    /// `HostError::ArtifactSizeOverflow`.
+    pub max_artifact_size: u64,
+    /// The maximum size, in bytes, of a *precompiled* (serialized) module
+    /// accepted by [`Engine::from_precompiled`](crate::Engine::from_precompiled).
+    ///
+    /// Distinct from [`max_module_size`](Self::max_module_size): that bounds
+    /// source WASM before compilation, whereas this bounds the larger
+    /// serialized artifact (native code + metadata) before deserialization.
+    /// Even though `from_precompiled` callers attest (via `unsafe`) that the
+    /// bytes are trusted, this cap is a defense-in-depth bound so a corrupt or
+    /// unexpectedly large artifact cannot drive unbounded allocation. Setting
+    /// it to 0 rejects all non-empty precompiled modules. An empty slice (0
+    /// bytes) always passes the size check regardless of this setting (the
+    /// check is `size > limit`, so `0 > 0` is false) and surfaces as a
+    /// deserialization error instead, matching the behavior of
+    /// [`max_module_size`](Self::max_module_size).
+    pub max_precompiled_module_size: u64,
 }
 
 impl Default for VMLimits {
@@ -246,6 +283,9 @@ impl Default for VMLimits {
             max_blob_chunk_size: DEFAULT_MAX_BLOB_CHUNK_SIZE_MIB * u64::from(ONE_MIB),
             max_method_name_length: DEFAULT_MAX_METHOD_NAME_LENGTH,
             max_module_size: DEFAULT_MAX_MODULE_SIZE_MIB * u64::from(ONE_MIB),
+            max_artifact_size: DEFAULT_MAX_ARTIFACT_SIZE_MIB * u64::from(ONE_MIB),
+            max_precompiled_module_size: DEFAULT_MAX_PRECOMPILED_MODULE_SIZE_MIB
+                * u64::from(ONE_MIB),
         }
     }
 }
@@ -873,6 +913,7 @@ mod tests {
         assert_eq!(limits.max_blob_handles, 100);
         assert_eq!(limits.max_blob_chunk_size, 10 << 20); // 10 MiB
         assert_eq!(limits.max_method_name_length, 256);
+        assert_eq!(limits.max_artifact_size, 16 << 20); // 16 MiB
     }
 
     /// A smoke test for the successful path of the `finish` method.

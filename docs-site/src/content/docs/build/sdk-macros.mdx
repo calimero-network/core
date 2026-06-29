@@ -1,0 +1,376 @@
+---
+title: SDK Macros
+description: Reference for the #[app::*] attribute and function-like macros that define a Calimero application.
+sidebar:
+  order: 3
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Everything an app exposes to the runtime is declared with macros re-exported
+under `calimero_sdk::app`. They are defined in `crates/sdk/macros/src/lib.rs` and
+brought into scope with `use calimero_sdk::app;`.
+
+## Summary
+
+| Macro | Kind | Applies to | What it does |
+|-------|------|------------|--------------|
+| `#[app::state]` | attribute | struct | Declares the persistent application state. |
+| `#[app::logic]` | attribute | `impl` block | Turns methods into runtime entry points. |
+| `#[app::init]` | attribute | method | Marks the constructor run when the app is first installed in a context. |
+| `#[app::view]` | attribute | `&self` method | Marks a read-only method (shared lock; no mutation). |
+| `#[app::xcall]` | attribute | method | Marks a method callable from other contexts via cross-context call. |
+| `#[app::destroy]` | attribute | method | Opts a method into state destruction (consuming `self`). |
+| `#[app::event]` | attribute | struct / enum | Declares emittable events. |
+| `#[app::private]` | attribute | struct / enum | Declares node-local (un-synchronized) state. |
+| `#[app::migrate]` | attribute | function | Exports a state-migration function for upgrades. |
+| `#[app::migration_check]` | attribute | `fn(old, new) -> bool` | Exports a predicate the runtime runs to accept/abort a migration. |
+| `#[derive(app::Mergeable)]` | derive | struct | Derives `Mergeable` so a custom struct can be a CRDT value. |
+| `#[derive(app::Migrate)]` | derive | struct | Generates a migration from per-field rules. |
+| `app::emit!(..)` | function-like | expression | Emits an event, optionally with a handler. |
+| `app::log!(..)` | function-like | expression | Logs a formatted message to the runtime. |
+| `app::err!(..)` | function-like | expression | Builds an `Err(app::Error::..)`. |
+| `app::bail!(..)` | function-like | expression | Returns early with an error. |
+
+<Aside type="note">
+  The marker attributes (`#[app::init]`, `#[app::view]`, `#[app::xcall]`,
+  `#[app::destroy]`) are no-ops on their own — they emit the item unchanged. They
+  exist so `#[app::logic]` can read them off the methods and so they are recorded
+  in the app's ABI. "No magic": any behavior that affects generated code is part
+  of the attribute surface.
+</Aside>
+
+## A minimal app
+
+Before the per-macro reference, here is a complete, runnable skeleton that uses
+the four macros every app needs: state, an init constructor, a mutating method,
+and a read-only view. Each numbered comment maps to a macro described below.
+
+```rust
+use calimero_sdk::app;
+use calimero_storage::collections::{LwwRegister, UnorderedMap};
+
+// 1. The single persistent state struct, built from CRDT collections.
+#[app::state(emits = for<'a> Event<'a>)]
+pub struct KvStore {
+    items: UnorderedMap<String, LwwRegister<String>>,
+}
+
+// 2. The events this app may emit (named in `emits = ..` above).
+#[app::event]
+pub enum Event<'a> {
+    Inserted { key: &'a str, value: &'a str },
+}
+
+#[app::logic]
+impl KvStore {
+    // 3. Constructor: runs once, when the app is first installed in a context.
+    #[app::init]
+    pub fn init() -> KvStore {
+        KvStore { items: UnorderedMap::new() }
+    }
+
+    // 4. Mutating method: takes `&mut self`, so it commits state on success.
+    pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
+        app::emit!(Event::Inserted { key: &key, value: &value });
+        self.items.insert(key, value.into())?;
+        Ok(())
+    }
+
+    // 5. Read-only view: takes `&self`, runs under a shared lock, never commits.
+    #[app::view]
+    pub fn get(&self, key: String) -> app::Result<Option<String>> {
+        Ok(self.items.get(&key)?.map(|v| v.get().clone()))
+    }
+}
+```
+
+## State and logic
+
+### `#[app::state]`
+
+Declares the single persistent state struct. It must be a `struct` — applying it
+to an `enum` is a compile error (no `Mergeable` impl can be generated for an
+enum). State is built from [CRDT collections](/build/collections/) so concurrent
+edits merge deterministically. The macro accepts two optional parameters:
+
+- `emits = <EventType>` — the event type this app may emit (use a `for<'a>`
+  binder for events that borrow, as below).
+- `version = N` — a schema version, forwarded to `#[derive(app::Migrate)]` for
+  migrations.
+
+```rust
+use calimero_sdk::app;
+use calimero_storage::collections::{LwwRegister, UnorderedMap};
+
+#[app::state(emits = for<'a> Event<'a>)]
+pub struct KvStore {
+    items: UnorderedMap<String, LwwRegister<String>>,
+}
+```
+
+<Aside type="caution">
+  `#[app::state]` (and `#[derive(app::Mergeable)]`) reject fields that have no
+  merge semantics — `std::collections::*`, bare `Vec`, bare `String`, and bare
+  primitives — because they would silently diverge across replicas. Wrap scalars
+  in `LwwRegister<T>` and use the SDK CRDT collections instead. The same lint
+  also rejects interior-mutability and shared-ownership wrappers
+  (`Rc`, `Arc`, `Weak`, `Cell`, `RefCell`, `UnsafeCell`, `OnceCell`, `OnceLock`,
+  `Mutex`, `RwLock`) **at any depth** — they have no merge semantics, don't
+  round-trip through borsh, and are non-portable to the single-writer wasm
+  replica.
+</Aside>
+
+### `#[app::logic]`
+
+Applied to an `impl` block, this exposes its public methods as runtime entry
+points: arguments are decoded from the caller's JSON, the receiver is loaded from
+state, and the return value is encoded back. Methods return `app::Result<T>`.
+
+```rust
+#[app::logic]
+impl KvStore {
+    pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
+        self.items.insert(key, value.into())?;
+        Ok(())
+    }
+}
+```
+
+<Aside type="caution" title="The method-argument JSON contract is strict">
+  Arguments are decoded from **one** JSON object whose keys are the parameter
+  names, and the generated input struct is `#[serde(deny_unknown_fields)]` — an
+  unexpected key is a hard error, not ignored. A method that declares **no**
+  arguments still rejects a call that sends a populated JSON object (extra
+  fields); an absent, empty, or `null` body is accepted, so callers need not send
+  `{}`. Decode failures `panic_str` with the method name and the expected
+  argument shape.
+</Aside>
+
+<Aside type="note">
+  Method names beginning with the reserved `__calimero` prefix are a **compile
+  error**. That prefix is reserved for the SDK's own generated exports (the
+  merge-registration hook, root-state merge, rekey thunks), so a public app
+  method using it would collide with an emitted symbol.
+</Aside>
+
+### `#[app::init]`
+
+Marks the constructor that produces the initial state when an app is first
+installed into a context. Takes no `self`; returns the state.
+
+```rust
+#[app::logic]
+impl KvStore {
+    #[app::init]
+    pub fn init() -> KvStore {
+        KvStore { items: UnorderedMap::new() }
+    }
+}
+```
+
+### `#[app::view]`
+
+Marks a read-only method. It is recorded in the ABI as read-only so the node can
+take a shared read lock instead of an exclusive write lock. It must take `&self`
+(a `&mut self` receiver is a compile error) and is mutually exclusive with
+`#[app::init]` and `#[app::xcall]`.
+
+```rust
+#[app::view]
+pub fn get(&self, key: String) -> app::Result<Option<String>> {
+    Ok(self.items.get(&key)?.map(|v| v.get().clone()))
+}
+```
+
+<Aside type="note" title="Read-only intent is enforced post-execution">
+  The `&self` receiver is checked at compile time, but the read-only contract is
+  also enforced *after* the method runs: a method declared read-only that
+  nonetheless produces a non-empty state artifact is rejected
+  (defence-in-depth), since a shared read lock must not mutate shared state.
+  `#[app::init]` is **always** treated as mutating regardless of any attribute —
+  the macro already rejects `#[app::view]` + `#[app::init]`, and the ABI emitter
+  hard-codes init as non-read-only so a rogue annotation from a non-SDK toolchain
+  can't trick the node into taking a read lock for an initializer.
+</Aside>
+
+### `#[app::destroy]`
+
+Marks a method as permitted to consume `self` for state destruction. Without it,
+a method taking `self` by value is rejected — the macro nudges you to `&self` /
+`&mut self` so you don't tear down state by accident.
+
+## Cross-context calls
+
+### `#[app::xcall]`
+
+Marks a public method as a cross-context entry point. Only methods bearing this
+attribute can be reached by another context in the same namespace via
+`env::xcall`. It is mutually exclusive with `#[app::init]` and `#[app::view]`
+(an xcall is fire-and-forget, so a view's return value would have nowhere to go).
+
+```rust
+use calimero_sdk::{app, env};
+
+#[app::logic]
+impl PingPong {
+    // caller side: queue a call, executed after this method returns
+    pub fn ping(&self, target_context: [u8; 32]) -> app::Result<()> {
+        let params = calimero_sdk::serde_json::to_vec(&"ping").unwrap();
+        env::xcall(&target_context, "pong", &params);
+        Ok(())
+    }
+
+    // callee side: only reachable because it is an xcall entry point
+    #[app::xcall]
+    pub fn pong(&mut self) -> app::Result<()> {
+        // `xcall_origin()` is set by the node and cannot be forged;
+        // `None` means a direct (non-xcall) call — reject it if you require xcall.
+        let from = env::xcall_origin();
+        let _ = from;
+        Ok(())
+    }
+}
+```
+
+See `apps/xcall-example` for the full ping-pong with provenance checks.
+
+## Events
+
+### `#[app::event]` and `app::emit!`
+
+`#[app::event]` declares an enum (or struct) of events your app can emit;
+`app::emit!` emits one. The single-argument form emits the event; the
+two-element-tuple form names a handler method to run after the event is
+processed.
+
+```rust
+#[app::event]
+pub enum Event<'a> {
+    Inserted { key: &'a str, value: &'a str },
+    Removed { key: &'a str },
+}
+
+// inside a logic method:
+app::emit!(Event::Inserted { key: &key, value: &value });
+
+// with a handler method name:
+app::emit!((Event::Inserted { key: &key, value: &value }, "on_insert"));
+```
+
+<Aside type="caution" title="Handlers may run in parallel">
+  Event handlers are **not** guaranteed to run sequentially. Per the SDK docs,
+  handlers must be commutative, independent, idempotent, and pure — only mutate
+  CRDT state, with no external side effects.
+</Aside>
+
+## Private (node-local) state
+
+### `#[app::private]`
+
+Declares a struct whose data is stored **node-local** and is **not**
+synchronized across the network — for secrets, node-specific config, or caches.
+Tree-backed collection fields are stored through the private storage backend
+rather than the synchronized CRDT store. See `apps/private_data`.
+
+```rust
+#[app::private]
+pub struct Secrets {
+    api_token: Option<String>,
+}
+```
+
+## Migrations
+
+When you ship a new schema, the runtime needs a way to carry the old state
+forward. Two macros cover this (see `apps/migration-harness-example`).
+
+### `#[app::migrate]`
+
+Exports a migration function. The hand-written form reads the old root with
+`calimero_sdk::read_raw()`, transforms it, and returns the new state. The macro
+generates the `#[no_mangle] extern "C"` export, sets up the panic hook, and
+borsh-serializes the result.
+
+```rust
+#[app::migrate]
+pub fn migrate() -> AppV2 {
+    let old: AppV1 = calimero_sdk::read_raw().expect("old root");
+    AppV2 { /* carry/transform fields from `old` */ }
+}
+```
+
+### `#[derive(app::Migrate)]`
+
+Generates the `#[app::migrate]` body from per-field rules, so you write only the
+diff. Field-level `#[migrate(...)]` keys: `new = EXPR` (seed an added field),
+`from = old_field` (rename), `with = EXPR` (transform, e.g. a type change); the
+struct-level `from`, `method`, and `emit` configure the source layout, the
+generated function name, and an event to emit.
+
+```rust
+#[app::state(version = 2, emits = for<'a> MigrateEvent<'a>)]
+#[derive(app::Migrate)]
+#[migrate(from = AppV1, method = migrate, emit = MigrateEvent::Migrated)]
+pub struct AppV2 {
+    items: UnorderedMap<String, LwwRegister<String>>, // carried by name
+    #[migrate(new = LwwRegister::new("note".to_owned()))]
+    notes: LwwRegister<String>,                       // additive
+    #[migrate(from = legacy)]
+    renamed: LwwRegister<String>,                     // renamed source
+}
+```
+
+### `#[app::migration_check]`
+
+Exports a predicate the runtime runs on the produced new root **before** it is
+committed. Returning `false` (or panicking) logically aborts the migration,
+leaving the old root intact. Apps without this export migrate unchecked.
+
+```rust
+#[app::migration_check]
+pub fn check(old: AppV1, new: AppV2) -> bool {
+    // e.g. entry-count parity — see calimero_sdk::migration_check helpers
+    old.items_len() == new.items_len()
+}
+```
+
+## Custom CRDT values
+
+### `#[derive(app::Mergeable)]`
+
+Derives `Mergeable` for a struct so it can be a value inside a CRDT collection
+(`UnorderedMap<_, V>`, `Vector<V>`, ...). The generated `merge()` calls each
+field's own `merge()` in declaration order, so **every field must itself be
+`Mergeable`** (a CRDT type or `LwwRegister<T>`). The same forbidden-type lint as
+`#[app::state]` applies. Enums are rejected — wrap them in `LwwRegister<MyEnum>`
+for last-write-wins, or implement `Mergeable` by hand.
+
+```rust
+use calimero_storage::collections::{Counter, LwwRegister};
+
+#[derive(app::Mergeable)]
+pub struct TeamStats {
+    points: Counter,
+    name: LwwRegister<String>,
+}
+```
+
+See `apps/team-metrics-macro` (derive) versus `apps/team-metrics-custom`
+(hand-written `Mergeable`).
+
+## Helper macros
+
+| Macro | Expands to |
+|-------|-----------|
+| `app::log!("processing {}", id)` | a runtime log call (format-string like `println!`) |
+| `app::err!("not found")` | `Err(app::Error::new(..))` |
+| `app::bail!("not found")` | `return Err(app::Error::new(..))` |
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Collections" href="/build/collections/" description="The CRDT collection types your #[app::state] is built from." />
+  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="What the derive macros generate, plus xcall, handlers, and migrations in depth." />
+  <LinkCard title="Gotchas & sharp edges" href="/build/gotchas/" description="Non-obvious facts about the macros and runtime that bite builders." />
+</CardGrid>

@@ -15,6 +15,7 @@ either.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true
+indexmap.workspace = true
 libp2p = { workspace = true, features = [
     "autonat",
     "dcutr",

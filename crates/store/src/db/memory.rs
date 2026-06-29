@@ -68,16 +68,15 @@ impl<'a> InMemoryDBImpl<'a> for Owned {
 }
 
 #[derive(Debug)]
-// TODO: Remove this lint exception once the is multi-thread-capable.
-#[allow(clippy::non_send_fields_in_send_ty, reason = "TODO: This is temporary")]
 pub struct InMemoryDB<T> {
     inner: T,
 }
 
-// todo! vvvvv remove this once miraclx/slice/multi-thread-capable is merged in
-unsafe impl<T: Debug> Sync for InMemoryDB<T> {}
-unsafe impl<T: Debug> Send for InMemoryDB<T> {}
-// todo! ^^^^^ remove this once miraclx/slice/multi-thread-capable is merged in
+// `InMemoryDB<T>` is `Send`/`Sync` exactly when its sole field `T` is. We rely on
+// the auto-derived bounds rather than asserting them unconditionally: an
+// unconditional `unsafe impl` would falsely claim thread-safety for any `T`
+// (e.g. `Rc` or borrowed non-`Sync` data). Both `Ref` and `Owned` are thread-safe
+// because `Slice` and the underlying `Arc<RwLock<_>>` storage are.
 
 impl InMemoryDB<()> {
     #[must_use]
@@ -119,11 +118,16 @@ struct ArcSlice<'this> {
     inner: Arc<Slice<'this>>,
 }
 
-impl ArcSlice<'_> {
-    fn new<'a, T: CastsTo<Slice<'a>>>(value: Arc<T>) -> Self {
+impl<'this> ArcSlice<'this> {
+    fn new<T: CastsTo<Slice<'this>> + 'this>(value: Arc<T>) -> Self {
         Self {
-            // safety: T: CastsTo<Slice>
-            inner: unsafe { transmute::<Arc<T>, Arc<Slice<'_>>>(value) },
+            // safety: `T: CastsTo<Slice<'this>>` guarantees layout compatibility,
+            // and the `T: 'this` bound guarantees the borrowed data behind `T`
+            // outlives `'this`. Together they make this transmute sound: the
+            // output `Slice<'this>` cannot outlive the data it points at, so a
+            // borrowed slice can no longer be laundered into a longer-lived
+            // (e.g. 'static) one and smuggled across threads.
+            inner: unsafe { transmute::<Arc<T>, Arc<Slice<'this>>>(value) },
         }
     }
 }
@@ -134,12 +138,24 @@ impl AsRef<[u8]> for ArcSlice<'_> {
     }
 }
 
-impl<'a, T: InMemoryDBImpl<'a> + Debug + 'static> Database<'a> for InMemoryDB<T>
+// The `Send + Sync` bounds are load-bearing: `Database` requires `Send + Sync +
+// 'static`, and `InMemoryDB<T>` is only `Send`/`Sync` when `T` is. They were
+// previously masked by an unconditional (unsound) `unsafe impl Send/Sync` — don't
+// drop them as "redundant with auto-derivation".
+impl<'a, T: InMemoryDBImpl<'a> + Debug + Send + Sync + 'static> Database<'a> for InMemoryDB<T>
 where
     T::Key: Ord + Clone + Borrow<[u8]>,
+    T::Value: 'static,
 {
     fn open(_config: &StoreConfig) -> EyreResult<Self> {
-        todo!("phase this out, please. it's not even worth writing an accomodation for")
+        // `InMemoryDB` has no on-disk representation to open and is never
+        // constructed through the generic `Database::open` path in practice.
+        // Return a recoverable error (rather than panicking) so generic
+        // callers don't crash, and point them at the real constructors.
+        Err(eyre!(
+            "InMemoryDB cannot be opened via `Database::open`; \
+             use `InMemoryDB::owned()` or `InMemoryDB::referenced()` instead"
+        ))
     }
 
     fn has(&self, col: Column, key: Slice<'_>) -> EyreResult<bool> {
@@ -151,7 +167,13 @@ where
             return Ok(None);
         };
 
-        Ok(Some(Slice::from_owned(ArcSlice::new(value))))
+        // The impl requires `T::Value: 'static`, so the cloned `Arc` owns data
+        // valid for `'static`. Build a `'static`-backed slice and let it coerce
+        // to the (shorter) return lifetime — rather than laundering the stored
+        // value's lifetime into an unconstrained one.
+        let value: ArcSlice<'static> = ArcSlice::new(value);
+
+        Ok(Some(Slice::from_owned(value)))
     }
 
     fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> EyreResult<()> {

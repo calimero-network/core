@@ -54,6 +54,7 @@ use core::fmt;
 use core::num::NonZeroU128;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use thiserror::Error as ThisError;
 
 /// NTP64 timestamp (64-bit: 32-bit seconds + 32-bit fraction).
 #[derive(
@@ -253,6 +254,35 @@ pub fn hlc_seed_from_executor_id(executor_id: &[u8; 32]) -> [u8; 16] {
     seed
 }
 
+/// Why [`LogicalClock::update`] rejected a remote timestamp.
+///
+/// `update` returns this typed error rather than `()` so callers — and the
+/// public [`crate::env::update_hlc`] wrapper — can tell *why* an update was
+/// refused instead of collapsing every failure into a single opaque unit. The
+/// only rejection today is clock drift, but the enum is `#[non_exhaustive]` so
+/// future, non-drift reasons can be added without callers silently mislabeling
+/// them as drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ThisError)]
+#[non_exhaustive]
+pub enum ClockUpdateError {
+    /// The remote timestamp's physical time is more than the drift tolerance
+    /// (5s) ahead of the local wall clock. Accepting it would let clock skew
+    /// drag the local clock arbitrarily far into the future, so the remote
+    /// operation's causality is not absorbed.
+    #[error(
+        "remote timestamp physical time {remote_phys} exceeds drift tolerance \
+         (max accepted: {max_accepted})"
+    )]
+    Drift {
+        /// Remote physical time (NTP64, counter bits masked off) that was
+        /// rejected.
+        remote_phys: u64,
+        /// Largest remote physical time that would have been accepted: the
+        /// local wall-clock physical time plus the 5s drift tolerance.
+        max_accepted: u64,
+    },
+}
+
 /// Hybrid Logical Clock implementation.
 ///
 /// Implements the HLC algorithm with custom time/random sources for WASM compatibility.
@@ -353,7 +383,7 @@ impl LogicalClock {
         &mut self,
         remote_ts: &HybridTimestamp,
         time_now_fn: F,
-    ) -> Result<(), ()>
+    ) -> Result<(), ClockUpdateError>
     where
         F: FnOnce() -> u64,
     {
@@ -377,7 +407,10 @@ impl LogicalClock {
         let drift_ntp = local_ntp + (DRIFT_TOLERANCE_SECS << 32);
 
         if remote_phys > drift_ntp {
-            return Err(());
+            return Err(ClockUpdateError::Drift {
+                remote_phys,
+                max_accepted: drift_ntp,
+            });
         }
 
         // Full Hybrid Logical Clock update rule. Advance to the greatest
@@ -717,8 +750,17 @@ mod tests {
         let now = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
 
         let future = remote_ts(now.get_time().as_u64() + (10_u64 << 32), 0);
-        assert!(hlc
+        let err = hlc
             .update(&future, || time.load(Ordering::Relaxed))
-            .is_err());
+            .expect_err("far-future timestamp must be rejected");
+
+        // The rejection reason is preserved as a typed variant, not flattened
+        // into an opaque error, and reports the offending vs accepted bounds.
+        let ClockUpdateError::Drift {
+            remote_phys,
+            max_accepted,
+        } = err;
+        assert_eq!(remote_phys, future.get_time().as_u64() & PHYSICAL_MASK);
+        assert!(remote_phys > max_accepted);
     }
 }

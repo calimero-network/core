@@ -177,27 +177,39 @@ pub(crate) async fn apply_authorized_state_delta(
     // key. Sits BEFORE the cross-DAG check and ReadOnly check because
     // those checks key off `author_id` — there's no point asking
     // "is this author a member?" if we haven't yet established that
-    // the claim of authorship is genuine. `None` is tolerated only
-    // for legacy rows authored before envelope signing landed; all
-    // freshly-signed deltas (every output of `internal_execute`)
-    // carry `Some(_)` and MUST verify.
-    if let Some(ref sig) = delta_signature {
-        if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
-            context_id,
-            delta_id,
-            author_id,
-            governance_position.as_ref(),
-            sig,
-        ) {
+    // the claim of authorship is genuine. `None` is treated as a
+    // verification failure: a missing signature cannot prove authorship
+    // and is indistinguishable from a stripped signature. Genesis
+    // deltas never reach this path (they are carved out earlier via the
+    // all-zeros author sentinel), so there is no legitimate case where
+    // a non-genesis delta arrives without a signature.
+    let sig = match delta_signature {
+        Some(s) => s,
+        None => {
             warn!(
                 %context_id,
                 %author_id,
                 delta_id = ?delta_id,
-                %err,
-                "Rejecting state delta — envelope signature verification failed"
+                "Rejecting state delta — missing envelope signature"
             );
             return Ok(());
         }
+    };
+    if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+        context_id,
+        delta_id,
+        author_id,
+        governance_position.as_ref(),
+        &sig,
+    ) {
+        warn!(
+            %context_id,
+            %author_id,
+            delta_id = ?delta_id,
+            %err,
+            "Rejecting state delta — envelope signature verification failed"
+        );
+        return Ok(());
     }
 
     // HLC fence: fences a delta produced under a schema the receiver's loaded
@@ -1227,8 +1239,10 @@ async fn request_missing_deltas(
     // Phase 1: Fetch ALL missing deltas recursively
     // No artificial limit - DAG is acyclic so this will naturally terminate at genesis
     while !to_fetch.is_empty() {
-        let current_batch = to_fetch.clone();
-        to_fetch.clear();
+        // Take ownership of this round's batch, leaving `to_fetch` empty to
+        // collect the next round's parents — avoids cloning the whole Vec only
+        // to immediately clear it.
+        let current_batch = std::mem::take(&mut to_fetch);
 
         for missing_id in current_batch {
             fetch_count += 1;
@@ -1345,28 +1359,39 @@ async fn request_missing_deltas(
                     // Envelope-signature verification (parity with the
                     // gossip + DAG-catchup paths in
                     // `apply_authorized_state_delta` / `request_dag_heads_and_sync`).
-                    // `None` is only tolerated for legacy rows
-                    // authored before envelope signing landed; any
-                    // present signature MUST verify.
-                    if let Some(ref sig) = response_delta_signature {
-                        if let Err(err) =
-                            calimero_node_primitives::sync::delta_auth::verify_delta_signature(
-                                context_id,
-                                storage_delta.id,
-                                response_author,
-                                governance_position.as_ref(),
-                                sig,
-                            )
-                        {
+                    // `None` is treated as a verification failure — a
+                    // missing signature cannot prove authorship and is
+                    // indistinguishable from a stripped signature. Genesis
+                    // deltas are carved out above via the author sentinel.
+                    let sig_for_parent = match response_delta_signature {
+                        Some(s) => s,
+                        None => {
                             warn!(
                                 %context_id,
                                 delta_id = ?missing_id,
                                 author = %response_author,
-                                %err,
-                                "parent-fetch: envelope signature verification failed, dropping"
+                                "parent-fetch: missing envelope signature, dropping"
                             );
                             continue;
                         }
+                    };
+                    if let Err(err) =
+                        calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+                            context_id,
+                            storage_delta.id,
+                            response_author,
+                            governance_position.as_ref(),
+                            &sig_for_parent,
+                        )
+                    {
+                        warn!(
+                            %context_id,
+                            delta_id = ?missing_id,
+                            author = %response_author,
+                            %err,
+                            "parent-fetch: envelope signature verification failed, dropping"
+                        );
+                        continue;
                     }
 
                     // Sanity check: peer returned the delta we
@@ -1720,27 +1745,38 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // gossip + DAG-catchup + parent-fetch paths. The `BufferedDelta`
     // carries the signature through snapshot-sync buffering precisely
     // so a replayed delta is re-verified against the same payload the
-    // original sender signed (Wave 5). Without this gate, snapshot-
-    // sync replay would silently accept envelope-forged buffered
-    // deltas — the very class of attack the envelope signature
-    // exists to prevent.
-    if let Some(ref sig) = buffered.delta_signature {
-        if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
-            context_id,
-            delta_id,
-            buffered.author_id,
-            buffered.governance_position.as_ref(),
-            sig,
-        ) {
+    // original sender signed. `None` is treated as a verification
+    // failure — a missing signature cannot prove authorship. Genesis
+    // deltas are never buffered (installed at context creation), so
+    // there is no legitimate case where a buffered delta lacks a
+    // signature.
+    let sig_for_replay = match buffered.delta_signature {
+        Some(s) => s,
+        None => {
             warn!(
                 %context_id,
                 delta_id = ?delta_id,
                 author = %buffered.author_id,
-                %err,
-                "Rejecting buffered state delta — envelope signature verification failed"
+                "Rejecting buffered state delta — missing envelope signature"
             );
             return Ok(false);
         }
+    };
+    if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+        context_id,
+        delta_id,
+        buffered.author_id,
+        buffered.governance_position.as_ref(),
+        &sig_for_replay,
+    ) {
+        warn!(
+            %context_id,
+            delta_id = ?delta_id,
+            author = %buffered.author_id,
+            %err,
+            "Rejecting buffered state delta — envelope signature verification failed"
+        );
+        return Ok(false);
     }
 
     // ReadOnly check, parallel to `handle_state_delta` and

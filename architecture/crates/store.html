@@ -351,7 +351,7 @@
   </div>
   <div class="cb">
     <h4>WriteBatch Transactions</h4>
-    <p style="margin-top:8px;">The <span class="code">Transaction</span> type accumulates puts and deletes, then is atomically committed via <span class="code">WriteBatch</span>. Guarantees all-or-nothing semantics for multi-key operations like delta application.</p>
+    <p style="margin-top:8px;">The <span class="code">Transaction</span> type accumulates puts and deletes, then is atomically committed via <span class="code">WriteBatch</span>. Guarantees all-or-nothing semantics for multi-key operations like delta application. <code>Transaction::merge</code> combines two transactions by keying the inner map on <code>entry.key()</code> (wrapped in <code>Slice</code>) rather than on the operation's value bytes, and handles both <code>Operation::Put</code> and <code>Operation::Delete</code> with a single <code>insert(entry.key().to_owned(), op.clone())</code> — a previous version incorrectly used the <em>value</em> bytes as the map key and panicked on <code>Operation::Delete</code> via <code>unreachable!()</code>.</p>
   </div>
   <div class="cb">
     <h4>Snapshot Iteration</h4>

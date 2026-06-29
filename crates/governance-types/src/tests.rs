@@ -156,14 +156,14 @@ const GOLDEN_GROUP_OP_GROUP_MIGRATION_SET: &[u8] = &[
     0,  // migration = None
 ];
 
-/// GroupOp ordinal 17 — ContextCapabilityGranted { context_id: [0;32], member: [0;32], capability: 0 }
+/// GroupOp ordinal 17 — ContextCapabilityGranted { context_id: [0;32], member: [0;32], capability: 1 }
 const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_GRANTED: &[u8] = &[
     17, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // context_id
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // member
-    0, // capability
+    1, // capability (must be non-zero: ContextCapabilityBits rejects 0 on the wire)
 ];
 
 /// GroupOp ordinal 18 — ContextCapabilityRevoked (same shape as Granted)
@@ -173,7 +173,7 @@ const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_REVOKED: &[u8] = &[
     0, // context_id
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // member
-    0, // capability
+    1, // capability (must be non-zero: ContextCapabilityBits rejects 0 on the wire)
 ];
 
 /// GroupOp ordinal 19 — TeeAdmissionPolicySet (6 empty Vec<String> + accept_mock=false)
@@ -1328,6 +1328,156 @@ fn v7_borsh_layout_group_op_is_rejected_not_misparsed() {
             ),
             "a v7-decoded op must be rejected on the version check, got {:?}",
             op.verify_signature()
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Namespace governance op storage encoding
+//
+// The op-log persists each op as a `StoredNamespaceEntry::Signed(op)`, borsh-
+// encoded into the `skeleton_bytes` of its store value; the serving, retry, and
+// projection-backfill paths read it back with the equivalent of
+// `decode_signed_namespace_op`. A silent encode/decode asymmetry in any op
+// variant (e.g. an ill-considered field type or a hand-rolled codec) would make
+// the affected op un-servable: a peer that needs it as a causal ancestor could
+// never fold the cut, stranding every state delta authored against it. These
+// tests pin the round-trip so such a regression fails here, in isolation,
+// rather than as an opaque convergence stall.
+// ---------------------------------------------------------------------------
+mod governance_op_storage_roundtrip {
+    use super::*;
+    use calimero_context_config::types::{
+        ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+
+    fn sample_invitation() -> SignedGroupOpenInvitation {
+        SignedGroupOpenInvitation {
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: SignerId::from([0xA1; 32]),
+                group_id: ContextGroupId::from([0x22; 32]),
+                expiration_timestamp: 1_900_000_000,
+                secret_salt: [0x33; 32],
+                invited_role: 1,
+            },
+            inviter_signature: "deadbeef".to_string(),
+            application_id: Some([0x44; 32]),
+            app_key: Some([0x55; 32]),
+        }
+    }
+
+    fn signed(op: NamespaceOp) -> SignedNamespaceOp {
+        let sk = PrivateKey::random(&mut OsRng);
+        SignedNamespaceOp::sign(&sk, [0x77; 32], vec![[0x01; 32], [0x02; 32]], 7, op)
+            .expect("sign namespace op")
+    }
+
+    /// Mirror of `decode_signed_namespace_op` in
+    /// `calimero-governance-store::namespace::op_log` (the read-back used by the
+    /// serving / retry / opaque walks): try the tagged wrapper first, then the
+    /// legacy raw fallback.
+    fn decode_signed_namespace_op(bytes: &[u8]) -> Option<SignedNamespaceOp> {
+        if let Ok(StoredNamespaceEntry::Signed(op)) =
+            ::borsh::from_slice::<StoredNamespaceEntry>(bytes)
+        {
+            return Some(op);
+        }
+        ::borsh::from_slice::<SignedNamespaceOp>(bytes).ok()
+    }
+
+    fn assert_roundtrips(op: &SignedNamespaceOp) {
+        // `SignedNamespaceOp` has no `PartialEq`; compare canonical bytes.
+        let skeleton_bytes =
+            ::borsh::to_vec(&StoredNamespaceEntry::Signed(op.clone())).expect("encode entry");
+        let decoded = decode_signed_namespace_op(&skeleton_bytes)
+            .expect("entry must decode back from StoredNamespaceEntry::Signed");
+        assert_eq!(
+            ::borsh::to_vec(&decoded).unwrap(),
+            ::borsh::to_vec(op).unwrap(),
+            "round-trip through StoredNamespaceEntry::Signed must be lossless"
+        );
+    }
+
+    #[test]
+    fn member_joined_at_roundtrips_through_stored_signed_entry() {
+        // The invitation join carries a nested `SignedGroupOpenInvitation`, the
+        // largest and most field-rich op payload — the one most exposed to a
+        // codec asymmetry.
+        assert_roundtrips(&signed(NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: PrivateKey::random(&mut OsRng).public_key(),
+            signed_invitation: sample_invitation(),
+            joined_at: 1_800_000_000,
+        })));
+    }
+
+    #[test]
+    fn every_root_op_roundtrips_through_stored_signed_entry() {
+        let ops = [
+            RootOp::GroupCreated {
+                group_id: [1; 32],
+                parent_id: [2; 32],
+                restricted: true,
+            },
+            RootOp::GroupReparented {
+                child_group_id: [1; 32],
+                new_parent_id: [2; 32],
+            },
+            RootOp::GroupDeleted {
+                root_group_id: [1; 32],
+                cascade_group_ids: vec![[3; 32]],
+                cascade_context_ids: vec![[4; 32]],
+            },
+            RootOp::AdminChanged {
+                new_admin: PrivateKey::random(&mut OsRng).public_key(),
+            },
+            RootOp::PolicyUpdated {
+                policy_bytes: vec![9, 8, 7],
+            },
+            RootOp::MemberJoined {
+                member: PrivateKey::random(&mut OsRng).public_key(),
+                signed_invitation: sample_invitation(),
+            },
+            RootOp::MemberJoinedOpen {
+                member: PrivateKey::random(&mut OsRng).public_key(),
+                group_id: [7; 32],
+            },
+            RootOp::MemberJoinedAt {
+                member: PrivateKey::random(&mut OsRng).public_key(),
+                signed_invitation: sample_invitation(),
+                joined_at: 42,
+            },
+        ];
+        for root in ops {
+            assert_roundtrips(&signed(NamespaceOp::Root(root)));
+        }
+    }
+
+    /// The op-log shares a column family with other key types, so its walk can
+    /// read a foreign value under a colliding key. The store value wraps the
+    /// entry in a length-prefixed `Vec<u8>` (`NamespaceGovOpValue.skeleton_bytes`),
+    /// so a raw 32-byte id read as that wrapper has its first 4 bytes misread as
+    /// an enormous length — borsh rejects it with "Unexpected length of input"
+    /// rather than silently producing a bogus op. Pin that loud-failure
+    /// behaviour so the walk's skip-and-continue stays correct.
+    #[test]
+    fn foreign_column_value_is_rejected_not_misdecoded() {
+        // Structural stand-in for `calimero_store::key::NamespaceGovOpValue`
+        // (a single length-prefixed `Vec<u8>` field); that type lives in
+        // `calimero-store`, which is not a dependency here.
+        #[derive(Debug, ::borsh::BorshDeserialize)]
+        struct GovOpValueShape {
+            #[allow(dead_code)]
+            skeleton_bytes: Vec<u8>,
+        }
+
+        // A raw 32-byte id (e.g. a group key_id) whose leading bytes form a
+        // length far beyond the 28 trailing bytes.
+        let foreign = [0xFEu8; 32];
+        let err = ::borsh::from_slice::<GovOpValueShape>(&foreign)
+            .expect_err("a foreign shared-column value must not decode as the op-log wrapper");
+        assert!(
+            err.to_string().contains("Unexpected length of input"),
+            "expected a borsh length error, got: {err}"
         );
     }
 }

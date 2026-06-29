@@ -1,0 +1,47 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-verdict">
+<svg viewBox="0 0 760 300" role="img" aria-label="The convergence verdict" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="va" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="300" rx="10" fill="#0f0f16"/>
+  <!-- Q1 -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="300" y="22" width="170" height="46" rx="9" fill="#161b22" stroke="#8b949e" stroke-width="1.4"/>
+    <text x="385" y="42" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">scope roots equal?</text>
+    <text x="385" y="58" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">H(entities ‖ acl ‖ gov)</text>
+  </g>
+  <!-- Converged -->
+  <g class="seq-step" style="--step-i:1">
+    <line x1="470" y1="45" x2="524" y2="45" stroke="#8b949e" stroke-width="1.3" marker-end="url(#va)"/>
+    <text x="497" y="38" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="8.5">yes</text>
+    <rect x="528" y="22" width="200" height="46" rx="9" fill="#10210f" stroke="#3fb950" stroke-width="1.4"/>
+    <text x="628" y="42" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">Converged</text>
+    <text x="628" y="58" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">nothing to do</text>
+  </g>
+  <!-- Q2 -->
+  <g class="seq-step" style="--step-i:2">
+    <line x1="385" y1="68" x2="385" y2="118" stroke="#8b949e" stroke-width="1.3" marker-end="url(#va)"/>
+    <text x="400" y="94" text-anchor="start" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8.5">no</text>
+    <rect x="300" y="120" width="170" height="46" rx="9" fill="#161b22" stroke="#8b949e" stroke-width="1.4"/>
+    <text x="385" y="140" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">entity roots equal?</text>
+    <text x="385" y="156" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">data plane only</text>
+  </g>
+  <!-- GovDiverged -->
+  <g class="seq-step" style="--step-i:3">
+    <line x1="300" y1="158" x2="222" y2="212" stroke="#8b949e" stroke-width="1.3" marker-end="url(#va)"/>
+    <text x="232" y="190" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8.5">yes</text>
+    <rect x="40" y="214" width="210" height="58" rx="9" fill="#231708" stroke="#f0883e" stroke-width="1.4"/>
+    <text x="145" y="237" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">Governance diverged</text>
+    <text x="145" y="255" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">data agrees; pull governance ops</text>
+  </g>
+  <!-- DataDiverged -->
+  <g class="seq-step" style="--step-i:4">
+    <line x1="470" y1="158" x2="548" y2="212" stroke="#8b949e" stroke-width="1.3" marker-end="url(#va)"/>
+    <text x="538" y="190" text-anchor="middle" fill="#ef4444" font-family="'JetBrains Mono', monospace" font-size="8.5">no</text>
+    <rect x="520" y="214" width="220" height="58" rx="9" fill="#2a1212" stroke="#ef4444" stroke-width="1.4"/>
+    <text x="630" y="237" text-anchor="middle" fill="#ef4444" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">Data diverged</text>
+    <text x="630" y="255" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">locate &amp; transfer missing state</text>
+  </g>
+</svg>
+</Figure>

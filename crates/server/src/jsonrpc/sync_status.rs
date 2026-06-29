@@ -6,6 +6,7 @@ use calimero_server_primitives::jsonrpc::{
 use tracing::debug;
 
 use super::{Request, RpcError, ServiceState};
+use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
 
 impl Request for SyncStatusRequest {
     type Response = SyncStatusResponse;
@@ -14,6 +15,8 @@ impl Request for SyncStatusRequest {
     async fn handle(
         self,
         state: Arc<ServiceState>,
+        _auth_key: Option<AuthenticatedKey>,
+        _auth_node_owner: Option<AuthenticatedNodeOwner>,
     ) -> Result<Self::Response, RpcError<Self::Error>> {
         let context_id = self.context_id;
 

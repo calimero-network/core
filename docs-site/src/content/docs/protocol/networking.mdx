@@ -1,0 +1,221 @@
+---
+title: Networking & the Wire Protocol
+description: How operations actually move between nodes.
+sidebar:
+  order: 8
+---
+
+import Figure from '../../../components/Figure.astro';
+import Libp2pStack from '../../../components/diagrams/Libp2pStack.astro';
+
+## The transport stack
+
+Calimero is built on **libp2p**. Nodes connect over TCP (with Noise/TLS) or QUIC, multiplex streams with Yamux, and run a set of behaviours for discovery, gossip, and direct exchange. The application logic sits on top and never touches sockets directly — it speaks in terms of topics and streams.
+
+<Libp2pStack />
+
+## Protocol versioning & compatibility
+
+Every libp2p protocol Calimero speaks is **version-pinned in its name**. The
+identify protocol carries the crate version directly — `/calimero/<pkg>/<version>`,
+built as `concat!("/", CARGO_PKG_NAME, "/", CARGO_PKG_VERSION)` — and each
+behaviour names a fixed version:
+
+| Protocol name | Carries |
+| --- | --- |
+| `/calimero/stream/0.0.2` | the sync stream (heads, tree-diff, snapshots, key recovery) |
+| `/calimero/blob/0.0.2` | the dedicated blob transfer stream |
+| `/calimero/kad/1.0.0` | the Kademlia DHT (blob discovery) |
+| `/calimero/specialized-node-invite/1.0.0` | the specialized-node invitation request-response |
+
+libp2p only opens a stream when both peers advertise the **exact same protocol
+name** — the version is part of that string, so a peer running `/calimero/blob/0.0.2`
+and one running a future `/calimero/blob/0.0.3` simply never negotiate that
+protocol. The connection still forms (transport and identify succeed), but the
+mismatched sub-protocol is **silently unavailable** rather than erroring: there is
+no version-negotiation handshake that downgrades or reports the skew.
+
+For operators this means a **mixed-version fleet fails quietly**. Two nodes can be
+connected and gossiping yet unable to, say, transfer blobs or run a sync, because
+one side bumped a protocol version the other doesn't offer. Roll versions out
+fleet-wide rather than piecemeal, and treat "connected but never syncs" as a
+possible version-skew symptom. (`crates/network/src/behaviour.rs`,
+`crates/network/primitives/src/stream.rs`.)
+
+## Two channels: gossip and streams
+
+Everything on the wire travels one of two ways, and the choice is about _eager vs. on-demand_:
+
+- **Gossip (eager broadcast)** — A node publishes to a **topic**; every subscriber receives it through the gossipsub mesh. This is how fresh operations propagate the instant they're created — fire it once, the mesh fans it out. Best-effort: a node that was offline simply misses it.
+- **Streams (pull, point-to-point)** — A node opens a direct, length-delimited stream to one peer and asks for something specific — missing operations, a snapshot, a blob, a key. This is how a node _catches up_ on anything gossip didn't deliver. Reliable and targeted.
+
+Gossip keeps everyone roughly current; streams make them exactly current. [Sync & convergence](/protocol/sync/) is essentially "the stream channel, driven by the scope-root comparison."
+
+## Topics follow the scope tree
+
+Subscriptions map directly onto scopes, so a node only hears about what it belongs to:
+
+- `context/<id>` — a context's data operations and heartbeats.
+- `group/<id>` — a group's governance operations.
+- `ns/<id>` — a namespace's root governance operations and heartbeats.
+
+Gossip's mesh is **membership-biased**: peers known to be members are preferred when forming the mesh, while unknown peers are never penalized — so a healthy cluster stays well-connected without excluding newcomers during cold start.
+
+## Gossipsub mesh tuning and peer scoring
+
+The gossipsub behaviour is configured for Calimero's reality — small, governance-gated clusters — not the large permissionless swarms libp2p's defaults assume. Three deliberate departures from those defaults are worth understanding.
+
+### Mesh sizing for small clusters
+
+The mesh water marks are tuned for clusters of roughly 2–20 peers. libp2p's defaults assume larger swarms, so in (say) a 3-node cluster the default `mesh_n_low=5` is permanently unreachable: every heartbeat logs `Mesh low` and re-runs peer selection for no candidates. Matching the water marks to the expected cluster size keeps the mesh at steady state.
+
+| Parameter | Calimero | libp2p default |
+| --- | --- | --- |
+| `mesh_n_low` | `2` | `5` |
+| `mesh_n` | `4` | `6` |
+| `mesh_n_high` | `8` | `12` |
+| `mesh_outbound_min` | `1` | `2` |
+
+`mesh_outbound_min=1` deliberately drops libp2p's default of `2`. In a large public swarm that default is the standard defence against an inbound-only Sybil cluster monopolising a node's mesh. Calimero topics are admission-gated by signed governance membership — a non-member can subscribe at the transport but their messages are rejected at the governance/cryptographic layer — so the Sybil-via-subscription vector that motivates the default isn't load-bearing here. (libp2p also enforces the invariant `mesh_outbound_min ≤ mesh_n_low / 2`, so with `mesh_n_low=2` the only legal value is `1`.)
+
+`mesh_n_low` is also a coupling point: the governance-broadcast readiness gate reads the same `GOSSIPSUB_MESH_N_LOW` constant as the upper bound on how many subscribers a publish requires (`required = min(GOSSIPSUB_MESH_N_LOW, known_subscribers)`). The two are intentionally driven from one source of truth — a mismatch would either reject healthy publishes or admit them on an unhealthy mesh.
+
+### `flood_publish`: fan out to every subscriber
+
+With `flood_publish=true`, calling `publish()` fans the message out to **every** subscribed peer, not just the grafted mesh peers. For Calimero's small topics this is cheap, and it removes the cold-start window where the mesh hasn't formed yet and a freshly-created delta would simply drop. It is safe only because every topic is governance-gated: bypassing the mesh also bypasses gossipsub's per-peer scoring and prune-backoff on the publish path, but a non-member's forwarded or published messages are rejected at the governance layer before they can influence application state, so scoring-based abuse mitigation isn't load-bearing on this path.
+
+### Cold-start-safe peer scoring
+
+Application-specific peer scoring biases mesh maintenance toward verified members, but it is configured so it can only ever *prefer* a peer, never *exclude* one:
+
+- Only `app_specific_weight` contributes to a peer's score. Every traffic- and behaviour-dependent weight — per-topic delivery, IP-colocation, behaviour penalty, slow-peer — is zeroed, so the score reflects verified-membership knowledge and nothing else.
+- The node only ever pushes **non-negative** app scores: it boosts authenticated namespace/group members and leaves unknown peers at exactly `0`.
+- Every gating threshold is `≤ 0` — gossip `-10`, publish `-50`, graylist `-80`.
+
+An unknown peer therefore sits at score `0`, above all three cutoffs, and is never graylisted for being unverified. Scoring tiers verified members higher for mesh slots without ever penalizing a newcomer during cold start.
+
+## The message catalog
+
+All messages are **Borsh**-encoded (compact, deterministic binary). They fall into the two channels:
+
+| Channel | Message | Carries |
+| --- | --- | --- |
+| Gossip | `StateDelta` | a context's data operation(s): author, parents, hlc, encrypted artifact, new root, signature. |
+| Gossip | `GovernanceDelta` | a governance operation (root op in clear, group op encrypted). |
+| Gossip | `Heartbeat` | current DAG heads + root, published periodically for divergence detection. |
+| Stream | `DeltaRequest / Response` | fetch a specific operation by id. |
+| Stream | `DagHeadsRequest / Response` | exchange heads + roots during a sync handshake. |
+| Stream | `TreeNode / LevelWise` | compare state trees to locate exactly what differs ([sync](/protocol/sync/)). |
+| Stream | `Snapshot*` | transfer a full materialized scope when incremental sync isn't enough. |
+| Stream | `KeyRequest / Response` | recover a scope key wrapped to the requester. |
+
+## Three layers of encryption
+
+Confidentiality is defense-in-depth, and the three layers map exactly onto [the three keys](/protocol/identities/):
+
+- **Transport** — Noise/TLS encrypts every connection, authenticated by the peers' _transport_ identities.
+- **Payload** — an operation's sensitive content is encrypted under its _scope_ key, so even a subscribed non-member on the topic sees only ciphertext.
+- **Key wrapping** — scope keys themselves move ECDH-wrapped to a recipient's _member_ key, never in the clear.
+
+Root operations that must be readable by everyone in a namespace (a join announcement, a key delivery envelope) travel in clear at the payload layer but are still inside the encrypted transport.
+
+## Specification
+
+Every message is Borsh. Recall the encoding: an enum is a single-byte variant index then its fields in order; a `Vec<u8>` is a `u32` little-endian length then the bytes; an `Option` is a 1-byte present/absent flag.
+
+### Stream envelope
+
+Point-to-point messages are wrapped in a `StreamMessage` with a rolling nonce:
+
+| Variant | Fields |
+| --- | --- |
+| `Init` | `context_id: ContextId`, `party_id: PublicKey`, `payload: InitPayload`, `next_nonce: Nonce` |
+| `Message` | `sequence_id: u64`, `payload: MessagePayload`, `next_nonce: Nonce` |
+| `OpaqueError` | — (failure without leaking state) |
+| `NotMaterialized` | — (member, but hasn't joined this context yet) |
+
+### Stream requests (`InitPayload`) and responses (`MessagePayload`)
+
+| Request | Response | Purpose |
+| --- | --- | --- |
+| `DagHeadsRequest` | `DagHeadsResponse { dag_heads: Vec<[u8;32]>, root_hash: Hash, scope_root: Option<Hash> }` | sync handshake |
+| `DeltaRequest { delta_id }` | `DeltaResponse { delta, author_id, governance_position_blob?, delta_signature?: [u8;64] }` | fetch one op |
+| `TreeNodeRequest { node_id, max_depth?: u8 }` | `TreeNodeResponse { nodes: Vec<TreeNode>, not_found }` | tree-diff sync |
+| `LevelWiseRequest { level: u32, parent_ids? }` | `LevelWiseResponse { level, nodes, has_more_levels, deleted_children }` | level-wise sync |
+| `SnapshotStreamRequest { boundary_root_hash, page_limit: u16, byte_limit: u32, resume_cursor? }` | `SnapshotPage { payload (lz4), uncompressed_len, cursor?, total_records }` | full transfer |
+| `GroupKeyRequest { group_id, requester_public_key }` | `GroupKeyResponse { key_envelope_bytes, responder_identity }` | key recovery |
+
+### Gossip broadcasts (`BroadcastMessage`)
+
+The data-plane broadcast carries the operation and everything a peer needs to verify, decrypt, and authorize it:
+
+```rust
+StateDelta {
+  context_id: ContextId, author_id: PublicKey,
+  delta_id: [u8;32], parent_ids: Vec<[u8;32]>, hlc: HybridTimestamp,
+  root_hash: Hash,
+  artifact: bytes, // ENCRYPTED under the scope key
+  nonce: Nonce, events: Option<bytes>, // events also encrypted
+  governance_position: Option<GovernanceParentEdge>, // the authorization cut
+  key_id: [u8;32], // = SHA-256(scope_key)
+  delta_signature: Option<[u8;64]>, producing_app_key: Option<[u8;32]>,
+}
+```
+
+| Other broadcast | Fields |
+| --- | --- |
+| `HashHeartbeat` | `context_id`, `root_hash: Hash`, `dag_heads: Vec<[u8;32]>` |
+| `NamespaceGovernanceDelta` | `namespace_id`, `delta_id`, `parent_ids`, `payload: Vec<u8>` (signed gov op) |
+| `NamespaceStateHeartbeat` | `namespace_id`, `dag_heads: Vec<[u8;32]>` |
+
+### Wire limits
+
+| Constant | Value | Constant | Value |
+| --- | --- | --- | --- |
+| tree request depth | 16 | DAG heads / msg | 100 |
+| signed gov op payload | 64 KiB | snapshot page (default) | 256 KiB |
+| entities / page | 1000 | decompressed page cap | 8 MiB |
+
+Signatures are fixed `[u8;64]` (Ed25519); hashes and ids are `[u8;32]`; a `Nonce` is the crypto-layer nonce, distinct from the raw `[u8;32]` nonces used by node-discovery messages.
+
+## Specialized-node invitation: a direct request-response
+
+Most of the wire is gossip-and-streams, but one flow is neither: inviting a
+**specialized node** (for example a read-only TEE node) runs over a dedicated
+libp2p **request-response** protocol, a single unicast round trip to one peer
+rather than a topic broadcast.
+
+```rust
+// crates/network/primitives/src/specialized_node_invite.rs
+pub const CALIMERO_SPECIALIZED_NODE_INVITE_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/calimero/specialized-node-invite/1.0.0");
+pub const MAX_SPECIALIZED_NODE_INVITE_MESSAGE_SIZE: u64 = 1024 * 1024; // 1 MiB
+```
+
+The codec reads a 4-byte big-endian length prefix, caps the body at 1 MiB, then
+Borsh-decodes exactly one message each way — there is no chunked stream and no
+rolling-nonce envelope, just a request and its response:
+
+| Direction | Message | Fields |
+| --- | --- | --- |
+| Request | `VerificationRequest::TeeAttestation` | `nonce: [u8;32]`, `quote_bytes: Vec<u8>`, `public_key: PublicKey` |
+| Response | `SpecializedNodeInvitationResponse` | `nonce: [u8;32]`, `invitation_bytes: Option<Vec<u8>>`, `error: Option<String>` |
+
+The two halves are distinct flows. The inviter first **gossips** a discovery
+announcement (a `nonce` + node type) on the global topic. A specialized node that
+hears it does *not* reply on the topic — it opens this request-response protocol
+directly to the inviter and sends its `VerificationRequest`. Note what the
+request omits: there is no `context_id` on the wire. The inviter tracks the
+context internally, keyed by the `nonce` it generated, so the `nonce` is the
+correlation token that binds the unicast reply back to the original broadcast (it
+also binds the TEE attestation `quote_bytes` to this exact request).
+
+The inviter verifies the attestation, and on success returns a
+`SpecializedNodeInvitationResponse` carrying `invitation_bytes` — a serialized
+signed open invitation the node uses to join the context. On failure the same
+struct carries an `error` string and no invitation. The response echoes the
+`nonce` so a later join confirmation on the context topic can be matched up.
+
+## Where this leads
+
+We can now move operations between nodes — but gossip is best-effort, so some never arrive. Next, [**Sync & Convergence**](/protocol/sync/) is the reliable channel that finds whatever the eager broadcast missed and repairs it by comparing scope roots.

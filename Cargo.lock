@@ -1145,6 +1145,7 @@ dependencies = [
  "futures-util",
  "serde",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",
@@ -1303,6 +1304,7 @@ dependencies = [
  "rand 0.8.5",
  "ring",
  "thiserror 1.0.69",
+ "zeroize",
 ]
 
 [[package]]
@@ -1336,6 +1338,7 @@ dependencies = [
  "calimero-context-config",
  "calimero-crypto",
  "calimero-dag",
+ "calimero-governance-types",
  "calimero-network-primitives",
  "calimero-node-primitives",
  "calimero-op",
@@ -1389,6 +1392,7 @@ dependencies = [
  "eyre",
  "futures-util",
  "hex",
+ "indexmap 2.13.0",
  "libp2p",
  "libp2p-metrics",
  "libp2p-stream",
@@ -5954,6 +5958,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "starknet",
+ "subtle",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",

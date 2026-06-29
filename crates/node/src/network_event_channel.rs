@@ -27,8 +27,10 @@ use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::metrics::histogram::{exponential_buckets, Histogram};
 use prometheus_client::registry::Registry;
+use tokio::runtime::Handle;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tokio::time::timeout;
+use tracing::{debug, error, info, warn};
 
 /// Configuration for the network event channel.
 #[derive(Debug, Clone, Copy)]
@@ -44,6 +46,20 @@ pub struct NetworkEventChannelConfig {
     /// Interval for logging channel statistics.
     /// Default: 30 seconds
     pub stats_log_interval: Duration,
+
+    /// When the channel is full, how long an overflow event may wait for
+    /// capacity before it is given up on and counted as a true drop.
+    ///
+    /// Instead of dropping immediately on a full channel, the sender hands
+    /// the event to a bounded async retry that applies backpressure for up
+    /// to this duration. Default: 5 seconds.
+    pub send_timeout: Duration,
+
+    /// Maximum number of overflow events that may be waiting for capacity
+    /// concurrently. Bounds the extra memory the retry path can buffer on
+    /// top of `channel_size`; past this cap, overflow events are dropped
+    /// (with escalation) rather than queued. Default: equal to `channel_size`.
+    pub max_pending_retries: usize,
 }
 
 impl Default for NetworkEventChannelConfig {
@@ -52,6 +68,8 @@ impl Default for NetworkEventChannelConfig {
             channel_size: 1000,
             warning_threshold: 0.8,
             stats_log_interval: Duration::from_secs(30),
+            send_timeout: Duration::from_secs(5),
+            max_pending_retries: 1000,
         }
     }
 }
@@ -74,14 +92,34 @@ pub struct NetworkEventChannelMetrics {
     /// Total events processed (received from channel).
     pub events_processed: Counter,
 
-    /// Events dropped due to full channel.
+    /// Events dropped after the bounded retry failed (timeout / closed /
+    /// retry queue saturated). Unlike before, a full channel no longer
+    /// implies a drop — only a sustained-overload give-up does.
     pub events_dropped: Counter,
+
+    /// Overflow events that hit a full channel and were handed to the
+    /// bounded async retry instead of being dropped outright.
+    pub events_retried: Counter,
+
+    /// Overflow events that the retry path successfully delivered once
+    /// capacity freed up (i.e. drops that backpressure prevented).
+    pub events_recovered: Counter,
+
+    /// 1 while at least one overflow event is waiting for capacity, 0
+    /// otherwise. This is the escalated backpressure signal: a sustained
+    /// `1` means the processor cannot keep up with the inbound feed.
+    pub backpressure_active: Gauge,
 
     /// Processing latency histogram (time from send to receive).
     pub processing_latency: Histogram,
 
     /// High watermark (maximum channel depth seen).
     pub high_watermark: Arc<AtomicU64>,
+
+    /// Number of overflow events currently waiting for capacity in the
+    /// retry path. Backs `max_pending_retries` and drives
+    /// `backpressure_active`. Not a registered metric (operational state).
+    pub pending_retries: Arc<AtomicU64>,
 }
 
 impl NetworkEventChannelMetrics {
@@ -91,6 +129,9 @@ impl NetworkEventChannelMetrics {
         let events_received = Counter::default();
         let events_processed = Counter::default();
         let events_dropped = Counter::default();
+        let events_retried = Counter::default();
+        let events_recovered = Counter::default();
+        let backpressure_active = Gauge::default();
 
         // Latency buckets: 100μs to 10s
         let processing_latency = Histogram::new(exponential_buckets(0.0001, 2.0, 18));
@@ -114,8 +155,23 @@ impl NetworkEventChannelMetrics {
         );
         sub_registry.register(
             "dropped_total",
-            "Number of events dropped due to full channel",
+            "Number of events dropped after the bounded retry gave up",
             events_dropped.clone(),
+        );
+        sub_registry.register(
+            "retried_total",
+            "Number of overflow events handed to the bounded retry path",
+            events_retried.clone(),
+        );
+        sub_registry.register(
+            "recovered_total",
+            "Number of overflow events the retry path eventually delivered",
+            events_recovered.clone(),
+        );
+        sub_registry.register(
+            "backpressure_active",
+            "1 while overflow events are waiting for channel capacity",
+            backpressure_active.clone(),
         );
         sub_registry.register(
             "processing_latency_seconds",
@@ -128,8 +184,12 @@ impl NetworkEventChannelMetrics {
             events_received,
             events_processed,
             events_dropped,
+            events_retried,
+            events_recovered,
+            backpressure_active,
             processing_latency,
             high_watermark: Arc::new(AtomicU64::new(0)),
+            pending_retries: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -141,8 +201,12 @@ impl NetworkEventChannelMetrics {
             events_received: Counter::default(),
             events_processed: Counter::default(),
             events_dropped: Counter::default(),
+            events_retried: Counter::default(),
+            events_recovered: Counter::default(),
+            backpressure_active: Gauge::default(),
             processing_latency: Histogram::new(exponential_buckets(0.0001, 2.0, 18)),
             high_watermark: Arc::new(AtomicU64::new(0)),
+            pending_retries: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -182,8 +246,18 @@ pub struct NetworkEventSender {
 impl NetworkEventSender {
     /// Send an event to the channel.
     ///
-    /// Uses `try_send` to avoid blocking the network thread.
-    /// Returns `true` if sent successfully, `false` if channel is full.
+    /// The fast path uses `try_send` so a non-full channel never blocks the
+    /// network thread. When the channel is *full*, the event is not dropped
+    /// silently: it is handed to a bounded async retry (see
+    /// [`NetworkEventChannelConfig::send_timeout`] /
+    /// [`max_pending_retries`](NetworkEventChannelConfig::max_pending_retries))
+    /// that waits for capacity, turning a transient burst into backpressure
+    /// rather than lost control events. An event is only truly dropped when
+    /// the retry times out, the retry queue is saturated, or the channel is
+    /// closed.
+    ///
+    /// Returns `true` if the event was enqueued or accepted for retry,
+    /// `false` if it was dropped or the channel is closed.
     pub fn send(&self, event: NetworkEvent) -> bool {
         let event_type = event_type_name(&event);
         let timestamped = TimestampedEvent {
@@ -217,22 +291,10 @@ impl NetworkEventSender {
 
                 true
             }
-            Err(mpsc::error::TrySendError::Full(dropped)) => {
-                self.metrics.events_dropped.inc();
-                warn!(
-                    event_type,
-                    channel_size = self.config.channel_size,
-                    "Network event channel FULL - dropping event! \
-                     This indicates the processor cannot keep up with incoming events."
-                );
-
-                // Log the dropped event details for debugging
-                debug!(
-                    ?dropped.event,
-                    "Dropped event details"
-                );
-
-                false
+            Err(mpsc::error::TrySendError::Full(timestamped)) => {
+                // Channel full: don't drop. Apply backpressure via a bounded
+                // async retry that waits for capacity.
+                self.spawn_retry(event_type, timestamped)
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 // Channel closed - processor has shut down
@@ -243,6 +305,93 @@ impl NetworkEventSender {
                 false
             }
         }
+    }
+
+    /// Hand a full-channel overflow event to a bounded async retry instead
+    /// of dropping it.
+    ///
+    /// The network thread can't `await`, so the wait happens on a detached
+    /// task that holds a clone of the sender and `send().await`s for up to
+    /// `send_timeout`. The number of concurrent waiters is capped by
+    /// `max_pending_retries`; past the cap (or with no async runtime to
+    /// spawn onto) the event is dropped with escalation. Returns `true` when
+    /// the event was accepted for retry, `false` when it was dropped.
+    fn spawn_retry(&self, event_type: &'static str, event: TimestampedEvent) -> bool {
+        let Ok(handle) = Handle::try_current() else {
+            // No async runtime to wait on (e.g. a synchronous caller) —
+            // fall back to a true drop rather than blocking the caller.
+            self.record_drop(event_type, event, "no async runtime for retry");
+            return false;
+        };
+
+        // Soft cap on concurrent waiters bounds extra buffering on top of
+        // the channel itself. Reserve a slot first; release it if we're over.
+        let pending = self.metrics.pending_retries.fetch_add(1, Ordering::AcqRel) + 1;
+        if pending > self.config.max_pending_retries as u64 {
+            let _ = self.metrics.pending_retries.fetch_sub(1, Ordering::AcqRel);
+            self.record_drop(event_type, event, "retry queue saturated");
+            return false;
+        }
+
+        self.metrics.events_retried.inc();
+        self.metrics.backpressure_active.set(1);
+        warn!(
+            event_type,
+            pending,
+            channel_size = self.config.channel_size,
+            "Network event channel full - applying backpressure (retrying event)"
+        );
+
+        let tx = self.tx.clone();
+        let metrics = self.metrics.clone();
+        let send_timeout = self.config.send_timeout;
+
+        let _detached = handle.spawn(async move {
+            match timeout(send_timeout, tx.send(event)).await {
+                Ok(Ok(())) => {
+                    metrics.events_received.inc();
+                    metrics.events_recovered.inc();
+                }
+                Ok(Err(_closed)) => {
+                    metrics.events_dropped.inc();
+                    warn!(
+                        event_type,
+                        "Network event channel closed while retrying - dropping event"
+                    );
+                }
+                Err(_elapsed) => {
+                    metrics.events_dropped.inc();
+                    error!(
+                        event_type,
+                        timeout_secs = send_timeout.as_secs_f64(),
+                        "Network event channel saturated - dropping event after \
+                         backpressure timeout. The processor cannot keep up with \
+                         the inbound feed."
+                    );
+                }
+            }
+
+            // Release the waiter slot and clear the signal once the last
+            // waiter drains.
+            let remaining = metrics.pending_retries.fetch_sub(1, Ordering::AcqRel) - 1;
+            if remaining == 0 {
+                metrics.backpressure_active.set(0);
+            }
+        });
+
+        true
+    }
+
+    /// Record a true drop (retry could not be attempted or was refused).
+    fn record_drop(&self, event_type: &'static str, dropped: TimestampedEvent, reason: &str) {
+        self.metrics.events_dropped.inc();
+        error!(
+            event_type,
+            reason,
+            channel_size = self.config.channel_size,
+            "Network event channel dropping event - processor cannot keep up"
+        );
+        debug!(?dropped.event, "Dropped event details");
     }
 
     /// Get the current approximate depth of the channel.
@@ -459,28 +608,98 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_channel_full_drops_events() {
+    async fn test_full_channel_applies_backpressure_and_recovers() {
         let config = NetworkEventChannelConfig {
             channel_size: 2,
             warning_threshold: 0.5,
+            send_timeout: Duration::from_secs(5),
             ..Default::default()
         };
         let (sender, mut receiver) = channel_unregistered(config);
 
-        // Fill the channel
+        // Fill the channel.
         assert!(sender.send(create_test_message_event()));
         assert!(sender.send(create_test_message_event()));
 
-        // Third should be dropped
-        assert!(!sender.send(create_test_message_event()));
+        // The overflow event is accepted for retry, not dropped silently.
+        assert!(sender.send(create_test_message_event()));
+        assert_eq!(sender.metrics.events_retried.get(), 1);
+        assert_eq!(sender.metrics.events_dropped.get(), 0);
 
-        // Verify metrics
-        assert_eq!(sender.metrics.events_received.get(), 2);
+        // Draining frees capacity, so the retried event eventually lands —
+        // all three events are delivered, none lost.
+        let mut received = 0;
+        while received < 3 {
+            match receiver.recv().await {
+                Some(_) => received += 1,
+                None => break,
+            }
+        }
+        assert_eq!(received, 3);
+
+        // The retry path reports the recovery and clears backpressure.
+        for _ in 0..100 {
+            if sender.metrics.events_recovered.get() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(sender.metrics.events_recovered.get(), 1);
+        assert_eq!(sender.metrics.events_dropped.get(), 0);
+        assert_eq!(sender.metrics.backpressure_active.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_retry_timeout_drops_event() {
+        let config = NetworkEventChannelConfig {
+            channel_size: 1,
+            send_timeout: Duration::from_millis(50),
+            ..Default::default()
+        };
+        // Keep the receiver alive (so the channel stays open) but never drain
+        // it, so the retry can only end by timing out.
+        let (sender, _receiver) = channel_unregistered(config);
+
+        assert!(sender.send(create_test_message_event()));
+
+        // Overflow is accepted for retry first...
+        assert!(sender.send(create_test_message_event()));
+        assert_eq!(sender.metrics.events_retried.get(), 1);
+
+        // ...then dropped once the backpressure timeout elapses with no room.
+        for _ in 0..100 {
+            if sender.metrics.events_dropped.get() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert_eq!(sender.metrics.events_dropped.get(), 1);
+        assert_eq!(sender.metrics.events_recovered.get(), 0);
+        assert_eq!(sender.metrics.backpressure_active.get(), 0);
+    }
 
-        // Drain and verify
-        let events = receiver.drain();
-        assert_eq!(events.len(), 2);
+    #[tokio::test]
+    async fn test_retry_queue_saturation_drops() {
+        let config = NetworkEventChannelConfig {
+            channel_size: 1,
+            send_timeout: Duration::from_secs(5),
+            max_pending_retries: 1,
+            ..Default::default()
+        };
+        let (sender, _receiver) = channel_unregistered(config);
+
+        // Fill the channel; nothing drains it.
+        assert!(sender.send(create_test_message_event()));
+
+        // First overflow takes the single retry slot.
+        assert!(sender.send(create_test_message_event()));
+        assert_eq!(sender.metrics.events_retried.get(), 1);
+
+        // Second overflow exceeds the cap and is dropped immediately rather
+        // than buffered without bound.
+        assert!(!sender.send(create_test_message_event()));
+        assert_eq!(sender.metrics.events_dropped.get(), 1);
+        assert_eq!(sender.metrics.events_retried.get(), 1);
     }
 
     #[tokio::test]

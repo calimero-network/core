@@ -200,6 +200,17 @@ const fn nonce_check_disabled_for_testing() -> bool {
     false
 }
 
+/// Why a child is being removed from its collection, selecting whether the
+/// Frozen-deletion guard applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoveMode {
+    /// A genuine semantic deletion: reject `Frozen` children.
+    Delete,
+    /// A deterministic re-key relocation: the child is immediately re-inserted
+    /// under a new id, so `Frozen` children are relocated rather than rejected.
+    Relocate,
+}
+
 /// The primary interface for the storage system.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
@@ -516,6 +527,41 @@ impl<S: StorageAdaptor> Interface<S> {
         }
     }
 
+    /// Resolve which writer in `writers` produced `sig_data`'s signature over
+    /// `payload`, returning that writer's key on success.
+    ///
+    /// Fast path: if `sig_data` carries a `signer` hint that is in `writers`,
+    /// do exactly one `ed25519_verify` against the hint. Slow path (no hint, or
+    /// a hint not in the set): linear scan over `writers`, returning the first
+    /// key whose signature verifies. `None` means no writer in the set produced
+    /// this signature — callers map that to `InvalidSignature`.
+    ///
+    /// This is the single source of truth for the signer-hint-then-scan
+    /// authorization check shared by every signed `Shared`/`SharedMember` arm
+    /// (upsert and delete) and the snapshot verifiers. Callers needing only a
+    /// yes/no answer use `.is_some()`; callers needing the signer for the
+    /// operation-granularity gate use the returned key directly.
+    ///
+    /// The caller is responsible for the `[0; 64]` placeholder reject before
+    /// calling this — that O(1) bail avoids a full writer-set scan of
+    /// `ed25519_verify` calls on a known-bad signature.
+    fn resolve_signer(
+        writers: &BTreeMap<PublicKey, OpMask>,
+        sig_data: &crate::entities::SignatureData,
+        payload: &[u8],
+    ) -> Option<PublicKey> {
+        match sig_data.signer {
+            Some(hint) if writers.contains_key(&hint) => {
+                crate::env::ed25519_verify(&sig_data.signature, hint.digest(), payload)
+                    .then_some(hint)
+            }
+            _ => writers
+                .keys()
+                .copied()
+                .find(|w| crate::env::ed25519_verify(&sig_data.signature, w.digest(), payload)),
+        }
+    }
+
     /// Verify the writer's signature on a snapshot-supplied entity
     /// against the access-control rules in its metadata.
     ///
@@ -637,15 +683,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
                 // Fast path: signer hint + verify once. Slow path:
                 // linear scan over writers. Mirrors `apply_action`.
-                let verified = match sig_data.signer {
-                    Some(hint) if writers.contains_key(&hint) => {
-                        crate::env::ed25519_verify(&sig_data.signature, hint.digest(), &payload)
-                    }
-                    _ => writers.keys().any(|w| {
-                        crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)
-                    }),
-                };
-                if verified {
+                if Self::resolve_signer(writers, sig_data, &payload).is_some() {
                     Ok(())
                 } else {
                     Err(StorageError::InvalidSignature)
@@ -670,15 +708,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 // which fails verification (the scan finds no writer) — fail
                 // closed rather than accept an unverifiable member.
                 let writers = Self::resolve_anchor_writers_as_of(*anchor, sig_data.nonce);
-                let verified = match sig_data.signer {
-                    Some(hint) if writers.contains_key(&hint) => {
-                        crate::env::ed25519_verify(&sig_data.signature, hint.digest(), &payload)
-                    }
-                    _ => writers.keys().any(|w| {
-                        crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)
-                    }),
-                };
-                if verified {
+                if Self::resolve_signer(&writers, sig_data, &payload).is_some() {
                     Ok(())
                 } else {
                     Err(StorageError::InvalidSignature)
@@ -739,15 +769,7 @@ impl<S: StorageAdaptor> Interface<S> {
             metadata: metadata.clone(),
         };
         let payload = action.payload_for_signing();
-        let verified = match sig_data.signer {
-            Some(hint) if writers.contains_key(&hint) => {
-                crate::env::ed25519_verify(&sig_data.signature, hint.digest(), &payload)
-            }
-            _ => writers
-                .keys()
-                .any(|w| crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)),
-        };
-        if verified {
+        if Self::resolve_signer(writers, sig_data, &payload).is_some() {
             Ok(())
         } else {
             Err(StorageError::InvalidSignature)
@@ -1391,24 +1413,9 @@ impl<S: StorageAdaptor> Interface<S> {
                         // `authoritative_writers` is now the
                         // DAG-causal answer when available.
                         let payload = action.payload_for_signing();
-                        let signer = match sig_data.signer {
-                            Some(hint) if authoritative_writers.contains_key(&hint) => {
-                                crate::env::ed25519_verify(
-                                    &sig_data.signature,
-                                    hint.digest(),
-                                    &payload,
-                                )
-                                .then_some(hint)
-                            }
-                            _ => authoritative_writers.keys().copied().find(|w| {
-                                crate::env::ed25519_verify(
-                                    &sig_data.signature,
-                                    w.digest(),
-                                    &payload,
-                                )
-                            }),
-                        };
-                        let Some(signer) = signer else {
+                        let Some(signer) =
+                            Self::resolve_signer(&authoritative_writers, sig_data, &payload)
+                        else {
                             return Err(StorageError::InvalidSignature);
                         };
                         // Operation-granularity gate: the signer is a current
@@ -1554,24 +1561,9 @@ impl<S: StorageAdaptor> Interface<S> {
                         // Verify signature first (same hint-fast-path / scan as
                         // Shared), against the anchor-resolved set.
                         let payload = action.payload_for_signing();
-                        let signer = match sig_data.signer {
-                            Some(hint) if authoritative_writers.contains_key(&hint) => {
-                                crate::env::ed25519_verify(
-                                    &sig_data.signature,
-                                    hint.digest(),
-                                    &payload,
-                                )
-                                .then_some(hint)
-                            }
-                            _ => authoritative_writers.keys().copied().find(|w| {
-                                crate::env::ed25519_verify(
-                                    &sig_data.signature,
-                                    w.digest(),
-                                    &payload,
-                                )
-                            }),
-                        };
-                        let Some(signer) = signer else {
+                        let Some(signer) =
+                            Self::resolve_signer(&authoritative_writers, sig_data, &payload)
+                        else {
                             return Err(StorageError::InvalidSignature);
                         };
                         // Operation-granularity gate (member resolves the anchor's masks).
@@ -1674,15 +1666,29 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // leaks current-nonce state to
                                 // unauthenticated probers).
                                 //
-                                // DeleteRef keeps the strict `Err` on
-                                // `<=` (unlike upsert's silent skip)
-                                // because a stale delete being
-                                // silently accepted vs dropped
-                                // carries different semantics than
-                                // a stale upsert, and rare-by-design
-                                // deletes don't drive the
-                                // post-divergence convergence problem
-                                // upsert silent-skip fixes.
+                                // DeleteRef rejects only STRICTLY stale
+                                // nonces (`<`) with a hard `Err` — unlike
+                                // upsert's silent skip — because a stale
+                                // delete dropped vs accepted carries
+                                // different semantics than a stale upsert,
+                                // and rare-by-design deletes don't drive
+                                // the post-divergence convergence problem
+                                // the upsert silent-skip fixes.
+                                //
+                                // The EQUAL-nonce case (`==`) is NOT
+                                // rejected here: it falls through to
+                                // `apply_delete_ref_action`, whose tiebreak
+                                // (`deleted_at < updated_at` ⇒ delete loses,
+                                // so equal ⇒ delete WINS) resolves the
+                                // delete-vs-update tie deterministically and
+                                // identically for every storage type. The
+                                // previous `<=` rejected equal-HLC deletes
+                                // for signed types only, while `Public` (no
+                                // nonce gate) and the apply path both let
+                                // equal through — so signed vs `Public`
+                                // diverged on the equal-HLC delete-vs-update
+                                // tie. Using `<` here unifies the tiebreak
+                                // across all storage types.
                                 let payload = action.payload_for_signing();
                                 let verification_result = crate::env::ed25519_verify(
                                     &sig_data.signature,
@@ -1699,7 +1705,7 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // the index.
                                 let new_nonce = sig_data.nonce;
                                 let last_nonce = *existing_metadata.updated_at;
-                                if new_nonce <= last_nonce {
+                                if new_nonce < last_nonce {
                                     return Err(StorageError::NonceReplay(Box::new((
                                         *owner, new_nonce,
                                     ))));
@@ -1742,58 +1748,45 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // `NonceReplay` (which leaks
                                 // current-nonce state).
                                 //
-                                // DeleteRef keeps the strict `Err` on
-                                // `<=` (unlike upsert's silent skip)
-                                // — see the User DeleteRef arm for
-                                // rationale.
+                                // DeleteRef rejects only STRICTLY stale
+                                // nonces (`<`) with a hard `Err` (unlike
+                                // upsert's silent skip); the equal-nonce
+                                // case falls through to the apply-path
+                                // tiebreak so the equal-HLC delete-vs-update
+                                // resolution is identical across storage
+                                // types — see the User DeleteRef arm for
+                                // the full rationale.
                                 //
                                 // Identify the signer.
                                 // Fast path: if the action carries a `signer` hint and that
                                 // signer is in the authoritative set, do exactly one verify.
                                 // Slow path (no hint): linear scan (matches Add/Update arm).
                                 let payload = action.payload_for_signing();
-                                let signer = match sig_data.signer {
-                                    Some(hint) if existing_writers.contains_key(&hint) => {
-                                        if crate::env::ed25519_verify(
-                                            &sig_data.signature,
-                                            hint.digest(),
-                                            &payload,
-                                        ) {
-                                            Some(hint)
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    _ => existing_writers.keys().copied().find(|w| {
-                                        crate::env::ed25519_verify(
-                                            &sig_data.signature,
-                                            w.digest(),
-                                            &payload,
-                                        )
-                                    }),
-                                };
-                                let signer = match signer {
-                                    Some(s) => s,
-                                    None => return Err(StorageError::InvalidSignature),
+                                let Some(signer) =
+                                    Self::resolve_signer(existing_writers, sig_data, &payload)
+                                else {
+                                    return Err(StorageError::InvalidSignature);
                                 };
                                 // Operation-granularity gate: deletes need DELETE.
                                 Self::enforce_op_mask(&signer, OpMask::DELETE, existing_writers)?;
 
                                 // Replay protection (per-entity monotonic nonce).
                                 //
-                                // Strict `<=` Err, symmetric with the
+                                // Strict `<` Err, symmetric with the
                                 // User DeleteRef arm above and matching
                                 // the rationale documented there: stale
                                 // delete semantics differ from upsert
-                                // silent-skip, and DeleteRef tests do
-                                // not opt into the test-only bypass.
-                                // Removing the previously-speculative
+                                // silent-skip, the equal-HLC case falls
+                                // through to the unified apply-path
+                                // tiebreak, and DeleteRef tests do not
+                                // opt into the test-only bypass. Removing
+                                // the previously-speculative
                                 // `nonce_check_disabled_for_testing`
                                 // guard here so the two delete arms
                                 // behave identically.
                                 let new_nonce = sig_data.nonce;
                                 let last_nonce = *existing_metadata.updated_at;
-                                if new_nonce <= last_nonce {
+                                if new_nonce < last_nonce {
                                     let placeholder = existing_writers
                                         .keys()
                                         .copied()
@@ -1853,37 +1846,20 @@ impl<S: StorageAdaptor> Interface<S> {
                                     });
 
                                 let payload = action.payload_for_signing();
-                                let signer = match sig_data.signer {
-                                    Some(hint) if existing_writers.contains_key(&hint) => {
-                                        if crate::env::ed25519_verify(
-                                            &sig_data.signature,
-                                            hint.digest(),
-                                            &payload,
-                                        ) {
-                                            Some(hint)
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    _ => existing_writers.keys().copied().find(|w| {
-                                        crate::env::ed25519_verify(
-                                            &sig_data.signature,
-                                            w.digest(),
-                                            &payload,
-                                        )
-                                    }),
-                                };
-                                let signer = match signer {
-                                    Some(s) => s,
-                                    None => return Err(StorageError::InvalidSignature),
+                                let Some(signer) =
+                                    Self::resolve_signer(&existing_writers, sig_data, &payload)
+                                else {
+                                    return Err(StorageError::InvalidSignature);
                                 };
                                 // Operation-granularity gate: deletes need DELETE.
                                 Self::enforce_op_mask(&signer, OpMask::DELETE, &existing_writers)?;
 
-                                // Replay protection (strict `<=` Err, as Shared).
+                                // Replay protection (strict `<` Err, as Shared:
+                                // equal-HLC falls through to the unified
+                                // apply-path delete-vs-update tiebreak).
                                 let new_nonce = sig_data.nonce;
                                 let last_nonce = *existing_metadata.updated_at;
-                                if new_nonce <= last_nonce {
+                                if new_nonce < last_nonce {
                                     let placeholder = existing_writers
                                         .keys()
                                         .copied()
@@ -2315,7 +2291,16 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(());
         };
 
-        // Guard: Local update is newer, deletion loses
+        // Guard: Local update is newer, deletion loses.
+        //
+        // This is the SINGLE canonical equal-HLC delete-vs-update tiebreak
+        // for every storage type. The strict `<` means a STRICTLY older
+        // delete loses, while an equal-HLC delete (`deleted_at ==
+        // updated_at`) WINS. The signed-type verify arms (User/Shared/
+        // SharedMember) reject only strictly-stale nonces (`<`) and let
+        // equal-HLC deletes fall through to here, and `Public` has no nonce
+        // gate at all — so all four types resolve the equal-HLC tie
+        // identically rather than signed types rejecting it earlier.
         if deleted_at < *metadata.updated_at {
             // Local update wins, ignore older deletion
             return Ok(());
@@ -2574,8 +2559,14 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `IndexNotFound` if entity exists but has no index
     ///
     pub fn find_by_id<D: Data>(id: Id) -> Result<Option<D>, StorageError> {
+        // Single `EntityIndex` read serves the tombstone check AND supplies the
+        // merkle_hash and metadata below. Loading it once here avoids the
+        // earlier `is_deleted()` + `get_index()` pair, which read and
+        // deserialized the index twice for every child of every collection scan.
+        let index = <Index<S>>::get_index(id)?;
+
         // Check if entity is deleted (tombstone)
-        if <Index<S>>::is_deleted(id)? {
+        if index.as_ref().and_then(|index| index.deleted_at).is_some() {
             return Ok(None); // Entity is deleted
         }
 
@@ -2587,8 +2578,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let mut item = from_slice::<D>(&slice).map_err(StorageError::DeserializationError)?;
 
-        // Single `EntityIndex` read for both merkle_hash and metadata.
-        let index = <Index<S>>::get_index(id)?.ok_or(StorageError::IndexNotFound(id))?;
+        let index = index.ok_or(StorageError::IndexNotFound(id))?;
         item.element_mut().merkle_hash = index.full_hash();
         item.element_mut().metadata = index.metadata;
 
@@ -2673,10 +2663,47 @@ impl<S: StorageAdaptor> Interface<S> {
     ///
     /// Deletes the child entity and generates sync actions automatically.
     ///
+    /// Rejects deletion of `Frozen` children — frozen data is immutable and
+    /// every peer rejects an incoming `DeleteRef` for it (see the
+    /// `StorageType::Frozen` arm in [`apply_action`](Self::apply_action)), so
+    /// a local delete would diverge the deleter from the rest of the network.
+    /// The re-key migration that relocates entries under new deterministic ids
+    /// must use [`relocate_child_from`](Self::relocate_child_from) instead.
+    ///
+    /// # Errors
+    /// Returns error if parent or child doesn't exist, or if the child is
+    /// `Frozen`.
+    ///
+    pub fn remove_child_from(parent_id: Id, child_id: Id) -> Result<bool, StorageError> {
+        Self::remove_child_from_inner(parent_id, child_id, RemoveMode::Delete)
+    }
+
+    /// Removes a child from a collection as part of a deterministic re-key
+    /// relocation (the entry is immediately re-inserted under a new id).
+    ///
+    /// Unlike [`remove_child_from`](Self::remove_child_from) this does **not**
+    /// reject `Frozen` children: a re-key is a local relocation, not a
+    /// semantic deletion, so the frozen data is preserved (re-inserted under
+    /// its new deterministic id by the caller). Used only by the collection
+    /// re-key paths (`reassign_deterministic_id_*`).
+    ///
     /// # Errors
     /// Returns error if parent or child doesn't exist.
     ///
-    pub fn remove_child_from(parent_id: Id, child_id: Id) -> Result<bool, StorageError> {
+    pub(crate) fn relocate_child_from(parent_id: Id, child_id: Id) -> Result<bool, StorageError> {
+        Self::remove_child_from_inner(parent_id, child_id, RemoveMode::Relocate)
+    }
+
+    /// Shared implementation behind [`remove_child_from`](Self::remove_child_from)
+    /// and [`relocate_child_from`](Self::relocate_child_from).
+    ///
+    /// `mode` selects whether the Frozen-deletion guard applies: it does for
+    /// [`RemoveMode::Delete`], but not for [`RemoveMode::Relocate`] re-keys.
+    fn remove_child_from_inner(
+        parent_id: Id,
+        child_id: Id,
+        mode: RemoveMode,
+    ) -> Result<bool, StorageError> {
         let child_exists = <Index<S>>::get_children_of(parent_id)?
             .iter()
             .any(|child| child.id() == child_id);
@@ -2690,6 +2717,24 @@ impl<S: StorageAdaptor> Interface<S> {
         // Get metadata before removing index
         let mut metadata =
             <Index<S>>::get_metadata(child_id)?.ok_or(StorageError::IndexNotFound(child_id))?;
+
+        // Reject deletion of Frozen data locally, before mutating any state.
+        //
+        // The receiving side rejects every `DeleteRef` for Frozen data (see
+        // the `StorageType::Frozen` arm in `apply_action`). If we let the
+        // local delete proceed it would tombstone the child and broadcast a
+        // `DeleteRef` that every peer rejects, leaving the deleter
+        // permanently diverged from the rest of the network (split-brain).
+        // Refusing here keeps the deleter consistent with its peers.
+        //
+        // The re-key relocation path (`relocate_child_from`) passes
+        // `RemoveMode::Relocate`: it removes the entry only to re-insert it
+        // under a new deterministic id, so the frozen data is preserved.
+        if mode == RemoveMode::Delete && matches!(metadata.storage_type, StorageType::Frozen) {
+            return Err(StorageError::ActionNotAllowed(
+                "Frozen data cannot be deleted".to_owned(),
+            ));
+        }
 
         // If this is a local user action, set the nonce
         if let StorageType::User { owner, .. } = metadata.storage_type {
@@ -2907,8 +2952,9 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let incoming_updated_at = metadata.updated_at();
 
-        // Compute incoming data hash for tracing
-        let incoming_hash: [u8; 32] = Sha256::digest(data).into();
+        // `incoming_hash` (Sha256 of `data`) is only consumed by the
+        // root-merge trace logs below, so it's computed lazily inside those
+        // branches rather than on every (hot, non-root) write.
 
         let last_metadata = <Index<S>>::get_metadata(id)?;
         let final_data = if let Some(last_metadata) = &last_metadata {
@@ -2958,6 +3004,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 // and silently dropped one side's writes on bootstrap
                 // and on concurrent root writes. See the doc comment on
                 // `is_app_root_entry` for the regression timeline.
+                let incoming_hash: [u8; 32] = Sha256::digest(data).into();
                 if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
                     let existing_hash: [u8; 32] = Sha256::digest(&existing_data).into();
                     info!(
@@ -3033,6 +3080,7 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         } else {
             if id.is_root() {
+                let incoming_hash: [u8; 32] = Sha256::digest(data).into();
                 info!(
                     target: "storage::root_merge",
                     %id,
@@ -3706,17 +3754,6 @@ impl<S: StorageAdaptor> Interface<S> {
         debug!(%id, ?full_hash, is_new, "save_raw completed");
 
         Ok(Some(full_hash))
-    }
-
-    /// Validates Merkle tree integrity.
-    ///
-    /// **Note**: Not yet implemented.
-    ///
-    /// # Errors
-    /// Currently panics (unimplemented).
-    ///
-    pub fn validate() -> Result<(), StorageError> {
-        unimplemented!()
     }
 
     /// Helper to verify an upsert (`Add` or `Update`) action against the

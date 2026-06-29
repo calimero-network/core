@@ -212,11 +212,12 @@ where
         // Actions don't). A drift-rejected (>5s ahead) HLC is logged, not fatal —
         // the actions are still valid state.
         if let StorageDelta::CausalActions { delta_hlc, .. } = &artifact {
-            if let Err(crate::env::HlcDriftError) = crate::env::update_hlc(delta_hlc) {
+            if let Err(e) = crate::env::update_hlc(delta_hlc) {
                 tracing::warn!(
                     target: "storage::root",
                     %delta_hlc,
-                    "Root::sync: remote delta HLC rejected by drift guard (>5s ahead); \
+                    error = %e,
+                    "Root::sync: remote delta HLC rejected (drift guard); \
                      applying without advancing the local clock"
                 );
             }

@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>State, Projection &amp; the Root Hash — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+<style>
+.slots { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: .86rem; }
+.slots th, .slots td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.slots th { color: var(--text-bright); font-weight: 600; }
+.slots td { color: var(--text-dim); }
+.slots code { white-space: nowrap; }
+.chapter-nav { display: flex; justify-content: space-between; margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border); font-size: .88rem; }
+</style>
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="index.html">Protocol Reference</a><span class="sep">/</span><span>State, Projection &amp; the Root Hash</span></div>
+<h1>State, Projection &amp; the <em>Root Hash</em></h1>
+<p class="page-subtitle">Chapter 4 — folding the DAG into readable state and one comparable hash.</p>
+
+<div class="card gc">
+<h2>From DAG to state: the fold</h2>
+<p>A scope's DAG is the source of truth, but you don't query a DAG — you query <strong>state</strong>. The <strong>projection</strong> is the deterministic function that replays a scope's operations into materialized state plus a single summary hash, the <strong>scope root</strong>.</p>
+<div class="diagram-tools"><button class="replay-btn" onclick="replay('d-fold')">&#9654; Replay</button></div>
+<div class="diagram-container" id="d-fold">
+<svg viewBox="0 0 760 300" role="img" aria-label="Folding the DAG into state and a root hash" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="fa" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="300" rx="10" fill="#0f0f16"/>
+  <!-- DAG -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="24" y="70" width="170" height="160" rx="10" fill="#13160f" stroke="#a5ff11" stroke-width="1.3"/>
+    <text x="109" y="58" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">Scope DAG</text>
+    <circle cx="60" cy="115" r="9" fill="#161b22" stroke="#444c56"/><circle cx="109" cy="150" r="9" fill="#161b22" stroke="#444c56"/>
+    <circle cx="60" cy="185" r="9" fill="#161b22" stroke="#444c56"/><circle cx="158" cy="120" r="9" fill="#161b22" stroke="#444c56"/>
+    <circle cx="150" cy="190" r="9" fill="#161b22" stroke="#444c56"/>
+    <line x1="69" y1="115" x2="100" y2="148" stroke="#3a3a4a"/><line x1="118" y1="150" x2="149" y2="122" stroke="#3a3a4a"/>
+    <line x1="69" y1="183" x2="100" y2="153" stroke="#3a3a4a"/><line x1="118" y1="152" x2="142" y2="186" stroke="#3a3a4a"/>
+    <text x="109" y="218" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">signed operations</text>
+  </g>
+  <g class="seq-step" style="--step-i:1"><line x1="200" y1="150" x2="288" y2="150" stroke="#8b949e" stroke-width="1.4" marker-end="url(#fa)"/>
+    <text x="244" y="142" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">fold</text></g>
+  <!-- Projection -->
+  <g class="seq-step" style="--step-i:2">
+    <rect x="296" y="50" width="200" height="200" rx="10" fill="#10151c" stroke="#58a6ff" stroke-width="1.3"/>
+    <text x="396" y="40" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">Projection — per-slot LWW</text>
+    <text x="312" y="86" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">entities  →  value · stamp</text>
+    <text x="312" y="112" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">acl       →  writers · stamp</text>
+    <text x="312" y="138" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">groups    →  members · stamp</text>
+    <text x="312" y="164" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">admin     →  identity · stamp</text>
+    <text x="312" y="190" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">policy    →  bytes · stamp</text>
+    <text x="312" y="216" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">subgroups →  tree · stamp</text>
+    <text x="312" y="242" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">caps      →  grants · stamp</text>
+  </g>
+  <g class="seq-step" style="--step-i:3"><line x1="502" y1="150" x2="590" y2="150" stroke="#8b949e" stroke-width="1.4" marker-end="url(#fa)"/>
+    <text x="546" y="142" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">hash</text></g>
+  <!-- root -->
+  <g class="seq-step" style="--step-i:4">
+    <rect x="598" y="105" width="148" height="90" rx="10" fill="#1f2a12" stroke="#a5ff11" stroke-width="1.5"/>
+    <text x="672" y="135" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">scope_root</text>
+    <text x="672" y="158" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">H( entities ‖</text>
+    <text x="672" y="172" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">acl ‖ governance )</text>
+  </g>
+</svg>
+</div>
+<p>The fold has one essential property: it is <strong>order-independent</strong>. Replay the same set of operations in any order — the order they were authored, gossiped, or backfilled — and you get the identical state and the identical scope root. That is what makes "detect divergence, don't prevent it" work: two nodes never have to agree on an order, only on a set.</p>
+</div>
+
+<div class="card ga">
+<h2>Last-writer-wins, per slot</h2>
+<p>Order-independence comes from how each piece of state is resolved. The projection treats every addressable piece of state — an entity, an object's writer set, a member's role — as a <strong>slot</strong>. Each slot remembers the <strong>stamp</strong> of the operation that last wrote it, and a write only takes effect if it carries a higher stamp.</p>
+<div class="typedef" aria-label="Last-writer-wins apply">
+<span class="comment">// applying one operation — pure, deterministic, order-independent</span><br>
+<span class="kw">fn</span> <span class="ty">apply</span>(op):<br>
+&nbsp;&nbsp;<span class="kw">for</span> (slot, value) <span class="kw">in</span> op.writes():<br>
+&nbsp;&nbsp;&nbsp;&nbsp;stamp = (op.hlc, generation(op), op.id)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">if</span> stamp &gt; clock[slot]:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;state[slot] = value<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;clock[slot] = stamp
+</div>
+<p>The stamp is a triple, compared left to right:</p>
+<ul>
+<li><strong><code>hlc</code></strong> — the hybrid logical clock. It advances with wall-clock time but is nudged forward whenever a higher clock is observed, so it stays <em>causally monotonic</em>: an operation that causally follows another always carries a higher (or equal) hlc.</li>
+<li><strong><code>generation</code></strong> — the operation's depth in the DAG (its longest path from genesis). This breaks ties where hlc alone can't. Governance operations in particular are authored with hlc&nbsp;=&nbsp;0, so <em>generation is what orders them</em> — a later structural change always sits deeper in the DAG than the state it supersedes.</li>
+<li><strong><code>id</code></strong> — the content hash, a final deterministic tiebreaker so two genuinely concurrent writes still resolve the same way on every node.</li>
+</ul>
+<p>A <code>Delete</code> records a stamp just like a write, so a stale re-add that arrives later cannot resurrect a deleted entity — its lower stamp loses.</p>
+</div>
+
+<div class="card gb">
+<h2>What the projection holds</h2>
+<p>The fold maintains one set of slots per plane. This is the complete materialized state of a scope:</p>
+<table class="slots">
+<tr><th>Plane</th><th>Slots</th><th>Resolved value</th></tr>
+<tr><td>Data</td><td><code>entities</code></td><td>the latest value written to each entity (or absent, if deleted)</td></tr>
+<tr><td>Access control</td><td><code>acl</code></td><td>the writer set and capability mask for each object</td></tr>
+<tr><td>Membership</td><td><code>groups</code></td><td>each group's members and their roles</td></tr>
+<tr><td>Admin</td><td><code>root_admin</code>, <code>policy</code></td><td>the scope's admin identity and policy bytes</td></tr>
+<tr><td>Structure</td><td><code>subgroups</code></td><td>the subgroup tree: parent links and visibility</td></tr>
+<tr><td>Capability</td><td><code>default_caps</code>, <code>member_caps</code></td><td>default and per-member capability grants</td></tr>
+</table>
+<p class="page-subtitle" style="margin-top:0">The data plane is the application's state; the other planes are what Chapter 6 calls governance. They all fold the same way — that's the unification.</p>
+</div>
+
+<div class="card gd">
+<h2>The scope root</h2>
+<p>The whole projection collapses to <strong>one 32-byte hash</strong>. It is the concatenation of three plane hashes, each computed over its slots in sorted, deterministic order:</p>
+<div class="typedef" aria-label="Scope root composition">
+<span class="field">scope_root</span> = <span class="ty">H</span>( entities_hash ‖ acl_hash ‖ governance_hash )<br>
+<br>
+<span class="comment">// each is a hash over its slots in sorted key order</span><br>
+entities_hash&nbsp;&nbsp;= <span class="ty">H</span>( for each entity:&nbsp;id ‖ len(value) ‖ value )<br>
+acl_hash&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= <span class="ty">H</span>( for each object:&nbsp;id ‖ writer ‖ capability_mask )<br>
+governance_hash = <span class="ty">H</span>( memberships ‖ admin ‖ policy ‖ subgroups ‖ caps )
+</div>
+<p>Because every node sorts the same way and hashes the same bytes, equal operation sets give equal scope roots — and <strong>unequal state gives unequal roots</strong>. That second half is the subtle, important part:</p>
+<div class="step"><span class="n">key property</span><h4>A change with no data effect still moves the scope root.</h4>
+<p>Rotate an object's writers, or remove a member, and the <em>data</em> entities may be byte-for-byte identical — yet because <code>acl_hash</code> and <code>governance_hash</code> are folded into the root, the scope root changes. This closes the gap that would otherwise let a silent access-control or membership split-brain hide behind matching application data. Convergence is checked on the whole scope, not just its data.</p></div>
+</div>
+
+<div class="card ga">
+<h2>Convergence is a hash comparison</h2>
+<p>With an order-independent fold and a single root, checking whether two nodes agree is trivial: <strong>compare scope roots.</strong> No agreement on ordering, no quorum, no coordination — just two hashes.</p>
+<div class="diagram-tools"><button class="replay-btn" onclick="replay('d-converge')">&#9654; Replay</button></div>
+<div class="diagram-container seq animating" id="d-converge"></div>
+<p>Equal roots mean the nodes hold the same state and are done. Unequal roots mean one is missing operations the other has — which is exactly the signal the sync engine acts on in Chapter 10.</p>
+</div>
+
+<div class="card gb">
+<h2>Reading the past: authorization at a cut</h2>
+<p>The fold above produces the <em>current</em> state. But authorization (Chapter 6) often needs the state <strong>as it was at a particular point in history</strong> — specifically, the membership and access-control state an operation's author had observed when they wrote it.</p>
+<p>The projection answers this by folding only the <strong>causal cut</strong>: the operation's parents and everything those parents transitively descend from, and nothing later. This yields an access-control view "as of" that point.</p>
+<div class="step"><span class="n">why it matters</span><h4>Forward-only authorization.</h4>
+<p>A write authored <em>before</em> a member was revoked is judged against the access-control state that existed <em>before</em> the revocation — so it stays valid regardless of the order in which a peer happens to receive the write and the revocation. Authority is evaluated at the author's cut, never at the receiver's present. Chapter 6 builds the full membership and capability rules on top of this primitive.</p></div>
+</div>
+
+<div class="card ga" id="spec">
+<h2>Specification</h2>
+<p>The exact composition of the scope root. Every node must hash identical bytes in identical order, so the rules below are normative for interop. All integers are <strong>little-endian</strong>; every map is iterated in <strong>ascending key order</strong> (the determinism source).</p>
+
+<div class="typedef" aria-label="scope_root">
+<span class="field">scope_root</span> = <span class="ty">SHA-256</span>( entities_root ‖ acl_hash ‖ governance_hash )<span style="color:var(--text-dim)">&nbsp;// three 32-byte inputs</span>
+</div>
+
+<div class="step"><span class="n">important</span><h4>Two entity roots — pick the right one for the wire.</h4>
+<p>The <code>entities_root</code> input has two sources. The projection can hash its own entity map (a self-contained root, used in tests and local checks). But the <strong>convergence signal exchanged on the wire</strong> folds the <em>storage layer's Merkle root</em> as <code>entities_root</code>, with this projection's <code>acl_hash</code> and <code>governance_hash</code> on top. The storage Merkle root is authoritative for the data plane; the projection never re-hashes entity state for the wire signal. A second implementation must fold its <em>storage</em> root here, not a re-hash of the entity map.</p></div>
+
+<h3>entities_hash (projection-local data plane)</h3>
+<div class="typedef"><span class="comment">// for each (id, value) in entities, ascending by id</span><br>
+h.update( id )<span style="color:var(--text-dim)">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;// 32 bytes</span><br>
+h.update( u64_le(len(value)) )<br>
+h.update( value )</div>
+
+<h3>acl_hash (access-control plane)</h3>
+<div class="typedef"><span class="comment">// for each (object_id, writers) ascending; writers ascending by key</span><br>
+h.update( object_id )<span style="color:var(--text-dim)">&nbsp;// 32 bytes</span><br>
+<span class="kw">for</span> (writer, mask) <span class="kw">in</span> writers:<br>
+&nbsp;&nbsp;h.update( writer )<span style="color:var(--text-dim)">&nbsp;// 32 bytes</span><br>
+&nbsp;&nbsp;h.update( [mask.bits()] )<span style="color:var(--text-dim)">&nbsp;// 1 byte bitflag</span></div>
+
+<h3>governance_hash (membership + admin + policy + structure + caps)</h3>
+<div class="typedef"><span class="comment">// 1) groups — ascending; empty groups are skipped entirely</span><br>
+<span class="kw">for</span> (group, members) <span class="kw">in</span> groups, <span class="kw">if</span> members not empty:<br>
+&nbsp;&nbsp;h.update( group )<br>
+&nbsp;&nbsp;<span class="kw">for</span> (member, role) <span class="kw">in</span> members: h.update( member ‖ [role_byte] )<br>
+<span class="comment">// 2) root admin</span><br>
+h.update( admin ? [1] ‖ admin : [0] )<br>
+<span class="comment">// 3) policy</span><br>
+h.update( u64_le(len(policy)) ‖ policy )<br>
+<span class="comment">// 4) live subgroups — ascending; only those whose latest exists=true</span><br>
+<span class="kw">for</span> (child, slot) <span class="kw">in</span> subgroups, <span class="kw">if</span> slot.live:<br>
+&nbsp;&nbsp;h.update( child ‖ [parent if set] ‖ [restricted_byte] )<br>
+<span class="comment">// 5) capability plane — each map ascending</span><br>
+<span class="kw">for</span> (group, caps) <span class="kw">in</span> default_caps: h.update( group ‖ u32_le(caps) )<br>
+<span class="kw">for</span> ((group,member), caps) <span class="kw">in</span> member_caps: h.update( group ‖ member ‖ u32_le(caps) )<br>
+<span class="kw">for</span> (group, admin) <span class="kw">in</span> group_admin: h.update( group ‖ admin )</div>
+
+<h3>Stable role encoding</h3>
+<p>Roles hash to an explicit byte — fixed independently of any in-memory enum order, so the root survives refactors:</p>
+<table class="slots">
+<tr><th>Role</th><th><code>role_byte</code></th></tr>
+<tr><td><code>Admin</code></td><td>0</td></tr>
+<tr><td><code>Member</code></td><td>1</td></tr>
+<tr><td><code>ReadOnly</code></td><td>2</td></tr>
+<tr><td><code>ReadOnlyTee</code></td><td>3</td></tr>
+</table>
+<p class="page-subtitle" style="margin-top:0">Note the empty-group skip and the live-subgroup filter: materialized state must hash identically no matter how it was reached, so a phantom empty group or a deleted subgroup must never perturb the root.</p>
+</div>
+
+<div class="card gc">
+<h2>Where this leads</h2>
+<p>Chapters 3 and 4 are the core: a signed operation, a causally-ordered DAG, an order-independent fold to state, and a single scope root that makes convergence a hash comparison. Everything else is this machinery applied to a purpose — <strong>Chapter 5</strong> shows where data operations come from (running a WASM application), and <strong>Chapter 6</strong> shows how the governance planes encode membership and authority.</p>
+</div>
+
+<div class="chapter-nav">
+<span><a href="operations.html">← Operations &amp; the Causal DAG</a></span>
+<span><a href="execution.html">Application Execution →</a></span>
+</div>
+
+</div>
+</div>
+<script src="../seq-diagram.js"></script>
+<script>
+  window.SEQ_DIAGRAMS = [{
+    id: 'd-converge',
+    title: 'Convergence is a hash comparison',
+    lanes: [
+      { label: 'Node A', color: '#3fb950' },
+      { label: 'Node B', color: '#58a6ff' }
+    ],
+    steps: [
+      { from: 0, to: 0, label: 'apply  op1, op2, op3' },
+      { from: 1, to: 1, label: 'apply  op3, op1, op2   (different order)' },
+      { from: 0, to: 0, label: 'fold → scope_root = H(…)', color: '#a5ff11' },
+      { from: 1, to: 1, label: 'fold → scope_root = H(…)', color: '#a5ff11' },
+      { type: 'divider', label: 'same operation set  ⇒  identical scope_root  ⇒  converged' }
+    ]
+  }];
+</script>
+<script src="../nav.js"></script>
+</body>
+</html>

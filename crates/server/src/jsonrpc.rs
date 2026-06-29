@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, field, info, info_span, Instrument};
 use uuid::Uuid;
 
+use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
 use crate::config::ServerConfig;
 
 mod execute;
@@ -35,12 +36,18 @@ impl JsonRpcConfig {
 pub(crate) struct ServiceState {
     ctx_client: ContextClient,
     node_client: NodeClient,
+    /// Whether the auth guard is active on this service's routes. When `false`
+    /// the server was intentionally started without auth (no-auth mode); when
+    /// `true` both `AuthenticatedKey` and `AuthenticatedNodeOwner` extensions
+    /// are expected to be injected by the guard on every request.
+    pub(crate) auth_enabled: bool,
 }
 
 pub(crate) fn service(
     config: &ServerConfig,
     ctx_client: ContextClient,
     node_client: NodeClient,
+    auth_enabled: bool,
 ) -> Option<(String, Router)> {
     // Check if JSON-RPC is configured and enabled
     let _jsonrpc_config = match &config.jsonrpc {
@@ -67,6 +74,7 @@ pub(crate) fn service(
     let state = Arc::new(ServiceState {
         ctx_client,
         node_client,
+        auth_enabled,
     });
     let handler = post(handle_request).layer(Extension(Arc::clone(&state)));
 
@@ -77,6 +85,8 @@ pub(crate) fn service(
 
 async fn handle_request(
     Extension(state): Extension<Arc<ServiceState>>,
+    auth_key: Option<Extension<AuthenticatedKey>>,
+    auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     Json(request): Json<PrimitiveRequest<serde_json::Value>>,
 ) -> Json<PrimitiveResponse> {
     // One correlation id per inbound request. Carried on a span so every log
@@ -96,14 +106,27 @@ async fn handle_request(
         method = field::Empty,
     );
 
-    handle_request_inner(state, request).instrument(span).await
+    handle_request_inner(
+        state,
+        auth_key.map(|ext| ext.0),
+        auth_node_owner.map(|ext| ext.0),
+        request,
+    )
+    .instrument(span)
+    .await
 }
 
 async fn handle_request_inner(
     state: Arc<ServiceState>,
+    auth_key: Option<AuthenticatedKey>,
+    auth_node_owner: Option<AuthenticatedNodeOwner>,
     request: PrimitiveRequest<serde_json::Value>,
 ) -> Json<PrimitiveResponse> {
-    let body = match serde_json::from_value::<RequestPayload>(request.payload.clone()) {
+    // Deserialize by reference: `&Value` implements `Deserializer`, so this
+    // avoids cloning the top-level `Value` tree (individual string/array fields
+    // are still copied into `RequestPayload` by serde). The payload stays intact
+    // for the parse-failure log below.
+    let body = match RequestPayload::deserialize(&request.payload) {
         Ok(payload) => match payload {
             RequestPayload::Execute(exec_request) => {
                 // Validate the execution request before processing
@@ -137,7 +160,10 @@ async fn handle_request_inner(
 
                 info!(args=%exec_request.args_json, "Received execution request");
 
-                let result = exec_request.handle(state).await.to_res_body();
+                let result = exec_request
+                    .handle(state, auth_key, auth_node_owner)
+                    .await
+                    .to_res_body();
 
                 match &result {
                     ResponseBody::Error(err) => {
@@ -155,7 +181,10 @@ async fn handle_request_inner(
                 span.record("context_id", field::display(&status_request.context_id));
                 span.record("method", "sync_status");
 
-                status_request.handle(state).await.to_res_body()
+                status_request
+                    .handle(state, auth_key, auth_node_owner)
+                    .await
+                    .to_res_body()
             }
         },
         Err(err) => {
@@ -177,6 +206,8 @@ pub(crate) trait Request {
     async fn handle(
         self,
         state: Arc<ServiceState>,
+        auth_key: Option<AuthenticatedKey>,
+        auth_node_owner: Option<AuthenticatedNodeOwner>,
     ) -> Result<Self::Response, RpcError<Self::Error>>;
 }
 
@@ -199,20 +230,21 @@ trait ToResponseBody {
 
 impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, RpcError<E>> {
     fn to_res_body(self) -> ResponseBody {
-        let err = match self {
+        match self {
             Ok(r) => match serde_json::to_value(r) {
                 Ok(v) => return ResponseBody::Result(ResponseBodyResult(v)),
-                Err(err) => err.into(),
+                Err(err) => error!(%err, "Failed to serialize response"),
             },
             Err(RpcError::MethodCallError(err)) => match serde_json::to_value(err) {
                 Ok(v) => return ResponseBody::Error(ResponseBodyError::HandlerError(v)),
-                Err(err) => err.into(),
+                Err(err) => error!(%err, "Failed to serialize handler error"),
             },
-            Err(RpcError::InternalError(err)) => err,
-        };
+            Err(RpcError::InternalError(err)) => error!(%err, "Internal server error"),
+        }
 
+        // All non-returning arms above log their error and fall through here.
         ResponseBody::Error(ResponseBodyError::ServerError(
-            ServerResponseError::InternalError { err: Some(err) },
+            ServerResponseError::InternalError { err: None },
         ))
     }
 }

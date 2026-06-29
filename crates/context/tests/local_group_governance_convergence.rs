@@ -282,7 +282,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_pk.digest()),
         group_id: gid,
-        expiration_timestamp: 9_999_999_999,
+        expiration_timestamp: 0,
         secret_salt: [0x42; 32],
         invited_role: 1,
     };
@@ -371,6 +371,56 @@ fn member_joined_at_rejects_expired_invitation() {
             .is_member(&gid, &joiner_pk)
             .unwrap(),
         "joiner with an expired invitation must not be recorded as a member"
+    );
+}
+
+#[test]
+fn member_joined_rejects_when_expiration_set_and_joined_at_absent() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let ns_id = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut rng);
+    let joiner_pk = joiner_sk.public_key();
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    // MemberJoined (legacy, no joined_at) with a non-zero expiration is a
+    // malformed op — the caller should have used MemberJoinedAt.
+    let signed_invitation = sign_invitation(&admin_sk, gid, 9_999_999_999, 1);
+    let ns_op = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns_id,
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoined {
+            member: joiner_pk,
+            signed_invitation,
+        }),
+    )
+    .expect("sign MemberJoined");
+
+    let err = group_store::apply_signed_namespace_op(&store, &ns_op)
+        .expect_err("MemberJoined with non-zero expiration must be rejected");
+    assert!(
+        format!("{err:#}").contains("joined_at is absent"),
+        "rejection must come from the absent-joined_at gate: {err:#}"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&gid, &joiner_pk)
+            .unwrap(),
+        "joiner must not be recorded as a member"
     );
 }
 
@@ -623,19 +673,21 @@ fn recursive_invite_joins_all_descendant_groups() {
 
     assert_eq!(invitations.len(), 4); // ns_id + child_a + child_b + grandchild
 
-    // Joiner publishes MemberJoined for each invitation
+    // Joiner publishes MemberJoinedAt for each invitation (expiration is set,
+    // so joined_at must be provided; use 1 which is safely before any future expiry).
     for (i, (_gid, signed_inv)) in invitations.iter().enumerate() {
         let ns_op = SignedNamespaceOp::sign(
             &joiner_sk,
             ns_id.to_bytes(),
             vec![],
             (i + 1) as u64,
-            NamespaceOp::Root(RootOp::MemberJoined {
+            NamespaceOp::Root(RootOp::MemberJoinedAt {
                 member: joiner_pk,
                 signed_invitation: signed_inv.clone(),
+                joined_at: 1,
             }),
         )
-        .expect("sign MemberJoined");
+        .expect("sign MemberJoinedAt");
 
         group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
     }
@@ -1669,8 +1721,8 @@ fn group_member_with_keys_persists_and_retrieves() {
             &gid,
             &member_pk,
             GroupMemberRole::Member,
-            Some(*member_sk),
-            Some(*sender_sk),
+            Some(*member_sk.as_bytes()),
+            Some(*sender_sk.as_bytes()),
         )
         .unwrap();
 
@@ -1686,8 +1738,8 @@ fn group_member_with_keys_persists_and_retrieves() {
         .expect("member value should exist");
 
     assert_eq!(value.role, GroupMemberRole::Member);
-    assert_eq!(value.private_key, Some(*member_sk));
-    assert_eq!(value.sender_key, Some(*sender_sk));
+    assert_eq!(value.private_key, Some(*member_sk.as_bytes()));
+    assert_eq!(value.sender_key, Some(*sender_sk.as_bytes()));
 }
 
 #[test]
@@ -1753,7 +1805,7 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_pk.digest()),
         group_id: gid,
-        expiration_timestamp: 9_999_999_999,
+        expiration_timestamp: 0,
         secret_salt: [0x42; 32],
         invited_role: 1,
     };

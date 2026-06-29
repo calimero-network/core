@@ -36,19 +36,29 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, new_owner: &PublicKey) -> EyreR
     //     promote then transfer if needed.
     match MembershipRepository::new(store).role_of(group_id, new_owner)? {
         Some(GroupMemberRole::Admin) => {}
-        Some(other) => bail!(
-            "new owner of group {} must be an Admin, but is currently {:?}; \
-             promote them to Admin before transferring ownership",
-            hex::encode(group_id.to_bytes()),
-            other
-        ),
-        None => bail!(
-            "new owner is not a member of group {}; invite and promote them first",
-            hex::encode(group_id.to_bytes())
-        ),
+        Some(other) => bail!(MembershipError::TransferTargetNotAdmin {
+            group: hex::encode(group_id.to_bytes()),
+            role: other,
+        }),
+        None => bail!(MembershipError::TransferTargetNotMember(hex::encode(
+            group_id.to_bytes()
+        ))),
     }
 
+    // Move BOTH the owner pin and the meta admin pin to the successor.
+    //
+    // `is_admin` treats `meta.admin_identity` as an always-admin that no
+    // member-row change can revoke (see `MembershipRepository::is_admin`).
+    // At group/namespace genesis the creator is written as
+    // `admin_identity == owner_identity`, so leaving `admin_identity` on
+    // the old owner here would let a former owner keep permanent,
+    // unrevokable admin after handing ownership over. Re-pinning it to the
+    // new owner preserves the genesis invariant (owner is the meta admin)
+    // and demotes the former owner to whatever revokable member row they
+    // still hold (an explicit Admin row, if any — which can now be removed
+    // or demoted like any other).
     meta.owner_identity = *new_owner;
+    meta.admin_identity = *new_owner;
     MetaRepository::new(store).save(group_id, &meta)?;
     Ok(())
 }

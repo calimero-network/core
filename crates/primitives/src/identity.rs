@@ -1,4 +1,5 @@
 use core::fmt;
+// Required by `PublicKey`'s `Deref` impl below; `PrivateKey` deliberately has none.
 use core::ops::Deref;
 use core::str::FromStr;
 
@@ -6,6 +7,10 @@ use core::str::FromStr;
 use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+// `random()` zeroizes its local seed copy, which needs the `Zeroize` trait in
+// scope. Both the call site and this import are gated on `rand` so a default
+// build (without `random`) doesn't pull in an unused import.
+#[cfg(feature = "rand")]
 use zeroize::Zeroize;
 
 use crate::context::ContextId;
@@ -13,11 +18,27 @@ use crate::hash::{Hash, HashError};
 
 use ed25519_dalek::{Signature, SignatureError, Signer, SigningKey, Verifier, VerifyingKey};
 
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
-)]
-pub struct PrivateKey(Hash);
+// NOTE: `PrivateKey` deliberately derives no serialization (Borsh, Serde, …).
+// Serializing would copy the secret into a buffer that is never zeroized,
+// silently defeating the zeroize-on-drop guarantee and making it trivial to
+// persist or transmit the secret. The raw bytes are reachable only through the
+// audited [`PrivateKey::as_bytes`] accessor; storage layers that must persist
+// key material take an explicit `[u8; 32]` copy at a reviewed call site.
+//
+// The inner type is a plain `[u8; 32]` (not `Hash`) so that the derived
+// `ZeroizeOnDrop` can zeroize the secret directly and safely. The previous
+// implementation reached the same goal with a hand-rolled `Drop` that cast a
+// `*mut Hash` to `*mut u8` over `size_of::<Hash>()`; that was fragile — any
+// padding or extra field added to `Hash` would have silently left key material
+// un-zeroized. `#[derive(ZeroizeOnDrop)]` over `[u8; 32]` removes the `unsafe`
+// and tracks the field layout automatically.
+//
+// `Clone` and `Copy` are deliberately NOT derived: either would hand out a copy
+// of the secret that is not tracked by `ZeroizeOnDrop`, reintroducing exactly
+// the leak this type guards against. Code that genuinely needs the bytes goes
+// through `as_bytes` at a reviewed call site.
+#[derive(zeroize::ZeroizeOnDrop)]
+pub struct PrivateKey([u8; 32]);
 
 impl fmt::Debug for PrivateKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -25,49 +46,32 @@ impl fmt::Debug for PrivateKey {
     }
 }
 
-impl Drop for PrivateKey {
-    fn drop(&mut self) {
-        // Zeroize the key material to prevent it from remaining in memory.
-        //
-        // SAFETY:
-        // - The pointer is valid and properly aligned because it comes from a valid
-        //   mutable reference (`&mut self.0`).
-        // - The size is correct as we use `size_of::<Hash>()` on the actual type.
-        // - We have exclusive access to this memory via `&mut self`.
-        // - Hash doesn't expose `DerefMut` or implement `Zeroize`, so we use pointer
-        //   casting to get a mutable byte slice over the entire structure.
-        unsafe {
-            let hash_ptr = &mut self.0 as *mut Hash as *mut u8;
-            let hash_size = core::mem::size_of::<Hash>();
-            core::slice::from_raw_parts_mut(hash_ptr, hash_size).zeroize();
-        }
-    }
-}
-
 impl From<[u8; 32]> for PrivateKey {
     fn from(id: [u8; 32]) -> Self {
-        Self(id.into())
-    }
-}
-
-impl AsRef<[u8; 32]> for PrivateKey {
-    fn as_ref(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-impl Deref for PrivateKey {
-    type Target = [u8; 32];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+        Self(id)
     }
 }
 
 impl PrivateKey {
+    /// Returns a reference to the raw 32-byte secret key material.
+    ///
+    /// # Security
+    ///
+    /// This is the single audited entry point to the secret bytes. It exists
+    /// for in-place cryptographic use (signing, key agreement) and for the few
+    /// storage layers that must persist an explicit `[u8; 32]` copy. Callers
+    /// MUST NOT log, print, or otherwise leak the returned bytes, and should
+    /// keep any copy as short-lived and tightly scoped as possible — copies
+    /// made out of this reference are not covered by the zeroize-on-drop
+    /// guarantee. Every use should be obvious enough to review on sight.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
     #[must_use]
     pub fn public_key(&self) -> PublicKey {
-        SigningKey::from_bytes(self)
+        SigningKey::from_bytes(self.as_bytes())
             .verifying_key()
             .to_bytes()
             .into()
@@ -79,11 +83,17 @@ impl PrivateKey {
 
         csprng.fill_bytes(&mut secret);
 
-        Self::from(secret)
+        let key = Self::from(secret);
+
+        // Zeroize the local copy of the seed so it doesn't linger on the stack
+        // after being moved into the key.
+        secret.zeroize();
+
+        key
     }
 
     pub fn sign(&self, message: &[u8]) -> Result<Signature, SignatureError> {
-        SigningKey::from_bytes(self).try_sign(message)
+        SigningKey::from_bytes(self.as_bytes()).try_sign(message)
     }
 }
 
@@ -251,13 +261,13 @@ mod tests {
         let mut key = ManuallyDrop::new(PrivateKey::from(secret_bytes));
 
         // Verify the key contains the expected bytes before drop
-        assert_eq!(key.as_ref(), &secret_bytes);
+        assert_eq!(key.as_bytes(), &secret_bytes);
 
         // Get a raw pointer to the key's memory location before dropping
         let key_ptr = &*key as *const PrivateKey as *const u8;
-        let hash_size = core::mem::size_of::<Hash>();
+        let key_size = core::mem::size_of::<PrivateKey>();
 
-        // Manually drop the key, which will call our Drop implementation.
+        // Manually drop the key, which will call the derived Drop implementation.
         // SAFETY: The key was created with ManuallyDrop::new, so we need to
         // manually drop it. After this, the ManuallyDrop wrapper prevents
         // double-drop.
@@ -274,9 +284,9 @@ mod tests {
         // SAFETY: We're reading stack memory that was just zeroized. While this is
         // technically UB (the value has been invalidated by drop), it's acceptable
         // here for verifying the security-critical zeroization behavior.
-        let zeroed = unsafe { core::slice::from_raw_parts(key_ptr, hash_size) };
+        let zeroed = unsafe { core::slice::from_raw_parts(key_ptr, key_size) };
 
-        // Check that the entire Hash structure is zeroed, not just the key bytes
+        // Check that the entire key structure is zeroed, not just part of it
         assert!(
             zeroed.iter().all(|&b| b == 0),
             "Key material was not properly zeroized on drop"

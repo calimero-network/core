@@ -41,12 +41,22 @@ impl<'a> NamespaceMembershipService<'a> {
         // (not a local clock) so every node reaches the same verdict.
         // Runs after signature verification (so `expiration` is authentic)
         // but before the permission lookup, to reject expired ops cheaply.
-        if let Some(joined_at) = joined_at {
-            let expiration = inv.expiration_timestamp;
-            if expiration != 0 && joined_at > expiration {
+        // `expiration == 0` is the canonical sentinel for "no expiry".
+        let expiration = inv.expiration_timestamp;
+        if expiration != 0 {
+            // A missing joined_at with a non-zero expiration is a malformed op,
+            // not merely an expired one — distinguish the two failure modes.
+            let Some(joined_at) = joined_at else {
+                bail!("invalid op: expiration {expiration} is set but joined_at is absent (use MemberJoinedAt for expiring invitations)");
+            };
+            if joined_at > expiration {
                 bail!("invitation expired: joined_at {joined_at} > expiration {expiration}");
             }
         }
+        // When expiration == 0 (no-expiry sentinel), joined_at is not checked:
+        // both None and any Some(_) value are accepted and the field is ignored.
+        // Do not add joined_at lookups below this point without handling the
+        // None case explicitly.
 
         let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
         self.require_inviter_permission(&group_id, &inviter_pk)?;

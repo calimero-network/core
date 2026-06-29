@@ -5,7 +5,8 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use calimero_context_client::client::ContextClient;
+use calimero_context::group_store::{get_group_for_context, MembershipRepository};
+use calimero_context_client::client::{ContextClient, ContextRegistry};
 use calimero_network_primitives::{
     blob_types::{BlobAuthPayload, BlobChunk, BlobRequest, BlobResponse},
     stream::{Message as StreamMessage, Stream},
@@ -20,7 +21,11 @@ use tracing::{debug, error, info, warn};
 const BLOB_SERVE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes total
 const CHUNK_SEND_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds per chunk
 
-// Replay protection window (30 seconds past, 10 seconds future)
+// Replay-protection window for a signed blob request: the auth envelope's
+// timestamp must be within 30s in the past / 10s in the future. Tight on
+// purpose — it bounds how long a captured BlobAuth can be replayed — while
+// still tolerating typical NTP drift (sub-second) and path latency. Widen only
+// with care; a larger window directly lengthens the replay opportunity.
 const MAX_REQUEST_AGE_SECS: u64 = 30;
 const MAX_REQUEST_FUTURE_AGE_SECS: u64 = 10;
 
@@ -280,6 +285,39 @@ async fn is_blob_access_authorized(
         warn!("Failed to fetch application config to verify public blob.");
     }
 
+    // Signed-member path. Extracted into a `Store`-and-crypto-only function so
+    // the full decision (replay window, signature, direct-or-inherited
+    // membership) is unit-testable end to end with a real signature, without an
+    // actor or the network.
+    is_signed_context_member(context_client.datastore(), request)
+}
+
+/// Authorizes a *private* blob read from a signed request: an `auth` envelope
+/// must be present, within the replay window, carrying a valid signature from
+/// an identity that is a member of the context — **directly** (own
+/// ContextIdentity row / direct GroupMember row / namespace-creator admin) OR
+/// **by inheritance** through an `Open`-subgroup ancestor.
+///
+/// Split out of [`is_blob_access_authorized`] (which additionally handles the
+/// store-config gate and the public app-bundle allowance, both needing the
+/// node client) precisely so this — `Store` + crypto only — can be tested with
+/// a real Ed25519 signature and real governance state.
+///
+/// ## The bug this closes
+///
+/// The membership gate used to be `ContextClient::has_member` alone, which only
+/// sees *direct* membership. A peer who joined an `Open` subgroup via
+/// inheritance has NO direct GroupMember row (the apply path
+/// `execute_member_joined_open` is validate-only, see list_group_members
+/// #2371), so `has_member` returned false and a serving node refused to hand
+/// over a blob it owns to a legitimate inherited member. That manifested as
+/// one-directional blob (image/canvas) sync: the namespace creator could fetch
+/// a joiner's blobs, but the joiner could not fetch the creator's. The
+/// inheritance-aware fallback mirrors the sync responder's parent-walk (#2256).
+fn is_signed_context_member(
+    store: &calimero_store::Store,
+    request: &BlobRequest,
+) -> eyre::Result<bool> {
     let auth = match &request.auth {
         Some(auth_struct) => auth_struct,
         None => return Ok(false),
@@ -312,8 +350,21 @@ async fn is_blob_access_authorized(
         return Ok(false);
     }
 
-    // Verify Context Membership
-    let is_member = context_client.has_member(&request.context_id, &auth.public_key)?;
+    // Verify Context Membership — direct OR inherited (see the doc comment).
+    //
+    // `ContextRegistry::new` takes the `Store` by value, whereas the inherited
+    // check below borrows it — hence the asymmetry. `Store` is `Arc`-backed, so
+    // `clone()` is a cheap ref-count bump, not a deep copy, and both checks read
+    // the *same* underlying store (not a separate snapshot). The two reads are
+    // sequential, but the result is a membership OR — a row appearing or
+    // vanishing in the sub-microsecond gap can only flip a non-member to a
+    // member (never revoke an in-flight read), so there is no exploitable
+    // TOCTOU for this read-authorization path.
+    let mut is_member =
+        ContextRegistry::new(store.clone()).has_member(&request.context_id, &auth.public_key)?;
+    if !is_member {
+        is_member = is_inherited_context_member(store, &request.context_id, &auth.public_key)?;
+    }
     if !is_member {
         error!(
             blob_id=%request.blob_id,
@@ -324,4 +375,282 @@ async fn is_blob_access_authorized(
     }
 
     Ok(is_member)
+}
+
+/// Inheritance-aware context-membership check for blob *read* authorization.
+///
+/// Resolves the context's owning group and asks the governance store whether
+/// `public_key` is a member — directly or by inheritance through an `Open`-
+/// subgroup ancestor (the parent-walk implemented by
+/// [`MembershipRepository::is_member`] / `check_path`). Returns `false` when
+/// the context is not registered to any group (no group binding to inherit
+/// through) or when the identity is not a member at any level.
+///
+/// This intentionally accepts every member *role* (including read-only ones):
+/// the predicate gates blob *reads*, which read-only members are entitled to —
+/// unlike `is_currently_authorized_for_context`, which gates *writes* and so
+/// rejects read-only roles.
+fn is_inherited_context_member(
+    store: &calimero_store::Store,
+    context_id: &calimero_primitives::context::ContextId,
+    public_key: &calimero_primitives::identity::PublicKey,
+) -> eyre::Result<bool> {
+    let Some(group_id) = get_group_for_context(store, context_id)? else {
+        return Ok(false);
+    };
+    MembershipRepository::new(store).is_member(&group_id, public_key)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use calimero_context::group_store::{
+        register_context_in_group, CapabilitiesRepository, MembershipRepository,
+        NamespaceRepository,
+    };
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload, BlobRequest};
+    use calimero_primitives::blobs::BlobId;
+    use calimero_primitives::context::{ContextId, GroupMemberRole};
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
+    use super::{is_inherited_context_member, is_signed_context_member};
+
+    const CONTEXT: [u8; 32] = [0xC0; 32];
+    const BLOB: [u8; 32] = [0xD0; 32];
+
+    fn test_store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    /// Build `namespace → Open subgroup → context` where `member` is a direct
+    /// member of the *namespace* holding `CAN_JOIN_OPEN_SUBGROUPS` — so they are
+    /// an *inherited* member of the subgroup with **no** direct `GroupMember`
+    /// row in it — and the context is registered under the subgroup. This is
+    /// exactly the shape a peer ends up in after joining an open subgroup.
+    fn open_subgroup_with_inherited_member(
+        member: &PublicKey,
+    ) -> (Store, ContextId, ContextGroupId) {
+        let store = test_store();
+        let namespace = ContextGroupId::from([0xA0; 32]);
+        let subgroup = ContextGroupId::from([0xB0; 32]);
+        let context_id = ContextId::from(CONTEXT);
+
+        NamespaceRepository::new(&store)
+            .nest(&namespace, &subgroup)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&namespace, member, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &namespace,
+                member,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            )
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+            .unwrap();
+        register_context_in_group(&store, &subgroup, &context_id).unwrap();
+
+        (store, context_id, subgroup)
+    }
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    /// A real Ed25519 keypair derived deterministically from a seed byte.
+    fn keypair(seed: u8) -> (PrivateKey, PublicKey) {
+        let sk = PrivateKey::from([seed; 32]);
+        let pk = sk.public_key();
+        (sk, pk)
+    }
+
+    /// Build a `BlobRequest` for `(BLOB, CONTEXT)` signed by `signer` at
+    /// `timestamp`, with the `auth.public_key` set to `claimed` (normally the
+    /// signer's own public key; differs only in the signature-mismatch test).
+    fn signed_request(signer: &PrivateKey, claimed: PublicKey, timestamp: u64) -> BlobRequest {
+        let payload = BlobAuthPayload {
+            blob_id: BLOB,
+            context_id: CONTEXT,
+            timestamp,
+        };
+        let message = borsh::to_vec(&payload).unwrap();
+        let signature = signer.sign(&message).unwrap().to_bytes();
+        BlobRequest {
+            blob_id: BlobId::from(BLOB),
+            context_id: ContextId::from(CONTEXT),
+            auth: Some(BlobAuth {
+                public_key: claimed,
+                signature,
+                timestamp,
+            }),
+        }
+    }
+
+    // ── helper-level tests: the inheritance walk ───────────────────────────
+
+    #[test]
+    fn inherited_open_subgroup_member_is_recognised() {
+        let (_sk, alice) = keypair(0x01);
+        let (store, context_id, subgroup) = open_subgroup_with_inherited_member(&alice);
+
+        // Precondition: alice has NO direct membership row in the subgroup —
+        // this is precisely why the old flat `has_member` check missed her and
+        // blob sync broke one-directionally.
+        assert!(
+            !MembershipRepository::new(&store)
+                .has_direct_member(&subgroup, &alice)
+                .unwrap(),
+            "test setup invariant: inherited member must have no direct row"
+        );
+        assert!(
+            is_inherited_context_member(&store, &context_id, &alice).unwrap(),
+            "inherited Open-subgroup member must be recognised"
+        );
+    }
+
+    #[test]
+    fn restricted_subgroup_does_not_inherit() {
+        let (_sk, alice) = keypair(0x01);
+        let (store, context_id, subgroup) = open_subgroup_with_inherited_member(&alice);
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
+            .unwrap();
+        assert!(
+            !is_inherited_context_member(&store, &context_id, &alice).unwrap(),
+            "Restricted subgroup must not inherit parent membership"
+        );
+    }
+
+    #[test]
+    fn context_with_no_group_binding_is_not_member() {
+        let store = test_store();
+        let (_sk, alice) = keypair(0x01);
+        assert!(
+            !is_inherited_context_member(&store, &ContextId::from([0xC1; 32]), &alice).unwrap(),
+            "a context not registered to any group has nothing to inherit through"
+        );
+    }
+
+    // ── decision-level tests: the full signed-request authorization ────────
+    //
+    // These exercise the actual function the bug lived in, end to end: replay
+    // window + real Ed25519 signature verification + direct-or-inherited
+    // membership — against a real governance store, no mocks.
+
+    #[test]
+    fn signed_request_from_inherited_member_is_authorized() {
+        let (alice_sk, alice_pk) = keypair(0x01);
+        let (store, _ctx, _sg) = open_subgroup_with_inherited_member(&alice_pk);
+
+        let request = signed_request(&alice_sk, alice_pk, now_secs());
+        assert!(
+            is_signed_context_member(&store, &request).unwrap(),
+            "an inherited member with a valid signature must be authorized — \
+             this is the one-directional-blob-sync regression"
+        );
+    }
+
+    #[test]
+    fn signed_request_from_non_member_is_rejected() {
+        let (_alice_sk, alice_pk) = keypair(0x01);
+        let (store, _ctx, _sg) = open_subgroup_with_inherited_member(&alice_pk);
+
+        // Mallory signs a perfectly valid request, but was never added to the
+        // namespace — membership, not signature validity, must gate access.
+        let (mallory_sk, mallory_pk) = keypair(0x99);
+        let request = signed_request(&mallory_sk, mallory_pk, now_secs());
+        assert!(
+            !is_signed_context_member(&store, &request).unwrap(),
+            "a validly-signed non-member must be rejected"
+        );
+    }
+
+    #[test]
+    fn signed_request_with_forged_signature_is_rejected() {
+        let (_alice_sk, alice_pk) = keypair(0x01);
+        let (store, _ctx, _sg) = open_subgroup_with_inherited_member(&alice_pk);
+
+        // Mallory signs but claims to be alice (a real member): the signature
+        // won't verify against alice's public key.
+        let (mallory_sk, _mallory_pk) = keypair(0x99);
+        let request = signed_request(&mallory_sk, alice_pk, now_secs());
+        assert!(
+            !is_signed_context_member(&store, &request).unwrap(),
+            "a signature that doesn't match the claimed public key must be rejected"
+        );
+    }
+
+    #[test]
+    fn signed_request_outside_replay_window_is_rejected() {
+        let (alice_sk, alice_pk) = keypair(0x01);
+        let (store, _ctx, _sg) = open_subgroup_with_inherited_member(&alice_pk);
+
+        // Valid member, valid signature, but the timestamp is well past the
+        // replay window — must be rejected.
+        let stale = now_secs() - super::MAX_REQUEST_AGE_SECS - 60;
+        let request = signed_request(&alice_sk, alice_pk, stale);
+        assert!(
+            !is_signed_context_member(&store, &request).unwrap(),
+            "a request outside the replay window must be rejected"
+        );
+    }
+
+    #[test]
+    fn request_without_auth_is_rejected() {
+        let (_sk, alice) = keypair(0x01);
+        let (store, _ctx, _sg) = open_subgroup_with_inherited_member(&alice);
+
+        let request = BlobRequest {
+            blob_id: BlobId::from(BLOB),
+            context_id: ContextId::from(CONTEXT),
+            auth: None,
+        };
+        assert!(
+            !is_signed_context_member(&store, &request).unwrap(),
+            "a private blob request without an auth envelope must be rejected"
+        );
+    }
+
+    #[test]
+    fn signed_request_from_direct_member_is_authorized() {
+        // Exercises the DIRECT-membership branch of `ContextRegistry::has_member`
+        // (the first `is_member` assignment), with no group/inheritance setup at
+        // all: a `ContextIdentity` row for (context, key) is the fast path
+        // has_member checks first. This guards against a regression in the
+        // direct path that the inheritance-only tests would miss.
+        let (direct_sk, direct_pk) = keypair(0x05);
+        let store = test_store();
+        let context_id = ContextId::from(CONTEXT);
+        {
+            let mut handle = store.handle();
+            handle
+                .put(
+                    &calimero_store::key::ContextIdentity::new(context_id, direct_pk),
+                    &calimero_store::types::ContextIdentity {
+                        private_key: None,
+                        sender_key: None,
+                    },
+                )
+                .unwrap();
+        }
+
+        let request = signed_request(&direct_sk, direct_pk, now_secs());
+        assert!(
+            is_signed_context_member(&store, &request).unwrap(),
+            "a direct context member with a valid signature must be authorized \
+             without relying on the inheritance walk"
+        );
+    }
 }

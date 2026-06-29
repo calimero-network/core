@@ -22,6 +22,11 @@ const MAX_LOGS_CEILING: u64 = 1_000_000;
 /// lines are never legitimately this large; a value above it is treated as a
 /// misconfiguration.
 const MAX_LOG_SIZE_CEILING: u64 = 10 * 1024 * 1024;
+/// Upper bound accepted for `max_precompiled_module_size`, in bytes (1 GiB).
+/// A precompiled artifact larger than this is far outside any legitimate range
+/// (source WASM is itself capped at a few MiB) and would defeat the purpose of
+/// the cap, so it is treated as a misconfiguration.
+const MAX_PRECOMPILED_MODULE_SIZE_CEILING: u64 = 1024 * 1024 * 1024;
 
 /// The `[runtime]` config section.
 ///
@@ -86,6 +91,14 @@ pub struct RuntimeLimitsConfig {
     /// `tracing` emits long lines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_log_size: Option<u64>,
+    /// Override for [`VMLimits::max_precompiled_module_size`]: the maximum size,
+    /// in bytes, of a precompiled (serialized) module accepted by
+    /// `Engine::from_precompiled`. Bounds deserialization input as
+    /// defense-in-depth; lower it in memory-constrained deployments. Distinct
+    /// from the source-WASM `max_module_size`, which guards a separate path and
+    /// is not operator-tunable today.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_precompiled_module_size: Option<u64>,
 }
 
 impl RuntimeLimitsConfig {
@@ -98,6 +111,9 @@ impl RuntimeLimitsConfig {
         }
         if let Some(max_log_size) = self.max_log_size {
             base.max_log_size = max_log_size;
+        }
+        if let Some(max_precompiled_module_size) = self.max_precompiled_module_size {
+            base.max_precompiled_module_size = max_precompiled_module_size;
         }
         base
     }
@@ -120,6 +136,15 @@ impl RuntimeLimitsConfig {
                 bail!(
                     "runtime.limits.max_log_size = {max_log_size} exceeds the maximum of \
                      {MAX_LOG_SIZE_CEILING} bytes"
+                );
+            }
+        }
+        if let Some(max_precompiled_module_size) = self.max_precompiled_module_size {
+            if max_precompiled_module_size > MAX_PRECOMPILED_MODULE_SIZE_CEILING {
+                bail!(
+                    "runtime.limits.max_precompiled_module_size = \
+                     {max_precompiled_module_size} exceeds the maximum of \
+                     {MAX_PRECOMPILED_MODULE_SIZE_CEILING} bytes"
                 );
             }
         }
@@ -147,6 +172,7 @@ mod tests {
             limits: RuntimeLimitsConfig {
                 max_logs: Some(4096),
                 max_log_size: None,
+                max_precompiled_module_size: None,
             },
         };
         let resolved = cfg.vm_limits();
@@ -155,6 +181,22 @@ mod tests {
         assert_eq!(resolved.max_log_size, defaults.max_log_size);
         // Untouched limits are preserved.
         assert_eq!(resolved.max_events, defaults.max_events);
+    }
+
+    #[test]
+    fn precompiled_module_size_override_applies() {
+        let defaults = VMLimits::default();
+        let cfg = RuntimeConfig {
+            limits: RuntimeLimitsConfig {
+                max_logs: None,
+                max_log_size: None,
+                max_precompiled_module_size: Some(8 * 1024 * 1024),
+            },
+        };
+        let resolved = cfg.vm_limits();
+        assert_eq!(resolved.max_precompiled_module_size, 8 * 1024 * 1024);
+        // The source-WASM cap is independent and stays at its default.
+        assert_eq!(resolved.max_module_size, defaults.max_module_size);
     }
 
     #[test]
@@ -180,6 +222,7 @@ mod tests {
             limits: RuntimeLimitsConfig {
                 max_logs: Some(4096),
                 max_log_size: Some(64 * 1024),
+                max_precompiled_module_size: Some(64 * 1024 * 1024),
             },
         };
         cfg.validate().expect("reasonable overrides are valid");
@@ -191,6 +234,7 @@ mod tests {
             limits: RuntimeLimitsConfig {
                 max_logs: Some(u64::MAX),
                 max_log_size: None,
+                max_precompiled_module_size: None,
             },
         };
         let err = cfg.validate().unwrap_err().to_string();
@@ -200,10 +244,24 @@ mod tests {
             limits: RuntimeLimitsConfig {
                 max_logs: None,
                 max_log_size: Some(u64::MAX),
+                max_precompiled_module_size: None,
             },
         };
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains("max_log_size"), "unexpected error: {err}");
+
+        let cfg = RuntimeConfig {
+            limits: RuntimeLimitsConfig {
+                max_logs: None,
+                max_log_size: None,
+                max_precompiled_module_size: Some(u64::MAX),
+            },
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("max_precompiled_module_size"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

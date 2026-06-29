@@ -1,0 +1,176 @@
+---
+title: Sync & Convergence
+description: Detecting divergence and repairing it.
+sidebar:
+  order: 11
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import Figure from '../../../components/Figure.astro';
+import Verdict from '../../../components/diagrams/Verdict.astro';
+
+## Why sync exists
+
+Gossip is best-effort. A node that was offline, partitioned, or simply not yet subscribed will miss broadcasts — so two nodes can hold different operation sets and, therefore, different scope roots. Sync is the reliable channel that closes that gap. Its whole job is built on one fact established by [state projection](/protocol/projection/): **two nodes agree if and only if their scope roots are equal.** So sync is just "compare roots; if they differ, find and transfer what's missing."
+
+## What triggers it
+
+A node starts a sync session for a scope when any of these fire:
+
+- **Periodically** — a steady background tick, so nothing drifts indefinitely.
+- **On join** — a freshly joined member pulls the history it just gained access to.
+- **On heartbeat mismatch** — the periodic `Heartbeat` ([networking](/protocol/networking/)) advertises a peer's heads and root; a root that doesn't match ours is a direct signal to reconcile.
+- **After a data sync** — a follow-up check that governance also agrees (below).
+
+## The handshake and the verdict
+
+A session opens a stream to a peer and the two exchange their **heads and roots**. From the comparison the node reaches one of three verdicts — and the verdict, not a guess, selects what happens next:
+
+<Verdict />
+
+The two-step test matters: comparing the _full_ scope root first catches divergence the data alone would hide (the hash-neutral case from [state projection](/protocol/projection/) — an access-control or membership split with identical data). Only if the data plane also differs do we reach for the heavier state-transfer protocols.
+
+## Choosing how to transfer
+
+When state must move, the node picks the cheapest protocol that fits the gap:
+
+#### Tree comparison
+
+Walk the two state trees top-down, descending only into subtrees whose hashes differ, until the exact differing entities are found — then exchange just those. Cheap when the difference is small.
+
+#### Level-wise
+
+Compare the trees breadth-first, level by level. A better fit when differences are spread widely rather than concentrated.
+
+#### Snapshot
+
+Transfer the whole materialized scope. The fallback when a node is so far behind that incremental comparison isn't worth it — a new joiner, or one long offline.
+
+Transferred entities are merged through the same conflict-free fold as everything else ([state projection](/protocol/projection/)), and the receiver re-checks its root afterward. The merge is authorized at the cut, so sync can never smuggle in a write the author wasn't entitled to make.
+
+## A session, end to end
+
+<SeqDiagram
+  id="d-sync"
+  title="A sync session"
+  lanes={[
+    { label: 'Initiator', color: '#3fb950' },
+    { label: 'Peer', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'open stream' },
+    { from: 0, to: 1, label: 'exchange heads + roots' },
+    { from: 0, to: 0, label: 'verdict: converged / gov / data', color: '#a5ff11' },
+    { from: 0, to: 1, label: 'request what differs (tree / level / snapshot)' },
+    { from: 1, to: 0, label: 'transfer missing operations', dashed: true },
+    { from: 0, to: 0, label: 'fold + re-check root' },
+    { from: 0, to: 1, label: 'roots still differ? pull governance', color: '#f0883e' },
+    { type: 'divider', label: 'scope roots equal ⇒ converged' },
+  ]}
+/>
+
+## A worked example: two nodes diverge and heal
+
+Make it concrete. Two members, **A** and **B**, share a context. A network partition drops gossip between them for a few minutes. During the partition each applies a local write:
+
+- **A** sets `counter/x = 5` and **B** sets `note/y = "hi"`. Each folds its own op into state, so their entity Merkle roots — and therefore their scope roots — drift apart. Neither is "wrong"; they simply hold different operation sets.
+
+The partition lifts. On the next periodic tick (or the first `Heartbeat` whose advertised root doesn't match), **A** opens a session to **B**:
+
+1. **Handshake.** A sends `Init{ DagHeadsRequest }`; B replies with its `dag_heads`, `root_hash`, and `scope_root`.
+2. **Verdict.** A compares the `(scope_root, entity_root)` pairs. Entities differ, so the verdict is **DataDiverged** — run a state-transfer protocol.
+3. **Compare, don't dump.** The gap is tiny (one entity each), so the selector picks **HashComparison**. A and B walk their trees top-down, descending only where subtree hashes differ. The walk converges on exactly two differing leaves: `counter/x` (only on A) and `note/y` (only on B).
+4. **Transfer just the difference.** A pushes `counter/x` to B with `EntityPush`; the leaf it learns it's missing, `note/y`, comes back the same way. Each side CRDT-merges the leaf it received and re-checks its root. Both pushes pass the authorization gate — a leaf whose author is no longer a member is dropped, so sync can't smuggle in an unauthorized write.
+5. **Converged.** Both nodes now hold `{ counter/x = 5, note/y = "hi" }`; their entity roots match. A re-reads its now-merged root, recomputes `scope_root`, finds it equal to B's, and the post-sync governance pull returns nothing. Done — divergence detected by comparing one 32-byte hash, repaired by transferring exactly two entities.
+
+<SeqDiagram
+  id="d-sync-heal"
+  title="Two nodes diverge under partition, then heal"
+  lanes={[
+    { label: 'Node A', color: '#3fb950' },
+    { label: 'Node B', color: '#58a6ff' },
+  ]}
+  steps={[
+    { type: 'divider', label: 'partition: gossip dropped' },
+    { from: 0, to: 0, label: 'apply counter/x = 5  ⇒ root drifts', color: '#f0883e' },
+    { from: 1, to: 1, label: 'apply note/y = "hi"  ⇒ root drifts', color: '#f0883e' },
+    { type: 'divider', label: 'partition heals ⇒ A syncs B' },
+    { from: 0, to: 1, label: 'Init{ DagHeadsRequest }' },
+    { from: 1, to: 0, label: 'DagHeadsResponse{ dag_heads, root_hash, scope_root }', dashed: true },
+    { from: 0, to: 0, label: 'verdict: roots differ ⇒ DataDiverged', color: '#a5ff11' },
+    { from: 0, to: 1, label: 'TreeNodeRequest (descend only where hashes differ)' },
+    { from: 1, to: 0, label: 'TreeNodeResponse ⇒ differs at note/y', dashed: true },
+    { from: 0, to: 1, label: 'EntityPush{ counter/x }' },
+    { from: 1, to: 0, label: 'EntityPushAck + EntityPush{ note/y }', dashed: true },
+    { from: 0, to: 0, label: 'CRDT-merge + re-check root', color: '#a5ff11' },
+    { type: 'divider', label: 'scope roots equal ⇒ converged' },
+  ]}
+/>
+
+## Closing the governance gap
+
+Data and governance live in different scopes and converge independently, so a successful _data_ sync doesn't by itself guarantee the governance planes agree. After any data transfer completes, the node recomputes the scope root and, if it still differs from the peer's, pulls governance operations too — **post-sync governance reconciliation**.
+
+The pull is idempotent: against an already-agreeing peer it returns nothing, so running it whenever roots still differ is safe and self-limiting. It is what ensures the _whole_ scope — data and governance together — actually converges, not just the half that the state-transfer protocols touch.
+
+## Specification
+
+### The handshake
+
+The initiator opens a stream and sends an `Init` carrying a `DagHeadsRequest`; the peer replies with:
+
+```rust
+DagHeadsResponse {
+  dag_heads: Vec<[u8; 32]>,
+  root_hash: Hash, // storage Merkle (entity) root
+  scope_root: Option<Hash>, // None when the scope can't be folded (cold / non-group)
+}
+```
+
+### The verdict
+
+From the local and peer (scope_root, entity_root) pairs, the node computes one verdict. This is the exact decision:
+
+```text
+match (local_scope_root, peer_scope_root):
+  (Some l, Some p) if l == p            → Converged
+  (Some l, Some p) if entity_roots ==   → GovDiverged(l, p)
+  (Some _, Some _)                      → DataDiverged
+  _ if entity_roots ==                  → Converged  // asymmetric None ⇒ fall back to entity root
+  _                                     → DataDiverged
+```
+
+- **Converged** — nothing to do.
+- **GovDiverged(local, peer)** — entities agree, governance differs: pull governance operations.
+- **DataDiverged** — entities differ: run a state-transfer protocol.
+
+### State-transfer protocols
+
+When data diverges, the node selects by tree shape and how much differs: **tree comparison** (`TreeNodeRequest` walking only differing subtrees, request depth clamped to 16), **level-wise** (breadth-first when differences are widespread), or **snapshot** (a fresh or far-behind node bootstraps with full, compressed pages). Pushed entities pass an authorization gate — the host drops any leaf whose author is no longer a member, and per-operation signatures are still verified on apply — so sync can never introduce an unauthorized write.
+
+### Post-sync governance reconciliation
+
+After a data transfer completes, the node **re-reads** its (now possibly merged) root, recomputes `scope_root`, and if it still differs from the peer's it pulls governance. The pull is idempotent — it returns zero operations against an already-agreeing peer — so pulling whenever the root still differs is safe and self-limiting.
+
+### Triggers & timing (defaults)
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| sync frequency | 10 s | periodic check interval |
+| min interval | 5 s | minimum gap between syncs of one scope |
+| session timeout | 30 s | per-step / session budget |
+| wedge grace | ~60 s | watchdog that unsticks a stalled session |
+
+Beyond the periodic tick, a session also starts on a fresh **join**, on a **heartbeat** whose root doesn't match, and as the governance follow-up above.
+
+### Retry & backoff
+
+A context that keeps *failing* to sync is not retried at the periodic cadence — each genuine failure stretches the gap before the next attempt. The dispatch floor is `2^min(failures, 8)` seconds, so it doubles per consecutive failure and **caps at 256 s** (`2^8`; the exponent saturates at 8, and the `.min(300)` ceiling never trips). In steady state `failures = 0` gives `2^0 = 1 s`, below the periodic floor, so normal cadence is unchanged — the backoff only matters after real errors (`crates/node/src/sync/tracking.rs`, `backoff_delay`).
+
+What counts as a failure is deliberately narrow: the benign outcomes **`NoPeersAvailable`** and **`PeerNotMaterialized`** clear the in-flight marker *without* bumping `failure_count`, so a context with no reachable co-member keeps retrying every interval instead of being pushed behind a 256 s delay (`crates/node/src/sync/session.rs`). This periodic-sync backoff is distinct from the **reconcile-after-divergence** cooldown, which is a different, slower curve — **30 s** doubling to a **30 min** cap (`crates/node/src/sync/reconciler.rs`, `reconcile_cooldown`).
+
+## The operation's life, complete
+
+That closes the loop the landing page opened. An operation is born on [the write path](/protocol/write-path/), broadcast over gossip ([networking](/protocol/networking/)), received and folded by peers ([the receive path](/protocol/receive-path/)) — and anything that channel missed is found and repaired here by comparing one 32-byte hash and transferring exactly what differs. No consensus, no quorum, no agreed order: just a signed operation DAG that folds to a state and a root, with divergence **detected, not prevented**.
+
+This page covered why sync exists and the shape of a session. Next, [**Sync Internals**](/protocol/sync-internals/) is the wire-level companion — every message a session sends, the verdict logic, and the hash-comparison, level-wise, and snapshot transfer protocols, message by message.

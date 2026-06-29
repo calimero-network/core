@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Appendix · Storage Schema — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+<style>
+.chapter-nav { display: flex; justify-content: space-between; margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border); font-size: .88rem; }
+.spec-tbl td.mono code, .spec-tbl th.mono { font-family: var(--font-mono); }
+</style>
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="index.html">Protocol Reference</a><span class="sep">/</span><span>Appendix · Storage Schema</span></div>
+<h1>Appendix · <em>Storage Schema</em></h1>
+<p class="page-subtitle">The on-disk format — column families, key byte-layouts, and value encodings.</p>
+
+<div class="card gc">
+<h2>Scope</h2>
+<p>This appendix specifies the local persistence layer. A node stores everything in a key-value store (RocksDB) partitioned into <strong>column families</strong>. Two encodings are used for values: <strong>Identity</strong> (raw bytes, no framing) and <strong>Borsh</strong> (the same compact binary encoding used on the wire). Reimplementations are free to choose any backend — what matters for interop is the logical content, not the column layout; this appendix documents the reference layout because it makes the data model concrete.</p>
+</div>
+
+<div class="card ga">
+<h2>Column families</h2>
+<p>Some columns replicate (their content syncs between nodes); others are strictly node-local and never leave the machine.</p>
+<table class="spec-tbl">
+<tr><th>Column</th><th>Scope</th><th>Holds</th></tr>
+<tr><td><code>Meta</code></td><td>replicated</td><td>per-context metadata (root hash, DAG heads, application)</td></tr>
+<tr><td><code>Config</code></td><td>replicated</td><td>per-context revision counters</td></tr>
+<tr><td><code>Identity</code></td><td>replicated</td><td>context member keypairs</td></tr>
+<tr><td><code>State</code></td><td>replicated</td><td>shared application state (the data plane)</td></tr>
+<tr><td><code>Delta</code></td><td>replicated</td><td>causal deltas (legacy per-context DAG)</td></tr>
+<tr><td><code>UnifiedOp</code></td><td>replicated</td><td>the unified op-store — one DAG per scope</td></tr>
+<tr><td><code>Group</code></td><td>replicated</td><td>all governance records (prefix-partitioned, below)</td></tr>
+<tr><td><code>Blobs</code> / <code>Application</code></td><td>replicated</td><td>content-addressed binaries and WASM bundles</td></tr>
+<tr><td><code>Alias</code> / <code>Generic</code></td><td>replicated</td><td>name→id mappings; uncategorized</td></tr>
+<tr><td><code>PrivateState</code></td><td>node-local</td><td>per-node private state (never synced)</td></tr>
+<tr><td><code>SortedIndex</code></td><td>node-local</td><td>derived ordering index for sorted collections</td></tr>
+<tr><td><code>ContextLocal</code>, <code>AbsorbBuffer</code>, …</td><td>node-local</td><td>leave markers, straggler buffers, migration/blob breadcrumbs</td></tr>
+</table>
+</div>
+
+<div class="card gb">
+<h2>Key byte-layouts</h2>
+<p>Keys are fixed-size concatenations of 32-byte ids. The leading id is the partition prefix, so a range scan over it returns everything for one context or scope.</p>
+<table class="spec-tbl">
+<tr><th>Key</th><th>Column</th><th>Layout</th><th>Bytes</th></tr>
+<tr><td><code>ContextMeta</code></td><td>Meta</td><td><code>context_id(32)</code></td><td>32</td></tr>
+<tr><td><code>ContextState</code></td><td>State</td><td><code>context_id(32) ‖ state_key(32)</code></td><td>64</td></tr>
+<tr><td><code>ContextPrivateState</code></td><td>PrivateState</td><td><code>context_id(32) ‖ state_key(32)</code></td><td>64</td></tr>
+<tr><td><code>ContextDagDelta</code></td><td>Delta</td><td><code>context_id(32) ‖ delta_id(32)</code></td><td>64</td></tr>
+<tr><td><code>ScopeUnifiedOp</code></td><td>UnifiedOp</td><td><code>scope(32) ‖ op_id(32)</code></td><td>64</td></tr>
+</table>
+<p>The unified op store is the key one for the target model: keyed <code>scope ‖ op_id</code>, so all operations of a scope are a contiguous range, and the value is simply the Borsh-encoded <code>Op</code> from Chapter 3, stored verbatim (Identity codec).</p>
+</div>
+
+<div class="card gd">
+<h2>Key value structures</h2>
+<p>The two structures a reimplementation most needs. Both are Borsh.</p>
+<div class="typedef" aria-label="ContextMeta value">
+<span class="kw">struct</span> <span class="ty">ContextMeta</span> {<span style="color:var(--text-dim)">&nbsp;// Meta column</span><br>
+&nbsp;&nbsp;<span class="field">application</span>: <span class="ty">[u8; 32]</span>,<br>
+&nbsp;&nbsp;<span class="field">root_hash</span>: <span class="ty">[u8; 32]</span>,<span style="color:var(--text-dim)">&nbsp;// storage Merkle root = entity root</span><br>
+&nbsp;&nbsp;<span class="field">dag_heads</span>: <span class="ty">Vec&lt;[u8; 32]&gt;</span>,<br>
+&nbsp;&nbsp;<span class="field">service_name</span>: <span class="ty">Option&lt;str&gt;</span>,<br>
+}
+</div>
+<div class="typedef" aria-label="ContextDagDelta value">
+<span class="kw">struct</span> <span class="ty">ContextDagDelta</span> {<span style="color:var(--text-dim)">&nbsp;// Delta column (legacy data DAG)</span><br>
+&nbsp;&nbsp;<span class="field">delta_id</span>: <span class="ty">[u8; 32]</span>, <span class="field">parents</span>: <span class="ty">Vec&lt;[u8; 32]&gt;</span>,<br>
+&nbsp;&nbsp;<span class="field">actions</span>: <span class="ty">Vec&lt;u8&gt;</span>, <span class="field">hlc</span>: <span class="ty">HybridTimestamp</span>, <span class="field">applied</span>: <span class="ty">bool</span>,<br>
+&nbsp;&nbsp;<span class="field">expected_root_hash</span>: <span class="ty">[u8; 32]</span>,<br>
+&nbsp;&nbsp;<span class="field">events</span>: <span class="ty">Option&lt;Vec&lt;u8&gt;&gt;</span>, <span class="field">author_id</span>: <span class="ty">Option&lt;PublicKey&gt;</span>,<br>
+&nbsp;&nbsp;<span class="field">governance_position_blob</span>: <span class="ty">Option&lt;Vec&lt;u8&gt;&gt;</span>,<br>
+&nbsp;&nbsp;<span class="field">delta_signature</span>: <span class="ty">Option&lt;[u8; 64]&gt;</span>,<br>
+}
+</div>
+</div>
+
+<div class="card ga">
+<h2>The Group column prefix scheme</h2>
+<p>All governance record types share one column, distinguished by a 1-byte prefix followed by the relevant ids. A representative selection:</p>
+<table class="spec-tbl">
+<tr><th>Prefix</th><th>Record</th><th>Key layout</th></tr>
+<tr><td><code>0x20</code></td><td>GroupMeta</td><td><code>0x20 ‖ group_id(32)</code></td></tr>
+<tr><td><code>0x21</code></td><td>GroupMember</td><td><code>0x21 ‖ group_id(32) ‖ identity(32)</code></td></tr>
+<tr><td><code>0x26</code></td><td>MemberCapability</td><td><code>0x26 ‖ group_id(32) ‖ identity(32)</code></td></tr>
+<tr><td><code>0x30</code></td><td>GroupOpLog</td><td><code>0x30 ‖ group_id(32) ‖ sequence(8, big-endian)</code></td></tr>
+<tr><td><code>0x34</code></td><td>GroupParentRef</td><td><code>0x34 ‖ child_id(32)</code> → parent</td></tr>
+<tr><td><code>0x36</code></td><td>NamespaceIdentity</td><td><code>0x36 ‖ namespace_id(32)</code> → keypair</td></tr>
+<tr><td><code>0x38</code></td><td>NamespaceGovOp</td><td><code>0x38 ‖ namespace_id(32) ‖ delta_id(32)</code></td></tr>
+<tr><td><code>0x3A</code></td><td>GroupKeyEntry</td><td><code>0x3A ‖ group_id(32) ‖ key_id(32)</code></td></tr>
+<tr><td><code>0x3C</code></td><td>NonceWindow</td><td><code>0x3C ‖ group_id(32) ‖ signer(32)</code></td></tr>
+</table>
+<p class="page-subtitle" style="margin-top:0">Note the <code>GroupOpLog</code> sequence is <strong>big-endian</strong> so keys sort in numeric order; id-based keys use the raw 32 bytes. The <code>key_id</code> in <code>GroupKeyEntry</code> is <code>SHA-256(scope_key)</code>, matching the <code>key_id</code> a <code>StateDelta</code> advertises on the wire (Chapter 7).</p>
+</div>
+
+<div class="card gc">
+<h2>Back to the protocol</h2>
+<p>That is the on-disk shape of everything the ten chapters describe. Return to the <a href="index.html">Protocol Reference</a>, or revisit <a href="operations.html">Operations</a> (whose <code>Op</code> is what the unified store holds) and <a href="projection.html">Projection</a> (whose root hash is the <code>root_hash</code> in <code>ContextMeta</code>).</p>
+</div>
+
+<div class="chapter-nav">
+<span><a href="sync.html">← Sync &amp; Convergence</a></span>
+<span><a href="index.html">Protocol Reference home →</a></span>
+</div>
+
+</div>
+</div>
+<script src="../seq-diagram.js"></script>
+<script src="../nav.js"></script>
+</body>
+</html>
