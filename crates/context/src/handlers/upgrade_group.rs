@@ -821,6 +821,29 @@ pub(crate) fn select_intermediate_rungs(
     Ok(rungs)
 }
 
+/// Read a target service's embedded schema for migration planning, refusing an
+/// *opaque* target: one whose schema is tagged with a major this build does not
+/// understand. Such a target reads as "no schema" through the plain `Option`
+/// reader, which would let it proceed as a code-only swap — and a code-only swap
+/// installs new bytecode over existing state with no migration. If that new code
+/// reinterprets identity-gated entries as plain, it is exactly the downgrade the
+/// L1 gate exists to forbid, except the gate never runs because no migration was
+/// detected. We cannot evaluate an unsupported schema, so we refuse rather than
+/// install it blind. (`Absent` — genuinely no/legacy ABI — stays code-only, as
+/// before; the L1 gate's documented fail-open owns that case.)
+fn classify_target_schema(bytes: &[u8]) -> eyre::Result<Option<Manifest>> {
+    match read_embedded_state_schema_versioned(bytes) {
+        EmbeddedSchema::Supported(manifest) => Ok(Some(manifest)),
+        EmbeddedSchema::UnsupportedVersion(version) => eyre::bail!(
+            "the target bytecode embeds an unsupported ABI schema version '{version}' that this \
+             node cannot evaluate — refusing the upgrade rather than installing it blind (a \
+             code-only swap to an unreadable schema could silently reinterpret existing state). \
+             Upgrade this node to a build that understands it first"
+        ),
+        EmbeddedSchema::Absent => Ok(None),
+    }
+}
+
 pub(crate) async fn resolve_upgrade_from_abis(
     node_client: &calimero_node_primitives::client::NodeClient,
     current_app_key: [u8; 32],
@@ -863,7 +886,12 @@ pub(crate) async fn resolve_upgrade_from_abis(
             .application_bytes_from_blob(&target_blob_id, service.as_deref())
             .await
         {
-            Ok(Some(bytes)) => read_embedded_state_schema(&bytes),
+            Ok(Some(bytes)) => classify_target_schema(&bytes).map_err(|err| {
+                eyre::eyre!(
+                    "service '{}': {err}",
+                    service.as_deref().unwrap_or("<single>")
+                )
+            })?,
             _ => None,
         };
 
@@ -1925,6 +1953,44 @@ mod tests {
         // Unsupported takes precedence even when the other side is absent.
         assert!(
             super::verify_no_identity_downgrade(&unsupported(), &EmbeddedSchema::Absent).is_err()
+        );
+    }
+
+    /// Embed a manifest into a minimal valid wasm module.
+    fn embed_manifest(manifest: &calimero_wasm_abi::schema::Manifest) -> Vec<u8> {
+        let empty_module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        calimero_wasm_abi::embed::write_embedded_state_schema(&empty_module, manifest)
+            .expect("embed")
+    }
+
+    #[test]
+    fn target_schema_supported_resolves_to_some() {
+        let wasm = embed_manifest(&dg_manifest(DG_PLAIN));
+        assert!(super::classify_target_schema(&wasm)
+            .expect("a supported schema is not an error")
+            .is_some());
+    }
+
+    #[test]
+    fn target_schema_absent_resolves_to_none() {
+        // A module with no `calimero_abi_v1` section stays code-only-eligible.
+        let bare_module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        assert!(super::classify_target_schema(&bare_module)
+            .expect("an absent schema is not an error")
+            .is_none());
+    }
+
+    #[test]
+    fn target_schema_refuses_unsupported_future_major() {
+        // The code-only bypass: an opaque target must be refused outright rather
+        // than read as "no schema" and waved through as code-only.
+        let mut manifest = dg_manifest(DG_PLAIN);
+        manifest.schema_version = "wasm-abi/2".to_owned();
+        let wasm = embed_manifest(&manifest);
+        let err = super::classify_target_schema(&wasm).unwrap_err();
+        assert!(
+            err.to_string().contains("unsupported ABI schema version"),
+            "{err}"
         );
     }
 
