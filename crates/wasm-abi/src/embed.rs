@@ -4,8 +4,42 @@
 use wasmparser::{Parser, Payload};
 
 use crate::schema::Manifest;
+use crate::validate::ValidationError;
 
 const SECTION_NAME: &str = "calimero_abi_v1";
+
+/// Outcome of reading the embedded state-schema section. The three cases the
+/// identity-downgrade gate must treat differently: a usable schema, a schema
+/// present but from a newer toolchain than this build understands, and nothing
+/// usable at all.
+#[derive(Debug)]
+pub enum EmbeddedSchema {
+    /// A present, structurally-valid manifest of a schema major this build
+    /// supports.
+    Supported(Manifest),
+    /// A section is present and parses as a `Manifest`, but its `schema_version`
+    /// names a major this build does not understand (e.g. `wasm-abi/2`). The
+    /// node cannot enumerate its identity-gated fields, so a security gate must
+    /// treat it as "present but opaque" — NOT as "absent".
+    UnsupportedVersion(String),
+    /// No `calimero_abi_v1` section, or one that is malformed / structurally
+    /// invalid (bad JSON, dangling refs, …) — indistinguishable from no schema.
+    Absent,
+}
+
+impl EmbeddedSchema {
+    /// The manifest when present and supported, else `None`. Collapses both
+    /// `Absent` and `UnsupportedVersion` to "no usable schema" — for readers that
+    /// only consume a schema they can understand and are NOT making a security
+    /// (identity-downgrade) decision.
+    #[must_use]
+    pub fn into_manifest(self) -> Option<Manifest> {
+        match self {
+            EmbeddedSchema::Supported(manifest) => Some(manifest),
+            EmbeddedSchema::UnsupportedVersion(_) | EmbeddedSchema::Absent => None,
+        }
+    }
+}
 
 /// Error from [`write_embedded_state_schema`]. The read path stays infallible
 /// (`Option`) for fail-open; the write path is build-time tooling and fails
@@ -34,32 +68,51 @@ impl std::error::Error for EmbedError {
     }
 }
 
-/// Read the embedded state-schema `Manifest`, or `None` if the section is absent
-/// or malformed (drives fail-open at the upgrade gate).
+/// Read the embedded state-schema `Manifest`, or `None` if the section is absent,
+/// malformed, or tagged with a schema major this build does not support.
 ///
-/// Note: a section tagged with an unsupported *future* major (`wasm-abi/2`)
-/// fails `validate_manifest` and is therefore also read as `None` here — i.e. it
-/// fails open like an absent section. Distinguishing "schema present but from a
-/// newer toolchain" from "no schema" at the downgrade gate would require
-/// threading [`crate::validate::ValidationError::UnsupportedSchemaVersion`] up
-/// to the caller and is intentionally left to a focused change on that gate.
-///
-/// Returns the *last* parseable `calimero_abi_v1` section. The writer emits
-/// exactly one (appended last), so this is normally unambiguous; on the off
-/// chance a stale earlier section co-exists, last-wins matches the writer's
-/// append semantics.
+/// This collapses "unsupported future version" into `None` — fine for readers
+/// that only consume a schema they can understand. The identity-downgrade gate
+/// must NOT use this: a future-major schema read as `None` would fail open like
+/// an absent section. That gate uses [`read_embedded_state_schema_versioned`],
+/// which surfaces [`EmbeddedSchema::UnsupportedVersion`] so it can fail closed.
 pub fn read_embedded_state_schema(wasm: &[u8]) -> Option<Manifest> {
-    let mut found = None;
+    read_embedded_state_schema_versioned(wasm).into_manifest()
+}
+
+/// Read the embedded state-schema section as a three-way [`EmbeddedSchema`],
+/// distinguishing a usable manifest, a present-but-unsupported-version section,
+/// and an absent/malformed one. Security gates (identity downgrade) use this so
+/// an unsupported future major fails *closed* instead of being mistaken for "no
+/// schema".
+///
+/// Returns the *last* `calimero_abi_v1` section that parses as a `Manifest`. The
+/// writer emits exactly one (appended last), so this is normally unambiguous;
+/// last-wins matches the writer's append semantics. A structurally-valid
+/// supported manifest always wins; failing that, a present unsupported-version
+/// section is reported over `Absent`; a malformed/invalid section is ignored.
+#[must_use]
+pub fn read_embedded_state_schema_versioned(wasm: &[u8]) -> EmbeddedSchema {
+    let mut found = EmbeddedSchema::Absent;
     for payload in Parser::new(0).parse_all(wasm).flatten() {
         if let Payload::CustomSection(reader) = payload {
             if reader.name() == SECTION_NAME {
-                // Accept only a structurally VALID manifest. A well-formed-JSON
-                // but semantically invalid section (dangling refs, bad
-                // state_root, …) is treated as absent — deserialization alone
-                // does not vouch for validity, only that the bytes parse.
+                // Deserialization alone does not vouch for validity, only that
+                // the bytes parse — `validate_manifest` decides usability and
+                // separates an unsupported version from genuine malformation.
                 if let Ok(manifest) = serde_json::from_slice::<Manifest>(reader.data()) {
-                    if crate::validate::validate_manifest(&manifest).is_ok() {
-                        found = Some(manifest);
+                    match crate::validate::validate_manifest(&manifest) {
+                        Ok(()) => found = EmbeddedSchema::Supported(manifest),
+                        // A newer toolchain's schema: present but opaque. Record
+                        // it unless we already hold a usable (supported) one.
+                        Err(ValidationError::UnsupportedSchemaVersion(version)) => {
+                            if !matches!(found, EmbeddedSchema::Supported(_)) {
+                                found = EmbeddedSchema::UnsupportedVersion(version);
+                            }
+                        }
+                        // Malformed / structurally invalid → treat as absent
+                        // (leave any prior find untouched).
+                        Err(_) => {}
                     }
                 }
             }
@@ -205,6 +258,53 @@ mod tests {
 
     fn empty_module() -> Vec<u8> {
         vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]
+    }
+
+    /// A manifest tagged with a schema major this build does not support.
+    /// `write_embedded_state_schema` does not validate, so it embeds fine; the
+    /// reader is what rejects it.
+    fn future_major_manifest() -> Manifest {
+        serde_json::from_str(
+            r#"{"schema_version":"wasm-abi/2","types":{"Root":{"kind":"record","fields":[]}},"methods":[],"events":[],"state_root":"Root"}"#,
+        ).unwrap()
+    }
+
+    #[test]
+    fn versioned_reads_supported() {
+        let wasm = write_embedded_state_schema(&empty_module(), &sample_manifest()).expect("embed");
+        assert!(matches!(
+            read_embedded_state_schema_versioned(&wasm),
+            EmbeddedSchema::Supported(_)
+        ));
+    }
+
+    #[test]
+    fn versioned_surfaces_unsupported_future_major() {
+        let wasm =
+            write_embedded_state_schema(&empty_module(), &future_major_manifest()).expect("embed");
+        // The gate-facing reader keeps the section visible as opaque-but-present,
+        // so the gate can fail closed rather than mistake it for "no schema".
+        match read_embedded_state_schema_versioned(&wasm) {
+            EmbeddedSchema::UnsupportedVersion(v) => assert_eq!(v, "wasm-abi/2"),
+            other => panic!("expected UnsupportedVersion, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn versioned_absent_for_module_without_section() {
+        assert!(matches!(
+            read_embedded_state_schema_versioned(&empty_module()),
+            EmbeddedSchema::Absent
+        ));
+    }
+
+    #[test]
+    fn option_reader_collapses_unsupported_to_none() {
+        // The convenience `Option` reader still hides the unsupported section
+        // (fail-open) — which is exactly why the gate must use the versioned one.
+        let wasm =
+            write_embedded_state_schema(&empty_module(), &future_major_manifest()).expect("embed");
+        assert!(read_embedded_state_schema(&wasm).is_none());
     }
 
     #[test]
