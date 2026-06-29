@@ -312,8 +312,26 @@ async fn is_blob_access_authorized(
         return Ok(false);
     }
 
-    // Verify Context Membership
-    let is_member = context_client.has_member(&request.context_id, &auth.public_key)?;
+    // Verify Context Membership — direct OR inherited.
+    //
+    // `has_member` only sees *direct* membership: an own ContextIdentity row, a
+    // direct GroupMember row, or the namespace-creator admin carve-out. A peer
+    // who joined an `Open` subgroup via inheritance has NO direct GroupMember
+    // row (the apply path `execute_member_joined_open` is validate-only, see
+    // list_group_members #2371), so `has_member` returns false for them. That
+    // made a serving node refuse to hand over a blob it owns to a legitimate
+    // inherited member — the cause of one-directional blob (image/canvas) sync:
+    // the creator could fetch a joiner's blobs, but the joiner could not fetch
+    // the creator's. Fall back to the inheritance-aware governance membership
+    // walk, mirroring the sync responder's parent-walk (#2256).
+    let mut is_member = context_client.has_member(&request.context_id, &auth.public_key)?;
+    if !is_member {
+        is_member = is_inherited_context_member(
+            context_client.datastore(),
+            &request.context_id,
+            &auth.public_key,
+        )?;
+    }
     if !is_member {
         error!(
             blob_id=%request.blob_id,
@@ -324,4 +342,140 @@ async fn is_blob_access_authorized(
     }
 
     Ok(is_member)
+}
+
+/// Inheritance-aware context-membership check for blob *read* authorization.
+///
+/// Resolves the context's owning group and asks the governance store whether
+/// `public_key` is a member — directly or by inheritance through an `Open`-
+/// subgroup ancestor (the parent-walk implemented by
+/// [`MembershipRepository::is_member`] / `check_path`). Returns `false` when
+/// the context is not registered to any group (no group binding to inherit
+/// through) or when the identity is not a member at any level.
+///
+/// This intentionally accepts every member *role* (including read-only ones):
+/// the predicate gates blob *reads*, which read-only members are entitled to —
+/// unlike `is_currently_authorized_for_context`, which gates *writes* and so
+/// rejects read-only roles.
+fn is_inherited_context_member(
+    store: &calimero_store::Store,
+    context_id: &calimero_primitives::context::ContextId,
+    public_key: &calimero_primitives::identity::PublicKey,
+) -> eyre::Result<bool> {
+    use calimero_context::group_store::{get_group_for_context, MembershipRepository};
+
+    let Some(group_id) = get_group_for_context(store, context_id)? else {
+        return Ok(false);
+    };
+    MembershipRepository::new(store).is_member(&group_id, public_key)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_context::group_store::{
+        register_context_in_group, CapabilitiesRepository, MembershipRepository,
+        NamespaceRepository,
+    };
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use calimero_primitives::context::{ContextId, GroupMemberRole};
+    use calimero_primitives::identity::PublicKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
+    use super::is_inherited_context_member;
+
+    fn test_store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    /// Build `namespace → Open subgroup → context`, where `alice` is a direct
+    /// member of the *namespace* holding `CAN_JOIN_OPEN_SUBGROUPS` — so she is
+    /// an *inherited* member of the subgroup with **no** direct `GroupMember`
+    /// row in it — and the context is registered under the subgroup. This is
+    /// exactly the shape a peer ends up in after joining an open subgroup.
+    fn open_subgroup_with_inherited_member() -> (Store, ContextId, ContextGroupId, PublicKey) {
+        let store = test_store();
+        let namespace = ContextGroupId::from([0xA0; 32]);
+        let subgroup = ContextGroupId::from([0xB0; 32]);
+        let context_id = ContextId::from([0xC0; 32]);
+        let alice = PublicKey::from([0x01; 32]);
+
+        NamespaceRepository::new(&store)
+            .nest(&namespace, &subgroup)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&namespace, &alice, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &namespace,
+                &alice,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            )
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+            .unwrap();
+        register_context_in_group(&store, &subgroup, &context_id).unwrap();
+
+        (store, context_id, subgroup, alice)
+    }
+
+    #[test]
+    fn inherited_open_subgroup_member_is_authorized() {
+        let (store, context_id, subgroup, alice) = open_subgroup_with_inherited_member();
+
+        // Precondition: alice has NO direct membership row in the subgroup —
+        // this is precisely why the old flat `has_member` check missed her and
+        // blob sync broke one-directionally.
+        assert!(
+            !MembershipRepository::new(&store)
+                .has_direct_member(&subgroup, &alice)
+                .unwrap(),
+            "test setup invariant: inherited member must have no direct row"
+        );
+
+        assert!(
+            is_inherited_context_member(&store, &context_id, &alice).unwrap(),
+            "inherited Open-subgroup member must be authorized to read blobs"
+        );
+    }
+
+    #[test]
+    fn non_member_is_not_authorized() {
+        let (store, context_id, _subgroup, _alice) = open_subgroup_with_inherited_member();
+        let mallory = PublicKey::from([0x02; 32]);
+        assert!(
+            !is_inherited_context_member(&store, &context_id, &mallory).unwrap(),
+            "a non-member must not be authorized"
+        );
+    }
+
+    #[test]
+    fn restricted_subgroup_does_not_inherit() {
+        let (store, context_id, subgroup, alice) = open_subgroup_with_inherited_member();
+        // Flip the subgroup to Restricted: inheritance must stop applying, so
+        // an identity with only inherited membership is no longer recognised.
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
+            .unwrap();
+        assert!(
+            !is_inherited_context_member(&store, &context_id, &alice).unwrap(),
+            "Restricted subgroup must not inherit parent membership"
+        );
+    }
+
+    #[test]
+    fn context_with_no_group_binding_is_not_member() {
+        let store = test_store();
+        let context_id = ContextId::from([0xC1; 32]);
+        let alice = PublicKey::from([0x01; 32]);
+        assert!(
+            !is_inherited_context_member(&store, &context_id, &alice).unwrap(),
+            "a context not registered to any group has nothing to inherit through"
+        );
+    }
 }
