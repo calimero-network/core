@@ -334,13 +334,19 @@ pub mod helpers {
 
     /// Blocked IPv4 ranges: loopback (127/8), private (10/8, 172.16/12,
     /// 192.168/16), link-local (169.254/16 — incl. the cloud metadata IP),
-    /// unspecified (0.0.0.0), and broadcast.
+    /// unspecified (0.0.0.0), broadcast, and CGNAT (100.64.0.0/10, RFC 6598 —
+    /// used by some cloud providers for internal/metadata reachability).
     fn ipv4_is_blocked(ip: std::net::Ipv4Addr) -> bool {
+        let o = ip.octets();
+        // 100.64.0.0/10: first octet 100, second octet 64..=127. `is_shared()`
+        // would cover this but is unstable, so check the prefix directly.
+        let is_cgnat = o[0] == 100 && (o[1] & 0xc0) == 0x40;
         ip.is_loopback()
             || ip.is_private()
             || ip.is_link_local()
             || ip.is_unspecified()
             || ip.is_broadcast()
+            || is_cgnat
     }
 
     /// Blocked IPv6: loopback (::1), unspecified (::), unique-local (fc00::/7),
@@ -509,6 +515,7 @@ mod ssrf_and_path_tests {
             "http://10.0.0.5/internal",
             "http://172.16.3.4/",
             "http://192.168.1.1/",
+            "http://100.64.0.1/", // CGNAT (RFC 6598)
             "http://0.0.0.0/",
             "http://[::1]/",
             "http://[fe80::1]/",

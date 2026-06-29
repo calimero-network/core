@@ -55,11 +55,15 @@ fn host_is_blocked(url: &Url) -> bool {
 fn ip_is_blocked(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            // 100.64.0.0/10 (RFC 6598, CGNAT). SYNC(#3053).
+            let is_cgnat = o[0] == 100 && (o[1] & 0xc0) == 0x40;
             v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
                 || v4.is_unspecified()
                 || v4.is_broadcast()
+                || is_cgnat
         }
         std::net::IpAddr::V6(v6) => {
             if v6.is_loopback() || v6.is_unspecified() {
