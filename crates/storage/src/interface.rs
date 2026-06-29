@@ -201,6 +201,17 @@ const fn nonce_check_disabled_for_testing() -> bool {
 }
 
 /// The primary interface for the storage system.
+/// Why a child is being removed from its collection, selecting whether the
+/// Frozen-deletion guard applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoveMode {
+    /// A genuine semantic deletion: reject `Frozen` children.
+    Delete,
+    /// A deterministic re-key relocation: the child is immediately re-inserted
+    /// under a new id, so `Frozen` children are relocated rather than rejected.
+    Relocate,
+}
+
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct Interface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
@@ -2659,7 +2670,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// `Frozen`.
     ///
     pub fn remove_child_from(parent_id: Id, child_id: Id) -> Result<bool, StorageError> {
-        Self::remove_child_from_inner(parent_id, child_id, true)
+        Self::remove_child_from_inner(parent_id, child_id, RemoveMode::Delete)
     }
 
     /// Removes a child from a collection as part of a deterministic re-key
@@ -2675,18 +2686,18 @@ impl<S: StorageAdaptor> Interface<S> {
     /// Returns error if parent or child doesn't exist.
     ///
     pub(crate) fn relocate_child_from(parent_id: Id, child_id: Id) -> Result<bool, StorageError> {
-        Self::remove_child_from_inner(parent_id, child_id, false)
+        Self::remove_child_from_inner(parent_id, child_id, RemoveMode::Relocate)
     }
 
     /// Shared implementation behind [`remove_child_from`](Self::remove_child_from)
     /// and [`relocate_child_from`](Self::relocate_child_from).
     ///
-    /// `reject_frozen` gates the Frozen-deletion guard: `true` for genuine
-    /// deletes, `false` for re-key relocations.
+    /// `mode` selects whether the Frozen-deletion guard applies: it does for
+    /// [`RemoveMode::Delete`], but not for [`RemoveMode::Relocate`] re-keys.
     fn remove_child_from_inner(
         parent_id: Id,
         child_id: Id,
-        reject_frozen: bool,
+        mode: RemoveMode,
     ) -> Result<bool, StorageError> {
         let child_exists = <Index<S>>::get_children_of(parent_id)?
             .iter()
@@ -2712,9 +2723,9 @@ impl<S: StorageAdaptor> Interface<S> {
         // Refusing here keeps the deleter consistent with its peers.
         //
         // The re-key relocation path (`relocate_child_from`) passes
-        // `reject_frozen == false`: it removes the entry only to re-insert it
+        // `RemoveMode::Relocate`: it removes the entry only to re-insert it
         // under a new deterministic id, so the frozen data is preserved.
-        if reject_frozen && matches!(metadata.storage_type, StorageType::Frozen) {
+        if mode == RemoveMode::Delete && matches!(metadata.storage_type, StorageType::Frozen) {
             return Err(StorageError::ActionNotAllowed(
                 "Frozen data cannot be deleted".to_owned(),
             ));
