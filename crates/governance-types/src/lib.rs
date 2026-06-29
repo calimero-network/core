@@ -148,13 +148,14 @@ impl From<std::num::NonZeroU8> for ContextCapabilityBits {
 impl BorshDeserialize for ContextCapabilityBits {
     fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
         let bits = u8::deserialize_reader(reader)?;
-        if bits == 0 {
-            return Err(io::Error::new(
+        // Route through the canonical constructor so the zero-rejection
+        // invariant lives in exactly one place.
+        Self::new(bits).ok_or_else(|| {
+            io::Error::new(
                 io::ErrorKind::InvalidData,
                 "ContextCapabilityBits: capability bitmask must not be zero",
-            ));
-        }
-        Ok(Self(bits))
+            )
+        })
     }
 }
 
