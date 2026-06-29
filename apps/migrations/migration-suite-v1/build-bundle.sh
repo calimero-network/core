@@ -39,7 +39,7 @@ cat > res/bundle-temp/manifest.json <<EOF
 EOF
 
 cargo run -p mero-sign --quiet -- sign res/bundle-temp/manifest.json \
-    --key ../../../scripts/test-signing-key/test-key.json
+    --dev
 
 cd res/bundle-temp
 tar -czf ../migration-suite-1.0.0.mpk manifest.json app.wasm abi.json 2>/dev/null || \
