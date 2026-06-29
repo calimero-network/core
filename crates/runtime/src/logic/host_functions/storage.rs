@@ -25,6 +25,10 @@ impl VMHostFunctions<'_> {
     /// * `HostError::KeyLengthOverflow` if the key size exceeds the configured limit.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn storage_read(&mut self, src_key_ptr: u64, dest_register_id: u64) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
 
         let logic = self.borrow_logic();
@@ -95,6 +99,10 @@ impl VMHostFunctions<'_> {
         src_key_ptr: u64,
         dest_register_id: u64,
     ) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
 
         let logic = self.borrow_logic();
@@ -174,7 +182,15 @@ impl VMHostFunctions<'_> {
         src_value_ptr: u64,
         dest_register_id: u64,
     ) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let value = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_value_ptr)? };
 
         let logic = self.borrow_logic();
@@ -252,6 +268,10 @@ impl VMHostFunctions<'_> {
         src_key_ptr: u64,
         dest_register_id: u64,
     ) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
 
         let logic = self.borrow_logic();
@@ -326,6 +346,10 @@ impl VMHostFunctions<'_> {
         src_key_ptr: u64,
         dest_register_id: u64,
     ) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
 
         let logic = self.borrow_logic();
@@ -397,7 +421,15 @@ impl VMHostFunctions<'_> {
         src_key_ptr: u64,
         src_value_ptr: u64,
     ) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let value = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_value_ptr)? };
 
         let logic = self.borrow_logic();
@@ -461,7 +493,15 @@ impl VMHostFunctions<'_> {
     /// write was persisted, `0` otherwise (so the guest can skip stamping its
     /// index-validity marker and rebuild instead).
     pub fn storage_index_set(&mut self, key_ptr: u64, value_ptr: u64) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(key_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let value = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(value_ptr)? };
         // Bound guest-supplied sizes like `storage_write` does, so a buggy/hostile
         // guest can't drive unbounded host allocation through the index path.
@@ -481,6 +521,10 @@ impl VMHostFunctions<'_> {
 
     /// Remove `key` from the ordered index. Returns `1` if persisted, else `0`.
     pub fn storage_index_remove(&mut self, key_ptr: u64) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(key_ptr)? };
         if key.len() > self.borrow_logic().limits.max_storage_key_size.get() {
             return Err(HostError::KeyLengthOverflow.into());
@@ -494,6 +538,10 @@ impl VMHostFunctions<'_> {
     /// Remove every ordered-index key beginning with `prefix`. Returns `1` if
     /// persisted, else `0`.
     pub fn storage_index_remove_prefix(&mut self, prefix_ptr: u64) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let prefix = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(prefix_ptr)? };
         if prefix.len() > self.borrow_logic().limits.max_storage_key_size.get() {
             return Err(HostError::KeyLengthOverflow.into());
@@ -518,7 +566,15 @@ impl VMHostFunctions<'_> {
         limit: u64,
         register_id: u64,
     ) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let lo = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(lo_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let hi = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(hi_ptr)? };
         // The bounds are index keys; cap them like any other storage key.
         let max_key = self.borrow_logic().limits.max_storage_key_size.get();
@@ -560,7 +616,15 @@ impl VMHostFunctions<'_> {
         hi_ptr: u64,
         register_id: u64,
     ) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let lo = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(lo_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let hi = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(hi_ptr)? };
         let max_key = self.borrow_logic().limits.max_storage_key_size.get();
         if lo.len() > max_key || hi.len() > max_key {

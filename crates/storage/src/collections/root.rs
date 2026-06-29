@@ -15,9 +15,8 @@
 //! any single inner `Mergeable::merge`.
 
 use core::fmt;
-use std::cell::RefCell;
+use std::cell::OnceCell;
 use std::ops::{Deref, DerefMut};
-use std::ptr;
 
 use super::{Collection, ROOT_ENTRY_ID, ROOT_ID};
 use crate::address::Id;
@@ -32,7 +31,13 @@ use tracing::info;
 /// A set collection that stores unqiue values once.
 pub struct Root<T, S: StorageAdaptor = MainStorage> {
     inner: Collection<T, S>,
-    value: RefCell<Option<T>>,
+    // Lazily-materialised cache of the single root value. A `OnceCell`
+    // (not a `RefCell`) is load-bearing for soundness: it hands out `&T`
+    // references tied to `&self` directly, so `Deref` needs no `unsafe`
+    // pointer laundering. The cell is populated exactly once (on first
+    // access or at construction) and is only ever mutated through
+    // `&mut self` via `get_mut`, so no aliasing `&mut` can be produced.
+    value: OnceCell<T>,
     dirty: bool,
 }
 
@@ -105,10 +110,14 @@ where
             .insert_with_field_name(id, f(), "root")
             .expect("fatal: Root<T> entry insert failed");
 
+        let cache = OnceCell::new();
+        // The cell is freshly created, so `set` cannot fail here.
+        let _ = cache.set(value);
+
         Self {
             inner,
             dirty: false,
-            value: RefCell::new(Some(value)),
+            value: cache,
         }
     }
 
@@ -121,49 +130,160 @@ where
         ROOT_ENTRY_ID
     }
 
-    #[expect(clippy::mut_from_ref, reason = "'tis fine")]
-    #[expect(clippy::unwrap_used, reason = "fatal error if it happens")]
-    fn get(&self) -> &mut T {
-        let mut value = self.value.borrow_mut();
+    /// Returns a shared reference to the (lazily materialised) root value.
+    ///
+    /// The value is read from storage on first access and cached in the
+    /// `OnceCell`; later calls hand out further shared references to the
+    /// same cached value. This is sound precisely because the cell is
+    /// populated once and never mutated through a shared reference — the
+    /// previous implementation laundered a `RefCell` guard into a `&mut T`
+    /// via `ptr::from_mut`, which let two `get()` calls alias the same
+    /// `&mut T` (UB).
+    ///
+    /// `get` is bound by [`Deref::deref`], whose signature is infallible,
+    /// so a storage-read error has nowhere to propagate: we log the cause
+    /// (so node logs carry it before any WASM abort) and panic. A missing
+    /// entry is treated the same way — a `Root<T>` always writes its single
+    /// entry at construction, so its absence means a corrupt store.
+    #[expect(
+        clippy::panic,
+        reason = "Deref::deref is infallible; a store fault here is fatal, but \
+                  log the cause first so it reaches node logs before the abort"
+    )]
+    fn get(&self) -> &T {
+        self.value.get_or_init(|| {
+            let id = Self::entry_id();
+            match self.inner.get(id) {
+                Ok(Some(value)) => value,
+                Ok(None) => {
+                    // The root collection was loaded (we have `self.inner`) but
+                    // its single entry is absent. That entry is written
+                    // atomically at construction, and `fetch` returning `Some`
+                    // guarantees it exists, so reaching here means a partial
+                    // write / store corruption — never a normal "empty root".
+                    tracing::error!(
+                        target: "storage::root",
+                        %id,
+                        "Root<T> collection present but its single entry is absent — \
+                         partial write or store corruption, not an empty root"
+                    );
+                    panic!(
+                        "fatal: Root<T> entry missing from store (collection present, \
+                         entry absent — store corruption)"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        target: "storage::root",
+                        %id,
+                        error = %e,
+                        "Root<T> entry read failed — cannot materialise root value"
+                    );
+                    panic!("fatal: Root<T> entry read failed: {e}");
+                }
+            }
+        })
+    }
 
-        let id = Self::entry_id();
-
-        let value = value.get_or_insert_with(|| self.inner.get(id).unwrap().unwrap());
-
-        #[expect(unsafe_code, reason = "necessary for caching")]
-        let value = unsafe { &mut *ptr::from_mut(value) };
-
-        value
+    /// Returns an exclusive reference to the (lazily materialised) root value.
+    ///
+    /// Requires `&mut self`, so there is no aliasing to reason about. It
+    /// populates the cache via [`Self::get`] (a shared borrow that ends
+    /// before the `get_mut` below) and then hands out the unique reference.
+    #[expect(
+        clippy::expect_used,
+        reason = "the cache is populated by the get() call immediately above"
+    )]
+    fn get_mut(&mut self) -> &mut T {
+        // Ensure the cache is populated; the shared borrow ends at the `;`.
+        let _: &T = self.get();
+        self.value
+            .get_mut()
+            .expect("root value cache populated by get() above")
     }
 
     /// Fetches the root collection.
+    ///
+    /// Returns `None` when no root has been written yet. A returned
+    /// `Some(root)` guarantees the single inner entry exists — it is written
+    /// atomically alongside the root at construction (see [`Self::new_internal`])
+    /// — so a *missing* entry observed later by [`Self::get`] is always store
+    /// corruption (or a partial write from a previous crash), never a normal
+    /// "empty root" state. That is why `get` panics rather than returning `None`
+    /// for the absent-entry case.
+    ///
+    /// A storage-read
+    /// fault (as opposed to "not present") is fatal and has nowhere to
+    /// propagate through this `Option`-returning signature, so it is logged
+    /// and then panics — keeping the cause in node logs before any abort.
     #[expect(
-        clippy::unwrap_used,
-        clippy::unwrap_in_result,
-        reason = "fatal error if it happens"
+        clippy::panic,
+        reason = "Option signature can't carry a store fault; log then abort"
     )]
     pub fn fetch() -> Option<Self> {
-        let inner = <Interface<S>>::root().unwrap()?;
+        let inner = match <Interface<S>>::root() {
+            Ok(inner) => inner?,
+            Err(e) => {
+                tracing::error!(
+                    target: "storage::root",
+                    error = %e,
+                    "Root::fetch: reading root collection failed"
+                );
+                panic!("fatal: Root::fetch failed: {e}");
+            }
+        };
 
         Some(Self {
             inner,
             dirty: false,
-            value: RefCell::new(None),
+            value: OnceCell::new(),
         })
     }
 
     /// Commits the root collection.
-    #[expect(clippy::unwrap_used, reason = "fatal error if it happens")]
+    ///
+    /// Storage faults while writing back the cached value or committing the
+    /// root are fatal; they are logged with their cause and then panic so
+    /// the reason survives in node logs before the WASM abort, rather than
+    /// surfacing as an opaque `unreachable` trap.
+    #[expect(
+        clippy::panic,
+        reason = "store write faults here are fatal; log the cause before aborting"
+    )]
     pub fn commit(mut self) {
+        // `dirty` is only ever set by `DerefMut`, which populates the cache
+        // before flipping the flag, so a dirty `Root` always has a cached
+        // value. Guard the invariant: if it ever breaks (e.g. a future API
+        // change), the write-back below would be silently skipped.
+        debug_assert!(
+            !self.dirty || self.value.get().is_some(),
+            "Root marked dirty but its value cache is empty — write-back would be skipped"
+        );
+
         if self.dirty {
             if let Some(value) = self.value.into_inner() {
-                if let Some(mut entry) = self.inner.get_mut(Self::entry_id()).unwrap() {
+                let entry = self.inner.get_mut(Self::entry_id()).unwrap_or_else(|e| {
+                    tracing::error!(
+                        target: "storage::root",
+                        error = %e,
+                        "Root::commit: reading root entry for write-back failed"
+                    );
+                    panic!("fatal: Root::commit entry read failed: {e}");
+                });
+                if let Some(mut entry) = entry {
                     *entry = value;
                 }
             }
         }
 
-        <Interface<S>>::commit_root(Some(self.inner)).unwrap();
+        <Interface<S>>::commit_root(Some(self.inner)).unwrap_or_else(|e| {
+            tracing::error!(
+                target: "storage::root",
+                error = %e,
+                "Root::commit: commit_root failed"
+            );
+            panic!("fatal: Root::commit failed: {e}");
+        });
     }
 
     /// Commits the root collection without an instance of the root state.
@@ -485,8 +605,12 @@ where
     S: StorageAdaptor,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // Materialise the cache first. If the lazy load panics on a store
+        // fault, `dirty` stays unset — so a failed load can never leave a
+        // dirty-but-unloaded `Root` that `commit` would try to write back.
+        let _: &T = self.get();
         self.dirty = true;
 
-        self.get()
+        self.get_mut()
     }
 }

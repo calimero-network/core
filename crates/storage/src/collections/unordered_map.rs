@@ -604,12 +604,8 @@ where
     V: PartialEq + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn eq(&self, other: &Self) -> bool {
-        let l = self.entries().unwrap();
-        let r = other.entries().unwrap();
-
-        l.eq(r)
+        super::fallible_iter_eq(self.entries(), other.entries())
     }
 }
 
@@ -619,12 +615,8 @@ where
     V: Ord + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let l = self.entries().unwrap();
-        let r = other.entries().unwrap();
-
-        l.cmp(r)
+        super::fallible_iter_cmp(self.entries(), other.entries())
     }
 }
 
@@ -635,10 +627,7 @@ where
     S: StorageAdaptor,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        let l = self.entries().ok()?;
-        let r = other.entries().ok()?;
-
-        l.partial_cmp(r)
+        super::fallible_iter_partial_cmp(self.entries(), other.entries())
     }
 }
 
@@ -648,14 +637,20 @@ where
     V: fmt::Debug + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    #[expect(clippy::unwrap_used, clippy::unwrap_in_result, reason = "'tis fine")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {
             f.debug_struct("UnorderedMap")
                 .field("entries", &self.inner)
                 .finish()
         } else {
-            f.debug_map().entries(self.entries().unwrap()).finish()
+            // A store fault while reading must not panic a Debug format.
+            match self.entries() {
+                Ok(entries) => f.debug_map().entries(entries).finish(),
+                Err(e) => f
+                    .debug_struct("UnorderedMap")
+                    .field("read_error", &e)
+                    .finish(),
+            }
         }
     }
 }

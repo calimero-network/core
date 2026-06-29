@@ -68,9 +68,25 @@ impl VMHostFunctions<'_> {
             return Ok(1);
         }
 
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let url = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_url_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let method = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_method_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let headers = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_headers_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let body = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_body_ptr)? };
 
         let url = self.read_guest_memory_str(&url)?;
@@ -123,6 +139,10 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn random_bytes(&mut self, dest_ptr: u64) -> VMLogicResult<()> {
+        // SAFETY: `sys::BufferMut<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let dest_buf = unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_ptr)? };
 
         // Validate the destination bounds before allocating a buffer sized from
@@ -163,6 +183,10 @@ impl VMHostFunctions<'_> {
         reason = "Effectively infallible here"
     )]
     pub fn time_now(&mut self, dest_ptr: u64) -> VMLogicResult<()> {
+        // SAFETY: `sys::BufferMut<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let guest_time_ptr =
             unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_ptr)? };
 
@@ -206,10 +230,22 @@ impl VMHostFunctions<'_> {
         src_message_ptr: u64,
     ) -> VMLogicResult<u32> {
         // Read buffer descriptors from guest memory
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let signature_buf =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_signature_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let public_key_buf =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_public_key_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let message_buf =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_message_ptr)? };
 
