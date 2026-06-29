@@ -62,15 +62,18 @@ impl VerifyQuoteThrottle {
     ///
     /// # Panics
     ///
-    /// Panics if `max_inflight == 0` or `burst < 1.0`: with no inflight permits
-    /// no request could ever proceed, and a sub-unit burst can never satisfy
-    /// the `tokens >= 1.0` gate, so either renders the endpoint a black hole.
-    /// These are construction-time programmer errors — the only in-tree callers
-    /// are [`Default`] and tests, both passing valid constants — so they are
+    /// Panics if `max_inflight == 0`, `burst < 1.0`, or `refill == 0`: with no
+    /// inflight permits no request could ever proceed, a sub-unit burst can
+    /// never satisfy the `tokens >= 1.0` gate, and a zero refill interval would
+    /// make the refill rate non-finite (poisoning the lazy-refill arithmetic
+    /// with `NaN`) — so each renders the endpoint useless. These are
+    /// construction-time programmer errors — the only in-tree callers are
+    /// [`Default`] and tests, both passing valid constants — so they are
     /// asserted rather than surfaced as a `Result`.
     pub fn new(max_inflight: usize, burst: f64, refill: Duration) -> Self {
         assert!(max_inflight > 0, "max_inflight must be positive");
         assert!(burst >= 1.0, "burst must be >= 1");
+        assert!(refill > Duration::ZERO, "refill must be positive");
         Self {
             inflight: Arc::new(Semaphore::new(max_inflight)),
             bucket: Mutex::new(Bucket {
@@ -86,11 +89,8 @@ impl VerifyQuoteThrottle {
     /// `Decision::Proceed` one token and one inflight permit are consumed; on
     /// rejection nothing is consumed.
     pub fn check_at(&self, now: Instant) -> Decision {
-        let refill_per_sec = if self.refill.as_secs_f64() > 0.0 {
-            1.0 / self.refill.as_secs_f64()
-        } else {
-            f64::INFINITY
-        };
+        // `refill` is asserted `> 0` in `new`, so this is always finite.
+        let refill_per_sec = 1.0 / self.refill.as_secs_f64();
 
         {
             // Recover from a poisoned mutex rather than propagating the panic:

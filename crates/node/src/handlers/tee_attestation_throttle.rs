@@ -28,6 +28,15 @@
 //! The struct is touched only on the actor thread, so the bookkeeping maps
 //! need no locking; only the inflight [`Semaphore`] is shared (it is moved,
 //! via an owned permit, into the spawned task).
+//!
+//! Per-peer state is created only when a peer's announce actually *proceeds*
+//! (Gate 3 grant), never on a rejection. A consequence is that a peer whose
+//! announces are *always* refused at the global inflight cap accumulates no
+//! per-peer rate-limit debt — but that is harmless by construction: such a peer
+//! triggers zero verifies (the global cap is doing the limiting), and the
+//! moment one of its announces proceeds it is tracked and metered normally.
+//! Tracking never-proceeding peers would instead let a unique-peer flood grow
+//! the map for no protective gain.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -135,13 +144,15 @@ impl TeeAdmissionThrottle {
     ///
     /// # Panics
     ///
-    /// Panics if `max_inflight == 0` or `per_peer_burst < 1.0`: with no inflight
-    /// permits no announce could ever proceed, and a sub-unit burst can never
-    /// satisfy the `tokens >= 1.0` gate, so both render the throttle a total
-    /// black hole. These are construction-time programmer errors — the only
-    /// in-tree callers are [`Default`] and tests, both of which pass valid
-    /// constants — so they are asserted rather than surfaced as a runtime
-    /// `Result` the caller would have to thread through node startup.
+    /// Panics if `max_inflight == 0`, `per_peer_burst < 1.0`, or
+    /// `per_peer_refill == 0`: with no inflight permits no announce could ever
+    /// proceed, a sub-unit burst can never satisfy the `tokens >= 1.0` gate, and
+    /// a zero refill interval would make the refill rate non-finite (poisoning
+    /// the lazy-refill arithmetic with `NaN`) — so each renders the throttle
+    /// useless. These are construction-time programmer errors — the only in-tree
+    /// callers are [`Default`] and tests, both of which pass valid constants —
+    /// so they are asserted rather than surfaced as a runtime `Result` the
+    /// caller would have to thread through node startup.
     pub fn new(
         max_inflight: usize,
         per_peer_burst: f64,
@@ -150,6 +161,10 @@ impl TeeAdmissionThrottle {
     ) -> Self {
         assert!(max_inflight > 0, "max_inflight must be positive");
         assert!(per_peer_burst >= 1.0, "per_peer_burst must be >= 1");
+        assert!(
+            per_peer_refill > Duration::ZERO,
+            "per_peer_refill must be positive"
+        );
         Self {
             inflight: Arc::new(Semaphore::new(max_inflight)),
             peers: HashMap::new(),
@@ -161,14 +176,11 @@ impl TeeAdmissionThrottle {
         }
     }
 
-    /// Tokens restored per second. A non-positive refill interval means
-    /// "unbounded" (one token back instantly), modelled as `f64::INFINITY`.
+    /// Tokens restored per second. `per_peer_refill` is asserted `> 0` in
+    /// [`Self::new`], so this is always finite (no `1.0 / 0.0` / `INFINITY`,
+    /// which would poison the `0 * rate` refill term with `NaN`).
     fn refill_per_sec(&self) -> f64 {
-        if self.per_peer_refill.as_secs_f64() > 0.0 {
-            1.0 / self.per_peer_refill.as_secs_f64()
-        } else {
-            f64::INFINITY
-        }
+        1.0 / self.per_peer_refill.as_secs_f64()
     }
 
     /// Consult all three gates for an announce observed at `now`.
@@ -245,8 +257,11 @@ impl TeeAdmissionThrottle {
         // All gates passed: commit the side effects atomically. This is the
         // only path that inserts/advances the bucket, so `tokens`/`last` reflect
         // the previous *grant* plus this one, never an intervening rejection.
-        let bucket = self.peers.entry(source).or_insert(PeerBucket {
-            tokens: refilled,
+        // The `or_insert_with` value is a placeholder used only for a genuinely
+        // new peer; the three assignments below always run and set the real
+        // post-grant state for both new and existing peers.
+        let bucket = self.peers.entry(source).or_insert_with(|| PeerBucket {
+            tokens: burst,
             last: now,
             last_seen: now,
         });
