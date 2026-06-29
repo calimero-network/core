@@ -149,6 +149,9 @@ impl<'a> NamespaceOpLogService<'a> {
             .ok()
             .flatten(),
             NamespaceOp::Root(_) => None,
+            // `NamespaceOp` is `#[non_exhaustive]`; nothing to decrypt for an
+            // unknown future op variant.
+            _ => None,
         };
 
         let unified_op = crate::unified_op_decode::op_from_namespace_op(

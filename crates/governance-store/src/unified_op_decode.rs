@@ -93,6 +93,10 @@ pub fn op_from_namespace_op(
         NamespaceOp::Group { group_id, .. } => decrypted_group_op
             .and_then(|g| payload_from_group_op(ContextGroupId::from(*group_id), g))
             .unwrap_or(OpPayload::Noop),
+        // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op folds as a
+        // `Noop` graph node (same as an undecryptable/unfoldable op above),
+        // preserving causal structure without inventing a payload.
+        _ => OpPayload::Noop,
     };
     build_op(
         id,

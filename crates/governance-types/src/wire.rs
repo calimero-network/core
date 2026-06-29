@@ -38,7 +38,7 @@ pub fn hash_scoped_namespace(
 ) -> Result<[u8; 32], GovernanceError> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(topic_id);
-    let body = borsh::to_vec(op).map_err(|e| GovernanceError::BorshSerialize(e.to_string()))?;
+    let body = borsh::to_vec(op)?;
     hasher.update(&body);
     Ok(*hasher.finalize().as_bytes())
 }
@@ -49,7 +49,7 @@ pub fn hash_scoped_namespace(
 pub fn hash_scoped_group(topic_id: &[u8], op: &SignedGroupOp) -> Result<[u8; 32], GovernanceError> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(topic_id);
-    let body = borsh::to_vec(op).map_err(|e| GovernanceError::BorshSerialize(e.to_string()))?;
+    let body = borsh::to_vec(op)?;
     hasher.update(&body);
     Ok(*hasher.finalize().as_bytes())
 }
@@ -142,8 +142,7 @@ impl SignedReadinessBeacon {
     /// Canonical bytes that the beacon signature covers:
     /// [`READINESS_BEACON_SIGN_DOMAIN`] || `borsh(SignableReadinessBeacon)`.
     pub fn signable_bytes(&self) -> Result<Vec<u8>, GovernanceError> {
-        let body = borsh::to_vec(&self.to_signable())
-            .map_err(|e| GovernanceError::BorshSerialize(e.to_string()))?;
+        let body = borsh::to_vec(&self.to_signable())?;
         let mut out = Vec::with_capacity(READINESS_BEACON_SIGN_DOMAIN.len() + body.len());
         out.extend_from_slice(READINESS_BEACON_SIGN_DOMAIN);
         out.extend_from_slice(&body);
@@ -313,8 +312,7 @@ impl SignedMigrationHeartbeat {
     /// Canonical bytes that the heartbeat signature covers:
     /// [`MIGRATION_HEARTBEAT_SIGN_DOMAIN`] || `borsh(SignableMigrationHeartbeat)`.
     pub fn signable_bytes(&self) -> Result<Vec<u8>, GovernanceError> {
-        let body = borsh::to_vec(&self.to_signable())
-            .map_err(|e| GovernanceError::BorshSerialize(e.to_string()))?;
+        let body = borsh::to_vec(&self.to_signable())?;
         let mut out = Vec::with_capacity(MIGRATION_HEARTBEAT_SIGN_DOMAIN.len() + body.len());
         out.extend_from_slice(MIGRATION_HEARTBEAT_SIGN_DOMAIN);
         out.extend_from_slice(&body);

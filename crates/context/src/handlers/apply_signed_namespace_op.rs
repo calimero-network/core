@@ -77,6 +77,9 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                         .ok()
                         .flatten(),
                         calimero_governance_types::NamespaceOp::Root(_) => None,
+                        // `NamespaceOp` is `#[non_exhaustive]`; an unknown future
+                        // op has nothing to decrypt and folds as `Noop`.
+                        _ => None,
                     };
                     let shadow_op = crate::scope_projection::op_from_namespace_op(
                         &signed_op,
@@ -321,5 +324,8 @@ fn apply_auth_requirement(
                 _ => None,
             }
         }
+        // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op authorizes
+        // nothing here (secure default — no admin/cap requirement is granted).
+        _ => None,
     }
 }

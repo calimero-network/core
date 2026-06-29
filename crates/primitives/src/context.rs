@@ -285,6 +285,10 @@ const _: () = {
     feature = "borsh",
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
+// Intentionally NOT #[non_exhaustive]: `calimero-projection::role_byte` maps
+// every role to a stable byte that feeds the consensus groups-root hash, and
+// must fail to compile (not silently hit a `_` arm) when a role is added so a
+// distinct hash byte is assigned. Exhaustive matching here is the safety net.
 pub enum GroupMemberRole {
     Admin,
     Member,

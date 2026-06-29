@@ -1059,6 +1059,9 @@ impl ScopeProjections {
                 .ok()
                 .flatten(),
                 calimero_governance_types::NamespaceOp::Root(_) => None,
+                // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op has
+                // nothing to decrypt and folds as `Noop`.
+                _ => None,
             };
             ops.push(op_from_namespace_op(
                 &signed,
