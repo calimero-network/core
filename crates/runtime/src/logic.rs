@@ -48,7 +48,7 @@ mod imports;
 mod registers;
 
 pub use errors::VMLogicError;
-pub use host_functions::{BlobHandle, Event, XCall};
+pub use host_functions::{BlobHandle, CallbackHandlerGuard, Event, XCall};
 use registers::Registers;
 
 /// A specialized `Result` type for VMLogic operations.
