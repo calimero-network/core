@@ -1,7 +1,8 @@
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use ed25519_dalek::{SecretKey, SigningKey};
+use ed25519_dalek::SigningKey;
 use ring::aead;
 use thiserror::Error;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 pub const NONCE_LEN: usize = 12;
 
@@ -16,9 +17,31 @@ pub enum SharedKeyError {
     InvalidPublicKey,
 }
 
-#[derive(Copy, Clone, Debug)]
+// Clone is intentional: callers store SharedKey in EncryptionState (which
+// derives Clone) and return it by value from trait methods. Each clone owns
+// its bytes and is zeroized independently on drop via Zeroizing<_>.
+#[derive(Clone)]
 pub struct SharedKey {
-    key: SecretKey,
+    key: Zeroizing<[u8; 32]>,
+}
+
+// Explicit Zeroize impl so SharedKey satisfies a `Zeroize` bound and callers
+// can eagerly wipe the key (e.g. before returning from a function) without
+// waiting for drop. The actual byte clearing delegates to Zeroizing<_>.
+// The `Zeroizing<_>` field's own Drop handles zeroization on drop; no manual
+// Drop impl is needed (that would double-zeroize).
+impl Zeroize for SharedKey {
+    fn zeroize(&mut self) {
+        self.key.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for SharedKey {}
+
+impl std::fmt::Debug for SharedKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SharedKey([redacted])")
+    }
 }
 
 impl SharedKey {
@@ -33,22 +56,28 @@ impl SharedKey {
             .decompress()
             .ok_or(SharedKeyError::InvalidPublicKey)?;
 
+        let signing_key = SigningKey::from_bytes(sk);
+        // curve25519-dalek 4.x Scalar implements Zeroize, so Zeroizing<Scalar>
+        // clears the private scalar bytes when it is dropped here.
+        let scalar = Zeroizing::new(signing_key.to_scalar());
+        let shared = (*scalar * decompressed).compress().to_bytes();
+
         Ok(Self {
-            key: (SigningKey::from_bytes(sk).to_scalar() * decompressed)
-                .compress()
-                .to_bytes(),
+            key: Zeroizing::new(shared),
         })
     }
 
     #[must_use]
     pub fn from_sk(sk: &PrivateKey) -> Self {
-        Self { key: **sk }
+        Self {
+            key: Zeroizing::new(**sk),
+        }
     }
 
     #[must_use]
     pub fn encrypt(&self, payload: Vec<u8>, nonce: Nonce) -> Option<Vec<u8>> {
         let encryption_key =
-            aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &self.key).ok()?);
+            aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &*self.key).ok()?);
 
         let mut cipher_text = payload;
         encryption_key
@@ -65,7 +94,7 @@ impl SharedKey {
     #[must_use]
     pub fn decrypt(&self, cipher_text: Vec<u8>, nonce: Nonce) -> Option<Vec<u8>> {
         let decryption_key =
-            aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &self.key).ok()?);
+            aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &*self.key).ok()?);
 
         let mut payload = cipher_text;
         let decrypted_len = decryption_key

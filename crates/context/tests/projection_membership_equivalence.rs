@@ -64,10 +64,9 @@ fn sign_invitation(
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
         group_id: group,
-        // Far-future absolute expiry: a small relative value resolves to ~1971 as
-        // an absolute wall-clock and would silently break these tests the day the
-        // apply path starts enforcing invitation expiry.
-        expiration_timestamp: u64::MAX,
+        // 0 is the canonical "no expiry" sentinel — MemberJoined carries no
+        // joined_at, so any non-zero expiration causes the apply gate to reject it.
+        expiration_timestamp: 0,
         secret_salt: [0x42; 32],
         invited_role: role,
     };

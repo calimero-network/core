@@ -131,24 +131,38 @@ fn verify_fetched_parent(
         }
     };
 
-    if let Some(ref sig) = fetched.delta_signature {
-        if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
-            *context_id,
-            delta_id,
-            fetched.author_id,
-            pos.as_ref(),
-            sig,
-        ) {
+    // A missing signature is treated as a verification failure — it cannot
+    // prove authorship and is indistinguishable from a stripped signature.
+    // Genesis deltas are carved out above via the author sentinel, so no
+    // legitimate non-genesis delta arrives without a signature.
+    let sig = match fetched.delta_signature {
+        Some(s) => s,
+        None => {
             warn!(
                 %context_id,
                 author = %fetched.author_id,
                 delta_id = ?delta_id,
-                %err,
-                "DAG-catchup parent-pull: rejecting delta — envelope signature \
-                 verification failed"
+                "DAG-catchup parent-pull: rejecting delta — missing envelope signature"
             );
             return VerifiedParent::Skip;
         }
+    };
+    if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+        *context_id,
+        delta_id,
+        fetched.author_id,
+        pos.as_ref(),
+        &sig,
+    ) {
+        warn!(
+            %context_id,
+            author = %fetched.author_id,
+            delta_id = ?delta_id,
+            %err,
+            "DAG-catchup parent-pull: rejecting delta — envelope signature \
+             verification failed"
+        );
+        return VerifiedParent::Skip;
     }
 
     // Group/membership authorization — including the group-id anti-bypass the

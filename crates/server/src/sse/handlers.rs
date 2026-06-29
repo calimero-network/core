@@ -343,16 +343,22 @@ pub async fn sse_handler(
                             .data(message),
                     ),
                     Err(err) => {
-                        error!("Failed to serialize SseResponse: {}", err);
-                        let error_data = serde_json::json!({
-                            "type": "error",
-                            "message": "Failed to serialize SseResponse"
-                        });
+                        error!(%err, "Failed to serialize SseResponse");
+                        let error_response = SseResponse {
+                            body: ResponseBody::Error(ResponseBodyError::ServerError(
+                                ServerResponseError::InternalError { err: None },
+                            )),
+                        };
+                        // This is a static struct with no dynamic fields and
+                        // the only non-trivial field is #[serde(skip)], so
+                        // serialization cannot fail.
+                        let data = to_json_string(&error_response)
+                            .expect("static InternalError response must serialize");
                         Ok::<Event, Infallible>(
                             Event::default()
                                 .event(SseEvent::Message.as_str())
                                 .id(id_str)
-                                .data(error_data.to_string()),
+                                .data(data),
                         )
                     }
                 },
@@ -512,7 +518,7 @@ pub async fn get_session_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(SseResponse {
                     body: ResponseBody::Error(ResponseBodyError::ServerError(
-                        ServerResponseError::InternalError { err: Some(err) },
+                        ServerResponseError::InternalError { err: None },
                     )),
                 }),
             )
