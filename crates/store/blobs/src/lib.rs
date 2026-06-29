@@ -545,8 +545,7 @@ mod delete_tests {
 
     async fn manager(root: &Path) -> BlobManager {
         let data_store = DataStore::new(Arc::new(InMemoryDB::owned()));
-        let config =
-            BlobStoreConfig::new(Utf8PathBuf::from_path_buf(root.to_path_buf()).unwrap());
+        let config = BlobStoreConfig::new(Utf8PathBuf::from_path_buf(root.to_path_buf()).unwrap());
         let blob_store = FileSystem::new(&config).await.unwrap();
         BlobManager::new(data_store, blob_store)
     }
