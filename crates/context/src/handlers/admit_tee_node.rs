@@ -139,13 +139,15 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         // Fail-closed TCB-status gate (audit #356 / #17). An empty
         // `allowed_tcb_statuses` no longer skips the check: it enforces against
         // the secure default `{UpToDate}`. `Revoked` is rejected
-        // unconditionally. Mock (`is_mock`) bypasses the allowlist — it is
-        // already gated by `accept_mock` above. Shared with the op-apply path
-        // (`governance_store::membership::tcb_status_allowed`).
+        // unconditionally. Mock (`is_mock`) bypasses the allowlist only when the
+        // policy sets `accept_mock` — defense-in-depth alongside the explicit
+        // `is_mock && !accept_mock` rejection above. Shared with the op-apply
+        // path (`governance_store::membership::tcb_status_allowed`).
         if !calimero_governance_store::tcb_status_allowed(
             &policy.allowed_tcb_statuses,
             &tcb_status,
             is_mock,
+            policy.accept_mock,
         ) {
             return ActorResponse::reply(Err(eyre::eyre!("TCB status not in policy allowlist")));
         }

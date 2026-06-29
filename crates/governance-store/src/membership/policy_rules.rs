@@ -23,10 +23,14 @@ pub const TCB_STATUS_MOCK: &str = "Mock";
 /// Rules (in order):
 /// 1. `Revoked` (case-insensitive) → always rejected, even for the stored-status
 ///    subgroup-reuse path that does not re-run dcap-qvl verify.
-/// 2. Mock path (`is_mock`, or the reserved `"Mock"` status which also covers
-///    the subgroup-reuse path that carries `is_mock = false` with a stored
-///    `"Mock"`) → allowed; the TCB allowlist does not apply (mock is gated by
-///    `accept_mock` upstream).
+/// 2. Mock path → allowed **only when the group policy sets `accept_mock`**. The
+///    mock signal is either the explicit runtime `is_mock` flag (admit_tee_node)
+///    or the reserved `"Mock"` status that carries it on the op-apply /
+///    subgroup-reuse path (which has `is_mock = false`). Gating both on
+///    `accept_mock` means a stored `"Mock"` status replayed onto a real fleet
+///    (`accept_mock = false`) is rejected instead of being a permanent bypass
+///    token — it no longer relies solely on the upstream admission gate
+///    (audit follow-up to #356 / #17).
 /// 3. Empty allowlist → fail-closed: enforce against the secure default
 ///    [`DEFAULT_ALLOWED_TCB_STATUS`] instead of skipping the check.
 /// 4. Non-empty allowlist → honored exactly (case-sensitive, as today).
@@ -34,11 +38,12 @@ pub fn tcb_status_allowed(
     allowed_tcb_statuses: &[String],
     tcb_status: &str,
     is_mock: bool,
+    accept_mock: bool,
 ) -> bool {
     if tcb_status.eq_ignore_ascii_case(TCB_STATUS_REVOKED) {
         return false;
     }
-    if is_mock || tcb_status == TCB_STATUS_MOCK {
+    if (is_mock || tcb_status == TCB_STATUS_MOCK) && accept_mock {
         return true;
     }
     if allowed_tcb_statuses.is_empty() {
@@ -116,6 +121,10 @@ pub struct TeeAllowlistPolicy {
     pub allowed_rtmr2: Vec<String>,
     pub allowed_rtmr3: Vec<String>,
     pub allowed_tcb_statuses: Vec<String>,
+    /// Whether this group accepts mock attestations. Gates the mock TCB bypass
+    /// on the op-apply path so a stored `"Mock"` status only passes on a fleet
+    /// that actually opted into mock. See [`tcb_status_allowed`].
+    pub accept_mock: bool,
 }
 
 pub struct TeeAttestationClaims<'a> {
@@ -140,8 +149,15 @@ pub fn validate_tee_attestation_allowlists(
     // Fail-closed TCB-status gate (shared with `admit_tee_node`). This is the
     // op-apply path: it runs on every node replicating the op and has no
     // explicit `is_mock` flag, so mock is detected via the reserved "Mock"
-    // status inside `tcb_status_allowed`.
-    if !tcb_status_allowed(&policy.allowed_tcb_statuses, fields.tcb_status, false) {
+    // status inside `tcb_status_allowed`. That mock bypass is in turn gated on
+    // the group's stored `accept_mock`, so a replayed `"Mock"` status cannot
+    // bypass the gate on a fleet that did not opt into mock.
+    if !tcb_status_allowed(
+        &policy.allowed_tcb_statuses,
+        fields.tcb_status,
+        false,
+        policy.accept_mock,
+    ) {
         return Err(MembershipPolicyValidationError {
             reason: MembershipPolicyRejection::TcbStatusNotAllowed,
         });

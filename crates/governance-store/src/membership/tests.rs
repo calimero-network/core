@@ -250,6 +250,7 @@ fn membership_policy_rules_report_rejection_reasons() {
         allowed_rtmr2: vec![],
         allowed_rtmr3: vec![],
         allowed_tcb_statuses: vec!["ok".to_owned()],
+        accept_mock: false,
     };
     let claims = TeeAttestationClaims {
         mrtd: "m-ok",
@@ -293,12 +294,12 @@ fn tcb_status_gate_fail_closed_on_empty_allowlist() {
     assert_eq!(DEFAULT_ALLOWED_TCB_STATUS, "UpToDate");
 
     // Real UpToDate is admitted under an empty (default) policy.
-    assert!(tcb_status_allowed(&[], "UpToDate", false));
+    assert!(tcb_status_allowed(&[], "UpToDate", false, false));
 
     // Real OutOfDate is rejected under an empty policy — the regression this
     // fix proves. Previously this was admitted (check skipped).
-    assert!(!tcb_status_allowed(&[], "OutOfDate", false));
-    assert!(!tcb_status_allowed(&[], "SWHardeningNeeded", false));
+    assert!(!tcb_status_allowed(&[], "OutOfDate", false, false));
+    assert!(!tcb_status_allowed(&[], "SWHardeningNeeded", false, false));
 }
 
 #[test]
@@ -307,10 +308,15 @@ fn tcb_status_gate_honors_non_empty_allowlist() {
 
     let allow = vec!["SWHardeningNeeded".to_owned()];
     // Explicit allowlist still honored: an entry it lists is admitted...
-    assert!(tcb_status_allowed(&allow, "SWHardeningNeeded", false));
+    assert!(tcb_status_allowed(
+        &allow,
+        "SWHardeningNeeded",
+        false,
+        false
+    ));
     // ...and a status it does not list is rejected (including the default).
-    assert!(!tcb_status_allowed(&allow, "UpToDate", false));
-    assert!(!tcb_status_allowed(&allow, "OutOfDate", false));
+    assert!(!tcb_status_allowed(&allow, "UpToDate", false, false));
+    assert!(!tcb_status_allowed(&allow, "OutOfDate", false, false));
 }
 
 #[test]
@@ -319,30 +325,64 @@ fn tcb_status_gate_rejects_revoked_unconditionally() {
 
     // Revoked is rejected even if somehow present in the allowlist, and
     // case-insensitively (guards the stored-status subgroup-reuse path).
-    assert!(!tcb_status_allowed(&[], "Revoked", false));
+    assert!(!tcb_status_allowed(&[], "Revoked", false, false));
     assert!(!tcb_status_allowed(
         &["Revoked".to_owned()],
         "Revoked",
+        false,
         false
     ));
-    assert!(!tcb_status_allowed(&[], "revoked", false));
-    assert!(!tcb_status_allowed(&[], "REVOKED", false));
-    // Even an explicit mock flag does not rescue a Revoked status.
-    assert!(!tcb_status_allowed(&[], "Revoked", true));
+    assert!(!tcb_status_allowed(&[], "revoked", false, false));
+    assert!(!tcb_status_allowed(&[], "REVOKED", false, false));
+    // Even an explicit mock flag on a mock-accepting policy does not rescue a
+    // Revoked status — Revoked is rejected before the mock branch.
+    assert!(!tcb_status_allowed(&[], "Revoked", true, true));
 }
 
 #[test]
 fn tcb_status_gate_preserves_mock_path() {
     use super::policy_rules::tcb_status_allowed;
 
-    // Mock must still be admitted: via the explicit is_mock flag under an
-    // empty policy (admit_tee_node path)...
-    assert!(tcb_status_allowed(&[], "Mock", true));
+    // Mock must still be admitted on a mock-accepting policy: via the explicit
+    // is_mock flag under an empty policy (admit_tee_node path)...
+    assert!(tcb_status_allowed(&[], "Mock", true, true));
     // ...and via the reserved "Mock" status with is_mock=false (the op-apply /
     // subgroup-reuse path, which carries no is_mock flag).
-    assert!(tcb_status_allowed(&[], "Mock", false));
+    assert!(tcb_status_allowed(&[], "Mock", false, true));
     // Mock bypasses even a non-empty allowlist that does not list it.
-    assert!(tcb_status_allowed(&["UpToDate".to_owned()], "Mock", false));
+    assert!(tcb_status_allowed(
+        &["UpToDate".to_owned()],
+        "Mock",
+        false,
+        true
+    ));
+
+    // The is_mock flag bypasses the TCB check entirely — even a real-looking
+    // non-"Mock" status like OutOfDate is admitted when is_mock=true on a
+    // mock-accepting policy (the TCB allowlist does not apply to the mock path).
+    assert!(tcb_status_allowed(&[], "OutOfDate", true, true));
+}
+
+#[test]
+fn tcb_status_gate_mock_requires_accept_mock() {
+    use super::policy_rules::tcb_status_allowed;
+
+    // Audit follow-up: the mock bypass is gated on the group's stored
+    // `accept_mock`. A stored "Mock" status replayed onto a real fleet
+    // (accept_mock=false) on the op-apply path must NOT bypass the gate — it
+    // falls through to the empty-allowlist secure default and is rejected,
+    // rather than acting as a permanent bypass token.
+    assert!(!tcb_status_allowed(&[], "Mock", false, false));
+    assert!(!tcb_status_allowed(
+        &["UpToDate".to_owned()],
+        "Mock",
+        false,
+        false
+    ));
+    // The explicit is_mock flag is likewise inert when the policy rejects mock
+    // (defense-in-depth behind admit_tee_node's upstream `is_mock && !accept_mock`
+    // rejection). With a non-allowlisted status it is rejected.
+    assert!(!tcb_status_allowed(&[], "OutOfDate", true, false));
 }
 
 #[test]
@@ -353,6 +393,8 @@ fn validate_allowlists_empty_tcb_enforces_secure_default() {
     };
 
     // Empty allowlists everywhere except the secure-default TCB enforcement.
+    // `accept_mock` defaults false here (a real fleet); the mock case below
+    // flips it on.
     let policy = TeeAllowlistPolicy {
         allowed_mrtd: vec!["m-ok".to_owned()],
         allowed_rtmr0: vec![],
@@ -360,6 +402,7 @@ fn validate_allowlists_empty_tcb_enforces_secure_default() {
         allowed_rtmr2: vec![],
         allowed_rtmr3: vec![],
         allowed_tcb_statuses: vec![],
+        accept_mock: false,
     };
     let up_to_date = TeeAttestationClaims {
         mrtd: "m-ok",
@@ -378,12 +421,22 @@ fn validate_allowlists_empty_tcb_enforces_secure_default() {
     let err = validate_tee_attestation_allowlists(&policy, &out_of_date).unwrap_err();
     assert_eq!(err.reason(), MembershipPolicyRejection::TcbStatusNotAllowed);
 
-    // Mock still passes through the op-apply path with an empty allowlist.
+    // A stored "Mock" status on the op-apply path is rejected on a real fleet
+    // (accept_mock=false): it falls through to the secure default rather than
+    // bypassing the gate.
     let mock = TeeAttestationClaims {
         tcb_status: "Mock",
         ..up_to_date
     };
-    assert!(validate_tee_attestation_allowlists(&policy, &mock).is_ok());
+    let err = validate_tee_attestation_allowlists(&policy, &mock).unwrap_err();
+    assert_eq!(err.reason(), MembershipPolicyRejection::TcbStatusNotAllowed);
+
+    // ...but on a mock-accepting fleet the same stored "Mock" passes through.
+    let mock_policy = TeeAllowlistPolicy {
+        accept_mock: true,
+        ..policy
+    };
+    assert!(validate_tee_attestation_allowlists(&mock_policy, &mock).is_ok());
 }
 
 #[test]
