@@ -227,18 +227,15 @@ impl SecretGame {
     /// matches the stored hash. `who` is derived from the executor
     /// identity rather than passed as an argument.
     ///
-    /// Takes `&self` because the *public* `SecretGame` state isn't
-    /// mutated here — only this node's private `Secrets`. The two
-    /// persistence paths are:
-    ///
-    /// - Tree-backed `attempted_games` / `guess_log` write each new
-    ///   entry through `PrivateStorage` immediately on
-    ///   `insert` / `push` (no save call needed).
-    /// - The borsh-blob field `last_guess` is persisted by the
-    ///   `EntryMut` `Drop` impl when `secrets_mut` goes out of scope.
-    ///   Early `?`-returns still drop the guard, so the blob saves
-    ///   whether we exit normally or via error propagation.
-    pub fn add_guess(&self, game_id: &str, guess: String) -> app::Result<bool> {
+    /// Takes `&mut self` even though only this node's private
+    /// `Secrets` is written and the public `SecretGame` is left
+    /// untouched. The runtime flushes private storage as part of
+    /// committing a method's state transition, and only `&mut self`
+    /// methods produce that commit — a `&self` method is treated as a
+    /// read-only view whose writes are never persisted. Any method
+    /// that writes private state must therefore take `&mut self`, or
+    /// the writes are silently discarded.
+    pub fn add_guess(&mut self, game_id: &str, guess: String) -> app::Result<bool> {
         let Some(public_hash_hex) = self.games.get(game_id)?.map(|v| v.get().clone()) else {
             app::bail!(Error::NoHash);
         };
@@ -270,21 +267,31 @@ impl SecretGame {
     }
 
     /// Toggle the "remember last guess" UX flag (private state).
-    pub fn set_remember_last_guess(&self, value: bool) -> app::Result<()> {
+    ///
+    /// Takes `&mut self` so the runtime commits and flushes the
+    /// private write — see [`SecretGame::add_guess`] for why a `&self`
+    /// method's private writes would be discarded.
+    pub fn set_remember_last_guess(&mut self, value: bool) -> app::Result<()> {
         let mut secrets = Secrets::private_load_or_default()?;
         secrets.as_mut().remember_last_guess = value;
         Ok(())
     }
 
     /// Attach a private note to a game (private state).
-    pub fn set_note(&self, game_id: String, note: String) -> app::Result<()> {
+    ///
+    /// `&mut self` for the same reason as
+    /// [`SecretGame::set_remember_last_guess`].
+    pub fn set_note(&mut self, game_id: String, note: String) -> app::Result<()> {
         let mut secrets = Secrets::private_load_or_default()?;
         secrets.as_mut().notes.insert(game_id, note);
         Ok(())
     }
 
     /// Add a private user-defined tag.
-    pub fn add_tag(&self, tag: String) -> app::Result<()> {
+    ///
+    /// `&mut self` for the same reason as
+    /// [`SecretGame::set_remember_last_guess`].
+    pub fn add_tag(&mut self, tag: String) -> app::Result<()> {
         let mut secrets = Secrets::private_load_or_default()?;
         secrets.as_mut().tags.insert(tag);
         Ok(())

@@ -26,7 +26,8 @@ const BYTES_PER_MB: f64 = BYTES_PER_KB * 1024.0;
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct FileRecord {
-    /// Unique file identifier (e.g., "file_0", "file_1")
+    /// Unique file identifier, namespaced by the uploader's identity to stay
+    /// collision-free across replicas (e.g. "<uploader-base58>_0").
     pub id: String,
 
     /// Human-readable file name (e.g., "document.pdf", "image.png")
@@ -81,7 +82,7 @@ pub struct FileShareState {
     pub owner: LwwRegister<String>,
 
     /// Map of file ID to file metadata records.
-    /// Key: file ID (e.g., "file_0"), Value: FileRecord.
+    /// Key: file ID (e.g. "<uploader-base58>_0"), Value: FileRecord.
     pub files: UnorderedMap<String, FileRecord>,
 
     /// Monotonic counter used to generate unique file IDs.
@@ -93,7 +94,7 @@ pub struct FileShareState {
 pub enum FileShareEvent {
     /// Emitted when a file is successfully uploaded
     FileUploaded {
-        /// Unique file identifier (e.g., "file_0")
+        /// Unique file identifier (e.g. "<uploader-base58>_0")
         id: String,
         /// File name
         name: String,
@@ -144,7 +145,8 @@ impl FileShareState {
     /// * `mime_type` - MIME type (e.g., "application/pdf", "image/png")
     ///
     /// # Returns
-    /// * `Ok(String)` - The generated file ID (e.g., "file_0", "file_1")
+    /// * `Ok(String)` - The generated file ID, namespaced by uploader identity
+    ///   (e.g. "<uploader-base58>_0")
     /// * `Err(app::Error)` - Error if storage operation fails
     pub fn upload_file(
         &mut self,
@@ -153,15 +155,18 @@ impl FileShareState {
         size: u64,
         mime_type: String,
     ) -> app::Result<String> {
-        // Counter is a monotonic CRDT — it converges across replicas (taking
-        // the per-source max on merge). Using its current value as the file ID
-        // means concurrent uploads on different nodes can still pick the same
-        // ID; that limitation existed with the previous bare `u64` too.
+        // File IDs must be unique across replicas. The counter alone is not
+        // enough: it's a CRDT whose value converges, so two nodes uploading
+        // concurrently both read the same value and would mint the same ID,
+        // and one upload would overwrite the other on merge. Namespacing the
+        // ID with the uploader's identity makes it collision-free — each node
+        // has a distinct executor key, so `<uploader>_<counter>` is globally
+        // unique even when counters coincide.
+        let uploader = PublicKey::from(env::executor_id()).to_string();
         let next_id = self.file_counter.value()?;
-        let file_id = format!("file_{next_id}");
+        let file_id = format!("{uploader}_{next_id}");
         self.file_counter.increment()?;
 
-        let uploader = PublicKey::from(env::executor_id()).to_string();
         let timestamp = env::time_now();
 
         // BLOB API: Announce blob to network for peer discovery
@@ -207,7 +212,7 @@ impl FileShareState {
     /// currently expose blob deletion methods.
     ///
     /// # Arguments
-    /// * `file_id` - The ID of the file to delete (e.g., "file_0")
+    /// * `file_id` - The ID of the file to delete (e.g. "<uploader-base58>_0")
     ///
     /// # Returns
     /// * `Ok(())` - File metadata successfully deleted
@@ -256,7 +261,7 @@ impl FileShareState {
     /// Get a specific file by ID
     ///
     /// # Arguments
-    /// * `file_id` - The ID of the file to retrieve (e.g., "file_0")
+    /// * `file_id` - The ID of the file to retrieve (e.g. "<uploader-base58>_0")
     ///
     /// # Returns
     /// * `Ok(FileRecord)` - Complete file record with all metadata
@@ -275,7 +280,7 @@ impl FileShareState {
     /// via `blobClient.downloadBlob(blob_id, context_id)`.
     ///
     /// # Arguments
-    /// * `file_id` - The ID of the file (e.g., "file_0")
+    /// * `file_id` - The ID of the file (e.g. "<uploader-base58>_0")
     ///
     /// # Returns
     /// * `Ok(BlobId)` - The blob ID (base58 string over the wire, e.g.
@@ -321,7 +326,9 @@ impl FileShareState {
         let mut total_size = 0u64;
 
         for (_, file_record) in self.files.entries()? {
-            total_size += file_record.size;
+            // Saturate rather than overflow: adversarial or corrupt sizes
+            // would otherwise panic in debug and wrap in release.
+            total_size = total_size.saturating_add(file_record.size);
         }
 
         Ok(total_size)
@@ -411,5 +418,70 @@ mod tests {
             app.view(|s| s.search_files("nope".into())).unwrap().len(),
             0
         );
+    }
+
+    #[test]
+    fn distinct_uploaders_get_distinct_file_ids() {
+        let mut app = TestHost::new(FileShareState::init);
+
+        let id_a = app
+            .call_as([1u8; 32], |s| {
+                s.upload_file("a.txt".into(), blob_id(), 1, "text/plain".into())
+            })
+            .unwrap();
+        let id_b = app
+            .call_as([2u8; 32], |s| {
+                s.upload_file("b.txt".into(), blob_id(), 1, "text/plain".into())
+            })
+            .unwrap();
+
+        // IDs are namespaced by the uploader's identity, so two uploaders never
+        // mint a colliding ID even when the converging counter coincides.
+        assert_ne!(id_a, id_b);
+        assert!(id_a.starts_with(&PublicKey::from([1u8; 32]).to_string()));
+        assert!(id_b.starts_with(&PublicKey::from([2u8; 32]).to_string()));
+        assert_eq!(app.view(|s| s.list_files()).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn total_size_saturates_instead_of_overflowing() {
+        let mut app = TestHost::new(FileShareState::init);
+
+        app.call(|s| {
+            s.upload_file(
+                "big".into(),
+                blob_id(),
+                u64::MAX,
+                "application/octet-stream".into(),
+            )
+        })
+        .unwrap();
+        app.call(|s| {
+            s.upload_file(
+                "more".into(),
+                blob_id(),
+                10,
+                "application/octet-stream".into(),
+            )
+        })
+        .unwrap();
+
+        // u64::MAX + 10 saturates to u64::MAX rather than wrapping or panicking.
+        assert_eq!(app.view(|s| s.get_total_files_size()).unwrap(), u64::MAX);
+    }
+
+    #[test]
+    fn upload_survives_announce_failure() {
+        let mut app = TestHost::new(FileShareState::init);
+
+        // The harness can now drive the announce-failure branch real WASM hits.
+        app.set_blob_announce_should_fail(true);
+
+        app.call(|s| s.upload_file("f.txt".into(), blob_id(), 3, "text/plain".into()))
+            .unwrap();
+
+        // A failed announce is logged, not fatal: the file is still recorded.
+        assert_eq!(app.view(|s| s.list_files()).unwrap().len(), 1);
+        assert!(app.logs().iter().any(|l| l.contains("Failed to announce")));
     }
 }
