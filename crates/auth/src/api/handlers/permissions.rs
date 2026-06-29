@@ -4,10 +4,12 @@ use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use validator::Validate;
 
 use crate::api::handlers::auth::{error_response, success_response};
+use crate::auth::middleware::CallerPermissions;
+use crate::auth::permissions::{Permission, PermissionValidator};
 use crate::auth::validation::{sanitize_string, ValidatedJson};
 use crate::server::AppState;
 use crate::storage::StorageError;
@@ -69,6 +71,40 @@ pub async fn get_key_permissions_handler(
     }
 }
 
+/// Reason a requested permission grant was denied.
+#[derive(Debug, PartialEq, Eq)]
+enum GrantDenial {
+    /// The permission string could not be parsed into a known permission.
+    InvalidFormat(String),
+    /// The caller does not hold a permission that satisfies the requested one.
+    Escalation(String),
+}
+
+/// Ensure the caller is only granting permissions they themselves hold.
+///
+/// For every permission in `add`, the caller must hold a permission that
+/// satisfies it (`admin` satisfies everything; scoped permissions follow the
+/// usual hierarchy). Permissions that fail to parse are rejected so we never
+/// grant something we cannot reason about.
+fn validate_grantable_permissions(
+    caller_permissions: &[String],
+    add: &[String],
+) -> Result<(), GrantDenial> {
+    let validator = PermissionValidator::new();
+
+    for perm in add {
+        let parsed = perm
+            .parse::<Permission>()
+            .map_err(GrantDenial::InvalidFormat)?;
+
+        if !validator.validate_permissions(caller_permissions, std::slice::from_ref(&parsed)) {
+            return Err(GrantDenial::Escalation(perm.clone()));
+        }
+    }
+
+    Ok(())
+}
+
 /// Key permissions update handler
 ///
 /// This endpoint updates the permissions for a key.
@@ -85,6 +121,7 @@ pub async fn get_key_permissions_handler(
 /// * `impl IntoResponse` - The response
 pub async fn update_key_permissions_handler(
     state: Extension<Arc<AppState>>,
+    Extension(caller_permissions): Extension<CallerPermissions>,
     Path(key_id): Path<String>,
     ValidatedJson(mut request): ValidatedJson<UpdateKeyPermissionsRequest>,
 ) -> impl IntoResponse {
@@ -98,6 +135,37 @@ pub async fn update_key_permissions_handler(
         *remove = remove.iter().map(|p| sanitize_string(p)).collect();
         remove.retain(|p| !p.is_empty()); // Remove empty permissions after sanitization
     }
+
+    // Prevent privilege escalation: a caller may only grant permissions that
+    // they themselves hold. Without this check, any key with
+    // `keys:update_permissions` could add arbitrary permissions (including
+    // `admin`) to a key and escalate its own privileges.
+    //
+    // Only additions are restricted; removing permissions is always allowed.
+    if let Some(add) = &request.add {
+        match validate_grantable_permissions(&caller_permissions.0, add) {
+            Ok(()) => {}
+            Err(GrantDenial::InvalidFormat(e)) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!("Invalid permission format: {e}"),
+                    None,
+                );
+            }
+            Err(GrantDenial::Escalation(perm)) => {
+                warn!(
+                    "Privilege escalation blocked: caller attempted to grant '{}' to key '{}' without holding it",
+                    perm, key_id
+                );
+                return error_response(
+                    StatusCode::FORBIDDEN,
+                    "Cannot grant permissions that exceed your own",
+                    None,
+                );
+            }
+        }
+    }
+
     // Get current key
     let key_result = state.0.key_manager.get_key(&key_id).await;
 
@@ -201,5 +269,92 @@ pub async fn update_key_permissions_handler(
             error!("Failed to get key: {}", err);
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to get key", None)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_grantable_permissions, GrantDenial};
+
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn non_admin_cannot_grant_admin() {
+        // A key that can only update permissions must not be able to grant
+        // `admin` (the core privilege-escalation vector).
+        let caller = strings(&["keys:permissions:update"]);
+        let result = validate_grantable_permissions(&caller, &strings(&["admin"]));
+        assert_eq!(result, Err(GrantDenial::Escalation("admin".to_string())));
+    }
+
+    #[test]
+    fn caller_cannot_grant_permission_it_does_not_hold() {
+        // Holding the update-permissions capability does not let the caller
+        // hand out unrelated permissions such as creating keys.
+        let caller = strings(&["keys:permissions:update", "keys:list"]);
+        let result = validate_grantable_permissions(&caller, &strings(&["keys:create"]));
+        assert_eq!(
+            result,
+            Err(GrantDenial::Escalation("keys:create".to_string()))
+        );
+    }
+
+    #[test]
+    fn admin_can_grant_anything() {
+        let caller = strings(&["admin"]);
+        assert_eq!(
+            validate_grantable_permissions(
+                &caller,
+                &strings(&["admin", "keys:create", "context:execute"])
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn caller_can_grant_permission_it_holds() {
+        let caller = strings(&["keys:permissions:update", "keys:create", "keys:list"]);
+        assert_eq!(
+            validate_grantable_permissions(&caller, &strings(&["keys:create", "keys:list"])),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn caller_can_grant_narrower_scope_than_it_holds() {
+        // A caller holding a global-scoped permission may grant the same
+        // permission scoped to a specific resource (a subset of its own).
+        let caller = strings(&["context:list"]);
+        assert_eq!(
+            validate_grantable_permissions(&caller, &strings(&["context:list[ctx-1]"])),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn caller_cannot_widen_scope_beyond_what_it_holds() {
+        // The reverse is not allowed: a caller scoped to one resource cannot
+        // grant a global-scoped permission.
+        let caller = strings(&["context:list[ctx-1]"]);
+        let result = validate_grantable_permissions(&caller, &strings(&["context:list"]));
+        assert_eq!(
+            result,
+            Err(GrantDenial::Escalation("context:list".to_string()))
+        );
+    }
+
+    #[test]
+    fn unparseable_permission_is_rejected() {
+        let caller = strings(&["admin"]);
+        let result = validate_grantable_permissions(&caller, &strings(&["not-a-real-permission"]));
+        assert!(matches!(result, Err(GrantDenial::InvalidFormat(_))));
+    }
+
+    #[test]
+    fn empty_add_list_is_allowed() {
+        let caller = strings(&["keys:permissions:update"]);
+        assert_eq!(validate_grantable_permissions(&caller, &[]), Ok(()));
     }
 }
