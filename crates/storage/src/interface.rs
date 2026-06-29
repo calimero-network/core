@@ -516,6 +516,41 @@ impl<S: StorageAdaptor> Interface<S> {
         }
     }
 
+    /// Resolve which writer in `writers` produced `sig_data`'s signature over
+    /// `payload`, returning that writer's key on success.
+    ///
+    /// Fast path: if `sig_data` carries a `signer` hint that is in `writers`,
+    /// do exactly one `ed25519_verify` against the hint. Slow path (no hint, or
+    /// a hint not in the set): linear scan over `writers`, returning the first
+    /// key whose signature verifies. `None` means no writer in the set produced
+    /// this signature — callers map that to `InvalidSignature`.
+    ///
+    /// This is the single source of truth for the signer-hint-then-scan
+    /// authorization check shared by every signed `Shared`/`SharedMember` arm
+    /// (upsert and delete) and the snapshot verifiers. Callers needing only a
+    /// yes/no answer use `.is_some()`; callers needing the signer for the
+    /// operation-granularity gate use the returned key directly.
+    ///
+    /// The caller is responsible for the `[0; 64]` placeholder reject before
+    /// calling this — that O(1) bail avoids a full writer-set scan of
+    /// `ed25519_verify` calls on a known-bad signature.
+    fn resolve_signer(
+        writers: &BTreeMap<PublicKey, OpMask>,
+        sig_data: &crate::entities::SignatureData,
+        payload: &[u8],
+    ) -> Option<PublicKey> {
+        match sig_data.signer {
+            Some(hint) if writers.contains_key(&hint) => {
+                crate::env::ed25519_verify(&sig_data.signature, hint.digest(), payload)
+                    .then_some(hint)
+            }
+            _ => writers
+                .keys()
+                .copied()
+                .find(|w| crate::env::ed25519_verify(&sig_data.signature, w.digest(), payload)),
+        }
+    }
+
     /// Verify the writer's signature on a snapshot-supplied entity
     /// against the access-control rules in its metadata.
     ///
@@ -637,15 +672,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
                 // Fast path: signer hint + verify once. Slow path:
                 // linear scan over writers. Mirrors `apply_action`.
-                let verified = match sig_data.signer {
-                    Some(hint) if writers.contains_key(&hint) => {
-                        crate::env::ed25519_verify(&sig_data.signature, hint.digest(), &payload)
-                    }
-                    _ => writers.keys().any(|w| {
-                        crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)
-                    }),
-                };
-                if verified {
+                if Self::resolve_signer(writers, sig_data, &payload).is_some() {
                     Ok(())
                 } else {
                     Err(StorageError::InvalidSignature)
@@ -670,15 +697,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 // which fails verification (the scan finds no writer) — fail
                 // closed rather than accept an unverifiable member.
                 let writers = Self::resolve_anchor_writers_as_of(*anchor, sig_data.nonce);
-                let verified = match sig_data.signer {
-                    Some(hint) if writers.contains_key(&hint) => {
-                        crate::env::ed25519_verify(&sig_data.signature, hint.digest(), &payload)
-                    }
-                    _ => writers.keys().any(|w| {
-                        crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)
-                    }),
-                };
-                if verified {
+                if Self::resolve_signer(&writers, sig_data, &payload).is_some() {
                     Ok(())
                 } else {
                     Err(StorageError::InvalidSignature)
@@ -739,15 +758,7 @@ impl<S: StorageAdaptor> Interface<S> {
             metadata: metadata.clone(),
         };
         let payload = action.payload_for_signing();
-        let verified = match sig_data.signer {
-            Some(hint) if writers.contains_key(&hint) => {
-                crate::env::ed25519_verify(&sig_data.signature, hint.digest(), &payload)
-            }
-            _ => writers
-                .keys()
-                .any(|w| crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)),
-        };
-        if verified {
+        if Self::resolve_signer(writers, sig_data, &payload).is_some() {
             Ok(())
         } else {
             Err(StorageError::InvalidSignature)
@@ -1391,24 +1402,9 @@ impl<S: StorageAdaptor> Interface<S> {
                         // `authoritative_writers` is now the
                         // DAG-causal answer when available.
                         let payload = action.payload_for_signing();
-                        let signer = match sig_data.signer {
-                            Some(hint) if authoritative_writers.contains_key(&hint) => {
-                                crate::env::ed25519_verify(
-                                    &sig_data.signature,
-                                    hint.digest(),
-                                    &payload,
-                                )
-                                .then_some(hint)
-                            }
-                            _ => authoritative_writers.keys().copied().find(|w| {
-                                crate::env::ed25519_verify(
-                                    &sig_data.signature,
-                                    w.digest(),
-                                    &payload,
-                                )
-                            }),
-                        };
-                        let Some(signer) = signer else {
+                        let Some(signer) =
+                            Self::resolve_signer(&authoritative_writers, sig_data, &payload)
+                        else {
                             return Err(StorageError::InvalidSignature);
                         };
                         // Operation-granularity gate: the signer is a current
@@ -1554,24 +1550,9 @@ impl<S: StorageAdaptor> Interface<S> {
                         // Verify signature first (same hint-fast-path / scan as
                         // Shared), against the anchor-resolved set.
                         let payload = action.payload_for_signing();
-                        let signer = match sig_data.signer {
-                            Some(hint) if authoritative_writers.contains_key(&hint) => {
-                                crate::env::ed25519_verify(
-                                    &sig_data.signature,
-                                    hint.digest(),
-                                    &payload,
-                                )
-                                .then_some(hint)
-                            }
-                            _ => authoritative_writers.keys().copied().find(|w| {
-                                crate::env::ed25519_verify(
-                                    &sig_data.signature,
-                                    w.digest(),
-                                    &payload,
-                                )
-                            }),
-                        };
-                        let Some(signer) = signer else {
+                        let Some(signer) =
+                            Self::resolve_signer(&authoritative_writers, sig_data, &payload)
+                        else {
                             return Err(StorageError::InvalidSignature);
                         };
                         // Operation-granularity gate (member resolves the anchor's masks).
@@ -1752,29 +1733,10 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // signer is in the authoritative set, do exactly one verify.
                                 // Slow path (no hint): linear scan (matches Add/Update arm).
                                 let payload = action.payload_for_signing();
-                                let signer = match sig_data.signer {
-                                    Some(hint) if existing_writers.contains_key(&hint) => {
-                                        if crate::env::ed25519_verify(
-                                            &sig_data.signature,
-                                            hint.digest(),
-                                            &payload,
-                                        ) {
-                                            Some(hint)
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    _ => existing_writers.keys().copied().find(|w| {
-                                        crate::env::ed25519_verify(
-                                            &sig_data.signature,
-                                            w.digest(),
-                                            &payload,
-                                        )
-                                    }),
-                                };
-                                let signer = match signer {
-                                    Some(s) => s,
-                                    None => return Err(StorageError::InvalidSignature),
+                                let Some(signer) =
+                                    Self::resolve_signer(existing_writers, sig_data, &payload)
+                                else {
+                                    return Err(StorageError::InvalidSignature);
                                 };
                                 // Operation-granularity gate: deletes need DELETE.
                                 Self::enforce_op_mask(&signer, OpMask::DELETE, existing_writers)?;
@@ -1853,29 +1815,10 @@ impl<S: StorageAdaptor> Interface<S> {
                                     });
 
                                 let payload = action.payload_for_signing();
-                                let signer = match sig_data.signer {
-                                    Some(hint) if existing_writers.contains_key(&hint) => {
-                                        if crate::env::ed25519_verify(
-                                            &sig_data.signature,
-                                            hint.digest(),
-                                            &payload,
-                                        ) {
-                                            Some(hint)
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    _ => existing_writers.keys().copied().find(|w| {
-                                        crate::env::ed25519_verify(
-                                            &sig_data.signature,
-                                            w.digest(),
-                                            &payload,
-                                        )
-                                    }),
-                                };
-                                let signer = match signer {
-                                    Some(s) => s,
-                                    None => return Err(StorageError::InvalidSignature),
+                                let Some(signer) =
+                                    Self::resolve_signer(&existing_writers, sig_data, &payload)
+                                else {
+                                    return Err(StorageError::InvalidSignature);
                                 };
                                 // Operation-granularity gate: deletes need DELETE.
                                 Self::enforce_op_mask(&signer, OpMask::DELETE, &existing_writers)?;
