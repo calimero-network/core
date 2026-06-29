@@ -150,6 +150,111 @@ fn test_rocksdb_iter() {
 }
 
 #[test]
+fn test_rocksdb_entries_survive_collection() {
+    // Regression test: keys/values yielded by `entries()`/`keys()` must remain
+    // valid after subsequent `next()` calls. The underlying RocksDB iterator
+    // hands out slices borrowing its internal buffer, which is overwritten on
+    // each advance. Because `Iterator::next` does not tie its item to the
+    // `&mut self` borrow, collecting the items into a `Vec` (or otherwise
+    // retaining them) must not expose freed/overwritten memory.
+    let dir = TempDir::new("_calimero_store_collect").expect("tempdir should be created");
+    let dir_path = dir
+        .path()
+        .to_owned()
+        .try_into()
+        .expect("path conversion should succeed");
+    let config = StoreConfig::new(dir_path);
+    let db = RocksDB::open(&config).expect("db should open");
+
+    let mut expected = Vec::new();
+    for b1 in 0..10 {
+        for b2 in 0..10 {
+            let bytes = [b1, b2];
+            db.put(
+                Column::Identity,
+                Slice::from(&bytes[..]),
+                Slice::from(&bytes[..]),
+            )
+            .expect("put should succeed");
+            expected.push([b1, b2]);
+        }
+    }
+
+    // Collect every entry up front, holding each yielded slice across the
+    // `next()` calls that follow it.
+    let mut iter = db.iter(Column::Identity).expect("iter should succeed");
+    // NB: the items are typed `Slice<'_>` (the iterator's `Item` carries the
+    // iterator's lifetime), not `Slice<'static>` — even though the fix backs
+    // them with owned `Box<[u8]>` at runtime. Annotating `'static` here would
+    // wrongly require `db` to be borrowed for `'static` and fail to compile.
+    let collected: Vec<(Slice<'_>, Slice<'_>)> = iter
+        .entries()
+        .map(|(k, v)| {
+            (
+                k.expect("key should be valid"),
+                v.expect("value should be valid"),
+            )
+        })
+        .collect();
+
+    assert_eq!(collected.len(), expected.len());
+    for ((key, value), bytes) in collected.iter().zip(&expected) {
+        assert_eq!(key.as_ref(), &bytes[..], "collected key was invalidated");
+        assert_eq!(
+            value.as_ref(),
+            &bytes[..],
+            "collected value was invalidated"
+        );
+    }
+
+    // Same expectation for `keys()`.
+    let mut iter = db.iter(Column::Identity).expect("iter should succeed");
+    let collected_keys: Vec<Slice<'_>> = iter
+        .keys()
+        .map(|k| k.expect("key should be valid"))
+        .collect();
+
+    assert_eq!(collected_keys.len(), expected.len());
+    for (key, bytes) in collected_keys.iter().zip(&expected) {
+        assert_eq!(key.as_ref(), &bytes[..], "collected key was invalidated");
+    }
+
+    // Directly model the use-after-free: retain entry N, advance to N+1, then
+    // read the retained N. The underlying RocksDB cursor has moved on by then,
+    // so an unowned slice would be reading overwritten buffer memory.
+    let mut iter = db.iter(Column::Identity).expect("iter should succeed");
+    let mut entries = iter.entries();
+    let mut prev: Option<(Slice<'_>, Slice<'_>, [u8; 2])> = None;
+    for bytes in &expected {
+        let (key, value) = entries
+            .next()
+            .map(|(k, v)| {
+                (
+                    k.expect("key should be valid"),
+                    v.expect("value should be valid"),
+                )
+            })
+            .expect("entry should exist");
+
+        // Assert the *previous* entry (retained across this advance) is intact.
+        if let Some((prev_key, prev_value, prev_bytes)) = &prev {
+            assert_eq!(
+                prev_key.as_ref(),
+                &prev_bytes[..],
+                "retained key was invalidated by the next advance"
+            );
+            assert_eq!(
+                prev_value.as_ref(),
+                &prev_bytes[..],
+                "retained value was invalidated by the next advance"
+            );
+        }
+
+        prev = Some((key, value, *bytes));
+    }
+}
+
+#[test]
 fn test_data_persistence() {
     // Test that data persists across open/close cycles
     let dir = TempDir::new("_calimero_store_persistence").expect("tempdir should be created");
