@@ -1,0 +1,277 @@
+---
+title: TEE Attestation & Fleet Admission
+description: Hardware-attested read replicas that admit themselves to a namespace by proving their TEE measurements, with no human invite.
+sidebar:
+  order: 14
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+## Why TEE fleet nodes exist
+
+Every other way a node joins a scope starts with a human: an admin issues an invitation, and the joiner redeems it (see [Governance](/protocol/governance/)). A **TEE fleet node** is the exception. It is a hardware-attested read replica that admits _itself_ by proving — cryptographically, against the hardware — that it is running an approved measurement inside a Trusted Execution Environment. No operator clicks "invite".
+
+The replica joins as a `ReadOnlyTee` member. It can decrypt a namespace's data and answer sync requests, but it can never write. The fleet exists so a namespace's data stays available and queryable even when the human-operated owner node is offline, NAT'd, or asleep.
+
+The trust substitution is the whole point: where an invitation says _"an admin vouches for this identity"_, an attestation quote says _"Intel's DCAP chain vouches that this identity runs measurement X inside genuine TDX hardware"_. The namespace's admins decide, ahead of time, which measurements they trust — an **admission policy** — and from then on any node matching it can join unattended.
+
+<Aside type="note">
+This chapter is about the **per-group encryption keys** a replica receives so it can read a namespace, and the governance ops that admit and evict it. It is distinct from the node's own **storage/disk key** that `merod` fetches from a KMS at startup. Those are unrelated mechanisms — do not conflate them.
+</Aside>
+
+## The attestation quote
+
+A TDX quote is a signed measurement of a confidential VM. Calimero treats it as an opaque blob plus a verified verdict; the crate that produces and checks it is `crates/tee-attestation`.
+
+What a verified quote proves:
+
+| Field | What it is | Role in admission |
+| --- | --- | --- |
+| `mrtd` | Launch measurement of the TD (the VM image) | Matched against the policy's `allowed_mrtd` |
+| `rtmr0`–`rtmr3` | Runtime measurement registers | Matched against `allowed_rtmr0..3` (each optional) |
+| `tcb_status` | Platform TCB level reported by DCAP verification | Matched against `allowed_tcb_statuses` |
+| `report_data` | 64 caller-supplied bytes baked into the quote | Binds the quote to a fresh nonce and a public key |
+
+The `report_data` binding is what stops a captured quote from being replayed for a different identity. It is built as:
+
+```text
+report_data[0..32]  = nonce          (32 bytes, random per announce)
+report_data[32..64] = SHA-256(pubkey) or app-hash (32 bytes)
+```
+
+For fleet admission the second half is `SHA-256` of the joining node's namespace-identity public key (`fleet_join.rs`); for the standalone `/tee/attest` endpoint it is the optional application bytecode hash. Verification (`verify_attestation`) does four things:
+
+<Steps>
+
+1. **Parses** the TDX quote.
+
+2. **Fetches collateral** from Intel PCS and **verifies** the quote's cryptographic signature and certificate chain, extracting `tcb_status` and any advisory IDs.
+
+3. **Checks the nonce** — `report_data[0..32]` must equal the expected nonce.
+
+4. **Checks the bound hash** — `report_data[32..64]` must equal the expected public-key hash (or app hash), when one is supplied.
+
+</Steps>
+
+A result is `is_valid()` only when the signature verified **and** the nonce matched **and** the bound-hash check passed (or was not requested).
+
+<Aside type="caution">
+**Mock quotes.** On non-Linux/non-TDX hosts, and under `merod run --mock-tee`, the crate emits a structurally valid but cryptographically **invalid** quote carrying a `MOCK_TDX_QUOTE_V1` header. `verify_mock_attestation` skips the signature check (it reports `quote_verified: true` unconditionally) and only re-checks the nonce and bound hash. A mock quote is accepted **only** by a policy that explicitly sets `accept_mock = true`. It exists for laptop/CI testing of the full join path and must never be trusted in production.
+</Aside>
+
+## The admission handshake
+
+Admission is a gossip exchange on the namespace governance topic `ns/<hex(namespace_id)>`. A namespace **is** its own root group, so the namespace id is the admission group id. The joining replica announces; any existing member that receives the announce acts as a **verifier**.
+
+<SeqDiagram
+  id="d-tee-admission"
+  title="TEE attestation admission handshake"
+  lanes={[
+    { label: 'TEE replica', color: '#58a6ff' },
+    { label: 'Verifier (existing member)', color: '#3fb950' },
+    { label: 'Namespace governance scope', color: '#a5ff11' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'resolve namespace identity; report_data = nonce || SHA-256(pubkey)' },
+    { from: 0, to: 0, label: 'generate_attestation → TDX quote' },
+    { from: 0, to: 2, label: 'broadcast TeeAttestationAnnounce on ns/<hex>', dashed: true },
+    { from: 2, to: 1, label: 'verifier receives announce' },
+    { from: 1, to: 1, label: 'verify_attestation: DCAP signature + nonce + pubkey-hash' },
+    { from: 1, to: 1, label: 'policy allowlists + quote-hash replay guard' },
+    { from: 1, to: 2, label: 'MemberJoinedViaTeeAttestation { role: ReadOnlyTee }', color: '#a5ff11' },
+    { from: 1, to: 0, label: 'KeyDelivery: namespace key ECDH-wrapped to replica', color: '#a5ff11' },
+    { from: 2, to: 0, label: 'replica polls, observes its own admission' },
+    { from: 0, to: 2, label: 'self-signed MemberSetAutoFollow { contexts, subgroups }' },
+    { type: 'divider', label: 'replica now decrypts + serves the namespace — read-only' },
+  ]}
+/>
+
+### Announce (the replica)
+
+`POST /admin-api/tee/fleet-join` (`fleet_join.rs`) drives the replica side. It resolves the node's **namespace identity** (the per-root-group keypair it joins under, not a throwaway key), builds `report_data = nonce || SHA-256(pubkey)`, generates the quote, and broadcasts:
+
+```rust
+BroadcastMessage::TeeAttestationAnnounce {
+    quote_bytes,
+    public_key,        // the namespace-identity pubkey the quote is bound to
+    nonce,             // the random nonce embedded in report_data
+    node_type: SpecializedNodeType::ReadOnly,
+}
+```
+
+<Aside type="note">
+The `nonce` field's doc-comment in `snapshot.rs` calls it a "Group DAG head hash for freshness binding", but the code path sets it to `rand::random()` and verification matches it against `report_data[0..32]`. Trust the code: it is the per-announce random nonce. The `node_type` is carried but the admission handler ignores it.
+</Aside>
+
+A single gossip publish into an empty mesh is lost forever — gossipsub has no replay, and a NAT'd owner's mesh forms only intermittently. So `fleet-join` **re-announces**: it republishes roughly every 2 s for up to ~30 s per call, runs a namespace bootstrap pull each cycle to seed the mesh, and polls for its own admission between announces. If the budget elapses without admission, the call returns `{ admitted: false, status: "announced" }` and the fleet sidecar retries.
+
+### Verify and admit (the verifier)
+
+The inbound handler is `handle_tee_attestation_announce` (`crates/node/src/handlers/tee_attestation_admission.rs`). It rejects an announce that did not arrive on a well-formed `ns/<hex>` topic, verifies the quote (mock or real) against `SHA-256(public_key)`, drops it silently if invalid, then computes `quote_hash = SHA-256(quote_bytes)` and delegates to `admit_tee_node` with the extracted measurements.
+
+`admit_tee_node` (`crates/context/src/handlers/admit_tee_node.rs`) is where policy is enforced:
+
+<Steps>
+
+1. **Read the policy** for the namespace root (`read_tee_admission_policy`). No policy set → reject.
+
+2. **Mock gate.** `is_mock && !policy.accept_mock` → reject.
+
+3. **Fail-closed allowlist.** `allowed_mrtd` must be non-empty; an empty MRTD allowlist is rejected outright. The quote's `mrtd` must be in it.
+
+4. **Optional allowlists.** `tcb_status` and each of `rtmr0..3` are checked only when their allowlist is non-empty (empty = "don't care").
+
+5. **Idempotency.** If the member already holds a direct row, admission is a no-op `Ok(())` — safe under the re-announce loop.
+
+6. **Replay guard.** `is_quote_hash_used` scans the group op log; a `quote_hash` already consumed in this scope is rejected, blocking replay of a captured announce.
+
+7. **Publish.** Sign and publish `GroupOp::MemberJoinedViaTeeAttestation { member, quote_hash, mrtd, rtmr0..3, tcb_status, role: ReadOnlyTee }`.
+
+8. **Deliver the key** (next section).
+
+</Steps>
+
+The op's **apply** handler (`member_joined_via_tee_attestation.rs`) re-checks the same invariants on every receiving peer, so a forged op cannot slip through replication: the role must be `ReadOnlyTee`, the **signer must itself be a member** of the namespace (`require_tee_attestation_verifier_membership` — any member may verify, no special verifier role), a policy must exist, and the recorded measurements must still satisfy the allowlists. On success it admits the member and clears any prior deny-list entry.
+
+<Aside type="caution">
+**Normative.** A verifier MUST be an existing member of the namespace whose attestation it admits. The admission op MUST record `role: ReadOnlyTee`; any other role is rejected at apply. The TEE admission policy MUST live on the **namespace root** — `TeeAdmissionPolicySet` on a subgroup is rejected, and policy reads resolve to the root before reading. `allowed_mrtd` MUST be non-empty, so a misconfigured empty policy fails closed rather than admitting everything.
+</Aside>
+
+### Key delivery (the verifier, again)
+
+A membership row is not enough — the replica needs the namespace's group encryption key to decrypt anything. The `MemberJoinedViaTeeAttestation` op is an _encrypted_ namespace-group op that only existing key-holders can apply, so the freshly-admitted node cannot even read its own membership until it holds the key.
+
+The verifier (a key-holder) therefore calls `deliver_group_key_to_member`, which publishes `NamespaceOp::Root(RootOp::KeyDelivery { group_id, envelope })` on the namespace DAG. The envelope is ECDH-wrapped for the recipient's public key, so only that node can unwrap it. Delivery is best-effort and one-shot; the durable fallback is the joiner-side recovery pull (`recover_missing_group_keys`), which sends a `GroupKeyRequest` that any key-holding member answers regardless of role. Key acquisition is thus a self-healing loop rather than a fragile single broadcast.
+
+### Self-confirm and auto-follow (the replica)
+
+Back in `fleet-join`, the poll loop watches `list_group_contexts`. Once the membership op and `KeyDelivery` have propagated and been applied, the replica sees itself in the group, joins every context in the namespace, and publishes its own `MemberSetAutoFollow { auto_follow_contexts: true, auto_follow_subgroups: true }` — signed with its **own** namespace identity, which satisfies that op's admin-or-self authorization rule. The verifier cannot do this on the replica's behalf because it holds neither admin authority nor the replica's signing key. From then on, new contexts and subgroups auto-join without further sidecar polling (see [Governance](/protocol/governance/) for the auto-follow machinery).
+
+## Worked example: a replica joins a fleet
+
+Concretely, here is how a brand-new TEE replica brings itself online as a
+read-only follower of an existing namespace — no operator invite at any point.
+
+<Steps>
+
+1. **An admin sets the policy, once.** Ahead of time, a namespace-root admin
+   publishes the measurements the fleet trusts. This is the only human step, and
+   it happens long before any replica exists:
+
+   ```bash
+   # the namespace is its own root group, so the group id is the namespace id
+   curl -X PUT \
+     "$NODE/admin-api/groups/$NS/settings/tee-admission-policy" \
+     -d '{ "allowed_mrtd": ["<approved-td-measurement>"],
+           "allowed_tcb_statuses": ["UpToDate"],
+           "accept_mock": false }'
+   ```
+
+   This publishes `TeeAdmissionPolicySet` on the namespace root. `allowed_mrtd`
+   is non-empty, so the policy fails closed; an empty allowlist would be
+   rejected rather than admitting every quote.
+
+2. **The replica boots and announces.** The fleet sidecar calls the protected
+   route on the new node. The node resolves its namespace identity, builds
+   `report_data = nonce || SHA-256(pubkey)`, generates a TDX quote over it, and
+   broadcasts `TeeAttestationAnnounce` on `ns/<hex>`:
+
+   ```bash
+   curl -X POST "$NODE/admin-api/tee/fleet-join" -d '{ "group_id": "'"$NS"'" }'
+   ```
+
+   The call re-announces every ~2 s for up to ~30 s, seeding the gossip mesh
+   each cycle, because a single publish into a not-yet-formed mesh would be lost.
+
+3. **Any existing member verifies and admits.** A current member receives the
+   announce, runs `verify_attestation` (DCAP signature + nonce +
+   `SHA-256(pubkey)` bind), checks the quote's `mrtd`/`tcb_status` against the
+   policy, guards against a replayed `quote_hash`, and publishes
+   `MemberJoinedViaTeeAttestation { role: ReadOnlyTee, quote_hash, mrtd, … }`.
+   No special "verifier" role exists — any member may admit a valid quote.
+
+4. **The verifier delivers the key.** The membership row is encrypted, so the
+   verifier also publishes `RootOp::KeyDelivery` carrying the namespace group key
+   ECDH-wrapped to the replica's public key. Only the replica can unwrap it; if
+   this best-effort delivery is missed, the replica's own `GroupKeyRequest`
+   recovery pull fills the gap.
+
+5. **The replica self-confirms and follows.** Once the membership op and key have
+   propagated, the replica's poll loop sees itself in the group, joins every
+   context in the namespace, and signs its own `MemberSetAutoFollow { contexts,
+   subgroups }` — authorized by the admin-or-self rule because it signs with its
+   own namespace identity. From here new contexts and subgroups auto-join with no
+   further sidecar polling. `fleet-join` returns `{ admitted: true }`.
+
+</Steps>
+
+The replica is now a `ReadOnlyTee` member: it decrypts and serves the
+namespace's data and answers sync requests, but it can never author a write —
+keeping the namespace available even while the human-operated owner node is
+offline.
+
+## The `ReadOnlyTee` role
+
+`ReadOnlyTee` is one of the group member roles ([identities](/protocol/identities/) covers the keypair model). Its constraints:
+
+- **Directly-rowed, never inherited.** A `ReadOnlyTee` membership is always a stored `(member, group)` row written by admission; it is never conferred by the inherited-membership parent-walk. A replica is a member only of the scopes it was explicitly admitted to.
+- **Read-only.** The role cannot author governance ops or state deltas. The state-delta receive path rejects any delta whose author's materialized role is `ReadOnly` or `ReadOnlyTee`, in every apply path (gossip, parent-fetch, buffered). It exists to decrypt and serve, not to mutate.
+- **Attestation-only assignment.** `MemberJoinedViaTeeAttestation` is the only op that mints the role. Manually setting a member to `ReadOnlyTee` via `update_member_role` is rejected — "can only be assigned via TEE attestation admission".
+- **Auto-follow on.** Admission plus the replica's self-signed op leave both auto-follow flags set, so the replica tracks new contexts and subgroups in the scopes it holds.
+
+## The admission policy
+
+The policy is itself a governance op, `GroupOp::TeeAdmissionPolicySet`, settable only by a namespace-root admin:
+
+```rust
+TeeAdmissionPolicySet {
+    allowed_mrtd: Vec<String>,
+    allowed_rtmr0: Vec<String>,
+    allowed_rtmr1: Vec<String>,
+    allowed_rtmr2: Vec<String>,
+    allowed_rtmr3: Vec<String>,
+    allowed_tcb_statuses: Vec<String>,
+    accept_mock: bool,
+}
+```
+
+There is no materialized policy row — the op log _is_ the storage. `read_tee_admission_policy` scans the root's op log and takes the **last** `TeeAdmissionPolicySet`, so a later op simply supersedes an earlier one (last-writer-wins, like the rest of the projection). The apply handler validates only that the signer is an admin and that the target is a namespace root, not a subgroup.
+
+## Eviction and self-purge
+
+Decommissioning is a coordinated, cross-repo flow. The control plane never reaches into the node; it uses **soft disable** — it drops the namespace from a fleet node's assignments, and the fleet sidecar (in the `mero-tee` repo) notices and runs a `namespace leave`. That publishes a removal op (`MemberLeft`, or an admin's `MemberRemoved`). Core owns the rest.
+
+When a removal's captured role is `ReadOnlyTee`, the apply path emits a role-scoped `TeeMemberRemoved` event _in addition to_ the generic `MemberRemoved`. A removal at the **namespace root** cascades: because a replica's presence in any subgroup came from namespace-level attestation (not a subgroup admin's choice), root authority extends to it, so the apply walks the whole subtree and emits `TeeMemberRemoved` per descendant subgroup the node held a direct row in.
+
+```text
+control plane drops assignment
+  → sidecar runs `namespace leave`
+    → MemberLeft / MemberRemoved (role = ReadOnlyTee)
+      → TeeMemberRemoved emitted (root + each subgroup row, cascaded)
+        → self_purge on the evicted node
+```
+
+`self_purge` (`crates/context/src/self_purge.rs`) is a node-local listener that reacts **only** to `TeeMemberRemoved` for _this_ node's identity — deliberately not the generic `MemberRemoved`. The split matters:
+
+- **Non-TEE removals stay soft-leave.** Local rows remain so kick-and-readd, rejoin-via-keyshare, and inheritance-rejoin flows can reuse them.
+- **TEE removals hard-purge.** A `ReadOnlyTee` node has no rejoin pathway — the only admission op for the role re-derives identity from a _fresh_ attestation — so leaving key material on disk buys nothing and hurts forward-secrecy hygiene.
+
+For a TEE eviction the handler deletes the group's local replicated data, signing keys, and AES group encryption keys, and (for a namespace-root removal) cascade-purges the subtree and unsubscribes from the namespace gossip topic; a subgroup-only removal purges just that group's rows and keeps the topic subscription for the node's other memberships.
+
+<Aside type="note">
+Self-purge does **not** rotate any key. Forward secrecy on the namespace's _new_ writes is already provided by the standard `MemberRemoved` rotation pipeline, which mints a fresh group key wrapped for everyone except the removed member. Self-purge only deletes what the evicted node held locally — including the now-orphaned old key material. A purge interrupted by a crash is finished by a durable pending-self-purge marker plus a startup reconcile sweep.
+</Aside>
+
+## Admin API surface
+
+The `/admin-api/tee` routes back this flow. `fleet-join` is on the protected (authenticated) router; the other three are unprotected.
+
+| Method · Path | Body | What it does |
+| --- | --- | --- |
+| `GET /tee/info` | — | Returns `{ cloud_provider, os_image, mrtd }` for the host TEE. |
+| `POST /tee/attest` | `{ nonce, application_id? }` | Generates a TDX quote over `nonce \|\| app-hash`; rejects a mock result unless `--mock-tee`. |
+| `POST /tee/verify-quote` | `{ nonce, quote_b64, expected_application_hash? }` | Verifies a quote and reports per-check results. |
+| `POST /tee/fleet-join` (protected) | `{ group_id }` | Runs the full announce → admission → join loop above. |
+
+The admission policy is set separately via `PUT /admin-api/.../groups/:group_id/settings/tee-admission-policy`, which publishes `TeeAdmissionPolicySet`.

@@ -1,0 +1,268 @@
+---
+title: Sync protocol internals
+description: The sync wire messages — handshake, verdict, and the hash-comparison, level-wise, and snapshot transfer protocols, message by message.
+sidebar:
+  label: Sync internals
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
+The [Sync & Convergence](/protocol/sync/) chapter explains *why* sync exists and the shape of a session. This page is the wire-level companion: every message a session sends, what it carries, and the rules each side applies. The message types live in `crates/node/primitives/src/sync/wire.rs`; the drivers live under `crates/node/src/sync/`.
+
+Every sync message is wrapped in a single envelope, `StreamMessage` (`wire.rs:60`):
+
+```rust
+enum StreamMessage<'a> {
+  Init    { context_id, party_id, payload: InitPayload, next_nonce },
+  Message { sequence_id: u64, payload: MessagePayload<'a>, next_nonce },
+  OpaqueError,     // reveals nothing about node state
+  NotMaterialized, // "valid peer, but no local copy yet" — treat as benign
+}
+```
+
+An `Init` opens an exchange and names the context and the sending party; `Message` carries every follow-up, ordered by `sequence_id` (a `u64` for cross-platform portability). `next_nonce` chains replay protection across the stream. The two terminal variants are deliberately information-poor: `OpaqueError` is returned when something is wrong but the responder does not want to leak state to an unverified or cross-namespace dialer, and `NotMaterialized` is the typed "I am a valid member of this context but have not materialised it locally yet" signal — the initiator MUST treat it as benign (no `failure_count` bump, no backoff) and simply drop that peer for the round.
+
+## The handshake
+
+A session opens a libp2p stream and sends an `Init` carrying `DagHeadsRequest { context_id }` (`wire.rs:144`). The responder replies with `DagHeadsResponse` (`wire.rs:351`):
+
+```rust
+DagHeadsResponse {
+  dag_heads:  Vec<[u8; 32]>,   // peer's current DAG head delta IDs
+  root_hash:  Hash,            // storage-layer entity Merkle root
+  scope_root: Option<Hash>,    // root_hash folded with the governance projection
+}
+```
+
+`root_hash` is the data plane's Merkle root over entities. `scope_root` folds that entity root together with the governance projection's ACL, membership, and admin hashes — it is the *whole* scope's fingerprint. It is `Option` because a node with a cold or unresolvable projection cannot fold one yet; in that case it sends `None` rather than a misleading value, and the initiator falls back to comparing entity roots alone. The initiator-side request/response is in `crates/node/src/sync/manager/mod.rs` (`query_dag_state`, around `:1651`); the local handshake summary — entity count and tree depth, used later for protocol selection — is built in `manager/handshake.rs`.
+
+## The verdict
+
+From the local and peer `(scope_root, entity_root)` pairs the node computes exactly one verdict:
+
+```text
+match (local_scope_root, peer_scope_root):
+  (Some l, Some p) if l == p          → Converged
+  (Some l, Some p) if entity_roots == → GovDiverged(l, p)
+  (Some _, Some _)                    → DataDiverged
+  _ if entity_roots ==                → Converged       // asymmetric None ⇒ entity root only
+  _                                   → DataDiverged
+```
+
+- **Converged** — scope roots equal; nothing to do.
+- **GovDiverged** — entities agree but governance differs (the hash-neutral case: identical data, divergent access control or membership). Pull governance operations; no data transfer.
+- **DataDiverged** — entities differ; run a state-transfer protocol, then reconcile governance afterward.
+
+Comparing the *full* scope root first is what catches governance-only divergence that the data plane alone would hide.
+
+<SeqDiagram
+  id="d-sync-internals"
+  title="Handshake, verdict, and transfer"
+  lanes={[
+    { label: 'Initiator', color: '#3fb950' },
+    { label: 'Responder', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'Init{ DagHeadsRequest }' },
+    { from: 1, to: 0, label: 'DagHeadsResponse{ dag_heads, root_hash, scope_root }', dashed: true },
+    { from: 0, to: 0, label: 'verdict: Converged / GovDiverged / DataDiverged', color: '#a5ff11' },
+    { from: 0, to: 1, label: 'select protocol (tree shape + divergence)' },
+    { from: 0, to: 1, label: 'TreeNodeRequest / LevelWiseRequest / SnapshotStreamRequest' },
+    { from: 1, to: 0, label: 'TreeNodeResponse / LevelWiseResponse / SnapshotPage', dashed: true },
+    { from: 0, to: 1, label: 'EntityPush / EntityDeletePush (authorization-gated)' },
+    { from: 1, to: 0, label: 'EntityPushAck{ applied_count }', dashed: true },
+    { from: 0, to: 0, label: 'fold + re-check root' },
+    { from: 0, to: 1, label: 'scope_root still differs ⇒ pull governance', color: '#f0883e' },
+    { type: 'divider', label: 'scope roots equal ⇒ converged' },
+  ]}
+/>
+
+## Choosing a transfer protocol
+
+On `DataDiverged`, `select_protocol` (`crates/node/primitives/src/sync/protocol.rs`) picks by tree shape and a **divergence ratio** — `|local.entity_count - remote.entity_count| / max(remote.entity_count, 1)`:
+
+| Condition | Protocol |
+| --- | --- |
+| Local has no state (fresh node) | `Snapshot` (compressed when remote `entity_count` > 100) |
+| Remote has no state | `None` |
+| Divergence > 50% | `HashComparison` |
+| `max_depth` 1-2 with many children per level | `LevelWise` |
+| otherwise | `HashComparison` / DAG-heads delta sync |
+
+The initiator side then runs the choice through `ProtocolSelector::execute` (`crates/node/src/sync/protocol_selector.rs`), which walks a fallback chain: a failed `HashComparison` or `LevelWise` opens a **fresh** stream (responder dispatch is one-shot per stream) and retries via DAG-heads delta sync, and a still-empty result falls back to `Snapshot` as the last resort. `BloomFilter` and `SubtreePrefetch` are reserved selections that currently fall straight through to snapshot.
+
+## HashComparison
+
+Walk the two entity Merkle trees top-down, descending only into subtrees whose hashes differ. The initiator sends `TreeNodeRequest` (`wire.rs:175`):
+
+```rust
+TreeNodeRequest { context_id, node_id: [u8; 32], max_depth: Option<u8> }
+```
+
+`node_id` is the root hash or an entity id; `max_depth` is `None` for just that node, `Some(1)` to include immediate children. The responder (`crates/node/src/sync/hash_comparison.rs`, `handle_tree_node_request`) replies with `TreeNodeResponse` (`wire.rs:406`):
+
+```rust
+TreeNodeResponse { nodes: Vec<TreeNode>, not_found: bool }
+```
+
+Each `TreeNode` carries child ids and hashes (and, for leaves, the full entity data needed for a CRDT merge). The initiator compares hashes and recurses only where they differ, until it reaches the exact differing leaves.
+
+:::caution[Normative]
+`max_depth` MUST be validated against `MAX_TREE_REQUEST_DEPTH` (16, `wire.rs:47`) before processing — it bounds how deep a single request may force the responder to traverse, so a malicious peer cannot demand an arbitrarily expensive walk.
+:::
+
+When the initiator finds subtrees that exist locally but not on the peer, it sends them with `EntityPush` (`wire.rs:207`):
+
+```rust
+EntityPush { context_id, entities: Vec<TreeLeafData> }
+```
+
+The responder applies each via a CRDT merge and replies with `EntityPushAck { applied_count }`. Because the tree comparison is add-wins, deletions cannot ride along implicitly — they are pushed explicitly as `EntityDeletePush { context_id, deletions: Vec<EntityDeletion> }` (`wire.rs:220`), which the responder applies delete-wins by HLC through the authenticated `DeleteRef` path, acked by `EntityDeletePushAck`.
+
+### The algorithm: comparing two trees
+
+The whole transfer is one recursive tree-walk, driven from the initiator. Each step requests one node *plus its immediate children* (`max_depth: 1`), compares child hashes, and recurses only into the children that disagree. Reimplementation-grade:
+
+```text
+fn reconcile(node_id = root):
+    local  = local_tree.node(node_id)
+    remote = request(TreeNodeRequest { node_id, max_depth: 1 }).nodes  // peer's node + child hashes
+    if remote.not_found:        push EntityPush(local subtree leaves); return
+    if local.full_hash == remote.full_hash:  return        // whole subtree agrees, prune
+
+    for child_id in union(local.children, remote.children):
+        match (local.child(child_id), remote.child(child_id)):
+            (Some l, Some r) if l.hash != r.hash => reconcile(child_id)   // differ → descend
+            (Some l, Some r) if l.hash == r.hash => skip                  // agree → prune
+            (Some l, None)                       => push EntityPush(l)    // we have it, peer doesn't
+            (None,   Some r)                     => pull/merge r          // peer has it, we don't
+
+    // leaves carry full entity data, so a differing leaf is a CRDT merge, not another round-trip
+    // deletions never surface as a missing child here — they ride EntityDeletePush (delete-wins by HLC)
+    // every EntityPush the responder ingests is authorization-gated on the initiator's peer_identity
+    // each request's max_depth is clamped to MAX_TREE_REQUEST_DEPTH (16) so a peer can't force an unbounded walk
+```
+
+Because a subtree whose `full_hash` matches is pruned outright, the walk only touches the parts of the tree that actually differ: cost is proportional to the *difference* between the two trees, not to their total size. Two large but identical contexts converge in a single root-level request.
+
+### The authorization gate
+
+A pushed plain entity is not trusted blindly. `handle_tree_node_request` takes the authenticated `peer_identity` of the session initiator and uses it to gate ingestion of authorless pushes: a peer that is no longer an authorized member must not be able to launder a write into the store via HashComparison (`hash_comparison.rs:76`). Authorized leaves carry their wire authorization forward into the stored metadata (`hash_comparison.rs:524`). This is what guarantees sync can never introduce a write the author was not entitled to make.
+
+### Deferred root-entity merge through WASM
+
+Most leaves merge directly on the host, but **root-entity** leaves cannot — the app's root state is application-typed, and only the WASM module knows how to merge it. So `handle_entity_push` does not apply those inline: it collects each root-entity leaf into the `deferred_root_merges` bucket (carrying the leaf's real remote-write HLC timestamp, not a synthetic one) and returns them for the caller to dispatch *after* the batch, via `ContextClient::merge_root_state` (`crates/node/src/sync/helpers.rs:700-733`). The dispatcher re-enters WASM per entity, then writes the merged bytes back with `updated_at = max(existing, incoming)` so the next round's LWW comparison resolves consistently (`crates/node/src/sync/protocol_selector.rs:501-577`). When the receiver has never seen the root entity, its metadata reads as all-zero, so `existing.created_at == existing.updated_at` and the WASM-side **bootstrap fast-path accepts the incoming bytes unconditionally** (`protocol_selector.rs:508`). The one exception that stays on the host: an opaque root entity with no app-defined `crdt_type` (test fixtures, apps without `#[app::state]`) has nothing for WASM to dispatch to, so it is direct-written LWW instead of deferred.
+
+## LevelWise
+
+A breadth-first variant tuned for wide, shallow trees (depth ≤ 2). The initiator requests a whole level at a time with `LevelWiseRequest` (`wire.rs:189`):
+
+```rust
+LevelWiseRequest {
+  context_id,
+  level: u32,                       // 0 = root's children, 1 = grandchildren, …
+  parent_ids: Option<Vec<[u8;32]>>, // None = all nodes at this level
+}
+```
+
+The responder (`crates/node/src/sync/level_sync.rs`) returns `LevelWiseResponse` (`wire.rs:419`):
+
+```rust
+LevelWiseResponse {
+  level: u32,
+  nodes: Vec<LevelNode>,              // id, hash, parent_id, leaf_data if leaf
+  has_more_levels: bool,
+  deleted_children: Vec<EntityDeletion>, // authenticated tombstones
+}
+```
+
+`has_more_levels` tells the initiator whether to request the next level. `deleted_children` is the LevelWise analogue of HashComparison's explicit deletions: without it a responder that has cleared an entity returns no node for it, and the initiator's loop would exit before ever learning of the deletion. Leaf nodes carry full entity data so the initiator can CRDT-merge directly; pushed entities pass the same authorization gate as HashComparison.
+
+## Snapshot
+
+The fallback for a node so far behind that incremental comparison is not worth it — a fresh joiner, or one long offline. It transfers the whole materialized scope as compressed pages.
+
+A node first asks for a boundary with `SnapshotBoundaryRequest { context_id, requested_cutoff_timestamp }`, answered by `SnapshotBoundaryResponse { boundary_timestamp, boundary_root_hash, dag_heads }` (`wire.rs:366`) — fixing the root the pages will reconstruct. It then streams with `SnapshotStreamRequest` (`wire.rs:158`):
+
+:::caution[The cutoff is not honored]
+Despite the field name, `requested_cutoff_timestamp` is **ignored** — the requester always sends `None` and the responder always answers with its **current live `root_hash`** and `time_now()`. There is no historical-snapshot negotiation; you get the responder's state as of the moment it replies. (`snapshot.rs` — the parameter is `_requested_cutoff_timestamp`.)
+:::
+
+```rust
+SnapshotStreamRequest {
+  context_id,
+  boundary_root_hash: Hash,       // the responder's current root (from the boundary response)
+  page_limit: u16,                // max pages per response burst
+  byte_limit: u32,                // max bytes per response
+  resume_cursor: Option<Vec<u8>>, // pagination cursor
+}
+```
+
+The responder (`crates/node/src/sync/snapshot.rs`) answers with a run of `SnapshotPage` messages (`wire.rs:376`):
+
+```rust
+SnapshotPage {
+  payload: Cow<[u8]>,        // lz4-compressed run of length-framed records
+  uncompressed_len: u32,
+  cursor: Option<Vec<u8>>,   // None ⇒ complete
+  page_count: u64,
+  sent_count: u64,
+  total_records: u64,        // grand total of shippable entities (0 ⇒ unknown)
+}
+```
+
+Each page payload is an lz4-compressed run of records. The current format (sentinel byte `0xFF`, `snapshot.rs:56`) length-frames every record (`u32 LE len ‖ bytes`) so the receiver bounds each record's decode to its own sub-slice. `cursor` drives resumption: the receiver echoes the last `cursor` back in the next `SnapshotStreamRequest` until the responder returns `None`. `total_records` is the exact denominator the receiver's applied count converges to, so progress and ETA can be computed; `0` means unknown (empty snapshot or an older peer). Bounds: pages cap at `DEFAULT_PAGE_LIMIT = 16` and `DEFAULT_PAGE_BYTE_LIMIT = 64 KB` per burst, with a hard `MAX_SNAPSHOT_PAGE_SIZE = 4 MB` uncompressed ceiling. Snapshot apply runs an explicit per-entity readability check so a receiver on an older schema declines-and-buffers a future-schema entity rather than persisting unreadable bytes. Failures surface as `SnapshotError { error: SnapshotError }`.
+
+### Applying a snapshot
+
+Snapshot apply does not behave like the incremental protocols — it has three properties worth stating outright, because each is a deliberate trade-off (`crates/node/src/sync/snapshot.rs`).
+
+**It is a full REPLACE, not a merge.** Before the first page lands the receiver snapshots its existing state keys; after the last page it calls `cleanup_stale_keys`, which deletes every key that existed locally but was *not* present in the snapshot (`snapshot.rs:1022`). A key the receiver held that the sender has since deleted is therefore removed — the snapshot is treated as the authoritative whole, not a set of additions. The one deliberate exception is rotation history the receiver rebuilt locally from delta replay: those keys are kept in the received set so the cleanup does not wipe them (`snapshot.rs:535`).
+
+**It bypasses `apply_action`.** Each verified `Entity` record is written with a raw `put` after its signature checks out — it does **not** go through `Interface::apply_action`, so there is no nonce-replay protection and no CRDT merge on this path (`snapshot.rs:640`). That is sound only because `request_snapshot_sync` refuses a snapshot when the local context is already initialized; the sole bypass is `force = true`, reserved for crash recovery where an on-disk marker confirms the local state was already mid-snapshot and is known-incomplete. In both cases the receiver holds no newer state that an older-nonce write could clobber. If that gate ever loosens, this path would need the nonce / CRDT-merge logic the incremental leaf-apply uses.
+
+**It never ships rotation logs.** Every `Auxiliary` record — including `ROTATION_LOG` — is rejected on receipt, because no `Auxiliary` kind is per-record signature-verifiable yet and a forged rotation log would let the verifier accept actions from writers who weren't authorized at the relevant causal point (`snapshot.rs:808`). The receiver instead reconstructs writer-rotation history from verified delta replay. The bounded edge case: a late-arriving pre-snapshot delta that references a rotation point before the snapshot may fail to verify until per-entry rotation-log signing lands.
+
+### Crash recovery and forced resync
+
+Two paths let a snapshot overwrite an already-initialized context, both bypassing the fresh-node invariant of the previous section.
+
+- **Crash recovery.** Before the first page lands, the receiver writes a `sync-in-progress` marker keyed by context id (`snapshot.rs:1043-1061`). If the node crashes mid-snapshot, that on-disk marker is still present on restart; `request_snapshot_sync` treats its presence as `is_crash_recovery` and forces a re-sync **without** an explicit `force` flag — the local state is known-incomplete, so the fresh-node gate is the wrong thing to enforce (`snapshot.rs:58-60,324-329`). The marker is the only thing that lets the bypass happen silently.
+- **Operator resync (`force = true`).** A `force` resync (routed from `handle_dag_sync` for a `ContextResyncRequested` context) disables **both** the fresh-node gate (`snapshot.rs:329`) **and** the per-entity schema fence (`snapshot.rs:561-570`): a stranded context's loaded reader is its old bound blob, so fencing would decline the peer's current-schema entities and recover nothing. The receiver therefore adopts the peer's state wholesale, even from a peer that is behind — so the activation marker is bound to the **schema actually observed** on the applied entities, not the group target, so the result isn't mislabeled "up to date" (`snapshot.rs:490-502`).
+
+## Side messages: blobs and key recovery
+
+A few protocols ride the same stream envelope outside the main transfer flow:
+
+- **`BlobShare { blob_id }`** (`wire.rs:130`) requests a blob; the responder streams it back as a sequence of `MessagePayload::BlobShare { chunk }` data chunks, terminated by an empty chunk (`crates/node/src/sync/blobs.rs`). Used to fetch application blobs a peer is missing.
+- **Key recovery** — `GroupKeyRequest { namespace_id, group_id, requester_public_key }` (`wire.rs:283`) is the pull-based replacement for the old on-DAG key-delivery op: a joiner that is already an admitted member but does not yet hold a group key *pulls* it from a sync peer each round. The responder validates membership, ECDH-wraps the key, and answers `GroupKeyResponse { key_envelope_bytes, responder_identity }` — an empty envelope means "I do not hold it, try another peer." Companion direct-join flows (`NamespaceJoinRequest`/`Response`, `OpenSubgroupJoinRequest`/`Response`) and `NamespaceBackfillRequest`/`Response` follow the same request/wrapped-envelope shape.
+
+## Run-loop mechanics
+
+The sync driver is a single `tokio::select!` loop dispatching sessions per context. A few of its self-protection mechanisms are worth stating because they bound failure modes the wire protocol can't.
+
+### Wedge watchdog
+
+A dispatched session that never produces a `SyncSessionResult` — a wedged actor, a dropped stream, a peer that went silent mid-transfer — would otherwise leave the context pinned in the in-progress state forever. The watchdog catches it. A session is considered wedged once it has been silent for the **grace window**, which is `session_deadline × 2` (60 s by default, from a 30 s deadline) (`crates/node/src/sync/session.rs:168,177`). The check itself only runs on the loop's interval tick (`frequency`, 10 s by default), so detection lands up to one tick **after** the grace lapses — roughly 60 s + 10 s in the worst case (`driver.rs:138-160`). When it fires, the watchdog synthesises an `on_failure` on the context so periodic sync retries it, and emits a per-context warn (`session.rs:554-577`).
+
+### Mailbox-full backoff and rollup
+
+If the `SyncSessionActor` mailbox is full, a dispatch `try_send` returns `Full`; the driver backs that context off for one `interval` (5 s) rather than spinning (`driver.rs:333-360`, `session.rs:321-335`). The warn is rate-limited to one per context per 60 s window; further drops in the window log at debug and feed a counter. When the window closes, a single rolled-up `info` line summarises it with `full_drops_in_window` (total drops) and `contexts_affected` (distinct contexts), so a storm shows up as one line instead of thousands (`session.rs:47,592-611`).
+
+### Targeted `context sync` syncs all contexts under churn
+
+An explicit `context sync` request normally carries a specific context (and optionally a peer) and force-bypasses the recency throttle for just that one. But if the request queue holds more than one pending request — common when many contexts join in a burst — the driver drains the entire queue and **clears the requested-context override to `None`**, falling back to a full sweep of every context (`driver.rs:198-255`). This trades one request's targeted-sync precision for a guarantee that no later-queued context is left stalled with empty DAG heads; the alternative (one request per loop iteration) starved contexts 2..N indefinitely.
+
+## Post-sync governance reconciliation
+
+A successful *data* sync does not by itself prove the governance planes agree, because data and governance converge independently. After any data transfer completes, the manager re-reads its now-merged root, recomputes `scope_root`, and — if it still differs from the peer's — pulls governance operations from that peer. This check is **centralised in the manager** (`handle_dag_sync`, `crates/node/src/sync/manager/mod.rs` around `:1574`) so it covers *every* data backend — Snapshot and DAG-heads delta as well as HashComparison and LevelWise — not just the protocols that compute the verdict. The transfer protocols themselves stay pure data steps. The pull is idempotent: against an already-agreeing peer it returns zero operations, so pulling whenever the root still differs is safe and self-limiting. The manager also short-circuits the *pre*-sync `GovDiverged` case (entities already equal, scope roots differ) directly into a governance pull without running a data transfer at all (`mod.rs:1460`).
+
+## Where this leads
+
+Next, [**Divergence & Recovery**](/protocol/divergence-recovery/) traces how detected divergence is actually repaired across the harder partition scenarios these messages serve — anchor reconcile, parent-pull, the absorb buffer, and concurrent writer-set rotation.
+
+## Cross-references
+
+- [Sync & Convergence](/protocol/sync/) — the high-level chapter: triggers, timing, and the verdict in prose.
+- [Networking](/protocol/networking/) — the libp2p stream layer these messages travel over.
+- [Divergence & recovery](/protocol/divergence-recovery/) — how detected divergence is repaired across partition scenarios.

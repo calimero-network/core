@@ -2,7 +2,7 @@
 
 Peer-to-peer application platform with local-first governance, CRDT state sync, and WASM execution.
 
-> **Full documentation**: [Architecture Reference](https://calimero-network.github.io/core/)
+> **Full documentation**: <https://calimero-network.github.io/core/> — organized into four tracks: **Build** (write apps), **Operate** (run nodes), **Protocol Reference** (reimplement / understand the model), and **Contribute** (work on core).
 
 ## Components
 
@@ -23,20 +23,17 @@ Peer-to-peer application platform with local-first governance, CRDT state sync, 
 
 ## Documentation
 
-| Topic | Page |
+| I want to… | Start here |
 |-------|------|
-| System overview and crate map | [System Overview](https://calimero-network.github.io/core/system-overview.html) |
-| Local governance and groups | [Local Governance](https://calimero-network.github.io/core/local-governance.html) |
-| App signing, bundles, migrations | [App Lifecycle](https://calimero-network.github.io/core/app-lifecycle.html) |
-| Writing app state migrations (developer guide) | [Migrations](https://calimero-network.github.io/core/migrations.html) |
-| Wire protocol and sync | [Wire Protocol](https://calimero-network.github.io/core/wire-protocol.html) |
-| Sequence diagrams | [Sequence Diagrams](https://calimero-network.github.io/core/sequence-diagrams.html) |
-| Storage schema | [Storage Schema](https://calimero-network.github.io/core/storage-schema.html) |
-| Error flows | [Error Flows](https://calimero-network.github.io/core/error-flows.html) |
-| Config reference | [Config Reference](https://calimero-network.github.io/core/config-reference.html) |
-| TEE mode and KMS | [TEE Mode](https://calimero-network.github.io/core/tee-mode.html) |
-| Release process | [Release Process](https://calimero-network.github.io/core/release.html) |
-| Glossary | [Glossary](https://calimero-network.github.io/core/glossary.html) |
+| Write a Calimero app | [Build](https://calimero-network.github.io/core/build/) — quickstart, SDK, collections, examples |
+| Run and configure a node | [Operate](https://calimero-network.github.io/core/operate/) — install, `merod`/`meroctl`, config, admin API |
+| Reimplement a node / understand the model | [Protocol Reference](https://calimero-network.github.io/core/protocol/overview/) — concepts, the operation DAG, sync, the spec |
+| Work on Calimero Core itself | [Contribute](https://calimero-network.github.io/core/contribute/) — architecture, crate guide, dev workflow |
+| Look up a term | [Glossary](https://calimero-network.github.io/core/protocol/glossary/) |
+
+The docs live in [`docs-site/`](docs-site/) (Astro Starlight). The previous
+hand-built site is preserved at
+[`/architecture-legacy/`](https://calimero-network.github.io/core/architecture-legacy/).
 
 ## Related Repositories
 

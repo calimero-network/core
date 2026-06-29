@@ -17,8 +17,12 @@ anthropic:
 # Doc auto-update — opens a draft PR on merges to master with proposed
 # changes to the architecture site (and any Markdown docs that go stale).
 # Disabled by default upstream; enabled here so doc-update.yaml has work to do.
+# Disabled at the docs cutover: the published docs are now the hand-authored
+# Starlight site in docs-site/, not the auto-generated architecture/ HTML.
+# Re-enable only if the bot is repointed at generating reference *data* for the
+# new site (see the docs-generation plan), not free-form HTML.
 doc_generation:
-  enabled: true
+  enabled: false
   model: claude-sonnet-4-6  # Sonnet: Haiku failed the HTML find/replace patch task
   max_files: 15
   static_docs_dirs:

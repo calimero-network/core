@@ -1,0 +1,179 @@
+---
+title: Emit and handle events
+description: Declare an event, emit it from a method, and run an in-app handler when it fires.
+sidebar:
+  order: 3
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+**Task:** announce that something changed so clients (and optionally other
+methods of your app) can react.
+
+## Declare an event
+
+An event type is an enum marked `#[app::event]`. Wire it into your state with the
+`emits` argument so the macro knows which events the app produces:
+
+```rust
+#[app::state(emits = for<'a> Event<'a>)]
+pub struct KvStore {
+    items: UnorderedMap<String, LwwRegister<String>>,
+    handler_counter: Counter,
+}
+
+#[app::event]
+pub enum Event<'a> {
+    Inserted { key: &'a str, value: &'a str },
+    Updated { key: &'a str, value: &'a str },
+    Removed { key: &'a str },
+    Cleared,
+}
+```
+
+## Emit it
+
+Call `app::emit!` with a variant. Clients subscribed to the context receive it:
+
+```rust
+app::emit!(Event::Updated { key: &key, value: &value });
+```
+
+## Run a handler when it fires
+
+To also invoke one of your own methods when the event is emitted, use the tuple
+form `(event, "handler_name")`. The handler is a regular method named by that
+string; its parameters match the event variant's fields. This pattern is
+`apps/kv-store-with-handlers`:
+
+```rust
+#[app::logic]
+impl KvStore {
+    pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
+        if self.items.contains(&key)? {
+            app::emit!((
+                Event::Updated { key: &key, value: &value },
+                "update_handler"
+            ));
+        } else {
+            app::emit!((
+                Event::Inserted { key: &key, value: &value },
+                "insert_handler"
+            ));
+        }
+        self.items.insert(key, value.into())?;
+        Ok(())
+    }
+
+    // handler: name matches the string above; params match the variant fields
+    pub fn update_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
+        app::log!("Handler 'update_handler' called: key={key}, value={value}");
+        self.handler_counter.increment()?;
+        Ok(())
+    }
+
+    pub fn insert_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
+        app::log!("Handler 'insert_handler' called: key={key}, value={value}");
+        self.handler_counter.increment()?;
+        Ok(())
+    }
+}
+```
+
+<Aside type="note" title="Handlers can mutate state">
+  A handler is just another method, so it can write state — here it bumps a
+  `Counter`. Use the plain one-argument `emit!` when you only want to notify
+  clients, and the tuple form when you also want in-app logic to run.
+</Aside>
+
+## Exercise it
+
+```sh
+meroctl --node node1 call set \
+  --context <context-id> --args '{"key": "hello", "value": "world"}'
+```
+
+The matching handler runs as part of the same call, and the emitted event is
+published on the node's event stream for subscribed clients.
+
+:::caution
+Events are consumed by clients over the node's API rather than by `meroctl`
+itself; check your node's API docs for the exact subscription endpoint.
+:::
+
+## Worked example: a chat notification flow
+
+A messaging app emits `MessageSent` whenever a member posts, and a web client
+subscribes over WebSocket to render new messages the moment they land. The event
+and the method that emits it:
+
+```rust
+#[app::event]
+pub enum Event<'a> {
+    MessageSent { from: &'a str, text: &'a str },
+}
+
+#[app::logic]
+impl Chat {
+    pub fn send_message(&mut self, from: String, text: String) -> app::Result<()> {
+        self.messages.push(text.clone())?;
+        app::emit!(Event::MessageSent { from: &from, text: &text });
+        Ok(())
+    }
+}
+```
+
+A client subscribes by sending a single frame on the node's WebSocket endpoint,
+naming the contexts it wants events for. The `method` is `subscribe` and the
+context ids go under `params.contextIds`:
+
+```json
+{ "id": 1, "method": "subscribe", "params": { "contextIds": ["<context-id>"] } }
+```
+
+After a `send_message` call commits, every subscriber to that context receives a
+state-mutation frame. The application event rides inside it under `data.events`:
+
+```json
+{
+  "contextId": "<context-id>",
+  "type": "StateMutation",
+  "data": {
+    "newRoot": "<root-hash>",
+    "events": [
+      { "kind": "MessageSent", "data": [123, 34, 102, 114, 111, 109, 34], "handler": null }
+    ]
+  }
+}
+```
+
+Each entry in `events` has three fields:
+
+- `kind` is the variant name — here `"MessageSent"`.
+- `data` is the variant's fields serialized to JSON, delivered as a **byte
+  array**. Decode the bytes back to UTF-8 and parse them to read the fields.
+- `handler` is the in-app handler name when you emitted with the tuple form
+  above, or `null` for a plain `emit!`.
+
+```js
+const ev = frame.data.events[0];                      // { kind, data, handler }
+const { from, text } = JSON.parse(
+  new TextDecoder().decode(new Uint8Array(ev.data)),  // -> {"from":"alice","text":"hi"}
+);
+renderMessage(from, text);                            // update the UI
+```
+
+<Aside type="note" title="Bytes, not an inline object">
+  The event payload arrives as a JSON array of bytes rather than a nested object
+  because the node treats each app's event `data` as opaque — it never parses
+  your event schema. The variant name in `kind` tells the client which shape to
+  decode the bytes into.
+</Aside>
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="SDK macros" href="/build/sdk-macros/" description="The #[app::event] and emit! surface in full." />
+  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="Handler replay semantics — why handlers must be idempotent." />
+  <LinkCard title="Admin & JSON-RPC API" href="/operate/admin-api/" description="The WebSocket and SSE streams clients subscribe to for events." />
+</CardGrid>

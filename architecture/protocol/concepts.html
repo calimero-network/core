@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Concepts &amp; Scopes — Calimero Core Architecture</title>
+<link rel="stylesheet" href="../styles.css">
+<style>
+.owns { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: .88rem; }
+.owns th, .owns td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.owns th { color: var(--text-bright); font-weight: 600; width: 30%; }
+.owns td { color: var(--text-dim); }
+.owns code { white-space: nowrap; }
+.chapter-nav { display: flex; justify-content: space-between; margin-top: 28px; padding-top: 16px;
+  border-top: 1px solid var(--border); font-size: .88rem; }
+</style>
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="../index.html">Home</a><span class="sep">/</span><a href="index.html">Protocol Reference</a><span class="sep">/</span><span>Concepts &amp; Scopes</span></div>
+<h1>Concepts &amp; <em>Scopes</em></h1>
+<p class="page-subtitle">Chapter 1 — the vocabulary every later chapter depends on.</p>
+
+<div class="card gc">
+<h2>The nouns</h2>
+<p>Five words carry the whole model. Get these straight and the rest of the reference reads easily.</p>
+<div class="g2">
+<div class="cb"><h4>Node</h4><p>A single peer process. It holds keys, runs applications, stores state, and talks to other nodes over a peer-to-peer network. One machine can run one node.</p></div>
+<div class="cb"><h4>Application</h4><p>A WASM module that defines the rules of a shared state machine — its data types and the methods that mutate them. Apps are sandboxed and deterministic.</p></div>
+<div class="cb"><h4>Identity</h4><p>An Ed25519 key. Two layers exist (covered in Chapter 2): a <em>transport</em> identity that names a node on the network, and a <em>member</em> identity that authors and authorizes operations.</p></div>
+<div class="cb"><h4>Operation</h4><p>The atomic, signed unit of change. Every mutation — to data, access, membership, or admin state — is an operation in a causal DAG. Chapter 3 dissects it.</p></div>
+<div class="cb"><h4>Scope</h4><p>The unit of "stuff that replicates and converges together." This is the load-bearing abstraction, and the rest of this page is about it.</p></div>
+</div>
+</div>
+
+<div class="card ga">
+<h2>What a scope is</h2>
+<p>A <strong>scope</strong> is a self-contained <strong>replication, encryption, and convergence domain</strong>. It is one node in a tree of scopes. Every scope owns exactly four things:</p>
+<table class="owns">
+<tr><th>An op-log (its own DAG)</th><td>The causally-ordered set of signed operations that belong to this scope, and only this scope.</td></tr>
+<tr><th>A key</th><td>Operations in the scope are encrypted under the scope's key. Only members hold the key, so only members can read the operations.</td></tr>
+<tr><th>A membership set</th><td>Who may author and read operations here. Membership is itself maintained by operations (Chapter 6).</td></tr>
+<tr><th>A scope root</th><td>One 32-byte hash summarising the scope's entire state. Convergence is always checked <strong>per scope</strong> by comparing scope roots.</td></tr>
+</table>
+<p>A scope is named by a stable 32-byte <code>ScopeId</code>. Everything in the protocol — operations, encryption, sync, convergence — is parameterised by scope.</p>
+</div>
+
+<div class="card gb">
+<h2>What is actually a scope</h2>
+<p>The things you already think of as nouns are each a scope:</p>
+<ul>
+<li>The <strong>root governance scope</strong> of a namespace — where membership, admin, and policy live — is one scope.</li>
+<li>Each <strong>subgroup</strong> is its own scope, with its own key, its own members, and its own operations.</li>
+<li>Each <strong>context</strong> — a running application's replicated state — is its own scope.</li>
+</ul>
+<p>So what you informally call "a context" is really a small <strong>tree of scopes</strong>: the governance scope(s) above it, plus the context's own data scope.</p>
+<div class="diagram-tools"><button class="replay-btn" onclick="replay('d-scope-tree')">&#9654; Replay</button></div>
+<div class="diagram-container animating" id="d-scope-tree">
+<svg viewBox="0 0 760 366" role="img" aria-label="The scope tree" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="760" height="366" rx="10" fill="#0f0f16"/>
+  <!-- edges -->
+  <g class="seq-step" style="--step-i:1">
+    <line x1="345" y1="90" x2="245" y2="163" stroke="#8b949e" stroke-width="1.3" stroke-dasharray="4 3"/>
+    <line x1="425" y1="90" x2="525" y2="163" stroke="#8b949e" stroke-width="1.3" stroke-dasharray="4 3"/>
+  </g>
+  <g class="seq-step" style="--step-i:3">
+    <line x1="232" y1="225" x2="232" y2="285" stroke="#8b949e" stroke-width="1.3" stroke-dasharray="4 3"/>
+  </g>
+  <!-- root governance scope -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="230" y="30" width="300" height="60" rx="11" fill="#1f2a12" stroke="#a5ff11" stroke-width="1.4"/>
+    <text x="380" y="56" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="700">Root governance scope</text>
+    <text x="380" y="76" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="10.5">members · admin · policy</text>
+  </g>
+  <!-- subgroup + context (level 2) -->
+  <g class="seq-step" style="--step-i:2">
+    <rect x="120" y="165" width="224" height="60" rx="11" fill="#1f2a12" stroke="#a5ff11" stroke-width="1.4"/>
+    <text x="232" y="191" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="700">Subgroup scope</text>
+    <text x="232" y="211" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="10.5">own key · own members</text>
+    <rect x="416" y="165" width="240" height="60" rx="11" fill="#16222e" stroke="#58a6ff" stroke-width="1.4"/>
+    <text x="536" y="191" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="700">Context scope</text>
+    <text x="536" y="211" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="10.5">app state operations</text>
+  </g>
+  <!-- nested context (level 3) -->
+  <g class="seq-step" style="--step-i:4">
+    <rect x="120" y="287" width="224" height="60" rx="11" fill="#16222e" stroke="#58a6ff" stroke-width="1.4"/>
+    <text x="232" y="313" text-anchor="middle" fill="#f0f6fc" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="700">Context scope</text>
+    <text x="232" y="333" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="10.5">app state operations</text>
+  </g>
+</svg>
+</div>
+<p class="page-subtitle" style="margin-top:0">Each box is an independent scope: its own op-log, key, members, and scope root. The edges form the scope tree.</p>
+</div>
+
+<div class="card gd">
+<h2>Why the concept exists</h2>
+<p>This is the part worth internalising. Earlier, Calimero had <strong>three different kinds of log</strong> with three different convergence signals: a data-delta log per context, a governance DAG per namespace, and a separate access-control rotation log. Three mechanisms, three hashes, three sync paths — and bugs hid in the seams between them.</p>
+<p>The scope abstraction collapses all of that into one idea: <strong>a scope is anything that has its own op-log and converges on its own.</strong> Data writes, access-control changes, membership changes, and admin actions are all just operations living in some scope. One DAG structure, one fold, one scope root, one sync engine — applied uniformly to contexts <em>and</em> governance. <strong>That generalisation is what makes the operation log "unified,"</strong> and <code>scope</code> is the noun that made it possible.</p>
+</div>
+
+<div class="card ga">
+<h2>The one subtlety: scopes form a tree, and operations can cross scope edges</h2>
+<p>An operation's <strong>parents</strong> are normally other operations <em>in the same scope</em>. But an operation may <em>also</em> reference the current head of its <strong>parent</strong> governance scope.</p>
+<p>This is safe because membership is nested: a subgroup's members are always a subset of its ancestor's members, so pointing "up" the tree never reveals anything a reader couldn't already see. That cross-scope parent link is what causally ties a child scope to the governance that authorises it — for example, a context write can pin the exact membership state it was authored under.</p>
+<p>That single mechanism is the foundation of <strong>authorization at the causal cut</strong> ("forward-only" authorization): a write authored before a member was revoked stays valid regardless of the order in which a peer receives the two operations. Chapter 6 builds the full rule on top of this; for now, just hold the shape: <em>one parent set, one causal model, spanning data and governance.</em></p>
+</div>
+
+<div class="card gc">
+<h2>Where this leads</h2>
+<p>With <em>scope</em> in hand, the rest of the reference is short:</p>
+<ul>
+<li><strong>Chapter 3</strong> defines the operation that lives in a scope, and how its DAG is ordered.</li>
+<li><strong>Chapter 4</strong> defines the fold from a scope's DAG to its state and its scope root.</li>
+<li><strong>Chapters 6–10</strong> are all variations on "operations move between scopes, and scopes converge."</li>
+</ul>
+</div>
+
+<div class="chapter-nav">
+<span><a href="index.html">← Protocol Reference</a></span>
+<span><a href="identities.html">Identities &amp; Keys →</a></span>
+</div>
+
+</div>
+</div>
+<script src="../seq-diagram.js"></script>
+<script src="../nav.js"></script>
+</body>
+</html>

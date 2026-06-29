@@ -1,0 +1,67 @@
+---
+title: Journeys by goal
+description: Curated cross-track reading paths for common goals.
+sidebar:
+  label: Journeys by goal
+  order: 2
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Each journey threads pages across tracks in the order that gets you to a goal.
+Follow one top to bottom.
+
+## Build a collaborative app
+
+<Steps>
+
+1. [Quickstart](/build/quickstart/) — get a node and an app running.
+2. [Build your first app](/build/tutorial/) — state, methods, build, call.
+3. [Collections](/build/collections/) — pick the right CRDT types for your data.
+4. [Emit &amp; handle events](/build/guides/events/) and [call another context](/build/guides/cross-context/).
+5. [Access-controlled storage](/build/permissioned-storage/) — lock down what shouldn't be world-writable.
+6. [Example apps](/build/examples/) — study real ones; [test](/build/testing/) yours.
+
+</Steps>
+
+## Run a production fleet
+
+<Steps>
+
+1. [Install &amp; first run](/operate/install/).
+2. [Production deployment](/operate/deployment/) — long-lived service, volumes, ports.
+3. [Networking &amp; discovery](/operate/networking/) — bootstrap, relays, NAT.
+4. [Security hardening](/operate/security/) and the [auth service](/operate/auth/).
+5. [Observability](/operate/observability/) — metrics and what divergence looks like.
+6. [Runbooks](/operate/runbooks/) and [troubleshooting](/operate/troubleshooting/) for day-2.
+
+</Steps>
+
+## Reimplement a node from scratch
+
+<Steps>
+
+1. [Protocol overview](/protocol/overview/) — the one idea everything hangs on.
+2. The core model, in order: [Concepts](/protocol/concepts/) → [Identities](/protocol/identities/) → [Operations](/protocol/operations/) → [Projection](/protocol/projection/).
+3. The planes: [Execution](/protocol/execution/) and [Governance](/protocol/governance/).
+4. The paths: [Networking](/protocol/networking/) → [Write](/protocol/write-path/) → [Receive](/protocol/receive-path/) → [Sync](/protocol/sync/).
+5. Subsystems: [Blobs](/protocol/blobs/), [TEE](/protocol/tee-attestation/), [xcall](/protocol/xcall/), [Upgrades](/protocol/upgrades/).
+6. The on-disk [Storage Schema](/protocol/storage/) and the [Glossary](/protocol/glossary/).
+
+</Steps>
+
+## Understand the data model deeply
+
+<Steps>
+
+1. [Collections](/build/collections/) — the types and their semantics.
+2. [CRDTs — how they work](/protocol/crdt-internals/) — the actual merge algorithms.
+3. [Projection &amp; the root hash](/protocol/projection/) — how state and convergence are computed.
+4. [Storage performance](/build/storage-complexity/) — what operations really cost.
+5. [Access-controlled storage](/build/permissioned-storage/) — the enforcement model.
+
+</Steps>
+
+<Aside type="tip">
+Prefer to browse by subject instead of goal? See [Topics](/topics/).
+</Aside>

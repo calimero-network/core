@@ -1,0 +1,190 @@
+---
+title: Testing strategy
+description: How testing is organized across the Calimero Core workspace — app unit tests, storage convergence harness, the deterministic sync simulator, e2e, and the exact CI gate a contributor runs before a PR.
+sidebar:
+  label: Testing strategy
+---
+
+import { Steps, Aside, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+Calimero Core is tested in layers, each trading scope for speed. Fast in-process
+unit tests cover application and CRDT logic; a deterministic simulator covers the
+sync protocol without WASM or a network; merobox workflows cover the real
+multi-node system end to end. This page maps the layers and gives the exact
+commands CI enforces, so you can reproduce the gate before opening a PR.
+
+| Layer | Where | What it proves | Speed |
+| --- | --- | --- | --- |
+| App unit tests (`TestHost`) | `crates/sdk/src/testing.rs` | Your app's `call` / `view` / event / migrate logic, in isolation | Milliseconds |
+| Storage convergence | `crates/storage/src/testing.rs` | A `Mergeable` / `#[app::state]` type converges under concurrent, reordered ops | Sub-second |
+| Sync simulator | `crates/node/tests/sync_sim/` | The sync protocol converges under loss, latency, reordering, and partitions | Fast, deterministic |
+| Integration / e2e (merobox) | `workflows/`, `e2e-tests/` | The real multi-node system: install, call, sync, govern, migrate | Slow (Docker) |
+
+## App unit tests with `TestHost`
+
+[`TestHost`](https://github.com/calimero-network/core/blob/master/crates/sdk/src/testing.rs)
+lets you exercise an `#[app::state]` type as ordinary Rust — no `wasm32` build, no
+node, no containers. State lives in an in-memory mock store; events and logs are
+captured; the executor / context identity is configurable. You drive mutations
+with `call`, reads with `view`, and inspect `events()` / `logs()`. Migrations are
+supported too: `TestHost::migrate`, plus `assert_migrate_converges` and
+`assert_absorb_replay_converges` for the determinism properties the migration
+model rests on.
+
+```rust
+let mut app = TestHost::new(|| MyApp::init());
+app.call(|s| s.increment("a".into())).unwrap();
+let value = app.view(|s| s.get("a".into())).unwrap();
+assert_eq!(value, 1);
+assert_eq!(app.events().len(), 1);
+```
+
+<Aside type="caution" title="What TestHost deliberately does not model">
+  The harness covers normal `call` / `view` / event / log / identity / migrate
+  flows. It does **not** model:
+
+  - **Cross-context calls** (`env::xcall`), **networked blob announce / fetch**,
+    and **`env::ed25519_verify`** — these have no in-process equivalent and
+    **panic** if invoked. Cover them with merobox workflows.
+  - **Event-handler dispatch.** `TestHost` captures the events your methods
+    emit, but it does not run the node's handler loop, so registered handlers do
+    not fire automatically — you drive methods directly through `call`.
+
+  It is also **one-live-harness-per-thread**: construct a fresh `TestHost` at the
+  top of each `#[test]` (it resets all mock state on construction), and set a
+  non-owner identity explicitly when asserting a rejection path — the default
+  identity satisfies owner checks and would silently pass.
+</Aside>
+
+This is the same harness app developers use; the app-author-facing guide is at
+[/build/testing/](/build/testing/).
+
+## Storage convergence (property tests)
+
+[`crates/storage/src/testing.rs`](https://github.com/calimero-network/core/blob/master/crates/storage/src/testing.rs)
+provides `converge` / `converge_app`: assert in a single `#[test]` that a state
+type converges under concurrent, reordered operations. It drives N in-memory
+replicas (each with its own store and executor identity), applies the registered
+ops on every replica in a per-replica shuffled order, gossips the resulting
+`StorageDelta`s in shuffled order, and asserts every replica lands on the **same
+Merkle root hash**.
+
+```rust
+converge_app(TeamMetricsApp::init)
+    .replicas(3)
+    .ops(|s| { let _ = s.record_win("liverpool".into()); })
+    .assert_all_replicas_equal();
+```
+
+<Aside type="note">
+  This proves your **app state converges end-to-end**, which is usually **not**
+  your hand-written `Mergeable::merge` — collection fields converge via the
+  storage layer's per-child-entity merge during delta apply, and inline scalars
+  via the root entity's HLC last-writer-wins. `Shared` / `Authored` / `User` /
+  `Frozen` storage need the node's signing identity (delta apply verifies
+  signatures), which this bare harness does not provide — test those with
+  merobox. The run takes a process-global lock, so it self-serializes and does
+  not need `#[serial]`.
+</Aside>
+
+## The deterministic sync simulator
+
+[`crates/node/tests/sync_sim/`](https://github.com/calimero-network/core/tree/master/crates/node/tests)
+is a discrete-event framework for the sync protocol. It reuses the **real**
+`calimero-storage` `Index` / `Interface::apply_action` and Merkle tree, the real
+hash computation, and the real `select_protocol()` — so hash propagation and
+protocol selection behave identically to production — while replacing WASM
+execution, network I/O, time, and concurrency with a `NetworkRouter` (with fault
+injection), a discrete `SimClock`, seeded RNG, and sequential event processing.
+Seeds make every failure reproducible.
+
+```rust
+let mut rt = SimRuntime::with_seed(42);
+```
+
+Read `crates/node/tests/sync_sim/AGENT_GUIDE.md` before touching the framework.
+The framework itself lives under `sync_sim/` (change with review); add new
+protocol-behavior tests under `sync_scenarios/`, and compliance tests under
+`sync_compliance/`.
+
+## Integration and e2e (merobox)
+
+The widest layer runs real `merod` nodes in Docker via
+[merobox](https://github.com/calimero-network/merobox), driven by declarative
+YAML workflows. The repo's `workflows/` directory holds the scenario files
+(grouped under `app-migration/`, `sync-tests/`, `fuzzy-tests/`); each describes
+a node topology and a sequence of install / call / assert steps. These are the
+tests that exercise everything `TestHost` and the simulator leave out — real
+networking, cross-context calls, governance across peers, late joiners,
+partitions, and multi-node migrations. They run in CI under the
+`e2e-rust-apps.yml`, `app-migration-e2e.yml`, and `sync-regression.yml`
+workflows, building a local `merod:local` image plus the WASM apps under
+`apps/`.
+
+## The pre-PR gate
+
+These are the exact checks CI enforces in `.github/workflows/ci-checks.yml`. Run
+them locally before pushing — they are the same commands, in the same order.
+
+<Steps>
+
+1. **Build the apps, then the workspace.** Several workspace tests load compiled
+   WASM artifacts, so the apps build first.
+
+   ```sh
+   ./scripts/build-all-apps.sh
+   cargo build --workspace --all-targets --tests
+   ```
+
+2. **Check formatting.**
+
+   ```sh
+   cargo fmt --check
+   ```
+
+3. **Lint with the no-warnings gate.** The `--features calimero-storage/testing`
+   flag pulls the storage `testing` harness into the same single pass so it is
+   linted too.
+
+   ```sh
+   cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
+   ```
+
+4. **Run the tests.** CI runs with output shown and a `TEST_HOSTS` env var
+   (some networking tests bind real interfaces); set it locally if host-dependent
+   tests fail.
+
+   ```sh
+   TEST_HOSTS=127.0.0.1,0.0.0.0 cargo test -- --nocapture
+   ```
+
+5. **Run the narrow target checks** CI keeps green: the no-chain context-config
+   build and the local-only `merod` init binary.
+
+   ```sh
+   cargo check -p calimero-context-config
+   cargo check -p merod --no-default-features
+   ```
+
+6. **Check the dependency policy** — only needed if you changed dependencies. CI
+   pins `cargo-deny` to `0.16.3` for toolchain compatibility.
+
+   ```sh
+   cargo deny check licenses sources
+   ```
+
+</Steps>
+
+<Aside type="tip">
+  Building the example apps to WASM needs the target installed once:
+  `rustup target add wasm32-unknown-unknown`. The full workflow — running local
+  nodes, commit / PR conventions, and style rules — is on the
+  [development workflow](/contribute/development/) page.
+</Aside>
+
+## Where to go next
+
+<CardGrid>
+  <LinkCard title="Development workflow" href="/contribute/development/" description="Build, run local nodes, and the commit / PR conventions the gate sits inside." />
+  <LinkCard title="Testing your app" href="/build/testing/" description="The app-author view of TestHost — fast, deterministic in-process unit tests." />
+</CardGrid>

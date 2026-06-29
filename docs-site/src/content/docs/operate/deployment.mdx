@@ -1,0 +1,289 @@
+---
+title: Production Deployment
+description: Run merod as a long-lived service with persistent storage, exposed swarm/server ports, a private admin API, and TLS at the edge.
+sidebar:
+  order: 10
+---
+
+import { Steps, Aside, Tabs, TabItem, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+This page covers running `merod` as a long-lived service: process supervision,
+which ports to publish, persisting the home directory, backups, and terminating
+TLS in front of the HTTP server. It builds on
+[Install & first run](/operate/install/), the
+[configuration reference](/operate/config/), and the
+[merod reference](/operate/merod/) — it does not repeat them.
+
+<Aside type="caution" title="Pre-1.0">
+Calimero is pre-1.0. The ports, on-disk layout, and flags below are grounded in
+the current `Dockerfile` and config structs, but can change between releases.
+Confirm against `merod --help` and your build before standardising a deployment.
+</Aside>
+
+## The shape of a deployment
+
+One `merod` process owns one **home directory** — `config.toml`, the identity
+keypair, the RocksDB **datastore**, and the **blob store** — and opens two
+listeners:
+
+| Listener | Default port | Bind default | Audience |
+| --- | --- | --- | --- |
+| libp2p **swarm** | `2428` (TCP + QUIC) | `0.0.0.0` / `::` (all interfaces) | Other nodes — must be reachable by peers |
+| HTTP **server** | `2528` (TCP) | `127.0.0.1` / `::1` (loopback) | `meroctl`, apps, the admin API — keep private |
+
+The swarm listens on all interfaces by default because peers must dial it. The
+server listens on loopback only, so nothing reaches the admin/JSON-RPC surface
+off-host until you deliberately widen it or front it with a proxy.
+
+<Aside type="caution" title="Do not blindly expose 2528">
+The server port carries the admin API (`/admin-api`), JSON-RPC (`/jsonrpc`),
+WebSocket (`/ws`), and SSE (`/sse`). Binding it to a public interface with no
+auth in front exposes node administration. Keep it on loopback and reach it
+through a [reverse proxy with TLS and auth](#put-the-server-behind-a-reverse-proxy),
+or over a private network only.
+</Aside>
+
+## Run merod as a service
+
+`merod run` is a foreground process — it does not daemonise. Put it under a
+supervisor (Docker or systemd) that restarts it on crash and on reboot, and
+point it at a **persistent** home directory.
+
+<Tabs>
+  <TabItem label="Docker">
+
+The root `Dockerfile` produces a runtime image whose entrypoint is `merod`. It
+sets `CALIMERO_HOME=/data`, declares `/data` as a `VOLUME`, exposes `2428` and
+`2528`, and runs as a non-root user (uid `10001`). Append a node name and
+subcommand after the image.
+
+<Steps>
+
+1. **Build (or pull) the image.**
+
+   ```sh
+   docker build -t calimero-node .
+   ```
+
+2. **Create a named volume** so the home directory survives container
+   replacement, and initialise the node into it once.
+
+   ```sh
+   docker volume create calimero-data
+
+   docker run --rm \
+     -v calimero-data:/data \
+     calimero-node --node node1 init
+   ```
+
+   The image's `CALIMERO_HOME=/data` means the node home is `/data/node1`.
+
+3. **Run it as a long-lived, restarting service.** Publish the swarm port to the
+   world; keep the server port on loopback so it is only reachable through a
+   proxy on the same host (drop the `127.0.0.1:` prefix only if you front it).
+
+   ```sh
+   docker run -d --name node1 \
+     --restart unless-stopped \
+     -v calimero-data:/data \
+     -p 2428:2428 \
+     -p 2428:2428/udp \
+     -p 127.0.0.1:2528:2528 \
+     calimero-node --node node1 run
+   ```
+
+   :::note
+   The swarm uses both TCP and QUIC, so publish `2428/tcp` **and** `2428/udp`.
+   QUIC runs over UDP — omitting the UDP mapping silently disables QUIC dials
+   inbound.
+   :::
+
+4. **Check health** from the host (the server is on loopback):
+
+   ```sh
+   curl -s http://127.0.0.1:2528/admin-api/health
+   ```
+
+   A healthy node returns a status of `alive`.
+
+</Steps>
+
+<Aside type="caution" title="Server bind vs. published port">
+By default the server binds loopback *inside* the container. To reach it from
+another host, you must both widen the in-container bind (`--server-host`, or
+`server.listen` in `config.toml`) **and** publish the port — and only behind a
+proxy. Publishing alone is not enough if the process is still bound to `::1`.
+</Aside>
+
+  </TabItem>
+  <TabItem label="systemd">
+
+For a host install of the `merod` binary, supervise it with a systemd unit. This
+is a **sketch** — adjust user, paths, and the binary location to your host.
+
+```ini
+# /etc/systemd/system/merod@.service
+[Unit]
+Description=Calimero node (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=calimero
+Group=calimero
+Environment=CALIMERO_HOME=/var/lib/calimero
+ExecStart=/usr/local/bin/merod --home /var/lib/calimero --node %i run
+Restart=on-failure
+RestartSec=5
+# Stop cleanly so RocksDB flushes and releases its lock
+KillSignal=SIGINT
+TimeoutStopSec=60
+
+# Hardening (the home dir must stay writable)
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/calimero
+
+[Install]
+WantedBy=multi-user.target
+```
+
+<Steps>
+
+1. **Create the service user and home**, then initialise the node once:
+
+   ```sh
+   sudo useradd --system --home /var/lib/calimero --shell /sbin/nologin calimero
+   sudo -u calimero merod --home /var/lib/calimero --node node1 init
+   ```
+
+2. **Enable and start** the instance (`%i` is the node name):
+
+   ```sh
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now merod@node1
+   ```
+
+3. **Check it is up** and tail logs:
+
+   ```sh
+   systemctl status merod@node1
+   journalctl -u merod@node1 -f
+   curl -s http://127.0.0.1:2528/admin-api/health
+   ```
+
+</Steps>
+
+<Aside type="caution" title="Stop with SIGINT/SIGTERM, not SIGKILL">
+`KillSignal=SIGINT` lets RocksDB flush and release its lock on stop. An abrupt
+`SIGKILL` (the default after `TimeoutStopSec`) can leave the datastore to
+recover on next start. Keep `TimeoutStopSec` generous enough for a clean exit.
+</Aside>
+
+  </TabItem>
+</Tabs>
+
+## Persist the home directory
+
+Everything stateful lives under the node home. Losing it loses the node's
+identity and replicated state.
+
+| Sub-path | Section in `config.toml` | What it holds |
+| --- | --- | --- |
+| `config.toml` | — | Config **and** the identity keypair (`[identity]`) |
+| `data/` | `[datastore] path = "data"` | RocksDB datastore (groups, contexts, governance DAG) |
+| `blobs/` | `[blobstore] path = "blobs"` | On-disk blob storage |
+
+The `datastore` and `blobstore` paths are **relative to the node home**, so a
+single persistent volume mounted at the home directory captures all three.
+
+<Aside type="caution" title="The identity keypair is in config.toml">
+The node's `peer_id` is derived from the keypair stored in `config.toml`
+(`[identity]`). Persist `config.toml` together with the datastore — restoring the
+datastore while regenerating identity makes the node a *different* peer that must
+re-join from scratch. See the
+[backup/restore runbook](/operate/runbooks/#back-up--restore-the-datastore).
+</Aside>
+
+### Backups
+
+A consistent backup is a **cold copy** of the whole home directory taken while
+the node is stopped (or an atomic filesystem/volume snapshot). There is no
+dedicated `merod` backup subcommand. The full, ordered procedure — stop, copy
+config + datastore + blobs as one set, restart, let it re-converge — lives in
+the runbooks.
+
+<CardGrid>
+  <LinkCard
+    title="Back up & restore"
+    href="/operate/runbooks/#back-up--restore-the-datastore"
+    description="Cold-copy the node home; restore and let it re-converge from peers." />
+  <LinkCard
+    title="Upgrade a node binary"
+    href="/operate/runbooks/#upgrade-a-node-binary"
+    description="Quiesce, stop, replace the binary, restart with the same home." />
+</CardGrid>
+
+## Put the server behind a reverse proxy
+
+The HTTP server speaks plain HTTP and has no built-in TLS. For any access beyond
+loopback, terminate TLS at a reverse proxy (nginx, Caddy, Traefik, …) and forward
+to the loopback bind. The proxy is also where you enforce authentication when
+running the default `auth_mode = "proxy"`.
+
+```ini
+# nginx sketch — TLS at the edge, forward to the loopback server bind
+server {
+    listen 443 ssl;
+    server_name node1.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/node1.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/node1.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:2528;
+
+        # WebSocket (/ws) and SSE (/sse) need upgrade + unbuffered streaming
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host       $host;
+        proxy_buffering off;
+    }
+}
+```
+
+<Aside type="caution" title="Auth lives at the proxy in proxy mode">
+With the default `auth_mode = "proxy"`, the node expects an external auth proxy
+in front of it — the protected admin routes are guarded on that assumption.
+Exposing `2528` without that proxy leaves administration unauthenticated. If you
+want the node to enforce auth itself, run `auth_mode = "embedded"` (see the
+[admin API reference](/operate/admin-api/#authentication) and
+[config reference](/operate/config/)).
+</Aside>
+
+:::tip
+WebSocket (`/ws`) and Server-Sent Events (`/sse`) are long-lived streams. Set
+your proxy's read timeouts high and disable response buffering for those paths,
+or clients will see periodic disconnects.
+:::
+
+:::note
+You can prefix every server base path by setting the `NODE_PATH_PREFIX`
+environment variable (e.g. `NODE_PATH_PREFIX=/node1` moves the admin API to
+`/node1/admin-api`). Useful when fronting several nodes behind one hostname.
+:::
+
+## Next
+
+<CardGrid>
+  <LinkCard
+    title="Networking & discovery"
+    href="/operate/networking/"
+    description="Swarm transport, peer discovery, and NAT traversal for a reachable node." />
+  <LinkCard
+    title="Observability"
+    href="/operate/observability/"
+    description="Scrape /metrics and watch the counters that matter in production." />
+</CardGrid>

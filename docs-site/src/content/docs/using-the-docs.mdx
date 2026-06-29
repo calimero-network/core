@@ -1,0 +1,58 @@
+---
+title: How to use these docs
+description: How this documentation is organized — the four tracks, the page types, and where to start.
+sidebar:
+  label: How to use these docs
+  order: 1
+---
+
+import { CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
+
+These docs are split into **four tracks by audience**, and within each track the
+sidebar groups pages by **what they're for** — so you can tell a "read in order"
+page from a "look it up" page at a glance.
+
+## Pick your track
+
+<CardGrid>
+  <LinkCard title="Build" href="/build/" description="You're writing a Calimero app on the SDK." />
+  <LinkCard title="Operate" href="/operate/" description="You're running and configuring nodes." />
+  <LinkCard title="Protocol Reference" href="/protocol/overview/" description="You're reimplementing a node, or want the model." />
+  <LinkCard title="Contribute" href="/contribute/" description="You're working on Calimero Core itself." />
+</CardGrid>
+
+## How each track is grouped
+
+Every track separates learning-oriented pages from reference:
+
+| Group | What it is | How to read it |
+| --- | --- | --- |
+| **Get started** | A tutorial path | In order, top to bottom |
+| **Guides / How-to** | Task-focused recipes | Jump to the one you need |
+| **Reference** | Exhaustive look-up | Search / scan, don't read cover to cover |
+| **Deep dives** | Implementation internals | When you want the "why" and the sharp edges |
+
+The Protocol Reference adds a few more groups (_The core model_, _The planes_,
+_Moving &amp; reconciling_, _Subsystems_) because it's a sequence — it follows one
+operation from birth to convergence.
+
+## Page conventions
+
+- **Callouts.** `:::note` is context, `:::tip` is a shortcut, `:::caution` is a
+  footgun. In the Protocol spec, a **`Normative`** caution marks a MUST/SHOULD
+  requirement an independent implementation has to satisfy.
+- **Diagrams** are animated — hit **▶ Replay** to step through a flow again.
+- **Code blocks** have a copy button; spec sections give exact byte layouts.
+- **Pre-1.0.** Everything here is accurate to current code but may change before
+  1.0; the byte-level details are versioned (see the spec's versioning note).
+
+## Two faster ways in
+
+<CardGrid>
+  <LinkCard title="Journeys by goal" href="/journeys/" description="Curated cross-track paths: build an app, run a fleet, reimplement a node." />
+  <LinkCard title="Browse by topic" href="/topics/" description="Everything on CRDTs, encryption, performance, governance…" />
+</CardGrid>
+
+<Aside type="tip">
+Press <kbd>/</kbd> or <kbd>⌘K</kbd> anywhere to search the whole site.
+</Aside>
