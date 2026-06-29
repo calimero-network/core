@@ -66,6 +66,38 @@ pub(super) fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
     }
 }
 
+/// Bootstrap a namespace root with a freshly-generated admin: writes the
+/// root meta (`admin == owner`), an `Admin` member row, and the admin's
+/// stored identity. Returns the admin's `(PrivateKey, PublicKey)` so the
+/// caller can sign ops and seed subgroup metas. Collapses the
+/// meta-save + add_member + store_identity setup duplicated across the
+/// namespace apply tests.
+pub(super) fn bootstrap_namespace_with_admin(
+    store: &Store,
+    ns_id: [u8; 32],
+) -> (calimero_primitives::identity::PrivateKey, PublicKey) {
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::{MembershipRepository, MetaRepository};
+
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut OsRng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+    let ns_gid = ContextGroupId::from(ns_id);
+    MetaRepository::new(store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
+    (admin_sk, admin_pk)
+}
+
 /// Shortcut for nesting one group under another inside tests, unwrapping
 /// the result. Used by membership-path tests across both `tests.rs` and
 /// `membership/tests.rs`.

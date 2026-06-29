@@ -18,7 +18,8 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 
 use super::super::test_fixtures::{
-    nest_for_test, sample_meta_with_admin, test_group_id, test_meta, test_store,
+    bootstrap_namespace_with_admin, nest_for_test, sample_meta_with_admin, test_group_id,
+    test_meta, test_store,
 };
 use super::super::*;
 
@@ -3855,28 +3856,13 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
     // exact-equality determinism check would permanently reject the retry,
     // stalling the namespace DAG. The subset check lets the retry resume.
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
-    use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
-    let admin_sk = PrivateKey::from(admin_sk_bytes);
-    let admin_pk = admin_sk.public_key();
-
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
-        .unwrap();
-    NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
-        .unwrap();
+    let (admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
 
     // Build: namespace → A → B (two-level subtree).
     let a_id = [0xAAu8; 32];
@@ -3955,28 +3941,13 @@ fn execute_group_deleted_ignores_payload_groups_outside_local_subtree() {
     // then deleted. The fix recomputes the subtree locally and deletes only
     // that; payload extras must survive.
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
-    use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
 
     use super::NamespaceGovernance;
 
     let store = test_store();
-    let mut rng = OsRng;
-    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
-    let admin_sk = PrivateKey::from(admin_sk_bytes);
-    let admin_pk = admin_sk.public_key();
-
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
-        .unwrap();
-    NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
-        .unwrap();
+    let (admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
 
     // Build: namespace → A → B (the subtree the signer legitimately owns),
     // plus an unrelated sibling X directly under the namespace root that the
