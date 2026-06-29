@@ -106,6 +106,11 @@ pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
 /// Validated at Borsh deserialization time: a zero value is rejected on the
 /// wire, making it impossible to construct an invalid capability op from
 /// received bytes.
+///
+/// Unknown bits are accepted without error (forward-compatible): nodes
+/// running older software will store ops with bits they do not recognise and
+/// replay them faithfully. Callers must mask against known capability
+/// constants before interpreting the value.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, BorshSerialize)]
 pub struct ContextCapabilityBits(u8);
 
@@ -123,6 +128,14 @@ impl ContextCapabilityBits {
     #[must_use]
     pub fn get(self) -> u8 {
         self.0
+    }
+}
+
+impl TryFrom<u8> for ContextCapabilityBits {
+    type Error = &'static str;
+
+    fn try_from(bits: u8) -> Result<Self, Self::Error> {
+        Self::new(bits).ok_or("capability bitmask must not be zero")
     }
 }
 
