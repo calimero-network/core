@@ -368,4 +368,40 @@ mod tests {
             "an admin token must pass every permission check",
         );
     }
+
+    /// A revoked token must map to `403 Forbidden` with `X-Auth-Error:
+    /// token_revoked`. Guards against a silent regression to the generic `401`
+    /// if the typed variant is ever removed, renamed, or the arm dropped.
+    #[test]
+    fn revoked_token_maps_to_forbidden() {
+        use axum::http::StatusCode;
+        use mero_auth::AuthError;
+
+        let resp = super::unauthorized_response(&AuthError::TokenRevoked);
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.headers().get("X-Auth-Error").unwrap(), "token_revoked",);
+    }
+
+    /// An expired token maps to `401 Unauthorized` with `X-Auth-Error:
+    /// token_expired`.
+    #[test]
+    fn expired_token_maps_to_unauthorized() {
+        use axum::http::StatusCode;
+        use mero_auth::AuthError;
+
+        let resp = super::unauthorized_response(&AuthError::TokenExpired);
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(resp.headers().get("X-Auth-Error").unwrap(), "token_expired",);
+    }
+
+    /// Any other rejection falls back to a bare `401` with no error hint.
+    #[test]
+    fn other_errors_map_to_bare_unauthorized() {
+        use axum::http::StatusCode;
+        use mero_auth::AuthError;
+
+        let resp = super::unauthorized_response(&AuthError::InvalidToken("nope".to_owned()));
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert!(resp.headers().get("X-Auth-Error").is_none());
+    }
 }
