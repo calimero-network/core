@@ -5,17 +5,18 @@
 //! without duplicating fixtures. Crate-internal: visible to all
 //! submodules under `group_store/`, invisible outside.
 
-use super::NamespaceRepository;
+use super::{MembershipRepository, MetaRepository, NamespaceRepository};
 use std::sync::Arc;
 
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::UpgradePolicy;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::{GroupMetaValue, GroupParentRef};
 use calimero_store::Store;
+use rand::rngs::OsRng;
 pub(super) fn test_store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }
@@ -75,13 +76,7 @@ pub(super) fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
 pub(super) fn bootstrap_namespace_with_admin(
     store: &Store,
     ns_id: [u8; 32],
-) -> (calimero_primitives::identity::PrivateKey, PublicKey) {
-    use calimero_primitives::context::GroupMemberRole;
-    use calimero_primitives::identity::PrivateKey;
-    use rand::rngs::OsRng;
-
-    use super::{MembershipRepository, MetaRepository};
-
+) -> (PrivateKey, PublicKey) {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut OsRng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();

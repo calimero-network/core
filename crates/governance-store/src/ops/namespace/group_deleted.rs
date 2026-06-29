@@ -147,10 +147,12 @@ pub(crate) fn apply(
         .iter()
         .map(ContextGroupId::to_bytes)
         .chain(std::iter::once(root_group_id));
+    let mut deleted_contexts = 0usize;
     for gid_bytes in all_groups_iter {
         let gid = ContextGroupId::from(gid_bytes);
         for context_id in enumerate_group_contexts(store, &gid, 0, usize::MAX)? {
             unregister_context_from_group(store, &gid, &context_id)?;
+            deleted_contexts += 1;
         }
         // Capture parent before delete_group_local_rows runs.
         let parent_for_cleanup = NamespaceRepository::new(store).parent(&gid)?;
@@ -165,10 +167,14 @@ pub(crate) fn apply(
         }
     }
 
+    // Counts reflect what was actually deleted locally: groups is the
+    // recomputed subtree (+1 for the root), contexts is the running tally
+    // from the unregister loop — not the pre-loop `local_payload` snapshot,
+    // which can overcount if a prior partial apply already removed some.
     tracing::info!(
         ?root_gid,
         deleted_groups = local_payload.descendant_groups.len() + 1,
-        deleted_contexts = local_payload.contexts.len(),
+        deleted_contexts,
         "cascade-deleted group subtree"
     );
     Ok(())
