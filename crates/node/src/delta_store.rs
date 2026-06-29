@@ -2104,6 +2104,12 @@ impl DeltaStore {
         let actions_for_db = delta.payload.clone();
         let hlc = delta.hlc;
 
+        // Borsh-serialize the actions at most once. Both the events pre-persist
+        // (below) and the applied-record (further down) write the same bytes;
+        // without this memo, a delta that has events AND applies would re-encode
+        // the identical payload twice.
+        let mut serialized_actions: Option<Vec<u8>> = None;
+
         // Store the mapping before applying
         {
             let mut head_hashes = self.head_root_hashes.write().await;
@@ -2114,8 +2120,9 @@ impl DeltaStore {
         // This ensures events are available if the delta cascades during add_delta()
         if events.is_some() {
             let mut handle = self.applier.context_client.datastore_handle();
-            let serialized_actions = borsh::to_vec(&actions_for_db)
+            let encoded = borsh::to_vec(&actions_for_db)
                 .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?;
+            serialized_actions = Some(encoded.clone());
 
             handle
                 .put(
@@ -2123,7 +2130,7 @@ impl DeltaStore {
                     &calimero_store::types::ContextDagDelta {
                         delta_id,
                         parents: parents.clone(),
-                        actions: serialized_actions,
+                        actions: encoded,
                         hlc,
                         applied: false, // Not applied yet, will update if it applies
                         expected_root_hash,
@@ -2247,8 +2254,13 @@ impl DeltaStore {
             calimero_store::key::ContextDagDelta,
             calimero_store::types::ContextDagDelta,
         )> = if result {
-            let serialized_actions = borsh::to_vec(&actions_for_db)
-                .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?;
+            // Reuse the pre-persist encoding when it ran (events path); only
+            // serialize here if this delta had no events to pre-persist.
+            let serialized_actions = match serialized_actions {
+                Some(bytes) => bytes,
+                None => borsh::to_vec(&actions_for_db)
+                    .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?,
+            };
             Some((
                 calimero_store::key::ContextDagDelta::new(self.applier.context_id, delta_id),
                 calimero_store::types::ContextDagDelta {

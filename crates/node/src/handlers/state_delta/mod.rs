@@ -1239,8 +1239,10 @@ async fn request_missing_deltas(
     // Phase 1: Fetch ALL missing deltas recursively
     // No artificial limit - DAG is acyclic so this will naturally terminate at genesis
     while !to_fetch.is_empty() {
-        let current_batch = to_fetch.clone();
-        to_fetch.clear();
+        // Take ownership of this round's batch, leaving `to_fetch` empty to
+        // collect the next round's parents — avoids cloning the whole Vec only
+        // to immediately clear it.
+        let current_batch = std::mem::take(&mut to_fetch);
 
         for missing_id in current_batch {
             fetch_count += 1;

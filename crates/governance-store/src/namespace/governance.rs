@@ -241,8 +241,8 @@ impl<'a> NamespaceGovernance<'a> {
                         // a failure here must not block the DAG (every later
                         // op would orphan), so errors are logged, not
                         // propagated.
-                        let envelope_bytes = borsh::to_vec(envelope).unwrap_or_default();
-                        match self.apply_received_group_key(*group_id, &envelope_bytes, op.signer) {
+                        match self.apply_received_group_key_envelope(*group_id, envelope, op.signer)
+                        {
                             Ok(retry_divergence) => {
                                 if retry_divergence.is_some() {
                                     result.divergence = retry_divergence;
@@ -1082,8 +1082,6 @@ impl<'a> NamespaceGovernance<'a> {
         envelope_bytes: &[u8],
         responder_identity: PublicKey,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
-        let ns_id = ContextGroupId::from(self.namespace_id);
-
         let envelope: KeyEnvelope = match borsh::from_slice(envelope_bytes) {
             Ok(env) => env,
             Err(e) => {
@@ -1091,6 +1089,20 @@ impl<'a> NamespaceGovernance<'a> {
                 return Ok(None);
             }
         };
+        self.apply_received_group_key_envelope(group_id, &envelope, responder_identity)
+    }
+
+    /// Like [`apply_received_group_key`](Self::apply_received_group_key) but
+    /// takes an already-decoded [`KeyEnvelope`]. The local `KeyDelivery` apply
+    /// path holds the envelope in hand, so it calls this directly instead of
+    /// serializing it only to immediately re-decode the bytes.
+    pub(crate) fn apply_received_group_key_envelope(
+        &self,
+        group_id: [u8; 32],
+        envelope: &KeyEnvelope,
+        responder_identity: PublicKey,
+    ) -> EyreResult<Option<super::super::DivergenceReport>> {
+        let ns_id = ContextGroupId::from(self.namespace_id);
 
         let Some(identity) = NamespaceRepository::new(self.store).identity_record(&ns_id)? else {
             return Ok(None);
@@ -1104,7 +1116,7 @@ impl<'a> NamespaceGovernance<'a> {
             return Ok(None);
         }
 
-        let group_key = match GroupKeyring::unwrap_for_recipient(&recipient_sk, &envelope) {
+        let group_key = match GroupKeyring::unwrap_for_recipient(&recipient_sk, envelope) {
             Ok(k) => k,
             Err(e) => {
                 tracing::warn!(?e, "failed to unwrap received group key envelope");
