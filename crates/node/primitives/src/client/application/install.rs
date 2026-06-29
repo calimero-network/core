@@ -33,16 +33,20 @@ const MAX_INSTALL_REDIRECTS: usize = 10;
 /// the synchronous check in `calimero-server-primitives` (the two crates do not
 /// share a dependency); applied here at fetch time so it also covers redirect
 /// hops, which the request-validation layer cannot see.
+///
+/// Uses the typed `Url::host()` rather than string parsing so IPv6 literals
+/// (including bracketed forms) are classified by the URL parser, not by manual
+/// bracket stripping.
 fn host_is_blocked(url: &Url) -> bool {
-    let Some(host) = url.host_str() else {
-        return true; // no host → refuse
-    };
-    let trimmed = host.trim_start_matches('[').trim_end_matches(']');
-    if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
-        return ip_is_blocked(ip);
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip_is_blocked(std::net::IpAddr::V4(ip)),
+        Some(url::Host::Ipv6(ip)) => ip_is_blocked(std::net::IpAddr::V6(ip)),
+        Some(url::Host::Domain(domain)) => {
+            let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+            domain == "localhost" || domain.ends_with(".localhost")
+        }
+        None => true, // no host → refuse
     }
-    let domain = host.trim_end_matches('.').to_ascii_lowercase();
-    domain == "localhost" || domain.ends_with(".localhost")
 }
 
 fn ip_is_blocked(ip: std::net::IpAddr) -> bool {

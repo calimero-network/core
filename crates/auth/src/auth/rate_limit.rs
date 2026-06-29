@@ -8,18 +8,32 @@
 //! Time is passed in explicitly (`*_at(now_ms)`) so the behaviour is
 //! deterministic in tests; the public wrappers stamp the real clock.
 //!
-//! NOTE: keying is by request identity (auth method + public key + client
-//! name). IP-based limiting — which would also throttle attackers that rotate
-//! the request identity — requires `ConnectInfo` wiring at the server and is a
-//! tracked follow-up.
+//! # Known limitations (intentionally out of scope; tracked follow-ups)
+//!
+//! - **In-memory / per-process**: counters live in the heap and reset on process
+//!   restart (crash, OOM-kill, deliberate restart), so an attacker able to
+//!   restart the process can reset the lockout. Production hardening would
+//!   persist counts to the store.
+//! - **Identity-keyed, not IP-keyed**: the key is the request identity
+//!   (`auth_method|public_key`). An attacker who rotates the public key gets a
+//!   fresh bucket; IP-based limiting (which closes that) needs `ConnectInfo`
+//!   wiring at the server.
+//!
+//! To stop identity rotation from growing memory without bound, the tracked-key
+//! map is capped at [`MAX_TRACKED_KEYS`]: once full, failures for *new* keys are
+//! not tracked (existing buckets continue to lock out as normal).
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Default: 5 failed attempts per 60s window before lockout.
 const DEFAULT_MAX_ATTEMPTS: u32 = 5;
 const DEFAULT_WINDOW_MS: u64 = 60_000;
+
+/// Upper bound on distinct identities tracked at once, so an attacker rotating
+/// identities cannot grow the map without bound.
+const MAX_TRACKED_KEYS: usize = 100_000;
 
 /// Current wall-clock time in milliseconds since the UNIX epoch.
 fn now_ms() -> u64 {
@@ -65,35 +79,47 @@ impl LoginRateLimiter {
 
     /// Clear all recorded failures for `key` (call on successful auth).
     pub fn reset(&self, key: &str) {
-        if let Ok(mut map) = self.inner.lock() {
-            let _ = map.remove(key);
-        }
+        drop(self.lock().remove(key));
+    }
+
+    /// Lock the map, recovering from poisoning rather than disabling the
+    /// limiter: if a thread panicked while holding the lock, silently returning
+    /// "not locked" / dropping the failure would turn off brute-force protection
+    /// entirely. The inner map is still consistent, so reuse it.
+    fn lock(&self) -> MutexGuard<'_, HashMap<String, Vec<u64>>> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn check_at(&self, key: &str, now: u64) -> Option<u64> {
-        let mut map = self.inner.lock().ok()?;
+        let mut map = self.lock();
         let failures = map.get_mut(key)?;
         prune(failures, now, self.window_ms);
+
+        if failures.is_empty() {
+            drop(map.remove(key));
+            return None;
+        }
         if failures.len() as u32 >= self.max_attempts {
             // Locked until the oldest in-window failure ages out.
-            let oldest = *failures.first()?;
-            let unlock_at = oldest.saturating_add(self.window_ms);
+            let unlock_at = failures[0].saturating_add(self.window_ms);
             let retry_after_ms = unlock_at.saturating_sub(now);
-            Some(retry_after_ms.div_ceil(1000).max(1))
-        } else {
-            if failures.is_empty() {
-                let _ = map.remove(key);
-            }
-            None
+            return Some(retry_after_ms.div_ceil(1000).max(1));
         }
+        None
     }
 
     fn record_failure_at(&self, key: &str, now: u64) {
-        if let Ok(mut map) = self.inner.lock() {
-            let failures = map.entry(key.to_owned()).or_default();
-            prune(failures, now, self.window_ms);
-            failures.push(now);
+        let mut map = self.lock();
+        // Bound memory: once the cap is reached, do not start tracking new
+        // identities (existing buckets still record and lock out).
+        if !map.contains_key(key) && map.len() >= MAX_TRACKED_KEYS {
+            return;
         }
+        let failures = map.entry(key.to_owned()).or_default();
+        prune(failures, now, self.window_ms);
+        failures.push(now);
     }
 }
 
@@ -123,7 +149,7 @@ mod tests {
 
         // 3rd failure reached the limit → locked, with a positive retry-after.
         let retry = rl.check_at(key, 3_000).expect("must be locked");
-        assert!(retry >= 1 && retry <= 60, "retry-after seconds: {retry}");
+        assert!((1..=60).contains(&retry), "retry-after seconds: {retry}");
 
         // Still locked just before the window clears.
         assert!(rl.check_at(key, 59_000).is_some());

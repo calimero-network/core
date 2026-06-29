@@ -197,17 +197,22 @@ pub async fn token_handler(
     // Brute-force throttle, keyed by the request identity. If this caller has
     // exceeded the failed-attempt budget, reject with 429 + Retry-After before
     // doing any credential work.
-    let rl_key = format!(
-        "{}|{}|{}",
-        token_request.auth_method, token_request.public_key, token_request.client_name
-    );
+    //
+    // Keyed by (auth_method, public_key) only. `client_name` is fully
+    // attacker-controlled and adds no binding — including it would let an
+    // attacker reset the bucket by rotating the name. `public_key` is the field
+    // bound to the caller's identity. (See module docs for the
+    // identity-rotation / IP-keying follow-up.)
+    let rl_key = format!("{}|{}", token_request.auth_method, token_request.public_key);
     if let Some(retry_after) = state.0.login_rate_limiter.check(&rl_key) {
         warn!("Login rate limit exceeded for identity {rl_key}");
         let mut headers = HeaderMap::new();
-        let _ = headers.insert(
-            "Retry-After",
-            HeaderValue::from_str(&retry_after.to_string())
-                .unwrap_or_else(|_| HeaderValue::from_static("60")),
+        drop(
+            headers.insert(
+                "Retry-After",
+                HeaderValue::from_str(&retry_after.to_string())
+                    .unwrap_or_else(|_| HeaderValue::from_static("60")),
+            ),
         );
         return error_response(
             StatusCode::TOO_MANY_REQUESTS,
@@ -516,21 +521,7 @@ fn extract_token_from_forwarded_uri(headers: &HeaderMap) -> Option<&str> {
         })
 }
 
-/// OAuth callback handler for meroctl authentication flow
-///
-/// This endpoint serves a simple authentication form that allows users
-/// to authenticate and then redirects back to the meroctl callback server.
-///
-/// # Arguments
-///
-/// * `state` - The application state
-/// * `Query(params)` - Query parameters including callback-url
-///
-/// # Returns
-///
-/// * `impl IntoResponse` - HTML form for authentication
-/// Default callback URL used when none is supplied or the supplied one is
-/// rejected.
+/// Default callback URL used when none is supplied or the supplied one is rejected.
 const DEFAULT_CALLBACK: &str = "http://127.0.0.1:9080/callback";
 
 /// Turn an attacker-controlled `callback-url` query value into a JS string
@@ -551,6 +542,19 @@ fn safe_callback_js(raw: Option<&str>) -> String {
     serde_json::to_string(&validated).unwrap_or_else(|_| format!("{DEFAULT_CALLBACK:?}"))
 }
 
+/// OAuth callback handler for meroctl authentication flow
+///
+/// This endpoint serves a simple authentication form that allows users
+/// to authenticate and then redirects back to the meroctl callback server.
+///
+/// # Arguments
+///
+/// * `state` - The application state
+/// * `Query(params)` - Query parameters including callback-url
+///
+/// # Returns
+///
+/// * `impl IntoResponse` - HTML form for authentication
 pub async fn callback_handler(
     _state: Extension<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
