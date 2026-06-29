@@ -95,7 +95,53 @@ pub(super) fn build_runtime_env(
 thread_local! {
     /// The name of the callback handler method to call when emitting events with handlers.
     /// This is set temporarily by the SDK's `emit_with_handler` function and read by the runtime.
+    ///
+    /// The runtime reuses OS threads across executions, so this thread-local must
+    /// never be allowed to outlive the execution that set it: a value left behind
+    /// by a prior execution would be read by [`VMHostFunctions::emit`] during a
+    /// later one and misattribute that event to a handler from a different
+    /// context. [`CallbackHandlerGuard`] scopes it to a single execution.
     static CURRENT_CALLBACK_HANDLER: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// RAII guard that scopes [`CURRENT_CALLBACK_HANDLER`] to a single execution.
+///
+/// Entering clears any value left behind on this thread (stashing whatever was
+/// there) and dropping restores it. Because the runtime pools and reuses OS
+/// threads, holding this guard for the duration of an execution guarantees that
+/// a callback-handler name set while running one context can never leak into a
+/// later execution that happens to reuse the same thread. Save-and-restore
+/// (rather than unconditionally clearing) also keeps re-entrant executions
+/// correct: a nested run restores the outer run's value when it finishes.
+///
+/// # Usage
+///
+/// Multiple guards on the same thread must be released in strictly nested
+/// (LIFO) order, since each restores the value it observed at `enter()`. Held
+/// as ordinary locals — the way `Module::run` uses it — Rust's LIFO drop order
+/// guarantees this; restoring guards out of order would clobber the saved
+/// value. The value must also actually be held: `#[must_use]` flags the
+/// `enter();`-and-discard mistake, which would drop the guard immediately and
+/// leave nothing scoped.
+#[must_use = "the guard must be held for the duration of the execution"]
+pub struct CallbackHandlerGuard {
+    previous: Option<String>,
+}
+
+impl CallbackHandlerGuard {
+    /// Enters a fresh callback-handler scope for the current execution, clearing
+    /// (and stashing) any value left behind on this thread.
+    pub fn enter() -> Self {
+        let previous = CURRENT_CALLBACK_HANDLER.with(|name| name.borrow_mut().take());
+        Self { previous }
+    }
+}
+
+impl Drop for CallbackHandlerGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        CURRENT_CALLBACK_HANDLER.with(|name| *name.borrow_mut() = previous);
+    }
 }
 
 /// Represents a structured event emitted during the execution.
@@ -811,11 +857,24 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if this function is called more than once or if memory
     ///   access fails for descriptor buffers.
+    /// * `HostError::ArtifactSizeOverflow` if the artifact exceeds `max_artifact_size`.
     pub fn commit(&mut self, src_root_hash_ptr: u64, src_artifact_ptr: u64) -> VMLogicResult<()> {
         let root_hash =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_root_hash_ptr)? };
         let artifact =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_artifact_ptr)? };
+
+        // Bound the artifact before copying it out of guest memory: the copy
+        // lands on the host `Outcome`, so without this cap the only limit is
+        // guest memory itself (~64 MiB).
+        let max_artifact_size = self.borrow_logic().limits.max_artifact_size;
+        if artifact.len() > max_artifact_size {
+            return Err(HostError::ArtifactSizeOverflow {
+                size: artifact.len(),
+                max: max_artifact_size,
+            }
+            .into());
+        }
 
         let root_hash = *self.read_guest_memory_sized::<DIGEST_SIZE>(&root_hash)?;
         let artifact = self.read_guest_memory_slice(&artifact)?.to_vec();
@@ -1128,6 +1187,58 @@ mod tests {
         },
         Cow, VMContext, VMLimits, VMLogic, VMLogicError, DIGEST_SIZE,
     };
+
+    use super::{CallbackHandlerGuard, CURRENT_CALLBACK_HANDLER};
+
+    fn current_handler() -> Option<String> {
+        CURRENT_CALLBACK_HANDLER.with(|name| name.borrow().clone())
+    }
+
+    /// The guard clears any value left behind on the thread when entered, so an
+    /// execution always starts with a fresh (empty) callback handler.
+    #[test]
+    fn test_callback_handler_guard_clears_stale_value_on_enter() {
+        // Simulate a value leaked from a "previous execution" on this thread.
+        CURRENT_CALLBACK_HANDLER.with(|name| *name.borrow_mut() = Some("stale".to_owned()));
+
+        {
+            let _scope = CallbackHandlerGuard::enter();
+            assert_eq!(
+                current_handler(),
+                None,
+                "entering a scope must clear a value left by a prior execution"
+            );
+        }
+    }
+
+    /// The guard restores the previous value on drop, so a re-entrant execution
+    /// does not clobber the outer execution's callback handler.
+    #[test]
+    fn test_callback_handler_guard_restores_previous_on_drop() {
+        let outer = CallbackHandlerGuard::enter();
+        CURRENT_CALLBACK_HANDLER.with(|name| *name.borrow_mut() = Some("outer".to_owned()));
+
+        {
+            // A nested execution enters its own scope...
+            let _inner = CallbackHandlerGuard::enter();
+            assert_eq!(current_handler(), None, "nested scope starts empty");
+            CURRENT_CALLBACK_HANDLER.with(|name| *name.borrow_mut() = Some("inner".to_owned()));
+        }
+
+        // ...and on drop the outer execution's value is back in place.
+        assert_eq!(
+            current_handler(),
+            Some("outer".to_owned()),
+            "dropping the nested scope must restore the outer value"
+        );
+
+        drop(outer);
+        assert_eq!(
+            current_handler(),
+            None,
+            "dropping the outermost scope must leave the thread-local empty"
+        );
+    }
 
     /// Tests the `input()`, `register_len()`, `read_register()` host functions.
     #[test]
@@ -1712,5 +1823,51 @@ mod tests {
         // Verify the host successfully stored the root hash and artifact in the `VMLogic` state.
         assert_eq!(host.borrow_logic().root_hash, Some(root_hash));
         assert_eq!(host.borrow_logic().artifact, artifact);
+    }
+
+    /// Tests that `commit()` rejects an artifact larger than `max_artifact_size`
+    /// instead of copying it onto the `Outcome`.
+    #[test]
+    fn test_commit_artifact_size_overflow() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_artifact_size: 4,
+            ..VMLimits::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let root_hash = [1u8; DIGEST_SIZE];
+        let artifact = vec![1, 2, 3, 4, 5]; // 5 bytes > 4-byte limit
+        let root_hash_ptr = 200u64;
+        let artifact_ptr = 300u64;
+        host.borrow_memory()
+            .write(root_hash_ptr, &root_hash)
+            .unwrap();
+        host.borrow_memory().write(artifact_ptr, &artifact).unwrap();
+
+        let root_hash_buf_ptr = 16u64;
+        let artifact_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(
+            &host,
+            root_hash_buf_ptr,
+            root_hash_ptr,
+            root_hash.len() as u64,
+        );
+        prepare_guest_buf_descriptor(&host, artifact_buf_ptr, artifact_ptr, artifact.len() as u64);
+
+        let err = host
+            .commit(root_hash_buf_ptr, artifact_buf_ptr)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::ArtifactSizeOverflow { size: 5, max: 4 })
+        ));
+
+        // The over-large artifact must not have been copied onto the state, and
+        // the commit must not be marked as completed.
+        assert!(host.borrow_logic().artifact.is_empty());
+        assert_eq!(host.borrow_logic().root_hash, None);
+        assert!(!host.borrow_logic().commit_called);
     }
 }

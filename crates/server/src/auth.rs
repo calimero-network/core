@@ -3,12 +3,14 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
+use axum::extract::OriginalUri;
 use axum::http::{Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use eyre::Result;
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
+use mero_auth::auth::permissions::PermissionValidator;
 use mero_auth::embedded::{build_app, default_config, EmbeddedAuthApp};
 use mero_auth::{AuthError, AuthService};
 use tower::{Layer, Service};
@@ -187,6 +189,47 @@ where
                         }
                     };
 
+                // Authorisation. Authenticating the token is not enough: a valid
+                // but under-privileged token must not reach privileged handlers.
+                // Previously this guard stopped at verification, so any valid
+                // token could hit every /admin-api/* and /jsonrpc endpoint. Run
+                // the same determine + validate pass the auth crate's
+                // `auth_middleware` uses, against the permissions carried by the
+                // verified token, so the two enforcement paths stay in sync.
+                //
+                // `PermissionValidator` matches full request paths (e.g.
+                // `/admin-api/contexts`, `/jsonrpc`). This guard runs inside a
+                // nested router, so `parts.uri` has had the mount prefix stripped
+                // (`/contexts`, `/`); recover the full path from `OriginalUri`,
+                // which axum's `nest` inserts. Non-nested mounts (e.g. the `/ws`
+                // route) have no `OriginalUri`, so fall back to the request URI,
+                // which is already the full path there.
+                let full_uri = parts
+                    .extensions
+                    .get::<OriginalUri>()
+                    .map_or_else(|| uri.clone(), |original| original.0.clone());
+
+                let perm_request = Request::builder()
+                    .method(method.clone())
+                    .uri(full_uri)
+                    .body(Body::empty())
+                    .expect("request built from an already-validated method and URI");
+
+                let validator = PermissionValidator::new();
+                let required = validator.determine_required_permissions(&perm_request);
+                if !validator.validate_permissions(&auth_response.permissions, &required) {
+                    warn!(
+                        key_id = %auth_response.key_id,
+                        ?required,
+                        granted = ?auth_response.permissions,
+                        "permission denied: token lacks the permissions this route requires",
+                    );
+                    let mut resp = StatusCode::FORBIDDEN.into_response();
+                    resp.headers_mut()
+                        .insert("X-Auth-Error", "permission_denied".parse().unwrap());
+                    return Ok(resp);
+                }
+
                 // Attempt to resolve the authenticated public key and inject it so
                 // handlers can use it as the effective requester without trusting the
                 // caller-supplied value.
@@ -249,5 +292,66 @@ where
             Ok(response)
         }
         .boxed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Method, Request};
+    use mero_auth::auth::permissions::PermissionValidator;
+
+    /// Build the request the guard hands to the validator: only the method and
+    /// the full path are read by `determine_required_permissions`.
+    fn request(method: Method, path: &str) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    /// The guard resolves the *full* request path (via `OriginalUri`) precisely
+    /// because the validator's mappings are keyed on the server's mount paths.
+    /// If these stopped yielding a required permission, enforcement would
+    /// silently degrade to "any valid token", which is the bug being fixed.
+    #[test]
+    fn server_mount_paths_require_permissions() {
+        let validator = PermissionValidator::new();
+
+        for (method, path) in [
+            (Method::GET, "/admin-api/contexts"),
+            (Method::POST, "/admin-api/contexts"),
+            (Method::GET, "/admin-api/applications"),
+            (Method::POST, "/jsonrpc"),
+        ] {
+            let required = validator.determine_required_permissions(&request(method.clone(), path));
+            assert!(
+                !required.is_empty(),
+                "{method} {path} must map to a required permission for the guard to enforce it",
+            );
+        }
+    }
+
+    /// End-to-end of the guard's authorisation decision: an authenticated token
+    /// with no permissions is rejected for a privileged route, while a token
+    /// holding `admin` is allowed.
+    #[test]
+    fn underprivileged_token_is_denied_admin_token_allowed() {
+        let validator = PermissionValidator::new();
+        let required =
+            validator.determine_required_permissions(&request(Method::GET, "/admin-api/contexts"));
+
+        let no_permissions: Vec<String> = Vec::new();
+        assert!(
+            !validator.validate_permissions(&no_permissions, &required),
+            "a token with no permissions must not pass the contexts-list check",
+        );
+
+        let admin = vec!["admin".to_owned()];
+        assert!(
+            validator.validate_permissions(&admin, &required),
+            "an admin token must pass every permission check",
+        );
     }
 }
