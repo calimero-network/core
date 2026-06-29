@@ -17,10 +17,12 @@ use tracing::{info, warn};
 /// identity.
 ///
 /// The attestation generator and every verifier must hash the public key the
-/// exact same way, otherwise the mandatory app-hash binding check fails. `*public_key`
-/// derefs `PublicKey` (a newtype over `[u8; 32]`) to its raw 32-byte ed25519 key
-/// material; centralizing it here keeps the generation and verification sides from
-/// silently diverging if `PublicKey`'s representation ever changes.
+/// exact same way, otherwise the mandatory app-hash binding check fails. The
+/// `**public_key` below derefs twice — `&PublicKey` -> `PublicKey`, then the
+/// `PublicKey` newtype (over `[u8; 32]`) -> its raw 32-byte ed25519 key material —
+/// so the hash is taken over the canonical key bytes. Centralizing it here keeps
+/// the generation and verification sides from silently diverging if `PublicKey`'s
+/// representation ever changes.
 pub(crate) fn public_key_binding_hash(public_key: &PublicKey) -> [u8; 32] {
     Sha256::digest(**public_key).into()
 }
