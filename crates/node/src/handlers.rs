@@ -22,6 +22,7 @@ mod specialized_node_invite;
 pub(crate) mod state_delta;
 mod stream_opened;
 pub(crate) mod tee_attestation_admission;
+pub(crate) mod tee_attestation_throttle;
 
 impl Handler<NodeMessage> for NodeManager {
     type Result = ();

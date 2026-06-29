@@ -31,6 +31,20 @@ pub(crate) fn public_key_binding_hash(public_key: &PublicKey) -> [u8; 32] {
 ///
 /// Verifies the TDX quote, checks measurements against the group's TEE admission
 /// policy, and publishes a `MemberJoinedViaTeeAttestation` governance op if valid.
+///
+/// # Error semantics (load-bearing)
+///
+/// Returns `Ok(())` for both a successful admission **and** a definitively
+/// rejected quote (verification ran and returned an invalid result). Returns
+/// `Err` only for a *transient* failure where the verify could not be completed
+/// — most importantly the outbound Intel-PCS collateral fetch erroring, but also
+/// store/governance publish failures. The caller in the
+/// `network_event::specialized` handler relies on this distinction:
+/// it clears the throttle's in-memory dedup entry on `Err` (so a legitimate
+/// re-announce can be re-verified after a transient outage) but keeps it on
+/// `Ok` (so a replayed/invalid quote stays suppressed). Do not start returning
+/// `Err` for an invalid-but-successfully-evaluated quote without updating that
+/// caller.
 pub async fn handle_tee_attestation_announce(
     context_client: &calimero_context_client::client::ContextClient,
     source: libp2p::PeerId,

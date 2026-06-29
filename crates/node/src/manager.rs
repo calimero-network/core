@@ -128,6 +128,17 @@ pub struct NodeManager {
     /// local residue, and the emitter publishes the node's own signed
     /// heartbeat (on-change + periodic) on the namespace topic.
     pub(crate) migration_emitter_addr: Option<Addr<MigrationEmitter>>,
+    /// Admission-control throttle for the inbound gossip
+    /// `TeeAttestationAnnounce` path (TEE-01 / audit #48). Consulted
+    /// synchronously on this actor thread before
+    /// `tee_attestation_admission::handle_tee_attestation_announce` is spawned,
+    /// so a malicious mesh peer cannot drive the heavy
+    /// `verify_attestation` (outbound Intel-PCS fetch + DCAP verify) path
+    /// unbounded by replaying structurally-valid quotes. Combines per-group
+    /// quote dedup, a per-peer rate limit, and a global inflight-verify cap.
+    /// See [`crate::handlers::tee_attestation_throttle`].
+    pub(crate) tee_admission_throttle:
+        crate::handlers::tee_attestation_throttle::TeeAdmissionThrottle,
 }
 
 impl NodeManager {
@@ -164,6 +175,8 @@ impl NodeManager {
             ns_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
             migration_status_cache: Arc::new(MigrationStatusCache::default()),
             migration_emitter_addr: None,
+            tee_admission_throttle:
+                crate::handlers::tee_attestation_throttle::TeeAdmissionThrottle::default(),
         }
     }
 }

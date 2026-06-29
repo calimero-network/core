@@ -5,6 +5,7 @@ mod attest;
 pub mod fleet_join;
 mod info;
 mod verify_quote;
+mod verify_quote_throttle;
 
 pub fn service() -> Router {
     Router::new()
