@@ -571,8 +571,8 @@ async fn create_context(
     handle.put(
         &key::ContextIdentity::new(context.id, identity),
         &types::ContextIdentity {
-            private_key: Some(*identity_secret),
-            sender_key: Some(*sender_key),
+            private_key: Some(*identity_secret.as_bytes()),
+            sender_key: Some(*sender_key.as_bytes()),
         },
     )?;
 
@@ -585,13 +585,12 @@ async fn create_context(
     // messages (e.g. RemoveGroupMembers), but the window is small and the
     // worst case is a single context associated with a since-removed member.
     {
-        let sk = PrivateKey::from(*identity_secret);
         let report = calimero_governance_store::sign_apply_and_publish(
             &datastore,
             &node_client,
             &ack_router,
             &group_id,
-            &sk,
+            &identity_secret,
             GroupOp::ContextRegistered {
                 context_id: context.id,
                 application_id: context.application_id,
@@ -608,13 +607,12 @@ async fn create_context(
     node_client.subscribe_namespace(group_id.to_bytes()).await?;
 
     if let Some(ref name_str) = name {
-        let sk = PrivateKey::from(*identity_secret);
         let report = calimero_governance_store::sign_apply_and_publish(
             &datastore,
             &node_client,
             &ack_router,
             &group_id,
-            &sk,
+            &identity_secret,
             GroupOp::ContextMetadataSet {
                 context_id: context.id,
                 name: Some(name_str.clone()),
