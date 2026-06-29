@@ -57,6 +57,7 @@ where
         Ok(Iter::new(TemporalIterator {
             inner: self.inner.iter::<K>()?,
             inner_done: false,
+            shadow_done: false,
             shadow: &self.shadow,
             shadow_iter: None,
             peeked_inner: None,
@@ -72,6 +73,7 @@ where
         Ok(Iter::new(TemporalIterator {
             inner: self.inner.iter_snapshot::<K>()?,
             inner_done: false,
+            shadow_done: false,
             shadow: &self.shadow,
             shadow_iter: None,
             peeked_inner: None,
@@ -114,6 +116,8 @@ struct TemporalIterator<'a, 'b, K> {
     inner: Iter<'a, Structured<K>>,
     /// Set once `inner` is exhausted so we stop polling it.
     inner_done: bool,
+    /// Set once the shadow column range is exhausted so we stop polling it.
+    shadow_done: bool,
     shadow: &'a Transaction<'b>,
     shadow_iter: Option<tx::ColRange<'a, 'b>>,
     /// Buffered front key of `inner`. Owned (copied) so it doesn't borrow
@@ -146,13 +150,19 @@ impl<'a, K: AsKeyParts + FromKeyParts> TemporalIterator<'a, '_, K> {
                 }
             }
 
-            // Refill the shadow front entry.
-            if self.peeked_shadow.is_none() {
+            // Refill the shadow front entry. `shadow_iter` is created lazily on
+            // the first `next()` call (unbounded start); `seek()` pre-creates it
+            // with a start bound. Once it runs dry we set `shadow_done` so we
+            // stop polling it, mirroring `inner_done`.
+            if !self.shadow_done && self.peeked_shadow.is_none() {
                 let shadow_iter = self
                     .shadow_iter
                     .get_or_insert_with(|| self.shadow.col_iter(K::column(), None));
 
-                self.peeked_shadow = shadow_iter.next();
+                match shadow_iter.next() {
+                    Some(entry) => self.peeked_shadow = Some(entry),
+                    None => self.shadow_done = true,
+                }
             }
 
             // Compare the two fronts. The synthetic orderings make a missing
@@ -165,8 +175,15 @@ impl<'a, K: AsKeyParts + FromKeyParts> TemporalIterator<'a, '_, K> {
             };
 
             match order {
-                // Inner key comes first and isn't shadowed: emit it, reading
-                // its value lazily from `inner` via `read()`.
+                // Inner key comes first and isn't shadowed: emit it. We leave
+                // `value` as `None` and read it lazily from `inner` in `read()`.
+                // This is sound because `inner` stays parked on this record
+                // until the next `advance()` refills `peeked_inner` (the first
+                // thing the loop does). `value == None` is therefore the
+                // invariant marking "the last emitted key was inner-sourced and
+                // `inner` is still positioned on it"; any shadow-sourced key
+                // sets `value` to `Some` instead, so `read()` never delegates to
+                // a stale `inner` position.
                 Ordering::Less => {
                     self.value = None;
 
@@ -194,11 +211,15 @@ impl<'a, K: AsKeyParts + FromKeyParts> TemporalIterator<'a, '_, K> {
 }
 
 impl<'a, K: AsKeyParts + FromKeyParts> DBIter for TemporalIterator<'a, '_, K> {
+    /// Seeks to the first *visible* key `>= key` in the merged ordering. A key
+    /// that exists in the shadow as a deletion is skipped, so the returned key
+    /// may be strictly greater than `key` even when `key` is present in `inner`.
     fn seek(&mut self, key: Slice<'_>) -> EyreResult<Option<Slice<'_>>> {
         self.value = None;
         self.peeked_inner = None;
         self.peeked_shadow = None;
         self.inner_done = false;
+        self.shadow_done = false;
         self.shadow_iter = Some(self.shadow.col_iter(K::column(), Some(&key)));
 
         match self.inner.seek(key)? {
@@ -214,6 +235,10 @@ impl<'a, K: AsKeyParts + FromKeyParts> DBIter for TemporalIterator<'a, '_, K> {
     }
 
     fn read(&self) -> EyreResult<Slice<'_>> {
+        // A buffered `value` means the last emitted key was shadow-sourced (a
+        // `Put`); otherwise the last key was inner-sourced and `inner` is still
+        // parked on it, so we delegate. See the `Ordering::Less` arm in
+        // `advance()` for the invariant this relies on.
         if let Some(value) = &self.value {
             return Ok(value.into());
         }
