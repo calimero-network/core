@@ -23,6 +23,16 @@ use tracing::{info, warn};
 /// The value selected as ~96 KB.
 pub const MAX_DELTA_QUERY_LIMIT: usize = 3000;
 
+/// Maximum number of deltas held in the pending map (deltas waiting for missing
+/// parents) before the oldest is evicted to make room.
+///
+/// Pending deltas are otherwise only reclaimed by the time-based
+/// [`DagStore::cleanup_stale`] sweep. A flood of out-of-order deltas arriving
+/// faster than that sweep runs would grow the map unboundedly, so this hard cap
+/// bounds memory regardless of sweep cadence. Evicted deltas can be re-fetched
+/// in a future sync.
+pub const MAX_PENDING_DELTAS: usize = 10_000;
+
 /// Type of delta - regular operation or checkpoint (snapshot boundary)
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub enum DeltaKind {
@@ -250,6 +260,11 @@ pub struct DagStore<T> {
     /// Even if a caller requests more, the DAG will cap the result at this size.
     /// By default, equal to `MAX_DELTA_QUERY_SIZE`.
     delta_query_limit: usize,
+
+    /// Maximum number of deltas retained in `pending`. When inserting would
+    /// exceed this, the oldest pending delta is evicted first. By default,
+    /// equal to `MAX_PENDING_DELTAS`.
+    max_pending: usize,
 }
 
 impl<T: Clone> DagStore<T> {
@@ -268,6 +283,7 @@ impl<T: Clone> DagStore<T> {
             heads,
             root,
             delta_query_limit: MAX_DELTA_QUERY_LIMIT,
+            max_pending: MAX_PENDING_DELTAS,
         }
     }
 
@@ -288,6 +304,21 @@ impl<T: Clone> DagStore<T> {
         );
 
         self.delta_query_limit = delta_query_limit;
+    }
+
+    /// Sets the maximum number of deltas retained in the pending map.
+    ///
+    /// When inserting a new pending delta would exceed this limit, the oldest
+    /// pending delta is evicted first (from both the pending and deltas maps),
+    /// keeping memory bounded between time-based `cleanup_stale` sweeps.
+    pub fn set_max_pending(&mut self, max_pending: usize) {
+        info!(
+            %max_pending,
+            old_max_pending = %self.max_pending,
+            "Updated DAG pending map capacity"
+        );
+
+        self.max_pending = max_pending;
     }
 
     /// Restore an already-applied delta from persistent storage
@@ -437,10 +468,39 @@ impl<T: Clone> DagStore<T> {
             self.apply_pending(applier).await?;
             Ok(AddDeltaOutcome::Applied)
         } else {
-            // Missing parents - store as pending
+            // Missing parents - store as pending. Cap the pending map so a
+            // flood of out-of-order deltas arriving faster than the time-based
+            // `cleanup_stale` sweep can't grow it unboundedly; evict the oldest
+            // entry to make room (it can be re-fetched in a future sync).
+            if self.pending.len() >= self.max_pending {
+                if let Some(evicted) = self.evict_oldest_pending() {
+                    warn!(
+                        evicted_delta_id = ?evicted,
+                        max_pending = %self.max_pending,
+                        "Pending DAG map at capacity; evicted oldest pending delta"
+                    );
+                }
+            }
             self.pending.insert(delta_id, PendingDelta::new(delta));
             Ok(AddDeltaOutcome::Pending)
         }
+    }
+
+    /// Evicts the oldest delta (by arrival time) from the pending map.
+    ///
+    /// Removes it from both the pending and deltas maps so it can be re-fetched
+    /// in a future sync, mirroring `cleanup_stale`. Returns the evicted ID, or
+    /// `None` if the pending map is empty.
+    fn evict_oldest_pending(&mut self) -> Option<[u8; 32]> {
+        let oldest = self
+            .pending
+            .iter()
+            .min_by_key(|(_, pending)| pending.received_at)
+            .map(|(id, _)| *id)?;
+
+        self.pending.remove(&oldest);
+        self.deltas.remove(&oldest);
+        Some(oldest)
     }
 
     /// Check if a delta can be applied
@@ -1083,6 +1143,48 @@ mod basic_tests {
         let evicted = dag.cleanup_stale(Duration::from_millis(50));
         assert_eq!(evicted, 1, "Should evict the stale delta");
         assert_eq!(dag.pending_stats().count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_pending_map_capped_evicts_oldest() {
+        let applier = TestApplier {
+            applied: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        let mut dag = DagStore::new([0; 32]);
+        dag.set_max_pending(3);
+
+        // Add pending deltas (all reference a missing parent so they stay
+        // pending). Insert more than the cap; the map must never exceed it.
+        for i in 1..=10u8 {
+            let delta = CausalDelta::new_test(
+                [i; 32],
+                vec![[200; 32]], // missing parent -> always pending
+                TestPayload { value: i as u32 },
+            );
+            dag.add_delta(delta, &applier).await.unwrap();
+            // Keep arrival times strictly ordered so "oldest" is well-defined.
+            tokio::time::sleep(Duration::from_millis(2)).await;
+
+            assert!(
+                dag.pending_stats().count <= 3,
+                "pending map must stay within the cap, was {}",
+                dag.pending_stats().count
+            );
+        }
+
+        assert_eq!(dag.pending_stats().count, 3, "should be saturated at cap");
+
+        // The last 3 inserted ([8], [9], [10]) should be retained; older ones evicted.
+        let retained: HashSet<[u8; 32]> = dag.get_pending_delta_ids().into_iter().collect();
+        assert!(retained.contains(&[8; 32]));
+        assert!(retained.contains(&[9; 32]));
+        assert!(retained.contains(&[10; 32]));
+        assert!(!retained.contains(&[1; 32]), "oldest should be evicted");
+
+        // Evicted deltas are also removed from the deltas map so they can be
+        // re-fetched in a future sync (not left as zombies).
+        assert!(!dag.has_delta(&[1; 32]), "evicted delta should not linger");
     }
 
     /// Failing applier — returns Err on every call.
