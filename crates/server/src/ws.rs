@@ -89,13 +89,25 @@ impl WsConfig {
 pub(crate) struct ConnectionStateInner {
     subscriptions: HashSet<ContextId>,
     last_pong: AtomicU64, // Timestamp of last received pong (or connection start)
+    /// The verified public key of the authenticated client that opened this
+    /// connection, or `None` when the auth method does not provide a
+    /// cryptographic key (e.g. embedded username/password auth). Set once at
+    /// upgrade time; immutable for the life of the connection.
+    pub(crate) caller: Option<calimero_primitives::identity::PublicKey>,
+    /// `true` when the auth layer positively confirmed this connection as the
+    /// node owner via a non-key method (e.g. embedded username/password).
+    /// Distinguishes the "legitimate NodeOwner" path from "no auth at all"
+    /// when `caller` is `None`.
+    pub(crate) node_owner: bool,
 }
 
-impl Default for ConnectionStateInner {
-    fn default() -> Self {
+impl ConnectionStateInner {
+    fn new(caller: Option<calimero_primitives::identity::PublicKey>, node_owner: bool) -> Self {
         Self {
             subscriptions: HashSet::default(),
             last_pong: AtomicU64::new(unix_timestamp()),
+            caller,
+            node_owner,
         }
     }
 }
@@ -113,6 +125,9 @@ pub(crate) struct ServiceState {
     ctx_client: ContextClient,
     connections: RwLock<HashMap<ConnectionId, ConnectionState>>,
     config: WsConfig,
+    /// Whether the auth guard is active on this service's routes. When `false`
+    /// the server was intentionally started without auth (no-auth mode).
+    pub(crate) auth_enabled: bool,
 }
 
 /// Get current Unix timestamp in seconds
@@ -127,6 +142,7 @@ pub(crate) fn service(
     config: &ServerConfig,
     node_client: NodeClient,
     ctx_client: ContextClient,
+    auth_enabled: bool,
 ) -> Option<(String, MethodRouter)> {
     let ws_config = match &config.websocket {
         Some(config) if config.enabled => *config,
@@ -154,6 +170,7 @@ pub(crate) fn service(
         ctx_client,
         connections: RwLock::default(),
         config: ws_config,
+        auth_enabled,
     });
 
     Some((path, get(ws_handler).layer(Extension(state))))
@@ -163,6 +180,8 @@ async fn ws_handler(
     headers: HeaderMap,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     Extension(state): Extension<Arc<ServiceState>>,
+    auth_key: Option<Extension<AuthenticatedKey>>,
+    auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
 ) -> impl IntoResponse {
     // Validate WebSocket upgrade request
     let ws = match ws {
@@ -192,11 +211,43 @@ async fn ws_handler(
             .into_response();
     }
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    // Determine the caller identity from the auth extensions injected by
+    // AuthGuardService:
+    //   AuthenticatedKey       → verified public key; stored as Some(pk)
+    //   AuthenticatedNodeOwner → non-key auth (e.g. embedded username/password);
+    //                            stored as None (NodeOwner path in execute)
+    //   neither                → two sub-cases:
+    //                             - auth_enabled=true  → guard ran but injected nothing;
+    //                               warn loudly (misconfiguration signal)
+    //                             - auth_enabled=false → intentional no-auth deployment;
+    //                               proceed silently at debug level
+    let (caller, node_owner) = match (auth_key, auth_node_owner) {
+        (Some(ext), _) => (Some(ext.0 .0), false),
+        (None, Some(_)) => (None, true),
+        (None, None) => {
+            if state.auth_enabled {
+                warn!(
+                    "No auth extensions present on WebSocket upgrade — auth guard may not be running"
+                );
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+            // Intentional no-auth deployment: treat every connection as
+            // node-owner so the no-auth path is positively distinguishable
+            // from a misconfigured guard (which returns 401 above).
+            info!("No-auth mode: WebSocket upgrade proceeding as NodeOwner — auth is disabled");
+            (None, true)
+        }
+    };
+    ws.on_upgrade(move |socket| handle_socket(socket, state, caller, node_owner))
         .into_response()
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
+async fn handle_socket(
+    socket: WebSocket,
+    state: Arc<ServiceState>,
+    caller: Option<calimero_primitives::identity::PublicKey>,
+    node_owner: bool,
+) {
     let (commands_sender, commands_receiver) = mpsc::channel(WS_COMMAND_CHANNEL_BUFFER_SIZE);
 
     // Generate a globally unique connection ID. A UUID (vs a per-process
@@ -205,7 +256,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
     let connection_id = Uuid::new_v4();
     let connection_state = ConnectionState {
         commands: commands_sender.clone(),
-        inner: Arc::default(),
+        inner: Arc::new(RwLock::new(ConnectionStateInner::new(caller, node_owner))),
     };
 
     {
@@ -526,7 +577,14 @@ async fn handle_text_message(
                     .handle(Arc::clone(&state), connection_state.clone())
                     .await
                     .to_res_body(),
-                RequestPayload::Execute(request) => execute::handle(&state, request).await,
+                RequestPayload::Execute(request) => {
+                    let inner = connection_state.inner.read().await;
+                    // caller and node_owner are set once at upgrade time and
+                    // never mutated; copying them before dropping the lock is safe.
+                    let (caller, node_owner) = (inner.caller, inner.node_owner);
+                    drop(inner);
+                    execute::handle(&state, caller, node_owner, request).await
+                }
             },
             Err(err) => {
                 error!(%err, "Failed to deserialize RequestPayload");
@@ -627,6 +685,7 @@ macro_rules! mount_method {
 
 pub(crate) use mount_method;
 
+use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
 use crate::config::ServerConfig;
 
 /// WebSocket command channel buffer size
@@ -735,6 +794,7 @@ mod tests {
             ctx_client,
             connections: RwLock::default(),
             config: WsConfig::new(true),
+            auth_enabled: false,
         });
 
         let app = Router::new()

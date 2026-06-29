@@ -42,6 +42,19 @@ fn unauthorized_response(err: &AuthError) -> Response {
 #[derive(Clone, Debug)]
 pub struct AuthenticatedKey(pub calimero_primitives::identity::PublicKey);
 
+/// Marker injected by [`AuthGuardService`] when a request carries a valid token
+/// but the auth method does not produce a cryptographic public key (e.g.
+/// embedded username/password). The presence of this extension tells handlers
+/// that the caller is the node owner, positively confirmed by the auth layer.
+///
+/// Using an explicit marker instead of relying on `Option<AuthenticatedKey>`
+/// being `None` makes the bypass path auditable: `None` for both extensions
+/// means the auth guard did not run (no-auth mode), not that a specific auth
+/// method was used. Handlers can match on both extensions and reason about
+/// exactly which auth path was taken.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedNodeOwner;
+
 /// Wrapper around the embedded authentication application, keeping the router and shared state.
 pub struct BundledAuth {
     app: EmbeddedAuthApp,
@@ -184,14 +197,49 @@ where
                             Ok(pk) => {
                                 parts.extensions.insert(AuthenticatedKey(pk));
                             }
-                            Err(err) => {
-                                warn!(key_id=%auth_response.key_id, %err, "auth key_id public_key is not a valid PublicKey; skipping extension injection");
+                            Err(_) => {
+                                // The stored value is not a valid Ed25519/base58 public
+                                // key. This is expected for username/password auth: the
+                                // user_password provider stores the username in the
+                                // `public_key` field as a human-readable identifier, not
+                                // a real cryptographic key. Treat this path identically
+                                // to Ok(None) — the auth layer confirmed a valid session;
+                                // the caller is the node owner.
+                                debug!(key_id=%auth_response.key_id, "non-key auth (parse failure): granting NodeOwner");
+                                parts.extensions.insert(AuthenticatedNodeOwner);
                             }
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        // No Ed25519 public key is stored for this key_id. The only
+                        // legitimate case is a client key (`KeyType::Client`): created
+                        // via the `/auth/client-keys` API by the node owner for their
+                        // own applications and provisioned with `public_key: None` by
+                        // design (see `Key::new_client_key`). Client keys are always
+                        // issued by and to the node owner; treating them as NodeOwner
+                        // matches the intended access model.
+                        //
+                        // Note: username/password root keys do NOT reach this arm.
+                        // The `user_password` provider stores the username as a
+                        // non-base58 string in `public_key`, so `get_key_public_key`
+                        // returns `Ok(Some(username))` and `PublicKey::from_str` fails
+                        // → that path is handled by the `Err(_)` arm above.
+                        //
+                        // No other key type with `public_key = None` should exist in
+                        // the store. This is a schema guarantee in the auth crate:
+                        // `new_root_key_with_permissions` always sets `public_key` to
+                        // a non-empty string, and `new_client_key` is the only other
+                        // constructor.
+                        warn!(key_id=%auth_response.key_id, "non-key auth (absent public key): granting NodeOwner");
+                        parts.extensions.insert(AuthenticatedNodeOwner);
+                    }
                     Err(err) => {
-                        warn!(key_id=%auth_response.key_id, %err, "failed to look up public key for auth key_id");
+                        // A store or network error during key lookup is an
+                        // infrastructure failure, not a known auth path. Fail
+                        // closed rather than failing open: do NOT grant
+                        // node-owner access on a transient error.
+                        warn!(key_id=%auth_response.key_id, %err, "failed to look up public key for auth key_id; rejecting request");
+                        return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
                     }
                 }
             }

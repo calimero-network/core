@@ -303,6 +303,36 @@
 </div>
 
 <!-- ════════════════════════════════════════════════════════
+     4b. EXECUTE CALLER-IDENTITY ENFORCEMENT
+     ════════════════════════════════════════════════════════ -->
+<div class="card" style="border-color:#ef4444;margin-top:18px;">
+<h2>Execute Caller-Identity Enforcement</h2>
+<p style="margin-bottom:14px;">Both the JSON-RPC <span class="code">/jsonrpc</span> surface and the WebSocket <span class="code">/ws</span> surface share a common <span class="code">execute_request</span> path in <span class="code">crates/server/src/execute.rs</span>. Before any WASM method is invoked, the handler verifies that the authenticated caller's public key is a known member of the target context.</p>
+
+<div class="g2" style="margin-bottom:16px;">
+  <div class="cb">
+    <h4 style="color:#ef4444;">Before (vulnerable)</h4>
+    <p style="margin-top:8px;">The executor identity was always auto-resolved to the node's <em>own</em> namespace identity for the context, regardless of which authenticated key made the request. Any valid token could invoke mutating methods on any context the node participated in.</p>
+  </div>
+  <div class="cb">
+    <h4 style="color:#84cc16;">After (fixed)</h4>
+    <p style="margin-top:8px;"><span class="code">execute_request</span> takes a <span class="code">caller: &amp;PublicKey</span> extracted from the verified <span class="code">AuthenticatedKey</span> extension. It calls <span class="code">ctx_client.has_member(context_id, caller)</span> first; a non-member receives <span class="code">FunctionCallError("Caller is not a member of this context")</span> and the WASM runtime is never reached.</p>
+  </div>
+</div>
+
+<h4 style="margin-bottom:8px;">How the key is threaded per transport</h4>
+<ul style="line-height:1.9;">
+  <li><strong>JSON-RPC:</strong> <span class="code">AuthGuardLayer</span> injects <span class="code">AuthenticatedKey(pk)</span> into Axum request extensions after JWT verification. The <span class="code">handle_request</span> extractor pulls it out and passes it through the <span class="code">Request::handle</span> trait to <span class="code">execute_request</span>.</li>
+  <li><strong>WebSocket:</strong> Auth is connection-level (HTTP upgrade). <span class="code">ws_handler</span> extracts <span class="code">AuthenticatedKey</span> at upgrade time and stores the public key in <span class="code">ConnectionStateInner::caller</span>. Each subsequent <span class="code">execute</span> message reads the stored key and passes it to <span class="code">execute_request</span>.</li>
+</ul>
+
+<div class="cb" style="margin-top:14px;border-color:#f59e0b;">
+  <h4 style="color:#f59e0b;">Executor identity vs. caller identity</h4>
+  <p style="margin-top:6px;">After the membership check passes, the executor identity used to invoke the WASM method is still auto-resolved to the node's <em>owned</em> namespace identity for that context (the key whose private material the node holds). The caller's key gates access; the node's owned key drives execution. This distinction matters for applications that inspect the executor identity inside WASM.</p>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
      5. SERVER → ACTOR CONNECTION
      ════════════════════════════════════════════════════════ -->
 <div class="card gd">
