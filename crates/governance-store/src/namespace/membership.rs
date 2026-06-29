@@ -53,9 +53,10 @@ impl<'a> NamespaceMembershipService<'a> {
                 bail!("invitation expired: joined_at {joined_at} > expiration {expiration}");
             }
         }
-        // When expiration == 0 (no-expiry sentinel), joined_at is not required
-        // and a None value is intentionally accepted. Do not add joined_at
-        // lookups below this point without handling the None case explicitly.
+        // When expiration == 0 (no-expiry sentinel), joined_at is not checked:
+        // both None and any Some(_) value are accepted and the field is ignored.
+        // Do not add joined_at lookups below this point without handling the
+        // None case explicitly.
 
         let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
         self.require_inviter_permission(&group_id, &inviter_pk)?;
