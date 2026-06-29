@@ -24,12 +24,31 @@ use libp2p::identity::Keypair;
 use mero_auth::config::{AuthConfig as EmbeddedAuthConfig, StorageConfig as AuthStorageConfig};
 use multiaddr::{Multiaddr, Protocol};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::fs::{self, create_dir_all};
 use tracing::{info, warn};
 
 use super::auth_mode::AuthModeArg;
 use crate::cli;
+
+/// Restrict a directory to owner-only access (`0700`) so the Ed25519 private
+/// key in `config.toml` and the datastore underneath it are not readable or
+/// traversable by other local users. No-op on non-Unix platforms, which lack
+/// POSIX mode bits.
+#[cfg(unix)]
+async fn restrict_dir_to_owner(dir: impl AsRef<Path>) -> EyreResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = dir.as_ref();
+    fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .await
+        .wrap_err_with(|| format!("failed to restrict permissions on {dir:?}"))
+}
+
+#[cfg(not(unix))]
+async fn restrict_dir_to_owner(_dir: impl AsRef<Path>) -> EyreResult<()> {
+    Ok(())
+}
 
 // Sync configuration - aggressive defaults for fast CRDT convergence
 const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -194,6 +213,9 @@ impl InitCommand {
                 .wrap_err_with(|| format!("failed to create directory {path:?}"))?;
         }
 
+        // The node home holds the private key in config.toml; keep it owner-only.
+        restrict_dir_to_owner(&path).await?;
+
         let identity = Keypair::generate_ed25519();
         info!("Generated identity: {:?}", identity.public().to_peer_id());
 
@@ -305,9 +327,13 @@ impl InitCommand {
 
         config.save(&path).await?;
 
+        let datastore_path = path.join(&config.datastore.path);
         drop(Store::open::<RocksDB>(&StoreConfig::new(
-            path.join(config.datastore.path),
+            datastore_path.clone(),
         ))?);
+
+        // RocksDB creates the datastore dir with the default umask; restrict it too.
+        restrict_dir_to_owner(&datastore_path).await?;
 
         info!("Initialized a node in {:?}", path);
 
