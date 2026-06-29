@@ -340,7 +340,7 @@ mod tests {
             .add_member(&group_id, &signing_pub, GroupMemberRole::Admin)
             .expect("add admin");
         SigningKeysRepository::new(&store)
-            .store_key(&group_id, &signing_pub, &signing_priv)
+            .store_key(&group_id, &signing_pub, signing_priv.as_bytes())
             .expect("store signing key");
         calimero_governance_store::register_context_in_group(&store, &group_id, &context_id)
             .expect("register context");
@@ -503,7 +503,7 @@ mod tests {
             .add_member(&root, &signing_pub, GroupMemberRole::Admin)
             .expect("add admin");
         SigningKeysRepository::new(&store)
-            .store_key(&root, &signing_pub, &signing_priv)
+            .store_key(&root, &signing_pub, signing_priv.as_bytes())
             .expect("store signing key");
 
         // Context lives in `child`, which is nested under `root`.
@@ -591,7 +591,7 @@ mod tests {
             .add_member(&group_id, &node_identity, GroupMemberRole::Admin)
             .expect("add admin");
         SigningKeysRepository::new(&store)
-            .store_key(&group_id, &node_identity, &real_priv)
+            .store_key(&group_id, &node_identity, real_priv.as_bytes())
             .expect("store signing key keyed by node_identity");
         calimero_governance_store::register_context_in_group(&store, &group_id, &context_id)
             .expect("register context");
@@ -644,7 +644,7 @@ mod tests {
             .add_member(&group_id, &signing_pub, GroupMemberRole::Admin)
             .expect("add admin");
         SigningKeysRepository::new(&store)
-            .store_key(&group_id, &signing_pub, &signing_priv)
+            .store_key(&group_id, &signing_pub, signing_priv.as_bytes())
             .expect("store signing key");
 
         let out = build_namespace_ownership_proof(
@@ -722,7 +722,7 @@ mod tests {
             .add_member(&child, &signing_pub, GroupMemberRole::Admin)
             .expect("add admin at child");
         SigningKeysRepository::new(&store)
-            .store_key(&child, &signing_pub, &signing_priv)
+            .store_key(&child, &signing_pub, signing_priv.as_bytes())
             .expect("store signing key at child");
 
         // `child` is nested under the namespace root `root`, so

@@ -43,7 +43,7 @@ Stores metadata about each uploaded file:
 
 ```rust
 pub struct FileRecord {
-    pub id: String,              // Unique file ID (e.g., "file_0")
+    pub id: String,              // Unique file ID, namespaced by uploader (e.g. "<uploader-base58>_0")
     pub name: String,            // Human-readable name
     pub blob_id: BlobId,         // Blob ID (base58 string in JSON via the SDK newtype)
     pub size: u64,               // File size in bytes
@@ -248,7 +248,7 @@ const response = await contractApi.upload_file(
 
 ```typescript
 // 1. CLIENT: Get blob ID from contract using file ID
-const fileId = "file_0"; // File ID returned from upload
+const fileId = uploadedFileId; // File ID returned from upload (e.g. "<uploader-base58>_0")
 
 // Option A: Get just the blob ID
 const blobId = await contractApi.get_blob_id_b58(fileId);

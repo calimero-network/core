@@ -142,12 +142,6 @@ mod interface__public_methods {
         // TODO: This is best done when there's data
         todo!()
     }
-
-    #[test]
-    #[ignore]
-    fn validate() {
-        todo!()
-    }
 }
 
 #[cfg(test)]
@@ -1000,9 +994,12 @@ mod user_storage_replay_protection {
         // post-divergence sync convergence.
         //
         // Strict rejection semantics remain for STRICTLY-LOWER
-        // nonces (see `replay_with_lower_nonce_fails` below) and
-        // for `DeleteRef` (where same-nonce delete is destructive
-        // and shouldn't occur in legitimate flows).
+        // nonces (see `replay_with_lower_nonce_fails` below). The
+        // `DeleteRef` arms now reject only strictly-lower nonces too
+        // and let the EQUAL-nonce case fall through to the unified
+        // apply-path tiebreak (`apply_delete_ref_action`: equal-HLC
+        // ⇒ delete wins) so signed types and `Public` resolve the
+        // equal-HLC delete-vs-update tie identically.
         //
         // **Why this test constructs the action manually** instead
         // of using `create_signed_user_add_action`: that helper
@@ -1102,7 +1099,10 @@ mod user_storage_replay_protection {
         // nonce)` and verify still runs.
         //
         // The DeleteRef path keeps the strict `Err(NonceReplay)` on
-        // `<=` — see `tombstone_replay_with_lower_nonce_fails`.
+        // STRICTLY-lower nonces (`<`); the equal-nonce case falls
+        // through to the unified apply-path tiebreak — see
+        // `user_delete_replay_protection` (strictly-stale) and
+        // `equal_nonce_delete_wins_like_public` (equal-HLC).
         env::reset_for_testing();
 
         let (signing_key, owner) = create_test_keypair();
@@ -2130,6 +2130,70 @@ mod frozen_storage_verification {
         }
     }
 
+    /// A local delete of a Frozen child must be rejected at
+    /// `remove_child_from`, before any state mutation.
+    ///
+    /// Regression test for the split-brain: previously the local delete
+    /// tombstoned the child and broadcast a `DeleteRef` that every peer
+    /// rejects (see `frozen_delete_is_rejected`), leaving the deleter
+    /// permanently diverged from the rest of the network.
+    #[test]
+    fn remove_child_from_rejects_frozen_child() {
+        use crate::delta::{commit_causal_delta, reset_delta_context};
+
+        env::reset_for_testing();
+
+        // Parent under root.
+        let mut page = Page::new_from_element("Parent", Element::root());
+        assert!(MainInterface::save(&mut page).unwrap());
+
+        // Frozen child registered under the parent.
+        let mut child_element = Element::new(None);
+        child_element.set_frozen_domain();
+        let mut para = Paragraph::new_from_element("Frozen child", child_element);
+        assert!(MainInterface::add_child_to(page.id(), &mut para).unwrap());
+
+        // Discard the actions emitted by the setup above — the assertion
+        // below is only about what the rejected delete contributes.
+        reset_delta_context();
+
+        // Local delete must be refused.
+        let result = MainInterface::remove_child_from(page.id(), para.id());
+        match result {
+            Err(StorageError::ActionNotAllowed(msg)) => {
+                assert!(
+                    msg.contains("Frozen") && msg.contains("deleted"),
+                    "Error should mention Frozen and deleted: {msg}"
+                );
+            }
+            other => panic!("Expected ActionNotAllowed error, got {other:?}"),
+        }
+
+        // The child must still be present — no tombstone, no divergence.
+        assert!(
+            MainInterface::children_of::<Paragraph>(page.id())
+                .unwrap()
+                .iter()
+                .any(|child| child.id() == para.id()),
+            "Frozen child must remain after a rejected delete"
+        );
+
+        // The rejected delete must not have broadcast a `DeleteRef`: that is
+        // the split-brain this guards against — every peer rejects a Frozen
+        // `DeleteRef`, leaving only the deleter diverged. The guard fires
+        // before any state is mutated, so no action should reach the delta.
+        if let Some(delta) = commit_causal_delta(&[0; 32]).unwrap() {
+            assert!(
+                !delta
+                    .actions
+                    .iter()
+                    .any(|a| matches!(a, Action::DeleteRef { id, .. } if *id == para.id())),
+                "rejected Frozen delete must not emit a DeleteRef, got: {:?}",
+                delta.actions
+            );
+        }
+    }
+
     #[test]
     fn frozen_blob_too_small_fails() {
         env::reset_for_testing();
@@ -2699,6 +2763,99 @@ mod storage_type_edge_cases {
         // Entity should still exist
         let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
         assert!(retrieved.is_some());
+    }
+
+    #[test]
+    fn equal_nonce_delete_wins_like_public() {
+        // Unified equal-HLC delete-vs-update tiebreak: a signed
+        // `DeleteRef` whose nonce EQUALS the stored `updated_at` must
+        // be ACCEPTED and win (delete-wins-on-equal), exactly as a
+        // `Public` delete is. Before unification the signed verify
+        // arms rejected this case with `NonceReplay` (the `<=`
+        // boundary) while the apply path and `Public` (no nonce gate)
+        // both accepted it — so signed types and `Public` diverged on
+        // the equal-HLC tie. The verify arms now reject only
+        // STRICTLY-lower nonces (`<`) and let the equal case fall
+        // through to `apply_delete_ref_action`'s tiebreak
+        // (`deleted_at < updated_at` ⇒ delete loses, so equal ⇒ delete
+        // wins). Contrast `user_delete_replay_protection`, which keeps
+        // the strict `NonceReplay` on a STRICTLY-lower delete nonce.
+        crate::tests::common::register_test_merge_functions();
+        env::reset_for_testing();
+
+        let (signing_key, owner) = create_test_keypair();
+
+        let mut element = Element::root();
+        element.set_user_domain(owner);
+        let page = Page::new_from_element("Page", element);
+        let serialized = to_vec(&page).unwrap();
+
+        let nonce1 = env::time_now();
+        let action1 =
+            create_signed_user_add_action(&signing_key, owner, page.id(), serialized, nonce1);
+        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
+
+        // The stored replay nonce after the add. Build a delete whose
+        // signed nonce AND `deleted_at` both equal it — mirroring the
+        // production invariant that both come from the same HLC — so
+        // the equal-HLC path is exercised in BOTH the verify and apply
+        // stages.
+        let stored = *<Index<MainStorage>>::get_metadata(page.id())
+            .unwrap()
+            .unwrap()
+            .updated_at;
+
+        let metadata = Metadata {
+            created_at: 0,
+            updated_at: stored.into(),
+            storage_type: StorageType::User {
+                owner,
+                signature_data: Some(SignatureData {
+                    signature: [0; 64],
+                    nonce: stored,
+                    signer: None,
+                }),
+            },
+            crdt_type: None,
+            field_name: None,
+            schema_version: None,
+        };
+        let mut delete_action = Action::DeleteRef {
+            id: page.id(),
+            deleted_at: stored,
+            metadata,
+        };
+        let signature = sign_action(&delete_action, &signing_key);
+        if let Action::DeleteRef {
+            metadata: ref mut m,
+            ..
+        } = delete_action
+        {
+            if let StorageType::User {
+                signature_data: ref mut sd,
+                ..
+            } = m.storage_type
+            {
+                *sd = Some(SignatureData {
+                    signature,
+                    nonce: stored,
+                    signer: None,
+                });
+            }
+        }
+
+        // Equal-HLC delete is accepted (not `NonceReplay`) and wins.
+        let result = MainInterface::apply_action(delete_action, &ApplyContext::empty());
+        assert!(
+            result.is_ok(),
+            "equal-HLC signed delete must be accepted (delete-wins), got {result:?}"
+        );
+        assert!(
+            MainInterface::find_by_id::<Page>(page.id())
+                .unwrap()
+                .is_none(),
+            "equal-HLC delete must win, removing the entity"
+        );
     }
 }
 

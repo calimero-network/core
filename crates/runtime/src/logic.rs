@@ -164,6 +164,13 @@ const DEFAULT_MAX_MODULE_SIZE_MIB: u64 = 20;
 /// `max_storage_value_size` single-value cap — so a max-size value committed as
 /// an artifact still fits — while staying well under the guest-memory ceiling.
 const DEFAULT_MAX_ARTIFACT_SIZE_MIB: u64 = 16;
+/// Default maximum *precompiled* (serialized) module size in MiB (256 MiB).
+///
+/// Generously larger than [`DEFAULT_MAX_MODULE_SIZE_MIB`] because a serialized
+/// artifact (native code + relocations + metadata) is materially bigger than
+/// the source WASM it was compiled from. This is a defense-in-depth ceiling on
+/// deserialization input, not a tight functional limit.
+const DEFAULT_MAX_PRECOMPILED_MODULE_SIZE_MIB: u64 = 256;
 
 /// Defines the resource limits for a VM instance.
 ///
@@ -226,6 +233,21 @@ pub struct VMLimits {
     /// (~64 MiB). Exceeding it traps the execution with
     /// `HostError::ArtifactSizeOverflow`.
     pub max_artifact_size: u64,
+    /// The maximum size, in bytes, of a *precompiled* (serialized) module
+    /// accepted by [`Engine::from_precompiled`](crate::Engine::from_precompiled).
+    ///
+    /// Distinct from [`max_module_size`](Self::max_module_size): that bounds
+    /// source WASM before compilation, whereas this bounds the larger
+    /// serialized artifact (native code + metadata) before deserialization.
+    /// Even though `from_precompiled` callers attest (via `unsafe`) that the
+    /// bytes are trusted, this cap is a defense-in-depth bound so a corrupt or
+    /// unexpectedly large artifact cannot drive unbounded allocation. Setting
+    /// it to 0 rejects all non-empty precompiled modules. An empty slice (0
+    /// bytes) always passes the size check regardless of this setting (the
+    /// check is `size > limit`, so `0 > 0` is false) and surfaces as a
+    /// deserialization error instead, matching the behavior of
+    /// [`max_module_size`](Self::max_module_size).
+    pub max_precompiled_module_size: u64,
 }
 
 impl Default for VMLimits {
@@ -262,6 +284,8 @@ impl Default for VMLimits {
             max_method_name_length: DEFAULT_MAX_METHOD_NAME_LENGTH,
             max_module_size: DEFAULT_MAX_MODULE_SIZE_MIB * u64::from(ONE_MIB),
             max_artifact_size: DEFAULT_MAX_ARTIFACT_SIZE_MIB * u64::from(ONE_MIB),
+            max_precompiled_module_size: DEFAULT_MAX_PRECOMPILED_MODULE_SIZE_MIB
+                * u64::from(ONE_MIB),
         }
     }
 }

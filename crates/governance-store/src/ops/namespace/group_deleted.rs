@@ -131,14 +131,28 @@ pub(crate) fn apply(
     }
 
     // Children-first deletion: descendants then root.
-    let all_groups_iter = cascade_group_ids
+    //
+    // We delete only the subtree we recomputed locally
+    // (`local_payload.descendant_groups`), never the ids carried in the op
+    // payload. The payload is authored by the (possibly hostile) signing
+    // peer and is only authorized against `root_group_id`; trusting its
+    // `cascade_group_ids` / `cascade_context_ids` would let a leaf-subgroup
+    // owner cascade-delete arbitrary, even cross-namespace, groups and
+    // contexts. The subset check above already guarantees every local
+    // descendant is covered by the op (so we don't under-delete relative to
+    // what the network agreed on); the payload extras are deliberately
+    // ignored here. `descendant_groups` is in children-first order.
+    let all_groups_iter = local_payload
+        .descendant_groups
         .iter()
-        .copied()
+        .map(ContextGroupId::to_bytes)
         .chain(std::iter::once(root_group_id));
+    let mut deleted_contexts = 0usize;
     for gid_bytes in all_groups_iter {
         let gid = ContextGroupId::from(gid_bytes);
         for context_id in enumerate_group_contexts(store, &gid, 0, usize::MAX)? {
             unregister_context_from_group(store, &gid, &context_id)?;
+            deleted_contexts += 1;
         }
         // Capture parent before delete_group_local_rows runs.
         let parent_for_cleanup = NamespaceRepository::new(store).parent(&gid)?;
@@ -153,10 +167,14 @@ pub(crate) fn apply(
         }
     }
 
+    // Counts reflect what was actually deleted locally: groups is the
+    // recomputed subtree (+1 for the root), contexts is the running tally
+    // from the unregister loop — not the pre-loop `local_payload` snapshot,
+    // which can overcount if a prior partial apply already removed some.
     tracing::info!(
         ?root_gid,
-        deleted_groups = cascade_group_ids.len() + 1,
-        deleted_contexts = cascade_context_ids.len(),
+        deleted_groups = local_payload.descendant_groups.len() + 1,
+        deleted_contexts,
         "cascade-deleted group subtree"
     );
     Ok(())

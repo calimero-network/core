@@ -129,6 +129,12 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         channel_size: 1000,     // Configurable, handles burst patterns
         warning_threshold: 0.8, // Log warning at 80% capacity
         stats_log_interval: Duration::from_secs(30),
+        // On a full channel, apply backpressure (wait for capacity) rather
+        // than dropping control events outright; only give up after this.
+        send_timeout: Duration::from_secs(5),
+        // Bound extra buffering from waiting overflow events to ~1x the
+        // channel before escalating to a true drop.
+        max_pending_retries: 1000,
     };
     let (network_event_sender, network_event_receiver) =
         network_event_channel::channel(channel_config, &mut registry);
