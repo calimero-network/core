@@ -36,6 +36,16 @@ use super::state::ServiceState;
 /// This design prioritizes simplicity and resource efficiency over guaranteed delivery.
 /// For critical state updates, clients should implement their own state reconciliation
 /// after reconnection.
+///
+/// # Lifecycle (no task leak)
+///
+/// This task is scoped to a single connection. It exits as soon as that
+/// connection's command channel closes (the client disconnected) — detected
+/// without waiting for the next node event via `closed()` in the `select!`.
+/// Previously it slept-and-looped forever when no connection was active, so
+/// every disconnect leaked a task, and a reconnect (which spawns a fresh task)
+/// produced duplicate delivery. The session state persists separately for
+/// reconnection.
 pub async fn handle_node_events(
     session_id: ConnectionId,
     state: Arc<ServiceState>,
