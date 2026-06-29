@@ -315,12 +315,12 @@ pub mod helpers {
     /// Whether a URL host must be refused as an SSRF target (literal private/
     /// loopback/link-local/unspecified IP, or a `localhost` domain).
     ///
-    /// NOTE: the same blocked-range logic is duplicated in
+    /// SYNC(#3053): the same blocked-range logic is duplicated in
     /// `calimero-node-primitives` (`client/application/install.rs::host_is_blocked`),
     /// which applies it at fetch time to also cover redirect hops. The two
     /// crates do not share a dependency; if you change the blocked ranges here
-    /// (e.g. add an RFC range or a new IPv6 special prefix), update that copy
-    /// too. A shared `net-utils` crate is the tracked follow-up.
+    /// (e.g. add CGNAT 100.64.0.0/10 or a new IPv6 special prefix), update that
+    /// copy too. Tracked for deduplication into a shared crate in #3053.
     pub fn url_host_is_blocked(host: &url::Host<&str>) -> bool {
         match host {
             url::Host::Ipv4(ip) => ipv4_is_blocked(*ip),

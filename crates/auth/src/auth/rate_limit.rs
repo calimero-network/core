@@ -169,6 +169,12 @@ impl LoginRateLimiter {
                         "Login rate-limiter at capacity; evicting oldest bucket (possible identity-rotation flood)"
                     );
                 } else {
+                    // Unreachable: the map is non-empty here (it just passed the
+                    // `>= MAX_TRACKED_KEYS` check) and reclaim only removes
+                    // entries, so `oldest_active_key` always finds a victim. Log
+                    // loudly and drop the record rather than panicking if that
+                    // invariant is ever violated, so the failure is visible.
+                    warn!("Login rate-limiter: no eviction victim on a full map; dropping failure record (unexpected)");
                     return;
                 }
             }

@@ -29,10 +29,13 @@ const MAX_ERROR_BODY_LEN: usize = 256;
 const MAX_INSTALL_REDIRECTS: usize = 10;
 
 /// Whether a URL's host must be refused as an SSRF target: a literal
-/// loopback / private / link-local / unspecified IP, or `localhost`. Mirrors
-/// the synchronous check in `calimero-server-primitives` (the two crates do not
-/// share a dependency); applied here at fetch time so it also covers redirect
-/// hops, which the request-validation layer cannot see.
+/// loopback / private / link-local / unspecified IP, or `localhost`. Applied
+/// here at fetch time so it also covers redirect hops, which the
+/// request-validation layer cannot see.
+///
+/// SYNC(#3053): mirrors `calimero-server-primitives::validation::url_host_is_blocked`
+/// (the two crates do not share a dependency). Keep the blocked ranges in step
+/// with that copy until both are deduplicated into a shared crate (#3053).
 ///
 /// Uses the typed `Url::host()` rather than string parsing so IPv6 literals
 /// (including bracketed forms) are classified by the URL parser, not by manual
