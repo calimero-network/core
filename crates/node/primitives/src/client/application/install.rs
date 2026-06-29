@@ -82,7 +82,9 @@ fn ip_is_blocked(ip: std::net::IpAddr) -> bool {
 fn ssrf_guarded_client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if host_is_blocked(attempt.url()) {
+            if !matches!(attempt.url().scheme(), "http" | "https") {
+                attempt.error("redirect to a non-http(s) scheme is blocked")
+            } else if host_is_blocked(attempt.url()) {
                 attempt.error("redirect to a non-public address is blocked")
             } else if attempt.previous().len() >= MAX_INSTALL_REDIRECTS {
                 attempt.stop()

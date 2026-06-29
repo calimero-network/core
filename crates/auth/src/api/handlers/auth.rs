@@ -171,7 +171,17 @@ pub async fn token_handler(
     // `public_key` is the field bound to the caller's identity. This value is
     // used only as an opaque map key and is never logged. (See module docs for
     // the identity-rotation / IP-keying follow-up.)
-    let rl_key = format!("{}|{}", token_request.auth_method, token_request.public_key);
+    //
+    // Length-prefix the first component so the `|` separator is unambiguous:
+    // raw, attacker-controlled values could otherwise inject a `|` to collide
+    // two distinct identities into one bucket (e.g. lock out a victim by
+    // polluting their bucket).
+    let rl_key = format!(
+        "{}|{}|{}",
+        token_request.auth_method.len(),
+        token_request.auth_method,
+        token_request.public_key
+    );
 
     // Sanitize string inputs to prevent injection attacks
     token_request.auth_method = sanitize_identifier(&token_request.auth_method);
@@ -206,6 +216,10 @@ pub async fn token_handler(
     // Brute-force throttle: if this caller has exceeded the failed-attempt
     // budget, reject with 429 + Retry-After before doing any credential work.
     if let Some(retry_after) = state.0.login_rate_limiter.check(&rl_key) {
+        // Count the rejected attempt too, so sustained hammering keeps the
+        // window rolling rather than letting the attacker wait out a fixed
+        // lockout while still probing.
+        state.0.login_rate_limiter.record_failure(&rl_key);
         // Log only the sanitized, low-cardinality auth method — never the raw
         // key (which holds the public key and could be a log-injection vector).
         warn!(
