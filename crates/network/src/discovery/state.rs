@@ -7,6 +7,7 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
+use indexmap::IndexMap;
 use libp2p::core::transport::ListenerId;
 use libp2p::relay::HOP_PROTOCOL_NAME;
 use libp2p::rendezvous::{Cookie, Namespace};
@@ -360,17 +361,23 @@ impl DiscoveryState {
         }
 
         // New address: enforce the per-peer cap before inserting so the
-        // map can't grow without bound. Evict the worst (highest
-        // consecutive-failure count) existing address to make room — ties
-        // broken arbitrarily — keeping the healthiest addresses and the
-        // fresh one we're about to add.
+        // map can't grow without bound. Evict the *worst* existing address
+        // — highest consecutive-failure count, ties broken toward the
+        // oldest (lowest insertion index). `IndexMap` preserves insertion
+        // order, so this is deterministic (no HashMap iteration-order
+        // randomness) and mirrors the peer-cache's newest-first policy: the
+        // freshly added address is always kept, and when everything is
+        // equally healthy we drop the stalest entry — which is what lets us
+        // pick up a peer's new address after an IP change instead of
+        // pinning to its first-seen one.
         if addrs.len() >= MAX_ADDRS_PER_PEER {
-            if let Some(worst) = addrs
+            if let Some(evict_idx) = addrs
                 .iter()
-                .max_by_key(|(_, &count)| count)
-                .map(|(worst_addr, _)| worst_addr.clone())
+                .enumerate()
+                .max_by_key(|(idx, (_, &count))| (count, core::cmp::Reverse(*idx)))
+                .map(|(idx, _)| idx)
             {
-                let _ = addrs.remove(&worst);
+                let _ = addrs.shift_remove_index(evict_idx);
             }
         }
 
@@ -392,7 +399,10 @@ impl DiscoveryState {
 
         *count = count.saturating_add(1);
         if *count >= DIAL_FAILURE_EVICTION_THRESHOLD {
-            let _ = peer_info.addrs.remove(addr);
+            // `shift_remove` (not `swap_remove`) so the remaining addresses
+            // keep their insertion order, which the cap-eviction tie-break
+            // relies on.
+            let _ = peer_info.addrs.shift_remove(addr);
             true
         } else {
             false
@@ -447,7 +457,7 @@ impl DiscoveryState {
                 let _ = discoveries.insert(mechanism);
 
                 let _ = entry.insert(PeerInfo {
-                    addrs: HashMap::default(),
+                    addrs: IndexMap::default(),
                     discoveries,
                     relay: None,
                     rendezvous: None,
@@ -818,7 +828,12 @@ impl DiscoveryState {
 /// counter at zero indefinitely.
 #[derive(Clone, Debug, Default)]
 pub struct PeerInfo {
-    addrs: HashMap<Multiaddr, u8>,
+    /// Known direct-dial addresses mapped to their consecutive
+    /// dial-failure count. An `IndexMap` (insertion-ordered) rather than a
+    /// `HashMap` so cap eviction is deterministic and can break failure-
+    /// count ties by age — see [`MAX_ADDRS_PER_PEER`] and
+    /// [`DiscoveryState::add_peer_addr`].
+    addrs: IndexMap<Multiaddr, u8>,
     discoveries: HashSet<PeerDiscoveryMechanism>,
     relay: Option<PeerRelayInfo>,
     rendezvous: Option<PeerRendezvousInfo>,

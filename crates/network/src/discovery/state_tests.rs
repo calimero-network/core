@@ -800,6 +800,40 @@ fn test_add_peer_addr_evicts_worst_address_when_capped() {
 }
 
 #[test]
+fn test_add_peer_addr_evicts_oldest_when_all_healthy() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+
+    // Fill the book to capacity with all-healthy (zero-failure) addresses.
+    let mut addrs = Vec::new();
+    for port in 0..(MAX_ADDRS_PER_PEER as u16) {
+        let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", 4001 + port)
+            .parse()
+            .unwrap();
+        state.add_peer_addr(peer, &addr);
+        addrs.push(addr);
+    }
+
+    // With no failures to distinguish them, eviction is deterministic:
+    // the oldest (first-inserted) address is dropped and the newest is
+    // kept — mirroring the peer-cache's newest-first policy so an IP
+    // change is captured rather than pinned out.
+    let fresh: Multiaddr = "/ip4/127.0.0.1/tcp/5999".parse().unwrap();
+    state.add_peer_addr(peer, &fresh);
+
+    assert_eq!(state.peers[&peer].addrs.len(), MAX_ADDRS_PER_PEER);
+    assert!(
+        !state.peers[&peer].addrs.contains_key(&addrs[0]),
+        "the oldest address must be evicted on an all-healthy tie"
+    );
+    assert!(state.peers[&peer].addrs.contains_key(&fresh));
+    // Every later (younger) healthy address survives.
+    for addr in &addrs[1..] {
+        assert!(state.peers[&peer].addrs.contains_key(addr));
+    }
+}
+
+#[test]
 fn test_add_peer_addr_refresh_of_existing_does_not_evict() {
     let mut state = DiscoveryState::default();
     let peer = PeerId::random();
