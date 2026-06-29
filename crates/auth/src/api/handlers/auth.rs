@@ -502,13 +502,36 @@ fn extract_token_from_forwarded_uri(headers: &HeaderMap) -> Option<&str> {
 /// # Returns
 ///
 /// * `impl IntoResponse` - HTML form for authentication
+/// Default callback URL used when none is supplied or the supplied one is
+/// rejected.
+const DEFAULT_CALLBACK: &str = "http://127.0.0.1:9080/callback";
+
+/// Turn an attacker-controlled `callback-url` query value into a JS string
+/// literal that is safe to embed in an inline `<script>`.
+///
+/// 1. Accept it only if it parses as an `http`/`https` URL (rejects
+///    `javascript:`, `data:`, and malformed values); otherwise fall back to the
+///    default. Re-serialising the parsed URL also percent-encodes HTML-unsafe
+///    characters such as `<`/`>`, so it cannot break out of the `<script>`.
+/// 2. JSON-encode the result, producing a quoted, fully-escaped JS string
+///    literal, so it cannot break out of the JS string context. This closes the
+///    `'{callback_url}'` → `';alert(1);//` injection.
+fn safe_callback_js(raw: Option<&str>) -> String {
+    let validated = raw
+        .and_then(|raw| url::Url::parse(raw).ok())
+        .filter(|u| matches!(u.scheme(), "http" | "https"))
+        .map_or_else(|| DEFAULT_CALLBACK.to_owned(), |u| u.to_string());
+    serde_json::to_string(&validated).unwrap_or_else(|_| format!("{DEFAULT_CALLBACK:?}"))
+}
+
 pub async fn callback_handler(
     _state: Extension<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    // Extract the callback URL from query parameters
-    let default_callback = "http://127.0.0.1:9080/callback".to_string();
-    let callback_url = params.get("callback-url").unwrap_or(&default_callback);
+    // Extract the callback URL from query parameters. This value is
+    // attacker-controlled and is embedded into an inline <script>; see
+    // [`safe_callback_js`] for how it is sanitised.
+    let callback_url_js = safe_callback_js(params.get("callback-url").map(String::as_str));
 
     // Create a simple authentication form
     let html = format!(
@@ -652,7 +675,7 @@ pub async fn callback_handler(
                 const refreshToken = 'temp_refresh_token_' + Date.now();
                 
                 // Redirect back to meroctl with tokens
-                const callbackUrl = '{callback_url}';
+                const callbackUrl = {callback_url_js};
                 const redirectUrl = new URL(callbackUrl);
                 redirectUrl.searchParams.set('access_token', accessToken);
                 redirectUrl.searchParams.set('refresh_token', refreshToken);
@@ -945,5 +968,49 @@ pub async fn mock_token_handler(
                 None,
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod callback_xss_tests {
+    use super::{safe_callback_js, DEFAULT_CALLBACK};
+
+    #[test]
+    fn malicious_callbacks_fall_back_to_default() {
+        for bad in [
+            Some("'; alert(1); //"),
+            Some("javascript:alert(1)"),
+            Some("data:text/html,<script>alert(1)</script>"),
+            Some("not a url"),
+            None,
+        ] {
+            let js = safe_callback_js(bad);
+            assert_eq!(
+                js,
+                format!("{DEFAULT_CALLBACK:?}"),
+                "malicious/invalid callback {bad:?} must fall back to the default",
+            );
+        }
+    }
+
+    #[test]
+    fn valid_callback_is_json_quoted_and_html_safe() {
+        // A valid http(s) URL is accepted, emitted as a quoted JS string literal.
+        let js = safe_callback_js(Some("https://app.example.com/cb?x=1"));
+        assert!(
+            js.starts_with('"') && js.ends_with('"'),
+            "must be a JS string literal: {js}"
+        );
+        assert!(js.contains("app.example.com"));
+
+        // Angle brackets that would break out of <script> are percent-encoded by
+        // URL normalisation, so the embedded literal contains no raw '<'/'>'.
+        let js = safe_callback_js(Some("http://x/</script><script>alert(1)</script>"));
+        assert!(
+            !js.contains('<') && !js.contains('>'),
+            "must not contain raw angle brackets: {js}"
+        );
+        // And it remains a single quoted JS string (no unescaped quote break-out).
+        assert!(js.starts_with('"') && js.ends_with('"'));
     }
 }
