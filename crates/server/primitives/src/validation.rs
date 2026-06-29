@@ -262,18 +262,128 @@ pub mod helpers {
         }
     }
 
-    /// Validate URL length
+    /// Validate a URL the node will fetch from (e.g. application install).
+    ///
+    /// Beyond the length cap this is the first line of SSRF defense: it enforces
+    /// an `http`/`https` scheme and rejects URLs whose host is a literal
+    /// loopback / private / link-local / unspecified IP, or `localhost`. This
+    /// blocks the obvious metadata-service and internal-service targets
+    /// (`http://169.254.169.254/...`, `http://127.0.0.1`, `http://10.0.0.1`,
+    /// `http://[::1]`, `http://localhost`).
+    ///
+    /// It does NOT catch a public hostname that *resolves* to a private address
+    /// (DNS rebinding) or a redirect to a private address — those require
+    /// resolution at fetch time and are enforced separately by the download
+    /// path. Keep both layers.
     pub fn validate_url(value: &url::Url, field: &'static str) -> Option<ValidationError> {
         let url_str = value.as_str();
         if url_str.len() > MAX_URL_LENGTH {
-            Some(ValidationError::StringTooLong {
+            return Some(ValidationError::StringTooLong {
                 field,
                 max: MAX_URL_LENGTH,
                 actual: url_str.len(),
-            })
-        } else {
-            None
+            });
         }
+
+        match value.scheme() {
+            "http" | "https" => {}
+            other => {
+                return Some(ValidationError::InvalidFormat {
+                    field,
+                    reason: format!(
+                        "unsupported URL scheme '{other}'; only http and https are allowed"
+                    ),
+                });
+            }
+        }
+
+        match value.host() {
+            Some(host) if url_host_is_blocked(&host) => Some(ValidationError::InvalidFormat {
+                field,
+                reason:
+                    "URL host is a loopback, private, link-local, or otherwise non-public address"
+                        .to_owned(),
+            }),
+            Some(_) => None,
+            None => Some(ValidationError::InvalidFormat {
+                field,
+                reason: "URL has no host".to_owned(),
+            }),
+        }
+    }
+
+    /// Whether a URL host must be refused as an SSRF target (literal private/
+    /// loopback/link-local/unspecified IP, or a `localhost` domain).
+    pub fn url_host_is_blocked(host: &url::Host<&str>) -> bool {
+        match host {
+            url::Host::Ipv4(ip) => ipv4_is_blocked(*ip),
+            url::Host::Ipv6(ip) => ipv6_is_blocked(*ip),
+            url::Host::Domain(domain) => {
+                let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+                domain == "localhost" || domain.ends_with(".localhost")
+            }
+        }
+    }
+
+    /// Blocked IPv4 ranges: loopback (127/8), private (10/8, 172.16/12,
+    /// 192.168/16), link-local (169.254/16 — incl. the cloud metadata IP),
+    /// unspecified (0.0.0.0), and broadcast.
+    fn ipv4_is_blocked(ip: std::net::Ipv4Addr) -> bool {
+        ip.is_loopback()
+            || ip.is_private()
+            || ip.is_link_local()
+            || ip.is_unspecified()
+            || ip.is_broadcast()
+    }
+
+    /// Blocked IPv6: loopback (::1), unspecified (::), unique-local (fc00::/7),
+    /// link-local (fe80::/10), and IPv4-mapped addresses whose embedded v4 is
+    /// blocked. (Avoids unstable `Ipv6Addr` helpers by checking segments.)
+    fn ipv6_is_blocked(ip: std::net::Ipv6Addr) -> bool {
+        if ip.is_loopback() || ip.is_unspecified() {
+            return true;
+        }
+        if let Some(v4) = ip.to_ipv4_mapped() {
+            return ipv4_is_blocked(v4);
+        }
+        let first = ip.segments()[0];
+        // fc00::/7 (unique-local) and fe80::/10 (link-local).
+        (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+    }
+
+    /// Validate a local filesystem path supplied by a client (e.g. dev install).
+    ///
+    /// Rejects `..` traversal components, which are never legitimate and are the
+    /// classic way to escape an intended directory (e.g. `foo/../../etc/passwd`).
+    ///
+    /// Absolute paths are intentionally allowed: dev installs commonly point at
+    /// an absolute build-output path (`meroctl app install --path /abs/app.wasm`),
+    /// and the `install-dev-application` endpoint is node-owner/admin-only (the
+    /// permission gate denies non-admin tokens), so reading the owner's own
+    /// filesystem is not a privilege boundary. This check is defense-in-depth
+    /// against traversal tricks layered on top of that gate.
+    pub fn validate_safe_path(path: &str, field: &'static str) -> Option<ValidationError> {
+        use std::path::{Component, Path};
+
+        if path.len() > MAX_PATH_LENGTH {
+            return Some(ValidationError::StringTooLong {
+                field,
+                max: MAX_PATH_LENGTH,
+                actual: path.len(),
+            });
+        }
+
+        if Path::new(path)
+            .components()
+            .any(|c| matches!(c, Component::ParentDir))
+        {
+            return Some(ValidationError::InvalidFormat {
+                field,
+                reason: "path must not contain '..' traversal components".to_owned(),
+            });
+        }
+
+        None
     }
 
     /// Validate method name (checks for empty, length, and control characters)
@@ -368,5 +478,85 @@ pub mod helpers {
                 2 + content_size + comma_size
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod ssrf_and_path_tests {
+    use url::Url;
+
+    use super::helpers::{validate_safe_path, validate_url};
+    use super::ValidationError;
+
+    fn url(s: &str) -> Url {
+        Url::parse(s).unwrap()
+    }
+
+    #[test]
+    fn ssrf_targets_are_rejected() {
+        for bad in [
+            "http://169.254.169.254/latest/meta-data/", // cloud metadata
+            "http://127.0.0.1:6379",
+            "http://localhost:8080/admin",
+            "https://LOCALHOST/x",
+            "http://10.0.0.5/internal",
+            "http://172.16.3.4/",
+            "http://192.168.1.1/",
+            "http://0.0.0.0/",
+            "http://[::1]/",
+            "http://[fe80::1]/",
+            "http://[fc00::1]/",
+            "http://[::ffff:127.0.0.1]/", // IPv4-mapped loopback
+        ] {
+            assert!(
+                matches!(
+                    validate_url(&url(bad), "url"),
+                    Some(ValidationError::InvalidFormat { .. })
+                ),
+                "{bad} must be rejected as an SSRF target",
+            );
+        }
+    }
+
+    #[test]
+    fn non_http_schemes_are_rejected() {
+        for bad in ["file:///etc/passwd", "ftp://example.com/x", "gopher://x/"] {
+            assert!(matches!(
+                validate_url(&url(bad), "url"),
+                Some(ValidationError::InvalidFormat { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn public_urls_are_allowed() {
+        for ok in [
+            "https://registry.example.com/app.wasm",
+            "http://93.184.216.34/app.mpk", // public literal IP
+            "https://calimero.network/pkg/v1.mpk",
+        ] {
+            assert!(
+                validate_url(&url(ok), "url").is_none(),
+                "{ok} must be allowed",
+            );
+        }
+    }
+
+    #[test]
+    fn path_traversal_is_rejected_absolute_allowed() {
+        for bad in ["../../etc/passwd", "foo/../../bar", "a/../b/../../c"] {
+            assert!(
+                matches!(
+                    validate_safe_path(bad, "path"),
+                    Some(ValidationError::InvalidFormat { .. })
+                ),
+                "{bad} must be rejected for traversal",
+            );
+        }
+        // Absolute and plain relative paths are allowed (dev-install ergonomics;
+        // the endpoint is admin-only).
+        assert!(validate_safe_path("/abs/build/app.wasm", "path").is_none());
+        assert!(validate_safe_path("res/app.wasm", "path").is_none());
+        assert!(validate_safe_path("./res/app.wasm", "path").is_none());
     }
 }
