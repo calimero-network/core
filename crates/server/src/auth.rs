@@ -404,4 +404,36 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         assert!(resp.headers().get("X-Auth-Error").is_none());
     }
+
+    /// Unmapped `/admin-api/*` routes (governance subpaths, unhandled methods)
+    /// must fail closed: a valid but non-admin token is denied, an admin token
+    /// is allowed. Without the default-deny these admitted any valid token —
+    /// the audit's "unlisted /admin-api/... subpath → 403, currently 200".
+    #[test]
+    fn unmapped_admin_api_routes_deny_non_admin_tokens() {
+        let validator = PermissionValidator::new();
+        let scoped = vec!["context:execute".to_owned(), "context:list".to_owned()];
+        let admin = vec!["admin".to_owned()];
+
+        for (method, path) in [
+            (Method::POST, "/admin-api/groups"),
+            (Method::DELETE, "/admin-api/groups/g-1"),
+            (Method::POST, "/admin-api/install-dev-application"),
+            (Method::GET, "/admin-api/usage"),
+        ] {
+            let required = validator.determine_required_permissions(&request(method.clone(), path));
+            assert!(
+                !required.is_empty(),
+                "{method} {path} must yield a requirement (admin) for the guard to enforce",
+            );
+            assert!(
+                !validator.validate_permissions(&scoped, &required),
+                "{method} {path}: a scoped non-admin token must be denied (403)",
+            );
+            assert!(
+                validator.validate_permissions(&admin, &required),
+                "{method} {path}: an admin token must be allowed",
+            );
+        }
+    }
 }

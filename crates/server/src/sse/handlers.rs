@@ -60,12 +60,67 @@ use super::events::handle_node_events;
 use super::session::{now_secs, SessionState, SessionStateInner};
 use super::state::ServiceState;
 use super::storage::{delete_session, load_session, save_session};
+use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
+
+/// Sentinel principal for sessions owned by the node owner (non-key auth, e.g.
+/// embedded username/password). All node-owner requests share one principal —
+/// they are the same human — so they may freely reuse each other's sessions.
+const NODE_OWNER_PRINCIPAL: &str = "node-owner";
+
+/// Resolve the principal that owns (or is requesting) a session from the auth
+/// guard's injected extensions.
+///
+/// - A verified Ed25519 key → that key's string form.
+/// - Non-key auth (`AuthenticatedNodeOwner`) → the shared [`NODE_OWNER_PRINCIPAL`].
+/// - Neither (auth disabled, no guard) → `None`: there is no principal to bind
+///   to, so ownership is not enforced (single-tenant local node).
+fn caller_principal(
+    auth_key: Option<&AuthenticatedKey>,
+    auth_node_owner: Option<&AuthenticatedNodeOwner>,
+) -> Option<String> {
+    if let Some(AuthenticatedKey(pk)) = auth_key {
+        Some(pk.to_string())
+    } else if auth_node_owner.is_some() {
+        Some(NODE_OWNER_PRINCIPAL.to_owned())
+    } else {
+        None
+    }
+}
+
+/// Whether `caller` may access a session owned by `session_owner`.
+///
+/// Allowed when the session is unowned (legacy/auth-disabled), when the caller
+/// is unauthenticated (auth disabled), or when the principals match. A mismatch
+/// between two known principals is a cross-principal access attempt (IDOR) and
+/// must be refused.
+fn owner_allows_access(session_owner: &Option<String>, caller: &Option<String>) -> bool {
+    match (session_owner, caller) {
+        (Some(owner), Some(caller)) => owner == caller,
+        _ => true,
+    }
+}
+
+/// A 403 response for the subscription endpoint, matching its `(StatusCode,
+/// Json<SseResponse>)` return shape.
+fn forbidden() -> (StatusCode, Json<SseResponse>) {
+    (
+        StatusCode::FORBIDDEN,
+        Json(SseResponse {
+            body: ResponseBody::Error(ResponseBodyError::HandlerError(
+                "Forbidden: not the session owner".into(),
+            )),
+        }),
+    )
+}
 
 /// Handle subscription/unsubscription requests
 pub async fn handle_subscription(
     Extension(state): Extension<Arc<ServiceState>>,
+    auth_key: Option<Extension<AuthenticatedKey>>,
+    auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     Json(request): Json<Request<serde_json::Value>>,
 ) -> impl IntoResponse {
+    let caller = caller_principal(auth_key.as_deref(), auth_node_owner.as_deref());
     let session_id = match request.id.parse::<ConnectionId>() {
         Ok(id) => id,
         Err(_) => {
@@ -91,6 +146,12 @@ pub async fn handle_subscription(
 
             if let Some(session) = sessions.get(&session_id) {
                 let mut inner = session.inner.write().await;
+                if !owner_allows_access(&inner.owner, &caller) {
+                    drop(inner);
+                    drop(sessions);
+                    warn!(%session_id, "SSE subscribe denied: caller is not the session owner");
+                    return forbidden();
+                }
                 for ctx in &ctxs.context_ids {
                     let _ = inner.subscriptions.insert(*ctx);
                 }
@@ -135,6 +196,12 @@ pub async fn handle_subscription(
             let sessions = state.sessions.read().await;
             if let Some(session) = sessions.get(&session_id) {
                 let mut inner = session.inner.write().await;
+                if !owner_allows_access(&inner.owner, &caller) {
+                    drop(inner);
+                    drop(sessions);
+                    warn!(%session_id, "SSE unsubscribe denied: caller is not the session owner");
+                    return forbidden();
+                }
                 let mut unsubscribed = Vec::new();
 
                 // Remove contexts that were actually subscribed
@@ -230,6 +297,13 @@ pub async fn sse_handler(
         .and_then(|s| s.split('-').next())
         .and_then(|id| id.parse::<ConnectionId>().ok());
 
+    // Principal of the reconnecting client, used to refuse adopting a session
+    // owned by a different principal (session-hijack via guessed Last-Event-ID).
+    let caller = caller_principal(
+        request.extensions().get::<AuthenticatedKey>(),
+        request.extensions().get::<AuthenticatedNodeOwner>(),
+    );
+
     let (commands_sender, commands_receiver) =
         mpsc::channel::<Command>(COMMAND_CHANNEL_BUFFER_SIZE);
 
@@ -238,12 +312,20 @@ pub async fn sse_handler(
         // Attempt to reconnect to existing session
         let sessions = state.sessions.read().await;
         if let Some(existing_session) = sessions.get(&existing_session_id).cloned() {
-            // Check expiry
-            if existing_session.inner.read().await.is_expired() {
+            // Check expiry + ownership while holding the session lock.
+            let inner = existing_session.inner.read().await;
+            if inner.is_expired() {
+                drop(inner);
                 drop(sessions);
                 warn!(%existing_session_id, "Session expired, creating new session");
-                create_new_session(&state).await
+                create_new_session(&state, caller).await
+            } else if !owner_allows_access(&inner.owner, &caller) {
+                drop(inner);
+                drop(sessions);
+                warn!(%existing_session_id, "SSE reconnect denied: caller is not the session owner; issuing a fresh session");
+                create_new_session(&state, caller).await
             } else {
+                drop(inner);
                 info!(%existing_session_id, "Client reconnecting to existing session (from cache)");
                 (existing_session_id, existing_session, true)
             }
@@ -258,7 +340,10 @@ pub async fn sse_handler(
                         // Clean up expired session
                         let mut store = state.store.clone();
                         drop(delete_session(&mut store, existing_session_id));
-                        create_new_session(&state).await
+                        create_new_session(&state, caller).await
+                    } else if !owner_allows_access(&persisted_data.owner, &caller) {
+                        warn!(%existing_session_id, "SSE reconnect denied: caller is not the persisted session owner; issuing a fresh session");
+                        create_new_session(&state, caller).await
                     } else {
                         info!(%existing_session_id, "Client reconnecting to persisted session");
                         // Restore session from storage
@@ -280,17 +365,17 @@ pub async fn sse_handler(
                 }
                 Ok(None) => {
                     warn!(%existing_session_id, "Session not found in storage, creating new session");
-                    create_new_session(&state).await
+                    create_new_session(&state, caller).await
                 }
                 Err(err) => {
                     error!(%existing_session_id, %err, "Failed to load session from storage, creating new session");
-                    create_new_session(&state).await
+                    create_new_session(&state, caller).await
                 }
             }
         }
     } else {
         // New connection, create new session
-        create_new_session(&state).await
+        create_new_session(&state, caller).await
     };
 
     if is_reconnect {
@@ -427,9 +512,12 @@ pub async fn sse_handler(
 /// Useful for clients that missed the initial connect event or want to verify session state.
 pub async fn get_session_handler(
     Extension(state): Extension<Arc<ServiceState>>,
+    auth_key: Option<Extension<AuthenticatedKey>>,
+    auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     Path(session_id): Path<ConnectionId>,
 ) -> impl IntoResponse {
     debug!(%session_id, "GET session info request");
+    let caller = caller_principal(auth_key.as_deref(), auth_node_owner.as_deref());
 
     // Check in-memory sessions first
     let sessions = state.sessions.read().await;
@@ -448,6 +536,15 @@ pub async fn get_session_handler(
                     )),
                 }),
             );
+        }
+
+        // Refuse cross-principal access (IDOR): a session may only be read by
+        // the principal that created it.
+        if !owner_allows_access(&inner.owner, &caller) {
+            drop(inner);
+            drop(sessions);
+            warn!(%session_id, "GET session denied: caller is not the session owner");
+            return forbidden();
         }
 
         let subscriptions: Vec<_> = inner.subscriptions.iter().copied().collect();
@@ -483,6 +580,9 @@ pub async fn get_session_handler(
                         )),
                     }),
                 )
+            } else if !owner_allows_access(&persisted_data.owner, &caller) {
+                warn!(%session_id, "GET session denied: caller is not the persisted session owner");
+                forbidden()
             } else {
                 let subscriptions: Vec<_> = persisted_data.subscriptions.iter().copied().collect();
                 (
@@ -520,8 +620,11 @@ pub async fn get_session_handler(
     }
 }
 
-/// Create a new session with persistent storage
-async fn create_new_session(state: &ServiceState) -> (ConnectionId, SessionState, bool) {
+/// Create a new session with persistent storage, owned by `owner`.
+async fn create_new_session(
+    state: &ServiceState,
+    owner: Option<String>,
+) -> (ConnectionId, SessionState, bool) {
     loop {
         let session_id = random();
         let mut sessions = state.sessions.write().await;
@@ -529,7 +632,7 @@ async fn create_new_session(state: &ServiceState) -> (ConnectionId, SessionState
             Entry::Occupied(_) => continue,
             Entry::Vacant(entry) => {
                 let session_state = SessionState {
-                    inner: Arc::new(RwLock::new(SessionStateInner::default())),
+                    inner: Arc::new(RwLock::new(SessionStateInner::with_owner(owner.clone()))),
                 };
                 let _ = entry.insert(session_state.clone());
 
@@ -545,5 +648,61 @@ async fn create_new_session(state: &ServiceState) -> (ConnectionId, SessionState
                 return (session_id, session_state, false);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_primitives::identity::PublicKey;
+
+    use super::*;
+
+    fn pk(b: u8) -> PublicKey {
+        PublicKey::from([b; 32])
+    }
+
+    #[test]
+    fn caller_principal_prefers_key_then_node_owner_then_none() {
+        // A verified key wins and maps to its string form.
+        let key = AuthenticatedKey(pk(1));
+        assert_eq!(caller_principal(Some(&key), None), Some(pk(1).to_string()),);
+        // A key takes precedence even if the node-owner marker is also present.
+        assert_eq!(
+            caller_principal(Some(&key), Some(&AuthenticatedNodeOwner)),
+            Some(pk(1).to_string()),
+        );
+        // Non-key auth collapses to the shared node-owner principal.
+        assert_eq!(
+            caller_principal(None, Some(&AuthenticatedNodeOwner)),
+            Some(NODE_OWNER_PRINCIPAL.to_owned()),
+        );
+        // Auth disabled: no principal to bind to.
+        assert_eq!(caller_principal(None, None), None);
+    }
+
+    #[test]
+    fn owner_binding_blocks_cross_principal_access() {
+        let alice = Some(pk(1).to_string());
+        let bob = Some(pk(2).to_string());
+
+        // Same principal: allowed.
+        assert!(owner_allows_access(&alice, &alice));
+        // Different principals: denied (the IDOR case).
+        assert!(!owner_allows_access(&alice, &bob));
+        // node-owner principals are shared, so they match each other.
+        let owner = Some(NODE_OWNER_PRINCIPAL.to_owned());
+        assert!(owner_allows_access(&owner, &owner));
+    }
+
+    #[test]
+    fn owner_binding_is_backward_compatible_when_unowned_or_unauthenticated() {
+        let alice = Some(pk(1).to_string());
+
+        // Unowned session (legacy/persisted-before-upgrade, or auth disabled at
+        // creation): accessible by anyone.
+        assert!(owner_allows_access(&None, &alice));
+        // Auth disabled now (no caller principal): not blocked.
+        assert!(owner_allows_access(&alice, &None));
+        assert!(owner_allows_access(&None, &None));
     }
 }
