@@ -622,4 +622,35 @@ mod tests {
             "a private blob request without an auth envelope must be rejected"
         );
     }
+
+    #[test]
+    fn signed_request_from_direct_member_is_authorized() {
+        // Exercises the DIRECT-membership branch of `ContextRegistry::has_member`
+        // (the first `is_member` assignment), with no group/inheritance setup at
+        // all: a `ContextIdentity` row for (context, key) is the fast path
+        // has_member checks first. This guards against a regression in the
+        // direct path that the inheritance-only tests would miss.
+        let (direct_sk, direct_pk) = keypair(0x05);
+        let store = test_store();
+        let context_id = ContextId::from(CONTEXT);
+        {
+            let mut handle = store.handle();
+            handle
+                .put(
+                    &calimero_store::key::ContextIdentity::new(context_id, direct_pk),
+                    &calimero_store::types::ContextIdentity {
+                        private_key: None,
+                        sender_key: None,
+                    },
+                )
+                .unwrap();
+        }
+
+        let request = signed_request(&direct_sk, direct_pk, now_secs());
+        assert!(
+            is_signed_context_member(&store, &request).unwrap(),
+            "a direct context member with a valid signature must be authorized \
+             without relying on the inheritance walk"
+        );
+    }
 }
