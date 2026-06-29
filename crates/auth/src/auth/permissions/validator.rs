@@ -148,7 +148,15 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
             let scope = ResourceScope::Specific(vec![key_id.as_str().to_string()]);
             return match method {
                 HttpMethod::GET => vec![Permission::Keys(KeyPermission::GetPermissions(scope))],
-                HttpMethod::PUT => vec![Permission::Keys(KeyPermission::UpdatePermissions(scope))],
+                // Updating a key's permissions is privilege management: the
+                // handler (`update_key_permissions_handler`) applies whatever
+                // permissions the body asks for, including `admin`, without
+                // checking that the caller already holds them. Gating the
+                // endpoint on a scoped `Keys(UpdatePermissions)` would let a
+                // non-admin key that merely holds that scope escalate itself (or
+                // any key) to `admin`. Require full `admin` to mutate
+                // permissions so escalation is impossible.
+                HttpMethod::PUT => vec![Permission::Admin(AdminPermission)],
                 _ => vec![],
             };
         }
@@ -841,6 +849,42 @@ mod tests {
         assert!(matches!(
             required.as_slice(),
             [Permission::Context(ContextPermission::Execute(..))]
+        ));
+    }
+
+    /// Updating a key's permissions must require `admin`, so a non-admin key
+    /// holding a scoped `keys:update-permissions` cannot escalate itself (or
+    /// any key) to `admin`. Reading permissions stays a scoped key permission.
+    #[test]
+    fn updating_key_permissions_requires_admin() {
+        let validator = PermissionValidator::new();
+
+        let put = Request::builder()
+            .method(Method::PUT)
+            .uri("/admin/keys/some-key-id/permissions")
+            .body(Body::empty())
+            .unwrap();
+        let required = validator.determine_required_permissions(&put);
+        assert_eq!(required, vec![Permission::Admin(AdminPermission)]);
+
+        // A token scoped only to update-permissions must NOT pass — that is the
+        // escalation this guard closes.
+        let escalator = vec!["keys:update-permissions[some-key-id]".to_owned()];
+        assert!(
+            !validator.validate_permissions(&escalator, &required),
+            "a non-admin keys:update-permissions token must not be able to update permissions",
+        );
+        assert!(validator.validate_permissions(&["admin".to_owned()], &required));
+
+        // Reading permissions remains a scoped key permission, not admin-gated.
+        let get = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/keys/some-key-id/permissions")
+            .body(Body::empty())
+            .unwrap();
+        assert!(matches!(
+            validator.determine_required_permissions(&get).as_slice(),
+            [Permission::Keys(KeyPermission::GetPermissions(_))]
         ));
     }
 }
