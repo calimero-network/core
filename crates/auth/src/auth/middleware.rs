@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Extension, Request};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use tracing::{debug, info, warn};
@@ -74,7 +74,10 @@ pub async fn auth_middleware(
                     method, path, required_permissions, auth_response.permissions
                 );
                 let mut headers = HeaderMap::new();
-                headers.insert("X-Auth-Error", "permission_denied".parse().unwrap());
+                headers.insert(
+                    "X-Auth-Error",
+                    HeaderValue::from_static("permission_denied"),
+                );
                 return Err((StatusCode::FORBIDDEN, headers));
             }
 
@@ -89,15 +92,27 @@ pub async fn auth_middleware(
             let duration = start_time.elapsed();
             debug!("Request {} {} completed in {:?}", method, path, duration);
 
-            response
-                .headers_mut()
-                .insert("X-Auth-User", auth_response.key_id.parse().unwrap());
+            if let Ok(user_value) = HeaderValue::from_str(&auth_response.key_id) {
+                response.headers_mut().insert("X-Auth-User", user_value);
+            } else {
+                warn!(
+                    "Skipping X-Auth-User header: key_id is not a valid header value for {} {}",
+                    method, path
+                );
+            }
 
             if !auth_response.permissions.is_empty() {
-                response.headers_mut().insert(
-                    "X-Auth-Permissions",
-                    auth_response.permissions.join(",").parse().unwrap(),
-                );
+                let permissions = auth_response.permissions.join(",");
+                if let Ok(permissions_value) = HeaderValue::from_str(&permissions) {
+                    response
+                        .headers_mut()
+                        .insert("X-Auth-Permissions", permissions_value);
+                } else {
+                    warn!(
+                        "Skipping X-Auth-Permissions header: invalid header value for {} {}",
+                        method, path
+                    );
+                }
             }
 
             Ok(response)
@@ -112,7 +127,7 @@ pub async fn auth_middleware(
                         "Token expired for {} {} (took {:?})",
                         method, path, duration
                     );
-                    headers.insert("X-Auth-Error", "token_expired".parse().unwrap());
+                    headers.insert("X-Auth-Error", HeaderValue::from_static("token_expired"));
                     Err((StatusCode::UNAUTHORIZED, headers))
                 }
                 AuthError::InvalidToken(msg) if msg.contains("revoked") => {
@@ -120,7 +135,7 @@ pub async fn auth_middleware(
                         "Token revoked for {} {} (took {:?})",
                         method, path, duration
                     );
-                    headers.insert("X-Auth-Error", "token_revoked".parse().unwrap());
+                    headers.insert("X-Auth-Error", HeaderValue::from_static("token_revoked"));
                     Err((StatusCode::FORBIDDEN, headers))
                 }
                 AuthError::InvalidRequest(_) => {
@@ -128,7 +143,7 @@ pub async fn auth_middleware(
                         "Invalid request for {} {}: {} (took {:?})",
                         method, path, err, duration
                     );
-                    headers.insert("X-Auth-Error", "invalid_request".parse().unwrap());
+                    headers.insert("X-Auth-Error", HeaderValue::from_static("invalid_request"));
                     Err((StatusCode::BAD_REQUEST, headers))
                 }
                 _ => {
@@ -136,7 +151,7 @@ pub async fn auth_middleware(
                         "Authentication failed for {} {}: {} (took {:?})",
                         method, path, err, duration
                     );
-                    headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
+                    headers.insert("X-Auth-Error", HeaderValue::from_static("invalid_token"));
                     Err((StatusCode::UNAUTHORIZED, headers))
                 }
             }
