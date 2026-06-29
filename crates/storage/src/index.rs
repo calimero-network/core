@@ -956,17 +956,23 @@ impl<S: StorageAdaptor> Index<S> {
     /// tiebreak that [`apply_delete_ref_action`] uses for a directly-deleted
     /// entity: a descendant whose own `updated_at` is STRICTLY newer than
     /// `deleted_at` (a concurrent update that causally follows the delete) keeps
-    /// its data — only strictly-older state is tombstoned. Running the identical
-    /// rule here and on the `DeleteRef` replay path means every replica stamps
-    /// the subtree the same way and converges, including the live-update-wins
-    /// "zombie" case (a surviving entity under a tombstoned ancestor), which is
-    /// the existing single-level concurrent add/update-vs-delete semantics
-    /// applied transitively.
+    /// its data; equal-or-older state is tombstoned — so `deleted_at ==
+    /// updated_at` tombstones the descendant (delete wins on the tie), matching
+    /// the single-level rule. Running the identical rule here and on the
+    /// `DeleteRef` replay path means every replica stamps the subtree the same
+    /// way and converges, including the live-update-wins "zombie" case (a
+    /// surviving entity under a tombstoned ancestor), which is the existing
+    /// single-level concurrent add/update-vs-delete semantics applied
+    /// transitively.
     ///
     /// Internal subtree parent-lists and hashes are intentionally NOT
     /// recomputed: the whole subtree is detached at the root, so none of it
     /// feeds a live hash. Only the root's removal from its parent (done by the
     /// caller) touches the live tree.
+    ///
+    /// Acquires the reentrant index-mutation guard internally and holds it for
+    /// the whole walk, so it is safe to call whether or not a caller already
+    /// holds it (`remove_child_from` does; `apply_delete_ref_action` does not).
     ///
     /// [`apply_delete_ref_action`]: crate::interface::Interface::apply_delete_ref_action
     pub(crate) fn tombstone_descendants_of(
@@ -975,31 +981,29 @@ impl<S: StorageAdaptor> Index<S> {
     ) -> Result<(), StorageError> {
         let _mutation_guard = index_mutation_guard();
 
-        // Collect the descendant ids up front (depth-first over `children`) so
-        // the per-node tombstone writes below don't mutate the structure we are
-        // still traversing.
+        // Single depth-first pass: read each node's index once, descend via the
+        // `children` read BEFORE tombstoning it, then tombstone the node itself
+        // — except the root, which the caller tombstones. The guard is held for
+        // the whole walk, so a concurrent native writer can't insert a child
+        // that the traversal would miss.
         let mut stack = vec![root_id];
-        let mut descendants = Vec::new();
         while let Some(id) = stack.pop() {
             let Some(index) = Self::get_index(id)? else {
                 continue;
             };
-            if let Some(children) = index.children {
+            if let Some(children) = &index.children {
                 for child in children {
-                    let child_id = child.id();
-                    descendants.push(child_id);
-                    stack.push(child_id);
+                    stack.push(child.id());
                 }
             }
-        }
-
-        for id in descendants {
-            let Some(index) = Self::get_index(id)? else {
+            // The root is tombstoned by the caller; only its descendants here.
+            if id == root_id {
                 continue;
-            };
-            // Strictly-newer local state wins (a concurrent update that
-            // causally follows this delete); equal or older is tombstoned. Same
-            // `<` tiebreak as `apply_delete_ref_action`.
+            }
+            // Strictly-newer local state wins (a concurrent update that causally
+            // follows this delete); equal-or-older is tombstoned (`deleted_at ==
+            // updated_at` ⇒ delete wins). Same `<` tiebreak as
+            // `apply_delete_ref_action`.
             if deleted_at < *index.metadata.updated_at {
                 continue;
             }

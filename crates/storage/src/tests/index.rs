@@ -754,32 +754,30 @@ mod subtree_tombstoning {
     /// orphans under a tombstoned ancestor (and so unreclaimable by GC).
     #[test]
     fn remove_child_from_tombstones_whole_subtree() {
-        let (root, a, b, c) = build_chain::<MainStorage>();
+        // Isolated per-test store (not the shared `MainStorage`) so a panic in
+        // one test can't leak tombstones into another.
+        type S = MockedStorage<2101>;
+        let (root, a, b, c) = build_chain::<S>();
 
-        <Index<MainStorage>>::remove_child_from(root, a, time_now()).unwrap();
+        <Index<S>>::remove_child_from(root, a, time_now()).unwrap();
 
-        assert!(<Index<MainStorage>>::is_deleted(a).unwrap(), "root child");
-        assert!(<Index<MainStorage>>::is_deleted(b).unwrap(), "grandchild");
-        assert!(
-            <Index<MainStorage>>::is_deleted(c).unwrap(),
-            "great-grandchild"
-        );
+        assert!(<Index<S>>::is_deleted(a).unwrap(), "root child");
+        assert!(<Index<S>>::is_deleted(b).unwrap(), "grandchild");
+        assert!(<Index<S>>::is_deleted(c).unwrap(), "great-grandchild");
     }
 
     /// `tombstone_descendants_of` tombstones every descendant but leaves the
     /// root itself untouched (the caller tombstones the root).
     #[test]
     fn tombstone_descendants_of_skips_root_tombstones_rest() {
-        let (_root, a, b, c) = build_chain::<MainStorage>();
+        type S = MockedStorage<2102>;
+        let (_root, a, b, c) = build_chain::<S>();
 
-        <Index<MainStorage>>::tombstone_descendants_of(a, time_now()).unwrap();
+        <Index<S>>::tombstone_descendants_of(a, time_now()).unwrap();
 
-        assert!(
-            !<Index<MainStorage>>::is_deleted(a).unwrap(),
-            "root untouched"
-        );
-        assert!(<Index<MainStorage>>::is_deleted(b).unwrap());
-        assert!(<Index<MainStorage>>::is_deleted(c).unwrap());
+        assert!(!<Index<S>>::is_deleted(a).unwrap(), "root untouched");
+        assert!(<Index<S>>::is_deleted(b).unwrap());
+        assert!(<Index<S>>::is_deleted(c).unwrap());
     }
 
     /// A descendant whose own `updated_at` is strictly newer than the delete
@@ -790,20 +788,21 @@ mod subtree_tombstoning {
     /// causally-newer update.
     #[test]
     fn newer_update_on_descendant_wins_tiebreak() {
-        let (root, a, b, c) = build_chain::<MainStorage>();
+        type S = MockedStorage<2103>;
+        let (root, a, b, c) = build_chain::<S>();
         let deleted_at = time_now();
 
         // `c` received an update that causally follows the delete.
-        let mut c_index = <Index<MainStorage>>::get_index(c).unwrap().unwrap();
+        let mut c_index = <Index<S>>::get_index(c).unwrap().unwrap();
         *c_index.metadata.updated_at = deleted_at + 1_000;
-        <Index<MainStorage>>::save_index(&c_index).unwrap();
+        <Index<S>>::save_index(&c_index).unwrap();
 
-        <Index<MainStorage>>::remove_child_from(root, a, deleted_at).unwrap();
+        <Index<S>>::remove_child_from(root, a, deleted_at).unwrap();
 
-        assert!(<Index<MainStorage>>::is_deleted(a).unwrap());
-        assert!(<Index<MainStorage>>::is_deleted(b).unwrap());
+        assert!(<Index<S>>::is_deleted(a).unwrap());
+        assert!(<Index<S>>::is_deleted(b).unwrap());
         assert!(
-            !<Index<MainStorage>>::is_deleted(c).unwrap(),
+            !<Index<S>>::is_deleted(c).unwrap(),
             "strictly-newer update on a descendant must survive the subtree delete"
         );
     }
