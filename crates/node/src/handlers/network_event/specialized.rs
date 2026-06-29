@@ -1,4 +1,4 @@
-use actix::{AsyncContext, WrapFuture};
+use actix::{ActorFutureExt, AsyncContext, WrapFuture};
 use calimero_context_config::types::ContextGroupId;
 use calimero_network_primitives::messages::NetworkEvent;
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
@@ -234,12 +234,13 @@ pub(super) fn handle_specialized_broadcast(
             let quote_bytes = quote_bytes.clone();
             let public_key = *public_key;
             let nonce = *nonce;
+            let group_key = group_id.to_bytes();
             let _ignored = ctx.spawn(
                 async move {
                     // Hold the inflight permit for the lifetime of the verify so
                     // the global concurrency cap stays accurate; dropped here.
                     let _verify_permit = verify_permit;
-                    if let Err(err) = tee_attestation_admission::handle_tee_attestation_announce(
+                    tee_attestation_admission::handle_tee_attestation_announce(
                         &context_client,
                         source,
                         quote_bytes,
@@ -248,15 +249,31 @@ pub(super) fn handle_specialized_broadcast(
                         namespace_id_bytes,
                     )
                     .await
-                    {
+                }
+                .into_actor(this)
+                .map(move |result, actor, _ctx| {
+                    if let Err(err) = result {
                         warn!(
                             %source,
                             error = %err,
                             "Failed to handle TEE attestation announce"
                         );
+                        // The verify *errored* (a transient infra failure such
+                        // as an Intel-PCS fetch error — an invalid quote instead
+                        // returns Ok above). Forget the dedup entry so a
+                        // re-announce of the same quote bytes (the fleet-join
+                        // re-announce loop reuses the identical payload) can be
+                        // re-verified rather than being suppressed for the full
+                        // dedup TTL — which, at TTL ≫ the 30s admission window,
+                        // would otherwise sink the whole join on one PCS hiccup.
+                        // A genuinely invalid quote stays deduped, and the
+                        // per-peer rate limit + inflight cap still bound any
+                        // replay-driven re-verification.
+                        actor
+                            .tee_admission_throttle
+                            .forget_quote(group_key, quote_hash);
                     }
-                }
-                .into_actor(this),
+                }),
             );
             true
         }

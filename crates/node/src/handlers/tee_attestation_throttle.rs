@@ -272,6 +272,22 @@ impl TeeAdmissionThrottle {
         Decision::Proceed(permit)
     }
 
+    /// Forget a recorded `(group, quote_hash)` dedup entry so the next announce
+    /// for that quote is re-verified instead of being suppressed for the full
+    /// dedup TTL.
+    ///
+    /// Called after a verify that *errored* (a transient infrastructure failure
+    /// — e.g. the Intel-PCS collateral fetch failed), so a legitimate re-announce
+    /// of the identical quote (the fleet-join re-announce loop reuses the same
+    /// `quote_bytes`) can recover within its admission window rather than being
+    /// stuck until the TTL elapses. A quote that *failed verification* (a
+    /// definite invalid result, not an error) is deliberately left recorded, so
+    /// a replay of it stays suppressed. DoS remains bounded by the per-peer rate
+    /// limit and the global inflight cap either way.
+    pub fn forget_quote(&mut self, group_id: [u8; 32], quote_hash: [u8; 32]) {
+        let _ = self.recent_quotes.remove(&(group_id, quote_hash));
+    }
+
     /// Drop expired dedup entries and full/idle peer buckets, and hard-cap map
     /// sizes so adversarial churn can't grow memory without bound.
     fn prune(&mut self, now: Instant) {
@@ -292,28 +308,22 @@ impl TeeAdmissionThrottle {
             Self::evict_oldest(&mut self.recent_quotes, MAX_TRACKED_QUOTES);
         }
 
-        // A peer whose bucket would have refilled to full and hasn't been *seen*
-        // for a while carries no state worth keeping (it is indistinguishable
-        // from a fresh peer). Two subtleties:
-        //   * Fullness is computed from elapsed time since the last grant, not
-        //     read from `b.tokens`: tokens are written only on `Proceed`
-        //     (transactional), so the stored value is stale between grants and
-        //     `b.tokens >= burst` would essentially never hold for a peer that
-        //     was ever granted. A partially-refilled (still-throttled) peer is
-        //     therefore correctly retained.
-        //   * Idleness is keyed on `last_seen` (every-call activity), not `last`
-        //     (grant time), so an active-but-throttled peer is kept rather than
-        //     evicted and handed a fresh full bucket. `>=` evicts at exactly the
-        //     cutoff, matching the dedup-TTL boundary convention above.
-        let burst = self.per_peer_burst;
-        let refill_per_sec = self.refill_per_sec();
-        let idle_cutoff = self.per_peer_refill.saturating_mul(2);
-        self.peers.retain(|_, b| {
-            let would_be_full = b.tokens
-                + now.saturating_duration_since(b.last).as_secs_f64() * refill_per_sec
-                >= burst;
-            !(would_be_full && now.saturating_duration_since(b.last_seen) >= idle_cutoff)
-        });
+        // Drop a peer once it hasn't been *seen* for at least the time its
+        // bucket needs to fully refill from empty (`burst * per_peer_refill`).
+        // By then it is indistinguishable from a fresh peer, so its state is
+        // worth nothing — and this is exactly the window after which a fresh
+        // full bucket grants no more than the configured rate, so eviction can't
+        // become a rate-limit-reset bypass (a peer flooding faster is *seen*
+        // more recently and so retained). Keying on `last_seen` (updated every
+        // call, any outcome) rather than `last` (grant time) is what keeps an
+        // active-but-throttled peer; and because `last_seen >= last` always, a
+        // peer idle this long has provably refilled, so no separate fullness
+        // check is needed.
+        let full_refill = self
+            .per_peer_refill
+            .saturating_mul(self.per_peer_burst.ceil() as u32);
+        self.peers
+            .retain(|_, b| now.saturating_duration_since(b.last_seen) < full_refill);
         if self.peers.len() > MAX_TRACKED_PEERS {
             Self::evict_oldest_peers(&mut self.peers, MAX_TRACKED_PEERS);
         }
@@ -333,17 +343,21 @@ impl TeeAdmissionThrottle {
         Self::evict_oldest_entries(map, &mut entries, keep);
     }
 
-    /// Remove the oldest `len - keep` entries (smallest `Instant`) from `map`,
-    /// given `entries` as its `(key, timestamp)` snapshot. Uses
+    /// Remove the oldest entries from `map` until at most `keep` remain, given
+    /// `entries` as a freshly-taken `(key, timestamp)` snapshot of `map`. Uses
     /// `select_nth_unstable` (O(n) average) rather than a full O(n log n) sort,
     /// since the cap is only ever crossed under adversarial churn and the
     /// evicted entries are discarded, so their relative order is irrelevant.
+    ///
+    /// `remove` is derived from `map.len()` (the source of truth for the cap),
+    /// then clamped to the snapshot length, so the hard cap is enforced robustly
+    /// even if `entries` were ever a partial view of `map`.
     fn evict_oldest_entries<K: std::hash::Hash + Eq, V>(
         map: &mut HashMap<K, V>,
         entries: &mut [(K, Instant)],
         keep: usize,
     ) {
-        let remove = entries.len().saturating_sub(keep);
+        let remove = map.len().saturating_sub(keep).min(entries.len());
         if remove == 0 {
             return;
         }
@@ -540,38 +554,60 @@ mod tests {
     }
 
     #[test]
-    fn idle_prune_drops_recovered_peer_keeps_throttled_peer() {
-        // burst 5, refill 1 token/sec → idle_cutoff = 2s. Generous inflight +
-        // dedup so only the per-peer bucket state varies.
+    fn idle_prune_drops_long_idle_peer_keeps_recently_seen() {
+        // burst 5, refill 1 token/sec → full-refill window = 5 * 1s = 5s.
         let mut t =
             TeeAdmissionThrottle::new(1000, 5.0, Duration::from_secs(1), Duration::from_secs(300));
         let now = Instant::now();
         let g = [0u8; 32];
 
-        // Recovered peer: a single grant, then idle — its bucket stays near full.
+        // Peer 1: seen once at t0, then never again.
         assert!(matches!(
             t.check(now, peer(1), g, [1u8; 32]),
             Decision::Proceed(_)
         ));
-        // Throttled peer: spend its whole burst so it is depleted to ~0 tokens.
-        for i in 0..5u8 {
-            let _ = t.check(now, peer(2), g, [10 + i; 32]);
-        }
-        assert!(t.peers.contains_key(&peer(1)) && t.peers.contains_key(&peer(2)));
+        // Peer 2: seen at t0, and again just before the prune so `last_seen` is
+        // recent (even though its bucket has also refilled by wall-clock).
+        assert!(matches!(
+            t.check(now, peer(2), g, [2u8; 32]),
+            Decision::Proceed(_)
+        ));
+        let _ = t.check(now + Duration::from_millis(4500), peer(2), g, [3u8; 32]);
 
-        // After the idle window, peer 1 would be fully refilled (drop it), but
-        // the depleted peer 2 would only have ~2 tokens (< burst) — its throttle
-        // state must be retained. This also guards against the stored-`tokens`
-        // staleness that a naive `b.tokens >= burst` check would suffer.
-        t.prune(now + Duration::from_secs(2));
+        // Prune at t0+6s (> the 5s full-refill window). Peer 1 has been idle 6s
+        // (≥ window) → pruned; peer 2 was seen 1.5s ago (< window) → retained.
+        t.prune(now + Duration::from_secs(6));
         assert!(
             !t.peers.contains_key(&peer(1)),
-            "fully-recovered idle peer should be pruned"
+            "peer idle past the full-refill window should be pruned"
         );
         assert!(
             t.peers.contains_key(&peer(2)),
-            "still-throttled peer must be retained"
+            "recently-seen peer must be retained regardless of bucket level"
         );
+    }
+
+    #[test]
+    fn forget_quote_allows_reverify_after_transient_failure() {
+        // Generous burst/inflight so only the dedup gate is in play.
+        let mut t = TeeAdmissionThrottle::new(
+            1000,
+            100.0,
+            Duration::from_secs(1),
+            Duration::from_secs(300),
+        );
+        let now = Instant::now();
+        let g = [1u8; 32];
+        let q = [2u8; 32];
+
+        // First announce proceeds and records the dedup entry.
+        assert!(matches!(t.check(now, peer(1), g, q), Decision::Proceed(_)));
+        // A re-announce of the same quote within the TTL is deduped.
+        assert!(matches!(t.check(now, peer(1), g, q), Decision::Duplicate));
+        // The verify errored transiently → forget the entry.
+        t.forget_quote(g, q);
+        // The same quote may now be re-verified (retry resilience restored).
+        assert!(matches!(t.check(now, peer(1), g, q), Decision::Proceed(_)));
     }
 
     #[test]
