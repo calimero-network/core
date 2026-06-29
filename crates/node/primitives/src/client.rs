@@ -558,6 +558,12 @@ impl NodeClient {
         // delta so it never rides the gossip topic in cleartext. The root
         // hash is a state fingerprint; encrypting it under the group key keeps
         // it readable only by members, who get it back on decrypt.
+        //
+        // A serialization failure here returns via `?` before any publish, so
+        // the delta is NOT gossiped at all. Treat it as a hard failure rather
+        // than a recoverable drop — unlike the cold-start "no peers" case
+        // below, there is no sync-pull path that recovers a delta we never put
+        // on the wire.
         let sealed = borsh::to_vec(&SealedDeltaPayload {
             root_hash: context.root_hash,
             artifact,
