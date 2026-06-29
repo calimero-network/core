@@ -537,7 +537,7 @@ mod op_mask__borsh {
         // Every encoding with a bit outside FULL must fail to deserialize, so a
         // peer cannot smuggle a non-canonical byte that is equal under
         // `contains` but alters the signed authorization payload and id.
-        for bits in (0u8..=u8::MAX).filter(|b| b & !OpMask::FULL.bits() != 0) {
+        for bits in (0u8..=u8::MAX).filter(|b| (b & !OpMask::FULL.bits()) != 0) {
             assert!(
                 OpMask::try_from_slice(&[bits]).is_err(),
                 "byte {bits:#010b} with undefined bits should be rejected"

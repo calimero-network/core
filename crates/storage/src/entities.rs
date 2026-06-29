@@ -16,6 +16,7 @@ mod tests;
 use calimero_primitives::identity::PublicKey;
 use core::fmt::{self, Debug, Display, Formatter};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Error as IoError, ErrorKind as IoErrorKind, Read};
 use std::ops::{Deref, DerefMut};
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -516,16 +517,16 @@ impl Default for OpMask {
 }
 
 impl BorshDeserialize for OpMask {
-    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+    fn deserialize_reader<R: Read>(reader: &mut R) -> Result<Self, IoError> {
         let bits = u8::deserialize_reader(reader)?;
         // Reject any byte carrying bits outside the defined set. Accepting them
         // would admit multiple encodings that are equal under `contains` but
         // differ in `bits()`, which feeds the signed authorization payload and
         // the derived id — a signature-malleability vector. `FULL` is the union
         // of every defined bit.
-        if bits & !Self::FULL.0 != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
+        if (bits & !Self::FULL.0) != 0 {
+            return Err(IoError::new(
+                IoErrorKind::InvalidData,
                 "OpMask has undefined bits set",
             ));
         }
