@@ -751,7 +751,9 @@ mod tests {
 
     fn headers_with(name: &'static str, value: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
-        let _ = h.insert(name, value.parse().unwrap());
+        // `insert` returns the previous value (an `Option`), not a `Result`;
+        // there is no error to handle here.
+        drop(h.insert(name, value.parse().unwrap()));
         h
     }
 

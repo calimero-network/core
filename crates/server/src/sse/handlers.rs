@@ -65,23 +65,38 @@ use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
 /// Sentinel principal for sessions owned by the node owner (non-key auth, e.g.
 /// embedded username/password). All node-owner requests share one principal —
 /// they are the same human — so they may freely reuse each other's sessions.
+///
+/// Both sentinels contain characters (`-`, `<`, `>`) outside the base58 alphabet
+/// that `PublicKey::to_string()` emits, so they can never collide with a real
+/// key-derived principal.
 const NODE_OWNER_PRINCIPAL: &str = "node-owner";
+
+/// Sentinel for a request that reached an auth-guarded service without any
+/// authenticated principal. Never equal to a real owner, so ownership checks
+/// fail closed instead of granting the single-tenant allowance.
+const UNAUTHENTICATED_PRINCIPAL: &str = "<unauthenticated>";
 
 /// Resolve the principal that owns (or is requesting) a session from the auth
 /// guard's injected extensions.
 ///
 /// - A verified Ed25519 key → that key's string form.
 /// - Non-key auth (`AuthenticatedNodeOwner`) → the shared [`NODE_OWNER_PRINCIPAL`].
-/// - Neither (auth disabled, no guard) → `None`: there is no principal to bind
-///   to, so ownership is not enforced (single-tenant local node).
+/// - Neither, auth **enabled** → [`UNAUTHENTICATED_PRINCIPAL`]: the guard is
+///   running but injected no principal (bypassed / mounted elsewhere). Fail
+///   closed rather than silently granting access.
+/// - Neither, auth **disabled** → `None`: single-tenant local node, ownership
+///   not enforced.
 fn caller_principal(
     auth_key: Option<&AuthenticatedKey>,
     auth_node_owner: Option<&AuthenticatedNodeOwner>,
+    auth_enabled: bool,
 ) -> Option<String> {
     if let Some(AuthenticatedKey(pk)) = auth_key {
         Some(pk.to_string())
     } else if auth_node_owner.is_some() {
         Some(NODE_OWNER_PRINCIPAL.to_owned())
+    } else if auth_enabled {
+        Some(UNAUTHENTICATED_PRINCIPAL.to_owned())
     } else {
         None
     }
@@ -89,10 +104,11 @@ fn caller_principal(
 
 /// Whether `caller` may access a session owned by `session_owner`.
 ///
-/// Allowed when the session is unowned (legacy/auth-disabled), when the caller
-/// is unauthenticated (auth disabled), or when the principals match. A mismatch
-/// between two known principals is a cross-principal access attempt (IDOR) and
-/// must be refused.
+/// Allowed when the session is unowned (legacy, or created with auth disabled),
+/// or when the principals match. A mismatch between two known principals — or an
+/// owned session accessed by the [`UNAUTHENTICATED_PRINCIPAL`] sentinel — is a
+/// cross-principal access attempt (IDOR) and is refused. The `(Some, None)` arm
+/// is only reachable with auth disabled (single-tenant allowance).
 fn owner_allows_access(session_owner: &Option<String>, caller: &Option<String>) -> bool {
     match (session_owner, caller) {
         (Some(owner), Some(caller)) => owner == caller,
@@ -120,7 +136,11 @@ pub async fn handle_subscription(
     auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     Json(request): Json<Request<serde_json::Value>>,
 ) -> impl IntoResponse {
-    let caller = caller_principal(auth_key.as_deref(), auth_node_owner.as_deref());
+    let caller = caller_principal(
+        auth_key.as_deref(),
+        auth_node_owner.as_deref(),
+        state.auth_enabled,
+    );
     let session_id = match request.id.parse::<ConnectionId>() {
         Ok(id) => id,
         Err(_) => {
@@ -302,6 +322,7 @@ pub async fn sse_handler(
     let caller = caller_principal(
         request.extensions().get::<AuthenticatedKey>(),
         request.extensions().get::<AuthenticatedNodeOwner>(),
+        state.auth_enabled,
     );
 
     let (commands_sender, commands_receiver) =
@@ -517,7 +538,11 @@ pub async fn get_session_handler(
     Path(session_id): Path<ConnectionId>,
 ) -> impl IntoResponse {
     debug!(%session_id, "GET session info request");
-    let caller = caller_principal(auth_key.as_deref(), auth_node_owner.as_deref());
+    let caller = caller_principal(
+        auth_key.as_deref(),
+        auth_node_owner.as_deref(),
+        state.auth_enabled,
+    );
 
     // Check in-memory sessions first
     let sessions = state.sessions.read().await;
@@ -665,19 +690,42 @@ mod tests {
     fn caller_principal_prefers_key_then_node_owner_then_none() {
         // A verified key wins and maps to its string form.
         let key = AuthenticatedKey(pk(1));
-        assert_eq!(caller_principal(Some(&key), None), Some(pk(1).to_string()),);
+        assert_eq!(
+            caller_principal(Some(&key), None, true),
+            Some(pk(1).to_string()),
+        );
         // A key takes precedence even if the node-owner marker is also present.
         assert_eq!(
-            caller_principal(Some(&key), Some(&AuthenticatedNodeOwner)),
+            caller_principal(Some(&key), Some(&AuthenticatedNodeOwner), true),
             Some(pk(1).to_string()),
         );
         // Non-key auth collapses to the shared node-owner principal.
         assert_eq!(
-            caller_principal(None, Some(&AuthenticatedNodeOwner)),
+            caller_principal(None, Some(&AuthenticatedNodeOwner), true),
             Some(NODE_OWNER_PRINCIPAL.to_owned()),
         );
-        // Auth disabled: no principal to bind to.
-        assert_eq!(caller_principal(None, None), None);
+        // Auth enabled but no principal → fail-closed sentinel (never matches a
+        // real owner).
+        assert_eq!(
+            caller_principal(None, None, true),
+            Some(UNAUTHENTICATED_PRINCIPAL.to_owned()),
+        );
+        // Auth disabled: no principal to bind to (single-tenant allowance).
+        assert_eq!(caller_principal(None, None, false), None);
+    }
+
+    #[test]
+    fn auth_enabled_request_without_principal_is_denied_on_owned_session() {
+        // The fail-closed sentinel must not be able to read an owned session.
+        let owner = Some(pk(7).to_string());
+        let unauth = caller_principal(None, None, true);
+        assert_eq!(unauth, Some(UNAUTHENTICATED_PRINCIPAL.to_owned()));
+        assert!(
+            !owner_allows_access(&owner, &unauth),
+            "an unauthenticated request under enabled auth must not access an owned session",
+        );
+        // It can still reach an unowned session (no owner to protect).
+        assert!(owner_allows_access(&None, &unauth));
     }
 
     #[test]
