@@ -47,7 +47,7 @@ struct NestedMap {
 }
 
 /// File record for blob metadata. Atomic whole-record LWW by `uploaded_at`
-/// (see `impl_atomic_lww!`); not a struct of CRDT fields, so no derive.
+/// (see `impl_atomic_lww_leaf!`); not a struct of CRDT fields, so no derive.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize, Serialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]
@@ -62,7 +62,7 @@ pub struct FileRecord {
     pub uploaded_at: u64,
 }
 
-calimero_storage::impl_atomic_lww!(FileRecord, uploaded_at);
+calimero_storage::impl_atomic_lww_leaf!(FileRecord, uploaded_at);
 
 // PRIVATE STATE (Node-local, NOT synchronized)
 

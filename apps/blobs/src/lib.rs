@@ -54,9 +54,9 @@ pub struct FileRecord {
     pub uploaded_at: u64,
 }
 
-// Atomic whole-record LWW by `uploaded_at` (see `impl_atomic_lww!`); not a
+// Atomic whole-record LWW by `uploaded_at` (see `impl_atomic_lww_leaf!`); not a
 // struct of CRDT fields, so `#[derive(Mergeable)]` doesn't apply.
-calimero_storage::impl_atomic_lww!(FileRecord, uploaded_at);
+calimero_storage::impl_atomic_lww_leaf!(FileRecord, uploaded_at);
 
 /// Application state for the file sharing system.
 #[app::state(emits = FileShareEvent)]

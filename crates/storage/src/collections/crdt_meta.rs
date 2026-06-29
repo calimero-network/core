@@ -287,10 +287,10 @@ macro_rules! is_crdt {
 /// `$t: Clone`, `$tie` monotonic; `other` replaces `self` iff `other.$tie > self.$tie`.
 ///
 /// ```ignore
-/// calimero_storage::impl_atomic_lww!(FileRecord, uploaded_at);
+/// calimero_storage::impl_atomic_lww_leaf!(FileRecord, uploaded_at);
 /// ```
 #[macro_export]
-macro_rules! impl_atomic_lww {
+macro_rules! impl_atomic_lww_leaf {
     ($t:ty, $tie:ident) => {
         impl $crate::collections::Mergeable for $t {
             fn merge(
@@ -344,7 +344,7 @@ mod tests {
         }
     }
 
-    // A leaf record merged by `impl_atomic_lww!`, mirroring an app upload record:
+    // A leaf record merged by `impl_atomic_lww_leaf!`, mirroring an app upload record:
     // plain non-CRDT fields, replaced atomically by a monotonic tie-breaker.
     #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
     struct Upload {
@@ -352,10 +352,10 @@ mod tests {
         size: u64,
         uploaded_at: u64,
     }
-    crate::impl_atomic_lww!(Upload, uploaded_at);
+    crate::impl_atomic_lww_leaf!(Upload, uploaded_at);
 
     #[test]
-    fn impl_atomic_lww_is_last_write_wins_by_tie_field() {
+    fn impl_atomic_lww_leaf_is_last_write_wins_by_tie_field() {
         use crate::collections::Mergeable;
 
         let older = Upload {
@@ -386,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn impl_atomic_lww_emits_a_noop_rekey_target() {
+    fn impl_atomic_lww_leaf_emits_a_noop_rekey_target() {
         // The macro emits `RekeyTarget` (supertrait of `Mergeable`); a leaf has
         // no nested id to re-key, so `rekey_relative_to` is a no-op that leaves
         // the value byte-identical.
