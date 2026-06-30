@@ -49,16 +49,19 @@ impl XCallExample {
         self.xcall_to(target_context, &method)
     }
 
-    /// Receive a pong via `xcall`. Marked `#[app::xcall(from_same_app)]` so the
-    /// node only admits callers running this same application — ping and pong
-    /// are the same app — and rejects a same-namespace context running a
-    /// different app before this method even runs.
+    /// Receive a pong via `xcall`. Marked `#[app::xcall]` so other contexts in
+    /// the same namespace may invoke it.
     ///
-    /// The node-enforced policy is the trust boundary; the `env::xcall_origin()`
-    /// checks below are the remaining app-specific logic — rejecting direct
-    /// calls (no origin) and verifying the origin matches the self-reported
-    /// `from_context`.
-    #[app::xcall(from_same_app)]
+    /// A tighter, node-enforced caller policy is available —
+    /// `#[app::xcall(from_same_app)]` restricts callers to contexts running this
+    /// same application. It's deliberately not used here yet: emitting the new
+    /// `xcall_callers` ABI field requires the downstream `abi-codegen` tool to
+    /// understand it first, so the example adopts it once that ships.
+    ///
+    /// `env::xcall_origin()` is set by the node and can't be forged, so this
+    /// method rejects direct calls (no origin) and refuses any call where the
+    /// origin doesn't match the self-reported `from_context`.
+    #[app::xcall]
     pub fn pong(&mut self, from_context: ContextId) -> app::Result<()> {
         let origin = calimero_sdk::env::xcall_origin().map(ContextId::from);
 
