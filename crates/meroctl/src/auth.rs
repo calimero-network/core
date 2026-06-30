@@ -330,6 +330,48 @@ fn generate_state() -> String {
     hex::encode(bytes)
 }
 
+/// The token scope a command requests at login.
+///
+/// Read-only commands no longer have to persist a full-`admin` token; they can
+/// request a narrower, non-admin scope so a leaked CLI token can do less.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenScope {
+    /// Full administrative access. Used for mutating/admin/node commands and any
+    /// command whose required permissions we do not conservatively narrow.
+    Admin,
+    /// Non-admin resource access (no `admin`, no `keys`): sufficient for
+    /// read-only resource commands (list/get/info/download).
+    Resource,
+}
+
+impl TokenScope {
+    /// The `permissions` value sent to `/auth/login` for this scope.
+    fn as_permissions(self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::Resource => "application,package,context,blob",
+        }
+    }
+}
+
+static REQUESTED_SCOPE: std::sync::OnceLock<TokenScope> = std::sync::OnceLock::new();
+
+/// Record the token scope the current command needs. Called once at startup
+/// before any authentication happens.
+pub fn set_requested_scope(scope: TokenScope) {
+    let _ = REQUESTED_SCOPE.set(scope);
+}
+
+/// The scope to request at login. Defaults to `Admin` when unset (safe), and an
+/// explicit `MEROCTL_AUTH_SCOPE=admin` always forces admin — an escape hatch if
+/// a narrowed scope ever proves insufficient against a particular server.
+fn requested_scope() -> TokenScope {
+    if matches!(std::env::var("MEROCTL_AUTH_SCOPE").as_deref(), Ok("admin")) {
+        return TokenScope::Admin;
+    }
+    REQUESTED_SCOPE.get().copied().unwrap_or(TokenScope::Admin)
+}
+
 fn build_auth_url(api_url: &Url, callback_port: u16, state: &str) -> Result<Url> {
     let mut auth_url = api_url.clone();
     auth_url.set_path("/auth/login");
@@ -341,7 +383,7 @@ fn build_auth_url(api_url: &Url, callback_port: u16, state: &str) -> Result<Url>
         .query_pairs_mut()
         .append_pair("callback-url", &callback)
         .append_pair("app-url", api_url.as_str().trim_end_matches('/'))
-        .append_pair("permissions", "admin");
+        .append_pair("permissions", requested_scope().as_permissions());
 
     Ok(auth_url)
 }
@@ -727,6 +769,16 @@ mod tests {
             .expect("callback-url present");
         assert_eq!(callback, "http://127.0.0.1:9080/callback?state=abc123");
         assert!(url.query_pairs().any(|(k, _)| k == "permissions"));
+    }
+
+    #[test]
+    fn token_scope_permission_strings() {
+        use super::TokenScope;
+        assert_eq!(TokenScope::Admin.as_permissions(), "admin");
+        // Resource scope never grants `admin` or `keys`.
+        let resource = TokenScope::Resource.as_permissions();
+        assert!(!resource.split(',').any(|p| p == "admin" || p == "keys"));
+        assert!(resource.split(',').any(|p| p == "context"));
     }
 
     fn make_tokens(access: &str) -> JwtToken {
