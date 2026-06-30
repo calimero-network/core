@@ -82,6 +82,11 @@ async fn main() -> Result<()> {
         .await
         .expect("Failed to initialize secret manager");
 
+    // Spawn the JWT signing-secret rotation task (finding #4). Safe now that
+    // verification accepts an unexpired backup secret (PR1), so a rotation no
+    // longer mass-invalidates outstanding tokens.
+    Arc::clone(&secret_manager).start_rotation_task().await;
+
     // Create JWT token manager
     let token_manager = TokenManager::new(config.jwt.clone(), storage.clone(), secret_manager);
 
