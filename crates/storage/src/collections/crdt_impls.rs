@@ -336,6 +336,7 @@ where
             {
                 // Add-wins, but a key we tombstoned must not be resurrected by
                 // other's live copy (delete wins; mirrors rga merge_chars_from).
+                // entry_id is self's: the tombstone lives in self's namespace.
                 drop(self.insert(key, other_value)?);
             }
         }
@@ -1081,11 +1082,8 @@ mod tests {
 }
 
 /// Add-wins map/set merges must not resurrect a key/value this replica
-/// tombstoned. Mirrors the RGA `tombstone_merge_tests`: `self` deletes an
-/// entry, a peer (a different collection id, same key) holds it live, and
-/// merging the peer in must leave the deletion intact. Resurrection shows up
-/// on the parent (`deleted_children` / `full_hash`), since the merge re-keys
-/// under `self`'s id; the child's own `deleted_at` is checked too.
+/// tombstoned: `self` deletes an entry, a peer holds it live, and merging the
+/// peer in must leave the deletion intact. Mirrors the RGA `tombstone_merge_tests`.
 #[cfg(test)]
 mod mapset_tombstone_merge_tests {
     use crate::collections::crdt_meta::Mergeable;
@@ -1100,7 +1098,8 @@ mod mapset_tombstone_merge_tests {
     fn map_merge_does_not_resurrect_locally_deleted_key() {
         type S = MockedStorage<861>;
 
-        // `a` tombstones "k"; `b` (a different map id) holds "k" live.
+        // `a` tombstones "k"; `b` is a separate replica (different collection id)
+        // holding "k" live. The guard checks `a`'s own id, so `a`'s delete wins.
         let mut a = UnorderedMap::<String, Reg, S>::new_with_field_name("a_map");
         drop(a.insert("k".to_owned(), Reg::new("v".to_owned())).unwrap());
         drop(a.remove("k").unwrap());
