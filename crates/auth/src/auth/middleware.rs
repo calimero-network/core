@@ -107,6 +107,14 @@ pub async fn auth_middleware(
                     headers.insert("X-Auth-Error", "token_revoked".parse().unwrap());
                     Err((StatusCode::FORBIDDEN, headers))
                 }
+                AuthError::TokenReuse => {
+                    warn!(
+                        "Refresh token reuse for {} {} (took {:?})",
+                        method, path, duration
+                    );
+                    headers.insert("X-Auth-Error", "token_reuse".parse().unwrap());
+                    Err((StatusCode::UNAUTHORIZED, headers))
+                }
                 AuthError::InvalidRequest(_) => {
                     warn!(
                         "Invalid request for {} {}: {} (took {:?})",

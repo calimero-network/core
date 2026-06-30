@@ -37,6 +37,13 @@ pub enum AuthError {
     InvalidToken(String),
     #[error("Token has expired")]
     TokenExpired,
+    /// A refresh token that was already exchanged (consumed) is being replayed.
+    /// This is treated as token theft: it is a terminal failure that revokes the
+    /// whole refresh-token family (finding #2). Surfaced to clients as the
+    /// `x-auth-error: token_reuse` wire signal so they clear tokens and force
+    /// re-authentication rather than retrying.
+    #[error("Refresh token reuse detected")]
+    TokenReuse,
     #[error("Storage error: {0}")]
     StorageError(String),
     #[error("Provider error: {0}")]

@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use axum::http::HeaderMap;
@@ -16,6 +17,21 @@ use crate::secrets::{SecretManager, SecretType};
 use crate::storage::models::KeyType;
 use crate::storage::{KeyManager, Storage};
 use crate::{AuthError, AuthResponse};
+
+/// Storage keyspace prefix for the consumed-refresh-token denylist (finding #2).
+///
+/// Each successful refresh records the `jti` of the refresh token it just
+/// consumed under `system:refresh:consumed:{jti}` with the token's own
+/// expiry as the value, so a replay of that exact refresh token can be
+/// detected. Entries are only meaningful until the token would have expired
+/// anyway (after that the token fails the expiry check regardless), so they
+/// are reaped lazily and by a throttled sweep.
+const CONSUMED_REFRESH_PREFIX: &str = "system:refresh:consumed:";
+
+/// Minimum seconds between throttled sweeps of the consumed-refresh denylist.
+/// The sweep walks the keyspace and drops entries whose recorded expiry has
+/// passed, bounding the store's growth without a per-call cost.
+const CONSUMED_REFRESH_SWEEP_INTERVAL_SECS: i64 = 3600;
 
 /// Token type enum.
 ///
@@ -79,6 +95,12 @@ pub struct TokenManager {
     config: JwtConfig,
     key_manager: KeyManager,
     secret_manager: Arc<SecretManager>,
+    /// Backing storage for the consumed-refresh-token denylist (finding #2).
+    /// Shares the same backend as keys/secrets.
+    storage: Arc<dyn Storage>,
+    /// Unix-seconds timestamp of the last consumed-refresh denylist sweep,
+    /// shared across clones so the throttle is process-wide.
+    last_consumed_sweep: Arc<AtomicI64>,
 }
 
 impl TokenManager {
@@ -103,6 +125,8 @@ impl TokenManager {
             config,
             key_manager,
             secret_manager,
+            storage,
+            last_consumed_sweep: Arc::new(AtomicI64::new(0)),
         }
     }
 
@@ -566,6 +590,70 @@ impl TokenManager {
         Ok(key.and_then(|k| k.public_key))
     }
 
+    /// Storage key for a consumed-refresh-token denylist entry.
+    fn consumed_refresh_key(jti: &str) -> String {
+        format!("{CONSUMED_REFRESH_PREFIX}{jti}")
+    }
+
+    /// Whether this refresh-token `jti` has already been exchanged (replay guard).
+    async fn is_refresh_consumed(&self, jti: &str) -> Result<bool, AuthError> {
+        self.storage
+            .exists(&Self::consumed_refresh_key(jti))
+            .await
+            .map_err(|e| AuthError::StorageError(e.to_string()))
+    }
+
+    /// Record a just-consumed refresh-token `jti` so a later replay is detected.
+    /// The stored value is the token's own expiry (unix secs); after that the
+    /// token fails the expiry check regardless, so the entry is only kept until
+    /// then and is reaped by the throttled sweep.
+    async fn record_consumed_refresh(&self, jti: &str, exp: u64) -> Result<(), AuthError> {
+        self.storage
+            .set(&Self::consumed_refresh_key(jti), exp.to_string().as_bytes())
+            .await
+            .map_err(|e| AuthError::StorageError(e.to_string()))?;
+        self.maybe_sweep_consumed_refresh().await;
+        Ok(())
+    }
+
+    /// Throttled GC of expired consumed-refresh entries. Runs at most once per
+    /// [`CONSUMED_REFRESH_SWEEP_INTERVAL_SECS`] process-wide (the timestamp is
+    /// shared across `TokenManager` clones), bounding the denylist's growth
+    /// without a per-refresh cost. Best-effort: failures are logged, not fatal.
+    async fn maybe_sweep_consumed_refresh(&self) {
+        let now = Utc::now().timestamp();
+        let last = self.last_consumed_sweep.load(Ordering::Relaxed);
+        if now - last < CONSUMED_REFRESH_SWEEP_INTERVAL_SECS {
+            return;
+        }
+        // Claim the sweep slot; if another clone won the race, let it run.
+        if self
+            .last_consumed_sweep
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        let keys = match self.storage.list_keys(CONSUMED_REFRESH_PREFIX).await {
+            Ok(keys) => keys,
+            Err(e) => {
+                tracing::warn!("consumed-refresh sweep: list_keys failed: {e}");
+                return;
+            }
+        };
+        for key in keys {
+            if let Ok(Some(bytes)) = self.storage.get(&key).await {
+                let expired = std::str::from_utf8(&bytes)
+                    .ok()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .is_some_and(|exp| exp <= now);
+                if expired {
+                    let _ = self.storage.delete(&key).await;
+                }
+            }
+        }
+    }
+
     /// Refresh a token pair using a refresh token
     ///
     /// This method verifies the refresh token and generates new tokens based on the key type.
@@ -606,7 +694,29 @@ impl TokenManager {
             return Err(AuthError::InvalidToken("Key is not valid".to_string()));
         }
 
-        match key.key_type {
+        // Reuse detection (finding #2): a refresh token may be exchanged exactly
+        // once. If this token's jti is already on the consumed denylist it has been
+        // replayed — treat it as theft, revoke the whole token family, and reject
+        // with the terminal `token_reuse` signal. (Client keys also rotate their id
+        // below, but the denylist closes the window uniformly for root and client.)
+        if self.is_refresh_consumed(&claims.jti).await? {
+            tracing::warn!(
+                "Refresh token reuse detected for subject {} (jti {}); revoking family",
+                claims.sub,
+                claims.jti
+            );
+            // Best-effort family revocation; reject regardless of its outcome.
+            if let Err(e) = self.revoke_client_tokens(&claims.sub).await {
+                tracing::error!("Failed to revoke token family for {}: {}", claims.sub, e);
+            }
+            return Err(AuthError::TokenReuse);
+        }
+
+        // Captured before the match moves `claims.sub`/`claims.permissions`.
+        let consumed_jti = claims.jti.clone();
+        let consumed_exp = claims.exp;
+
+        let result = match key.key_type {
             // For root tokens, simply generate new tokens with the same ID
             KeyType::Root => {
                 self.generate_token_pair(claims.sub, key.permissions, claims.node_url.clone())
@@ -672,7 +782,16 @@ impl TokenManager {
 
                 Ok((access_token, refresh_token))
             }
+        };
+
+        // On a successful exchange, mark this refresh token's jti consumed so any
+        // later replay is caught above. Bounded by the token's own expiry.
+        if result.is_ok() {
+            self.record_consumed_refresh(&consumed_jti, consumed_exp)
+                .await?;
         }
+
+        result
     }
 
     /// Generate a challenge token
@@ -977,6 +1096,68 @@ mod tests {
             !resp.permissions.contains(&"context".to_string()),
             "permission removed from the live key must NOT be granted, got {:?}",
             resp.permissions
+        );
+    }
+
+    // ==========================================================================
+    // REFRESH ROTATION + REUSE DETECTION (finding #2)
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn refresh_rotates_and_consumed_token_is_reuse_rejected() {
+        let (tm, _sm) = test_manager().await;
+        let key = crate::storage::models::Key::new_root_key_with_permissions(
+            "pk".to_string(),
+            "method".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        tm.get_key_manager().set_key("key-1", &key).await.unwrap();
+
+        let (_access, refresh) = tm
+            .generate_token_pair("key-1".to_string(), vec!["admin".to_string()], None)
+            .await
+            .unwrap();
+
+        // First exchange succeeds and the refresh token rotates.
+        let (_a2, refresh2) = tm.refresh_token_pair(&refresh).await.unwrap();
+        assert_ne!(refresh, refresh2, "refresh token must rotate on exchange");
+
+        // Replaying the original (now consumed) refresh token is detected as reuse.
+        let err = tm.refresh_token_pair(&refresh).await.unwrap_err();
+        assert!(
+            matches!(err, AuthError::TokenReuse),
+            "replayed refresh token must be rejected as reuse, got {err:?}"
+        );
+
+        // Family revoked: the freshly-rotated refresh token no longer works either.
+        let err2 = tm.refresh_token_pair(&refresh2).await.unwrap_err();
+        assert!(
+            matches!(err2, AuthError::InvalidToken(_) | AuthError::TokenReuse),
+            "after a reuse-triggered family revoke the rotated token must also fail, got {err2:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_refresh_token_is_not_flagged_as_reuse() {
+        let (tm, _sm) = test_manager().await;
+        let key = crate::storage::models::Key::new_root_key_with_permissions(
+            "pk".to_string(),
+            "method".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        tm.get_key_manager().set_key("key-1", &key).await.unwrap();
+
+        let (_access, refresh) = tm
+            .generate_token_pair("key-1".to_string(), vec!["admin".to_string()], None)
+            .await
+            .unwrap();
+
+        // A never-before-exchanged refresh token must succeed exactly once.
+        assert!(
+            tm.refresh_token_pair(&refresh).await.is_ok(),
+            "a fresh refresh token must be accepted on first use"
         );
     }
 

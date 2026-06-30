@@ -378,6 +378,20 @@ pub async fn refresh_token_handler(
             let response = TokenResponse::new(access_token, refresh_token);
             success_response(response, None)
         }
+        Err(AuthError::TokenReuse) => {
+            // Replayed (already-consumed) refresh token: the family has been
+            // revoked. Signal the terminal `token_reuse` contract so clients clear
+            // their tokens and force re-auth instead of retrying (which would just
+            // replay the consumed token again).
+            warn!("Refresh token reuse detected; token family revoked");
+            let mut reuse_headers = HeaderMap::new();
+            reuse_headers.insert("X-Auth-Error", "token_reuse".parse().unwrap());
+            error_response(
+                StatusCode::UNAUTHORIZED,
+                "Refresh token reuse detected; re-authentication required",
+                Some(reuse_headers),
+            )
+        }
         Err(err) => {
             error!("Failed to refresh token: {}", err);
             error_response(
