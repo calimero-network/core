@@ -210,10 +210,9 @@ pub async fn create_context(
         group_name,
     } = args;
 
-    // Resolve the identity secret from its source spec (env:/file:/-/prompt) so
-    // it never has to be passed verbatim on the command line.
-    let identity_secret =
-        crate::secret::resolve_optional_secret(identity_secret.as_deref(), "identity secret")?;
+    // Resolve the identity secret from its source spec (env:/file:/-) so it
+    // never has to be passed verbatim on the command line.
+    let identity_secret = crate::secret::resolve_optional_secret(identity_secret.as_deref())?;
 
     let response: GetApplicationResponse = client.get_application(&application_id).await?;
 

@@ -270,11 +270,9 @@ async fn determine_auth_tokens(
     // If access token is provided, use direct JWT tokens (skip automatic auth).
     // The flag values are *source specs*, not the raw secret, so the token
     // never has to appear in argv.
-    let access_token =
-        crate::secret::resolve_optional_secret(cmd.access_token.as_deref(), "access token")?;
+    let access_token = crate::secret::resolve_optional_secret(cmd.access_token.as_deref())?;
     if let Some(access_token) = access_token {
-        let refresh_token =
-            crate::secret::resolve_optional_secret(cmd.refresh_token.as_deref(), "refresh token")?;
+        let refresh_token = crate::secret::resolve_optional_secret(cmd.refresh_token.as_deref())?;
         return Ok(Some(if let Some(refresh) = refresh_token {
             JwtToken::with_refresh(access_token, refresh)
         } else {

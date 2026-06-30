@@ -5,13 +5,18 @@
 //! itself, secret-bearing flags take a *source spec* that this module resolves:
 //!
 //! - `env:NAME`  — read the value from environment variable `NAME`
-//! - `file:PATH` — read the value from `PATH` (trailing newline trimmed)
-//! - `-`         — read a single line from stdin
+//! - `file:PATH` — read the value from `PATH` (trailing newlines trimmed)
+//! - `-`         — read one line from stdin (secrets here are single-line, e.g.
+//!   hex keys or JWTs)
 //!
 //! A bare value (anything not matching the forms above) is still accepted for
 //! backwards compatibility, but emits a deprecation warning recommending the
-//! safe forms. When no value is supplied at all and stdin is a TTY, the user is
-//! prompted without echo.
+//! safe forms.
+//!
+//! Only [`resolve_required_secret`] ever prompts (and only on a TTY); an
+//! *optional* secret that is simply omitted resolves to `None` without a
+//! prompt, so commands with optional secrets (e.g. `node add` tokens) are not
+//! interrupted.
 
 use std::env;
 use std::fs;
@@ -21,30 +26,37 @@ use eyre::{eyre, Result, WrapErr};
 
 /// Resolve an optional secret source spec into the secret value.
 ///
-/// Returns `Ok(None)` only when `arg` is `None` and stdin is not a TTY (so a
-/// non-interactive run with no secret supplied stays "not provided" rather than
-/// blocking on a prompt). `prompt` labels the no-echo prompt.
-pub fn resolve_optional_secret(arg: Option<&str>, prompt: &str) -> Result<Option<String>> {
+/// Returns `Ok(None)` when `arg` is `None` — an omitted optional secret stays
+/// "not provided" and never triggers a prompt. When a spec *is* given it is
+/// resolved (and a failure to resolve it is an error).
+pub fn resolve_optional_secret(arg: Option<&str>) -> Result<Option<String>> {
     match arg {
         Some(spec) => resolve_spec(spec).map(Some),
-        None => {
-            if io::stdin().is_terminal() {
-                prompt_hidden(prompt).map(Some)
-            } else {
-                Ok(None)
-            }
-        }
+        None => Ok(None),
     }
 }
 
 /// Resolve a required secret source spec into the secret value.
 ///
-/// Like [`resolve_optional_secret`] but errors when nothing is supplied in a
-/// non-interactive context instead of returning `None`.
+/// When a spec is given it is resolved (and rejected if it resolves to empty).
+/// When nothing is supplied, a TTY is prompted without echo; a non-interactive
+/// run errors rather than hanging.
 pub fn resolve_required_secret(arg: Option<&str>, prompt: &str) -> Result<String> {
-    match resolve_optional_secret(arg, prompt)? {
-        Some(value) if !value.is_empty() => Ok(value),
-        Some(_) => Err(eyre!("{prompt}: resolved to an empty value")),
+    match arg {
+        Some(spec) => {
+            let value = resolve_spec(spec)?;
+            if value.is_empty() {
+                return Err(eyre!("{prompt}: resolved to an empty value"));
+            }
+            Ok(value)
+        }
+        None if io::stdin().is_terminal() => {
+            let value = prompt_hidden(prompt)?;
+            if value.is_empty() {
+                return Err(eyre!("{prompt}: empty value entered"));
+            }
+            Ok(value)
+        }
         None => Err(eyre!(
             "{prompt}: no value supplied. Provide one via `env:NAME`, `file:PATH`, `-` (stdin), or run interactively."
         )),
@@ -62,7 +74,8 @@ fn resolve_spec(spec: &str) -> Result<String> {
     if let Some(path) = spec.strip_prefix("file:") {
         let raw = fs::read_to_string(path)
             .wrap_err_with(|| format!("failed to read secret from file `{path}`"))?;
-        // Trim a single trailing newline (and any \r) so `echo secret > f` works.
+        // Trim trailing newline(s)/CRs so `echo secret > f` works; a secret
+        // never legitimately ends in a newline.
         return Ok(raw.trim_end_matches(['\n', '\r']).to_owned());
     }
 
@@ -101,7 +114,10 @@ mod tests {
 
     #[test]
     fn env_spec_reads_environment_variable() {
-        // SAFETY: single-threaded test; unique var name avoids cross-test races.
+        // The test harness runs tests on multiple threads, so this mutates the
+        // process environment concurrently with other tests. That is sound on
+        // edition 2021 (`set_var` is safe) and race-free in practice here: the
+        // variable name is unique to this test and no other test reads it.
         env::set_var("MEROCTL_TEST_SECRET_ENV", "s3cr3t");
         assert_eq!(
             resolve_spec("env:MEROCTL_TEST_SECRET_ENV").unwrap(),
