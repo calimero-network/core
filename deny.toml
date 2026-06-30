@@ -15,15 +15,10 @@ ignore = [
     { id = "RUSTSEC-2026-0098", reason = "rustls-webpki, via libp2p-tls; pending libp2p upgrade" },
     { id = "RUSTSEC-2026-0099", reason = "rustls-webpki, via libp2p-tls; pending libp2p upgrade" },
     { id = "RUSTSEC-2026-0104", reason = "rustls-webpki, via libp2p-tls; pending libp2p upgrade" },
-    { id = "RUSTSEC-2026-0037", reason = "quinn-proto, via libp2p-quic; pending libp2p upgrade" },
-    { id = "RUSTSEC-2026-0185", reason = "quinn-proto, via libp2p-quic; pending libp2p upgrade" },
     { id = "RUSTSEC-2026-0118", reason = "hickory-proto, via libp2p-dns; pending libp2p upgrade" },
     { id = "RUSTSEC-2026-0119", reason = "hickory-proto, via libp2p-dns; pending libp2p upgrade" },
     { id = "RUSTSEC-2026-0097", reason = "rand, transitive; pending upstream upgrade" },
-    { id = "RUSTSEC-2023-0018", reason = "remove_dir_all, via tempdir (build/test); low reachability" },
     { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing attack, transitive; no upstream fix available" },
-    { id = "RUSTSEC-2018-0017", reason = "tempdir (direct, store/impl/rocksdb); migrate to tempfile" },
-    { id = "RUSTSEC-2024-0436", reason = "paste (direct, utils/actix); unmaintained, no replacement wired yet" },
 ]
 
 [bans]
