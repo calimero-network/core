@@ -104,15 +104,33 @@ fn caller_principal(
 
 /// Whether `caller` may access a session owned by `session_owner`.
 ///
-/// Allowed when the session is unowned (legacy, or created with auth disabled),
-/// or when the principals match. A mismatch between two known principals — or an
-/// owned session accessed by the [`UNAUTHENTICATED_PRINCIPAL`] sentinel — is a
-/// cross-principal access attempt (IDOR) and is refused. The `(Some, None)` arm
-/// is only reachable with auth disabled (single-tenant allowance).
+/// - `(Some, Some)` → allowed only when the principals match. A mismatch between
+///   two known principals — including an owned session reached by the
+///   [`UNAUTHENTICATED_PRINCIPAL`] sentinel — is a cross-principal access attempt
+///   (IDOR) and is refused.
+/// - `(Some, None)` → allowed, but logged. This is only reachable with auth
+///   **disabled** at access time ([`caller_principal`] never returns `None` once
+///   auth is enabled). It means an owned session — created while auth was on —
+///   is being accessed after auth was turned off. Ownership is not enforced on a
+///   single-tenant node, but the access is surfaced via `warn!` so an
+///   auth-disabling configuration change that exposes previously-owned sessions
+///   is visible in logs/audit rather than silent.
+/// - `(None, _)` → allowed. An unowned session (legacy, or created with auth
+///   disabled) has no principal to protect, so any caller may use it — including
+///   the [`UNAUTHENTICATED_PRINCIPAL`] sentinel. The sentinel is fail-closed only
+///   for *owned* sessions, which is the IDOR case being defended.
 fn owner_allows_access(session_owner: &Option<String>, caller: &Option<String>) -> bool {
     match (session_owner, caller) {
         (Some(owner), Some(caller)) => owner == caller,
-        _ => true,
+        (Some(owner), None) => {
+            warn!(
+                %owner,
+                "SSE session ownership not enforced: an owned session was accessed with no \
+                 caller principal (auth is disabled at access time)",
+            );
+            true
+        }
+        (None, _) => true,
     }
 }
 
