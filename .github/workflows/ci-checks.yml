@@ -20,6 +20,11 @@ env:
 permissions:
   contents: read
 
+# Cancel superseded PR runs; never cancel a master run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
 jobs:
   rust:
     name: Rust
@@ -77,4 +82,4 @@ jobs:
         run: |
           # Pin cargo-deny to 0.16.3 for compatibility with Rust 1.88.0 (from rust-toolchain.toml)
           cargo install cargo-deny --version 0.16.3 --locked
-          cargo deny check licenses sources
+          cargo deny check bans licenses sources
