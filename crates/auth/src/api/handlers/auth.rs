@@ -11,10 +11,19 @@ use tracing::{debug, error, info, warn};
 use validator::Validate;
 
 use crate::api::handlers::AuthUiStaticFiles;
+use crate::auth::token::Claims;
 use crate::auth::validation::{sanitize_identifier, sanitize_string, ValidatedJson};
 use crate::server::AppState;
 use crate::storage::models::Key;
 use crate::AuthError;
+
+/// Whether an access token and a refresh token belong to the same subject.
+///
+/// Enforces finding #3: the refresh endpoint must reject a request that pairs a
+/// refresh token with an access token issued to a different subject.
+fn tokens_share_subject(access: &Claims, refresh: &Claims) -> bool {
+    access.sub == refresh.sub
+}
 
 // Common response type used by all helper functions
 type ApiResponse = (StatusCode, HeaderMap, Json<serde_json::Value>);
@@ -293,11 +302,30 @@ pub async fn refresh_token_handler(
         }
     };
 
-    // Verify the refresh token and extract claims
+    // Read the (expired) access token's claims so we can bind it to the refresh
+    // token below. This also re-confirms the access slot really holds an access
+    // token, not a refresh token (finding #1).
+    let access_claims = match state
+        .0
+        .token_generator
+        .verify_expired_access_claims(&refresh_request.access_token)
+        .await
+    {
+        Ok(claims) => claims,
+        Err(err) => {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                format!("Invalid access token: {err}"),
+                None,
+            );
+        }
+    };
+
+    // Verify the refresh token and extract claims (must be a refresh token).
     let refresh_claims = match state
         .0
         .token_generator
-        .verify_token(&refresh_request.refresh_token)
+        .verify_refresh_token(&refresh_request.refresh_token)
         .await
     {
         Ok(claims) => claims,
@@ -309,6 +337,21 @@ pub async fn refresh_token_handler(
             );
         }
     };
+
+    // Bind access <-> refresh: both must belong to the same subject (finding #3).
+    // Without this, any valid refresh token could be paired with an unrelated
+    // expired access token to mint a fresh pair for the refresh token's subject.
+    if !tokens_share_subject(&access_claims, &refresh_claims) {
+        warn!(
+            "Refresh rejected: access/refresh subject mismatch ({} != {})",
+            access_claims.sub, refresh_claims.sub
+        );
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "Access and refresh tokens do not belong to the same subject",
+            None,
+        );
+    }
 
     // Check node URL if token has node information
     if let Some(token_node_url) = &refresh_claims.node_url {
@@ -943,5 +986,44 @@ pub async fn mock_token_handler(
                 None,
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::token::TokenType;
+
+    fn claims_for(sub: &str) -> Claims {
+        Claims {
+            sub: sub.to_string(),
+            iss: "calimero-test".to_string(),
+            aud: "calimero-test".to_string(),
+            exp: 0,
+            iat: 0,
+            jti: "jti".to_string(),
+            token_type: TokenType::Access,
+            permissions: vec![],
+            node_url: None,
+        }
+    }
+
+    #[test]
+    fn tokens_share_subject_accepts_same_subject() {
+        // finding #3: matching subjects bind the access/refresh pair.
+        assert!(tokens_share_subject(
+            &claims_for("user-a"),
+            &claims_for("user-a")
+        ));
+    }
+
+    #[test]
+    fn tokens_share_subject_rejects_mismatched_subject() {
+        // finding #3: a refresh token must not be paired with an access token
+        // issued to a different subject.
+        assert!(!tokens_share_subject(
+            &claims_for("user-a"),
+            &claims_for("user-b")
+        ));
     }
 }
