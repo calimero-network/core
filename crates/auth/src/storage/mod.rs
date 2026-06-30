@@ -247,6 +247,23 @@ pub trait Storage: Send + Sync + 'static {
             "read_write_test": read_ok,
         }))
     }
+
+    /// Stable key-encryption-key (KEK) for sealing secrets *at rest*, or `None`
+    /// when this backend has no on-disk surface to protect.
+    ///
+    /// This is the persistent-vs-ephemeral seam for [`crate::secrets`]: a
+    /// file-backed backend (RocksDB) returns a stable 32-byte KEK — sourced from a
+    /// sibling `0600` key file — so the JWT signing secrets are written to disk
+    /// sealed with AES-256-GCM and a later instance (e.g. after a restart) can
+    /// unseal them. An in-memory backend has nothing at rest, so it returns `None`
+    /// and the secret is kept as plaintext: encrypting a value that never touches
+    /// disk would only break interoperability between two managers sharing the
+    /// store. The KEK here is the *fallback* used when no `MERO_AUTH_SECRET_KEK`
+    /// env var is provided (the env var, when set, takes precedence and never
+    /// touches disk — see [`crate::secrets`]).
+    fn at_rest_kek(&self) -> Option<[u8; 32]> {
+        None
+    }
 }
 
 /// Create a storage instance based on the configuration

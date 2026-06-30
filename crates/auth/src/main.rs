@@ -75,8 +75,13 @@ async fn main() -> Result<()> {
         .await
         .expect("Failed to create storage");
 
-    // Create the secret manager with the storage trait
-    let secret_manager = Arc::new(SecretManager::new(storage.clone() as Arc<dyn Storage>));
+    // Create the secret manager with the storage trait. `with_storage_config`
+    // resolves the at-rest KEK (env-provided, or a 0600 sibling key file for
+    // RocksDB) so the JWT signing secrets are sealed on disk.
+    let secret_manager = Arc::new(SecretManager::with_storage_config(
+        storage.clone() as Arc<dyn Storage>,
+        &config.storage,
+    ));
     secret_manager
         .initialize()
         .await

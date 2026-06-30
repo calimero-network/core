@@ -25,10 +25,11 @@ impl RocksDBStorage {
     ///
     /// * `Result<Self, StorageError>` - The new instance
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, StorageError> {
-        // Ensure the directory exists
-        std::fs::create_dir_all(&path).map_err(|e| {
-            StorageError::StorageError(format!("Failed to create DB directory: {e}"))
-        })?;
+        // Ensure the directory exists. This directory holds the JWT signing
+        // secrets at rest, so on unix it must be created with `0700` (owner-only)
+        // permissions rather than the umask default (typically `0755`), which would
+        // let any local user traverse it. See finding #6 (auth-secret-at-rest).
+        Self::create_db_dir(&path)?;
 
         let mut options = rocksdb::Options::default();
         options.create_if_missing(true);
@@ -47,10 +48,74 @@ impl RocksDBStorage {
         options.set_wal_bytes_per_sync(524288); // 512KB
         options.set_compaction_readahead_size(2 * 1024 * 1024); // 2MB
 
-        let db = DB::open(&options, path)
+        let db = DB::open(&options, &path)
             .map_err(|e| StorageError::StorageError(format!("Failed to open RocksDB: {e}")))?;
 
+        // Tighten permissions on the secret-bearing files RocksDB just created
+        // (SST/WAL/MANIFEST/CURRENT/LOG) to `0600`. The `0700` directory above is
+        // the enforced boundary; this is defense-in-depth for stray file copies.
+        #[cfg(unix)]
+        Self::restrict_db_files(&path);
+
         Ok(Self { db })
+    }
+
+    /// Create the RocksDB directory with owner-only (`0700`) permissions on unix.
+    ///
+    /// On non-unix targets this falls back to a plain `create_dir_all`.
+    fn create_db_dir<P: AsRef<Path>>(path: P) -> Result<(), StorageError> {
+        let map_err = |e| StorageError::StorageError(format!("Failed to create DB directory: {e}"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&path)
+                .map_err(map_err)?;
+
+            // `recursive(true)` only applies the mode to components it *creates*;
+            // if the leaf directory already existed it keeps its old mode, so
+            // re-assert `0700` explicitly.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                .map_err(map_err)?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            std::fs::create_dir_all(&path).map_err(map_err)?;
+        }
+
+        Ok(())
+    }
+
+    /// Best-effort tightening of every file directly inside the DB directory to
+    /// `0600` (owner read/write only). Failures are logged, not fatal: the
+    /// `0700` directory already blocks other users from reaching these files.
+    #[cfg(unix)]
+    fn restrict_db_files<P: AsRef<Path>>(path: P) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let entries = match std::fs::read_dir(&path) {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::warn!("Failed to enumerate DB directory for chmod: {e}");
+                return;
+            }
+        };
+
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_file() {
+                if let Err(e) =
+                    std::fs::set_permissions(&entry_path, std::fs::Permissions::from_mode(0o600))
+                {
+                    tracing::warn!("Failed to restrict permissions on {entry_path:?}: {e}");
+                }
+            }
+        }
     }
 }
 
@@ -226,6 +291,46 @@ mod tests {
         assert!(result.is_empty());
 
         storage.delete_batch(&empty_keys).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_rocksdb_dir_created_0700() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path().join("secret-db");
+
+        let _storage = RocksDBStorage::new(&db_path).unwrap();
+
+        let mode = std::fs::metadata(&db_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "DB directory must be owner-only (0700)");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_rocksdb_files_restricted_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path().join("secret-db");
+
+        let storage = RocksDBStorage::new(&db_path).unwrap();
+        storage.set("k", b"v").await.unwrap();
+        // Force RocksDB to flush an SST so on-disk files exist.
+        storage.db.flush().unwrap();
+
+        // Re-apply the tightening (as `new` does at open time) so we assert it on
+        // the full current file set, then verify none are group/other accessible.
+        RocksDBStorage::restrict_db_files(&db_path);
+
+        for entry in std::fs::read_dir(&db_path).unwrap().flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o600, "DB file {p:?} must be owner-only (0600)");
+            }
+        }
     }
 
     #[tokio::test]
