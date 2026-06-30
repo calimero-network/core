@@ -421,6 +421,73 @@ pub struct ApplicationBlob {
     pub compiled: BlobId,
 }
 
+/// A validated application version (`major.minor.patch` semver core, with an
+/// optional `-prerelease` / `+build` suffix). A newtype so a raw, unvalidated
+/// string can't masquerade as a version.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize)]
+pub struct Version(Box<str>);
+
+/// Error returned when constructing an invalid [`Version`].
+#[derive(Clone, Debug, ThisError)]
+#[non_exhaustive]
+pub enum InvalidVersion {
+    /// The string is not `major.minor.patch` semver.
+    #[error("version must be semver `major.minor.patch`, got `{0}`")]
+    NotSemver(String),
+}
+
+impl Version {
+    /// Parse and validate a semver version string.
+    ///
+    /// # Errors
+    /// Returns [`InvalidVersion::NotSemver`] if `s` is not three dot-separated
+    /// numeric components (optionally followed by a `-pre`/`+build` suffix).
+    pub fn new(s: impl Into<Box<str>>) -> Result<Self, InvalidVersion> {
+        let s = s.into();
+        let core = s.split(['-', '+']).next().unwrap_or(&s);
+        let mut parts = core.split('.');
+        let numeric = |p: Option<&str>| {
+            p.is_some_and(|x| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit()))
+        };
+        let valid = numeric(parts.next())
+            && numeric(parts.next())
+            && numeric(parts.next())
+            && parts.next().is_none();
+        if valid {
+            Ok(Self(s))
+        } else {
+            Err(InvalidVersion::NotSemver(s.into_string()))
+        }
+    }
+
+    /// The version as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Display for Version {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.pad(&self.0)
+    }
+}
+
+impl FromStr for Version {
+    type Err = InvalidVersion;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::new(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Version {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = <String as Deserialize>::deserialize(deserializer)?;
+        Self::new(s).map_err(SerdeError::custom)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct Application {
@@ -429,12 +496,12 @@ pub struct Application {
     pub size: u64,
     pub source: ApplicationSource,
     pub metadata: Vec<u8>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub signer_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer_id: Option<SignerId>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub package: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<Version>,
     /// Named services. Key = service name, value = WASM blob.
     /// Empty for single-service apps (use `blob` field instead).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -456,9 +523,9 @@ impl Application {
             size,
             source,
             metadata,
-            signer_id: String::new(),
+            signer_id: None,
             package: String::new(),
-            version: String::new(),
+            version: None,
             services: BTreeMap::new(),
         }
     }
@@ -476,9 +543,13 @@ impl Application {
 
     #[must_use]
     pub fn with_bundle_info(mut self, signer_id: String, package: String, version: String) -> Self {
-        self.signer_id = signer_id;
+        // An empty or invalid signer id becomes `None` rather than being stored
+        // as an unvalidated string.
+        self.signer_id = SignerId::new(signer_id).ok();
         self.package = package;
-        self.version = version;
+        // Validate the version; an empty or non-semver string becomes `None`
+        // rather than silently storing an invalid version.
+        self.version = Version::new(version).ok();
         self
     }
 }
