@@ -276,6 +276,7 @@ mod index__public_methods {
             .unwrap()
             .deleted_children()
             .contains(&child_id));
+        let tombstoned_hash = <Index<S>>::get_index(root_id).unwrap().unwrap().full_hash();
 
         // Re-add (resurrect) the child via a winning upsert.
         assert!(<Index<S>>::add_child_to(
@@ -300,6 +301,13 @@ mod index__public_methods {
                 .map(|c| c.iter().any(|ci| ci.id() == child_id))
                 .unwrap_or(false),
             "re-add did not relink the child as a live child"
+        );
+        // The resurrected child is re-folded into the parent hash — the other
+        // symptom of the bug, and the value a peer that never deleted it carries.
+        assert_ne!(
+            parent.full_hash(),
+            tombstoned_hash,
+            "re-add did not re-fold the child into the parent hash"
         );
     }
 

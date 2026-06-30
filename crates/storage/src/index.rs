@@ -455,9 +455,8 @@ impl<S: StorageAdaptor> Index<S> {
         child_index.full_hash =
             Self::calculate_full_hash_for_children(child_index.own_hash, &child_index.children)?;
         // Adding a child means it is live: clear any tombstone, else find_by_id
-        // keeps hiding an entity whose hash the parent now counts (a winning
-        // upsert on a tombstoned id → hash divergence). Pairs with the
-        // deleted_children.retain below, which clears the parent-side advert.
+        // hides an entity the parent hash now counts (upsert-on-tombstone
+        // divergence). Pairs with the deleted_children.retain below.
         child_index.deleted_at = None;
         Self::save_index(&child_index)?;
 
