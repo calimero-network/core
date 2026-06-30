@@ -728,4 +728,70 @@ mod tests {
         assert!(!TokenManager::is_internal_auth_service("auth:+3001"));
         assert!(!TokenManager::is_internal_auth_service("auth: 3001"));
     }
+
+    async fn test_token_manager() -> TokenManager {
+        use crate::config::JwtConfig;
+        use crate::secrets::SecretManager;
+        use crate::storage::providers::memory::MemoryStorage;
+        use crate::storage::Storage;
+
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        secret_manager.initialize().await.unwrap();
+        TokenManager::new(
+            JwtConfig {
+                issuer: "test".to_string(),
+                access_token_expiry: 3600,
+                refresh_token_expiry: 86400,
+            },
+            storage,
+            secret_manager,
+        )
+    }
+
+    fn headers_with(name: &'static str, value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        // `insert` returns the previous value (an `Option`), not a `Result`;
+        // there is no error to handle here.
+        drop(h.insert(name, value.parse().unwrap()));
+        h
+    }
+
+    /// A spoofed `X-Forwarded-Host` for a different node must NOT validate a
+    /// token minted for this node — this is the cross-node host-spoof guard.
+    /// `X-Forwarded-Host` is preferred over `Host`, so an attacker forging it
+    /// must still be rejected.
+    #[tokio::test]
+    async fn forwarded_host_spoof_is_rejected_cross_node() {
+        let tm = test_token_manager().await;
+        let token_node = "http://node-a.example:2428";
+
+        // Matching forwarded host: accepted.
+        assert!(tm
+            .validate_node_host(
+                token_node,
+                &headers_with("X-Forwarded-Host", "node-a.example")
+            )
+            .is_ok());
+
+        // Spoofed forwarded host for a different node: rejected, even though the
+        // attacker controls the header.
+        assert!(tm
+            .validate_node_host(token_node, &headers_with("X-Forwarded-Host", "node-b.evil"))
+            .is_err());
+
+        // A forged "auth:<non-numeric>" must not be treated as the internal
+        // service bypass (it is not a numeric port), so it is rejected.
+        assert!(tm
+            .validate_node_host(
+                token_node,
+                &headers_with("X-Forwarded-Host", "auth:evil.com")
+            )
+            .is_err());
+
+        // The genuine internal-service host (numeric port) still bypasses.
+        assert!(tm
+            .validate_node_host(token_node, &headers_with("X-Forwarded-Host", "auth:2428"))
+            .is_ok());
+    }
 }

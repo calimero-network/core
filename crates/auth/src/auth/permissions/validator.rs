@@ -5,9 +5,9 @@ use axum::http::Request;
 use regex::Regex;
 
 use super::types::{
-    AddBlobPermission, ApplicationPermission, BlobPermission, CapabilityPermission,
-    ContextApplicationPermission, ContextPermission, HttpMethod, KeyPermission, PackagePermission,
-    Permission, ResourceScope, UserScope,
+    AddBlobPermission, AdminPermission, ApplicationPermission, BlobPermission,
+    CapabilityPermission, ContextApplicationPermission, ContextPermission, HttpMethod,
+    KeyPermission, PackagePermission, Permission, ResourceScope, UserScope,
 };
 
 /// Pre-compiled regex patterns for performance
@@ -148,7 +148,15 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
             let scope = ResourceScope::Specific(vec![key_id.as_str().to_string()]);
             return match method {
                 HttpMethod::GET => vec![Permission::Keys(KeyPermission::GetPermissions(scope))],
-                HttpMethod::PUT => vec![Permission::Keys(KeyPermission::UpdatePermissions(scope))],
+                // Updating a key's permissions is privilege management: the
+                // handler (`update_key_permissions_handler`) applies whatever
+                // permissions the body asks for, including `admin`, without
+                // checking that the caller already holds them. Gating the
+                // endpoint on a scoped `Keys(UpdatePermissions)` would let a
+                // non-admin key that merely holds that scope escalate itself (or
+                // any key) to `admin`. Require full `admin` to mutate
+                // permissions so escalation is impossible.
+                HttpMethod::PUT => vec![Permission::Admin(AdminPermission)],
                 _ => vec![],
             };
         }
@@ -300,6 +308,27 @@ impl PermissionValidator {
                     _ => {}
                 }
             }
+        }
+
+        // Default-deny for the privileged admin-api namespace.
+        //
+        // Any `/admin-api/*` route not matched above — an unknown subpath, or a
+        // known path reached with an unhandled method (the `_ => vec![]` arms) —
+        // produces an empty requirement set. `validate_permissions` treats an
+        // empty requirement as a pass (an empty `Iterator::all` is vacuously
+        // true), so without this any valid token, including a narrow
+        // client-scoped one, would reach the route. Require `admin` instead so
+        // unmapped admin routes fail closed.
+        //
+        // This deliberately makes every unmapped `/admin-api/*` route
+        // admin/node-owner only (governance under `/admin-api/groups`,
+        // `/admin-api/alias`, `install-dev-application`, context sub-operations,
+        // `/admin-api/blobs`, usage/network/peers, …). A scoped (non-admin)
+        // token that must reach one of these needs an explicit mapping added
+        // above. `/jsonrpc`, `/ws`, `/sse` and the public `/auth/*` routes are
+        // intentionally outside this namespace and unaffected.
+        if required_permissions.is_empty() && path.starts_with("/admin-api/") {
+            required_permissions.push(Permission::Admin(AdminPermission));
         }
 
         required_permissions
@@ -741,5 +770,121 @@ mod tests {
         // 2. No repeated Regex::new() calls on each request
         // 3. Patterns are pre-optimized and cached in memory
         println!("✅ Pre-compiled regex patterns working correctly");
+    }
+
+    /// An unmapped `/admin-api/*` route (unknown subpath) must fall back to
+    /// requiring `admin`, not to an empty requirement set. This is the
+    /// default-deny guard for the audit's "unlisted /admin-api/... subpath →
+    /// must be 403, currently 200" finding.
+    #[test]
+    fn unmapped_admin_api_route_requires_admin() {
+        let validator = PermissionValidator::new();
+
+        for (method, path) in [
+            (Method::GET, "/admin-api/groups/some-group-id"),
+            (Method::POST, "/admin-api/groups"),
+            (Method::PATCH, "/admin-api/groups/some-group-id"),
+            (Method::POST, "/admin-api/install-dev-application"),
+            (Method::GET, "/admin-api/usage"),
+            (Method::GET, "/admin-api/totally-unknown-subpath"),
+            // Mapped path, unhandled method (the `_ => vec![]` arms):
+            (Method::POST, "/admin-api/contexts/ctx-1"),
+            (Method::DELETE, "/admin-api/applications"),
+        ] {
+            let req = Request::builder()
+                .method(method.clone())
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+            assert_eq!(
+                required,
+                vec![Permission::Admin(AdminPermission)],
+                "{method} {path} must require admin (default-deny), got {required:?}",
+            );
+
+            // A narrow, non-admin token must be denied; only admin passes.
+            let scoped = vec!["context:execute".to_owned(), "context:list".to_owned()];
+            assert!(
+                !validator.validate_permissions(&scoped, &required),
+                "{method} {path}: a scoped non-admin token must be denied",
+            );
+            assert!(
+                validator.validate_permissions(&["admin".to_owned()], &required),
+                "{method} {path}: an admin token must pass",
+            );
+        }
+    }
+
+    /// The default-deny is scoped to `/admin-api/*`. Realtime/public namespaces
+    /// (`/jsonrpc` is explicitly mapped; `/ws`, `/sse`, `/auth/*` are not
+    /// privileged admin routes) must NOT be forced to admin by the catch-all,
+    /// or every app's realtime channel would break.
+    #[test]
+    fn non_admin_api_namespaces_are_not_force_denied() {
+        let validator = PermissionValidator::new();
+
+        // /ws and /sse have no mapping and must stay empty (open to any valid
+        // token at the scope gate; their own handlers enforce session/context
+        // rules).
+        for path in ["/ws", "/sse", "/sse/session/123", "/auth/providers"] {
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            assert!(
+                validator.determine_required_permissions(&req).is_empty(),
+                "{path} must not be forced to admin by the /admin-api default-deny",
+            );
+        }
+
+        // /jsonrpc stays mapped to context execute, not admin.
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/jsonrpc")
+            .body(Body::empty())
+            .unwrap();
+        let required = validator.determine_required_permissions(&req);
+        assert!(matches!(
+            required.as_slice(),
+            [Permission::Context(ContextPermission::Execute(..))]
+        ));
+    }
+
+    /// Updating a key's permissions must require `admin`, so a non-admin key
+    /// holding a scoped `keys:update-permissions` cannot escalate itself (or
+    /// any key) to `admin`. Reading permissions stays a scoped key permission.
+    #[test]
+    fn updating_key_permissions_requires_admin() {
+        let validator = PermissionValidator::new();
+
+        let put = Request::builder()
+            .method(Method::PUT)
+            .uri("/admin/keys/some-key-id/permissions")
+            .body(Body::empty())
+            .unwrap();
+        let required = validator.determine_required_permissions(&put);
+        assert_eq!(required, vec![Permission::Admin(AdminPermission)]);
+
+        // A token scoped only to update-permissions must NOT pass — that is the
+        // escalation this guard closes.
+        let escalator = vec!["keys:update-permissions[some-key-id]".to_owned()];
+        assert!(
+            !validator.validate_permissions(&escalator, &required),
+            "a non-admin keys:update-permissions token must not be able to update permissions",
+        );
+        assert!(validator.validate_permissions(&["admin".to_owned()], &required));
+
+        // Reading permissions remains a scoped key permission, not admin-gated.
+        let get = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/keys/some-key-id/permissions")
+            .body(Body::empty())
+            .unwrap();
+        assert!(matches!(
+            validator.determine_required_permissions(&get).as_slice(),
+            [Permission::Keys(KeyPermission::GetPermissions(_))]
+        ));
     }
 }

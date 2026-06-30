@@ -82,6 +82,7 @@ pub async fn build_app(config: AuthConfig) -> Result<EmbeddedAuthApp> {
         token_generator: token_manager,
         config: config.clone(),
         metrics,
+        login_rate_limiter: Arc::new(crate::auth::rate_limit::LoginRateLimiter::default()),
     });
 
     let router = create_router(Arc::clone(&state), &config);
