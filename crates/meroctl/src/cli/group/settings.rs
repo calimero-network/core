@@ -51,7 +51,11 @@ impl SettingsCommand {
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Get current default settings for a group")]
 pub struct SettingsGetCommand {
-    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    #[clap(
+        name = "GROUP_ID",
+        value_parser = crate::cli::validation::group_id,
+        help = "The hex-encoded group ID"
+    )]
     pub group_id: String,
 }
 
@@ -103,7 +107,11 @@ impl SettingsGetCommand {
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Set default capabilities for new group members (admin-only)")]
 pub struct SetDefaultCapabilitiesCommand {
-    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    #[clap(
+        name = "GROUP_ID",
+        value_parser = crate::cli::validation::group_id,
+        help = "The hex-encoded group ID"
+    )]
     pub group_id: String,
 
     #[clap(long, help = "Allow new members to create contexts by default")]
@@ -159,7 +167,11 @@ impl SetDefaultCapabilitiesCommand {
              add_group_members"
 )]
 pub struct SetSubgroupVisibilityCommand {
-    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    #[clap(
+        name = "GROUP_ID",
+        value_parser = crate::cli::validation::group_id,
+        help = "The hex-encoded group ID"
+    )]
     pub group_id: String,
 
     #[clap(long, value_enum, help = "Subgroup visibility: open or restricted")]

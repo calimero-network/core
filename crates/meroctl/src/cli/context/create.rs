@@ -74,6 +74,7 @@ pub struct CreateCommand {
     #[clap(
         long,
         required = true,
+        value_parser = crate::cli::validation::group_id,
         help = "Group ID (hex) to attach this context to"
     )]
     pub group_id: String,
