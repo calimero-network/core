@@ -7,6 +7,7 @@ pub mod cli;
 mod client;
 mod common;
 mod config;
+mod confirm;
 mod connection;
 mod defaults;
 

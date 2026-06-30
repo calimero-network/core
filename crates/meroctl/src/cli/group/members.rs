@@ -9,6 +9,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use eyre::Result;
 
 use crate::cli::Environment;
+use crate::confirm::confirm;
+use crate::output::InfoLine;
 
 #[derive(Clone, Debug, ValueEnum)]
 pub enum MemberRoleArg {
@@ -148,10 +150,25 @@ pub struct RemoveMembersCommand {
         help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
     )]
     pub requester: Option<PublicKey>,
+
+    #[clap(long, short = 'y', help = "Skip the confirmation prompt")]
+    pub yes: bool,
 }
 
 impl RemoveMembersCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        if !confirm(
+            &format!(
+                "Remove {} member(s) from group '{}'?",
+                self.identities.len(),
+                self.group_id
+            ),
+            self.yes,
+        )? {
+            environment.output.write(&InfoLine("Aborted."));
+            return Ok(());
+        }
+
         let request = RemoveGroupMembersApiRequest {
             members: self.identities,
             requester: self.requester,

@@ -4,6 +4,8 @@ use clap::Parser;
 use eyre::Result;
 
 use crate::cli::Environment;
+use crate::confirm::confirm;
+use crate::output::InfoLine;
 
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Delete a group")]
@@ -16,10 +18,24 @@ pub struct DeleteCommand {
         help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
     )]
     pub requester: Option<PublicKey>,
+
+    #[clap(long, short = 'y', help = "Skip the confirmation prompt")]
+    pub yes: bool,
 }
 
 impl DeleteCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        if !confirm(
+            &format!(
+                "Delete group '{}'? This cascades to its subgroups and cannot be undone.",
+                self.group_id
+            ),
+            self.yes,
+        )? {
+            environment.output.write(&InfoLine("Aborted."));
+            return Ok(());
+        }
+
         let request = DeleteGroupApiRequest {
             requester: self.requester,
         };
