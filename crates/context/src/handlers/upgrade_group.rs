@@ -216,7 +216,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                                 &group_id,
                                 &sk,
                                 GroupOp::TargetApplicationSet {
-                                    app_key: rung.app_key,
+                                    app_key: rung.app_key.into(),
                                     target_application_id,
                                 },
                             )
@@ -384,7 +384,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     &group_id,
                     &sk,
                     GroupOp::TargetApplicationSet {
-                        app_key,
+                        app_key: app_key.into(),
                         target_application_id,
                     },
                 )
@@ -1669,8 +1669,8 @@ fn dispatch_cascade(
             &group_id,
             &sk,
             GroupOp::CascadeUpgrade {
-                from_app_key,
-                app_key: new_app_key,
+                from_app_key: from_app_key.into(),
+                app_key: new_app_key.into(),
                 target_application_id,
                 migration: migration_bytes_for_publish.clone(),
                 cascade_hlc,

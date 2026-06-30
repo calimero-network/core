@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use std::io;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_context_config::types::SignedGroupOpenInvitation;
+use calimero_context_config::types::{AppKey, SignedGroupOpenInvitation};
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
@@ -297,7 +297,7 @@ pub enum GroupOp {
     UpgradePolicySet { policy: UpgradePolicy },
     /// Update target application and app key in group metadata.
     TargetApplicationSet {
-        app_key: [u8; 32],
+        app_key: AppKey,
         target_application_id: ApplicationId,
     },
     /// Register a context index under this group (must match `ContextGroupRef` invariants).
@@ -424,8 +424,8 @@ pub enum GroupOp {
     /// `#[deprecated]` because the enum's derived borsh/Debug impls reference
     /// every variant and would warn at the derive site.)
     CascadeTargetApplicationSet {
-        from_app_key: [u8; 32],
-        app_key: [u8; 32],
+        from_app_key: AppKey,
+        app_key: AppKey,
         target_application_id: ApplicationId,
     },
     /// Cascade variant of [`Self::GroupMigrationSet`]: emitted alongside
@@ -438,7 +438,7 @@ pub enum GroupOp {
     /// DEPRECATED: superseded by [`Self::CascadeUpgrade`] (see that variant).
     /// Do NOT emit; apply arm retained for one release for wire-compat.
     CascadeGroupMigrationSet {
-        from_app_key: [u8; 32],
+        from_app_key: AppKey,
         migration: Option<Vec<u8>>,
     },
     /// Atomic namespace cascade upgrade. Applies target_application_id, app_key,
@@ -453,8 +453,8 @@ pub enum GroupOp {
     /// timestamp predates this value is rejected post-`Completed` to prevent
     /// offline-writer stale-schema state from overwriting migrated state.
     CascadeUpgrade {
-        from_app_key: [u8; 32],
-        app_key: [u8; 32],
+        from_app_key: AppKey,
+        app_key: AppKey,
         target_application_id: ApplicationId,
         migration: Option<Vec<u8>>,
         cascade_hlc: HybridTimestamp,

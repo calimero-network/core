@@ -121,8 +121,8 @@ fn cascade_target_application_set_updates_all_matching_descendants_and_skips_sib
         vec![],
         1,
         GroupOp::CascadeTargetApplicationSet {
-            from_app_key: APP_KEY_1,
-            app_key: APP_KEY_2,
+            from_app_key: APP_KEY_1.into(),
+            app_key: APP_KEY_2.into(),
             target_application_id: app_id_2(),
         },
     )

@@ -97,8 +97,8 @@ fn cascade_upgrade_atomic_op_sets_target_app_key_and_migration_and_records_casca
         vec![],
         1,
         GroupOp::CascadeUpgrade {
-            from_app_key: APP_KEY_1,
-            app_key: APP_KEY_2,
+            from_app_key: APP_KEY_1.into(),
+            app_key: APP_KEY_2.into(),
             target_application_id: app_id_2(),
             migration: Some(b"migrate_v2".to_vec()),
             cascade_hlc: fence,
@@ -190,8 +190,8 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
         vec![op_p_hash],
         2,
         GroupOp::CascadeUpgrade {
-            from_app_key: APP_KEY_1,
-            app_key: APP_KEY_2,
+            from_app_key: APP_KEY_1.into(),
+            app_key: APP_KEY_2.into(),
             target_application_id: app_id_2(),
             migration: Some(b"migrate_v2".to_vec()),
             cascade_hlc: fence,
@@ -296,8 +296,8 @@ fn two_op_reverse_delivery_drops_migration_characterization() {
             vec![],
             1,
             GroupOp::CascadeTargetApplicationSet {
-                from_app_key: APP_KEY_1,
-                app_key: APP_KEY_2,
+                from_app_key: APP_KEY_1.into(),
+                app_key: APP_KEY_2.into(),
                 target_application_id: app_id_2(),
             },
         )
@@ -312,7 +312,7 @@ fn two_op_reverse_delivery_drops_migration_characterization() {
             vec![],
             2,
             GroupOp::CascadeGroupMigrationSet {
-                from_app_key: APP_KEY_1,
+                from_app_key: APP_KEY_1.into(),
                 migration: Some(b"migrate_v2".to_vec()),
             },
         )

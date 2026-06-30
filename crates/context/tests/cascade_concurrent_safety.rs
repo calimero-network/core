@@ -134,8 +134,8 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
         vec![[0u8; 32]],
         1,
         GroupOp::CascadeTargetApplicationSet {
-            from_app_key: APP_KEY_1,
-            app_key: APP_KEY_2,
+            from_app_key: APP_KEY_1.into(),
+            app_key: APP_KEY_2.into(),
             target_application_id: app_id_2(),
         },
     )
@@ -152,8 +152,8 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
         vec![op_a_hash],
         2,
         GroupOp::CascadeTargetApplicationSet {
-            from_app_key: APP_KEY_1,
-            app_key: APP_KEY_3,
+            from_app_key: APP_KEY_1.into(),
+            app_key: APP_KEY_3.into(),
             target_application_id: app_id_3(),
         },
     )

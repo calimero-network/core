@@ -212,7 +212,7 @@ fn two_nodes_converge_on_target_application_and_migration() {
         vec![],
         1,
         GroupOp::TargetApplicationSet {
-            app_key: [0x11; 32],
+            app_key: [0x11; 32].into(),
             target_application_id: new_target,
         },
     )

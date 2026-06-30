@@ -87,7 +87,7 @@ const GOLDEN_GROUP_OP_UPGRADE_POLICY_SET: &[u8] = &[
     1, // UpgradePolicy::LazyOnAccess (ordinal 1, the Default)
 ];
 
-/// GroupOp ordinal 8 — TargetApplicationSet { app_key: [0;32], target: [0;32] }
+/// GroupOp ordinal 8 — TargetApplicationSet { app_key: [0;32].into(), target: [0;32] }
 const GOLDEN_GROUP_OP_TARGET_APPLICATION_SET: &[u8] = &[
     8, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -220,7 +220,7 @@ const GOLDEN_GROUP_OP_TRANSFER_OWNERSHIP: &[u8] = &[
     0, // new_owner
 ];
 
-/// GroupOp ordinal 23 — CascadeTargetApplicationSet { from_app_key: [0;32], app_key: [0;32], target: [0;32] }
+/// GroupOp ordinal 23 — CascadeTargetApplicationSet { from_app_key: [0;32].into(), app_key: [0;32].into(), target: [0;32] }
 const GOLDEN_GROUP_OP_CASCADE_TARGET_APPLICATION_SET: &[u8] = &[
     23, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -231,7 +231,7 @@ const GOLDEN_GROUP_OP_CASCADE_TARGET_APPLICATION_SET: &[u8] = &[
     0, // target_application_id
 ];
 
-/// GroupOp ordinal 24 — CascadeGroupMigrationSet { from_app_key: [0;32], migration: None }
+/// GroupOp ordinal 24 — CascadeGroupMigrationSet { from_app_key: [0;32].into(), migration: None }
 const GOLDEN_GROUP_OP_CASCADE_GROUP_MIGRATION_SET: &[u8] = &[
     24, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -943,8 +943,8 @@ fn cascade_target_application_set_sign_verify() {
         vec![],
         1,
         GroupOp::CascadeTargetApplicationSet {
-            from_app_key: [9u8; 32],
-            app_key: [10u8; 32],
+            from_app_key: [9u8; 32].into(),
+            app_key: [10u8; 32].into(),
             target_application_id: sample_application_id(0x42),
         },
     )
@@ -969,7 +969,7 @@ fn cascade_group_migration_set_sign_verify() {
         vec![],
         1,
         GroupOp::CascadeGroupMigrationSet {
-            from_app_key: [9u8; 32],
+            from_app_key: [9u8; 32].into(),
             migration: Some(b"migrate_v1_to_v2".to_vec()),
         },
     )
@@ -999,7 +999,7 @@ fn cascade_target_distinct_from_single_group_target() {
         vec![],
         1,
         GroupOp::TargetApplicationSet {
-            app_key: new_app_key,
+            app_key: new_app_key.into(),
             target_application_id: target,
         },
     )
@@ -1011,8 +1011,8 @@ fn cascade_target_distinct_from_single_group_target() {
         vec![],
         1,
         GroupOp::CascadeTargetApplicationSet {
-            from_app_key: [9u8; 32],
-            app_key: new_app_key,
+            from_app_key: [9u8; 32].into(),
+            app_key: new_app_key.into(),
             target_application_id: target,
         },
     )
@@ -1047,8 +1047,8 @@ fn cascade_target_from_app_key_changes_hash() {
         vec![],
         1,
         GroupOp::CascadeTargetApplicationSet {
-            from_app_key: [9u8; 32],
-            app_key: new_app_key,
+            from_app_key: [9u8; 32].into(),
+            app_key: new_app_key.into(),
             target_application_id: target,
         },
     )
@@ -1060,8 +1060,8 @@ fn cascade_target_from_app_key_changes_hash() {
         vec![],
         1,
         GroupOp::CascadeTargetApplicationSet {
-            from_app_key: [8u8; 32], // only this differs
-            app_key: new_app_key,
+            from_app_key: [8u8; 32].into(), // only this differs
+            app_key: new_app_key.into(),
             target_application_id: target,
         },
     )
@@ -1085,8 +1085,8 @@ fn cascade_target_application_set_borsh_round_trip() {
     // op decodes as; this guards against that by asserting field
     // equality after a round trip.
     let original = GroupOp::CascadeTargetApplicationSet {
-        from_app_key: [9u8; 32],
-        app_key: [10u8; 32],
+        from_app_key: [9u8; 32].into(),
+        app_key: [10u8; 32].into(),
         target_application_id: sample_application_id(0x42),
     };
 
@@ -1099,8 +1099,8 @@ fn cascade_target_application_set_borsh_round_trip() {
             app_key,
             target_application_id,
         } => {
-            assert_eq!(from_app_key, [9u8; 32]);
-            assert_eq!(app_key, [10u8; 32]);
+            assert_eq!(from_app_key.to_bytes(), [9u8; 32]);
+            assert_eq!(app_key.to_bytes(), [10u8; 32]);
             assert_eq!(target_application_id, sample_application_id(0x42));
         }
         other => panic!("expected CascadeTargetApplicationSet, got {other:?}"),
@@ -1111,7 +1111,7 @@ fn cascade_target_application_set_borsh_round_trip() {
 fn cascade_group_migration_set_borsh_round_trip() {
     // Symmetric round-trip guard for the migration variant.
     let original = GroupOp::CascadeGroupMigrationSet {
-        from_app_key: [9u8; 32],
+        from_app_key: [9u8; 32].into(),
         migration: Some(b"migrate_v1_to_v2".to_vec()),
     };
 
@@ -1123,7 +1123,7 @@ fn cascade_group_migration_set_borsh_round_trip() {
             from_app_key,
             migration,
         } => {
-            assert_eq!(from_app_key, [9u8; 32]);
+            assert_eq!(from_app_key.to_bytes(), [9u8; 32]);
             assert_eq!(migration.as_deref(), Some(b"migrate_v1_to_v2".as_ref()));
         }
         other => panic!("expected CascadeGroupMigrationSet, got {other:?}"),
@@ -1131,7 +1131,7 @@ fn cascade_group_migration_set_borsh_round_trip() {
 
     // Also cover migration = None.
     let original_none = GroupOp::CascadeGroupMigrationSet {
-        from_app_key: [0u8; 32],
+        from_app_key: [0u8; 32].into(),
         migration: None,
     };
     let bytes_none = borsh::to_vec(&original_none).expect("serialize none");
@@ -1141,7 +1141,7 @@ fn cascade_group_migration_set_borsh_round_trip() {
             from_app_key,
             migration,
         } => {
-            assert_eq!(from_app_key, [0u8; 32]);
+            assert_eq!(from_app_key.to_bytes(), [0u8; 32]);
             assert!(migration.is_none());
         }
         other => panic!("expected CascadeGroupMigrationSet, got {other:?}"),
@@ -1166,8 +1166,8 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
     //
     // Golden encoding of:
     //   GroupOp::CascadeUpgrade {
-    //       from_app_key: [3u8; 32],
-    //       app_key: [4u8; 32],
+    //       from_app_key: [3u8; 32].into(),
+    //       app_key: [4u8; 32].into(),
     //       target_application_id: sample_application_id(5),
     //       migration: Some(b"migrate".to_vec()),
     //       cascade_hlc: HybridTimestamp::zero(),
@@ -1203,8 +1203,8 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
             migration,
             cascade_hlc,
         } => {
-            assert_eq!(from_app_key, [3u8; 32]);
-            assert_eq!(app_key, [4u8; 32]);
+            assert_eq!(from_app_key.to_bytes(), [3u8; 32]);
+            assert_eq!(app_key.to_bytes(), [4u8; 32]);
             assert_eq!(target_application_id, sample_application_id(5));
             assert_eq!(migration, Some(b"migrate".to_vec()));
             assert_eq!(cascade_hlc, HybridTimestamp::zero());
