@@ -183,10 +183,43 @@ impl UseCommand {
 }
 
 async fn context_exists(client: &crate::client::Client, target_id: &ContextId) -> Result<bool> {
-    let result = client.get_context(target_id).await;
-
-    match result {
+    match client.get_context(target_id).await {
         Ok(_) => Ok(true),
-        Err(_) => Ok(false),
+        // Only a definitive "not found" means the context genuinely doesn't
+        // exist. Any other failure (network, auth, 5xx) must propagate — mapping
+        // every error to `false` would silently misreport an unreachable or
+        // unauthorized node as "context does not exist".
+        Err(err) if is_not_found(&err) => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+/// Whether a `get_context` error represents a genuine 404 / not-found.
+///
+/// The client surfaces HTTP failures as messages like `"HTTP 404: ..."`
+/// (see `extract_error_message` in `calimero-client`), so a 404 is the only
+/// status we treat as "does not exist".
+fn is_not_found(err: &eyre::Report) -> bool {
+    err.to_string().contains("HTTP 404")
+}
+
+#[cfg(test)]
+mod tests {
+    use eyre::eyre;
+
+    use super::is_not_found;
+
+    #[test]
+    fn only_http_404_is_not_found() {
+        assert!(is_not_found(&eyre!("HTTP 404: context not found")));
+        assert!(is_not_found(&eyre!("HTTP 404")));
+        // Non-404 failures must NOT be treated as "does not exist".
+        assert!(!is_not_found(&eyre!("HTTP 500: internal error")));
+        assert!(!is_not_found(&eyre!(
+            "Access denied — your token may not have sufficient permissions."
+        )));
+        assert!(!is_not_found(&eyre!(
+            "Connection failed: connection refused"
+        )));
     }
 }
