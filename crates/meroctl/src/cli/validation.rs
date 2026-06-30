@@ -100,13 +100,15 @@ pub fn valid_node_name(s: &str) -> Result<String, String> {
 ///
 /// Can be used with `#[clap(value_parser = group_id)]`.
 pub fn group_id(s: &str) -> Result<String, String> {
+    // Validate and report on the same (trimmed) value so the error never refers
+    // to a different string than the one actually checked.
     let trimmed = s.trim();
     let bytes = hex::decode(trimmed).map_err(|_| {
-        format!("Invalid group id '{s}': expected hex-encoded 32 bytes (64 hex characters)")
+        format!("Invalid group id '{trimmed}': expected hex-encoded 32 bytes (64 hex characters)")
     })?;
     if bytes.len() != 32 {
         return Err(format!(
-            "Invalid group id '{s}': must be exactly 32 bytes (64 hex characters), got {} bytes",
+            "Invalid group id '{trimmed}': must be exactly 32 bytes (64 hex characters), got {} bytes",
             bytes.len()
         ));
     }
