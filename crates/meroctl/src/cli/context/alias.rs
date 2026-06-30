@@ -201,8 +201,12 @@ async fn context_exists(client: &crate::client::Client, target_id: &ContextId) -
 /// We match on that *prefix* rather than a substring so that a different status
 /// whose body happens to mention "HTTP 404" (e.g. `"HTTP 500: ... HTTP 404 ..."`)
 /// is not misread as not-found.
+///
+/// The check runs against the **root cause**, not `err.to_string()`, so a
+/// `.wrap_err("…")` context layer added anywhere up the chain can't hide the
+/// `"HTTP 404…"` message and silently turn a 404 into a propagated error.
 fn is_not_found(err: &eyre::Report) -> bool {
-    let msg = err.to_string();
+    let msg = err.root_cause().to_string();
     msg == "HTTP 404" || msg.starts_with("HTTP 404:") || msg.starts_with("HTTP 404 ")
 }
 
@@ -226,5 +230,9 @@ mod tests {
         )));
         // A non-404 status whose body merely mentions "HTTP 404" must not match.
         assert!(!is_not_found(&eyre!("HTTP 500: upstream said HTTP 404")));
+        // A 404 wrapped with extra context is still detected (root-cause match).
+        assert!(is_not_found(
+            &eyre!("HTTP 404: not found").wrap_err("failed to fetch context")
+        ));
     }
 }
