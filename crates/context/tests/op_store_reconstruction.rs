@@ -101,7 +101,7 @@ fn op_store_reconstruction_recovers_late_decrypted_membership_after_key_delivery
         nonce: 1,
         op: NamespaceOp::Group {
             group_id: ns_bytes,
-            key_id,
+            key_id: key_id.into(),
             encrypted,
             key_rotation: None,
         },
@@ -189,7 +189,7 @@ fn completeness_gate_flags_governance_ops_missing_from_the_op_store() {
             nonce: u64::from(id),
             op: NamespaceOp::Group {
                 group_id: ns_bytes,
-                key_id: [0u8; 32],
+                key_id: [0u8; 32].into(),
                 encrypted: EncryptedGroupOp {
                     nonce: [0u8; 12],
                     ciphertext: Vec::new(),
@@ -260,7 +260,7 @@ fn locally_authored_op_lands_in_the_op_store_atomically() {
         nonce: 1,
         op: NamespaceOp::Group {
             group_id: ns_bytes,
-            key_id,
+            key_id: key_id.into(),
             encrypted,
             key_rotation: None,
         },

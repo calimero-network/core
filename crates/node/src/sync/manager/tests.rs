@@ -372,7 +372,7 @@ mod key_recovery_trigger {
             1,
             NamespaceOp::Group {
                 group_id,
-                key_id: GroupKeyring::key_id_for(&[0xAA; 32]),
+                key_id: GroupKeyring::key_id_for(&[0xAA; 32]).into(),
                 encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
                 key_rotation: None,
             },

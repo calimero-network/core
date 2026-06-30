@@ -1,6 +1,7 @@
 use calimero_context_client::local_governance::{
     NamespaceOp, OpaqueSkeleton, SignedNamespaceOp, StoredNamespaceEntry,
 };
+use calimero_governance_types::KeyId;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
@@ -9,7 +10,7 @@ use crate::metrics::{record_namespace_decode_fallback, record_namespace_decode_i
 /// Typed namespace group entry decoded from the namespace op-log.
 pub struct StoredSignedGroupOp {
     pub signed_op: SignedNamespaceOp,
-    pub key_id: [u8; 32],
+    pub key_id: KeyId,
 }
 
 /// Service for persisting and reading namespace governance op-log entries.
@@ -143,7 +144,7 @@ impl<'a> NamespaceOpLogService<'a> {
                 self.store,
                 self.namespace_id,
                 calimero_context_config::types::ContextGroupId::from(*group_id),
-                key_id,
+                key_id.as_bytes(),
                 encrypted,
             )
             .ok()
@@ -321,7 +322,7 @@ impl<'a> NamespaceOpLogService<'a> {
                 ..
             } = signed_op.op
             {
-                seen.insert((op_group_id, key_id));
+                seen.insert((op_group_id, key_id.to_bytes()));
             }
         }
 

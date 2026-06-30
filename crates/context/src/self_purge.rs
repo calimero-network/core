@@ -2840,7 +2840,7 @@ mod tests {
             1,
             NamespaceOp::Group {
                 group_id: sub_gid.to_bytes(),
-                key_id,
+                key_id: key_id.into(),
                 encrypted,
                 key_rotation: None,
             },

@@ -1955,7 +1955,7 @@ async fn restricted_ctx_redriven_after_group_created() {
         1,
         NamespaceOp::Group {
             group_id: sub_gid.to_bytes(),
-            key_id,
+            key_id: key_id.into(),
             encrypted,
             key_rotation: None,
         },
@@ -2183,7 +2183,7 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
         1,
         NamespaceOp::Group {
             group_id: sub_gid.to_bytes(),
-            key_id,
+            key_id: key_id.into(),
             encrypted,
             key_rotation: None,
         },
@@ -2548,7 +2548,7 @@ async fn tee_matrix_restricted_late_join() {
         2,
         NamespaceOp::Group {
             group_id: sub_gid.to_bytes(),
-            key_id,
+            key_id: key_id.into(),
             encrypted,
             key_rotation: None,
         },

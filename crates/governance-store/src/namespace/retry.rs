@@ -135,13 +135,13 @@ impl<'a> NamespaceRetryService<'a> {
             // may have been encrypted with the namespace key if the
             // subgroup was `Open` at publish time.
             let group_key = match GroupKeyring::new(self.store, gid_typed)
-                .load_key_by_id(&key_id)
+                .load_key_by_id(key_id.as_bytes())
                 .map_err(|e| eyre::eyre!("load_group_key_by_id(group): {e}"))?
             {
                 Some(k) => k,
                 None => {
                     let Some(k) = GroupKeyring::new(self.store, ns_typed)
-                        .load_key_by_id(&key_id)
+                        .load_key_by_id(key_id.as_bytes())
                         .map_err(|e| eyre::eyre!("load_group_key_by_id(namespace): {e}"))?
                     else {
                         continue;

@@ -341,7 +341,7 @@ fn namespace_op_log_service_reads_signed_and_skeleton_entries() {
         1,
         NamespaceOp::Group {
             group_id: group_a.to_bytes(),
-            key_id: [0x01; 32],
+            key_id: [0x01; 32].into(),
             encrypted: GroupKeyring::encrypt_op(&[0xA1; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
         },
@@ -381,7 +381,7 @@ fn namespace_op_log_service_reads_signed_and_skeleton_entries() {
         signed_delta,
         "signed op should be decoded with stable delta id",
     );
-    assert_eq!(decoded_signed[0].key_id, [0x01; 32]);
+    assert_eq!(decoded_signed[0].key_id.to_bytes(), [0x01; 32]);
 
     let decoded_skeleton = op_log
         .collect_opaque_skeleton_delta_ids_for_group(group_b.to_bytes())
@@ -410,7 +410,7 @@ fn namespace_op_log_service_reads_tagged_and_legacy_rows() {
         1,
         NamespaceOp::Group {
             group_id: group.to_bytes(),
-            key_id: [0x12; 32],
+            key_id: [0x12; 32].into(),
             encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
         },
@@ -486,7 +486,7 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
         1,
         NamespaceOp::Group {
             group_id: group_a.to_bytes(),
-            key_id: [0x11; 32],
+            key_id: [0x11; 32].into(),
             encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
         },
@@ -500,7 +500,7 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
         2,
         NamespaceOp::Group {
             group_id: group_b.to_bytes(),
-            key_id: [0x22; 32],
+            key_id: [0x22; 32].into(),
             encrypted: GroupKeyring::encrypt_op(&[0xBB; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
         },
@@ -531,7 +531,7 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
         selected[0].signed_op.content_hash().unwrap(),
         op_a.content_hash().unwrap()
     );
-    assert_eq!(selected[0].key_id, [0x11; 32]);
+    assert_eq!(selected[0].key_id.to_bytes(), [0x11; 32]);
 }
 
 #[test]
@@ -562,7 +562,7 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
         1,
         NamespaceOp::Group {
             group_id: group_a.to_bytes(),
-            key_id,
+            key_id: key_id.into(),
             encrypted: encrypted_a,
             key_rotation: None,
         },
@@ -576,7 +576,7 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
         2,
         NamespaceOp::Group {
             group_id: group_b.to_bytes(),
-            key_id,
+            key_id: key_id.into(),
             encrypted: encrypted_b,
             key_rotation: None,
         },
@@ -669,7 +669,7 @@ fn namespace_retry_service_orders_candidates_by_signer_nonce() {
                     nonce,
                     NamespaceOp::Group {
                         group_id: group.to_bytes(),
-                        key_id,
+                        key_id: key_id.into(),
                         encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
                         key_rotation: None,
                     },
@@ -1074,7 +1074,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
         1,
         NamespaceOp::Group {
             group_id: namespace_id,
-            key_id,
+            key_id: key_id.into(),
             encrypted: policy_op,
             key_rotation: None,
         },
@@ -1117,7 +1117,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
         2,
         NamespaceOp::Group {
             group_id: namespace_id,
-            key_id,
+            key_id: key_id.into(),
             encrypted: join_op,
             key_rotation: None,
         },
@@ -1271,7 +1271,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
         head.next_nonce,
         NamespaceOp::Group {
             group_id: namespace_id,
-            key_id,
+            key_id: key_id.into(),
             encrypted: policy_op,
             key_rotation: None,
         },
@@ -1307,7 +1307,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
         head.next_nonce,
         NamespaceOp::Group {
             group_id: namespace_id,
-            key_id,
+            key_id: key_id.into(),
             encrypted: join_op,
             key_rotation: None,
         },
@@ -2486,7 +2486,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
         1,
         NamespaceOp::Group {
             group_id: namespace_id,
-            key_id,
+            key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner_a).unwrap(),
             key_rotation: None,
         },
@@ -2513,7 +2513,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
         2,
         NamespaceOp::Group {
             group_id: namespace_id,
-            key_id,
+            key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner_b).unwrap(),
             key_rotation: None,
         },
@@ -2614,7 +2614,7 @@ fn replica_concurrent_sibling_ops_apply_out_of_order_2516() {
             nonce,
             NamespaceOp::Group {
                 group_id: namespace_id,
-                key_id,
+                key_id: key_id.into(),
                 encrypted: GroupKeyring::encrypt_op(&group_key, inner).unwrap(),
                 key_rotation: None,
             },
@@ -2724,7 +2724,7 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
         1,
         NamespaceOp::Group {
             group_id: namespace_id,
-            key_id,
+            key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner_a).unwrap(),
             key_rotation: None,
         },
@@ -2749,7 +2749,7 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
         2,
         NamespaceOp::Group {
             group_id: namespace_id,
-            key_id,
+            key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner_b).unwrap(),
             key_rotation: None,
         },
@@ -4804,7 +4804,7 @@ fn groups_awaiting_key_reports_then_clears() {
             group_id,
             // Content-addressed id of the key the op is encrypted under, so
             // storing that exact key later resolves the op (awaiting clears).
-            key_id: GroupKeyring::key_id_for(&[0xAA; 32]),
+            key_id: GroupKeyring::key_id_for(&[0xAA; 32]).into(),
             encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
         },
@@ -4863,7 +4863,7 @@ fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
         1,
         NamespaceOp::Group {
             group_id: subgroup_id,
-            key_id: GroupKeyring::key_id_for(&subgroup_key),
+            key_id: GroupKeyring::key_id_for(&subgroup_key).into(),
             encrypted: GroupKeyring::encrypt_op(&subgroup_key, &GroupOp::Noop).unwrap(),
             key_rotation: None,
         },
@@ -4955,7 +4955,7 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
             group_id: subgroup_id,
             // Content-addressed id of `group_key`, so the retry path finds
             // the delivered key by id once it is stored.
-            key_id: GroupKeyring::key_id_for(&group_key),
+            key_id: GroupKeyring::key_id_for(&group_key).into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
             key_rotation: None,
         },
@@ -5071,7 +5071,7 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
             group_id: subgroup_id,
             // Content-addressed id of `group_key`, so the retry path finds
             // the delivered key by id once it is stored.
-            key_id: GroupKeyring::key_id_for(&group_key),
+            key_id: GroupKeyring::key_id_for(&group_key).into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
             key_rotation: None,
         },
@@ -5232,7 +5232,7 @@ fn curative_sweep_redrives_stranded_context() {
         1,
         NamespaceOp::Group {
             group_id: sub_gid.to_bytes(),
-            key_id,
+            key_id: key_id.into(),
             encrypted,
             key_rotation: None,
         },
@@ -5335,7 +5335,7 @@ fn curative_sweep_redrives_stranded_context() {
         2,
         NamespaceOp::Group {
             group_id: nokey_gid.to_bytes(),
-            key_id: GroupKeyring::key_id_for(&nokey_key),
+            key_id: GroupKeyring::key_id_for(&nokey_key).into(),
             encrypted: nokey_encrypted,
             key_rotation: None,
         },

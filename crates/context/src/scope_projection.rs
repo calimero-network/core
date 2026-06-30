@@ -1053,7 +1053,7 @@ impl ScopeProjections {
                     store,
                     namespace_id,
                     ContextGroupId::from(*group_id),
-                    key_id,
+                    key_id.as_bytes(),
                     encrypted,
                 )
                 .ok()
@@ -2117,7 +2117,7 @@ mod tests {
             nonce: 0,
             op: NamespaceOp::Group {
                 group_id: group.to_bytes(),
-                key_id: [0u8; 32],
+                key_id: [0u8; 32].into(),
                 encrypted: calimero_governance_types::EncryptedGroupOp {
                     nonce: [0u8; 12],
                     ciphertext: Vec::new(),

@@ -68,7 +68,7 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                             &feed_store,
                             namespace_id,
                             calimero_context_config::types::ContextGroupId::from(*group_id),
-                            key_id,
+                            key_id.as_bytes(),
                             encrypted,
                         )
                         .map_err(|err| {

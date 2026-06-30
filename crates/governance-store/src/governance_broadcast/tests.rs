@@ -146,7 +146,7 @@ fn timeout_classifier_assigns_per_op_kind() {
     assert_eq!(
         timeout_for_namespace_op(&NamespaceOp::Group {
             group_id: [0u8; 32],
-            key_id: [0u8; 32],
+            key_id: [0u8; 32].into(),
             encrypted: calimero_context_client::local_governance::EncryptedGroupOp {
                 ciphertext: Vec::new(),
                 nonce: [0u8; 12],

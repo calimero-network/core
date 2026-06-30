@@ -522,7 +522,7 @@ pub enum NamespaceOp {
     Group {
         group_id: [u8; 32],
         /// `sha256(group_key)` — identifies which group key encrypted this op.
-        key_id: [u8; 32],
+        key_id: KeyId,
         encrypted: EncryptedGroupOp,
         /// Present only on `MemberRemoved` ops: wraps a NEW group key for
         /// each remaining member. Lives outside the encrypted payload so
@@ -754,7 +754,7 @@ pub struct KeyEnvelope {
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct KeyRotation {
     /// `sha256(new_group_key)` — identifies the new epoch.
-    pub new_key_id: [u8; 32],
+    pub new_key_id: KeyId,
     /// One envelope per remaining member, each wrapping the new group key.
     pub envelopes: Vec<KeyEnvelope>,
 }

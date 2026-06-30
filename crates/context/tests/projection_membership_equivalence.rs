@@ -144,7 +144,7 @@ fn ns_group_envelope(
         nonce: 0,
         op: NamespaceOp::Group {
             group_id: group.to_bytes(),
-            key_id: [0u8; 32],
+            key_id: [0u8; 32].into(),
             encrypted: EncryptedGroupOp {
                 nonce: [0u8; 12],
                 ciphertext: Vec::new(),
