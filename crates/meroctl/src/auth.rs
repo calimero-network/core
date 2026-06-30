@@ -352,6 +352,16 @@ impl TokenScope {
             Self::Resource => "application,package,context,blob",
         }
     }
+
+    /// Parse an explicit scope override (e.g. from `MEROCTL_AUTH_SCOPE`),
+    /// case-insensitively. Unrecognised values return `None`.
+    fn parse_override(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "admin" => Some(Self::Admin),
+            "resource" => Some(Self::Resource),
+            _ => None,
+        }
+    }
 }
 
 static REQUESTED_SCOPE: std::sync::OnceLock<TokenScope> = std::sync::OnceLock::new();
@@ -362,12 +372,16 @@ pub fn set_requested_scope(scope: TokenScope) {
     let _ = REQUESTED_SCOPE.set(scope);
 }
 
-/// The scope to request at login. Defaults to `Admin` when unset (safe), and an
-/// explicit `MEROCTL_AUTH_SCOPE=admin` always forces admin — an escape hatch if
-/// a narrowed scope ever proves insufficient against a particular server.
+/// The scope to request at login. An explicit `MEROCTL_AUTH_SCOPE` env var
+/// (`admin` or `resource`, case-insensitive) overrides the per-command scope —
+/// an escape hatch in either direction if the command-derived scope is wrong
+/// for a particular server. An unrecognised value is ignored. Otherwise the
+/// scope recorded by [`set_requested_scope`] is used, defaulting to `Admin`.
 fn requested_scope() -> TokenScope {
-    if matches!(std::env::var("MEROCTL_AUTH_SCOPE").as_deref(), Ok("admin")) {
-        return TokenScope::Admin;
+    if let Ok(raw) = std::env::var("MEROCTL_AUTH_SCOPE") {
+        if let Some(scope) = TokenScope::parse_override(&raw) {
+            return scope;
+        }
     }
     REQUESTED_SCOPE.get().copied().unwrap_or(TokenScope::Admin)
 }
@@ -779,6 +793,21 @@ mod tests {
         let resource = TokenScope::Resource.as_permissions();
         assert!(!resource.split(',').any(|p| p == "admin" || p == "keys"));
         assert!(resource.split(',').any(|p| p == "context"));
+    }
+
+    #[test]
+    fn token_scope_override_parses_both_directions() {
+        use super::TokenScope;
+        assert_eq!(TokenScope::parse_override("admin"), Some(TokenScope::Admin));
+        assert_eq!(
+            TokenScope::parse_override("RESOURCE"),
+            Some(TokenScope::Resource)
+        );
+        assert_eq!(
+            TokenScope::parse_override(" resource "),
+            Some(TokenScope::Resource)
+        );
+        assert_eq!(TokenScope::parse_override("bogus"), None);
     }
 
     fn make_tokens(access: &str) -> JwtToken {
