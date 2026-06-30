@@ -22,6 +22,18 @@ const JWT_AUTH_BACKUP_KEY: &str = "system:secrets:jwt_auth_backup";
 const JWT_CHALLENGE_BACKUP_KEY: &str = "system:secrets:jwt_challenge_backup";
 const CSRF_BACKUP_KEY: &str = "system:secrets:csrf_backup";
 
+/// Current Unix time in whole seconds.
+///
+/// Returns an error instead of panicking when the system clock is set before
+/// the Unix epoch (1970). This keeps every time-dependent path panic-free
+/// (security finding #12).
+fn current_unix_secs() -> Result<u64> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| eyre!("system clock is set before the Unix epoch: {e}"))?
+        .as_secs())
+}
+
 /// Secret type enum
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SecretType {
@@ -101,32 +113,25 @@ impl fmt::Debug for VersionedSecret {
 
 impl VersionedSecret {
     /// Create a new versioned secret
-    pub fn new(secret_type: SecretType, rotation_config: &SecretRotationConfig) -> Self {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+    pub fn new(secret_type: SecretType, rotation_config: &SecretRotationConfig) -> Result<Self> {
+        let now = current_unix_secs()?;
 
         // Generate a secure random secret
         let secret: [u8; 32] = rand::thread_rng().gen();
 
-        Self {
+        Ok(Self {
             value: URL_SAFE_NO_PAD.encode(secret),
             version: format!("v{now}"),
             created_at: now,
             expires_at: now + rotation_config.grace_period,
             is_primary: true,
             secret_type,
-        }
+        })
     }
 
     /// Check if this secret has expired
-    pub fn is_expired(&self) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        self.expires_at < now
+    pub fn is_expired(&self) -> Result<bool> {
+        Ok(self.expires_at < current_unix_secs()?)
     }
 }
 
@@ -166,7 +171,7 @@ impl SecretManager {
             Some(data) => serde_json::from_slice::<VersionedSecret>(&data)?,
             None => {
                 // Generate new secret
-                let new_secret = VersionedSecret::new(secret_type, &self.rotation_config);
+                let new_secret = VersionedSecret::new(secret_type, &self.rotation_config)?;
                 let data = serde_json::to_vec(&new_secret)?;
 
                 // Try to save to primary location
@@ -185,39 +190,107 @@ impl SecretManager {
         Ok(())
     }
 
-    /// Get a secret by type
+    /// Get the current primary secret value for a type.
+    ///
+    /// Backing storage is treated as authoritative: it is read on every call so
+    /// that a rotation performed by another process (which only mutates storage,
+    /// not this process's in-memory cache) is observed. When the stored
+    /// `version` differs from the cached one, the in-memory cache is refreshed
+    /// before returning. This is the staleness half of finding #12 (Fix C):
+    /// without it, replicas keep serving a secret that has already rotated
+    /// elsewhere and diverge.
     pub async fn get_secret(&self, secret_type: SecretType) -> Result<String> {
-        // First try memory cache
-        let secrets = self.secrets.read().await;
-        if let Some(secret) = secrets
+        // Storage is authoritative for the current primary.
+        if let Some(data) = self.storage.get(secret_type.primary_key()).await? {
+            let stored: VersionedSecret = serde_json::from_slice(&data)?;
+            self.refresh_cache_primary(secret_type, &stored).await;
+            return Ok(stored.value);
+        }
+
+        // Primary missing in storage: fall back to the in-memory cache, if any.
+        {
+            let secrets = self.secrets.read().await;
+            if let Some(secret) = secrets
+                .iter()
+                .find(|s| s.secret_type == secret_type && s.is_primary)
+            {
+                return Ok(secret.value.clone());
+            }
+        }
+
+        // Last resort: recover from the backup location and restore it.
+        match self.storage.get(secret_type.backup_key()).await? {
+            Some(data) => {
+                let secret: VersionedSecret = serde_json::from_slice(&data)?;
+                // Restore to primary location
+                if let Err(e) = self.storage.set(secret_type.primary_key(), &data).await {
+                    error!("Failed to restore secret to primary storage: {}", e);
+                }
+                Ok(secret.value)
+            }
+            None => Err(eyre!("No secret found in storage for {:?}", secret_type)),
+        }
+    }
+
+    /// Refresh the cached primary for a type when the stored version differs.
+    ///
+    /// Keeps the in-memory cache consistent with backing storage after an
+    /// out-of-process rotation (Fix C). The previous primary is demoted to a
+    /// non-primary cache entry so it can still serve as a verification fallback
+    /// until it expires, mirroring [`Self::rotate_secret`].
+    async fn refresh_cache_primary(&self, secret_type: SecretType, stored: &VersionedSecret) {
+        let mut secrets = self.secrets.write().await;
+
+        if let Some(cached) = secrets
             .iter()
             .find(|s| s.secret_type == secret_type && s.is_primary)
         {
-            return Ok(secret.value.clone());
+            if cached.version == stored.version {
+                return; // Cache already up to date.
+            }
         }
-        drop(secrets);
 
-        // If not in memory, try storage
-        match self.storage.get(secret_type.primary_key()).await? {
-            Some(data) => {
-                let secret: VersionedSecret = serde_json::from_slice(&data)?;
-                Ok(secret.value)
-            }
-            None => {
-                // Try backup location
-                match self.storage.get(secret_type.backup_key()).await? {
-                    Some(data) => {
-                        let secret: VersionedSecret = serde_json::from_slice(&data)?;
-                        // Restore to primary location
-                        if let Err(e) = self.storage.set(secret_type.primary_key(), &data).await {
-                            error!("Failed to restore secret to primary storage: {}", e);
-                        }
-                        Ok(secret.value)
-                    }
-                    None => Err(eyre!("No secret found in storage for {:?}", secret_type)),
-                }
+        // Demote any stale primary to a backup so it remains a verify fallback.
+        for s in secrets
+            .iter_mut()
+            .filter(|s| s.secret_type == secret_type && s.is_primary)
+        {
+            s.is_primary = false;
+        }
+
+        // Drop expired entries and any duplicate of the incoming version.
+        let now = current_unix_secs().unwrap_or(u64::MAX);
+        secrets.retain(|s| {
+            s.secret_type != secret_type || (s.expires_at >= now && s.version != stored.version)
+        });
+
+        secrets.push(stored.clone());
+    }
+
+    /// Get all secrets a token signature may legitimately be verified against.
+    ///
+    /// Returns the current primary plus the backup if it is still within its
+    /// grace (unexpired) window, primary first. This is the verify path for
+    /// finding #5: without consulting the still-valid backup, every outstanding
+    /// token fails the instant a secret rotates (mass logout). The grace concept
+    /// is reused verbatim from [`VersionedSecret::is_expired`] — no new notion of
+    /// expiry is introduced.
+    pub async fn get_verify_secrets(&self, secret_type: SecretType) -> Result<Vec<String>> {
+        let mut out = Vec::with_capacity(2);
+
+        // Primary (this also refreshes the cache on cross-process rotation).
+        let primary = self.get_secret(secret_type).await?;
+        out.push(primary.clone());
+
+        // Backup, if present and still inside its grace window.
+        if let Some(data) = self.storage.get(secret_type.backup_key()).await? {
+            let backup: VersionedSecret = serde_json::from_slice(&data)?;
+            if !backup.is_expired()? && backup.value != primary {
+                out.push(backup.value);
             }
         }
+
+        Ok(out)
     }
 
     /// Rotate a secret
@@ -225,7 +298,7 @@ impl SecretManager {
         let mut secrets = self.secrets.write().await;
 
         // Create new primary secret
-        let new_secret = VersionedSecret::new(secret_type, &self.rotation_config);
+        let new_secret = VersionedSecret::new(secret_type, &self.rotation_config)?;
         let data = serde_json::to_vec(&new_secret)?;
 
         // Save to storage
@@ -243,8 +316,10 @@ impl SecretManager {
                 .await?;
         }
 
-        // Update memory cache
-        secrets.retain(|s| s.secret_type != secret_type || !s.is_expired());
+        // Update memory cache: drop expired entries for this type, keep an
+        // unexpired backup as a verify fallback, then add the new primary.
+        let now = current_unix_secs()?;
+        secrets.retain(|s| s.secret_type != secret_type || s.expires_at >= now);
         secrets.push(new_secret);
 
         info!("Rotated secret for {:?}", secret_type);
@@ -277,10 +352,7 @@ impl SecretManager {
             .iter()
             .find(|s| s.secret_type == secret_type && s.is_primary)
         {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+            let now = current_unix_secs()?;
             if now - secret.created_at >= self.rotation_config.rotation_interval {
                 drop(secrets);
                 self.rotate_secret(secret_type).await?;
@@ -302,5 +374,104 @@ impl SecretManager {
     /// Get the CSRF secret
     pub async fn get_csrf_secret(&self) -> Result<String> {
         self.get_secret(SecretType::Csrf).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::MemoryStorage;
+
+    fn manager() -> Arc<SecretManager> {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        Arc::new(SecretManager::new(storage))
+    }
+
+    #[tokio::test]
+    async fn time_helper_and_is_expired_are_ok() {
+        // Fix B: the time path must not panic and must yield Ok.
+        assert!(current_unix_secs().is_ok());
+        let secret = VersionedSecret::new(SecretType::JwtAuth, &SecretRotationConfig::default())
+            .expect("new must not panic on the time path");
+        // A freshly minted secret is within its grace window, so not expired.
+        assert!(!secret.is_expired().expect("is_expired must not panic"));
+    }
+
+    #[tokio::test]
+    async fn get_verify_secrets_returns_primary_only_initially() {
+        let mgr = manager();
+        mgr.initialize().await.unwrap();
+
+        let secrets = mgr.get_verify_secrets(SecretType::JwtAuth).await.unwrap();
+        assert_eq!(secrets.len(), 1, "no backup exists before any rotation");
+        let primary = mgr.get_jwt_auth_secret().await.unwrap();
+        assert_eq!(secrets[0], primary);
+    }
+
+    #[tokio::test]
+    async fn get_verify_secrets_includes_unexpired_backup_after_rotation() {
+        let mgr = manager();
+        mgr.initialize().await.unwrap();
+
+        let old_primary = mgr.get_jwt_auth_secret().await.unwrap();
+        mgr.rotate_secret(SecretType::JwtAuth).await.unwrap();
+        let new_primary = mgr.get_jwt_auth_secret().await.unwrap();
+        assert_ne!(old_primary, new_primary);
+
+        let secrets = mgr.get_verify_secrets(SecretType::JwtAuth).await.unwrap();
+        assert_eq!(secrets.len(), 2, "primary + unexpired backup");
+        assert_eq!(secrets[0], new_primary, "primary comes first");
+        assert!(
+            secrets.contains(&old_primary),
+            "previous secret kept as backup during grace window"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_verify_secrets_drops_oldest_after_double_rotation() {
+        let mgr = manager();
+        mgr.initialize().await.unwrap();
+
+        let v1 = mgr.get_jwt_auth_secret().await.unwrap();
+        mgr.rotate_secret(SecretType::JwtAuth).await.unwrap();
+        mgr.rotate_secret(SecretType::JwtAuth).await.unwrap();
+        let v3 = mgr.get_jwt_auth_secret().await.unwrap();
+
+        let secrets = mgr.get_verify_secrets(SecretType::JwtAuth).await.unwrap();
+        assert_eq!(
+            secrets.len(),
+            2,
+            "only the latest backup generation is kept"
+        );
+        assert_eq!(secrets[0], v3);
+        assert!(
+            !secrets.contains(&v1),
+            "the oldest secret is no longer accepted"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_secret_rereads_after_external_rotation() {
+        // Fix C: a manager that did not perform the rotation must still pick up
+        // the new primary written to shared storage by another process.
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let mgr_a = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        let mgr_b = Arc::new(SecretManager::new(Arc::clone(&storage)));
+
+        mgr_a.initialize().await.unwrap();
+        // mgr_b warms its in-memory cache from the same storage.
+        mgr_b.initialize().await.unwrap();
+        let before = mgr_b.get_jwt_auth_secret().await.unwrap();
+
+        // mgr_a rotates; mgr_b's cache is now stale.
+        mgr_a.rotate_secret(SecretType::JwtAuth).await.unwrap();
+        let rotated = mgr_a.get_jwt_auth_secret().await.unwrap();
+        assert_ne!(before, rotated);
+
+        let seen_by_b = mgr_b.get_jwt_auth_secret().await.unwrap();
+        assert_eq!(
+            seen_by_b, rotated,
+            "stale cache must be refreshed from backing storage on version mismatch"
+        );
     }
 }

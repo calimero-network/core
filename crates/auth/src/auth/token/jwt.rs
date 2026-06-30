@@ -12,7 +12,7 @@ use {base64, hex, rand, uuid};
 
 use crate::api::handlers::auth::ChallengeResponse;
 use crate::config::JwtConfig;
-use crate::secrets::SecretManager;
+use crate::secrets::{SecretManager, SecretType};
 use crate::storage::models::KeyType;
 use crate::storage::{KeyManager, Storage};
 use crate::{AuthError, AuthResponse};
@@ -321,11 +321,18 @@ impl TokenManager {
         }
     }
 
-    /// Verify a JWT token and return the claims
+    /// Verify a JWT token and return the claims.
+    ///
+    /// Verification is attempted against the current primary JWT secret and, on
+    /// a signature mismatch, against any backup secret still inside its grace
+    /// window (finding #5). Without this fallback, every outstanding token would
+    /// fail to verify the instant a secret rotated, logging out the whole fleet.
+    /// All non-signature checks (expiry, issuer, audience, malformed token) are
+    /// terminal and behave exactly as before.
     pub async fn verify_token(&self, token: &str) -> Result<Claims, AuthError> {
-        let secret = self
+        let secrets = self
             .secret_manager
-            .get_jwt_auth_secret()
+            .get_verify_secrets(SecretType::JwtAuth)
             .await
             .map_err(|e| AuthError::TokenGenerationFailed(e.into()))?;
 
@@ -334,20 +341,39 @@ impl TokenManager {
         validation.set_issuer(&[&self.config.issuer]);
         validation.set_audience(&[&self.config.issuer]);
 
-        match decode::<Claims>(
-            token,
-            &DecodingKey::from_secret(secret.as_bytes()),
-            &validation,
-        ) {
-            Ok(token_data) => Ok(token_data.claims),
-            Err(err) => match err.kind() {
-                jsonwebtoken::errors::ErrorKind::ExpiredSignature => Err(AuthError::TokenExpired),
-                jsonwebtoken::errors::ErrorKind::InvalidToken => {
-                    Err(AuthError::InvalidToken(format!("Malformed token: {err}")))
-                }
-                _ => Err(AuthError::InvalidToken(err.to_string())),
-            },
+        // Retried only on signature mismatch; populated with the last such error
+        // so the final message matches the legacy single-secret behaviour.
+        let mut last_signature_err: Option<jsonwebtoken::errors::Error> = None;
+
+        for secret in &secrets {
+            match decode::<Claims>(
+                token,
+                &DecodingKey::from_secret(secret.as_bytes()),
+                &validation,
+            ) {
+                Ok(token_data) => return Ok(token_data.claims),
+                Err(err) => match err.kind() {
+                    // A different signing secret might still validate this token.
+                    jsonwebtoken::errors::ErrorKind::InvalidSignature => {
+                        last_signature_err = Some(err);
+                    }
+                    // These outcomes are independent of which secret is used.
+                    jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
+                        return Err(AuthError::TokenExpired)
+                    }
+                    jsonwebtoken::errors::ErrorKind::InvalidToken => {
+                        return Err(AuthError::InvalidToken(format!("Malformed token: {err}")))
+                    }
+                    _ => return Err(AuthError::InvalidToken(err.to_string())),
+                },
+            }
         }
+
+        Err(AuthError::InvalidToken(
+            last_signature_err
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "No verification secret available".to_string()),
+        ))
     }
 
     /// Verify a raw JWT token string and return an AuthResponse.
@@ -662,6 +688,90 @@ impl TokenManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::MemoryStorage;
+
+    fn test_config() -> JwtConfig {
+        JwtConfig {
+            issuer: "calimero-test".to_string(),
+            access_token_expiry: 3600,
+            refresh_token_expiry: 30 * 24 * 3600,
+        }
+    }
+
+    async fn test_manager() -> (TokenManager, Arc<SecretManager>) {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        secret_manager.initialize().await.unwrap();
+        let tm = TokenManager::new(
+            test_config(),
+            Arc::clone(&storage),
+            Arc::clone(&secret_manager),
+        );
+        (tm, secret_manager)
+    }
+
+    #[tokio::test]
+    async fn verify_token_succeeds_after_secret_rotation() {
+        let (tm, sm) = test_manager().await;
+        let (access, _refresh) = tm
+            .generate_mock_token_pair("key-1".to_string(), vec!["admin".to_string()], None, None)
+            .await
+            .unwrap();
+
+        // Token verifies before rotation.
+        let claims = tm.verify_token(&access).await.unwrap();
+        assert_eq!(claims.sub, "key-1");
+
+        // After a rotation the token was signed with the now-backup secret.
+        sm.rotate_secret(SecretType::JwtAuth).await.unwrap();
+
+        // Fix A: verification falls back to the unexpired backup secret.
+        let claims = tm
+            .verify_token(&access)
+            .await
+            .expect("token signed with backup secret must still verify");
+        assert_eq!(claims.sub, "key-1");
+    }
+
+    #[tokio::test]
+    async fn verify_token_fails_once_backup_is_evicted() {
+        let (tm, sm) = test_manager().await;
+        let (access, _refresh) = tm
+            .generate_mock_token_pair("key-1".to_string(), vec!["admin".to_string()], None, None)
+            .await
+            .unwrap();
+
+        // Two rotations push the original signing secret out of the grace window.
+        sm.rotate_secret(SecretType::JwtAuth).await.unwrap();
+        sm.rotate_secret(SecretType::JwtAuth).await.unwrap();
+
+        let err = tm.verify_token(&access).await.unwrap_err();
+        assert!(
+            matches!(err, AuthError::InvalidToken(_)),
+            "token signed with an evicted secret must be rejected, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_token_rejects_unknown_secret() {
+        let (tm, _sm) = test_manager().await;
+
+        // A token minted by a completely independent manager (different secret).
+        let other_storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let other_sm = Arc::new(SecretManager::new(Arc::clone(&other_storage)));
+        other_sm.initialize().await.unwrap();
+        let other_tm = TokenManager::new(test_config(), other_storage, other_sm);
+        let (foreign, _r) = other_tm
+            .generate_mock_token_pair("key-1".to_string(), vec!["admin".to_string()], None, None)
+            .await
+            .unwrap();
+
+        let err = tm.verify_token(&foreign).await.unwrap_err();
+        assert!(
+            matches!(err, AuthError::InvalidToken(_)),
+            "foreign-signed token must be rejected, got {err:?}"
+        );
+    }
 
     #[test]
     fn test_is_internal_auth_service_valid_cases() {
