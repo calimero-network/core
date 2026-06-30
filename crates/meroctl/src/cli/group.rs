@@ -91,24 +91,26 @@ pub enum GroupSubCommands {
 
 impl GroupCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        match self.subcommand {
-            GroupSubCommands::Get(cmd) => cmd.run(environment).await,
-            GroupSubCommands::Delete(cmd) => cmd.run(environment).await,
-            GroupSubCommands::Update(cmd) => cmd.run(environment).await,
-            GroupSubCommands::Members(cmd) => cmd.run(environment).await,
-            GroupSubCommands::Contexts(cmd) => cmd.run(environment).await,
-            GroupSubCommands::Metadata(cmd) => cmd.run(environment).await,
-            GroupSubCommands::MemberMetadata(cmd) => cmd.run(environment).await,
-            GroupSubCommands::ContextMetadata(cmd) => cmd.run(environment).await,
-            GroupSubCommands::Reparent(cmd) => cmd.run(environment).await,
-            GroupSubCommands::Subgroups(cmd) => cmd.run(environment).await,
-            GroupSubCommands::SigningKey(cmd) => cmd.run(environment).await,
-            GroupSubCommands::Upgrade(cmd) => cmd.run(environment).await,
-            GroupSubCommands::Sync(cmd) => cmd.run(environment).await,
-            GroupSubCommands::JoinContext(cmd) => cmd.run(environment).await,
-            GroupSubCommands::LeaveContext(cmd) => cmd.run(environment).await,
-            GroupSubCommands::Leave(cmd) => cmd.run(environment).await,
-            GroupSubCommands::Settings(cmd) => cmd.run(environment).await,
-        }
+        crate::cli::dispatch_subcommands!(
+            self.subcommand,
+            environment,
+            GroupSubCommands::Get,
+            GroupSubCommands::Delete,
+            GroupSubCommands::Update,
+            GroupSubCommands::Members,
+            GroupSubCommands::Contexts,
+            GroupSubCommands::Metadata,
+            GroupSubCommands::MemberMetadata,
+            GroupSubCommands::ContextMetadata,
+            GroupSubCommands::Reparent,
+            GroupSubCommands::Subgroups,
+            GroupSubCommands::SigningKey,
+            GroupSubCommands::Upgrade,
+            GroupSubCommands::Sync,
+            GroupSubCommands::JoinContext,
+            GroupSubCommands::LeaveContext,
+            GroupSubCommands::Leave,
+            GroupSubCommands::Settings,
+        )
     }
 }

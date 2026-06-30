@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::PathBuf;
 
 use calimero_primitives::blobs::BlobId;
@@ -53,14 +52,16 @@ impl DownloadCommand {
         // Get file size before writing
         let size = data.len() as u64;
 
-        // Write to file
-        fs::write(&self.output_path, data).map_err(|e| {
-            eyre!(
-                "Failed to write file '{}': {}",
-                self.output_path.display(),
-                e
-            )
-        })?;
+        // Write to file (async so we don't block the runtime worker thread).
+        tokio::fs::write(&self.output_path, data)
+            .await
+            .map_err(|e| {
+                eyre!(
+                    "Failed to write file '{}': {}",
+                    self.output_path.display(),
+                    e
+                )
+            })?;
 
         let response = BlobDownloadResponse {
             blob_id: self.blob_id,
