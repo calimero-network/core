@@ -164,6 +164,50 @@ pub async fn token_handler(
     // Extract node URL from client_name for node-specific token generation
     let node_url = Some(token_request.client_name.clone());
 
+    // Rate-limit key from the RAW identity, captured before sanitization so that
+    // two distinct identities cannot be collapsed into one bucket (which would
+    // let one identity lock out another). Keyed by (auth_method, public_key)
+    // only: `client_name` is fully attacker-controlled and adds no binding, and
+    // `public_key` is the field bound to the caller's identity. This value is
+    // used only as an opaque map key and is never logged. (See module docs for
+    // the identity-rotation / IP-keying follow-up.)
+    //
+    // Note the key is built from the RAW (pre-sanitization) values, while the
+    // rate-limit `warn!` below logs the SANITIZED `auth_method`. They can
+    // therefore differ; the raw value is deliberate for the bucket (so two
+    // distinct identities can't be collapsed by sanitization), and the
+    // sanitized value is deliberate for the log (low-cardinality, injection-safe).
+    //
+    // Length-prefix the first component so the `|` separator is unambiguous:
+    // raw, attacker-controlled values could otherwise inject a `|` to collide
+    // two distinct identities into one bucket (e.g. lock out a victim by
+    // polluting their bucket).
+    //
+    // Cap each component before it enters the key: the raw fields are unbounded
+    // attacker input, and an oversized `public_key` (e.g. megabytes) would be
+    // allocated and stored verbatim as a map key — up to MAX_TRACKED_KEYS of
+    // them — turning the limiter into a memory-amplification sink. A real
+    // public key is well under this bound, so capping cannot collapse two
+    // legitimate identities; a forged >cap key only ever collides with another
+    // forged >cap key sharing the same prefix, which is the attacker's own
+    // bucket.
+    const MAX_RL_KEY_FIELD: usize = 256;
+    let cap_field = |s: &str| -> String { s.chars().take(MAX_RL_KEY_FIELD).collect() };
+    let rl_auth_method = cap_field(&token_request.auth_method);
+    let rl_public_key = cap_field(&token_request.public_key);
+    // Length-prefix *both* fields so the key is unambiguous regardless of any
+    // `|` characters in either component: `len|auth_method|len|public_key`. A
+    // bare `|` separator would otherwise let an attacker who controls
+    // `public_key` smuggle a separator and collide with a different identity's
+    // bucket.
+    let rl_key = format!(
+        "{}|{}|{}|{}",
+        rl_auth_method.len(),
+        rl_auth_method,
+        rl_public_key.len(),
+        rl_public_key
+    );
+
     // Sanitize string inputs to prevent injection attacks
     token_request.auth_method = sanitize_identifier(&token_request.auth_method);
     token_request.public_key = sanitize_string(&token_request.public_key);
@@ -194,6 +238,34 @@ pub async fn token_handler(
         );
     }
 
+    // Brute-force throttle: if this caller has exceeded the failed-attempt
+    // budget, reject with 429 + Retry-After before doing any credential work.
+    if let Some(retry_after) = state.0.login_rate_limiter.check(&rl_key) {
+        // Count the rejected attempt too, so sustained hammering keeps the
+        // window rolling rather than letting the attacker wait out a fixed
+        // lockout while still probing.
+        state.0.login_rate_limiter.record_failure(&rl_key);
+        // Log only the sanitized, low-cardinality auth method — never the raw
+        // key (which holds the public key and could be a log-injection vector).
+        warn!(
+            auth_method = %token_request.auth_method,
+            "Login rate limit exceeded"
+        );
+        let mut headers = HeaderMap::new();
+        drop(
+            headers.insert(
+                "Retry-After",
+                HeaderValue::from_str(&retry_after.to_string())
+                    .unwrap_or_else(|_| HeaderValue::from_static("60")),
+            ),
+        );
+        return error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many failed login attempts; please try again later",
+            Some(headers),
+        );
+    }
+
     // Authenticate directly using the token request with node context
     let auth_response = match state
         .0
@@ -204,6 +276,7 @@ pub async fn token_handler(
         Ok(response) => response,
         Err(err) => {
             error!("Authentication failed: {}", err);
+            state.0.login_rate_limiter.record_failure(&rl_key);
             return error_response(
                 StatusCode::UNAUTHORIZED,
                 format!("Authentication failed: {err}"),
@@ -214,12 +287,16 @@ pub async fn token_handler(
 
     // Ensure authentication was successful
     if !auth_response.is_valid {
+        state.0.login_rate_limiter.record_failure(&rl_key);
         return error_response(
             StatusCode::UNAUTHORIZED,
             "Authentication failed: Invalid credentials",
             None,
         );
     }
+
+    // Successful authentication clears the failed-attempt counter.
+    state.0.login_rate_limiter.reset(&rl_key);
 
     let key_id = auth_response.key_id;
 
@@ -489,6 +566,27 @@ fn extract_token_from_forwarded_uri(headers: &HeaderMap) -> Option<&str> {
         })
 }
 
+/// Default callback URL used when none is supplied or the supplied one is rejected.
+const DEFAULT_CALLBACK: &str = "http://127.0.0.1:9080/callback";
+
+/// Turn an attacker-controlled `callback-url` query value into a JS string
+/// literal that is safe to embed in an inline `<script>`.
+///
+/// 1. Accept it only if it parses as an `http`/`https` URL (rejects
+///    `javascript:`, `data:`, and malformed values); otherwise fall back to the
+///    default. Re-serialising the parsed URL also percent-encodes HTML-unsafe
+///    characters such as `<`/`>`, so it cannot break out of the `<script>`.
+/// 2. JSON-encode the result, producing a quoted, fully-escaped JS string
+///    literal, so it cannot break out of the JS string context. This closes the
+///    `'{callback_url}'` → `';alert(1);//` injection.
+fn safe_callback_js(raw: Option<&str>) -> String {
+    let validated = raw
+        .and_then(|raw| url::Url::parse(raw).ok())
+        .filter(|u| matches!(u.scheme(), "http" | "https"))
+        .map_or_else(|| DEFAULT_CALLBACK.to_owned(), |u| u.to_string());
+    serde_json::to_string(&validated).unwrap_or_else(|_| format!("{DEFAULT_CALLBACK:?}"))
+}
+
 /// OAuth callback handler for meroctl authentication flow
 ///
 /// This endpoint serves a simple authentication form that allows users
@@ -506,9 +604,10 @@ pub async fn callback_handler(
     _state: Extension<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    // Extract the callback URL from query parameters
-    let default_callback = "http://127.0.0.1:9080/callback".to_string();
-    let callback_url = params.get("callback-url").unwrap_or(&default_callback);
+    // Extract the callback URL from query parameters. This value is
+    // attacker-controlled and is embedded into an inline <script>; see
+    // [`safe_callback_js`] for how it is sanitised.
+    let callback_url_js = safe_callback_js(params.get("callback-url").map(String::as_str));
 
     // Create a simple authentication form
     let html = format!(
@@ -652,7 +751,7 @@ pub async fn callback_handler(
                 const refreshToken = 'temp_refresh_token_' + Date.now();
                 
                 // Redirect back to meroctl with tokens
-                const callbackUrl = '{callback_url}';
+                const callbackUrl = {callback_url_js};
                 const redirectUrl = new URL(callbackUrl);
                 redirectUrl.searchParams.set('access_token', accessToken);
                 redirectUrl.searchParams.set('refresh_token', refreshToken);
@@ -945,5 +1044,49 @@ pub async fn mock_token_handler(
                 None,
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod callback_xss_tests {
+    use super::{safe_callback_js, DEFAULT_CALLBACK};
+
+    #[test]
+    fn malicious_callbacks_fall_back_to_default() {
+        for bad in [
+            Some("'; alert(1); //"),
+            Some("javascript:alert(1)"),
+            Some("data:text/html,<script>alert(1)</script>"),
+            Some("not a url"),
+            None,
+        ] {
+            let js = safe_callback_js(bad);
+            assert_eq!(
+                js,
+                format!("{DEFAULT_CALLBACK:?}"),
+                "malicious/invalid callback {bad:?} must fall back to the default",
+            );
+        }
+    }
+
+    #[test]
+    fn valid_callback_is_json_quoted_and_html_safe() {
+        // A valid http(s) URL is accepted, emitted as a quoted JS string literal.
+        let js = safe_callback_js(Some("https://app.example.com/cb?x=1"));
+        assert!(
+            js.starts_with('"') && js.ends_with('"'),
+            "must be a JS string literal: {js}"
+        );
+        assert!(js.contains("app.example.com"));
+
+        // Angle brackets that would break out of <script> are percent-encoded by
+        // URL normalisation, so the embedded literal contains no raw '<'/'>'.
+        let js = safe_callback_js(Some("http://x/</script><script>alert(1)</script>"));
+        assert!(
+            !js.contains('<') && !js.contains('>'),
+            "must not contain raw angle brackets: {js}"
+        );
+        // And it remains a single quoted JS string (no unescaped quote break-out).
+        assert!(js.starts_with('"') && js.ends_with('"'));
     }
 }

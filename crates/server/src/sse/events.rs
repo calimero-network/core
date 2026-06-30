@@ -36,6 +36,17 @@ use super::state::ServiceState;
 /// This design prioritizes simplicity and resource efficiency over guaranteed delivery.
 /// For critical state updates, clients should implement their own state reconciliation
 /// after reconnection.
+///
+/// # Lifecycle (no task leak)
+///
+/// This task is scoped to a single connection and writes directly to that
+/// connection's command channel (`commands_sender`). It exits **only** when the
+/// connection actually goes away — either `commands_sender.closed()` fires (the
+/// SSE stream's receiver was dropped) or a send fails for the same reason — or
+/// when the node event stream ends. It does not consult `active_connections`,
+/// so a transient miss there during a reconnect handoff cannot kill it.
+/// Previously it slept-and-looped forever when no connection was active, which
+/// leaked a task per disconnect.
 pub async fn handle_node_events(
     session_id: ConnectionId,
     state: Arc<ServiceState>,
