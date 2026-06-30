@@ -81,9 +81,9 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
         GroupOp::MemberCapabilitySet {
             member,
             capabilities,
-        } => member_capability_set::apply(ctx, member, capabilities)?,
+        } => member_capability_set::apply(ctx, member, &capabilities.bits())?,
         GroupOp::DefaultCapabilitiesSet { capabilities } => {
-            default_capabilities_set::apply(ctx, capabilities)?
+            default_capabilities_set::apply(ctx, &capabilities.bits())?
         }
         GroupOp::UpgradePolicySet { policy } => upgrade_policy_set::apply(ctx, policy)?,
         GroupOp::TargetApplicationSet {

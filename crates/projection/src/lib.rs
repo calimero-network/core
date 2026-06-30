@@ -220,7 +220,7 @@ impl ScopeState {
                 capabilities,
             } => {
                 if wins(stamp, self.default_caps_clock.get(group)) {
-                    let _ = self.default_caps.insert(*group, *capabilities);
+                    let _ = self.default_caps.insert(*group, capabilities.bits());
                     let _ = self.default_caps_clock.insert(*group, stamp);
                 }
             }
@@ -231,7 +231,7 @@ impl ScopeState {
             } => {
                 let key = (*group, *member);
                 if wins(stamp, self.member_caps_clock.get(&key)) {
-                    let _ = self.member_caps.insert(key, *capabilities);
+                    let _ = self.member_caps.insert(key, capabilities.bits());
                     let _ = self.member_caps_clock.insert(key, stamp);
                 }
             }

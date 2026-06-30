@@ -146,13 +146,23 @@ pub enum VisibilityMode {
     Restricted,
 }
 
-/// Bitfield constants for group member capabilities.
-#[derive(Copy, Clone, Debug)]
-pub struct MemberCapabilities;
+/// A type-safe bitset of group member capabilities.
+///
+/// Replaces the bare `u32` that capability bitmasks used to flow as: a raw
+/// integer silently accepted unknown/garbage bits and offered no way to tell a
+/// capability mask apart from any other `u32`. The named flags are associated
+/// constants of this type; combine them with `|`, test with
+/// [`contains`](MemberCapabilities::contains), and cross wire/storage
+/// boundaries with [`bits`](MemberCapabilities::bits) /
+/// [`from_bits`](MemberCapabilities::from_bits). Borsh/serde encode it as the
+/// underlying `u32` (wire-compatible with the old representation) but reject
+/// undefined bits on the way in.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct MemberCapabilities(u32);
 
 impl MemberCapabilities {
-    pub const CAN_CREATE_CONTEXT: u32 = 1 << 0;
-    pub const CAN_INVITE_MEMBERS: u32 = 1 << 1;
+    pub const CAN_CREATE_CONTEXT: Self = Self(1 << 0);
+    pub const CAN_INVITE_MEMBERS: Self = Self(1 << 1);
     /// Permits a parent-group member to be inherited as a member of any
     /// `Open` subgroup beneath them (and transitively, any contexts those
     /// subgroups contain). Granted by default to non-admin members; admins
@@ -161,9 +171,9 @@ impl MemberCapabilities {
     ///
     /// Reuses bit slot `1 << 2`, vacated by the prior `CAN_JOIN_OPEN_CONTEXTS`
     /// (never enforced — see issue #2256).
-    pub const CAN_JOIN_OPEN_SUBGROUPS: u32 = 1 << 2;
-    pub const MANAGE_MEMBERS: u32 = 1 << 3;
-    pub const MANAGE_APPLICATION: u32 = 1 << 4;
+    pub const CAN_JOIN_OPEN_SUBGROUPS: Self = Self(1 << 2);
+    pub const MANAGE_MEMBERS: Self = Self(1 << 3);
+    pub const MANAGE_APPLICATION: Self = Self(1 << 4);
     /// Permits a non-admin namespace member to create a subgroup **directly
     /// under the namespace root** (`parent_group_id == namespace_id`). This
     /// is the "any member can start a channel" primitive.
@@ -176,7 +186,7 @@ impl MemberCapabilities {
     /// necessarily for a deeper subgroup. Delegated creation of nested
     /// subgroups by non-admins is therefore left to a follow-up; namespace
     /// admins can still create subgroups at any depth.
-    pub const CAN_CREATE_SUBGROUP: u32 = 1 << 5;
+    pub const CAN_CREATE_SUBGROUP: Self = Self(1 << 5);
     /// Permits a non-admin namespace member to delete a subgroup (and its
     /// whole subtree) via the cascade-delete path. Checked on the namespace
     /// root, for the same determinism reason as [`Self::CAN_CREATE_SUBGROUP`].
@@ -185,13 +195,13 @@ impl MemberCapabilities {
     /// does *not* get it implicitly here (and a later change tightens the
     /// baseline so even admins can't destroy a subtree they don't own — see
     /// the owner-gated-destruction work).
-    pub const CAN_DELETE_SUBGROUP: u32 = 1 << 6;
+    pub const CAN_DELETE_SUBGROUP: Self = Self(1 << 6);
     /// Permits a member to flip a subgroup's [`VisibilityMode`]
     /// (`Open` ↔ `Restricted`) without holding full admin on it. The
     /// `SubgroupVisibilitySet` op is group-scoped (encrypted to the target
     /// subgroup's members), so this check is deterministic among exactly the
     /// peers that apply it — no root-level restriction needed.
-    pub const CAN_MANAGE_VISIBILITY: u32 = 1 << 7;
+    pub const CAN_MANAGE_VISIBILITY: Self = Self(1 << 7);
     /// Permits a member to set the `name` / `data` of the group, its members,
     /// or its contexts (the `*MetadataSet` ops) without holding full admin.
     /// Group admins hold this implicitly; a member may always set *their own*
@@ -200,7 +210,115 @@ impl MemberCapabilities {
     /// group-scoped (encrypted to the target group's members), so this check
     /// is deterministic among exactly the peers that apply it — no root-level
     /// restriction needed.
-    pub const CAN_MANAGE_METADATA: u32 = 1 << 8;
+    pub const CAN_MANAGE_METADATA: Self = Self(1 << 8);
+
+    /// The union of every defined capability bit.
+    pub const ALL: Self = Self(
+        Self::CAN_CREATE_CONTEXT.0
+            | Self::CAN_INVITE_MEMBERS.0
+            | Self::CAN_JOIN_OPEN_SUBGROUPS.0
+            | Self::MANAGE_MEMBERS.0
+            | Self::MANAGE_APPLICATION.0
+            | Self::CAN_CREATE_SUBGROUP.0
+            | Self::CAN_DELETE_SUBGROUP.0
+            | Self::CAN_MANAGE_VISIBILITY.0
+            | Self::CAN_MANAGE_METADATA.0,
+    );
+
+    /// The empty capability set.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    /// The raw bit representation (for wire/storage encoding).
+    #[must_use]
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// Construct from raw bits, returning `None` if any **undefined** bit is set.
+    #[must_use]
+    pub const fn from_bits(bits: u32) -> Option<Self> {
+        if bits & !Self::ALL.0 == 0 {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
+
+    /// Construct from raw bits, silently dropping any undefined bits.
+    #[must_use]
+    pub const fn from_bits_truncate(bits: u32) -> Self {
+        Self(bits & Self::ALL.0)
+    }
+
+    /// Whether `self` contains every bit in `other`.
+    #[must_use]
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// Whether no capability bit is set.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl core::ops::BitOr for MemberCapabilities {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for MemberCapabilities {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl core::ops::BitAnd for MemberCapabilities {
+    type Output = Self;
+    fn bitand(self, rhs: Self) -> Self {
+        Self(self.0 & rhs.0)
+    }
+}
+
+impl core::ops::Sub for MemberCapabilities {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self {
+        Self(self.0 & !rhs.0)
+    }
+}
+
+// Wire/storage representation: the raw `u32`, byte-compatible with the bare
+// `u32` these masks used to be. Unknown bits are preserved on the wire
+// (forward-compatible with capabilities a newer peer may define); the
+// named-flag API masks against the defined set when interpreting them.
+impl borsh::BorshSerialize for MemberCapabilities {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        borsh::BorshSerialize::serialize(&self.0, writer)
+    }
+}
+
+impl borsh::BorshDeserialize for MemberCapabilities {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        Ok(Self(u32::deserialize_reader(reader)?))
+    }
+}
+
+impl serde::Serialize for MemberCapabilities {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u32(self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for MemberCapabilities {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self(u32::deserialize(deserializer)?))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

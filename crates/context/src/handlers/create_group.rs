@@ -174,7 +174,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // into Open subgroups beneath this group.
                 CapabilitiesRepository::new(&datastore).set_default_capabilities(
                     &group_id,
-                    calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+                    calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
                 )?;
 
                 // Generate and store the group encryption key.

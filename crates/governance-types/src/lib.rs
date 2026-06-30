@@ -25,7 +25,7 @@ use std::io;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_context_config::types::SignedGroupOpenInvitation;
-use calimero_context_config::VisibilityMode;
+use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -239,10 +239,10 @@ pub enum GroupOp {
     /// Per-member capability bitmask (`GroupMemberCapability` store).
     MemberCapabilitySet {
         member: PublicKey,
-        capabilities: u32,
+        capabilities: MemberCapabilities,
     },
     /// Default capability bitmask for new members.
-    DefaultCapabilitiesSet { capabilities: u32 },
+    DefaultCapabilitiesSet { capabilities: MemberCapabilities },
     /// Update group upgrade policy in [`GroupMetaValue`].
     UpgradePolicySet { policy: UpgradePolicy },
     /// Update target application and app key in group metadata.
