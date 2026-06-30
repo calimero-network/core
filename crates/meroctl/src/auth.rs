@@ -130,6 +130,17 @@ async fn start_callback_server(
                     // another local process from injecting tokens into our
                     // loopback callback (login-CSRF).
                     if params.get("state").map(String::as_str) != Some(expected_state.as_str()) {
+                        // Wake the waiting CLI with an error instead of dropping
+                        // the request silently — otherwise it blocks until the
+                        // 2-minute auth timeout.
+                        if let Ok(mut guard) = tx.lock() {
+                            if let Some(sender) = guard.take() {
+                                drop(sender.send(Err(
+                                    "authentication state mismatch (possible CSRF); rejected"
+                                        .to_owned(),
+                                )));
+                            }
+                        }
                         return STATE_MISMATCH_HTML;
                     }
                     let callback = AuthCallback {
