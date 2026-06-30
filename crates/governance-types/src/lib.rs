@@ -44,6 +44,56 @@ pub use wire::{
 // (they depend on `tokio::sync::broadcast` and connect actor mailboxes).
 // This crate is pure-data: types, signing, hashing, borsh layout.
 
+/// Define a 32-byte id newtype. Borsh-transparent (a derived `[u8; 32]`, no tag
+/// or length prefix) so it is byte-compatible with the bare `[u8; 32]` these
+/// ids used to be, while making the distinct id kinds non-interchangeable.
+macro_rules! id_newtype {
+    ($(#[$m:meta])* $name:ident) => {
+        $(#[$m])*
+        #[derive(
+            Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash,
+            BorshSerialize, BorshDeserialize,
+        )]
+        pub struct $name([u8; 32]);
+
+        impl $name {
+            #[must_use]
+            pub const fn new(bytes: [u8; 32]) -> Self {
+                Self(bytes)
+            }
+            #[must_use]
+            pub const fn as_bytes(&self) -> &[u8; 32] {
+                &self.0
+            }
+            #[must_use]
+            pub const fn to_bytes(self) -> [u8; 32] {
+                self.0
+            }
+        }
+
+        impl From<[u8; 32]> for $name {
+            fn from(bytes: [u8; 32]) -> Self {
+                Self(bytes)
+            }
+        }
+
+        impl From<$name> for [u8; 32] {
+            fn from(id: $name) -> Self {
+                id.0
+            }
+        }
+    };
+}
+
+id_newtype! {
+    /// Stable id of a namespace (the root governance group of a DAG).
+    NamespaceId
+}
+id_newtype! {
+    /// Stable id of a group/namespace encryption key.
+    KeyId
+}
+
 /// Wire/schema version for [`SignedGroupOp`].
 ///
 /// v5: Drop the `cut: GovernanceParentEdge` field from `MemberRemoved` and
