@@ -251,6 +251,59 @@ mod index__public_methods {
     }
 
     #[test]
+    fn readd_clears_child_tombstone() {
+        // A winning upsert on a tombstoned id re-adds it via `add_child_to`. The
+        // child's own tombstone must clear, or `find_by_id` keeps hiding an
+        // entity whose hash the parent now counts — resurrection hash divergence.
+        type S = MockedStorage<970>;
+        let root_id = Id::random();
+        assert!(
+            <Index<S>>::add_root(ChildInfo::new(root_id, [1; 32], Metadata::default())).is_ok()
+        );
+
+        let child_id = Id::random();
+        assert!(<Index<S>>::add_child_to(
+            root_id,
+            ChildInfo::new(child_id, [2; 32], Metadata::default())
+        )
+        .is_ok());
+
+        // Tombstone the child.
+        assert!(<Index<S>>::remove_child_from(root_id, child_id, 100).is_ok());
+        assert!(<Index<S>>::is_deleted(child_id).unwrap());
+        assert!(<Index<S>>::get_index(root_id)
+            .unwrap()
+            .unwrap()
+            .deleted_children()
+            .contains(&child_id));
+
+        // Re-add (resurrect) the child via a winning upsert.
+        assert!(<Index<S>>::add_child_to(
+            root_id,
+            ChildInfo::new(child_id, [3; 32], Metadata::default())
+        )
+        .is_ok());
+
+        // The child must no longer be tombstoned, nor advertised as deleted.
+        assert!(
+            !<Index<S>>::is_deleted(child_id).unwrap(),
+            "re-add left the child tombstoned"
+        );
+        let parent = <Index<S>>::get_index(root_id).unwrap().unwrap();
+        assert!(
+            !parent.deleted_children().contains(&child_id),
+            "re-add left the child in the parent's deleted-children advert"
+        );
+        assert!(
+            parent
+                .children()
+                .map(|c| c.iter().any(|ci| ci.id() == child_id))
+                .unwrap_or(false),
+            "re-add did not relink the child as a live child"
+        );
+    }
+
+    #[test]
     fn add_root() {
         let root_id = Id::random();
         let root_hash = [1_u8; 32];

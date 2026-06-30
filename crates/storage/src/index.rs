@@ -454,6 +454,11 @@ impl<S: StorageAdaptor> Index<S> {
         child_index.own_hash = child.merkle_hash();
         child_index.full_hash =
             Self::calculate_full_hash_for_children(child_index.own_hash, &child_index.children)?;
+        // Adding a child means it is live: clear any tombstone, else find_by_id
+        // keeps hiding an entity whose hash the parent now counts (a winning
+        // upsert on a tombstoned id → hash divergence). Pairs with the
+        // deleted_children.retain below, which clears the parent-side advert.
+        child_index.deleted_at = None;
         Self::save_index(&child_index)?;
 
         // Insert into parent's children list, keeping it sorted by `ChildInfo`'s
@@ -937,11 +942,12 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     /// Step 1 of deletion: Remove actual data, keep index for CRDT sync.
     fn delete_entity_and_create_tombstone(id: Id, deleted_at: u64) -> Result<(), StorageError> {
-        // Delete the actual entity data immediately (save storage space)
+        // Tombstone first, then drop the data: if mark_deleted fails the entry
+        // is left intact and the delete can be retried, instead of leaving the
+        // data gone with no tombstone while the parent still lists it live.
+        Self::mark_deleted(id, deleted_at)?;
         let _ignored = S::storage_remove(Key::Entry(id));
-
-        // Mark child index as deleted (tombstone for CRDT sync)
-        Self::mark_deleted(id, deleted_at)
+        Ok(())
     }
 
     /// Tombstones every descendant of `root_id` at `deleted_at`.
