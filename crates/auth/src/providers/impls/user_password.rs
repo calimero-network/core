@@ -1,12 +1,13 @@
 use std::any::Any;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::Request;
+use ring::pbkdf2;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use tracing::{debug, error};
 use validator::Validate;
 
@@ -20,6 +21,68 @@ use crate::providers::ProviderContext;
 use crate::storage::models::Key;
 use crate::storage::{KeyManager, Storage};
 use crate::{register_auth_data_type, register_auth_provider, AuthResponse};
+
+/// Application-wide salt prefix for deriving the username/password key id.
+///
+/// The key id doubles as the storage lookup key, so it must be reproducible
+/// from the credentials alone, with no per-user state stored before lookup.
+/// A per-user *random* salt is therefore impossible in this model. We instead
+/// derive a per-user salt deterministically as `KEY_ID_SALT_PREFIX || username`
+/// (the username is known at lookup time), which defeats cross-user precomputed
+/// (rainbow) tables, and rely on the PBKDF2 iteration count for offline
+/// brute-force resistance. Tradeoff: because the salt is derived (not random),
+/// an attacker who learns the scheme can still mount a per-target attack, but
+/// that attack is now PBKDF2-stretched rather than a single unsalted SHA256.
+const KEY_ID_SALT_PREFIX: &[u8] = b"calimero:auth:user_password:key-id:v1:";
+
+/// PBKDF2 iteration count for key-id derivation.
+const KEY_ID_PBKDF2_ITERATIONS: u32 = 100_000;
+
+/// Length of the derived key-id, in bytes (256-bit, hex-encoded to 64 chars).
+const KEY_ID_LEN: usize = 32;
+
+/// Deterministically derive the storage key id from credentials using a
+/// per-user-salted PBKDF2-HMAC-SHA256, replacing the previous unsalted SHA256.
+fn derive_key_id(username: &str, password: &str) -> String {
+    // Per-user deterministic salt: fixed domain-separation prefix + username.
+    let mut salt = Vec::with_capacity(KEY_ID_SALT_PREFIX.len() + username.len());
+    salt.extend_from_slice(KEY_ID_SALT_PREFIX);
+    salt.extend_from_slice(username.as_bytes());
+
+    // Iteration count is a non-zero compile-time constant.
+    let iterations = NonZeroU32::new(KEY_ID_PBKDF2_ITERATIONS)
+        .expect("KEY_ID_PBKDF2_ITERATIONS must be non-zero");
+
+    let mut out = [0u8; KEY_ID_LEN];
+    pbkdf2::derive(
+        pbkdf2::PBKDF2_HMAC_SHA256,
+        iterations,
+        &salt,
+        password.as_bytes(),
+        &mut out,
+    );
+    hex::encode(out)
+}
+
+/// Enforce configured password length bounds.
+///
+/// Returns a clear validation error when the password is shorter than
+/// `min_length` or longer than `max_length`. Length is measured in Unicode
+/// scalar values (`chars`), not bytes.
+fn validate_password_length(
+    password: &str,
+    min_length: usize,
+    max_length: usize,
+) -> eyre::Result<()> {
+    let len = password.chars().count();
+    if len < min_length {
+        eyre::bail!("Password must be at least {min_length} characters long");
+    }
+    if len > max_length {
+        eyre::bail!("Password must be at most {max_length} characters long");
+    }
+    Ok(())
+}
 
 /// Username/password authentication data
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,10 +147,16 @@ impl UserPasswordProvider {
     ///
     /// * `String` - The generated key ID
     fn generate_key_id(&self, username: &str, password: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(format!("user_password:{username}:{password}").as_bytes());
-        let hash = hasher.finalize();
-        hex::encode(hash)
+        derive_key_id(username, password)
+    }
+
+    /// Enforce the configured password length bounds for this provider.
+    fn validate_password(&self, password: &str) -> eyre::Result<()> {
+        validate_password_length(
+            password,
+            self.config.min_password_length,
+            self.config.max_password_length,
+        )
     }
 
     /// Verify username and password by checking if corresponding root key exists
@@ -171,6 +240,10 @@ impl UserPasswordProvider {
         username: &str,
         password: &str,
     ) -> eyre::Result<(String, Vec<String>)> {
+        // Enforce password length bounds at the provider entry point, for both
+        // first-time registration (bootstrap) and subsequent authentication.
+        self.validate_password(password)?;
+
         // Try to verify existing credentials
         if let Some((key_id, root_key)) = self.verify_credentials(username, password).await? {
             // Existing user - return their key ID and permissions
@@ -381,8 +454,17 @@ impl AuthProvider for UserPasswordProvider {
         provider_data: Value,
         node_url: Option<&str>,
     ) -> eyre::Result<bool> {
-        let username = provider_data.get("username").unwrap().as_str().unwrap();
-        let password = provider_data.get("password").unwrap().as_str().unwrap();
+        let username = provider_data
+            .get("username")
+            .and_then(Value::as_str)
+            .ok_or_else(|| eyre::eyre!("Missing username in provider data"))?;
+        let password = provider_data
+            .get("password")
+            .and_then(Value::as_str)
+            .ok_or_else(|| eyre::eyre!("Missing password in provider data"))?;
+
+        // Enforce password length bounds before creating the root key.
+        self.validate_password(password)?;
 
         // Generate key ID from username/password
         let key_id = self.generate_key_id(username, password);
@@ -442,3 +524,87 @@ register_auth_provider!(UserPasswordProviderRegistration);
 
 // Register the username/password auth data type
 register_auth_data_type!(UserPasswordAuthDataType);
+
+#[cfg(test)]
+mod tests {
+    use sha2::{Digest, Sha256};
+
+    use super::*;
+
+    fn old_unsalted_key_id(username: &str, password: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(format!("user_password:{username}:{password}").as_bytes());
+        hex::encode(hasher.finalize())
+    }
+
+    // --- #8: salted KDF key-id derivation -------------------------------
+
+    #[test]
+    fn test_derive_key_id_is_deterministic() {
+        let a = derive_key_id("alice", "correct horse battery staple");
+        let b = derive_key_id("alice", "correct horse battery staple");
+        assert_eq!(a, b);
+        assert_eq!(a.len(), KEY_ID_LEN * 2); // hex of 32 bytes
+    }
+
+    #[test]
+    fn test_derive_key_id_differs_by_password() {
+        let a = derive_key_id("alice", "password-one");
+        let b = derive_key_id("alice", "password-two");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_derive_key_id_differs_by_username() {
+        // Same password, different user -> different id (per-user salt).
+        let a = derive_key_id("alice", "shared-password");
+        let b = derive_key_id("bob", "shared-password");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_derive_key_id_is_salted_not_plain_sha256() {
+        // The new derivation must not equal the old unsalted SHA256.
+        let username = "alice";
+        let password = "correct horse battery staple";
+        assert_ne!(
+            derive_key_id(username, password),
+            old_unsalted_key_id(username, password)
+        );
+    }
+
+    // --- #8: password length enforcement --------------------------------
+
+    #[test]
+    fn test_password_too_short_rejected() {
+        let err = validate_password_length("short", 8, 128).unwrap_err();
+        assert!(err.to_string().contains("at least 8"));
+    }
+
+    #[test]
+    fn test_password_too_long_rejected() {
+        let pw = "x".repeat(129);
+        let err = validate_password_length(&pw, 8, 128).unwrap_err();
+        assert!(err.to_string().contains("at most 128"));
+    }
+
+    #[test]
+    fn test_password_within_bounds_accepted() {
+        assert!(validate_password_length("just-right-pw", 8, 128).is_ok());
+    }
+
+    #[test]
+    fn test_password_length_boundaries_inclusive() {
+        // Exactly min and exactly max are accepted.
+        assert!(validate_password_length(&"x".repeat(8), 8, 128).is_ok());
+        assert!(validate_password_length(&"x".repeat(128), 8, 128).is_ok());
+    }
+
+    #[test]
+    fn test_password_length_counts_unicode_scalars() {
+        // 8 multi-byte characters should count as length 8, not byte length.
+        let pw = "áéíóúñçü"; // 8 chars, > 8 bytes
+        assert_eq!(pw.chars().count(), 8);
+        assert!(validate_password_length(pw, 8, 128).is_ok());
+    }
+}

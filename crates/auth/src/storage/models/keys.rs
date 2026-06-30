@@ -98,14 +98,42 @@ impl Key {
         self.metadata.revoked_at.is_some()
     }
 
-    /// Check if the key is valid (not revoked)
+    /// Check if the key has expired.
+    ///
+    /// A key with no `expires_at` set never expires (returns `false`),
+    /// preserving the behavior of keys created before expiry was introduced.
+    pub fn is_expired(&self) -> bool {
+        self.metadata.is_expired()
+    }
+
+    /// Check if the key is valid (neither revoked nor expired)
     pub fn is_valid(&self) -> bool {
-        !self.is_revoked()
+        !self.is_revoked() && !self.is_expired()
     }
 
     /// Revoke the key
     pub fn revoke(&mut self) {
         self.metadata.revoke();
+    }
+
+    /// Set an absolute expiry (Unix timestamp, seconds) on this key.
+    ///
+    /// `None` clears the expiry, making the key non-expiring.
+    pub fn set_expires_at(&mut self, expires_at: Option<u64>) {
+        self.metadata.expires_at = expires_at;
+    }
+
+    /// Builder-style helper that applies a time-to-live (in seconds) to the key,
+    /// computing an absolute `expires_at` from the current time.
+    ///
+    /// A `None` TTL leaves the key non-expiring (current default behavior).
+    #[must_use]
+    pub fn with_ttl_secs(mut self, ttl_secs: Option<u64>) -> Self {
+        if let Some(ttl_secs) = ttl_secs {
+            let now = Utc::now().timestamp().max(0) as u64;
+            self.metadata.expires_at = Some(now.saturating_add(ttl_secs));
+        }
+        self
     }
 
     /// Check if the key has a specific permission
@@ -215,15 +243,54 @@ impl Key {
         self.node_url.as_deref()
     }
 
-    /// Check if this key is valid for the given node URL
+    /// Check if this key is valid for the given node URL.
+    ///
+    /// Node binding is an **exact host match**: the host parsed from the key's
+    /// `node_url` must equal the host parsed from the request's `node_url`.
+    /// A prefix/`starts_with` comparison was previously used, which allowed
+    /// `node.example.com.attacker.com` to match a key bound to
+    /// `node.example.com`. This fails closed: if either side cannot be parsed
+    /// into a host, the key is rejected for that request.
     pub fn is_valid_for_node(&self, node_url: Option<&str>) -> bool {
         match (&self.node_url, node_url) {
             (None, _) => true, // Legacy keys without node_url are valid everywhere
             (Some(key_node_url), Some(request_node_url)) => {
-                request_node_url.starts_with(key_node_url)
+                match (extract_host(key_node_url), extract_host(request_node_url)) {
+                    (Some(key_host), Some(request_host)) => key_host == request_host,
+                    // Fail closed when either host cannot be determined.
+                    _ => false,
+                }
             }
             (Some(_), None) => false, // Node-specific key used without node context
         }
+    }
+}
+
+/// Extract the host component from a node URL string.
+///
+/// Accepts either a full URL (e.g. `https://node.example.com:8080`) or a bare
+/// `host[:port]` authority (e.g. `node.example.com:8080`). Returns the
+/// lowercased host with any port stripped, or `None` if no host can be
+/// determined. Used for exact node-binding comparisons.
+fn extract_host(node_url: &str) -> Option<String> {
+    if let Ok(url) = url::Url::parse(node_url) {
+        if let Some(host) = url.host_str() {
+            return Some(host.to_ascii_lowercase());
+        }
+    }
+
+    // Fall back to treating the value as a bare `host[:port]` authority.
+    let trimmed = node_url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let host = trimmed.split('/').next().unwrap_or(trimmed);
+    let host = host.split(':').next().unwrap_or(host);
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
     }
 }
 
@@ -234,6 +301,13 @@ pub struct KeyMetadata {
     pub created_at: u64,
     /// When the key was revoked
     pub revoked_at: Option<u64>,
+    /// When the key expires (Unix timestamp, seconds).
+    ///
+    /// `None` means the key never expires. This field defaults to `None` on
+    /// deserialization so keys persisted before expiry existed still load and
+    /// remain non-expiring.
+    #[serde(default)]
+    pub expires_at: Option<u64>,
 }
 
 impl Default for KeyMetadata {
@@ -248,11 +322,157 @@ impl KeyMetadata {
         Self {
             created_at: Utc::now().timestamp() as u64,
             revoked_at: None,
+            expires_at: None,
+        }
+    }
+
+    /// Check whether the key has expired relative to the current time.
+    ///
+    /// Returns `false` when no expiry is set (non-expiring key).
+    pub fn is_expired(&self) -> bool {
+        match self.expires_at {
+            Some(expires_at) => {
+                let now = Utc::now().timestamp().max(0) as u64;
+                now >= expires_at
+            }
+            None => false,
         }
     }
 
     /// Revoke the key
     pub fn revoke(&mut self) {
         self.revoked_at = Some(Utc::now().timestamp() as u64);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn root_key() -> Key {
+        Key::new_root_key_with_permissions(
+            "pubkey".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        )
+    }
+
+    fn now_secs() -> u64 {
+        Utc::now().timestamp().max(0) as u64
+    }
+
+    // --- #9: key expiry -------------------------------------------------
+
+    #[test]
+    fn test_key_with_no_expiry_is_valid() {
+        let key = root_key();
+        assert!(key.metadata.expires_at.is_none());
+        assert!(!key.is_expired());
+        assert!(key.is_valid());
+    }
+
+    #[test]
+    fn test_key_not_yet_expired_is_valid() {
+        let mut key = root_key();
+        key.set_expires_at(Some(now_secs() + 3600));
+        assert!(!key.is_expired());
+        assert!(key.is_valid());
+    }
+
+    #[test]
+    fn test_expired_key_is_invalid() {
+        let mut key = root_key();
+        key.set_expires_at(Some(now_secs().saturating_sub(10)));
+        assert!(key.is_expired());
+        assert!(!key.is_valid());
+    }
+
+    #[test]
+    fn test_with_ttl_secs_sets_future_expiry() {
+        let key = root_key().with_ttl_secs(Some(3600));
+        assert!(key.metadata.expires_at.is_some());
+        assert!(!key.is_expired());
+        assert!(key.is_valid());
+    }
+
+    #[test]
+    fn test_with_ttl_secs_none_is_non_expiring() {
+        let key = root_key().with_ttl_secs(None);
+        assert!(key.metadata.expires_at.is_none());
+        assert!(!key.is_expired());
+    }
+
+    #[test]
+    fn test_expires_at_defaults_to_none_on_deserialize() {
+        // Legacy persisted metadata without an `expires_at` field must still
+        // load and remain non-expiring.
+        let legacy = r#"{"created_at": 1000, "revoked_at": null}"#;
+        let meta: KeyMetadata = serde_json::from_str(legacy).unwrap();
+        assert!(meta.expires_at.is_none());
+        assert!(!meta.is_expired());
+    }
+
+    #[test]
+    fn test_legacy_key_json_without_expiry_loads() {
+        let legacy = r#"{
+            "key_type": "Root",
+            "public_key": "pubkey",
+            "auth_method": "user_password",
+            "root_key_id": null,
+            "name": null,
+            "permissions": ["admin"],
+            "created_at": 1000,
+            "revoked_at": null
+        }"#;
+        let key: Key = serde_json::from_str(legacy).unwrap();
+        assert!(key.metadata.expires_at.is_none());
+        assert!(key.is_valid());
+    }
+
+    // --- #11: node-host binding exact match, fail closed ----------------
+
+    #[test]
+    fn test_node_binding_rejects_suffix_attack() {
+        let mut key = root_key();
+        key.node_url = Some("https://node.example.com".to_string());
+        assert!(!key.is_valid_for_node(Some("https://node.example.com.attacker.com")));
+    }
+
+    #[test]
+    fn test_node_binding_exact_match_accepted() {
+        let mut key = root_key();
+        key.node_url = Some("https://node.example.com".to_string());
+        assert!(key.is_valid_for_node(Some("https://node.example.com")));
+    }
+
+    #[test]
+    fn test_node_binding_exact_match_ignores_port() {
+        let mut key = root_key();
+        key.node_url = Some("https://node.example.com".to_string());
+        assert!(key.is_valid_for_node(Some("https://node.example.com:8443")));
+    }
+
+    #[test]
+    fn test_node_binding_absent_request_node_rejected() {
+        let mut key = root_key();
+        key.node_url = Some("https://node.example.com".to_string());
+        assert!(!key.is_valid_for_node(None));
+    }
+
+    #[test]
+    fn test_node_binding_legacy_key_valid_everywhere() {
+        let key = root_key();
+        assert!(key.node_url.is_none());
+        assert!(key.is_valid_for_node(Some("https://anything.example.com")));
+        assert!(key.is_valid_for_node(None));
+    }
+
+    #[test]
+    fn test_node_binding_bare_host_authority() {
+        let mut key = root_key();
+        key.node_url = Some("node.example.com".to_string());
+        assert!(key.is_valid_for_node(Some("node.example.com:8443")));
+        assert!(!key.is_valid_for_node(Some("node.example.com.attacker.com")));
     }
 }

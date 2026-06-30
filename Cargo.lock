@@ -5950,6 +5950,7 @@ dependencies = [
  "regex",
  "reqwest 0.11.27",
  "reqwest 0.12.28",
+ "ring",
  "rocksdb",
  "rust-embed",
  "serde",
