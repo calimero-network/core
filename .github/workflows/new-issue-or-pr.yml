@@ -8,16 +8,17 @@ on:
     branches:
       - master # Trigger when PRs are opened or reopened targeting the master branch
 
+# Runs under pull_request_target (privileged token). Restrict it to exactly what the
+# labeling jobs need; everything else defaults to no access.
+permissions:
+  issues: write
+  pull-requests: write
+
 jobs:
   labelIssuePR:
     name: Apply Label to Issues and PRs
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-
       - name: Add Label to Issue or PR
         uses: actions/github-script@v7
         with:
@@ -143,7 +144,7 @@ jobs:
           fi
 
       - name: Notify external contribution
-        uses: "ravsamhq/notify-slack-action@2.5.0"
+        uses: ravsamhq/notify-slack-action@be814b201e233b2dc673608aa46e5447c8ab13f2 # 2.5.0
         with:
           status: failure
           notification_title: "New external contribution in <${{ github.server_url }}/${{ github.repository }}/${{ github.ref_name }}|${{ github.repository }}>"
