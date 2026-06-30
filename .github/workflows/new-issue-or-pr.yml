@@ -33,7 +33,7 @@ jobs:
                 issue_number: context.issue.number,
                 labels: ['needs-team-review']
               });
-            } else if (context.eventName === 'pull_request') {
+            } else if (context.eventName === 'pull_request_target') {
               // Add label to PR
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,
