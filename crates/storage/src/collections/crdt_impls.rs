@@ -1110,7 +1110,9 @@ mod mapset_tombstone_merge_tests {
                 .unwrap(),
         );
 
-        // Precondition: the resurrection scenario is real.
+        // Precondition: the resurrection scenario is real. `b` must hold "k"
+        // live, else the merge is a no-op and the test passes vacuously.
+        assert!(b.get("k").unwrap().is_some());
         let entry = a.entry_id("k");
         assert!(a.get("k").unwrap().is_none());
         assert!(Index::<S>::is_deleted(entry).unwrap());
@@ -1162,6 +1164,8 @@ mod mapset_tombstone_merge_tests {
         let mut b = UnorderedSet::<String, S>::new_with_field_name("b_set");
         let _ = b.insert("x".to_owned()).unwrap();
 
+        // `b` must hold "x" live, else the merge is a no-op (vacuous pass).
+        assert!(b.contains("x").unwrap());
         let entry = a.entry_id("x");
         assert!(Index::<S>::is_deleted(entry).unwrap());
         let parent = Index::<S>::get_parent_id(entry).unwrap().unwrap();
