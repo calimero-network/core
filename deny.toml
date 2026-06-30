@@ -1,6 +1,31 @@
 [graph]
 targets = []
 
+[advisories]
+# Vulnerabilities are denied by default. Only flag unmaintained crates we depend on
+# directly (transitive unmaintained crates aren't actionable here).
+unmaintained = "workspace"
+# Dated baseline of advisories accepted for now. The vulnerabilities are all
+# transitive through libp2p 0.56's TLS/QUIC/DNS stack and can't be lock-bumped
+# without a libp2p upgrade (tracked follow-up); any *new* advisory still fails CI.
+ignore = [
+    { id = "RUSTSEC-2026-0044", reason = "aws-lc-sys, via libp2p-tls; pending libp2p upgrade" },
+    { id = "RUSTSEC-2026-0048", reason = "aws-lc-sys, via libp2p-tls; pending libp2p upgrade" },
+    { id = "RUSTSEC-2026-0049", reason = "rustls-webpki, via libp2p-tls; pending libp2p upgrade" },
+    { id = "RUSTSEC-2026-0098", reason = "rustls-webpki, via libp2p-tls; pending libp2p upgrade" },
+    { id = "RUSTSEC-2026-0099", reason = "rustls-webpki, via libp2p-tls; pending libp2p upgrade" },
+    { id = "RUSTSEC-2026-0104", reason = "rustls-webpki, via libp2p-tls; pending libp2p upgrade" },
+    { id = "RUSTSEC-2026-0037", reason = "quinn-proto, via libp2p-quic; pending libp2p upgrade" },
+    { id = "RUSTSEC-2026-0185", reason = "quinn-proto, via libp2p-quic; pending libp2p upgrade" },
+    { id = "RUSTSEC-2026-0118", reason = "hickory-proto, via libp2p-dns; pending libp2p upgrade" },
+    { id = "RUSTSEC-2026-0119", reason = "hickory-proto, via libp2p-dns; pending libp2p upgrade" },
+    { id = "RUSTSEC-2026-0097", reason = "rand, transitive; pending upstream upgrade" },
+    { id = "RUSTSEC-2023-0018", reason = "remove_dir_all, via tempdir (build/test); low reachability" },
+    { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing attack, transitive; no upstream fix available" },
+    { id = "RUSTSEC-2018-0017", reason = "tempdir (direct, store/impl/rocksdb); migrate to tempfile" },
+    { id = "RUSTSEC-2024-0436", reason = "paste (direct, utils/actix); unmaintained, no replacement wired yet" },
+]
+
 [bans]
 multiple-versions = "warn" # Warn about duplicate dependency versions
 
@@ -39,11 +64,11 @@ allow = [
 # exceptions; a new accidental copyleft dependency still fails the check.
 [[licenses.exceptions]]
 name = "configfs-tsm"
-allow = ["AGPL-3.0"]
+allow = ["AGPL-3.0-or-later"]
 
 [[licenses.exceptions]]
 name = "tdx-quote"
-allow = ["AGPL-3.0"]
+allow = ["AGPL-3.0-or-later"]
 
 # Add exceptions for packages with complex licensing
 [[licenses.clarify]]
