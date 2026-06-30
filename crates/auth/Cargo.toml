@@ -9,10 +9,10 @@ license.workspace = true
 publish = true
 
 [dependencies]
-aes-gcm = "0.10.3"
+aes-gcm = "0.11.0"
 async-trait.workspace = true
 axum = { workspace = true, features = ["macros"] }
-axum-extra = { version = "0.10.1", features = ["cookie", "cookie-signed", "cookie-private"] }
+axum-extra = { version = "0.12.5", features = ["cookie", "cookie-signed", "cookie-private"] }
 base64.workspace = true
 borsh.workspace = true
 bs58.workspace = true
@@ -20,9 +20,9 @@ calimero-primitives.workspace = true
 calimero-store.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive", "env"] }
-config = { version = "0.13", default-features = false, features = ["json", "toml"] }
-ctor = "0.1"
-dashmap = "5.5.3"
+config = { version = "0.15", default-features = false, features = ["json", "toml"] }
+ctor = "1.0"
+dashmap = "6.1.0"
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 eyre.workspace = true
 hex.workspace = true
@@ -52,7 +52,7 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 validator = { version = "0.20.0", features = ["derive"] }
 
 [dev-dependencies]
-mockall = "0.11"
+mockall = "0.15"
 reqwest = { workspace = true, features = ["json"] }
 tempfile = "3.8"
 tokio-test = "0.4"
