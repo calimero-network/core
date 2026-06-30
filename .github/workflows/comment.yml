@@ -11,6 +11,13 @@ on:
     types:
       - completed
 
+# Least-privilege: runs in the base-repo context (workflow_run); only needs to read
+# the triggering run's artifacts and post a PR comment.
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
 jobs:
   submit:
     name: Submit
@@ -40,17 +47,27 @@ jobs:
       - name: Extract payload
         id: payload
         if: ${{ steps.download.outcome == 'success' }}
+        # payload.json comes from a fork-influenced workflow artifact. Emit each value
+        # with a unique random heredoc delimiter so its contents cannot forge extra
+        # workflow outputs (output injection).
         run: |
-          cat payload.json
-
-          echo "pr=$(jq '.pr' payload.json)" >> $GITHUB_OUTPUT
-          echo "tag=$(jq '.tag' payload.json)" >> $GITHUB_OUTPUT
-          echo "mode=$(jq '.mode' payload.json)" >> $GITHUB_OUTPUT
-          echo "message=$(jq '.message' payload.json)" >> $GITHUB_OUTPUT
+          emit() {
+            local delim
+            delim="EOF_$(openssl rand -hex 16)"
+            {
+              printf '%s<<%s\n' "$1" "$delim"
+              jq "$2" payload.json
+              printf '%s\n' "$delim"
+            } >> "$GITHUB_OUTPUT"
+          }
+          emit pr '.pr'
+          emit tag '.tag'
+          emit mode '.mode'
+          emit message '.message'
 
       - name: Apply pull request comment
         if: ${{ steps.download.outcome == 'success' }}
-        uses: thollander/actions-comment-pull-request@v3
+        uses: thollander/actions-comment-pull-request@65f9e5c9a1f2cd378bd74b2e057c9736982a8e74 # v3
         with:
           pr-number: ${{ fromJson(steps.payload.outputs.pr) }}
           comment-tag: ${{ fromJson(steps.payload.outputs.tag) }}
