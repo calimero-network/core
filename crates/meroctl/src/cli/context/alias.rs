@@ -196,11 +196,14 @@ async fn context_exists(client: &crate::client::Client, target_id: &ContextId) -
 
 /// Whether a `get_context` error represents a genuine 404 / not-found.
 ///
-/// The client surfaces HTTP failures as messages like `"HTTP 404: ..."`
-/// (see `extract_error_message` in `calimero-client`), so a 404 is the only
-/// status we treat as "does not exist".
+/// The client formats HTTP failures as a status-prefixed message — `"HTTP 404"`
+/// or `"HTTP 404: <detail>"` (see `extract_error_message` in `calimero-client`).
+/// We match on that *prefix* rather than a substring so that a different status
+/// whose body happens to mention "HTTP 404" (e.g. `"HTTP 500: ... HTTP 404 ..."`)
+/// is not misread as not-found.
 fn is_not_found(err: &eyre::Report) -> bool {
-    err.to_string().contains("HTTP 404")
+    let msg = err.to_string();
+    msg == "HTTP 404" || msg.starts_with("HTTP 404:") || msg.starts_with("HTTP 404 ")
 }
 
 #[cfg(test)]
@@ -221,5 +224,7 @@ mod tests {
         assert!(!is_not_found(&eyre!(
             "Connection failed: connection refused"
         )));
+        // A non-404 status whose body merely mentions "HTTP 404" must not match.
+        assert!(!is_not_found(&eyre!("HTTP 500: upstream said HTTP 404")));
     }
 }
