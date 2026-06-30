@@ -17,8 +17,14 @@ use crate::storage::models::KeyType;
 use crate::storage::{KeyManager, Storage};
 use crate::{AuthError, AuthResponse};
 
-/// Token type enum
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Token type enum.
+///
+/// Serialized on the wire as a stable lowercase string (`"access"` /
+/// `"refresh"`) inside the JWT `token_type` claim. This distinguishes an
+/// access credential from a refresh credential so that a long-lived refresh
+/// token can no longer be replayed as a bearer access token (finding #1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TokenType {
     Access,
     Refresh,
@@ -39,6 +45,10 @@ pub struct Claims {
     pub iat: u64,
     /// JWT ID
     pub jti: String,
+    /// Token type — distinguishes access from refresh tokens and is enforced
+    /// during verification. This is a required claim: tokens minted before this
+    /// field existed are intentionally rejected (clean break, finding #1).
+    pub token_type: TokenType,
     /// Permissions
     pub permissions: Vec<String>,
     /// Node URL this token is valid for (optional, for backward compatibility)
@@ -174,6 +184,7 @@ impl TokenManager {
         permissions: Vec<String>,
         expiry: Duration,
         node_url: Option<String>,
+        token_type: TokenType,
     ) -> Result<String, AuthError> {
         let now = Utc::now();
         let exp = now + expiry;
@@ -185,6 +196,7 @@ impl TokenManager {
             exp: exp.timestamp() as u64,
             iat: now.timestamp() as u64,
             jti: uuid::Uuid::new_v4().to_string(),
+            token_type,
             permissions,
             node_url,
         };
@@ -219,11 +231,18 @@ impl TokenManager {
                 permissions.clone(),
                 access_expiry,
                 node_url.clone(),
+                TokenType::Access,
             )
             .await?;
 
         let refresh_token = self
-            .generate_token(key_id, permissions, refresh_expiry, node_url)
+            .generate_token(
+                key_id,
+                permissions,
+                refresh_expiry,
+                node_url,
+                TokenType::Refresh,
+            )
             .await?;
 
         Ok((access_token, refresh_token))
@@ -306,15 +325,24 @@ impl TokenManager {
         }
     }
 
-    /// Verify a JWT token and return the claims.
+    /// Decode and signature-verify a JWT, returning its raw claims.
     ///
     /// Verification is attempted against the current primary JWT secret and, on
     /// a signature mismatch, against any backup secret still inside its grace
     /// window (finding #5). Without this fallback, every outstanding token would
     /// fail to verify the instant a secret rotated, logging out the whole fleet.
-    /// All non-signature checks (expiry, issuer, audience, malformed token) are
-    /// terminal and behave exactly as before.
-    pub async fn verify_token(&self, token: &str) -> Result<Claims, AuthError> {
+    /// All non-signature checks (issuer, audience, malformed token) are terminal.
+    ///
+    /// `validate_exp` controls expiry enforcement: callers that must inspect the
+    /// claims of an already-expired token (the refresh endpoint binding an
+    /// expired access token to its refresh token, finding #3) pass `false`.
+    /// This performs **no** `token_type` check — that is layered on by the typed
+    /// wrappers below.
+    async fn decode_with_secrets(
+        &self,
+        token: &str,
+        validate_exp: bool,
+    ) -> Result<Claims, AuthError> {
         let secrets = self
             .secret_manager
             .get_verify_secrets(SecretType::JwtAuth)
@@ -322,7 +350,7 @@ impl TokenManager {
             .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
 
         let mut validation = Validation::new(Algorithm::HS256);
-        validation.validate_exp = true;
+        validation.validate_exp = validate_exp;
         validation.set_issuer(&[&self.config.issuer]);
         validation.set_audience(&[&self.config.issuer]);
 
@@ -359,6 +387,53 @@ impl TokenManager {
                 .map(|e| e.to_string())
                 .unwrap_or_else(|| "No verification secret available".to_string()),
         ))
+    }
+
+    /// Reject a token whose `token_type` claim is not the one the slot requires
+    /// (finding #1). A refresh token presented as a bearer access credential
+    /// (or vice-versa) is treated as an invalid token.
+    fn ensure_token_type(claims: &Claims, expected: TokenType) -> Result<(), AuthError> {
+        if claims.token_type != expected {
+            return Err(AuthError::InvalidToken(format!(
+                "Wrong token type: expected {expected:?}, got {:?}",
+                claims.token_type
+            )));
+        }
+        Ok(())
+    }
+
+    /// Verify an **access** token and return its claims.
+    ///
+    /// Enforces expiry, signature (with rotation-safe backup fallback) and that
+    /// the token is an access token — a refresh token presented here is rejected
+    /// (finding #1).
+    pub async fn verify_token(&self, token: &str) -> Result<Claims, AuthError> {
+        let claims = self.decode_with_secrets(token, true).await?;
+        Self::ensure_token_type(&claims, TokenType::Access)?;
+        Ok(claims)
+    }
+
+    /// Verify a **refresh** token and return its claims.
+    ///
+    /// Like [`Self::verify_token`] but requires the `Refresh` token type; an
+    /// access token presented in a refresh slot is rejected (finding #1).
+    pub async fn verify_refresh_token(&self, token: &str) -> Result<Claims, AuthError> {
+        let claims = self.decode_with_secrets(token, true).await?;
+        Self::ensure_token_type(&claims, TokenType::Refresh)?;
+        Ok(claims)
+    }
+
+    /// Verify the signature and access-token type of a possibly-expired access
+    /// token, returning its claims.
+    ///
+    /// Used only by the refresh endpoint, which must read the subject of an
+    /// already-expired access token to bind it to the refresh token (finding
+    /// #3). Expiry is intentionally not enforced here; the caller has already
+    /// confirmed the access token is expired before reaching this path.
+    pub async fn verify_expired_access_claims(&self, token: &str) -> Result<Claims, AuthError> {
+        let claims = self.decode_with_secrets(token, false).await?;
+        Self::ensure_token_type(&claims, TokenType::Access)?;
+        Ok(claims)
     }
 
     /// Verify a raw JWT token string and return an AuthResponse.
@@ -407,10 +482,22 @@ impl TokenManager {
             return Err(AuthError::InvalidToken("Key has been revoked".to_string()));
         }
 
+        // Re-derive effective permissions from the LIVE key rather than trusting
+        // the snapshot baked into the token (finding #10). The token's claim acts
+        // only as an upper bound: a permission removed from the key after the
+        // token was issued must no longer be granted. The result is the
+        // intersection of the claimed permissions with the key's current set.
+        let live_permissions: std::collections::HashSet<&String> = key.permissions.iter().collect();
+        let effective_permissions: Vec<String> = claims
+            .permissions
+            .into_iter()
+            .filter(|perm| live_permissions.contains(perm))
+            .collect();
+
         Ok(AuthResponse {
             is_valid: true,
             key_id: claims.sub,
-            permissions: claims.permissions,
+            permissions: effective_permissions,
         })
     }
 
@@ -496,8 +583,10 @@ impl TokenManager {
         &self,
         refresh_token: &str,
     ) -> Result<(String, String), AuthError> {
-        // Verify the refresh token to get the claims
-        let claims = self.verify_token(refresh_token).await?;
+        // Verify the refresh token to get the claims. This requires the token to
+        // actually be a refresh token (finding #1) — an access token cannot be
+        // exchanged for a new pair here.
+        let claims = self.verify_refresh_token(refresh_token).await?;
 
         // Get the key and verify it's valid
         let key = self
@@ -753,6 +842,141 @@ mod tests {
         assert!(
             matches!(err, AuthError::InvalidToken(_)),
             "foreign-signed token must be rejected, got {err:?}"
+        );
+    }
+
+    // ==========================================================================
+    // TOKEN-TYPE ENFORCEMENT (finding #1)
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn access_token_verifies_as_access() {
+        let (tm, _sm) = test_manager().await;
+        let (access, _refresh) = tm
+            .generate_mock_token_pair("key-1".to_string(), vec!["admin".to_string()], None, None)
+            .await
+            .unwrap();
+
+        let claims = tm.verify_token(&access).await.unwrap();
+        assert_eq!(claims.token_type, TokenType::Access);
+    }
+
+    #[tokio::test]
+    async fn refresh_token_verifies_as_refresh() {
+        let (tm, _sm) = test_manager().await;
+        let (_access, refresh) = tm
+            .generate_mock_token_pair("key-1".to_string(), vec!["admin".to_string()], None, None)
+            .await
+            .unwrap();
+
+        let claims = tm.verify_refresh_token(&refresh).await.unwrap();
+        assert_eq!(claims.token_type, TokenType::Refresh);
+    }
+
+    #[tokio::test]
+    async fn refresh_token_rejected_as_access_token() {
+        let (tm, _sm) = test_manager().await;
+        let (_access, refresh) = tm
+            .generate_mock_token_pair("key-1".to_string(), vec!["admin".to_string()], None, None)
+            .await
+            .unwrap();
+
+        // A refresh token must NOT be usable as a bearer access credential.
+        let err = tm.verify_token(&refresh).await.unwrap_err();
+        assert!(
+            matches!(err, AuthError::InvalidToken(_)),
+            "refresh token presented as access must be rejected, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn access_token_rejected_in_refresh_slot() {
+        let (tm, _sm) = test_manager().await;
+        let (access, _refresh) = tm
+            .generate_mock_token_pair("key-1".to_string(), vec!["admin".to_string()], None, None)
+            .await
+            .unwrap();
+
+        // An access token must NOT be exchangeable at the refresh slot.
+        let err = tm.verify_refresh_token(&access).await.unwrap_err();
+        assert!(
+            matches!(err, AuthError::InvalidToken(_)),
+            "access token presented at refresh slot must be rejected, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_token_pair_rejects_access_token() {
+        let (tm, _sm) = test_manager().await;
+
+        // Store a root key so the underlying key lookup would otherwise succeed.
+        let key = crate::storage::models::Key::new_root_key_with_permissions(
+            "pk".to_string(),
+            "method".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        tm.get_key_manager().set_key("key-1", &key).await.unwrap();
+
+        let (access, _refresh) = tm
+            .generate_token_pair("key-1".to_string(), vec!["admin".to_string()], None)
+            .await
+            .unwrap();
+
+        // Refreshing with an access token in the refresh slot must fail.
+        let err = tm.refresh_token_pair(&access).await.unwrap_err();
+        assert!(
+            matches!(err, AuthError::InvalidToken(_)),
+            "refresh_token_pair must reject an access token, got {err:?}"
+        );
+    }
+
+    // ==========================================================================
+    // LIVE-KEY PERMISSION RE-DERIVATION (finding #10)
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn verify_token_string_rederives_perms_from_live_key() {
+        let (tm, _sm) = test_manager().await;
+
+        // Key initially holds two permissions.
+        let mut key = crate::storage::models::Key::new_root_key_with_permissions(
+            "pk".to_string(),
+            "method".to_string(),
+            vec!["admin".to_string(), "context".to_string()],
+            None,
+        );
+        tm.get_key_manager().set_key("key-1", &key).await.unwrap();
+
+        // Mint a token carrying both permissions.
+        let (access, _refresh) = tm
+            .generate_token_pair(
+                "key-1".to_string(),
+                vec!["admin".to_string(), "context".to_string()],
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Sanity: before any change, both permissions are present.
+        let resp = tm.verify_token_string(&access, None).await.unwrap();
+        assert!(resp.permissions.contains(&"admin".to_string()));
+        assert!(resp.permissions.contains(&"context".to_string()));
+
+        // Revoke "context" from the LIVE key (keep "admin").
+        key.set_permissions(vec!["admin".to_string()]);
+        tm.get_key_manager().set_key("key-1", &key).await.unwrap();
+
+        // The still-valid token must no longer grant the revoked permission.
+        let resp = tm.verify_token_string(&access, None).await.unwrap();
+        assert!(
+            resp.permissions.contains(&"admin".to_string()),
+            "retained permission must still be granted"
+        );
+        assert!(
+            !resp.permissions.contains(&"context".to_string()),
+            "permission removed from the live key must NOT be granted, got {:?}",
+            resp.permissions
         );
     }
 
