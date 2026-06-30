@@ -19,6 +19,11 @@ use serde::Serialize;
 /// Set when an `Output::write` fails to render (e.g. JSON serialization error).
 /// `main` reads this to exit non-zero instead of masking the failure with a
 /// success code.
+///
+/// Accessed with `Ordering::Relaxed`: this is a standalone flag that guards no
+/// other memory, the meaningful read happens once in `main` after the command
+/// has fully returned (so the store has long since happened-before it), and a
+/// set is monotonic (never cleared). No stronger ordering is needed.
 static OUTPUT_FAILED: AtomicBool = AtomicBool::new(false);
 
 /// Whether any output render has failed during this process.
