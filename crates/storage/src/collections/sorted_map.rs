@@ -500,6 +500,17 @@ where
         self.inner.contains(id)
     }
 
+    /// The deterministic storage entity id this `key` maps to — lets the
+    /// add-wins merge consult `Index::is_deleted` without re-deriving
+    /// `compute_id`. See [`UnorderedMap::entry_id`](super::UnorderedMap::entry_id).
+    pub(crate) fn entry_id<Q>(&self, key: &Q) -> Id
+    where
+        K: Borrow<Q>,
+        Q: AsRef<[u8]> + ?Sized,
+    {
+        compute_id(self.inner.id(), key.as_ref())
+    }
+
     /// Remove a key from the map, returning the value if it previously existed.
     ///
     /// # Errors
