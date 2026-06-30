@@ -300,6 +300,30 @@ mod tests {
     }
 
     #[test]
+    fn retry_after_stays_at_least_one_second_across_cap_and_roll_cycles() {
+        // The rolling cap advances `failures[0]` (the lockout anchor) on every
+        // recorded failure once the bucket is full, so the reported retry-after
+        // is computed from the oldest *retained* failure rather than the first
+        // one ever seen. Regardless of how many cap-and-roll cycles happen, a
+        // locked key must always report a retry-after of at least 1 second (no
+        // zero/sub-second value that would invite an immediate retry).
+        let rl = LoginRateLimiter::new(3, 60_000);
+        let key = "sustained-flooder";
+        for t in 0..200u64 {
+            // Hammer once per second; each call past the cap rolls the window.
+            rl.record_failure_at(key, t * 1_000);
+            // Only assert once the bucket has reached `max_attempts` (3) entries
+            // and is therefore locked; the first two failures are still allowed.
+            if t + 1 >= 3 {
+                let retry = rl
+                    .check_at(key, t * 1_000)
+                    .expect("a full bucket must remain locked");
+                assert!(retry >= 1, "retry-after must stay >= 1s, got {retry}");
+            }
+        }
+    }
+
+    #[test]
     fn reclaim_expired_drops_only_aged_buckets() {
         let mut map: HashMap<String, Vec<u64>> = HashMap::new();
         let _ = map.insert("live".to_owned(), vec![50_000]);

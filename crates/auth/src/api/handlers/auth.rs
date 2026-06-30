@@ -195,10 +195,16 @@ pub async fn token_handler(
     let cap_field = |s: &str| -> String { s.chars().take(MAX_RL_KEY_FIELD).collect() };
     let rl_auth_method = cap_field(&token_request.auth_method);
     let rl_public_key = cap_field(&token_request.public_key);
+    // Length-prefix *both* fields so the key is unambiguous regardless of any
+    // `|` characters in either component: `len|auth_method|len|public_key`. A
+    // bare `|` separator would otherwise let an attacker who controls
+    // `public_key` smuggle a separator and collide with a different identity's
+    // bucket.
     let rl_key = format!(
-        "{}|{}|{}",
+        "{}|{}|{}|{}",
         rl_auth_method.len(),
         rl_auth_method,
+        rl_public_key.len(),
         rl_public_key
     );
 
