@@ -117,7 +117,7 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                                         &shadow_op.scope,
                                         &g,
                                         &m,
-                                        &[shadow_op.id],
+                                        &[shadow_op.id()],
                                     )
                                 });
                                 (true, role)

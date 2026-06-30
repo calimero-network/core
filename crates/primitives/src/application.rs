@@ -198,7 +198,9 @@ impl BorshSerialize for SignerId {
     fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         // Serialize as length-prefixed bytes
         let bytes = self.0.as_bytes();
-        let len = bytes.len() as u32;
+        let len = u32::try_from(bytes.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "SignerId too long to encode")
+        })?;
         BorshSerialize::serialize(&len, writer)?;
         writer.write_all(bytes)
     }
@@ -348,7 +350,12 @@ impl BorshSerialize for AppKey {
     fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         // Serialize app_id as length-prefixed bytes
         let app_id_bytes = self.app_id.as_bytes();
-        let app_id_len = app_id_bytes.len() as u32;
+        let app_id_len = u32::try_from(app_id_bytes.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "AppKey app_id too long to encode",
+            )
+        })?;
         BorshSerialize::serialize(&app_id_len, writer)?;
         writer.write_all(app_id_bytes)?;
 

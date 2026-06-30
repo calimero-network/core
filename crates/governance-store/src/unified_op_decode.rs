@@ -34,16 +34,16 @@ fn build_op(
     parents: &[[u8; 32]],
     payload: OpPayload,
 ) -> Op {
-    Op {
+    Op::from_parts(
         id,
         scope,
-        parents: parents.to_vec(),
+        parents.to_vec(),
         author,
         hlc,
         payload,
-        expected_scope_root: [0u8; 32],
-        signature: [0u8; 64],
-    }
+        [0u8; 32],
+        [0u8; 64],
+    )
 }
 
 /// Convert a namespace governance op into the unified [`Op`] graph node it
