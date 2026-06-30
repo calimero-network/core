@@ -21,11 +21,14 @@ pub struct AddNodeCommand {
     /// URL of remote node or path to local node directory
     pub location: String,
 
-    /// Access token for authentication (skips automatic login)
+    /// Access token source (skips automatic login): `env:NAME`, `file:PATH`,
+    /// `-` (stdin), or the raw token (discouraged — exposed in shell history /
+    /// ps / /proc).
     #[arg(long)]
     pub access_token: Option<String>,
 
-    /// Refresh token for authentication (optional, used with access-token)
+    /// Refresh token source (used with --access-token): `env:NAME`,
+    /// `file:PATH`, `-` (stdin), or the raw token (discouraged).
     #[arg(long)]
     pub refresh_token: Option<String>,
 }
@@ -264,12 +267,18 @@ async fn determine_auth_tokens(
     node_description: &str,
     output: Output,
 ) -> Result<Option<JwtToken>> {
-    // If access token is provided, use direct JWT tokens (skip automatic auth)
-    if let Some(access_token) = &cmd.access_token {
-        return Ok(Some(if let Some(refresh) = &cmd.refresh_token {
-            JwtToken::with_refresh(access_token.clone(), refresh.clone())
+    // If access token is provided, use direct JWT tokens (skip automatic auth).
+    // The flag values are *source specs*, not the raw secret, so the token
+    // never has to appear in argv.
+    let access_token =
+        crate::secret::resolve_optional_secret(cmd.access_token.as_deref(), "access token")?;
+    if let Some(access_token) = access_token {
+        let refresh_token =
+            crate::secret::resolve_optional_secret(cmd.refresh_token.as_deref(), "refresh token")?;
+        return Ok(Some(if let Some(refresh) = refresh_token {
+            JwtToken::with_refresh(access_token, refresh)
         } else {
-            JwtToken::new(access_token.clone())
+            JwtToken::new(access_token)
         }));
     }
 
