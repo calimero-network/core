@@ -397,6 +397,14 @@
         "xcall_callable": {
           "type": "boolean",
           "description": "Cross-context entry point declared via #[app::xcall]. Absent/false on modules compiled before this field existed. When any method in a module sets this, the node enforces that only such methods are reachable via xcall."
+        },
+        "xcall_callers": {
+          "type": "string",
+          "enum": [
+            "any_in_namespace",
+            "same_app"
+          ],
+          "description": "Who may invoke this xcall entry point, enforced by the node. 'any_in_namespace' (the default, and the value for manifests compiled before this field existed) keeps the historical behaviour; 'same_app' (#[app::xcall(from_same_app)]) restricts callers to contexts running the same application id."
         }
       }
     },

@@ -52,6 +52,12 @@ impl XCallExample {
     /// Receive a pong via `xcall`. Marked `#[app::xcall]` so other contexts in
     /// the same namespace may invoke it.
     ///
+    /// A tighter, node-enforced caller policy is available —
+    /// `#[app::xcall(from_same_app)]` restricts callers to contexts running this
+    /// same application. It's deliberately not used here yet: emitting the new
+    /// `xcall_callers` ABI field requires the downstream `abi-codegen` tool to
+    /// understand it first, so the example adopts it once that ships.
+    ///
     /// `env::xcall_origin()` is set by the node and can't be forged, so this
     /// method rejects direct calls (no origin) and refuses any call where the
     /// origin doesn't match the self-reported `from_context`.
