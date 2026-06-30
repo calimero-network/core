@@ -364,11 +364,32 @@ impl TryFrom<&str> for GroupInvitationPayload {
     }
 }
 
+/// The constituent parts of a [`GroupInvitationPayload`].
+///
+/// A named struct rather than a 7-positional `new(...)` / a 7-tuple `parts()`:
+/// the payload carries two distinct 32-byte ids and three integers, which are
+/// trivially transposable when passed positionally.
+#[derive(Clone, Debug)]
+pub struct GroupInvitationParts {
+    /// The group the invitation is for.
+    pub group_id: [u8; DIGEST_SIZE],
+    /// Identity of the inviting member.
+    pub inviter_identity: crate::identity::PublicKey,
+    /// The specific invitee, if the invitation is targeted.
+    pub invitee_identity: Option<crate::identity::PublicKey>,
+    /// Optional expiration (semantics owned by the caller).
+    pub expiration: Option<u64>,
+    /// The inviter's signature over the invitation.
+    pub inviter_signature: String,
+    /// Per-invitation secret salt.
+    pub secret_salt: [u8; 32],
+    /// Absolute expiration timestamp.
+    pub expiration_timestamp: u64,
+}
+
 #[cfg(feature = "borsh")]
 const _: () = {
     use borsh::{BorshDeserialize, BorshSerialize};
-
-    use crate::identity::PublicKey;
 
     #[derive(BorshSerialize, BorshDeserialize)]
     struct GroupInvitationInner {
@@ -382,54 +403,35 @@ const _: () = {
     }
 
     impl GroupInvitationPayload {
-        /// Creates a new, serialized group invitation payload.
-        #[allow(clippy::too_many_arguments)]
-        pub fn new(
-            group_id: [u8; DIGEST_SIZE],
-            inviter_identity: PublicKey,
-            invitee_identity: Option<PublicKey>,
-            expiration: Option<u64>,
-            inviter_signature: String,
-            secret_salt: [u8; 32],
-            expiration_timestamp: u64,
-        ) -> io::Result<Self> {
+        /// Creates a new, serialized group invitation payload from its
+        /// [`GroupInvitationParts`].
+        pub fn new(parts: GroupInvitationParts) -> io::Result<Self> {
             let payload = GroupInvitationInner {
-                group_id,
-                inviter_identity: *inviter_identity,
-                invitee_identity: invitee_identity.map(|pk| *pk),
-                expiration,
-                inviter_signature,
-                secret_salt,
-                expiration_timestamp,
+                group_id: parts.group_id,
+                inviter_identity: *parts.inviter_identity,
+                invitee_identity: parts.invitee_identity.map(|pk| *pk),
+                expiration: parts.expiration,
+                inviter_signature: parts.inviter_signature,
+                secret_salt: parts.secret_salt,
+                expiration_timestamp: parts.expiration_timestamp,
             };
 
             borsh::to_vec(&payload).map(Self)
         }
 
-        /// Deserializes the payload and extracts its constituent parts.
-        #[allow(clippy::type_complexity)]
-        pub fn parts(
-            &self,
-        ) -> io::Result<(
-            [u8; DIGEST_SIZE],
-            PublicKey,
-            Option<PublicKey>,
-            Option<u64>,
-            String,
-            [u8; 32],
-            u64,
-        )> {
+        /// Deserializes the payload into its [`GroupInvitationParts`].
+        pub fn parts(&self) -> io::Result<GroupInvitationParts> {
             let payload: GroupInvitationInner = borsh::from_slice(&self.0)?;
 
-            Ok((
-                payload.group_id,
-                payload.inviter_identity.into(),
-                payload.invitee_identity.map(Into::into),
-                payload.expiration,
-                payload.inviter_signature,
-                payload.secret_salt,
-                payload.expiration_timestamp,
-            ))
+            Ok(GroupInvitationParts {
+                group_id: payload.group_id,
+                inviter_identity: payload.inviter_identity.into(),
+                invitee_identity: payload.invitee_identity.map(Into::into),
+                expiration: payload.expiration,
+                inviter_signature: payload.inviter_signature,
+                secret_salt: payload.secret_salt,
+                expiration_timestamp: payload.expiration_timestamp,
+            })
         }
     }
 };
@@ -473,15 +475,15 @@ mod tests {
         let invitee = PublicKey::from([5; DIGEST_SIZE]);
         let salt = [9u8; 32];
 
-        let payload = GroupInvitationPayload::new(
+        let payload = GroupInvitationPayload::new(GroupInvitationParts {
             group_id,
-            inviter,
-            Some(invitee),
-            Some(1_700_000_000),
-            "abcd1234".to_string(),
-            salt,
-            999_999_999,
-        )
+            inviter_identity: inviter,
+            invitee_identity: Some(invitee),
+            expiration: Some(1_700_000_000),
+            inviter_signature: "abcd1234".to_string(),
+            secret_salt: salt,
+            expiration_timestamp: 999_999_999,
+        })
         .expect("Payload creation should succeed");
 
         let encoded = payload.to_string();
@@ -490,15 +492,14 @@ mod tests {
         let decoded =
             GroupInvitationPayload::from_str(&encoded).expect("Payload decoding should succeed");
 
-        let (g, inv, invitee_out, exp, sig, decoded_salt, exp_ts) =
-            decoded.parts().expect("Parts extraction should succeed");
-        assert_eq!(g, group_id);
-        assert_eq!(inv, inviter);
-        assert_eq!(invitee_out, Some(invitee));
-        assert_eq!(exp, Some(1_700_000_000));
-        assert_eq!(sig, "abcd1234");
-        assert_eq!(decoded_salt, salt);
-        assert_eq!(exp_ts, 999_999_999);
+        let parts = decoded.parts().expect("Parts extraction should succeed");
+        assert_eq!(parts.group_id, group_id);
+        assert_eq!(parts.inviter_identity, inviter);
+        assert_eq!(parts.invitee_identity, Some(invitee));
+        assert_eq!(parts.expiration, Some(1_700_000_000));
+        assert_eq!(parts.inviter_signature, "abcd1234");
+        assert_eq!(parts.secret_salt, salt);
+        assert_eq!(parts.expiration_timestamp, 999_999_999);
     }
 
     #[test]
@@ -507,30 +508,29 @@ mod tests {
         let inviter = PublicKey::from([7; DIGEST_SIZE]);
         let salt = [10u8; 32];
 
-        let payload = GroupInvitationPayload::new(
+        let payload = GroupInvitationPayload::new(GroupInvitationParts {
             group_id,
-            inviter,
-            None,
-            None,
-            "sig_hex".to_string(),
-            salt,
-            1_000_000_000,
-        )
+            inviter_identity: inviter,
+            invitee_identity: None,
+            expiration: None,
+            inviter_signature: "sig_hex".to_string(),
+            secret_salt: salt,
+            expiration_timestamp: 1_000_000_000,
+        })
         .expect("Payload creation should succeed");
 
         let encoded = payload.to_string();
         let decoded =
             GroupInvitationPayload::from_str(&encoded).expect("Payload decoding should succeed");
 
-        let (g, inv, invitee_out, exp, sig, decoded_salt, exp_ts) =
-            decoded.parts().expect("Parts extraction should succeed");
-        assert_eq!(g, group_id);
-        assert_eq!(inv, inviter);
-        assert_eq!(invitee_out, None);
-        assert_eq!(exp, None);
-        assert_eq!(sig, "sig_hex");
-        assert_eq!(decoded_salt, salt);
-        assert_eq!(exp_ts, 1_000_000_000);
+        let parts = decoded.parts().expect("Parts extraction should succeed");
+        assert_eq!(parts.group_id, group_id);
+        assert_eq!(parts.inviter_identity, inviter);
+        assert_eq!(parts.invitee_identity, None);
+        assert_eq!(parts.expiration, None);
+        assert_eq!(parts.inviter_signature, "sig_hex");
+        assert_eq!(parts.secret_salt, salt);
+        assert_eq!(parts.expiration_timestamp, 1_000_000_000);
     }
 
     #[test]
