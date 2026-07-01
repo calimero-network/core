@@ -60,6 +60,17 @@ impl<'a> GroupKeyring<'a> {
     /// that pulls the current key at `epoch 0` and later replays the rotation op
     /// that minted it (real epoch) ends up with the real epoch either way — so
     /// nodes never disagree on the "current" key from write-ordering alone.
+    ///
+    /// The read-modify-write below (get the existing epoch, take the max, put)
+    /// is **not** an atomic store transaction, but it does not need to be: every
+    /// writer of a `GroupKeyEntry` runs inside the per-namespace governance
+    /// apply, which is serialized by the `DagStore` lock the `ContextManager`
+    /// actor holds (the same single-writer invariant `advance_dag_head` and
+    /// `delete_all_for_group` rely on). There is therefore no concurrent writer
+    /// for the same `(group_id, key_id)` to interleave between the get and the
+    /// put. `key_id = sha256(group_key)`, so any two writes for the same key_id
+    /// carry the identical `group_key`; only the `epoch`/`created_at` can differ,
+    /// and the monotonic-max keeps the write idempotent regardless.
     pub fn store_key_with_epoch(&self, group_key: &[u8; 32], epoch: u64) -> EyreResult<[u8; 32]> {
         let key_id = Self::key_id_for(group_key);
         let entry = GroupKeyEntry::new(self.group_id.to_bytes(), key_id);
