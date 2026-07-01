@@ -371,7 +371,7 @@ mod key_recovery_trigger {
             vec![],
             1,
             NamespaceOp::Group {
-                group_id,
+                group_id: group_id.into(),
                 key_id: GroupKeyring::key_id_for(&[0xAA; 32]).into(),
                 encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
                 key_rotation: None,

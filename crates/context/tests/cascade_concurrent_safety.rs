@@ -130,7 +130,7 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
     // Op A: cascade K1 -> K2 (genesis-parented). Causally first.
     let op_a = SignedGroupOp::sign(
         &admin_sk,
-        root.to_bytes(),
+        root.to_bytes().into(),
         vec![[0u8; 32]],
         1,
         GroupOp::CascadeTargetApplicationSet {
@@ -148,7 +148,7 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
     // and the cascade arm hits the predicate-skip path.
     let op_b = SignedGroupOp::sign(
         &admin_sk,
-        root.to_bytes(),
+        root.to_bytes().into(),
         vec![op_a_hash],
         2,
         GroupOp::CascadeTargetApplicationSet {

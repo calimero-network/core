@@ -125,8 +125,8 @@ fn timeout_classifier_assigns_per_op_kind() {
     // Member-change class: membership-table mutations, possible inheritance walks.
     assert_eq!(
         timeout_for_namespace_op(&NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: [0u8; 32],
-            parent_id: [0u8; 32],
+            group_id: [0u8; 32].into(),
+            parent_id: [0u8; 32].into(),
             restricted: true,
         })),
         OP_ACK_MEMBER_CHANGE_TIMEOUT
@@ -135,7 +135,7 @@ fn timeout_classifier_assigns_per_op_kind() {
     // Heavy class: cascade deletes / KeyDelivery side-effects.
     assert_eq!(
         timeout_for_namespace_op(&NamespaceOp::Root(RootOp::GroupDeleted {
-            root_group_id: [0u8; 32],
+            root_group_id: [0u8; 32].into(),
             cascade_group_ids: Vec::new(),
             cascade_context_ids: Vec::new(),
         })),
@@ -146,7 +146,7 @@ fn timeout_classifier_assigns_per_op_kind() {
     // the inner GroupOp variant isn't visible without decrypting.
     assert_eq!(
         timeout_for_namespace_op(&NamespaceOp::Group {
-            group_id: [0u8; 32],
+            group_id: [0u8; 32].into(),
             key_id: [0u8; 32].into(),
             encrypted: calimero_context_client::local_governance::EncryptedGroupOp {
                 ciphertext: Vec::new(),

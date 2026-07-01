@@ -65,7 +65,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                         match GroupKeyring::wrap_for_member(&sk, identity, &group_key) {
                             Ok(envelope) => {
                                 let delivery_op = NamespaceOp::Root(RootOp::KeyDelivery {
-                                    group_id: group_id.to_bytes(),
+                                    group_id: group_id.to_bytes().into(),
                                     envelope,
                                 });
                                 // Recipient-specific: pass

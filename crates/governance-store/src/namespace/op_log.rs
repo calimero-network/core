@@ -144,7 +144,7 @@ impl<'a> NamespaceOpLogService<'a> {
             } => crate::decrypt_group_op(
                 self.store,
                 self.namespace_id,
-                calimero_context_config::types::ContextGroupId::from(*group_id),
+                *group_id,
                 key_id.as_bytes(),
                 encrypted,
             )
@@ -267,7 +267,7 @@ impl<'a> NamespaceOpLogService<'a> {
             else {
                 continue;
             };
-            if op_group_id != group_id {
+            if op_group_id.to_bytes() != group_id {
                 continue;
             }
             entries.push(StoredSignedGroupOp { signed_op, key_id });
@@ -325,7 +325,7 @@ impl<'a> NamespaceOpLogService<'a> {
                 ..
             } = signed_op.op
             {
-                seen.insert((op_group_id, key_id.to_bytes()));
+                seen.insert((op_group_id.to_bytes(), key_id.to_bytes()));
             }
         }
 
@@ -378,7 +378,7 @@ impl<'a> NamespaceOpLogService<'a> {
             let Some(skeleton) = decode_opaque_skeleton(&value.skeleton_bytes) else {
                 continue;
             };
-            if skeleton.group_id == group_id {
+            if skeleton.group_id.to_bytes() == group_id {
                 delta_ids.push(skeleton.delta_id);
             }
         }

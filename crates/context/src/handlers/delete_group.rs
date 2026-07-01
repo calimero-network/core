@@ -120,9 +120,9 @@ impl Handler<DeleteGroupRequest> for ContextManager {
             async move {
                 let signer_sk = PrivateKey::from(signer_sk_bytes);
                 let op = NamespaceOp::Root(RootOp::GroupDeleted {
-                    root_group_id: group_id_bytes,
-                    cascade_group_ids,
-                    cascade_context_ids,
+                    root_group_id: group_id_bytes.into(),
+                    cascade_group_ids: cascade_group_ids.into_iter().map(Into::into).collect(),
+                    cascade_context_ids: cascade_context_ids.into_iter().map(Into::into).collect(),
                 });
 
                 let report = calimero_governance_store::sign_apply_and_publish_namespace_op(

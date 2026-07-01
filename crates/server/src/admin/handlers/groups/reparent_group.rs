@@ -70,8 +70,8 @@ pub async fn handler(
 
     let signer_sk = PrivateKey::from(sk_bytes);
     let op = NamespaceOp::Root(RootOp::GroupReparented {
-        child_group_id: child_group_id.to_bytes(),
-        new_parent_id: new_parent_id.to_bytes(),
+        child_group_id: child_group_id.to_bytes().into(),
+        new_parent_id: new_parent_id.to_bytes().into(),
     });
 
     info!(child=%group_id_str, new_parent=%req.new_parent_id, "Reparenting subgroup");

@@ -161,7 +161,7 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
     let signer_sk = PrivateKey::random(&mut rng);
     let policy_op = SignedGroupOp::sign(
         &signer_sk,
-        gid.to_bytes(),
+        gid.to_bytes().into(),
         vec![],
         1,
         GroupOp::TeeAdmissionPolicySet {
@@ -2072,7 +2072,7 @@ fn is_authoritative_namespace_identity_recognizes_owner_admin_tee() {
     let signer_sk = PrivateKey::random(&mut rng);
     let tee_op = SignedGroupOp::sign(
         &signer_sk,
-        gid.to_bytes(),
+        gid.to_bytes().into(),
         vec![],
         1,
         GroupOp::MemberJoinedViaTeeAttestation {

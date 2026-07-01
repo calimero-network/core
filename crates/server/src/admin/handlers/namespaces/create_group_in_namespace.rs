@@ -152,8 +152,8 @@ pub async fn handler(
     // docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
     let op = calimero_context_client::local_governance::NamespaceOp::Root(
         calimero_context_client::local_governance::RootOp::GroupCreated {
-            group_id,
-            parent_id: namespace_id.to_bytes(),
+            group_id: group_id.into(),
+            parent_id: namespace_id.to_bytes().into(),
             restricted,
         },
     );

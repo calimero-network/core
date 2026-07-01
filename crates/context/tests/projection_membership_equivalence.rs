@@ -103,8 +103,8 @@ fn fold_subgroup_structure(
         signer: admin,
         nonce: 0,
         op: NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: subgroup.to_bytes(),
-            parent_id: namespace,
+            group_id: subgroup.to_bytes().into(),
+            parent_id: namespace.into(),
             restricted: true,
         }),
         signature: [0u8; 64],
@@ -143,7 +143,7 @@ fn ns_group_envelope(
         signer,
         nonce: 0,
         op: NamespaceOp::Group {
-            group_id: group.to_bytes(),
+            group_id: group.to_bytes().into(),
             key_id: [0u8; 32].into(),
             encrypted: EncryptedGroupOp {
                 nonce: [0u8; 12],
@@ -225,7 +225,7 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
-            group_id: subgroup.to_bytes(),
+            group_id: subgroup.to_bytes().into(),
         }),
     )
     .expect("sign join_sub");
@@ -381,7 +381,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
-            group_id: subgroup.to_bytes(),
+            group_id: subgroup.to_bytes().into(),
         }),
     )
     .unwrap();
@@ -519,7 +519,7 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
-            group_id: subgroup.to_bytes(),
+            group_id: subgroup.to_bytes().into(),
         }),
     )
     .unwrap();
@@ -627,7 +627,7 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
-            group_id: subgroup.to_bytes(),
+            group_id: subgroup.to_bytes().into(),
         }),
     )
     .unwrap();

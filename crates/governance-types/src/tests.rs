@@ -651,11 +651,11 @@ fn root_op_discriminants_are_golden() {
     );
 }
 
-fn sample_group_id() -> [u8; 32] {
+fn sample_group_id() -> ContextGroupId {
     let mut g = [0u8; 32];
     g[0] = 7;
     g[31] = 3;
-    g
+    g.into()
 }
 
 #[test]
@@ -771,7 +771,7 @@ fn signable_bytes_deterministic() {
     let pk = sk.public_key();
     let s = SignableGroupOp {
         version: SIGNED_GROUP_OP_SCHEMA_VERSION,
-        group_id: [1u8; 32],
+        group_id: [1u8; 32].into(),
         parent_op_hashes: vec![],
         signer: pk,
         nonce: 42,
@@ -804,7 +804,7 @@ fn namespace_op_sign_verify_root() {
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
-            parent_id: sample_namespace_id().to_bytes(),
+            parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
         }),
     )
@@ -874,7 +874,7 @@ fn namespace_op_content_hash_distinct() {
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
-            parent_id: sample_namespace_id().to_bytes(),
+            parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
         }),
     )
@@ -887,7 +887,7 @@ fn namespace_op_content_hash_distinct() {
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
-            parent_id: sample_namespace_id().to_bytes(),
+            parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
         }),
     )
@@ -913,7 +913,7 @@ fn namespace_signable_bytes_deterministic() {
         nonce: 42,
         op: NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
-            parent_id: sample_namespace_id().to_bytes(),
+            parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
         }),
     };
@@ -1251,7 +1251,7 @@ fn pre_flag_day_namespace_op_version_is_rejected() {
     let signer = PrivateKey::random(&mut OsRng).public_key();
     let stale = SignedNamespaceOp {
         version: SIGNED_NAMESPACE_OP_SCHEMA_VERSION - 1,
-        namespace_id: sample_group_id().into(),
+        namespace_id: sample_group_id().to_bytes().into(),
         parent_op_hashes: vec![],
         signer,
         nonce: 1,
@@ -1295,7 +1295,7 @@ fn v7_borsh_layout_group_op_is_rejected_not_misparsed() {
     let signer = PrivateKey::random(&mut OsRng).public_key();
     let v7 = V7SignedGroupOp {
         version: SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
-        group_id: sample_group_id(),
+        group_id: sample_group_id().to_bytes(),
         parent_op_hashes: vec![],
         state_hash: [0xAB; 32],
         signer,
@@ -1414,18 +1414,18 @@ mod governance_op_storage_roundtrip {
     fn every_root_op_roundtrips_through_stored_signed_entry() {
         let ops = [
             RootOp::GroupCreated {
-                group_id: [1; 32],
-                parent_id: [2; 32],
+                group_id: [1; 32].into(),
+                parent_id: [2; 32].into(),
                 restricted: true,
             },
             RootOp::GroupReparented {
-                child_group_id: [1; 32],
-                new_parent_id: [2; 32],
+                child_group_id: [1; 32].into(),
+                new_parent_id: [2; 32].into(),
             },
             RootOp::GroupDeleted {
-                root_group_id: [1; 32],
-                cascade_group_ids: vec![[3; 32]],
-                cascade_context_ids: vec![[4; 32]],
+                root_group_id: [1; 32].into(),
+                cascade_group_ids: vec![[3; 32].into()],
+                cascade_context_ids: vec![[4; 32].into()],
             },
             RootOp::AdminChanged {
                 new_admin: PrivateKey::random(&mut OsRng).public_key(),
@@ -1439,7 +1439,7 @@ mod governance_op_storage_roundtrip {
             },
             RootOp::MemberJoinedOpen {
                 member: PrivateKey::random(&mut OsRng).public_key(),
-                group_id: [7; 32],
+                group_id: [7; 32].into(),
             },
             RootOp::MemberJoinedAt {
                 member: PrivateKey::random(&mut OsRng).public_key(),

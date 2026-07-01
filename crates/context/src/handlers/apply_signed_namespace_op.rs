@@ -67,7 +67,7 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                         } => calimero_governance_store::decrypt_group_op(
                             &feed_store,
                             namespace_id,
-                            calimero_context_config::types::ContextGroupId::from(*group_id),
+                            *group_id,
                             key_id.as_bytes(),
                             encrypted,
                         )
@@ -298,7 +298,7 @@ fn apply_auth_requirement(
                 | RootOp::PolicyUpdated { .. }
                 | RootOp::GroupReparented { .. } => Some((ns_root, ApplyAuthReq::Admin)),
                 RootOp::GroupCreated { parent_id, .. } => Some((
-                    ContextGroupId::from(*parent_id),
+                    *parent_id,
                     ApplyAuthReq::AdminOrCap(Cap::CAN_CREATE_SUBGROUP.bits()),
                 )),
                 // GroupDeleted authorizes the subgroup OWNER or a
@@ -308,7 +308,7 @@ fn apply_auth_requirement(
             }
         }
         NamespaceOp::Group { group_id, .. } => {
-            let group = ContextGroupId::from(*group_id);
+            let group = *group_id;
             match decrypted? {
                 GroupOp::MemberAdded { .. } | GroupOp::MemberRemoved { .. } => {
                     Some((group, ApplyAuthReq::AdminOrCap(Cap::MANAGE_MEMBERS.bits())))

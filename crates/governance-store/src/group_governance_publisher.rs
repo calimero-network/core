@@ -246,7 +246,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         };
 
         let namespace_op = NamespaceOp::Group {
-            group_id: self.group_id.to_bytes(),
+            group_id: self.group_id.to_bytes().into(),
             key_id: stored_key.key_id.into(),
             encrypted,
             key_rotation,

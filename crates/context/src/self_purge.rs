@@ -2843,7 +2843,7 @@ mod tests {
             vec![],
             1,
             NamespaceOp::Group {
-                group_id: sub_gid.to_bytes(),
+                group_id: sub_gid.to_bytes().into(),
                 key_id: key_id.into(),
                 encrypted,
                 key_rotation: None,

@@ -117,7 +117,7 @@ fn cascade_target_application_set_updates_all_matching_descendants_and_skips_sib
     // Cascade op signed on R, targeting from_app_key=K1, new app_key=K2 + new target=APP_ID_2.
     let cascade_op = SignedGroupOp::sign(
         &admin_sk,
-        r.to_bytes(),
+        r.to_bytes().into(),
         vec![],
         1,
         GroupOp::CascadeTargetApplicationSet {

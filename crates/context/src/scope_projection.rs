@@ -1052,7 +1052,7 @@ impl ScopeProjections {
                 } => calimero_governance_store::decrypt_group_op(
                     store,
                     namespace_id.into(),
-                    ContextGroupId::from(*group_id),
+                    *group_id,
                     key_id.as_bytes(),
                     encrypted,
                 )
@@ -1731,7 +1731,7 @@ mod tests {
                 signer,
                 RootOp::MemberJoinedOpen {
                     member,
-                    group_id: group,
+                    group_id: group.into(),
                 },
             ),
             None,
@@ -2116,7 +2116,7 @@ mod tests {
             signer,
             nonce: 0,
             op: NamespaceOp::Group {
-                group_id: group.to_bytes(),
+                group_id: group.to_bytes().into(),
                 key_id: [0u8; 32].into(),
                 encrypted: calimero_governance_types::EncryptedGroupOp {
                     nonce: [0u8; 12],

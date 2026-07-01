@@ -1316,7 +1316,7 @@ pub fn apply_local_signed_group_op_at_cut(
     }
     op.verify_signature()
         .map_err(|e| eyre::eyre!("signed group op: {e}"))?;
-    let group_id = ContextGroupId::from(op.group_id);
+    let group_id = op.group_id;
 
     // C5.S3b: the op-level `state_hash` staleness check was removed with the field.
     // It stopped being an apply gate in C5.S3a (`scope_root` is the convergence
@@ -1474,7 +1474,7 @@ pub fn sign_apply_local_group_op_borsh(
     let parent_hashes = get_op_head(store, group_id)?
         .map(|h| h.dag_heads.clone())
         .unwrap_or_default();
-    let signed = SignedGroupOp::sign(signer_sk, group_id.to_bytes(), parent_hashes, nonce, op)?;
+    let signed = SignedGroupOp::sign(signer_sk, *group_id, parent_hashes, nonce, op)?;
     let delta_id = signed
         .content_hash()
         .map_err(|e| eyre::eyre!("content_hash: {e}"))?;

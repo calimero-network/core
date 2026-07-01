@@ -243,8 +243,11 @@ impl<'a> NamespaceGovernance<'a> {
                         // a failure here must not block the DAG (every later
                         // op would orphan), so errors are logged, not
                         // propagated.
-                        match self.apply_received_group_key_envelope(*group_id, envelope, op.signer)
-                        {
+                        match self.apply_received_group_key_envelope(
+                            group_id.to_bytes(),
+                            envelope,
+                            op.signer,
+                        ) {
                             Ok(retry_divergence) => {
                                 if retry_divergence.is_some() {
                                     result.divergence = retry_divergence;
@@ -252,12 +255,12 @@ impl<'a> NamespaceGovernance<'a> {
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    group_id = %hex::encode(group_id),
+                                    group_id = %hex::encode(group_id.to_bytes()),
                                     error = %e,
                                     "KeyDelivery side-effect failed; DAG apply continues"
                                 );
                                 result.key_unwrap_failures.push(KeyUnwrapFailure {
-                                    group_id: *group_id,
+                                    group_id: group_id.to_bytes(),
                                     reason: format!("KeyDelivery side-effect failed: {e}"),
                                 });
                             }
@@ -302,7 +305,7 @@ impl<'a> NamespaceGovernance<'a> {
                         // (we ran it via `apply_root_op` above before this
                         // match), so by the time we get here the path is
                         // confirmed Inherited.
-                        let group_id_typed = ContextGroupId::from(*group_id);
+                        let group_id_typed = *group_id;
                         // Clear deny-list on EVERY peer, not just the
                         // local rejoiner. A prior `MemberLeft` (or
                         // `MemberRemoved` followed by inheritance rejoin)
@@ -380,7 +383,7 @@ impl<'a> NamespaceGovernance<'a> {
                         // touching the op-log. Best-effort: log, never
                         // propagate.
                         let gid = *group_id;
-                        let gid_typed = ContextGroupId::from(gid);
+                        let gid_typed = gid;
                         let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
                         let holds_key = GroupKeyring::new(self.store, gid_typed)
                             .holds_any_key()
@@ -389,7 +392,7 @@ impl<'a> NamespaceGovernance<'a> {
                                 .holds_any_key()
                                 .unwrap_or(false);
                         if holds_key {
-                            match self.retry_encrypted_ops_for_group(*group_id) {
+                            match self.retry_encrypted_ops_for_group(group_id.to_bytes()) {
                                 Ok(retry_divergence) => {
                                     if retry_divergence.is_some() {
                                         result.divergence = retry_divergence;
@@ -397,7 +400,7 @@ impl<'a> NamespaceGovernance<'a> {
                                 }
                                 Err(e) => tracing::warn!(
                                     ?e,
-                                    group_id = %hex::encode(group_id),
+                                    group_id = %hex::encode(group_id.to_bytes()),
                                     "retry after GroupCreated failed (#2848)"
                                 ),
                             }
@@ -412,7 +415,7 @@ impl<'a> NamespaceGovernance<'a> {
                 encrypted,
                 key_rotation,
             } => {
-                let group_id_typed = ContextGroupId::from(*group_id);
+                let group_id_typed = *group_id;
 
                 // Issue #2256: an `Open` subgroup is encrypted with the
                 // parent namespace's key (see `GroupGovernancePublisher`).
@@ -469,7 +472,7 @@ impl<'a> NamespaceGovernance<'a> {
                                         let _ = GroupKeyring::new(self.store, group_id_typed)
                                             .store_key(&new_key)?;
                                         tracing::info!(
-                                            group_id = %hex::encode(group_id),
+                                            group_id = %hex::encode(group_id.to_bytes()),
                                             "stored rotated group key"
                                         );
                                     }
@@ -479,7 +482,7 @@ impl<'a> NamespaceGovernance<'a> {
                                             "failed to unwrap key rotation envelope"
                                         );
                                         result.key_unwrap_failures.push(KeyUnwrapFailure {
-                                            group_id: *group_id,
+                                            group_id: group_id.to_bytes(),
                                             reason: format!("key rotation unwrap failed: {e}"),
                                         });
                                     }
@@ -1352,7 +1355,7 @@ impl<'a> NamespaceGovernance<'a> {
 
         let signed_group_op = SignedGroupOp {
             version: calimero_context_client::local_governance::SIGNED_GROUP_OP_SCHEMA_VERSION,
-            group_id: group_id.to_bytes(),
+            group_id: *group_id,
             parent_op_hashes: ns_op.parent_op_hashes.clone(),
             signer: ns_op.signer,
             nonce: ns_op.nonce,

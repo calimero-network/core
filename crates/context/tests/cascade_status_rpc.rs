@@ -86,7 +86,7 @@ fn collect_cascade_status_returns_entries_for_all_three_groups() {
     let fence = HybridTimestamp::zero();
     let op = SignedGroupOp::sign(
         &admin_sk,
-        r.to_bytes(),
+        r.to_bytes().into(),
         vec![],
         1,
         GroupOp::CascadeUpgrade {

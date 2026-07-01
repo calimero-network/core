@@ -288,7 +288,7 @@ fn namespace_dag_service_collects_skeleton_delta_ids_by_group() {
         skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Opaque(OpaqueSkeleton {
             delta_id: delta_a,
             parent_op_hashes: vec![],
-            group_id: group_a.to_bytes(),
+            group_id: group_a.to_bytes().into(),
             signer,
         }))
         .unwrap(),
@@ -297,7 +297,7 @@ fn namespace_dag_service_collects_skeleton_delta_ids_by_group() {
         skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Opaque(OpaqueSkeleton {
             delta_id: delta_b,
             parent_op_hashes: vec![delta_a],
-            group_id: group_b.to_bytes(),
+            group_id: group_b.to_bytes().into(),
             signer,
         }))
         .unwrap(),
@@ -307,7 +307,7 @@ fn namespace_dag_service_collects_skeleton_delta_ids_by_group() {
         skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Opaque(OpaqueSkeleton {
             delta_id: delta_other_ns,
             parent_op_hashes: vec![],
-            group_id: group_a.to_bytes(),
+            group_id: group_a.to_bytes().into(),
             signer,
         }))
         .unwrap(),
@@ -344,7 +344,7 @@ fn namespace_op_log_service_reads_signed_and_skeleton_entries() {
         vec![],
         1,
         NamespaceOp::Group {
-            group_id: group_a.to_bytes(),
+            group_id: group_a.to_bytes().into(),
             key_id: [0x01; 32].into(),
             encrypted: GroupKeyring::encrypt_op(&[0xA1; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
@@ -366,7 +366,7 @@ fn namespace_op_log_service_reads_signed_and_skeleton_entries() {
         skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Opaque(OpaqueSkeleton {
             delta_id: skeleton_delta,
             parent_op_hashes: vec![],
-            group_id: group_b.to_bytes(),
+            group_id: group_b.to_bytes().into(),
             signer: signer_sk.public_key(),
         }))
         .unwrap(),
@@ -413,7 +413,7 @@ fn namespace_op_log_service_reads_tagged_and_legacy_rows() {
         vec![],
         1,
         NamespaceOp::Group {
-            group_id: group.to_bytes(),
+            group_id: group.to_bytes().into(),
             key_id: [0x12; 32].into(),
             encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
@@ -430,7 +430,7 @@ fn namespace_op_log_service_reads_tagged_and_legacy_rows() {
     let legacy_skeleton = OpaqueSkeleton {
         delta_id: legacy_skeleton_delta,
         parent_op_hashes: vec![],
-        group_id: group.to_bytes(),
+        group_id: group.to_bytes().into(),
         signer: signer_sk.public_key(),
     };
 
@@ -489,7 +489,7 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
         vec![],
         1,
         NamespaceOp::Group {
-            group_id: group_a.to_bytes(),
+            group_id: group_a.to_bytes().into(),
             key_id: [0x11; 32].into(),
             encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
@@ -503,7 +503,7 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
         vec![],
         2,
         NamespaceOp::Group {
-            group_id: group_b.to_bytes(),
+            group_id: group_b.to_bytes().into(),
             key_id: [0x22; 32].into(),
             encrypted: GroupKeyring::encrypt_op(&[0xBB; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
@@ -565,7 +565,7 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
         vec![],
         1,
         NamespaceOp::Group {
-            group_id: group_a.to_bytes(),
+            group_id: group_a.to_bytes().into(),
             key_id: key_id.into(),
             encrypted: encrypted_a,
             key_rotation: None,
@@ -579,7 +579,7 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
         vec![],
         2,
         NamespaceOp::Group {
-            group_id: group_b.to_bytes(),
+            group_id: group_b.to_bytes().into(),
             key_id: key_id.into(),
             encrypted: encrypted_b,
             key_rotation: None,
@@ -610,7 +610,7 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
 
     assert_eq!(retryable.len(), 1, "expected only one retryable op");
     match &retryable[0].signed_op.op {
-        NamespaceOp::Group { group_id, .. } => assert_eq!(*group_id, group_a.to_bytes()),
+        NamespaceOp::Group { group_id, .. } => assert_eq!(*group_id, group_a.to_bytes().into()),
         _ => panic!("expected group op"),
     }
 }
@@ -672,7 +672,7 @@ fn namespace_retry_service_orders_candidates_by_signer_nonce() {
                     vec![],
                     nonce,
                     NamespaceOp::Group {
-                        group_id: group.to_bytes(),
+                        group_id: group.to_bytes().into(),
                         key_id: key_id.into(),
                         encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
                         key_rotation: None,
@@ -1077,7 +1077,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
         vec![],
         1,
         NamespaceOp::Group {
-            group_id: namespace_id,
+            group_id: namespace_id.into(),
             key_id: key_id.into(),
             encrypted: policy_op,
             key_rotation: None,
@@ -1120,7 +1120,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
         vec![],
         2,
         NamespaceOp::Group {
-            group_id: namespace_id,
+            group_id: namespace_id.into(),
             key_id: key_id.into(),
             encrypted: join_op,
             key_rotation: None,
@@ -1275,7 +1275,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
         head.parent_hashes.clone(),
         head.next_nonce,
         NamespaceOp::Group {
-            group_id: namespace_id,
+            group_id: namespace_id.into(),
             key_id: key_id.into(),
             encrypted: policy_op,
             key_rotation: None,
@@ -1311,7 +1311,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
         head.parent_hashes.clone(),
         head.next_nonce,
         NamespaceOp::Group {
-            group_id: namespace_id,
+            group_id: namespace_id.into(),
             key_id: key_id.into(),
             encrypted: join_op,
             key_rotation: None,
@@ -1463,8 +1463,8 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     );
     let subgroup_id = [0xC5u8; 32];
     let create_op = NamespaceOp::Root(RootOp::GroupCreated {
-        group_id: subgroup_id,
-        parent_id: namespace_id,
+        group_id: subgroup_id.into(),
+        parent_id: namespace_id.into(),
         restricted: true,
     });
     let signed = SignedNamespaceOp::sign(
@@ -2489,7 +2489,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
     let group_op_content_hash = |ns_op: &SignedNamespaceOp, inner: &GroupOp| -> [u8; 32] {
         SignedGroupOp {
             version: SIGNED_GROUP_OP_SCHEMA_VERSION,
-            group_id: namespace_id,
+            group_id: namespace_id.into(),
             parent_op_hashes: ns_op.parent_op_hashes.clone(),
             signer: ns_op.signer,
             nonce: ns_op.nonce,
@@ -2518,7 +2518,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
         vec![],
         1,
         NamespaceOp::Group {
-            group_id: namespace_id,
+            group_id: namespace_id.into(),
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner_a).unwrap(),
             key_rotation: None,
@@ -2545,7 +2545,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
         vec![hash_a],
         2,
         NamespaceOp::Group {
-            group_id: namespace_id,
+            group_id: namespace_id.into(),
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner_b).unwrap(),
             key_rotation: None,
@@ -2646,7 +2646,7 @@ fn replica_concurrent_sibling_ops_apply_out_of_order_2516() {
             vec![],
             nonce,
             NamespaceOp::Group {
-                group_id: namespace_id,
+                group_id: namespace_id.into(),
                 key_id: key_id.into(),
                 encrypted: GroupKeyring::encrypt_op(&group_key, inner).unwrap(),
                 key_rotation: None,
@@ -2727,7 +2727,7 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
     let group_op_content_hash = |ns_op: &SignedNamespaceOp, inner: &GroupOp| -> [u8; 32] {
         SignedGroupOp {
             version: SIGNED_GROUP_OP_SCHEMA_VERSION,
-            group_id: namespace_id,
+            group_id: namespace_id.into(),
             parent_op_hashes: ns_op.parent_op_hashes.clone(),
             signer: ns_op.signer,
             nonce: ns_op.nonce,
@@ -2756,7 +2756,7 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
         vec![],
         1,
         NamespaceOp::Group {
-            group_id: namespace_id,
+            group_id: namespace_id.into(),
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner_a).unwrap(),
             key_rotation: None,
@@ -2781,7 +2781,7 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
         vec![],
         2,
         NamespaceOp::Group {
-            group_id: namespace_id,
+            group_id: namespace_id.into(),
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner_b).unwrap(),
             key_rotation: None,
@@ -3281,8 +3281,8 @@ fn governance_group_reparented_via_signed_op() {
             vec![],
             (i + 1) as u64,
             NamespaceOp::Root(RootOp::GroupCreated {
-                group_id: *gid,
-                parent_id: *parent,
+                group_id: (*gid).into(),
+                parent_id: (*parent).into(),
                 restricted: true,
             }),
         )
@@ -3302,8 +3302,8 @@ fn governance_group_reparented_via_signed_op() {
         vec![],
         4,
         NamespaceOp::Root(RootOp::GroupReparented {
-            child_group_id: leaf_id,
-            new_parent_id,
+            child_group_id: leaf_id.into(),
+            new_parent_id: new_parent_id.into(),
         }),
     )
     .expect("sign reparent op");
@@ -3362,8 +3362,8 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: [0xC1; 32],
-            parent_id: ns_id,
+            group_id: [0xC1; 32].into(),
+            parent_id: ns_id.into(),
             restricted: true,
         }),
     )
@@ -3425,8 +3425,8 @@ fn governance_rejects_non_admin_signer() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: [0xBB; 32],
-            parent_id: ns_id,
+            group_id: [0xBB; 32].into(),
+            parent_id: ns_id.into(),
             restricted: true,
         }),
     )
@@ -3472,8 +3472,8 @@ fn governance_group_created_is_idempotent() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: new_group_id,
-            parent_id: ns_id,
+            group_id: new_group_id.into(),
+            parent_id: ns_id.into(),
             restricted: true,
         }),
     )
@@ -3489,8 +3489,8 @@ fn governance_group_created_is_idempotent() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: new_group_id,
-            parent_id: ns_id,
+            group_id: new_group_id.into(),
+            parent_id: ns_id.into(),
             restricted: true,
         }),
     )
@@ -3547,8 +3547,8 @@ fn governance_group_created_writes_birth_visibility() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: open_group_id,
-            parent_id: ns_id,
+            group_id: open_group_id.into(),
+            parent_id: ns_id.into(),
             restricted: false,
         }),
     )
@@ -3569,8 +3569,8 @@ fn governance_group_created_writes_birth_visibility() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: restricted_group_id,
-            parent_id: ns_id,
+            group_id: restricted_group_id.into(),
+            parent_id: ns_id.into(),
             restricted: true,
         }),
     )
@@ -3633,8 +3633,8 @@ fn governance_group_created_replay_does_not_reset_visibility() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id,
-            parent_id: ns_id,
+            group_id: group_id.into(),
+            parent_id: ns_id.into(),
             restricted: false,
         }),
     )
@@ -3665,8 +3665,8 @@ fn governance_group_created_replay_does_not_reset_visibility() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id,
-            parent_id: ns_id,
+            group_id: group_id.into(),
+            parent_id: ns_id.into(),
             restricted: false,
         }),
     )
@@ -3733,8 +3733,8 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: new_group_id,
-            parent_id: ns_id,
+            group_id: new_group_id.into(),
+            parent_id: ns_id.into(),
             restricted: true,
         }),
     )
@@ -3796,8 +3796,8 @@ fn execute_group_created_rejects_self_parent() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: ns_id,
-            parent_id: ns_id,
+            group_id: ns_id.into(),
+            parent_id: ns_id.into(),
             restricted: true,
         }),
     )
@@ -3860,8 +3860,8 @@ fn execute_group_created_inherits_app_key_and_application_from_parent() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: sub_id,
-            parent_id: ns_id,
+            group_id: sub_id.into(),
+            parent_id: ns_id.into(),
             restricted: true,
         }),
     )
@@ -3950,8 +3950,8 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupDeleted {
-            root_group_id: a_id,
-            cascade_group_ids,
+            root_group_id: a_id.into(),
+            cascade_group_ids: cascade_group_ids.into_iter().map(Into::into).collect(),
             cascade_context_ids: vec![],
         }),
     )
@@ -4020,8 +4020,8 @@ fn execute_group_deleted_ignores_payload_groups_outside_local_subtree() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupDeleted {
-            root_group_id: a_id,
-            cascade_group_ids: vec![b_id, x_id],
+            root_group_id: a_id.into(),
+            cascade_group_ids: vec![b_id.into(), x_id.into()],
             cascade_context_ids: vec![],
         }),
     )
@@ -4405,8 +4405,8 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
             vec![],
             nonce,
             NamespaceOp::Root(RootOp::GroupCreated {
-                group_id,
-                parent_id,
+                group_id: group_id.into(),
+                parent_id: parent_id.into(),
                 restricted: true,
             }),
         )
@@ -4572,7 +4572,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
             vec![],
             nonce,
             NamespaceOp::Root(RootOp::GroupDeleted {
-                root_group_id,
+                root_group_id: root_group_id.into(),
                 cascade_group_ids: vec![],
                 cascade_context_ids: vec![],
             }),
@@ -4694,8 +4694,8 @@ fn group_created_with_no_key_skips_retry() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: new_group_id,
-            parent_id: ns_id,
+            group_id: new_group_id.into(),
+            parent_id: ns_id.into(),
             restricted: true,
         }),
     )
@@ -4834,7 +4834,7 @@ fn groups_awaiting_key_reports_then_clears() {
         vec![],
         1,
         NamespaceOp::Group {
-            group_id,
+            group_id: group_id.into(),
             // Content-addressed id of the key the op is encrypted under, so
             // storing that exact key later resolves the op (awaiting clears).
             key_id: GroupKeyring::key_id_for(&[0xAA; 32]).into(),
@@ -4895,7 +4895,7 @@ fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
         vec![],
         1,
         NamespaceOp::Group {
-            group_id: subgroup_id,
+            group_id: subgroup_id.into(),
             key_id: GroupKeyring::key_id_for(&subgroup_key).into(),
             encrypted: GroupKeyring::encrypt_op(&subgroup_key, &GroupOp::Noop).unwrap(),
             key_rotation: None,
@@ -4990,7 +4990,7 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
         vec![],
         1,
         NamespaceOp::Group {
-            group_id: subgroup_id,
+            group_id: subgroup_id.into(),
             // Content-addressed id of `group_key`, so the retry path finds
             // the delivered key by id once it is stored.
             key_id: GroupKeyring::key_id_for(&group_key).into(),
@@ -5113,7 +5113,7 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
         vec![],
         1,
         NamespaceOp::Group {
-            group_id: subgroup_id,
+            group_id: subgroup_id.into(),
             // Content-addressed id of `group_key`, so the retry path finds
             // the delivered key by id once it is stored.
             key_id: GroupKeyring::key_id_for(&group_key).into(),
@@ -5278,7 +5278,7 @@ fn curative_sweep_redrives_stranded_context() {
         vec![],
         1,
         NamespaceOp::Group {
-            group_id: sub_gid.to_bytes(),
+            group_id: sub_gid.to_bytes().into(),
             key_id: key_id.into(),
             encrypted,
             key_rotation: None,
@@ -5383,7 +5383,7 @@ fn curative_sweep_redrives_stranded_context() {
         vec![],
         2,
         NamespaceOp::Group {
-            group_id: nokey_gid.to_bytes(),
+            group_id: nokey_gid.to_bytes().into(),
             key_id: GroupKeyring::key_id_for(&nokey_key).into(),
             encrypted: nokey_encrypted,
             key_rotation: None,
