@@ -129,6 +129,7 @@ impl<'a> MembershipPolicy<'a> {
             allowed_rtmr2: policy.allowed_rtmr2.clone(),
             allowed_rtmr3: policy.allowed_rtmr3.clone(),
             allowed_tcb_statuses: policy.allowed_tcb_statuses.clone(),
+            accept_mock: policy.accept_mock,
         };
         if let Err(err) = validate_tee_attestation_allowlists(&normalized_policy, fields) {
             let reason = match err.reason() {
