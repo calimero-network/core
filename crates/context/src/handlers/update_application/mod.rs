@@ -407,15 +407,15 @@ fn authorize_update_application(
     // raw store error text propagate to the caller (`?`). It's distinct from the
     // authz rejection below so a genuine I/O failure isn't mislabeled as
     // "unauthorized", but it still leaks no store internals.
-    let identity = handle
-        .get(&key)
-        .map_err(|e| {
-            // Log the real store error for operators (so a persistently-broken
-            // store is distinguishable from an authz rejection), but hand the
-            // caller only the generic message.
-            debug!(%e, %context_id, %caller, "store read failed during update_application authorization");
-            eyre::eyre!("failed to verify caller authorization")
-        })?;
+    let identity = handle.get(&key).map_err(|e| {
+        // Log the real store error for operators (so a persistently-broken
+        // store is distinguishable from an authz rejection), but hand the
+        // caller only the generic message. The caller key is deliberately
+        // omitted here for the same info-hiding reason as the rejection
+        // message below: it must not become a membership-enumeration oracle.
+        debug!(%e, %context_id, "store read failed during update_application authorization");
+        eyre::eyre!("failed to verify caller authorization")
+    })?;
     match identity {
         Some(identity) if identity.private_key.is_some() => Ok(()),
         // This arm deliberately collapses two distinct rejections — an entirely
@@ -443,6 +443,9 @@ pub async fn update_application_id(
     context: Option<Context>,
     application_id: ApplicationId,
     application: Option<Application>,
+    // intentionally unused: the caller is authorized at the Handler<UpdateApplicationRequest>
+    // entry (and re-verified under the write guard on the migration path) before this function
+    // is reached; kept for signature symmetry with update_application_with_migration.
     _public_key: PublicKey,
 ) -> eyre::Result<Application> {
     let (mut context, application) = resolve_context_and_application(
