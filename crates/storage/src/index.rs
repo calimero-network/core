@@ -750,6 +750,31 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(())
     }
 
+    /// Lifts a tombstone when a strictly-newer write outlives it.
+    ///
+    /// This is the counterpart to [`mark_deleted`](Self::mark_deleted). Once an
+    /// entity is tombstoned, [`find_by_id`](crate::Interface::find_by_id) hides
+    /// it regardless of any later value write. A concurrent update that
+    /// causally follows the delete (`at > deleted_at`) must win under LWW, so
+    /// the value write has to clear the tombstone or the freshly-written bytes
+    /// stay invisible — an over-suppression that diverges replicas (the replica
+    /// that saw `delete` before the newer `update` keeps hiding the value while
+    /// the replica that only saw the newer `update` shows it).
+    ///
+    /// The `at > deleted_at` guard is strict and monotonic, mirroring
+    /// `mark_deleted`: an equal-HLC write does NOT resurrect (delete wins ties),
+    /// and an older write never lifts a newer tombstone.
+    pub(crate) fn clear_deleted(id: Id, at: u64) -> Result<(), StorageError> {
+        let _mutation_guard = index_mutation_guard();
+        if let Some(mut index) = Self::get_index(id)? {
+            if index.deleted_at.is_some_and(|deleted_at| at > deleted_at) {
+                index.deleted_at = None;
+                Self::save_index(&index)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Returns children from a specific collection.
     ///
     /// Collection param is ignored - entity only has one collection.

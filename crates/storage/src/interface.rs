@@ -3169,6 +3169,17 @@ impl<S: StorageAdaptor> Interface<S> {
         // inconsistency surfaces immediately as a wrong-content read.
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
 
+        // A value write that causally follows an existing tombstone must lift it,
+        // or `find_by_id` would keep hiding the bytes we just wrote (the entity's
+        // `updated_at` already outran the tombstone in the LWW guard above, so
+        // the write won — but the stale `deleted_at` would silently suppress it,
+        // diverging replicas on delete-then-update vs update-only delivery). This
+        // is a no-op unless the entity is tombstoned; `save_internal` is never on
+        // the delete path (deletes go through `apply_delete_ref_action`), and the
+        // `> deleted_at` guard inside `clear_deleted` keeps ties and older writes
+        // from resurrecting.
+        <Index<S>>::clear_deleted(id, *metadata.updated_at)?;
+
         if id.is_root() {
             info!(
                 target: "storage::root_merge",
