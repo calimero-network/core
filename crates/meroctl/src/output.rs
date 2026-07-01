@@ -37,6 +37,11 @@ impl Output {
         }
     }
 
+    /// The configured output format (`--output-format`).
+    pub const fn format(&self) -> Format {
+        self.format
+    }
+
     pub fn write<T: Serialize + Report>(&self, value: &T) {
         match self.format {
             Format::Json => match serde_json::to_string(&value) {

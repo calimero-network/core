@@ -17,7 +17,7 @@ use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use crate::cli::validation::non_empty_string;
 use crate::cli::Environment;
 use crate::client::Client;
-use crate::output::InfoLine;
+use crate::output::{Format, InfoLine};
 use crate::ws::WsSession;
 
 pub const EXAMPLES: &str = r#"
@@ -157,6 +157,7 @@ async fn run_shell(
     seed_args: Option<Value>,
     timeout: Option<Duration>,
 ) -> Result<()> {
+    let format = environment.output.format();
     let mut context_id = resolve_context(client, context).await?;
     let mut session = WsSession::connect(client).await?;
 
@@ -173,8 +174,16 @@ async fn run_shell(
     // start, so a transport failure ends it.
     if let Some(method) = seed_method {
         let args = seed_args.unwrap_or_else(|| json!({}));
-        if let CallOutcome::Closed(err) =
-            run_call(&mut session, timeout, context_id, &substitute, method, args).await
+        if let CallOutcome::Closed(err) = run_call(
+            &mut session,
+            timeout,
+            context_id,
+            &substitute,
+            method,
+            args,
+            format,
+        )
+        .await
         {
             eprintln!("Connection closed: {err}");
             return Ok(());
@@ -250,7 +259,17 @@ async fn run_shell(
             None => json!({}),
         };
 
-        match run_call(&mut session, timeout, context_id, &substitute, method, args).await {
+        match run_call(
+            &mut session,
+            timeout,
+            context_id,
+            &substitute,
+            method,
+            args,
+            format,
+        )
+        .await
+        {
             CallOutcome::Done => {}
             CallOutcome::TimedOut(dur) => eprintln!(
                 "No response within {}s; the call may still be running on the node.",
@@ -288,6 +307,7 @@ async fn run_call(
     substitute: &[Alias<PublicKey>],
     method: String,
     args: Value,
+    format: Format,
 ) -> CallOutcome {
     let request = ExecutionRequest::new(context_id, method, args, substitute.to_vec());
 
@@ -301,14 +321,25 @@ async fn run_call(
 
     match result {
         Ok(response) => {
-            print_response(&response);
+            print_response(&response, format);
             CallOutcome::Done
         }
         Err(err) => CallOutcome::Closed(err),
     }
 }
 
-fn print_response(response: &Response) {
+fn print_response(response: &Response, format: Format) {
+    // JSON mode: emit the whole response as one machine-readable line on stdout
+    // (results and handler errors alike) so `call -i` output is parseable, just
+    // like the non-interactive path honours --output-format.
+    if matches!(format, Format::Json) {
+        match serde_json::to_string(response) {
+            Ok(json) => println!("{json}"),
+            Err(err) => eprintln!("Failed to serialize response to JSON: {err}"),
+        }
+        return;
+    }
+
     match &response.body {
         ResponseBody::Result(ResponseBodyResult(value)) => {
             let rendered =
