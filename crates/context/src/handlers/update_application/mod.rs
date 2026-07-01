@@ -381,14 +381,22 @@ fn authorize_update_application(
     context_id: &ContextId,
     caller: &PublicKey,
 ) -> eyre::Result<()> {
+    // This authz check opens its own datastore handle, separate from the handle
+    // the downstream business logic uses. That leaves a tiny check-then-use window
+    // in which the identity could be deprovisioned between here and the actual
+    // update. This is a benign TOCTOU: identity deprovisioning is rare, and the
+    // operation re-reads context/identity state downstream, so a race can at worst
+    // let one already-in-flight update proceed on a just-revoked identity.
     let handle = datastore.handle();
     let key = calimero_store::key::ContextIdentity::new(*context_id, *caller);
     match handle.get(&key)? {
         Some(identity) if identity.private_key.is_some() => Ok(()),
-        _ => bail!(
-            "identity {caller} is not an authorized local member of context {context_id}; \
-             refusing update_application"
-        ),
+        // Keep the caller-facing error generic so it can't be used as a
+        // membership-enumeration oracle: the reply is returned to the (possibly
+        // unauthorized) caller, and interpolating the caller key / context id
+        // would confirm whether a given key is a known member. Operators still get
+        // the full diagnostic from the `warn!` log at the call site.
+        _ => bail!("unauthorized: caller is not a permitted identity for this context"),
     }
 }
 
