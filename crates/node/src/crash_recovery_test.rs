@@ -86,20 +86,19 @@ fn persist_row(
 ///
 /// Correct restart behavior: such a row — whose state effects were never
 /// committed (root hash unchanged, heads never advanced) — must NOT be treated
-/// as applied on reload. It must be re-driven through apply or left pending;
-/// otherwise the DAG believes a delta is applied whose actions never reached
-/// committed state, an unconvergeable divergence.
+/// as applied on reload. `load_persisted_deltas` now routes `applied: false`
+/// rows through the full `add_delta_internal` path, which re-executes the
+/// actions and, only on success, atomically flips the row to `applied: true`
+/// and advances the heads. The DAG's applied-state and the persisted `applied`
+/// flag therefore always agree — the buggy state (DAG marks it applied while the
+/// DB row is still `applied: false`, so the delta re-drives on every restart and
+/// advertises never-written state) can no longer occur.
 ///
-/// This test is `#[ignore]`d because it currently fails: `load_persisted_deltas`
-/// restores rows purely by parent-reachability (`restore_applied_delta`) and
-/// never consults the persisted `applied` flag, so a genesis-parented
-/// `applied: false` row is promoted to applied (and made a head) on restart
-/// without re-executing its actions.
+/// This harness has no WASM runtime, so the re-driven apply cannot complete;
+/// the delta stays unapplied in BOTH the DAG and the DB (consistent), rather
+/// than being promoted to applied-without-execution as the pre-fix
+/// `restore_applied_delta` path did.
 #[tokio::test]
-#[ignore = "reveals possible bug: load_persisted_deltas ignores the persisted \
-            `applied` flag and promotes a Phase-0 applied:false row (killed \
-            before the heads commit) to applied on restart via \
-            restore_applied_delta, without re-executing its actions"]
 async fn phase0_applied_false_row_not_promoted_on_restart() {
     let store = Store::new(Arc::new(InMemoryDB::owned()));
     let delta_id = [0x01; 32];
@@ -116,16 +115,58 @@ async fn phase0_applied_false_row_not_promoted_on_restart() {
     );
 
     // Restart: fresh DeltaStore over the same store, then reload from disk.
-    let (delta_store, _tmp, _rx) = delta_store_over(store).await;
-    let _ = delta_store
+    // Keep a clone so we can read the persisted row's flag after reload.
+    let (delta_store, _tmp, _rx) = delta_store_over(store.clone()).await;
+    let result = delta_store
         .load_persisted_deltas()
         .await
         .expect("reload from persisted rows");
 
+    // An applied:false row is re-driven through the apply path, NOT restored as
+    // applied, so it must never surface `pending_handler_events` — those are
+    // harvested only for committed (applied:true) rows. Replaying an uncommitted
+    // row's handlers would fire effects for state that never landed.
     assert!(
-        !delta_store.dag_has_delta_applied(&delta_id).await,
-        "an applied:false row that never reached the heads commit must not be \
-         promoted to applied on restart"
+        result.pending_handler_events.is_empty(),
+        "an applied:false row must not surface phantom handler events on restart"
+    );
+    // The re-drive was ATTEMPTED (the row went to the unapplied re-drive path,
+    // not the applied-topology restore). Its parent is genesis, so `add_delta`
+    // treats it as ready and tries to apply immediately (rather than enqueuing it
+    // as pending). With no WASM runtime that apply returns `Err`, which
+    // propagates out of `add_delta`/`add_delta_internal` BEFORE the delta is
+    // registered anywhere — so it is neither applied nor added to the pending
+    // queue, and the DB row stays `applied: false` for the next restart. Hence
+    // `pending_stats().count == 0`: this specifically asserts the apply erred (the
+    // "ready" path) rather than the delta silently going pending. (A missing
+    // parent would instead enqueue it as pending — a different, deliberate path.)
+    assert_eq!(
+        delta_store.pending_stats().await.count,
+        0,
+        "a genesis-parented re-driven delta whose apply errors is not left dangling in pending"
+    );
+
+    let dag_applied = delta_store.dag_has_delta_applied(&delta_id).await;
+    let db_applied = store
+        .handle()
+        .get(&calimero_store::key::ContextDagDelta::new(
+            context(),
+            delta_id,
+        ))
+        .expect("read persisted row")
+        .is_some_and(|row| row.applied);
+
+    // The core regression guard: the pre-fix bug left the DAG marking the delta
+    // applied while the DB row stayed `applied: false`. Those two must agree.
+    assert_eq!(
+        dag_applied, db_applied,
+        "DAG applied-state and the persisted `applied` flag must agree; a mismatch \
+         is exactly the pre-fix bug (promoted-to-applied without a committed apply)"
+    );
+    assert!(
+        !dag_applied,
+        "with no WASM runtime the re-drive cannot complete, so the uncommitted \
+         row must not be promoted to applied on restart"
     );
     assert!(
         !delta_store.get_heads().await.contains(&delta_id),
