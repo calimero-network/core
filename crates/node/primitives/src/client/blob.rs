@@ -97,7 +97,12 @@ impl BlobManager {
         self.blobstore.get(blob_id)
     }
 
-    pub async fn delete_blob_file(&self, blob_id: BlobId) -> eyre::Result<bool> {
+    /// Release one reference to `blob_id`, deleting its files and metadata (and
+    /// those of its chunks) only once the last reference is gone. Content is
+    /// deduplicated by hash, so several owners can share the same blob; the
+    /// refcount-aware, tree-aware deletion lives in
+    /// [`calimero_blobstore::BlobManager::delete`].
+    pub async fn delete_blob(&self, blob_id: BlobId) -> eyre::Result<bool> {
         self.blobstore.delete(blob_id).await
     }
 }
@@ -503,82 +508,28 @@ impl NodeClient {
         Ok(root_blobs)
     }
 
-    /// Delete a blob by its ID
+    /// Release this owner's reference to a blob by its ID.
     ///
-    /// Removes blob metadata from database and deletes the actual blob files.
-    /// This includes all associated chunk files for large blobs.
+    /// Blobs are content-addressed and deduplicated: the same bytes can be
+    /// referenced by several contexts, and a chunk can be shared by several root
+    /// blobs. So this does not delete eagerly — it decrements the blob's (and,
+    /// for a root blob, each chunk's) reference count and removes the files and
+    /// metadata only once nothing references them. Deleting eagerly here would
+    /// corrupt other owners' blobs that share the same content.
+    ///
+    /// Returns `Ok(true)` when the blob existed and its reference was released;
+    /// errors with "Blob not found" when it was already absent.
     pub async fn delete_blob(&self, blob_id: BlobId) -> eyre::Result<bool> {
-        let mut handle = self.datastore.clone().handle();
-        let blob_key = key::BlobMeta::new(blob_id);
-
-        let blob_meta = match handle.get(&blob_key) {
-            Ok(Some(meta)) => meta,
-            Ok(None) => {
-                bail!("Blob not found");
+        match self.blob_manager.delete_blob(blob_id).await {
+            Ok(true) => {
+                tracing::info!(%blob_id, "released blob reference");
+                Ok(true)
             }
+            Ok(false) => bail!("Blob not found"),
             Err(err) => {
-                tracing::error!("Failed to get blob metadata {}: {:?}", blob_id, err);
-                bail!("Failed to access blob metadata: {}", err);
+                tracing::error!("Failed to delete blob {}: {:?}", blob_id, err);
+                bail!("Failed to delete blob: {}", err);
             }
-        };
-
-        tracing::info!(
-            "Starting deletion for blob {} with {} linked chunks",
-            blob_id,
-            blob_meta.links.len()
-        );
-
-        let mut blobs_to_delete = vec![blob_id];
-        let mut deleted_metadata_count = 0;
-        let mut deleted_files_count = 0;
-
-        blobs_to_delete.extend(blob_meta.links.iter().map(key::BlobMeta::blob_id));
-
-        // Delete blob files first
-        for current_blob_id in &blobs_to_delete {
-            match self.blob_manager.delete_blob_file(*current_blob_id).await {
-                Ok(true) => {
-                    deleted_files_count += 1;
-                    tracing::debug!("Successfully deleted blob file {}", current_blob_id);
-                }
-                Ok(false) => {
-                    tracing::debug!("Blob file {} was already missing", current_blob_id);
-                }
-                Err(err) => {
-                    tracing::warn!("Failed to delete blob file {}: {}", current_blob_id, err);
-                    // Continue with metadata deletion even if file deletion fails
-                }
-            }
-        }
-
-        // Delete metadata
-        for current_blob_id in blobs_to_delete {
-            let current_key = key::BlobMeta::new(current_blob_id);
-
-            match handle.delete(&current_key) {
-                Ok(()) => {
-                    deleted_metadata_count += 1;
-                    tracing::debug!("Successfully deleted metadata for blob {}", current_blob_id);
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        "Failed to delete metadata for blob {}: {}",
-                        current_blob_id,
-                        err
-                    );
-                }
-            }
-        }
-
-        if deleted_metadata_count > 0 {
-            tracing::info!(
-                "Successfully deleted {} blob metadata entries and {} blob files",
-                deleted_metadata_count,
-                deleted_files_count
-            );
-            Ok(true)
-        } else {
-            bail!("Failed to delete any blob metadata");
         }
     }
 

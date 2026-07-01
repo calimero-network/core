@@ -143,18 +143,145 @@ impl BlobManager {
         Blob::new(id, self.clone())
     }
 
+    /// Release one reference to `id` and physically remove it once the last
+    /// reference is gone.
+    ///
+    /// Blobs are content-addressed and deduplicated, so the same bytes may be
+    /// shared by several owners (added more than once) or, as a chunk, by
+    /// several root blobs. Deleting eagerly would let one owner destroy content
+    /// another still references, so a blob's file and metadata are dropped only
+    /// once its reference count falls to zero. For a root blob this releases one
+    /// reference to each of its chunks too — symmetric with [`Self::put_sized`],
+    /// which increments the root and every chunk on add.
+    ///
+    /// Returns `true` if `id` existed (its reference was released), `false` if
+    /// it was already absent. Note that `true` does *not* imply the bytes were
+    /// physically removed — if other owners still reference the content, only
+    /// the count was decremented and the blob remains readable for them.
+    ///
+    /// The read-decrement-write is not atomic against a concurrent add/delete of
+    /// the *same* content id; callers today drive blob lifecycle serially per
+    /// id (see the INVARIANT on [`Self::release_ref`]). Making it fully atomic
+    /// would move the refcount update onto the store's transaction path
+    /// ([`calimero_store::Store::apply`]).
     pub async fn delete(&self, id: BlobId) -> EyreResult<bool> {
+        let Some(meta) = self.data_store.handle().get(&BlobMetaKey::new(id))? else {
+            // No metadata row references this id, so as a *referenced blob* it was
+            // already absent — return `false` regardless of whether an orphan file
+            // happened to linger. Still sweep any such file best-effort (ignoring
+            // its outcome) so `has` (metadata-only) and `get` (file-backed) stay
+            // consistent.
+            let _ = self.blob_store.delete(id).await;
+            return Ok(false);
+        };
+
+        // Release the root's own reference. A root blob keeps its content in its
+        // chunks and has no backing file of its own, so `blob_store.delete` on
+        // the root id is a harmless no-op; it is kept for blobs that ever carry
+        // their own file. A failed file delete is logged, not propagated, so we
+        // still go on to release the chunk references below.
+        if self.release_ref(id, &meta)? {
+            if let Err(err) = self.blob_store.delete(id).await {
+                tracing::warn!(%id, %err, "failed to delete root blob file during delete");
+            }
+        }
+
+        // Release one reference from every chunk, mirroring the per-chunk
+        // increment on add. A chunk shared by another still-live root keeps a
+        // positive count and survives. This loop is best-effort: a failure on one
+        // chunk is logged and skipped rather than propagated, so it cannot leave
+        // the *remaining* chunks with their reference counts un-decremented
+        // (which would leak them permanently).
+        for link in &meta.links {
+            let chunk_id = link.blob_id();
+            let chunk_meta = match self.data_store.handle().get(&BlobMetaKey::new(chunk_id)) {
+                Ok(Some(chunk_meta)) => chunk_meta,
+                Ok(None) => continue,
+                Err(err) => {
+                    tracing::warn!(%chunk_id, %err, "failed to read chunk metadata during delete; skipping");
+                    continue;
+                }
+            };
+            match self.release_ref(chunk_id, &chunk_meta) {
+                Ok(true) => {
+                    if let Err(err) = self.blob_store.delete(chunk_id).await {
+                        tracing::warn!(%chunk_id, %err, "failed to delete chunk file during delete");
+                    }
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    tracing::warn!(%chunk_id, %err, "failed to release chunk reference during delete");
+                }
+            }
+        }
+
+        Ok(true)
+    }
+
+    /// Decrement `id`'s reference count by one. Returns `true` when the count
+    /// reaches zero — the metadata row is deleted and the caller must remove the
+    /// backing file — or `false` when references remain, in which case the
+    /// decremented count is persisted and the blob is kept.
+    ///
+    /// INVARIANT: this and [`Self::persist_ref`] read-modify-write a single
+    /// metadata row across separate store operations and are NOT atomic. Callers
+    /// must serialize add/delete for the same blob id (the node drives blob
+    /// lifecycle serially per id today). A concurrent add interleaved with a
+    /// delete could lose an increment and free content that still has a live
+    /// owner; making it atomic means moving the update onto the store's
+    /// transaction path ([`calimero_store::Store::apply`]).
+    fn release_ref(&self, id: BlobId, meta: &BlobMetaValue) -> EyreResult<bool> {
         let key = BlobMetaKey::new(id);
+        // refs should never be 0 for a stored entry; if it is (store corruption
+        // or a bug that wrote a zero-ref row), surface it rather than silently
+        // "fixing" it, then proceed to reclaim the row via the zero arm below.
+        if meta.refs == 0 {
+            tracing::warn!(%id, "release_ref on a blob with refs == 0; reclaiming as last reference");
+        }
+        match meta.refs.saturating_sub(1) {
+            0 => {
+                self.data_store.handle().delete(&key)?;
+                Ok(true)
+            }
+            remaining => {
+                self.data_store.handle().put(
+                    &key,
+                    &BlobMetaValue::new(meta.size, meta.hash, meta.links.clone(), remaining),
+                )?;
+                Ok(false)
+            }
+        }
+    }
 
-        // Remove the metadata row alongside the chunk file. Without this, `has`
-        // keeps reporting the blob as present (it only checks metadata) while
-        // `get` fails because the underlying file is gone.
-        let had_meta = self.data_store.handle().has(&key)?;
-        self.data_store.handle().delete(&key)?;
-
-        let had_file = self.blob_store.delete(id).await?;
-
-        Ok(had_meta || had_file)
+    /// Persist `id`'s metadata on add, incrementing its reference count when an
+    /// entry already exists. Deduplicated content re-added by another owner (or
+    /// a chunk shared by another root) bumps the count instead of silently
+    /// aliasing a single reference that the first delete would tear down.
+    ///
+    /// INVARIANT: like [`Self::release_ref`], the read-modify-write here is not
+    /// atomic; callers must serialize add/delete for the same blob id.
+    fn persist_ref(
+        &self,
+        id: BlobId,
+        size: u64,
+        hash: [u8; 32],
+        links: Box<[BlobMetaKey]>,
+    ) -> EyreResult<()> {
+        let key = BlobMetaKey::new(id);
+        let refs = match self.data_store.handle().get(&key)? {
+            // Overflow is not physically reachable (it needs u32::MAX live
+            // references to one content id) but is surfaced rather than saturated:
+            // a saturated count could never decrement back to zero, permanently
+            // leaking the blob.
+            Some(existing) => existing.refs.checked_add(1).ok_or_else(|| {
+                eyre::eyre!("blob refcount overflow for {id}: already at u32::MAX references")
+            })?,
+            None => 1,
+        };
+        self.data_store
+            .handle()
+            .put(&key, &BlobMetaValue::new(size, hash, links, refs))?;
+        Ok(())
     }
 
     pub async fn put<T>(&self, stream: T) -> EyreResult<(BlobId, Hash, u64)>
@@ -229,10 +356,7 @@ impl BlobManager {
 
                 let id = BlobId::from(*AsRef::<[u8; 32]>::as_ref(&blob.digest.finalize()));
 
-                self.data_store.handle().put(
-                    &BlobMetaKey::new(id),
-                    &BlobMetaValue::new(blob.size as u64, *id, Box::default()),
-                )?;
+                self.persist_ref(id, blob.size as u64, *id, Box::default())?;
 
                 self.blob_store.put(id, &buf[..blob.size]).await?;
 
@@ -308,10 +432,7 @@ impl BlobManager {
 
         let id = BlobId::from(*(AsRef::<[u8; 32]>::as_ref(&digest.finalize())));
 
-        self.data_store.handle().put(
-            &BlobMetaKey::new(id),
-            &BlobMetaValue::new(size, *hash, links.into_boxed_slice()),
-        )?;
+        self.persist_ref(id, size, *hash, links.into_boxed_slice())?;
 
         debug!(
             ?id,
@@ -673,6 +794,130 @@ mod delete_tests {
 
         // A second delete has nothing left to remove.
         assert!(!mgr.delete(id).await.unwrap());
+    }
+
+    fn refs_of(mgr: &BlobManager, id: BlobId) -> Option<u32> {
+        mgr.data_store
+            .handle()
+            .get(&BlobMetaKey::new(id))
+            .unwrap()
+            .map(|meta| meta.refs)
+    }
+
+    async fn read_all(mgr: &BlobManager, id: BlobId) -> Vec<u8> {
+        let mut stream = mgr.get(id).unwrap().expect("blob present");
+        let mut out = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            out.extend_from_slice(&chunk.unwrap());
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn duplicate_content_is_refcounted_not_aliased() {
+        let dir = tempdir().unwrap();
+        let mgr = manager(dir.path()).await;
+
+        // Two owners add byte-identical content. Content addressing makes them
+        // one stored blob; without refcounting the first delete would destroy
+        // the bytes the second owner still relies on.
+        let data = b"identical bytes shared by two owners";
+        let (id, _, _) = mgr.put(&data[..]).await.unwrap();
+        let (id2, _, _) = mgr.put(&data[..]).await.unwrap();
+        assert_eq!(id, id2, "identical content must dedup to the same id");
+        assert_eq!(
+            refs_of(&mgr, id),
+            Some(2),
+            "second add must bump the refcount"
+        );
+
+        // First owner releases their reference: the blob survives for the second.
+        assert!(mgr.delete(id).await.unwrap());
+        assert_eq!(refs_of(&mgr, id), Some(1));
+        assert!(mgr.has(id).unwrap());
+        assert_eq!(
+            read_all(&mgr, id).await,
+            data,
+            "surviving owner keeps its data"
+        );
+
+        // Second owner releases the last reference: now it is really gone.
+        assert!(mgr.delete(id).await.unwrap());
+        assert_eq!(refs_of(&mgr, id), None);
+        assert!(!mgr.has(id).unwrap());
+    }
+
+    #[tokio::test]
+    async fn chunk_shared_across_roots_survives_sibling_delete() {
+        let dir = tempdir().unwrap();
+        let mgr = manager(dir.path()).await;
+
+        // Two different files that share an identical leading chunk. Their root
+        // blobs differ, but the shared chunk is stored once (same content id).
+        let prefix = vec![7_u8; CHUNK_SIZE];
+        let mut a = prefix.clone();
+        a.extend_from_slice(b"divergent tail A");
+        let mut b = prefix.clone();
+        b.extend_from_slice(b"divergent tail B");
+
+        let (root_a, _, _) = mgr.put(&a[..]).await.unwrap();
+        let (root_b, _, _) = mgr.put(&b[..]).await.unwrap();
+        assert_ne!(
+            root_a, root_b,
+            "different content must yield different roots"
+        );
+
+        // The shared leading chunk is the first link of both roots.
+        let links_a = mgr
+            .data_store
+            .handle()
+            .get(&BlobMetaKey::new(root_a))
+            .unwrap()
+            .unwrap()
+            .links;
+        let links_b = mgr
+            .data_store
+            .handle()
+            .get(&BlobMetaKey::new(root_b))
+            .unwrap()
+            .unwrap()
+            .links;
+        let shared_chunk = links_a[0].blob_id();
+        assert_eq!(
+            shared_chunk,
+            links_b[0].blob_id(),
+            "roots must share a chunk"
+        );
+        assert_eq!(
+            refs_of(&mgr, shared_chunk),
+            Some(2),
+            "shared chunk carries two refs"
+        );
+
+        let tail_a = links_a[1].blob_id();
+
+        // Delete the first root. Its unique tail chunk goes; the shared chunk is
+        // decremented but kept, and the sibling blob reads back intact.
+        assert!(mgr.delete(root_a).await.unwrap());
+        assert!(!mgr.has(root_a).unwrap());
+        assert!(
+            !mgr.has(tail_a).unwrap(),
+            "unique chunk of deleted root is freed"
+        );
+        assert_eq!(
+            refs_of(&mgr, shared_chunk),
+            Some(1),
+            "shared chunk survives"
+        );
+        assert_eq!(
+            read_all(&mgr, root_b).await,
+            b,
+            "sibling blob is not corrupted"
+        );
+
+        // Deleting the sibling now frees the shared chunk for good.
+        assert!(mgr.delete(root_b).await.unwrap());
+        assert_eq!(refs_of(&mgr, shared_chunk), None);
     }
 }
 

@@ -190,8 +190,10 @@ pub struct VMLimits {
     /// constrained to be less than u64::MAX
     /// because register_len returns u64::MAX if the register is not found
     pub max_register_size: Constrained<u64, MaxU64<{ u64::MAX - 1 }>>,
-    /// The total capacity across all registers in bytes.
-    pub max_registers_capacity: u64, // todo! must not be less than max_register_size
+    /// The total capacity across all registers in bytes. Must be `>=`
+    /// [`max_register_size`](Self::max_register_size) — enforced by
+    /// [`VMLimits::validate`], which every engine runs at construction.
+    pub max_registers_capacity: u64,
     /// The maximum number of log entries that can be created.
     pub max_logs: u64,
     /// The maximum size of a single log message in bytes.
@@ -247,6 +249,33 @@ pub struct VMLimits {
     /// deserialization error instead, matching the behavior of
     /// [`max_module_size`](Self::max_module_size).
     pub max_precompiled_module_size: u64,
+}
+
+impl VMLimits {
+    /// Check cross-field invariants that the individual field types can't
+    /// express on their own. Returns `Ok(())` if all invariants hold, or `Err`
+    /// with a message describing the first violation.
+    /// (Named `validate_invariants`, not `validate`, so it does not collide with
+    /// the blanket [`Constraint::validate`](crate::Constraint) method that every
+    /// type gets.)
+    ///
+    /// Enforces `max_registers_capacity >= max_register_size`: the total budget
+    /// shared across all registers cannot be smaller than the cap on a single
+    /// register. If it were, a lone maximum-size register write would already
+    /// blow the aggregate budget — the per-register check in `Registers::set`
+    /// would admit a write that the capacity check in the same function then
+    /// rejects, leaving the limit self-contradictory. Every engine runs this at
+    /// construction ([`Engine::new`](crate::Engine::new)) so such a config fails
+    /// loudly at startup rather than misbehaving per execution.
+    pub fn validate_invariants(&self) -> Result<(), &'static str> {
+        if self.max_registers_capacity < *self.max_register_size {
+            return Err(
+                "max_registers_capacity must be >= max_register_size (the total register \
+                 budget cannot be smaller than a single register's cap)",
+            );
+        }
+        Ok(())
+    }
 }
 
 impl Default for VMLimits {

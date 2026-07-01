@@ -94,12 +94,17 @@ impl TeeConfig {
     /// must be mutually exclusive on a single node.
     ///
     /// Returns `false` when no KMS provider is configured (e.g. `kms.phala`
-    /// absent), which permits `--mock-tee`. If a second KMS provider is added,
-    /// extend this predicate to cover it.
+    /// absent), which permits `--mock-tee`.
+    ///
+    /// The `KmsConfig` is destructured field-by-field with no `..` rest pattern
+    /// on purpose: adding a new provider field to `KmsConfig` will fail to
+    /// compile here until it is folded into this predicate. That keeps the
+    /// `--mock-tee` deny-guard exhaustive across every provider rather than
+    /// silently ignoring a newly-added one.
     #[must_use]
     pub fn has_real_attestation(&self) -> bool {
-        self.kms
-            .phala
+        let KmsConfig { phala } = &self.kms;
+        phala
             .as_ref()
             .is_some_and(|phala| phala.attestation.enabled && !phala.attestation.accept_mock)
     }
