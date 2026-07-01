@@ -667,8 +667,9 @@ mod tests {
         // saturated backoff instead of panicking on the `1 << exponent`.
         let far = policy_fetch_backoff(1_000);
         assert_eq!(far.as_millis(), u128::from(u64::MAX));
-        // And it must not panic at the exact boundary either.
-        let _ = policy_fetch_backoff(65);
+        // exponent == 64 (attempt 65) is the exact shift-width boundary: it must
+        // saturate rather than panic.
+        assert_eq!(policy_fetch_backoff(65).as_millis(), u128::from(u64::MAX));
     }
 
     #[test]

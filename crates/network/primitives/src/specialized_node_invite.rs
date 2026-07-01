@@ -20,6 +20,11 @@ pub const CALIMERO_SPECIALIZED_NODE_INVITE_PROTOCOL: StreamProtocol =
 /// Maximum size of a specialized node invite message (1MB should be sufficient for attestation + invitation)
 pub const MAX_SPECIALIZED_NODE_INVITE_MESSAGE_SIZE: u64 = 1024 * 1024;
 
+// The message size is framed with a u32 length prefix, so the cap must fit a
+// u32. Enforcing this at compile time lets the write path bound against the cap
+// and then cast to u32 without a fallible conversion.
+const _: () = assert!(MAX_SPECIALIZED_NODE_INVITE_MESSAGE_SIZE <= u32::MAX as u64);
+
 /// Type of specialized node being invited
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub enum SpecializedNodeType {
@@ -192,9 +197,9 @@ impl Codec for SpecializedNodeInviteCodec {
             ));
         }
 
-        // Write length prefix
-        let len =
-            u32::try_from(buf.len()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        // Write length prefix. The bound above (<= MAX <= u32::MAX, asserted at
+        // compile time) guarantees this cast is lossless.
+        let len = buf.len() as u32;
         io.write_all(&len.to_be_bytes()).await?;
 
         // Write message
@@ -225,9 +230,9 @@ impl Codec for SpecializedNodeInviteCodec {
             ));
         }
 
-        // Write length prefix
-        let len =
-            u32::try_from(buf.len()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        // Write length prefix. The bound above (<= MAX <= u32::MAX, asserted at
+        // compile time) guarantees this cast is lossless.
+        let len = buf.len() as u32;
         io.write_all(&len.to_be_bytes()).await?;
 
         // Write message
