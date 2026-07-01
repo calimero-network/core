@@ -11,7 +11,7 @@ publish = false
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
-wasmparser = "0.118"
+wasmparser = "0.252"
 serde_json.workspace = true
 eyre.workspace = true
 calimero-wasm-abi = { workspace = true }
