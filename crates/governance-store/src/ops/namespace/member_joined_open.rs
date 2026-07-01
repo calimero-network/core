@@ -50,12 +50,12 @@ pub(crate) fn apply(
     // namespace — matches the implicit assumption in the sibling
     // `MemberJoined` apply path.
     let resolved_ns = NamespaceRepository::new(store).resolve(&gid)?;
-    if resolved_ns.to_bytes() != namespace_id {
+    if resolved_ns.to_bytes() != namespace_id.to_bytes() {
         eyre::bail!(ApplyError::MemberJoinedOpenRejected(
             MemberJoinedOpenRejection::WrongNamespace {
                 gid: format!("{gid:?}"),
                 resolved_ns: format!("{resolved_ns:?}"),
-                this_ns: format!("{:?}", ContextGroupId::from(namespace_id)),
+                this_ns: format!("{:?}", ContextGroupId::from(namespace_id.to_bytes())),
             }
         ));
     }

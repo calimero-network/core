@@ -574,7 +574,8 @@ fn redrive_stranded_ops_sweep(store: &Store) {
                 let mut pairs = Vec::new();
                 for ns_id in &namespaces {
                     match calimero_governance_store::namespace_groups_with_held_key_buffered_ops(
-                        store, *ns_id,
+                        store,
+                        (*ns_id).into(),
                     ) {
                         Ok(groups) => {
                             for group_id in groups {
@@ -598,8 +599,11 @@ fn redrive_stranded_ops_sweep(store: &Store) {
         for (ns_id, group_id) in pass_pairs {
             let ns_hex = hex::encode(ns_id);
             let group_hex = hex::encode(group_id);
-            match calimero_governance_store::redrive_buffered_ops_for_group(store, ns_id, group_id)
-            {
+            match calimero_governance_store::redrive_buffered_ops_for_group(
+                store,
+                ns_id.into(),
+                group_id,
+            ) {
                 Ok(0) => {
                     // Nothing applied this pass for this group (already
                     // drained, or its remaining ops still await a
@@ -2835,12 +2839,12 @@ mod tests {
         let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).expect("encrypt op");
         let ctx_registered_op = SignedNamespaceOp::sign(
             &owner_sk,
-            namespace_id,
+            namespace_id.into(),
             vec![],
             1,
             NamespaceOp::Group {
-                group_id: sub_gid.to_bytes(),
-                key_id,
+                group_id: sub_gid.to_bytes().into(),
+                key_id: key_id.into(),
                 encrypted,
                 key_rotation: None,
             },

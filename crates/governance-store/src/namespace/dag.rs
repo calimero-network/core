@@ -1,3 +1,4 @@
+use calimero_governance_types::NamespaceId;
 use std::collections::HashSet;
 
 use calimero_context_client::local_governance::SignedNamespaceOp;
@@ -22,11 +23,11 @@ impl NamespaceHead {
 /// Domain service for namespace DAG persistence and traversal.
 pub struct NamespaceDagService<'a> {
     store: &'a Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
 }
 
 impl<'a> NamespaceDagService<'a> {
-    pub fn new(store: &'a Store, namespace_id: [u8; 32]) -> Self {
+    pub fn new(store: &'a Store, namespace_id: NamespaceId) -> Self {
         Self {
             store,
             namespace_id,
@@ -44,7 +45,7 @@ impl<'a> NamespaceDagService<'a> {
     /// condition observable rather than silent.
     pub fn read_head_record(&self) -> EyreResult<NamespaceHead> {
         let handle = self.store.handle();
-        let key = calimero_store::key::NamespaceGovHead::new(self.namespace_id);
+        let key = calimero_store::key::NamespaceGovHead::new(self.namespace_id.to_bytes());
         let head = handle.get(&key)?;
         let raw_heads = head
             .as_ref()
@@ -54,7 +55,7 @@ impl<'a> NamespaceDagService<'a> {
         if let Some(h) = head.as_ref() {
             if h.dag_heads.len() != parent_hashes.len() {
                 tracing::warn!(
-                    namespace_id = %hex::encode(self.namespace_id),
+                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                     stored = h.dag_heads.len(),
                     deduped = parent_hashes.len(),
                     "namespace governance DAG head set contained duplicates; \
@@ -89,7 +90,7 @@ impl<'a> NamespaceDagService<'a> {
         sequence: u64,
     ) -> EyreResult<()> {
         let handle = self.store.handle();
-        let ns_key = calimero_store::key::NamespaceGovHead::new(self.namespace_id);
+        let ns_key = calimero_store::key::NamespaceGovHead::new(self.namespace_id.to_bytes());
         let current = handle.get(&ns_key)?;
         drop(handle);
 

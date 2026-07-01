@@ -423,7 +423,7 @@ fn apply_local_signed_group_op_nonce_and_admin() {
 
     let op1 = SignedGroupOp::sign(
         &admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::MemberAdded {
@@ -437,13 +437,14 @@ fn apply_local_signed_group_op_nonce_and_admin() {
         .is_member(&gid, &member_pk)
         .unwrap());
 
-    let op_dup_nonce = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 1, GroupOp::Noop).unwrap();
+    let op_dup_nonce =
+        SignedGroupOp::sign(&admin_sk, gid_bytes.into(), vec![], 1, GroupOp::Noop).unwrap();
     assert!(
         apply_local_signed_group_op(&store, &op_dup_nonce).is_ok(),
         "duplicate nonce should be silently accepted (idempotent)"
     );
 
-    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 2, GroupOp::Noop).unwrap();
+    let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes.into(), vec![], 2, GroupOp::Noop).unwrap();
     apply_local_signed_group_op(&store, &op2).unwrap();
 
     let non_admin_sk = PrivateKey::random(&mut rng);
@@ -452,7 +453,7 @@ fn apply_local_signed_group_op_nonce_and_admin() {
         .unwrap();
     let op_bad = SignedGroupOp::sign(
         &non_admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::MemberAdded {
@@ -499,7 +500,7 @@ fn apply_local_signed_group_op_out_of_order_siblings_2516() {
     // The HIGHER-nonce sibling (nonce 2) is delivered first.
     let op_high = SignedGroupOp::sign(
         &admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         2,
         GroupOp::MemberAdded {
@@ -523,7 +524,7 @@ fn apply_local_signed_group_op_out_of_order_siblings_2516() {
     // would have dropped it as `1 <= last(=2)`; the window applies it.
     let op_low = SignedGroupOp::sign(
         &admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::MemberAdded {
@@ -600,7 +601,7 @@ fn apply_local_signed_group_op_replay_does_not_duplicate_log_entry() {
     let member = PrivateKey::random(&mut rng).public_key();
     let op = SignedGroupOp::sign(
         &admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::MemberAdded {
@@ -725,7 +726,7 @@ fn reject_read_only_tee_via_member_added() {
     let tee_pk = PrivateKey::random(&mut rng).public_key();
     let op = SignedGroupOp::sign(
         &admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::MemberAdded {
@@ -768,7 +769,7 @@ fn reject_read_only_tee_via_member_role_set() {
 
     let op = SignedGroupOp::sign(
         &admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::MemberRoleSet {
@@ -814,7 +815,7 @@ fn apply_local_member_alias_member_signer_or_admin() {
 
     let op = SignedGroupOp::sign(
         &member_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::MemberMetadataSet {
@@ -837,7 +838,7 @@ fn apply_local_member_alias_member_signer_or_admin() {
     let other_sk = PrivateKey::random(&mut rng);
     let op_bad = SignedGroupOp::sign(
         &other_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::MemberMetadataSet {
@@ -851,7 +852,7 @@ fn apply_local_member_alias_member_signer_or_admin() {
 
     let admin_op = SignedGroupOp::sign(
         &admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::MemberMetadataSet {
@@ -909,7 +910,7 @@ fn apply_local_context_alias_admin_or_creator() {
 
     let op_reg = SignedGroupOp::sign(
         &creator_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::ContextRegistered {
@@ -925,7 +926,7 @@ fn apply_local_context_alias_admin_or_creator() {
 
     let op_creator_alias = SignedGroupOp::sign(
         &creator_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         2,
         GroupOp::ContextMetadataSet {
@@ -942,7 +943,7 @@ fn apply_local_context_alias_admin_or_creator() {
 
     let op_admin = SignedGroupOp::sign(
         &admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::ContextMetadataSet {
@@ -993,7 +994,7 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
 
     let op_caps = SignedGroupOp::sign(
         &admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::MemberCapabilitySet {
@@ -1013,7 +1014,7 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
 
     let op_policy = SignedGroupOp::sign(
         &admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         2,
         GroupOp::UpgradePolicySet {
@@ -1032,7 +1033,7 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
     );
 
     let op_del =
-        SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], 3, GroupOp::GroupDelete).unwrap();
+        SignedGroupOp::sign(&admin_sk, gid_bytes.into(), vec![], 3, GroupOp::GroupDelete).unwrap();
     apply_local_signed_group_op(&store, &op_del).unwrap();
     assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
 }
@@ -1059,7 +1060,7 @@ fn apply_local_signed_group_op_rejects_last_admin_removal() {
 
     let op_bad = SignedGroupOp::sign(
         &admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         dummy_member_removed_op(admin_pk),
@@ -1117,7 +1118,7 @@ fn transfer_ownership_rejects_non_owner_signer() {
 
     let op = SignedGroupOp::sign(
         &other_admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::TransferOwnership {
@@ -1174,7 +1175,7 @@ fn transfer_ownership_rejects_new_owner_not_admin() {
 
     let op = SignedGroupOp::sign(
         &owner_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::TransferOwnership {
@@ -1229,7 +1230,7 @@ fn transfer_ownership_rejects_new_owner_not_member() {
 
     let op = SignedGroupOp::sign(
         &owner_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::TransferOwnership {
@@ -1291,7 +1292,7 @@ fn transfer_ownership_moves_admin_identity_to_new_owner() {
 
     let op = SignedGroupOp::sign(
         &owner_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::TransferOwnership {
@@ -1361,7 +1362,7 @@ fn context_capability_granted_rejects_unauthorized_signer() {
 
     let op = SignedGroupOp::sign(
         &member_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::ContextCapabilityGranted {
@@ -1427,7 +1428,7 @@ fn context_capability_revoked_rejects_unauthorized_signer() {
 
     let op = SignedGroupOp::sign(
         &member_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::ContextCapabilityRevoked {
@@ -2542,7 +2543,8 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
 
     let mut rng = OsRng;
     let signer_sk = PrivateKey::random(&mut rng);
-    let op = SignedGroupOp::sign(&signer_sk, gid.to_bytes(), vec![], 1, GroupOp::Noop).unwrap();
+    let op =
+        SignedGroupOp::sign(&signer_sk, gid.to_bytes().into(), vec![], 1, GroupOp::Noop).unwrap();
     let op_bytes = borsh::to_vec(&op).unwrap();
     append_op_log_entry(&store, &gid, 1, &op_bytes).unwrap();
     set_op_head(&store, &gid, 1, vec![[0x11; 32]]).unwrap();
@@ -2634,7 +2636,7 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
     let signer_sk = PrivateKey::random(&mut rng);
     let policy_1 = SignedGroupOp::sign(
         &signer_sk,
-        gid.to_bytes(),
+        gid.to_bytes().into(),
         vec![],
         1,
         GroupOp::TeeAdmissionPolicySet {
@@ -2652,7 +2654,7 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
 
     let joined = SignedGroupOp::sign(
         &signer_sk,
-        gid.to_bytes(),
+        gid.to_bytes().into(),
         vec![],
         2,
         GroupOp::MemberJoinedViaTeeAttestation {
@@ -2672,7 +2674,7 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
 
     let policy_2 = SignedGroupOp::sign(
         &signer_sk,
-        gid.to_bytes(),
+        gid.to_bytes().into(),
         vec![],
         3,
         GroupOp::TeeAdmissionPolicySet {
@@ -2796,7 +2798,7 @@ fn seed_bootstrap_admin_repairs_missing_member_row() {
     let namespace_id = [0xC6u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
 
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // ---- First seed: both meta and the (non-authoritative) member row are
     // written. #2474: the member row is `Member`, not `Admin`. ----
@@ -2845,7 +2847,7 @@ fn append_tee_policy_op(store: &Store, group: &ContextGroupId, seq: u64, mrtd: &
     let signer_sk = PrivateKey::random(&mut rng);
     let op = SignedGroupOp::sign(
         &signer_sk,
-        group.to_bytes(),
+        group.to_bytes().into(),
         vec![],
         seq,
         GroupOp::TeeAdmissionPolicySet {
@@ -2952,7 +2954,7 @@ fn apply_tee_policy_op_on_subgroup_rejected() {
 
     let op = SignedGroupOp::sign(
         &admin_sk,
-        child.to_bytes(),
+        child.to_bytes().into(),
         vec![],
         1,
         GroupOp::TeeAdmissionPolicySet {
@@ -3612,7 +3614,7 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
 
     let removed = SignedGroupOp::sign(
         &admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         dummy_member_removed_op(member_pk),
@@ -3634,7 +3636,7 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
     // restore on the local rejoiner.
     let readded = SignedGroupOp::sign(
         &admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         2,
         GroupOp::MemberAdded {
@@ -3735,7 +3737,7 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
     }
     let removed = SignedGroupOp::sign(
         &admin_sk,
-        subgroup.to_bytes(),
+        subgroup.to_bytes().into(),
         vec![],
         1,
         dummy_member_removed_op(member_pk),
@@ -3754,7 +3756,7 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
     // match — only then does the restore run.
     let readded = SignedGroupOp::sign(
         &admin_sk,
-        subgroup.to_bytes(),
+        subgroup.to_bytes().into(),
         vec![],
         2,
         GroupOp::MemberAdded {
@@ -3862,12 +3864,12 @@ fn member_joined_open_clears_deny_list_and_restores_context_identity() {
     // Sign + apply a fresh `MemberJoinedOpen` for the rejoiner.
     let signed = SignedNamespaceOp::sign(
         &member_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: member_pk,
-            group_id: subgroup.to_bytes(),
+            group_id: subgroup.to_bytes().into(),
         }),
     )
     .unwrap();
@@ -3973,7 +3975,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
 
     let signed = SignedNamespaceOp::sign(
         &member_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
@@ -4035,7 +4037,7 @@ fn member_added_does_nothing_for_non_rejoiner_peers() {
 
     let added = SignedGroupOp::sign(
         &admin_sk,
-        gid.to_bytes(),
+        gid.to_bytes().into(),
         vec![],
         1,
         GroupOp::MemberAdded {
@@ -4696,7 +4698,7 @@ fn deny_list_member_added_op_clears_existing_entry() {
     // Apply MemberAdded for target_pk.
     let op = SignedGroupOp::sign(
         &admin_sk,
-        gid.to_bytes(),
+        gid.to_bytes().into(),
         vec![],
         1,
         GroupOp::MemberAdded {
@@ -4747,7 +4749,7 @@ fn deny_list_member_removed_op_marks_entry() {
 
     let op = SignedGroupOp::sign(
         &admin_sk,
-        gid.to_bytes(),
+        gid.to_bytes().into(),
         vec![],
         1,
         dummy_member_removed_op(target_pk),
@@ -4786,7 +4788,7 @@ fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
     // Remove.
     let rm = SignedGroupOp::sign(
         &admin_sk,
-        gid.to_bytes(),
+        gid.to_bytes().into(),
         vec![],
         1,
         dummy_member_removed_op(target_pk),
@@ -4800,7 +4802,7 @@ fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
     // Re-add.
     let add = SignedGroupOp::sign(
         &admin_sk,
-        gid.to_bytes(),
+        gid.to_bytes().into(),
         vec![rm.content_hash().unwrap()],
         2,
         GroupOp::MemberAdded {
@@ -4880,7 +4882,7 @@ fn metadata_set_does_not_change_group_state_hash() {
 
     let op = SignedGroupOp::sign(
         &admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::GroupMetadataSet {
@@ -4947,7 +4949,7 @@ fn member_metadata_self_set_allowed_others_gated() {
     // Alice sets her own metadata — allowed.
     let op = SignedGroupOp::sign(
         &alice_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::MemberMetadataSet {
@@ -4962,7 +4964,7 @@ fn member_metadata_self_set_allowed_others_gated() {
     // Alice tries to set Bob's metadata — rejected (no CAN_MANAGE_METADATA).
     let op_bad = SignedGroupOp::sign(
         &alice_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         2,
         GroupOp::MemberMetadataSet {
@@ -4977,7 +4979,7 @@ fn member_metadata_self_set_allowed_others_gated() {
     // Group-level metadata by a bare member — rejected.
     let op_group = SignedGroupOp::sign(
         &alice_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         3,
         GroupOp::GroupMetadataSet {
@@ -4998,7 +5000,7 @@ fn member_metadata_self_set_allowed_others_gated() {
         .unwrap();
     let op_ok = SignedGroupOp::sign(
         &alice_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         4,
         GroupOp::GroupMetadataSet {
@@ -5353,7 +5355,7 @@ fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
 
     let signed = SignedGroupOp::sign(
         &admin_sk,
-        gid.to_bytes(),
+        gid.to_bytes().into(),
         vec![],
         1,
         GroupOp::MemberRemoved {
@@ -5695,7 +5697,7 @@ fn is_tee_admitted_identity_matches_tee_joined_member() {
     let signer_sk = PrivateKey::random(&mut rng);
     let tee_op = SignedGroupOp::sign(
         &signer_sk,
-        gid.to_bytes(),
+        gid.to_bytes().into(),
         vec![],
         1,
         GroupOp::MemberJoinedViaTeeAttestation {
@@ -5760,7 +5762,7 @@ mod auto_follow_tests {
 
         let op = SignedGroupOp::sign(
             &admin_sk,
-            gid_bytes,
+            gid_bytes.into(),
             vec![],
             1,
             GroupOp::MemberSetAutoFollow {
@@ -5787,7 +5789,7 @@ mod auto_follow_tests {
 
         let op = SignedGroupOp::sign(
             &member_sk,
-            gid_bytes,
+            gid_bytes.into(),
             vec![],
             1,
             GroupOp::MemberSetAutoFollow {
@@ -5824,7 +5826,7 @@ mod auto_follow_tests {
 
         let op = SignedGroupOp::sign(
             &member_sk,
-            gid_bytes,
+            gid_bytes.into(),
             vec![],
             1,
             GroupOp::MemberSetAutoFollow {
@@ -5865,7 +5867,7 @@ mod auto_follow_tests {
 
         let op = SignedGroupOp::sign(
             &admin_sk,
-            gid_bytes,
+            gid_bytes.into(),
             vec![],
             1,
             GroupOp::MemberSetAutoFollow {
@@ -5900,7 +5902,7 @@ mod auto_follow_tests {
         // Member turns on contexts
         let op1 = SignedGroupOp::sign(
             &member_sk,
-            gid_bytes,
+            gid_bytes.into(),
             vec![],
             1,
             GroupOp::MemberSetAutoFollow {
@@ -5915,7 +5917,7 @@ mod auto_follow_tests {
         // Admin changes role — flags must survive
         let op2 = SignedGroupOp::sign(
             &admin_sk,
-            gid_bytes,
+            gid_bytes.into(),
             vec![],
             1,
             GroupOp::MemberRoleSet {
@@ -5960,7 +5962,7 @@ mod auto_follow_tests {
         // 1. MemberSetAutoFollow on self
         let set_flags = SignedGroupOp::sign(
             &member_sk,
-            gid_bytes,
+            gid_bytes.into(),
             vec![],
             1,
             GroupOp::MemberSetAutoFollow {
@@ -5984,7 +5986,7 @@ mod auto_follow_tests {
         let context_id = ContextId::from([0x77; 32]);
         let register = SignedGroupOp::sign(
             &admin_sk,
-            gid_bytes,
+            gid_bytes.into(),
             vec![],
             1,
             GroupOp::ContextRegistered {
@@ -6066,7 +6068,7 @@ mod auto_follow_tests {
 
         let op = SignedGroupOp::sign(
             &admin_sk,
-            gid_bytes,
+            gid_bytes.into(),
             vec![],
             1,
             GroupOp::MemberAdded {
@@ -6165,7 +6167,7 @@ mod auto_follow_tests {
             &store,
             &SignedGroupOp::sign(
                 &admin_sk,
-                gid_bytes,
+                gid_bytes.into(),
                 vec![],
                 1,
                 GroupOp::MemberAdded {
@@ -6182,7 +6184,7 @@ mod auto_follow_tests {
             &store,
             &SignedGroupOp::sign(
                 &target_sk,
-                gid_bytes,
+                gid_bytes.into(),
                 vec![],
                 1,
                 GroupOp::MemberSetAutoFollow {
@@ -6242,7 +6244,7 @@ mod auto_follow_tests {
 
         let op = SignedGroupOp::sign(
             &admin_sk,
-            gid_bytes,
+            gid_bytes.into(),
             vec![],
             1,
             GroupOp::MemberAdded {
@@ -6353,7 +6355,7 @@ mod auto_follow_tests {
 
         let op = SignedGroupOp::sign(
             &admin_sk,
-            gid_bytes,
+            gid_bytes.into(),
             vec![],
             1,
             GroupOp::MemberAdded {
@@ -6453,12 +6455,12 @@ mod auto_follow_tests {
 
         let op = SignedNamespaceOp::sign(
             &admin_sk,
-            ns_id,
+            ns_id.into(),
             vec![],
             1,
             NamespaceOp::Root(RootOp::GroupCreated {
-                group_id: new_group_id,
-                parent_id: ns_id,
+                group_id: new_group_id.into(),
+                parent_id: ns_id.into(),
                 restricted: true,
             }),
         )
@@ -6497,12 +6499,12 @@ mod auto_follow_tests {
                         namespace_id,
                         parent_group_id,
                         child_group_id,
-                    }) if namespace_id == ns_id
+                    }) if namespace_id == ns_id.into()
                         && parent_group_id == ns_id
                         && child_group_id == new_group_id =>
                     {
                         return Some(
-                            NamespaceOpLogService::new(&observer_store, ns_id)
+                            NamespaceOpLogService::new(&observer_store, ns_id.into())
                                 .contains_op(delta_id)
                                 .unwrap(),
                         );
@@ -6526,7 +6528,7 @@ mod auto_follow_tests {
 
         // Release the observer and immediately apply.
         barrier.wait();
-        NamespaceGovernance::new(&store, ns_id)
+        NamespaceGovernance::new(&store, ns_id.into())
             .apply_signed_op(&op)
             .unwrap();
 
@@ -6706,7 +6708,7 @@ mod tee_member_removed_event_tests {
 
         let op = SignedGroupOp::sign(
             &admin_sk,
-            gid.to_bytes(),
+            gid.to_bytes().into(),
             vec![],
             1,
             dummy_member_removed_op(tee_pk),
@@ -6755,7 +6757,7 @@ mod tee_member_removed_event_tests {
 
         let op = SignedGroupOp::sign(
             &admin_sk,
-            gid.to_bytes(),
+            gid.to_bytes().into(),
             vec![],
             1,
             dummy_member_removed_op(target_pk),
@@ -6825,7 +6827,7 @@ mod tee_member_removed_event_tests {
         // Root admin removes the TEE at the namespace root.
         let op = SignedGroupOp::sign(
             &admin_sk,
-            ns_gid.to_bytes(),
+            ns_gid.to_bytes().into(),
             vec![],
             1,
             dummy_member_removed_op(tee_pk),
@@ -6941,7 +6943,7 @@ mod tee_member_removed_event_tests {
 
         let op = SignedGroupOp::sign(
             &admin_sk,
-            ns_gid.to_bytes(),
+            ns_gid.to_bytes().into(),
             vec![],
             1,
             dummy_member_removed_op(tee_pk),
@@ -7019,7 +7021,7 @@ mod tee_member_removed_event_tests {
 
         let op = SignedGroupOp::sign(
             &admin_sk,
-            ns_gid.to_bytes(),
+            ns_gid.to_bytes().into(),
             vec![],
             1,
             dummy_member_removed_op(member_pk),
@@ -7095,7 +7097,7 @@ mod tee_member_removed_event_tests {
 
             let op = SignedGroupOp::sign(
                 &tee_sk,
-                gid.to_bytes(),
+                gid.to_bytes().into(),
                 vec![],
                 1,
                 GroupOp::MemberLeft {
@@ -7141,7 +7143,7 @@ mod tee_member_removed_event_tests {
 
             let op = SignedGroupOp::sign(
                 &leaver_sk,
-                gid.to_bytes(),
+                gid.to_bytes().into(),
                 vec![],
                 1,
                 GroupOp::MemberLeft {

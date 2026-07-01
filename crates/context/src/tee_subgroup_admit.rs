@@ -29,6 +29,7 @@ use calimero_governance_store::{
     tee_admission_record, tee_admission_records, CapabilitiesRepository, GroupKeyring,
     MembershipRepository, NamespaceRepository, TeeAdmissionRecord,
 };
+use calimero_governance_types::NamespaceId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
@@ -39,7 +40,7 @@ use tracing::{debug, error, info, warn};
 pub(crate) enum AdmitTrigger {
     /// A new subgroup was created; admit the namespace's existing root TEE members.
     NewSubgroup {
-        namespace_id: [u8; 32],
+        namespace_id: NamespaceId,
         child_group_id: [u8; 32],
     },
     /// A TEE member was admitted somewhere; if it was the namespace root, fan it
@@ -225,10 +226,10 @@ async fn admit_member_into_subgroup(
 async fn handle_new_subgroup(
     store: &Store,
     context_client: &ContextClient,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     child_group_id: [u8; 32],
 ) {
-    let namespace_gid = ContextGroupId::from(namespace_id);
+    let namespace_gid = ContextGroupId::from(namespace_id.to_bytes());
     let child_gid = ContextGroupId::from(child_group_id);
 
     // Note on the same emit-before-persist race: unlike `handle_new_tee_member`,
@@ -241,7 +242,7 @@ async fn handle_new_subgroup(
 
     debug!(
         subgroup = %hex::encode(child_group_id),
-        namespace = %hex::encode(namespace_id),
+        namespace = %hex::encode(namespace_id.as_bytes()),
         "tee-subgroup-admit: new-subgroup trigger received"
     );
 
@@ -425,12 +426,12 @@ mod dispatch_tests {
 
         assert_eq!(
             admit_trigger(&OpEvent::SubgroupCreated {
-                namespace_id: [1u8; 32],
+                namespace_id: [1u8; 32].into(),
                 parent_group_id: [2u8; 32],
                 child_group_id: [3u8; 32],
             }),
             Some(AdmitTrigger::NewSubgroup {
-                namespace_id: [1u8; 32],
+                namespace_id: [1u8; 32].into(),
                 child_group_id: [3u8; 32],
             })
         );

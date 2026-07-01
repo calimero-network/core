@@ -1,6 +1,8 @@
 use calimero_context_client::local_governance::{
     NamespaceOp, OpaqueSkeleton, SignedNamespaceOp, StoredNamespaceEntry,
 };
+use calimero_governance_types::KeyId;
+use calimero_governance_types::NamespaceId;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
@@ -9,17 +11,17 @@ use crate::metrics::{record_namespace_decode_fallback, record_namespace_decode_i
 /// Typed namespace group entry decoded from the namespace op-log.
 pub struct StoredSignedGroupOp {
     pub signed_op: SignedNamespaceOp,
-    pub key_id: [u8; 32],
+    pub key_id: KeyId,
 }
 
 /// Service for persisting and reading namespace governance op-log entries.
 pub struct NamespaceOpLogService<'a> {
     store: &'a Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
 }
 
 impl<'a> NamespaceOpLogService<'a> {
-    pub fn new(store: &'a Store, namespace_id: [u8; 32]) -> Self {
+    pub fn new(store: &'a Store, namespace_id: NamespaceId) -> Self {
         Self {
             store,
             namespace_id,
@@ -33,7 +35,7 @@ impl<'a> NamespaceOpLogService<'a> {
     /// without paying the cost of a full op-log scan.
     pub fn contains_op(&self, delta_id: [u8; 32]) -> EyreResult<bool> {
         let handle = self.store.handle();
-        let key = calimero_store::key::NamespaceGovOp::new(self.namespace_id, delta_id);
+        let key = calimero_store::key::NamespaceGovOp::new(self.namespace_id.to_bytes(), delta_id);
         handle
             .has(&key)
             .map_err(|e| eyre::eyre!("contains_op: {e}"))
@@ -54,7 +56,7 @@ impl<'a> NamespaceOpLogService<'a> {
     /// drops it with a misleading "permanently missing" log.
     pub fn get_signed_op(&self, delta_id: [u8; 32]) -> EyreResult<Option<SignedNamespaceOp>> {
         let handle = self.store.handle();
-        let key = calimero_store::key::NamespaceGovOp::new(self.namespace_id, delta_id);
+        let key = calimero_store::key::NamespaceGovOp::new(self.namespace_id.to_bytes(), delta_id);
         let value: calimero_store::key::NamespaceGovOpValue = match handle.get(&key) {
             Ok(Some(v)) => v,
             Ok(None) => return Ok(None),
@@ -74,15 +76,15 @@ impl<'a> NamespaceOpLogService<'a> {
         if op.namespace_id != self.namespace_id {
             bail!(
                 "namespace mismatch when storing op: handle={}, op={}",
-                hex::encode(self.namespace_id),
-                hex::encode(op.namespace_id)
+                hex::encode(self.namespace_id.as_bytes()),
+                hex::encode(op.namespace_id.as_bytes())
             );
         }
 
         let delta_id = op
             .content_hash()
             .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
-        let key = calimero_store::key::NamespaceGovOp::new(self.namespace_id, delta_id);
+        let key = calimero_store::key::NamespaceGovOp::new(self.namespace_id.to_bytes(), delta_id);
         let value = calimero_store::key::NamespaceGovOpValue {
             skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Signed(op.clone()))
                 .map_err(|e| eyre::eyre!("borsh: {e}"))?,
@@ -107,7 +109,7 @@ impl<'a> NamespaceOpLogService<'a> {
             // existing backfill/repersist paths. Logged, not propagated.
             tracing::warn!(
                 %err,
-                namespace_id = %hex::encode(self.namespace_id),
+                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                 delta_id = %hex::encode(delta_id),
                 "unified op-store: atomic op-store write failed; gov-DAG write kept"
             );
@@ -142,8 +144,8 @@ impl<'a> NamespaceOpLogService<'a> {
             } => crate::decrypt_group_op(
                 self.store,
                 self.namespace_id,
-                calimero_context_config::types::ContextGroupId::from(*group_id),
-                key_id,
+                *group_id,
+                key_id.as_bytes(),
                 encrypted,
             )
             .ok()
@@ -162,7 +164,7 @@ impl<'a> NamespaceOpLogService<'a> {
             &delta.parents,
         );
 
-        let scope = calimero_op::ScopeId::from(self.namespace_id);
+        let scope = calimero_op::ScopeId::from(self.namespace_id.to_bytes());
         let key = calimero_store::key::ScopeUnifiedOp::new(*scope.as_bytes(), unified_op.id());
         let bytes = borsh::to_vec(&unified_op).map_err(|e| eyre::eyre!("borsh op: {e}"))?;
         let value =
@@ -183,7 +185,8 @@ impl<'a> NamespaceOpLogService<'a> {
     ) -> EyreResult<Vec<StoredSignedGroupOp>> {
         let mut entries = Vec::new();
         let handle = self.store.handle();
-        let start = calimero_store::key::NamespaceGovOp::new(self.namespace_id, [0u8; 32]);
+        let start =
+            calimero_store::key::NamespaceGovOp::new(self.namespace_id.to_bytes(), [0u8; 32]);
         let mut iter = handle
             .iter::<calimero_store::key::NamespaceGovOp>()
             .map_err(|e| eyre::eyre!("iter::<NamespaceGovOp>: {e}"))?;
@@ -231,7 +234,7 @@ impl<'a> NamespaceOpLogService<'a> {
                     break;
                 }
             };
-            if key.namespace_id() != self.namespace_id {
+            if key.namespace_id() != self.namespace_id.to_bytes() {
                 break;
             }
             let value: calimero_store::key::NamespaceGovOpValue = match handle.get(&key) {
@@ -245,7 +248,7 @@ impl<'a> NamespaceOpLogService<'a> {
                     // valid retry candidates.
                     record_namespace_decode_invalid("signed_iter_value");
                     tracing::warn!(
-                        namespace_id = %hex::encode(self.namespace_id),
+                        namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                         delta_id = %hex::encode(key.delta_id()),
                         error = %e,
                         "skipping undecodable NamespaceGovOpValue during retry walk"
@@ -264,7 +267,7 @@ impl<'a> NamespaceOpLogService<'a> {
             else {
                 continue;
             };
-            if op_group_id != group_id {
+            if op_group_id.to_bytes() != group_id {
                 continue;
             }
             entries.push(StoredSignedGroupOp { signed_op, key_id });
@@ -285,7 +288,8 @@ impl<'a> NamespaceOpLogService<'a> {
     pub fn collect_buffered_group_op_keys(&self) -> EyreResult<Vec<([u8; 32], [u8; 32])>> {
         let mut seen = std::collections::BTreeSet::new();
         let handle = self.store.handle();
-        let start = calimero_store::key::NamespaceGovOp::new(self.namespace_id, [0u8; 32]);
+        let start =
+            calimero_store::key::NamespaceGovOp::new(self.namespace_id.to_bytes(), [0u8; 32]);
         let mut iter = handle
             .iter::<calimero_store::key::NamespaceGovOp>()
             .map_err(|e| eyre::eyre!("iter::<NamespaceGovOp>: {e}"))?;
@@ -301,7 +305,7 @@ impl<'a> NamespaceOpLogService<'a> {
                     break;
                 }
             };
-            if key.namespace_id() != self.namespace_id {
+            if key.namespace_id() != self.namespace_id.to_bytes() {
                 break;
             }
             let value: calimero_store::key::NamespaceGovOpValue = match handle.get(&key) {
@@ -321,7 +325,7 @@ impl<'a> NamespaceOpLogService<'a> {
                 ..
             } = signed_op.op
             {
-                seen.insert((op_group_id, key_id));
+                seen.insert((op_group_id.to_bytes(), key_id.to_bytes()));
             }
         }
 
@@ -334,7 +338,8 @@ impl<'a> NamespaceOpLogService<'a> {
     ) -> EyreResult<Vec<[u8; 32]>> {
         let mut delta_ids = Vec::new();
         let handle = self.store.handle();
-        let start = calimero_store::key::NamespaceGovOp::new(self.namespace_id, [0u8; 32]);
+        let start =
+            calimero_store::key::NamespaceGovOp::new(self.namespace_id.to_bytes(), [0u8; 32]);
         let mut iter = handle.iter::<calimero_store::key::NamespaceGovOp>()?;
         let first = iter.seek(start).transpose();
 
@@ -353,7 +358,7 @@ impl<'a> NamespaceOpLogService<'a> {
                     break;
                 }
             };
-            if key.namespace_id() != self.namespace_id {
+            if key.namespace_id() != self.namespace_id.to_bytes() {
                 break;
             }
             let value: calimero_store::key::NamespaceGovOpValue = match handle.get(&key) {
@@ -362,7 +367,7 @@ impl<'a> NamespaceOpLogService<'a> {
                 Err(e) => {
                     record_namespace_decode_invalid("opaque_iter_value");
                     tracing::warn!(
-                        namespace_id = %hex::encode(self.namespace_id),
+                        namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                         delta_id = %hex::encode(key.delta_id()),
                         error = %e,
                         "skipping undecodable NamespaceGovOpValue during opaque walk"
@@ -373,7 +378,7 @@ impl<'a> NamespaceOpLogService<'a> {
             let Some(skeleton) = decode_opaque_skeleton(&value.skeleton_bytes) else {
                 continue;
             };
-            if skeleton.group_id == group_id {
+            if skeleton.group_id.to_bytes() == group_id {
                 delta_ids.push(skeleton.delta_id);
             }
         }

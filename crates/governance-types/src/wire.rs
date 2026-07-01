@@ -15,7 +15,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::identity::PublicKey;
 
-use super::{GovernanceError, SignedGroupOp, SignedNamespaceOp};
+use super::{GovernanceError, NamespaceId, SignedGroupOp, SignedNamespaceOp};
 
 /// Domain separation prefix for [`SignedAck`] signatures.
 pub const ACK_SIGN_DOMAIN: &[u8] = b"calimero.ack.v1";
@@ -99,7 +99,7 @@ impl SignedAck {
 /// detected at verification time.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct SignableReadinessBeacon {
-    pub namespace_id: [u8; 32],
+    pub namespace_id: NamespaceId,
     pub peer_pubkey: PublicKey,
     pub dag_head: [u8; 32],
     pub applied_through: u64,
@@ -116,7 +116,7 @@ pub struct SignableReadinessBeacon {
 /// cold-fleet deadlock without requiring a quorum.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct SignedReadinessBeacon {
-    pub namespace_id: [u8; 32],
+    pub namespace_id: NamespaceId,
     pub peer_pubkey: PublicKey,
     pub dag_head: [u8; 32],
     pub applied_through: u64,
@@ -167,7 +167,7 @@ impl SignedReadinessBeacon {
 /// are detected at verification time.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct SignableMigrationHeartbeat {
-    pub namespace_id: [u8; 32],
+    pub namespace_id: NamespaceId,
     pub peer_pubkey: PublicKey,
     /// Schema/binary version the publishing node has loaded.
     pub schema_version: u32,
@@ -197,7 +197,7 @@ pub struct SignableMigrationHeartbeat {
 // fail loudly on a desync — keep them in step.
 #[derive(Debug, Clone, BorshSerialize)]
 pub struct SignedMigrationHeartbeat {
-    pub namespace_id: [u8; 32],
+    pub namespace_id: NamespaceId,
     pub peer_pubkey: PublicKey,
     pub schema_version: u32,
     pub residue_auto: u64,
@@ -266,7 +266,7 @@ fn read_trailing<R: borsh::io::Read, const N: usize>(
 // go AFTER migration_failed (another trailing read) or behind a discriminant.
 impl BorshDeserialize for SignedMigrationHeartbeat {
     fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
-        let namespace_id = <[u8; 32]>::deserialize_reader(reader)?;
+        let namespace_id: NamespaceId = <[u8; 32]>::deserialize_reader(reader)?.into();
         let peer_pubkey = PublicKey::deserialize_reader(reader)?;
         let schema_version = u32::deserialize_reader(reader)?;
         let residue_auto = u64::deserialize_reader(reader)?;
@@ -335,7 +335,7 @@ impl SignedMigrationHeartbeat {
 /// the periodic beacon interval when waiting for `await_namespace_ready`.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct ReadinessProbe {
-    pub namespace_id: [u8; 32],
+    pub namespace_id: NamespaceId,
     pub nonce: [u8; 16],
 }
 
@@ -395,14 +395,14 @@ mod tests {
     #[test]
     fn namespace_topic_msg_discriminates_kinds() {
         let probe = NamespaceTopicMsg::ReadinessProbe(ReadinessProbe {
-            namespace_id: [1u8; 32],
+            namespace_id: [1u8; 32].into(),
             nonce: [2u8; 16],
         });
         let bytes = borsh::to_vec(&probe).expect("ser");
         let parsed: NamespaceTopicMsg = borsh::from_slice(&bytes).expect("de");
         match parsed {
             NamespaceTopicMsg::ReadinessProbe(p) => {
-                assert_eq!(p.namespace_id, [1u8; 32]);
+                assert_eq!(p.namespace_id.to_bytes(), [1u8; 32]);
                 assert_eq!(p.nonce, [2u8; 16]);
             }
             other => panic!("wrong variant: {other:?}"),
@@ -412,7 +412,7 @@ mod tests {
     #[test]
     fn group_topic_msg_discriminates_kinds() {
         let beacon = GroupTopicMsg::ReadinessBeacon(SignedReadinessBeacon {
-            namespace_id: [3u8; 32],
+            namespace_id: [3u8; 32].into(),
             peer_pubkey: PrivateKey::random(&mut rand::thread_rng()).public_key(),
             dag_head: [4u8; 32],
             applied_through: 17,
@@ -424,7 +424,7 @@ mod tests {
         let parsed: GroupTopicMsg = borsh::from_slice(&bytes).expect("de");
         match parsed {
             GroupTopicMsg::ReadinessBeacon(b) => {
-                assert_eq!(b.namespace_id, [3u8; 32]);
+                assert_eq!(b.namespace_id.to_bytes(), [3u8; 32]);
                 assert_eq!(b.applied_through, 17);
                 assert!(b.strong);
             }
@@ -437,7 +437,7 @@ mod tests {
         let sk = PrivateKey::random(&mut rand::thread_rng());
         let op = SignedNamespaceOp::sign(
             &sk,
-            [0u8; 32],
+            [0u8; 32].into(),
             Vec::new(),
             0,
             super::super::NamespaceOp::Root(super::super::RootOp::AdminChanged {
@@ -503,7 +503,7 @@ mod tests {
     fn signed_readiness_beacon_verify_round_trip() {
         let sk = PrivateKey::random(&mut rand::thread_rng());
         let mut beacon = SignedReadinessBeacon {
-            namespace_id: [7u8; 32],
+            namespace_id: [7u8; 32].into(),
             peer_pubkey: sk.public_key(),
             dag_head: [9u8; 32],
             applied_through: 42,
@@ -524,7 +524,7 @@ mod tests {
         // must break the signature.
         let sk = PrivateKey::random(&mut rand::thread_rng());
         let mut beacon = SignedReadinessBeacon {
-            namespace_id: [7u8; 32],
+            namespace_id: [7u8; 32].into(),
             peer_pubkey: sk.public_key(),
             dag_head: [9u8; 32],
             applied_through: 42,
@@ -549,7 +549,7 @@ mod tests {
         // must break the signature.
         let sk = PrivateKey::random(&mut rand::thread_rng());
         let mut beacon = SignedReadinessBeacon {
-            namespace_id: [7u8; 32],
+            namespace_id: [7u8; 32].into(),
             peer_pubkey: sk.public_key(),
             dag_head: [9u8; 32],
             applied_through: 100,
@@ -572,7 +572,7 @@ mod tests {
     fn signed_migration_heartbeat_verify_round_trip() {
         let sk = PrivateKey::random(&mut rand::thread_rng());
         let mut hb = SignedMigrationHeartbeat {
-            namespace_id: [7u8; 32],
+            namespace_id: [7u8; 32].into(),
             peer_pubkey: sk.public_key(),
             schema_version: 2,
             residue_auto: 5,
@@ -596,7 +596,7 @@ mod tests {
         // fake a completed migration must break the signature.
         let sk = PrivateKey::random(&mut rand::thread_rng());
         let mut hb = SignedMigrationHeartbeat {
-            namespace_id: [7u8; 32],
+            namespace_id: [7u8; 32].into(),
             peer_pubkey: sk.public_key(),
             schema_version: 2,
             residue_auto: 0,
@@ -626,7 +626,7 @@ mod tests {
     fn migration_heartbeat_authored_remaining_unsigned_and_eof_tolerant() {
         let sk = PrivateKey::random(&mut rand::thread_rng());
         let mut hb = SignedMigrationHeartbeat {
-            namespace_id: [9u8; 32],
+            namespace_id: [9u8; 32].into(),
             peer_pubkey: sk.public_key(),
             schema_version: 2,
             residue_auto: 0,
@@ -678,7 +678,7 @@ mod tests {
     fn migration_heartbeat_migration_failed_unsigned_and_eof_tolerant() {
         let sk = PrivateKey::random(&mut rand::thread_rng());
         let mut hb = SignedMigrationHeartbeat {
-            namespace_id: [7u8; 32],
+            namespace_id: [7u8; 32].into(),
             peer_pubkey: sk.public_key(),
             schema_version: 2,
             residue_auto: 0,
@@ -726,7 +726,7 @@ mod tests {
         // domain prefix.
         let sk = PrivateKey::random(&mut rand::thread_rng());
         let hb_unsigned = SignableMigrationHeartbeat {
-            namespace_id: [7u8; 32],
+            namespace_id: [7u8; 32].into(),
             peer_pubkey: sk.public_key(),
             schema_version: 2,
             residue_auto: 0,
@@ -758,7 +758,7 @@ mod tests {
     fn namespace_topic_msg_migration_heartbeat_roundtrip() {
         let sk = PrivateKey::random(&mut rand::thread_rng());
         let envelope = NamespaceTopicMsg::MigrationHeartbeat(SignedMigrationHeartbeat {
-            namespace_id: [3u8; 32],
+            namespace_id: [3u8; 32].into(),
             peer_pubkey: sk.public_key(),
             schema_version: 2,
             residue_auto: 7,
@@ -773,7 +773,7 @@ mod tests {
         let parsed: NamespaceTopicMsg = borsh::from_slice(&bytes).expect("de");
         match parsed {
             NamespaceTopicMsg::MigrationHeartbeat(hb) => {
-                assert_eq!(hb.namespace_id, [3u8; 32]);
+                assert_eq!(hb.namespace_id.to_bytes(), [3u8; 32]);
                 assert_eq!(hb.schema_version, 2);
                 assert_eq!(hb.residue_auto, 7);
                 assert_eq!(hb.residue_identity, 1);

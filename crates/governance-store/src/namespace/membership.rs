@@ -2,6 +2,7 @@ use crate::{MembershipRepository, NamespaceRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_context_config::MemberCapabilities;
+use calimero_governance_types::NamespaceId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
@@ -13,11 +14,11 @@ use super::super::membership::role_from_invited_role;
 /// Namespace-scoped service for handling `RootOp::MemberJoined`.
 pub struct NamespaceMembershipService<'a> {
     store: &'a Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
 }
 
 impl<'a> NamespaceMembershipService<'a> {
-    pub fn new(store: &'a Store, namespace_id: [u8; 32]) -> Self {
+    pub fn new(store: &'a Store, namespace_id: NamespaceId) -> Self {
         Self {
             store,
             namespace_id,
@@ -79,7 +80,7 @@ impl<'a> NamespaceMembershipService<'a> {
         }
 
         let resolved_ns = NamespaceRepository::new(self.store).resolve(&group_id)?;
-        if resolved_ns.to_bytes() != self.namespace_id {
+        if resolved_ns.to_bytes() != self.namespace_id.to_bytes() {
             bail!("group does not belong to this namespace");
         }
 
@@ -112,7 +113,7 @@ impl<'a> NamespaceMembershipService<'a> {
         self.verify_inviter_signature(signed_invitation)?;
 
         let resolved_ns = NamespaceRepository::new(self.store).resolve(&group_id)?;
-        if resolved_ns.to_bytes() != self.namespace_id {
+        if resolved_ns.to_bytes() != self.namespace_id.to_bytes() {
             bail!("group does not belong to this namespace");
         }
 

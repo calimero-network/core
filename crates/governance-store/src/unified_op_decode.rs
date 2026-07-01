@@ -9,7 +9,6 @@
 //! existing projection callers keep compiling unchanged.
 
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
-use calimero_context_config::types::ContextGroupId;
 use calimero_dag::CausalDelta;
 use calimero_op::{Op, OpPayload, ScopeId};
 use calimero_op_adapter::{payload_from_group_op, payload_from_root_op};
@@ -91,7 +90,7 @@ pub fn op_from_namespace_op(
             payload_from_root_op(root, signed.signer).unwrap_or(OpPayload::Noop)
         }
         NamespaceOp::Group { group_id, .. } => decrypted_group_op
-            .and_then(|g| payload_from_group_op(ContextGroupId::from(*group_id), g))
+            .and_then(|g| payload_from_group_op(*group_id, g))
             .unwrap_or(OpPayload::Noop),
         // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op folds as a
         // `Noop` graph node (same as an undecryptable/unfoldable op above),
@@ -100,7 +99,7 @@ pub fn op_from_namespace_op(
     };
     build_op(
         id,
-        ScopeId::from(signed.namespace_id),
+        ScopeId::from(signed.namespace_id.to_bytes()),
         signed.signer,
         hlc,
         parents,

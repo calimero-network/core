@@ -149,7 +149,7 @@ fn applied_through_grace_prevents_thrashing() {
 
 fn make_beacon(pk: PublicKey, applied_through: u64, strong: bool) -> SignedReadinessBeacon {
     SignedReadinessBeacon {
-        namespace_id: [42u8; 32],
+        namespace_id: [42u8; 32].into(),
         peer_pubkey: pk,
         dag_head: [9u8; 32],
         applied_through,
