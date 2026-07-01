@@ -205,6 +205,12 @@ async fn context_exists(client: &crate::client::Client, target_id: &ContextId) -
 /// The check runs against the **root cause**, not `err.to_string()`, so a
 /// `.wrap_err("…")` context layer added anywhere up the chain can't hide the
 /// `"HTTP 404…"` message and silently turn a 404 into a propagated error.
+///
+/// This relies on the client layer propagating the error by *value* — via
+/// `.wrap_err(…)` / `?` — so the original `"HTTP 404…"` stays the root cause.
+/// If a layer instead re-creates it by formatting (e.g. `eyre!("…: {err}")`),
+/// the status prefix ends up embedded mid-string, the root cause becomes the
+/// new message, and the `starts_with("HTTP 404")` check will miss it.
 fn is_not_found(err: &eyre::Report) -> bool {
     let msg = err.root_cause().to_string();
     msg == "HTTP 404" || msg.starts_with("HTTP 404:") || msg.starts_with("HTTP 404 ")
