@@ -60,6 +60,11 @@ fn persist_row(
                 delta_id,
                 parents,
                 actions,
+                // A zero HLC is safe for these tests: `load_persisted_deltas`
+                // only infers a checkpoint from `parents == [genesis] && actions
+                // empty` — never from the HLC — and every row here carries a
+                // non-empty `one_action`, so none is misclassified. A future row
+                // with empty actions would need a real HLC to stay a regular delta.
                 hlc: HybridTimestamp::default(),
                 applied,
                 expected_root_hash,

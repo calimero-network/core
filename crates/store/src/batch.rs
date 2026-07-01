@@ -232,6 +232,14 @@ mod tests {
         batch
             .put(&good, &GenericData::from(Slice::from(&b"good"[..])))
             .expect("good put stages");
+        // Confirm the good put actually staged (not a silent no-op) so the
+        // post-abort absence assertion below is meaningful — it proves a *staged*
+        // write is discarded, not merely that nothing was ever staged.
+        assert_eq!(
+            batch.len(),
+            1,
+            "good put must be staged before the failing put"
+        );
 
         // `put` returns `&mut Self` on success, which is not `Debug`, so match
         // rather than `expect_err`.
