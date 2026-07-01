@@ -1051,16 +1051,18 @@ mod traversal_tests {
         let b = BlobId::from([2u8; 32]);
         let mut handle = mgr.data_store.handle();
         // A -> B and B -> A: both are internal nodes (non-empty links).
+        // `refs = 1`: each is a single live reference (the value is incidental to
+        // this cycle-rejection test).
         handle
             .put(
                 &BlobMetaKey::new(a),
-                &BlobMetaValue::new(1, *a, vec![BlobMetaKey::new(b)].into_boxed_slice()),
+                &BlobMetaValue::new(1, *a, vec![BlobMetaKey::new(b)].into_boxed_slice(), 1),
             )
             .unwrap();
         handle
             .put(
                 &BlobMetaKey::new(b),
-                &BlobMetaValue::new(1, *b, vec![BlobMetaKey::new(a)].into_boxed_slice()),
+                &BlobMetaValue::new(1, *b, vec![BlobMetaKey::new(a)].into_boxed_slice(), 1),
             )
             .unwrap();
 
