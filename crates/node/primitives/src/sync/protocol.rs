@@ -83,15 +83,17 @@ pub enum SyncProtocol {
     /// Bloom filter-based quick diff.
     ///
     /// Best for: Large trees with small diff (<10% divergence).
+    ///
+    /// The false-positive rate is intentionally not negotiated here: it is a
+    /// property of the actual [`DeltaIdBloomFilter`] exchanged during the sync,
+    /// derivable from that filter's parameters. Advertising it as a borsh `f64`
+    /// would also add a field whose only non-canonical bit pattern (a crafted
+    /// NaN) makes the whole handshake fail to decode.
+    ///
+    /// [`DeltaIdBloomFilter`]: super::bloom_filter::DeltaIdBloomFilter
     BloomFilter {
         /// Size of the bloom filter in bits.
         filter_size: u64,
-        /// Expected false positive rate (0.0 to 1.0).
-        ///
-        /// **Note**: Validation of bounds is performed when constructing the actual
-        /// bloom filter, not at protocol negotiation time. Invalid values will cause
-        /// filter construction to fail gracefully.
-        false_positive_rate: f64,
     },
 
     /// Subtree prefetch for deep localized changes.
@@ -259,7 +261,6 @@ pub fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> Protoco
             protocol: SyncProtocol::BloomFilter {
                 // ~10 bits per entity, max 10k; saturating to avoid overflow on huge counts
                 filter_size: remote.entity_count.saturating_mul(10).min(10_000),
-                false_positive_rate: 0.01,
             },
             reason: "large tree with small divergence, using bloom filter",
         };
@@ -355,10 +356,7 @@ mod tests {
                 compressed: true,
                 verified: false,
             },
-            SyncProtocol::BloomFilter {
-                filter_size: 1024,
-                false_positive_rate: 0.01,
-            },
+            SyncProtocol::BloomFilter { filter_size: 1024 },
             SyncProtocol::SubtreePrefetch {
                 subtree_roots: vec![[5; 32], [6; 32]],
             },
@@ -392,6 +390,60 @@ mod tests {
     }
 
     #[test]
+    fn test_sync_protocol_kind_discriminants_are_parallel() {
+        // SyncProtocol and SyncProtocolKind must list their variants in the same
+        // order: borsh encodes the variant index as the leading tag byte, and
+        // capability negotiation relies on `SyncProtocol::kind()` mapping a
+        // protocol to the kind with the *same* discriminant. This test pins that
+        // parity so inserting/reordering a variant in only one enum fails here
+        // rather than silently mis-advertising capabilities on the wire.
+        let pairs = [
+            (SyncProtocol::None, SyncProtocolKind::None),
+            (
+                SyncProtocol::DeltaSync {
+                    missing_delta_ids: vec![],
+                },
+                SyncProtocolKind::DeltaSync,
+            ),
+            (
+                SyncProtocol::HashComparison { root_hash: [0; 32] },
+                SyncProtocolKind::HashComparison,
+            ),
+            (
+                SyncProtocol::Snapshot {
+                    compressed: false,
+                    verified: false,
+                },
+                SyncProtocolKind::Snapshot,
+            ),
+            (
+                SyncProtocol::BloomFilter { filter_size: 0 },
+                SyncProtocolKind::BloomFilter,
+            ),
+            (
+                SyncProtocol::SubtreePrefetch {
+                    subtree_roots: vec![],
+                },
+                SyncProtocolKind::SubtreePrefetch,
+            ),
+            (
+                SyncProtocol::LevelWise { max_depth: 0 },
+                SyncProtocolKind::LevelWise,
+            ),
+        ];
+
+        for (protocol, kind) in pairs {
+            let protocol_tag = borsh::to_vec(&protocol).expect("serialize protocol")[0];
+            let kind_tag = borsh::to_vec(&kind).expect("serialize kind")[0];
+            assert_eq!(
+                protocol_tag, kind_tag,
+                "discriminant mismatch: {protocol:?} (tag {protocol_tag}) vs {kind:?} (tag {kind_tag})"
+            );
+            assert_eq!(protocol.kind(), kind, "kind() mapping must agree");
+        }
+    }
+
+    #[test]
     fn test_sync_protocol_kind_conversion() {
         // Test kind() method and From trait
         assert_eq!(SyncProtocol::None.kind(), SyncProtocolKind::None);
@@ -415,11 +467,7 @@ mod tests {
             SyncProtocolKind::Snapshot
         );
         assert_eq!(
-            SyncProtocol::BloomFilter {
-                filter_size: 1024,
-                false_positive_rate: 0.01
-            }
-            .kind(),
+            SyncProtocol::BloomFilter { filter_size: 1024 }.kind(),
             SyncProtocolKind::BloomFilter
         );
         assert_eq!(

@@ -6,6 +6,15 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use super::hash_comparison::TreeLeafData;
 
+/// Maximum number of leaves a single [`BloomFilterResponse`] may carry.
+///
+/// Mirrors the response caps on the sibling sync types (e.g.
+/// `MAX_NODES_PER_RESPONSE`). Each `TreeLeafData` can be up to ~1 MB, so an
+/// uncapped `missing_entities` vector is a memory-exhaustion vector; bound it
+/// and validate every leaf via [`BloomFilterResponse::is_valid`] after decoding
+/// from an untrusted peer.
+pub const MAX_MISSING_ENTITIES: usize = 1000;
+
 // =============================================================================
 // Constants
 // =============================================================================
@@ -308,34 +317,41 @@ impl DeltaIdBloomFilter {
 #[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct BloomFilterRequest {
     /// Bloom filter containing initiator's entity IDs.
+    ///
+    /// The filter fully encodes its own parameters (`num_bits`, `num_hashes`,
+    /// `item_count`), so the false-positive rate is derivable from it and is not
+    /// carried separately. Keeping it out of the wire format also removes a
+    /// borsh `f64` field whose only non-canonical bit pattern (a crafted NaN)
+    /// would make the whole message fail to decode.
     pub filter: DeltaIdBloomFilter,
-
-    /// False positive rate used to build the filter.
-    /// Uses f64 for consistency with wire protocol.
-    pub false_positive_rate: f64,
 }
 
 impl BloomFilterRequest {
     /// Create a new Bloom filter request.
     #[must_use]
-    pub fn new(filter: DeltaIdBloomFilter, false_positive_rate: f64) -> Self {
-        Self {
-            filter,
-            false_positive_rate,
-        }
+    pub fn new(filter: DeltaIdBloomFilter) -> Self {
+        Self { filter }
     }
 
     /// Create a request by building a filter from entity IDs.
+    ///
+    /// `fp_rate` sizes the filter (clamped to the valid range) but is not stored
+    /// on the request — see the [`filter`](BloomFilterRequest::filter) field.
     #[must_use]
     pub fn from_ids(ids: &[[u8; 32]], fp_rate: f64) -> Self {
-        // Use the same clamped fp_rate that DeltaIdBloomFilter::new() uses
-        // to ensure metadata matches what was actually used to build the filter
         let clamped_fp_rate = DeltaIdBloomFilter::clamp_fp_rate(fp_rate);
         let mut filter = DeltaIdBloomFilter::new(ids.len(), clamped_fp_rate);
         for id in ids {
             filter.insert(id);
         }
-        Self::new(filter, clamped_fp_rate)
+        Self::new(filter)
+    }
+
+    /// The false-positive rate the filter was built for, recovered from the
+    /// filter's own parameters rather than carried on the wire.
+    #[must_use]
+    pub fn false_positive_rate(&self) -> f64 {
+        self.filter.estimated_fp_rate()
     }
 }
 
@@ -382,6 +398,18 @@ impl BloomFilterResponse {
     pub fn missing_count(&self) -> usize {
         self.missing_entities.len()
     }
+
+    /// Check if the response is within valid bounds.
+    ///
+    /// Call this after deserializing from untrusted sources to prevent memory
+    /// exhaustion: bounds the number of returned leaves to
+    /// [`MAX_MISSING_ENTITIES`] and validates each leaf (value + ancestor-chain
+    /// size). Mirrors `TreeNodeResponse::is_valid` on the sibling sync types.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.missing_entities.len() <= MAX_MISSING_ENTITIES
+            && self.missing_entities.iter().all(TreeLeafData::is_valid)
+    }
 }
 
 // =============================================================================
@@ -391,7 +419,7 @@ impl BloomFilterResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::hash_comparison::{CrdtType, LeafMetadata};
+    use crate::sync::hash_comparison::{CrdtType, LeafMetadata, MAX_LEAF_VALUE_SIZE};
 
     #[test]
     fn test_bloom_filter_fnv1a_consistency() {
@@ -509,7 +537,6 @@ mod tests {
         assert!(request.filter.contains(&[2u8; 32]));
         assert!(request.filter.contains(&[3u8; 32]));
         assert!(!request.filter.contains(&[4u8; 32]));
-        assert_eq!(request.false_positive_rate, 0.01);
     }
 
     #[test]
@@ -555,6 +582,26 @@ mod tests {
         let decoded: BloomFilterResponse = borsh::from_slice(&encoded).expect("deserialize");
 
         assert_eq!(response, decoded);
+    }
+
+    #[test]
+    fn test_bloom_filter_response_is_valid() {
+        let metadata = LeafMetadata::new(CrdtType::lww_register("test"), 100, [5; 32]);
+
+        // Within bounds → valid.
+        let leaf = TreeLeafData::new([1; 32], vec![1, 2, 3], metadata.clone());
+        let ok = BloomFilterResponse::new(vec![leaf.clone()], 10);
+        assert!(ok.is_valid());
+        assert!(BloomFilterResponse::empty(0).is_valid());
+
+        // Too many leaves → invalid.
+        let over = BloomFilterResponse::new(vec![leaf; MAX_MISSING_ENTITIES + 1], 10);
+        assert!(!over.is_valid());
+
+        // A single oversized leaf → invalid (per-leaf validation).
+        let big_leaf = TreeLeafData::new([1; 32], vec![0u8; MAX_LEAF_VALUE_SIZE + 1], metadata);
+        let bad = BloomFilterResponse::new(vec![big_leaf], 10);
+        assert!(!bad.is_valid());
     }
 
     #[test]
@@ -836,37 +883,20 @@ mod tests {
     }
 
     #[test]
-    fn test_bloom_filter_from_ids_clamps_fp_rate() {
-        // Test that from_ids stores the clamped FP rate, not the original
-
-        // Test with NaN - should use DEFAULT_BLOOM_FP_RATE
+    fn test_bloom_filter_from_ids_clamps_fp_rate_for_sizing() {
+        // `fp_rate` is no longer stored on the request, but it must still be
+        // clamped internally so extreme/invalid values (NaN, negative, >0.5)
+        // produce a valid, usable filter rather than a degenerate one.
         let ids = [[1u8; 32], [2u8; 32]];
-        let request = BloomFilterRequest::from_ids(&ids, f64::NAN);
-        assert_eq!(
-            request.false_positive_rate, DEFAULT_BLOOM_FP_RATE,
-            "NaN should be clamped to DEFAULT_BLOOM_FP_RATE"
-        );
-
-        // Test with negative - should use MIN_FP_RATE
-        let request = BloomFilterRequest::from_ids(&ids, -1.0);
-        assert_eq!(
-            request.false_positive_rate, MIN_FP_RATE,
-            "Negative should be clamped to MIN_FP_RATE"
-        );
-
-        // Test with too high - should use MAX_FP_RATE
-        let request = BloomFilterRequest::from_ids(&ids, 0.99);
-        assert_eq!(
-            request.false_positive_rate, MAX_FP_RATE,
-            "Value > 0.5 should be clamped to MAX_FP_RATE"
-        );
-
-        // Test with valid value - should remain unchanged
-        let request = BloomFilterRequest::from_ids(&ids, 0.02);
-        assert_eq!(
-            request.false_positive_rate, 0.02,
-            "Valid FP rate should remain unchanged"
-        );
+        for fp_rate in [f64::NAN, -1.0, 0.0, 0.99, f64::INFINITY, 0.02] {
+            let request = BloomFilterRequest::from_ids(&ids, fp_rate);
+            assert!(
+                request.filter.is_valid(),
+                "from_ids with fp_rate {fp_rate} must build a valid filter"
+            );
+            assert!(request.filter.contains(&[1u8; 32]));
+            assert!(request.filter.contains(&[2u8; 32]));
+        }
     }
 
     #[test]
