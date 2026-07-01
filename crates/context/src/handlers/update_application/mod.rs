@@ -54,6 +54,24 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             "Handling UpdateApplicationRequest"
         );
 
+        // Authorize the *requester* before touching any state. `update_application`
+        // swaps the context's bytecode and can drive a whole-context state
+        // migration, so it must be gated to this context's own provisioned
+        // identities — the same bar `execute` enforces. Previously the caller
+        // `public_key` was threaded straight through to the migration/finalize
+        // path and only the new application's signer *continuity* was checked,
+        // never the requester, so any key could drive a migration.
+        if let Err(err) = authorize_update_application(&self.datastore, &context_id, &public_key) {
+            warn!(
+                %context_id,
+                %application_id,
+                %public_key,
+                %err,
+                "Rejecting unauthorized update_application"
+            );
+            return ActorResponse::reply(Err(err));
+        }
+
         let context_meta = self.contexts.get(&context_id).map(|c| c.meta.clone());
 
         // Skip update only when the application ID is unchanged AND no migration is requested.
@@ -344,6 +362,34 @@ fn app_version_changed_event(
             }),
         })
     })
+}
+
+/// Authorize the caller of an `UpdateApplicationRequest`.
+///
+/// `update_application` runs new bytecode and can migrate the whole context's
+/// state, so — like `execute` — it is restricted to a *provisioned local
+/// identity* of this context: a stored `ContextIdentity` that carries a private
+/// key on this node. A key that is unknown here, or a known-but-remote identity
+/// with no private key, is refused before any state is read or written.
+///
+/// This gates only the external `Handler<UpdateApplicationRequest>` entry. The
+/// in-WASM callers of `update_application_id` (the execute path) are already
+/// authorized by `execute`'s own identity check and are intentionally not
+/// re-gated here.
+fn authorize_update_application(
+    datastore: &calimero_store::Store,
+    context_id: &ContextId,
+    caller: &PublicKey,
+) -> eyre::Result<()> {
+    let handle = datastore.handle();
+    let key = calimero_store::key::ContextIdentity::new(*context_id, *caller);
+    match handle.get(&key)? {
+        Some(identity) if identity.private_key.is_some() => Ok(()),
+        _ => bail!(
+            "identity {caller} is not an authorized local member of context {context_id}; \
+             refusing update_application"
+        ),
+    }
 }
 
 #[allow(
@@ -1551,11 +1597,95 @@ mod tests {
 
     use calimero_primitives::events::{ContextEvent, ContextEventPayload, NodeEvent};
 
+    use calimero_primitives::identity::PublicKey;
+
     use super::ContextStorage;
     use super::{
-        app_version_changed_event, application_version, same_id_update_is_noop,
-        verify_appkey_continuity,
+        app_version_changed_event, application_version, authorize_update_application,
+        same_id_update_is_noop, verify_appkey_continuity,
     };
+
+    /// Write a `ContextIdentity` row exactly as identity provisioning would, so
+    /// the authz check sees a member of `context_id`. `private_key` present marks
+    /// it a *local* identity (`Some`) vs a known-but-remote one (`None`).
+    fn seed_identity(
+        store: &Store,
+        context_id: ContextId,
+        public_key: PublicKey,
+        private_key: Option<[u8; 32]>,
+    ) {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &key::ContextIdentity::new(context_id, public_key),
+                &types::ContextIdentity {
+                    private_key,
+                    sender_key: None,
+                },
+            )
+            .expect("seed identity");
+    }
+
+    /// A caller unknown to this context cannot drive an application update /
+    /// migration — the request is refused before any state is touched (E3).
+    #[test]
+    fn authorize_update_application_rejects_unknown_caller() {
+        let store = create_test_store();
+        let context_id = ContextId::from([1u8; 32]);
+        let stranger = PublicKey::from([9u8; 32]);
+
+        assert!(
+            authorize_update_application(&store, &context_id, &stranger).is_err(),
+            "an identity that is not a member of the context must be refused"
+        );
+    }
+
+    /// A provisioned local identity (a `ContextIdentity` carrying a private key
+    /// on this node) is authorized — the same bar `execute` enforces.
+    #[test]
+    fn authorize_update_application_accepts_local_member() {
+        let store = create_test_store();
+        let context_id = ContextId::from([1u8; 32]);
+        let member = PublicKey::from([2u8; 32]);
+        seed_identity(&store, context_id, member, Some([7u8; 32]));
+
+        assert!(
+            authorize_update_application(&store, &context_id, &member).is_ok(),
+            "a local provisioned identity must be authorized"
+        );
+    }
+
+    /// A known-but-remote identity (present in the context but with no private
+    /// key on this node) is not a local member and must not drive an update.
+    #[test]
+    fn authorize_update_application_rejects_remote_identity_without_private_key() {
+        let store = create_test_store();
+        let context_id = ContextId::from([1u8; 32]);
+        let remote = PublicKey::from([3u8; 32]);
+        seed_identity(&store, context_id, remote, None);
+
+        assert!(
+            authorize_update_application(&store, &context_id, &remote).is_err(),
+            "a remote identity without a local private key must be refused"
+        );
+    }
+
+    /// Membership is scoped per context: a valid local identity in one context
+    /// cannot authorize an update to a different context.
+    #[test]
+    fn authorize_update_application_is_scoped_to_the_context() {
+        let store = create_test_store();
+        let ctx_a = ContextId::from([1u8; 32]);
+        let ctx_b = ContextId::from([2u8; 32]);
+        let member = PublicKey::from([4u8; 32]);
+        seed_identity(&store, ctx_a, member, Some([7u8; 32]));
+
+        assert!(authorize_update_application(&store, &ctx_a, &member).is_ok());
+        assert!(
+            authorize_update_application(&store, &ctx_b, &member).is_err(),
+            "an identity provisioned in context A must not authorize context B"
+        );
+    }
 
     /// Creates a test store with in-memory database.
     fn create_test_store() -> Store {
