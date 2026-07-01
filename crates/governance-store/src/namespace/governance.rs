@@ -1428,12 +1428,17 @@ impl<'a> NamespaceGovernance<'a> {
         }
 
         // Authorized-rotator gate: only an admin at the op's cut may rotate.
-        // An incomplete fold / missing apply-auth context resolves to `false`
-        // here (fail closed) rather than aborting the whole apply.
+        // `is_admin` returns `Ok(false)` for a genuine non-admin (and for an
+        // incomplete fold / missing apply-auth context, via the live fallback),
+        // which we treat as "not authorized" and skip. A store *error* (e.g. I/O
+        // failure), by contrast, is propagated with `?` rather than swallowed as
+        // "not admin": swallowing it would silently drop a legitimate rotation
+        // and leave the node unable to decrypt subsequent ops. Propagating lets
+        // the apply fail and be retried; the inner op re-applies idempotently
+        // (per-signer nonce window) and the rotation is re-attempted.
         let signer_is_admin = PermissionChecker::new(self.store, *group_id)
             .with_apply_auth(&op.parent_op_hashes, self.authorizer)
-            .is_admin(&op.signer)
-            .unwrap_or(false);
+            .is_admin(&op.signer)?;
         if !signer_is_admin {
             tracing::warn!(
                 group_id = %hex::encode(group_id.to_bytes()),

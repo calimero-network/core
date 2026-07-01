@@ -377,6 +377,18 @@ impl<'a> GroupKeyring<'a> {
             }
         }
 
+        // Cheap identity gate first: the envelope must be addressed to us. This
+        // is checked against our own key (not a value we have to trust from the
+        // envelope), so it is safe to do before signature verification and gives
+        // a clear "wrong recipient" error instead of a downstream
+        // `DecryptionFailed` from ECDH-ing with the wrong key. Callers already
+        // filter by `recipient`; this is defense in depth.
+        if envelope.recipient != recipient_sk.public_key() {
+            bail!(KeyringError::EnvelopeAuthFailed(
+                "envelope is not addressed to this recipient".to_owned()
+            ));
+        }
+
         // Authenticate the sender before doing any ECDH/decrypt work: a forged
         // or cross-group-replayed envelope fails here.
         let payload = KeyEnvelope::signing_payload(
@@ -391,17 +403,6 @@ impl<'a> GroupKeyring<'a> {
             .sender
             .verify_raw_signature(&payload, &envelope.signature)
             .map_err(|e| KeyringError::EnvelopeAuthFailed(format!("verify: {e}")))?;
-
-        // The envelope must actually be addressed to us. Callers already filter
-        // by `recipient`, but checking here too means a misaddressed (e.g.
-        // replayed-from-another-delivery) envelope fails with a clear
-        // "wrong recipient" error instead of a downstream `DecryptionFailed`
-        // from ECDH-ing with the wrong key.
-        if envelope.recipient != recipient_sk.public_key() {
-            bail!(KeyringError::EnvelopeAuthFailed(
-                "envelope is not addressed to this recipient".to_owned()
-            ));
-        }
 
         let shared = SharedKey::new(recipient_sk, &envelope.ephemeral_pk).map_err(|e| {
             KeyringError::KeyAgreementFailed {
