@@ -257,7 +257,34 @@ impl InitCommand {
                 return Ok(());
             }
 
-            fs::remove_dir_all(&path).await?;
+            // Refuse to delete anything but a real directory here. `path` is the
+            // node home we're about to wipe; if it has been replaced by a symlink
+            // (or a plain file) since the checks above, fail loudly with a clear
+            // message rather than silently touching an unexpected target. Re-stat
+            // without following symlinks (lstat) right before the removal.
+            //
+            // This lstat only narrows an attacker's race window, it does not
+            // close it. The hard guarantee comes from `remove_dir_all` itself:
+            // it opens the final component with `O_NOFOLLOW`, so a symlink swapped
+            // in after this check is unlinked in place rather than traversed — the
+            // symlink's target and its contents are never recursed into or deleted.
+            let metadata = fs::symlink_metadata(&path)
+                .await
+                .wrap_err_with(|| format!("failed to stat existing path {path:?}"))?;
+            if !metadata.is_dir() {
+                bail!(
+                    "refusing to remove {path:?}: expected a directory, found {}",
+                    if metadata.is_symlink() {
+                        "a symlink"
+                    } else {
+                        "a non-directory"
+                    }
+                );
+            }
+
+            fs::remove_dir_all(&path)
+                .await
+                .wrap_err_with(|| format!("failed to remove existing node home {path:?}"))?;
         }
 
         if !path.exists() {
