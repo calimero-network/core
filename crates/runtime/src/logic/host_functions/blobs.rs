@@ -254,10 +254,14 @@ impl VMHostFunctions<'_> {
             BlobHandle::Write(write_handle) => {
                 let _ignored = write_handle.sender;
 
-                let (blob_id_, _size) = tokio::runtime::Handle::current()
-                    .block_on(write_handle.completion_handle)
-                    .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?
-                    .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
+                // `block_in_place` hands the blocking wait off the async worker;
+                // a bare `Handle::block_on` panics when called on a runtime
+                // thread.
+                let (blob_id_, _size) = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(write_handle.completion_handle)
+                })
+                .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?
+                .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
 
                 *blob_id_.as_ref()
             }
@@ -316,10 +320,13 @@ impl VMHostFunctions<'_> {
             ContextId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&context_id)?);
 
         // Get blob metadata to get size
-        let blob_info = tokio::runtime::Handle::current()
-            .block_on(node_client.get_blob_info(blob_id))
-            .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?
-            .ok_or(VMLogicError::HostError(HostError::BlobsNotSupported))?;
+        // `block_in_place` hands the blocking wait off the async worker; a bare
+        // `Handle::block_on` panics when called on a runtime thread.
+        let blob_info = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(node_client.get_blob_info(blob_id))
+        })
+        .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?
+        .ok_or(VMLogicError::HostError(HostError::BlobsNotSupported))?;
 
         // Announce blob to network
         tokio::task::block_in_place(|| {
@@ -501,9 +508,14 @@ impl VMHostFunctions<'_> {
             }
 
             if read_handle.stream.is_none() {
-                let blob_stream = tokio::runtime::Handle::current()
-                    .block_on(node_client.get_blob(&read_handle.blob_id, None))
-                    .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
+                // `block_in_place` hands the blocking wait off the async worker;
+                // a bare `Handle::block_on` panics when called on a runtime
+                // thread.
+                let blob_stream = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current()
+                        .block_on(node_client.get_blob(&read_handle.blob_id, None))
+                })
+                .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
 
                 if let Some(stream) = blob_stream {
                     let mapped_stream = stream.map(|result| {
@@ -519,37 +531,44 @@ impl VMHostFunctions<'_> {
             }
 
             if let Some(stream) = &mut read_handle.stream {
-                tokio::runtime::Handle::current().block_on(async {
-                    while output_buffer.len() < data_len {
-                        match stream.next().await {
-                            Some(Ok(chunk)) => {
-                                let chunk_bytes = chunk.as_ref();
+                // `block_in_place` hands the blocking wait off the async worker;
+                // a bare `Handle::block_on` panics when called on a runtime
+                // thread.
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        while output_buffer.len() < data_len {
+                            match stream.next().await {
+                                Some(Ok(chunk)) => {
+                                    let chunk_bytes = chunk.as_ref();
 
-                                let remaining_needed = data_len
-                                    .checked_sub(output_buffer.len())
-                                    .ok_or(VMLogicError::HostError(HostError::IntegerOverflow))?;
+                                    let remaining_needed =
+                                        data_len.checked_sub(output_buffer.len()).ok_or(
+                                            VMLogicError::HostError(HostError::IntegerOverflow),
+                                        )?;
 
-                                if chunk_bytes.len() <= remaining_needed {
-                                    output_buffer.extend_from_slice(chunk_bytes);
-                                } else {
-                                    // Use part of chunk, save rest in cursor for next time
-                                    output_buffer
-                                        .extend_from_slice(&chunk_bytes[..remaining_needed]);
+                                    if chunk_bytes.len() <= remaining_needed {
+                                        output_buffer.extend_from_slice(chunk_bytes);
+                                    } else {
+                                        // Use part of chunk, save rest in cursor for next time
+                                        output_buffer
+                                            .extend_from_slice(&chunk_bytes[..remaining_needed]);
 
-                                    // Create cursor with remaining data
-                                    let remaining_data = chunk_bytes[remaining_needed..].to_vec();
-                                    read_handle.current_chunk_cursor =
-                                        Some(Cursor::new(remaining_data));
+                                        // Create cursor with remaining data
+                                        let remaining_data =
+                                            chunk_bytes[remaining_needed..].to_vec();
+                                        read_handle.current_chunk_cursor =
+                                            Some(Cursor::new(remaining_data));
 
+                                        break;
+                                    }
+                                }
+                                Some(Err(_)) | None => {
                                     break;
                                 }
                             }
-                            Some(Err(_)) | None => {
-                                break;
-                            }
                         }
-                    }
-                    Ok::<(), VMLogicError>(())
+                        Ok::<(), VMLogicError>(())
+                    })
                 })?;
             }
 

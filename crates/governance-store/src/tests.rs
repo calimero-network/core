@@ -70,7 +70,7 @@ fn permission_checker_enforces_admin_and_capability_rules() {
         .set_member_capability(
             &gid,
             &member,
-            calimero_context_config::MemberCapabilities::MANAGE_MEMBERS,
+            calimero_context_config::MemberCapabilities::MANAGE_MEMBERS.bits(),
         )
         .unwrap();
     assert!(checker
@@ -83,7 +83,7 @@ fn permission_checker_enforces_admin_and_capability_rules() {
         .set_member_capability(
             &gid,
             &member,
-            calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
+            calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
         )
         .unwrap();
     assert!(checker.require_can_create_context(&member).is_ok());
@@ -141,7 +141,7 @@ fn group_settings_service_enforces_permissions_and_persists_values() {
         .set_member_capability(
             &gid,
             &member,
-            calimero_context_config::MemberCapabilities::MANAGE_APPLICATION,
+            calimero_context_config::MemberCapabilities::MANAGE_APPLICATION.bits(),
         )
         .unwrap();
     settings
@@ -242,7 +242,7 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
         .set_member_capability(
             &gid,
             &creator,
-            calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
+            calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
         )
         .unwrap();
 
@@ -362,7 +362,7 @@ fn context_registration_service_keeps_existing_non_zero_context_meta_application
         .set_member_capability(
             &gid,
             &creator,
-            calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
+            calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
         )
         .unwrap();
     MetaRepository::new(&store)
@@ -898,7 +898,11 @@ fn apply_local_context_alias_admin_or_creator() {
         .add_member(&gid, &creator_pk, GroupMemberRole::Member)
         .unwrap();
     CapabilitiesRepository::new(&store)
-        .set_member_capability(&gid, &creator_pk, MemberCapabilities::CAN_CREATE_CONTEXT)
+        .set_member_capability(
+            &gid,
+            &creator_pk,
+            MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
+        )
         .unwrap();
 
     let context_id = ContextId::from([0x33; 32]);
@@ -994,7 +998,7 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
         1,
         GroupOp::MemberCapabilitySet {
             member: member_m,
-            capabilities: 0x7,
+            capabilities: calimero_context_config::MemberCapabilities::from_bits_truncate(0x7),
         },
     )
     .unwrap();
@@ -1885,9 +1889,9 @@ fn capability_zero_means_no_permissions() {
     assert_eq!(caps, 0);
     // All capability bits are off
     use calimero_context_config::MemberCapabilities;
-    assert_eq!(caps & MemberCapabilities::CAN_CREATE_CONTEXT, 0);
-    assert_eq!(caps & MemberCapabilities::CAN_INVITE_MEMBERS, 0);
-    assert_eq!(caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS, 0);
+    assert_eq!(caps & MemberCapabilities::CAN_CREATE_CONTEXT.bits(), 0);
+    assert_eq!(caps & MemberCapabilities::CAN_INVITE_MEMBERS.bits(), 0);
+    assert_eq!(caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(), 0);
 }
 
 #[test]
@@ -2048,7 +2052,7 @@ fn default_capabilities_include_can_join_open_subgroups() {
     let alice = PublicKey::from([0x01; 32]);
 
     CapabilitiesRepository::new(&store)
-        .set_default_capabilities(&gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .set_default_capabilities(&gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
         .unwrap();
     MembershipRepository::new(&store)
         .add_member(&gid, &alice, GroupMemberRole::Member)
@@ -2059,8 +2063,8 @@ fn default_capabilities_include_can_join_open_subgroups() {
         .unwrap()
         .unwrap_or(0);
     assert_eq!(
-        caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
-        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS
+        caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits()
     );
 }
 
@@ -2193,8 +2197,8 @@ fn default_capabilities_admin_override_propagates_to_new_member() {
 
     // Symmetric check with a non-zero non-default value.
     let bob = PublicKey::from([0x02; 32]);
-    let custom = calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT
-        | calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS;
+    let custom = calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT.bits()
+        | calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS.bits();
     CapabilitiesRepository::new(&store)
         .set_default_capabilities(&gid, custom)
         .unwrap();
@@ -3833,7 +3837,7 @@ fn member_joined_open_clears_deny_list_and_restores_context_identity() {
         .set_member_capability(
             &ns_gid,
             &member_pk,
-            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         )
         .unwrap();
 
@@ -4389,7 +4393,11 @@ fn permission_checker_subgroup_management_capabilities() {
 
     // CAN_CREATE_SUBGROUP only.
     CapabilitiesRepository::new(&store)
-        .set_member_capability(&gid, &member, MemberCapabilities::CAN_CREATE_SUBGROUP)
+        .set_member_capability(
+            &gid,
+            &member,
+            MemberCapabilities::CAN_CREATE_SUBGROUP.bits(),
+        )
         .unwrap();
     assert!(checker.require_can_create_subgroup(&member).is_ok());
     assert!(checker.require_can_delete_subgroup(&member).is_err());
@@ -4400,9 +4408,9 @@ fn permission_checker_subgroup_management_capabilities() {
         .set_member_capability(
             &gid,
             &member,
-            MemberCapabilities::CAN_CREATE_SUBGROUP
-                | MemberCapabilities::CAN_DELETE_SUBGROUP
-                | MemberCapabilities::CAN_MANAGE_VISIBILITY,
+            MemberCapabilities::CAN_CREATE_SUBGROUP.bits()
+                | MemberCapabilities::CAN_DELETE_SUBGROUP.bits()
+                | MemberCapabilities::CAN_MANAGE_VISIBILITY.bits(),
         )
         .unwrap();
     assert!(checker.require_can_create_subgroup(&member).is_ok());
@@ -4447,7 +4455,11 @@ fn group_settings_subgroup_visibility_honors_can_manage_visibility() {
 
     // Granting CAN_MANAGE_VISIBILITY lets the member flip it.
     CapabilitiesRepository::new(&store)
-        .set_member_capability(&gid, &member, MemberCapabilities::CAN_MANAGE_VISIBILITY)
+        .set_member_capability(
+            &gid,
+            &member,
+            MemberCapabilities::CAN_MANAGE_VISIBILITY.bits(),
+        )
         .unwrap();
     svc.set_subgroup_visibility(&member, VisibilityMode::Restricted)
         .unwrap();
@@ -4834,7 +4846,11 @@ fn permission_checker_can_manage_metadata() {
     assert!(checker.require_can_manage_metadata(&member).is_err());
     // Granting the cap flips it.
     CapabilitiesRepository::new(&store)
-        .set_member_capability(&gid, &member, MemberCapabilities::CAN_MANAGE_METADATA)
+        .set_member_capability(
+            &gid,
+            &member,
+            MemberCapabilities::CAN_MANAGE_METADATA.bits(),
+        )
         .unwrap();
     assert!(checker.require_can_manage_metadata(&member).is_ok());
 }
@@ -4974,7 +4990,11 @@ fn member_metadata_self_set_allowed_others_gated() {
 
     // Grant CAN_MANAGE_METADATA — now Alice can set Bob's and the group's.
     CapabilitiesRepository::new(&store)
-        .set_member_capability(&gid, &alice_pk, MemberCapabilities::CAN_MANAGE_METADATA)
+        .set_member_capability(
+            &gid,
+            &alice_pk,
+            MemberCapabilities::CAN_MANAGE_METADATA.bits(),
+        )
         .unwrap();
     let op_ok = SignedGroupOp::sign(
         &alice_sk,

@@ -246,6 +246,8 @@ jobs:
 
       - name: Setup vmagent for metrics collection
         id: setup-vmagent
+        env:
+          VICTORIA_METRICS_BEARER_TOKEN: ${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}
         run: |
           chmod +x scripts/setup-vmagent.sh
           COMMIT_HASH="${{ github.sha }}"
@@ -254,7 +256,6 @@ jobs:
             "kv-store" \
             "kv-store-${SHORT_COMMIT}" \
             "${{ github.run_id }}" \
-            "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
             "8429" \
             "$COMMIT_HASH" \
             "${{ github.ref_name }}"
@@ -468,6 +469,8 @@ jobs:
 
       - name: Setup vmagent for metrics collection
         id: setup-vmagent-handlers
+        env:
+          VICTORIA_METRICS_BEARER_TOKEN: ${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}
         run: |
           chmod +x scripts/setup-vmagent.sh
           COMMIT_HASH="${{ github.sha }}"
@@ -476,7 +479,6 @@ jobs:
             "kv-store-with-handlers" \
             "kv-store-with-handlers-${SHORT_COMMIT}" \
             "${{ github.run_id }}" \
-            "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
             "8430" \
             "$COMMIT_HASH" \
             "${{ github.ref_name }}"
@@ -680,6 +682,8 @@ jobs:
 
       - name: Setup vmagent for metrics collection
         id: setup-vmagent-e2e
+        env:
+          VICTORIA_METRICS_BEARER_TOKEN: ${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}
         run: |
           chmod +x scripts/setup-vmagent.sh
           COMMIT_HASH="${{ github.sha }}"
@@ -688,7 +692,6 @@ jobs:
             "scaffolding-e2e" \
             "scaffolding-e2e-${SHORT_COMMIT}" \
             "${{ github.run_id }}" \
-            "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
             "8431" \
             "$COMMIT_HASH" \
             "${{ github.ref_name }}"
@@ -890,6 +893,8 @@ jobs:
 
       - name: Setup vmagent for metrics collection
         id: setup-vmagent-gov
+        env:
+          VICTORIA_METRICS_BEARER_TOKEN: ${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}
         run: |
           chmod +x scripts/setup-vmagent.sh
           COMMIT_HASH="${{ github.sha }}"
@@ -898,7 +903,6 @@ jobs:
             "group-governance" \
             "group-governance-${SHORT_COMMIT}" \
             "${{ github.run_id }}" \
-            "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
             "8432" \
             "$COMMIT_HASH" \
             "${{ github.ref_name }}"

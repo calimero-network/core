@@ -299,7 +299,7 @@ fn apply_auth_requirement(
                 | RootOp::GroupReparented { .. } => Some((ns_root, ApplyAuthReq::Admin)),
                 RootOp::GroupCreated { parent_id, .. } => Some((
                     ContextGroupId::from(*parent_id),
-                    ApplyAuthReq::AdminOrCap(Cap::CAN_CREATE_SUBGROUP),
+                    ApplyAuthReq::AdminOrCap(Cap::CAN_CREATE_SUBGROUP.bits()),
                 )),
                 // GroupDeleted authorizes the subgroup OWNER or a
                 // `CAN_DELETE_SUBGROUP` holder at the root, NOT only the root
@@ -311,11 +311,12 @@ fn apply_auth_requirement(
             let group = ContextGroupId::from(*group_id);
             match decrypted? {
                 GroupOp::MemberAdded { .. } | GroupOp::MemberRemoved { .. } => {
-                    Some((group, ApplyAuthReq::AdminOrCap(Cap::MANAGE_MEMBERS)))
+                    Some((group, ApplyAuthReq::AdminOrCap(Cap::MANAGE_MEMBERS.bits())))
                 }
-                GroupOp::SubgroupVisibilitySet { .. } => {
-                    Some((group, ApplyAuthReq::AdminOrCap(Cap::CAN_MANAGE_VISIBILITY)))
-                }
+                GroupOp::SubgroupVisibilitySet { .. } => Some((
+                    group,
+                    ApplyAuthReq::AdminOrCap(Cap::CAN_MANAGE_VISIBILITY.bits()),
+                )),
                 GroupOp::MemberRoleSet { .. }
                 | GroupOp::MemberCapabilitySet { .. }
                 | GroupOp::DefaultCapabilitiesSet { .. } => Some((group, ApplyAuthReq::Admin)),
