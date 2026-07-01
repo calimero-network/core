@@ -221,11 +221,18 @@ async fn run(store: Store, node_client: NodeClient) {
             // channel does not back up. The purge helpers are idempotent and
             // distinct evictions target distinct groups, so concurrent purges
             // are safe. `Store` and `NodeClient` are cheap handle clones.
+            //
+            // The `JoinHandle` is intentionally dropped: `handle_member_removed`
+            // returns `()` (no error to propagate — per-step failures are
+            // already surfaced via `record_purge_failure` + logs inside it), and
+            // a panic in the task still fires the process panic hook, so it is
+            // not silently lost. Detaching also isolates a panicking purge from
+            // the recv loop, which is the point of spawning here.
             let store = store.clone();
             let node_client = node_client.clone();
-            tokio::spawn(async move {
+            drop(tokio::spawn(async move {
                 handle_member_removed(&store, &node_client, group_id, member).await;
-            });
+            }));
         }
     }
 }

@@ -320,19 +320,24 @@ impl NodeClient {
         let request = GetBlobBytesRequest { blob_id };
         let (tx, rx) = tokio::sync::oneshot::channel();
 
-        // Bound the mailbox enqueue so a dead/absent NodeManager can't hang us,
-        // but keep the bound generous. The handler replies asynchronously via
-        // `tx`, so `send()` resolves as soon as the message is dequeued — a fast
-        // operation. The previous 10ms bound raced that mailbox handoff: under
-        // any NodeManager load `send()` had not resolved yet, so this path was
-        // abandoned as if the actor were down, the blob was then read from disk
-        // directly here, AND the actor still processed the enqueued message and
-        // wrote the result into the now-dropped `tx` — a wasted second disk
-        // read on every contended call. A whole second is far longer than a
-        // healthy handoff ever takes, so it fires only when the actor is truly
-        // unavailable, while eliminating the load-induced double read.
+        // Single bound for the whole NodeManager round-trip, applied to BOTH
+        // legs (enqueue and async reply). Keeping them equal is the point: the
+        // previous 10ms enqueue / 100ms reply pair raced the actor under load.
+        // On the enqueue leg, `send()` resolves once the message is dequeued —
+        // fast unless the actor is truly gone; a dead/absent actor's `send()`
+        // errors quickly, so the bound only really fires when the mailbox is
+        // deeply backed up. On the reply leg, the handler answers asynchronously
+        // via `tx` AFTER reading (and caching) the blob, which can legitimately
+        // exceed 100ms for a large blob; a too-short reply bound abandoned the
+        // actor path and re-read the same blob from disk here while the actor
+        // was still writing the result into the now-dropped `tx` — a wasted
+        // second disk read on every contended call. One generous, shared bound
+        // eliminates both races; if the actor genuinely stalls past it, `rx`
+        // (or `send`) still lets us fall through to the direct read below.
+        const NODE_MANAGER_BLOB_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(1);
+
         let send_result = tokio::time::timeout(
-            tokio::time::Duration::from_secs(1),
+            NODE_MANAGER_BLOB_TIMEOUT,
             self.node_manager.send(GetBlobBytes {
                 request,
                 outcome: tx,
@@ -342,7 +347,7 @@ impl NodeClient {
 
         if let Ok(Ok(())) = send_result {
             // Node manager accepted the request, wait for response with timeout
-            match tokio::time::timeout(tokio::time::Duration::from_millis(100), rx).await {
+            match tokio::time::timeout(NODE_MANAGER_BLOB_TIMEOUT, rx).await {
                 Ok(Ok(Ok(response))) if response.bytes.is_some() => {
                     return Ok(response.bytes);
                 }

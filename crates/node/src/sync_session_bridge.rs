@@ -443,18 +443,26 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                             // giving up. The grace is deliberately shorter than
                             // `session_timeout` so total wall time stays under
                             // the 2× watchdog grace (a permit-starved session
-                            // must not trip a spurious synthetic failure).
-                            warn!(
-                                %peer_id,
-                                timeout_secs = session_timeout.as_secs(),
-                                "SyncSession responder exceeded timeout — re-awaiting under a bounded grace to finish cleanly (avoids mid-protocol drop / storage-DAG divergence)"
-                            );
-                            // If the grace ALSO elapses the session is genuinely
-                            // stuck: drop it so its concurrency permit is
-                            // released and other sessions aren't starved (the
-                            // #2319 rationale). The next periodic sync repairs
-                            // the rare divergence a hard drop can leave.
-                            tokio::time::timeout(session_timeout / 2, &mut session).await
+                            // must not trip a spurious synthetic failure). We do
+                            // NOT warn yet — a session that finishes within the
+                            // grace completed successfully, so warning here would
+                            // log a spurious timeout for a healthy session.
+                            match tokio::time::timeout(session_timeout / 2, &mut session).await {
+                                Ok(()) => {
+                                    debug!(
+                                        %peer_id,
+                                        timeout_secs = session_timeout.as_secs(),
+                                        "SyncSession responder exceeded soft timeout but finished within the grace window"
+                                    );
+                                    Ok(())
+                                }
+                                // Grace ALSO elapsed → genuinely stuck. Drop it so
+                                // its concurrency permit is released and other
+                                // sessions aren't starved (#2319 rationale); the
+                                // downstream arm logs the drop. The next periodic
+                                // sync repairs the rare divergence a drop leaves.
+                                Err(elapsed) => Err(elapsed),
+                            }
                         }
                     };
                     match &outcome {
@@ -565,14 +573,22 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                             // the rationale): let a slow-but-progressing session
                             // finish cleanly, but cap the grace below
                             // `session_timeout` so total wall time stays under
-                            // the 2× watchdog grace. If the grace also elapses,
-                            // drop it so the permit is released (#2319).
-                            warn!(
-                                %context_id,
-                                timeout_secs = session_timeout.as_secs(),
-                                "SyncSession initiator exceeded timeout — re-awaiting under a bounded grace to finish cleanly (avoids mid-protocol drop / storage-DAG divergence)"
-                            );
-                            tokio::time::timeout(session_timeout / 2, &mut session).await
+                            // the 2× watchdog grace. No warn here — a session that
+                            // finishes within the grace succeeded, so warning
+                            // would log a spurious timeout for a healthy session.
+                            match tokio::time::timeout(session_timeout / 2, &mut session).await {
+                                Ok(res) => {
+                                    debug!(
+                                        %context_id,
+                                        timeout_secs = session_timeout.as_secs(),
+                                        "SyncSession initiator exceeded soft timeout but finished within the grace window"
+                                    );
+                                    Ok(res)
+                                }
+                                // Grace also elapsed → drop it so the permit is
+                                // released (#2319); the downstream arm logs it.
+                                Err(elapsed) => Err(elapsed),
+                            }
                         }
                     };
 

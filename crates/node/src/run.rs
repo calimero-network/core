@@ -476,13 +476,26 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
             res = &mut server => {
                 // Server task ended: abort the remaining background tasks so
                 // they don't outlive this function as detached tasks (dropping
-                // a `JoinHandle` detaches — it does NOT cancel), then propagate.
+                // a `JoinHandle` detaches — it does NOT cancel), then break with
+                // its result. Breaking (rather than falling through) avoids
+                // re-polling this completed `JoinHandle` on the next iteration,
+                // which would panic. `res?` unwraps the `JoinError`; the inner
+                // `eyre::Result<()>` becomes the loop's value.
                 bridge.abort();
-                res??
+                break res?;
             }
             res = &mut bridge => {
-                // Bridge task completed (channel closed or shutdown signal)
+                // The network-event bridge feeds inbound events to NodeManager;
+                // if it stops on its own (channel closed / task ended) the node
+                // is deaf to the network and cannot make progress. Treat it as
+                // terminal rather than looping — continuing would also re-poll
+                // this now-completed `JoinHandle` on the next iteration, which
+                // panics. Abort the server and exit; on a normal shutdown the
+                // `system_handle` arm wins first, so reaching here means the
+                // bridge died unexpectedly.
                 tracing::warn!("Network event bridge stopped: {:?}", res);
+                server.abort();
+                break Err(eyre::eyre!("network event bridge stopped unexpectedly"));
             }
             res = &mut arbiter_pool.system_handle => {
                 // Signal bridge shutdown before exiting. The
