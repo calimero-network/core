@@ -30,6 +30,7 @@ async fn pull(nodes: &mut [SimNode], i: usize, j: usize) {
             .await
             .expect("hash-comparison sync (i<-j) should succeed");
     } else {
+        // i > j: right[0] = nodes[i], left[j] = nodes[j]
         let (left, right) = nodes.split_at_mut(i);
         execute_hash_comparison_sync(&mut right[0], &left[j])
             .await
@@ -206,7 +207,20 @@ async fn c2_directional_partition_conflicting_writes_order_independent() {
     // Reorder shuffles the reconciling pair order; duplication re-runs some
     // sessions. HC sync is idempotent, so a converged result must be invariant
     // under both — these rates drive that perturbation.
+    //
+    // `fc` is used here as a parameter bag to drive the manual perturbation
+    // below (shuffle + duplicate delivery); it is NOT wired into a
+    // NetworkRouter. So sanity-check that the builders actually populated the
+    // fields we gate on — otherwise the perturbation would silently no-op.
     let fc = FaultConfig::none().with_reorder(50).with_duplicates(0.5);
+    assert!(
+        fc.reorder_window_ms > 0,
+        "reorder must be configured or the perturbation silently no-ops"
+    );
+    assert!(
+        fc.duplicate_rate > 0.0,
+        "duplication must be configured or the perturbation silently no-ops"
+    );
 
     // Directional semantics: A->B blocked, B->A still open.
     {
@@ -346,6 +360,12 @@ async fn c5_dropped_gossip_deltas_recovered_via_sync() {
         );
 
         // A dropped delta left at least one consumer diverged from alice.
+        //
+        // The real drop evidence is the `messages_dropped_loss > 0` assertion
+        // above; this check only needs ONE consumer to still show divergence
+        // pre-sync, which is robust. Requiring BOTH to diverge (`&&`) would be
+        // more fragile — a single consumer can receive every gossip by chance —
+        // so the `||` is deliberate, not a weakening.
         assert!(
             alice.root_hash() != bob.root_hash() || alice.root_hash() != carol.root_hash(),
             "seed {seed}: dropped gossip must leave a consumer diverged before sync"
