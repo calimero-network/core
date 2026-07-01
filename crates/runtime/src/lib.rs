@@ -107,12 +107,14 @@ impl Engine {
     pub fn new(mut engine: wasmer::Engine, limits: VMLimits) -> Self {
         // A self-contradictory limits config (e.g. a total register budget
         // smaller than a single register's cap) is a construction-time
-        // programming error, not a runtime condition, and is never reachable
-        // from guest input. Fail loudly here, at engine construction — once, at
-        // startup — instead of letting it misbehave on every execution.
-        limits
-            .validate_invariants()
-            .expect("invalid VMLimits passed to Engine::new");
+        // programming error: it is never reachable from guest input nor from
+        // operator config (which does not expose these fields), only from a code
+        // change. A debug assertion catches it in dev/CI/tests without a
+        // process-fatal panic in release library code.
+        debug_assert!(
+            limits.validate_invariants().is_ok(),
+            "invalid VMLimits passed to Engine::new: max_registers_capacity must be >= max_register_size"
+        );
 
         // Set tunables if this is a sys engine (native engine)
         if engine.is_sys() {

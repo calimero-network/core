@@ -167,22 +167,40 @@ impl BlobManager {
         // Release the root's own reference. A root blob keeps its content in its
         // chunks and has no backing file of its own, so `blob_store.delete` on
         // the root id is a harmless no-op; it is kept for blobs that ever carry
-        // their own file.
+        // their own file. A failed file delete is logged, not propagated, so we
+        // still go on to release the chunk references below.
         if self.release_ref(id, &meta)? {
-            self.blob_store.delete(id).await?;
+            if let Err(err) = self.blob_store.delete(id).await {
+                tracing::warn!(%id, %err, "failed to delete root blob file during delete");
+            }
         }
 
         // Release one reference from every chunk, mirroring the per-chunk
         // increment on add. A chunk shared by another still-live root keeps a
-        // positive count and survives.
+        // positive count and survives. This loop is best-effort: a failure on one
+        // chunk is logged and skipped rather than propagated, so it cannot leave
+        // the *remaining* chunks with their reference counts un-decremented
+        // (which would leak them permanently).
         for link in &meta.links {
             let chunk_id = link.blob_id();
-            let Some(chunk_meta) = self.data_store.handle().get(&BlobMetaKey::new(chunk_id))?
-            else {
-                continue;
+            let chunk_meta = match self.data_store.handle().get(&BlobMetaKey::new(chunk_id)) {
+                Ok(Some(chunk_meta)) => chunk_meta,
+                Ok(None) => continue,
+                Err(err) => {
+                    tracing::warn!(%chunk_id, %err, "failed to read chunk metadata during delete; skipping");
+                    continue;
+                }
             };
-            if self.release_ref(chunk_id, &chunk_meta)? {
-                self.blob_store.delete(chunk_id).await?;
+            match self.release_ref(chunk_id, &chunk_meta) {
+                Ok(true) => {
+                    if let Err(err) = self.blob_store.delete(chunk_id).await {
+                        tracing::warn!(%chunk_id, %err, "failed to delete chunk file during delete");
+                    }
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    tracing::warn!(%chunk_id, %err, "failed to release chunk reference during delete");
+                }
             }
         }
 
