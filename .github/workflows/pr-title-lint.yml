@@ -34,7 +34,7 @@ jobs:
         2. Allowed type values are: build, ci, docs, feat, fix, perf, refactor, test.
 
     steps:
-      - uses: amannn/action-semantic-pull-request@v5
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
         id: lint_pr_title
 
       - name: Create PR Comment Payload
@@ -49,7 +49,7 @@ jobs:
 
       - name: Upload Comment
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pr-comment-payload
           path: payload.json

@@ -210,7 +210,7 @@ fn completeness_gate_flags_governance_ops_missing_from_the_op_store() {
 
     assert_eq!(
         ScopeProjections::check_op_store_completeness(&store, ns_bytes, &dag_ops),
-        Some(vec![op3.id]),
+        Some(vec![op3.id()]),
         "the gate must flag exactly the op missing from the op-store"
     );
 
@@ -283,7 +283,7 @@ fn locally_authored_op_lands_in_the_op_store_atomically() {
         load_scope_ops(&store, &ScopeId::from(ns_bytes))
             .unwrap()
             .iter()
-            .map(|op| op.id)
+            .map(|op| op.id())
             .collect::<Vec<_>>(),
         vec![delta_id],
         "store_signed_operation must persist the op atomically with the gov-DAG write"
@@ -297,7 +297,7 @@ fn locally_authored_op_lands_in_the_op_store_atomically() {
     // of the op-store sees `member` (proves the payload landed, not just the id).
     let store_ops = load_scope_ops(&store, &ScopeId::from(ns_bytes)).unwrap();
     assert_eq!(
-        store_ops.iter().map(|op| op.id).collect::<Vec<_>>(),
+        store_ops.iter().map(|op| op.id()).collect::<Vec<_>>(),
         vec![delta_id],
         "the authored op must now be in the op-store"
     );

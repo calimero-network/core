@@ -41,14 +41,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout core
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # On pull_request, check out the PR head; on push, head.sha is empty so
           # fall back to the pushed commit.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Checkout mero-devtools-js
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: calimero-network/mero-devtools-js
           ref: ${{ env.DEVTOOLS_REF }}
@@ -63,12 +63,12 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: 10
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: pnpm

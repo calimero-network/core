@@ -219,7 +219,7 @@ pub(crate) fn apply(
                 if caps.default_capabilities(&ns_gid)?.is_none() {
                     caps.set_default_capabilities(
                         &ns_gid,
-                        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+                        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
                     )?;
                 }
                 tracing::debug!(
@@ -396,7 +396,7 @@ pub(crate) fn apply(
     // condition is ever changed, this no-clobber invariant MUST be preserved.
     let caps = CapabilitiesRepository::new(store);
     if caps.default_capabilities(&ns_gid)?.is_none() {
-        caps.set_default_capabilities(&ns_gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)?;
+        caps.set_default_capabilities(&ns_gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())?;
     }
 
     tracing::info!(
