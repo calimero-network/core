@@ -206,10 +206,10 @@ fn build_conflict_scenario() -> Vec<SimNode> {
 async fn c2_directional_partition_conflicting_writes_order_independent() {
     // Reorder shuffles the reconciling pair order; duplication re-runs some
     // sessions. HC sync is idempotent, so a converged result must be invariant
-    // under both. These plain local constants drive the manual perturbation
-    // below (shuffle + duplicate delivery) directly — there is no NetworkRouter
-    // in this test, so a FaultConfig param-bag would only obscure the intent.
-    const REORDER: bool = true;
+    // under both. The manual perturbation below (unconditional reorder shuffle +
+    // probabilistic duplicate delivery) is driven directly — there is no
+    // NetworkRouter in this test, so a FaultConfig param-bag would only obscure
+    // the intent. `DUP_RATE` is the per-pull duplicate probability.
     const DUP_RATE: f64 = 0.5;
 
     // Directional semantics: A->B blocked, B->A still open.
@@ -255,9 +255,7 @@ async fn c2_directional_partition_conflicting_writes_order_independent() {
             } else {
                 vec![(1usize, 0usize), (0, 1)]
             };
-            if REORDER {
-                rng.shuffle(&mut order);
-            }
+            rng.shuffle(&mut order);
             for _ in 0..4 {
                 for &(i, j) in &order {
                     pull(&mut nodes, i, j).await;
