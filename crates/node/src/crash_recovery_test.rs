@@ -117,10 +117,28 @@ async fn phase0_applied_false_row_not_promoted_on_restart() {
     // Restart: fresh DeltaStore over the same store, then reload from disk.
     // Keep a clone so we can read the persisted row's flag after reload.
     let (delta_store, _tmp, _rx) = delta_store_over(store.clone()).await;
-    let _ = delta_store
+    let result = delta_store
         .load_persisted_deltas()
         .await
         .expect("reload from persisted rows");
+
+    // An applied:false row is re-driven through the apply path, NOT restored as
+    // applied, so it must never surface `pending_handler_events` — those are
+    // harvested only for committed (applied:true) rows. Replaying an uncommitted
+    // row's handlers would fire effects for state that never landed.
+    assert!(
+        result.pending_handler_events.is_empty(),
+        "an applied:false row must not surface phantom handler events on restart"
+    );
+    // The re-drive was ATTEMPTED (the row went to the unapplied re-drive path,
+    // not the applied-topology restore). Its parent is genesis, so `add_delta`
+    // tries to apply immediately; with no WASM runtime that apply fails, leaving
+    // the delta neither applied nor pending — never silently promoted.
+    assert_eq!(
+        delta_store.pending_stats().await.count,
+        0,
+        "a re-driven delta whose apply cannot complete is not left dangling in pending"
+    );
 
     let dag_applied = delta_store.dag_has_delta_applied(&delta_id).await;
     let db_applied = store
