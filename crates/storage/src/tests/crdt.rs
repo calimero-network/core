@@ -752,3 +752,234 @@ fn test_delete_near_future_accepted() {
         "Should accept delete timestamp within tolerance"
     );
 }
+
+// ============================================================
+// D1 — map delete-vs-update converges, no resurrection
+// ============================================================
+//
+// These tests live at the DELTA / `apply_action` (Index) layer, NOT
+// `Mergeable::merge`. `UnorderedMap::merge` is an add-wins UNION that
+// iterates `other.entries()` (tombstoned keys are already skipped) and
+// never consults tombstones — a delete-vs-update run purely through it
+// would RESURRECT the deleted key. The real tombstone-vs-value HLC
+// resolution is in `apply_delete_ref_action` / `save_internal`, exercised
+// here.
+//
+// A map entry is modelled as a single content-addressed entity whose id is
+// stable across nodes (the key). Two nodes are two independent
+// `MockedStorage` instances; each op is an `Action` cross-applied in both
+// directions. Timestamps are explicit nanosecond HLC nonces in the recent
+// past (< now, so the future-drift guard accepts them) to make "strictly
+// later" deterministic without wall-clock sleeps.
+
+// Two independent replicas, each with its own store.
+type D1NodeA = MockedStorage<7101>;
+type D1NodeB = MockedStorage<7102>;
+type D1IfaceA = Interface<D1NodeA>;
+type D1IfaceB = Interface<D1NodeB>;
+
+// A fixed content-addressed id standing in for one map key "k". Modelled as
+// a child of the map-container root so it gets a real Index entry (a
+// parent-less non-root Add is an orphan with no index, which `DeleteRef`
+// can't resolve).
+fn d1_key_id() -> Id {
+    Id::new([0x7c; 32])
+}
+
+// The map container: the shared root parent that the key entity hangs under.
+fn d1_map_ancestors() -> Vec<crate::entities::ChildInfo> {
+    vec![crate::entities::ChildInfo::new(
+        Id::root(),
+        [0; 32],
+        Metadata::default(),
+    )]
+}
+
+// Build an upsert action (Add or Update) for the key entity carrying an
+// explicit `updated_at` HLC nonce. The base `Add` supplies the root ancestor
+// so the entity is linked under the container and indexed; later `Update`s
+// pass empty ancestors (the entity already exists).
+fn d1_upsert(id: Id, value: &str, updated_at: u64, is_add: bool) -> Action {
+    let mut page = Page::new_from_element(value, Element::new(Some(id)));
+    page.element_mut().set_updated_at(updated_at);
+    let data = borsh::to_vec(&page).unwrap();
+    let metadata = page.element().metadata.clone();
+    if is_add {
+        Action::Add {
+            id,
+            data,
+            ancestors: d1_map_ancestors(),
+            metadata,
+        }
+    } else {
+        Action::Update {
+            id,
+            data,
+            ancestors: vec![],
+            metadata,
+        }
+    }
+}
+
+fn d1_delete(id: Id, deleted_at: u64) -> Action {
+    Action::DeleteRef {
+        id,
+        deleted_at,
+        metadata: Metadata::default(),
+    }
+}
+
+/// (a) A newer `insert("k", v')` must NOT be over-suppressed by an older
+/// `remove("k")` tombstone: after both replicas exchange the two ops, both
+/// agree "k" is present with value `v'`.
+///
+/// REVEALS A BUG (kept asserting the correct CRDT invariant, `#[ignore]`d):
+/// `apply_action`'s upsert path does NOT clear an existing older `deleted_at`
+/// tombstone when a strictly-newer `Update` arrives. `save_internal` passes
+/// the LWW guard (`stored.updated_at == t_del < t_upd`) and writes the new
+/// bytes, but the stale tombstone is never lifted, so `find_by_id` keeps
+/// returning `None` — the newer write lands in storage yet stays invisible.
+/// This makes the two replicas DIVERGE on the exact scenario this test models:
+/// the replica that saw `remove` before the newer `insert` hides the value,
+/// while the replica that only ever saw the newer `insert` (its older
+/// `remove` correctly loses via `apply_delete_ref_action`) shows it. Newer
+/// updates should win over older deletes (LWW-including-deletes / add-wins).
+#[test]
+#[serial]
+#[ignore = "reveals possible bug: a strictly-newer Update does not clear an older \
+            deleted_at tombstone, so the newer write is stored but stays invisible \
+            (over-suppressed) and replicas diverge on delete-then-update vs update-only"]
+fn d1_map_update_newer_than_delete_is_not_over_suppressed() {
+    super::common::register_test_merge_functions();
+    crate::env::reset_for_testing();
+
+    let id = d1_key_id();
+    let base = time_now();
+    let t0 = base - 30_000_000; // shared base insert
+    let t_del = base - 20_000_000; // A's delete
+    let t_upd = base - 10_000_000; // B's update, strictly later than the delete
+
+    // Shared base: both replicas hold "k" = "v0".
+    let base_add = d1_upsert(id, "v0", t0, true);
+    D1IfaceA::apply_action(base_add.clone(), &ApplyContext::empty()).unwrap();
+    D1IfaceB::apply_action(base_add, &ApplyContext::empty()).unwrap();
+
+    // A removes "k" (tombstone at t_del). B updates "k" = "v1" (at t_upd > t_del).
+    let del = d1_delete(id, t_del);
+    let upd = d1_upsert(id, "v1", t_upd, false);
+    D1IfaceA::apply_action(del.clone(), &ApplyContext::empty()).unwrap();
+    D1IfaceB::apply_action(upd.clone(), &ApplyContext::empty()).unwrap();
+
+    // Cross-apply: A learns of B's newer update; B learns of A's older delete.
+    D1IfaceA::apply_action(upd, &ApplyContext::empty()).unwrap();
+    D1IfaceB::apply_action(del, &ApplyContext::empty()).unwrap();
+
+    // Both replicas must converge to "k" present = "v1" — the newer update
+    // wins over the older tombstone; it must not be suppressed.
+    let a = D1IfaceA::find_by_id::<Page>(id).unwrap();
+    let b = D1IfaceB::find_by_id::<Page>(id).unwrap();
+    assert!(
+        a.is_some(),
+        "node A: newer update must resurrect over the older tombstone"
+    );
+    assert!(
+        b.is_some(),
+        "node B: older delete must not suppress the newer local update"
+    );
+    assert_eq!(a.unwrap().title, "v1", "node A converged value");
+    assert_eq!(b.unwrap().title, "v1", "node B converged value");
+}
+
+/// (b) A `remove("k")` strictly-later than an `insert("k", v)` must win on
+/// BOTH replicas — no resurrection of the deleted key from the older insert.
+#[test]
+#[serial]
+fn d1_map_delete_newer_than_update_no_resurrection() {
+    super::common::register_test_merge_functions();
+    crate::env::reset_for_testing();
+
+    let id = d1_key_id();
+    let base = time_now();
+    let t0 = base - 30_000_000; // shared base insert
+    let t_upd = base - 20_000_000; // A's update
+    let t_del = base - 10_000_000; // B's delete, strictly later than the update
+
+    // Shared base.
+    let base_add = d1_upsert(id, "v0", t0, true);
+    D1IfaceA::apply_action(base_add.clone(), &ApplyContext::empty()).unwrap();
+    D1IfaceB::apply_action(base_add, &ApplyContext::empty()).unwrap();
+
+    // A updates "k" = "v1" (t_upd). B removes "k" (t_del > t_upd).
+    let upd = d1_upsert(id, "v1", t_upd, false);
+    let del = d1_delete(id, t_del);
+    D1IfaceA::apply_action(upd.clone(), &ApplyContext::empty()).unwrap();
+    D1IfaceB::apply_action(del.clone(), &ApplyContext::empty()).unwrap();
+
+    // Cross-apply: A learns of B's newer delete; B learns of A's older update.
+    D1IfaceA::apply_action(del, &ApplyContext::empty()).unwrap();
+    D1IfaceB::apply_action(upd, &ApplyContext::empty()).unwrap();
+
+    // Both replicas must converge to "k" ABSENT — the newer delete wins and
+    // the older update must not resurrect it.
+    assert!(
+        D1IfaceA::find_by_id::<Page>(id).unwrap().is_none(),
+        "node A: newer delete must win over the older update"
+    );
+    assert!(
+        D1IfaceB::find_by_id::<Page>(id).unwrap().is_none(),
+        "node B: older update must NOT resurrect the newer-deleted key"
+    );
+}
+
+/// (c) Convergence is symmetric: applying the same delete + update ops in
+/// opposite orders must yield the identical final storage state (same
+/// visibility AND same Merkle hash for the key id).
+#[test]
+#[serial]
+fn d1_map_delete_vs_update_convergence_is_apply_order_independent() {
+    super::common::register_test_merge_functions();
+    crate::env::reset_for_testing();
+
+    let id = d1_key_id();
+    let base = time_now();
+    let t0 = base - 30_000_000;
+    let t_upd = base - 20_000_000;
+    let t_del = base - 10_000_000; // delete strictly later than update
+
+    let base_add = d1_upsert(id, "v0", t0, true);
+    let upd = d1_upsert(id, "v1", t_upd, false);
+    let del = d1_delete(id, t_del);
+
+    // Node A applies update-then-delete; node B applies delete-then-update.
+    D1IfaceA::apply_action(base_add.clone(), &ApplyContext::empty()).unwrap();
+    D1IfaceA::apply_action(upd.clone(), &ApplyContext::empty()).unwrap();
+    D1IfaceA::apply_action(del.clone(), &ApplyContext::empty()).unwrap();
+
+    D1IfaceB::apply_action(base_add, &ApplyContext::empty()).unwrap();
+    D1IfaceB::apply_action(del, &ApplyContext::empty()).unwrap();
+    D1IfaceB::apply_action(upd, &ApplyContext::empty()).unwrap();
+
+    // Same visibility.
+    let a_visible = D1IfaceA::find_by_id::<Page>(id).unwrap().is_some();
+    let b_visible = D1IfaceB::find_by_id::<Page>(id).unwrap().is_some();
+    assert_eq!(
+        a_visible, b_visible,
+        "visibility must be independent of apply order"
+    );
+    assert!(
+        !a_visible,
+        "newer delete wins ⇒ key absent on both replicas"
+    );
+
+    // Convergence signal that actually drives sync: the map-container (root)
+    // Merkle hash. A tombstoned child is unlinked from its parent's children
+    // list, so the dead leaf's own bytes no longer feed the container hash —
+    // the two replicas must agree on the container root regardless of the
+    // order they applied the update vs the delete.
+    let a_root = Index::<D1NodeA>::get_hashes_for(Id::root()).unwrap();
+    let b_root = Index::<D1NodeB>::get_hashes_for(Id::root()).unwrap();
+    assert_eq!(
+        a_root, b_root,
+        "map-container root hash must be identical regardless of apply order"
+    );
+}
