@@ -20,5 +20,6 @@
 
 pub mod byzantine_delta_auth;
 pub mod byzantine_handshake;
+pub mod partition_churn;
 pub mod protocol_dispatch;
 pub mod snapshot_merge_protection;

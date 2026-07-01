@@ -535,4 +535,116 @@ mod tests {
         c.prune(100, 1000, MAX_PEER_CACHE_ENTRIES);
         assert_eq!(c.len(), 1);
     }
+
+    /// Distinct, deterministic `PeerId` from a `u64` — the `u8`-seeded
+    /// `peer()` helper only spans 256 ids, too few for a churn-scale test.
+    /// The `0x5A ^ index-salt` fill guarantees a non-zero, per-`n`-distinct
+    /// 32-byte seed.
+    fn peer_u64(n: u64) -> PeerId {
+        let mut seed = [0u8; 32];
+        for (i, b) in seed.iter_mut().enumerate() {
+            *b = ((n >> ((i % 8) * 8)) as u8) ^ (i as u8).wrapping_mul(31) ^ 0x5A;
+        }
+        let kp = libp2p::identity::Keypair::ed25519_from_bytes(seed).expect("valid ed25519 seed");
+        PeerId::from_public_key(&kp.public())
+    }
+
+    /// `record()` itself is deliberately unbounded in entry count (only the
+    /// per-peer address list is capped) — the map cap is enforced by the
+    /// periodic `prune()` (production calls it on the rendezvous tick). This
+    /// pins that contract at the exact cap boundary so a future change that
+    /// silently adds capping to `record` (or drops it from `prune`) is caught.
+    #[test]
+    fn record_is_unbounded_but_prune_enforces_the_entry_cap() {
+        let mut c = PeerAddrCache::default();
+        let over = MAX_PEER_CACHE_ENTRIES + 10;
+        for i in 0..over as u64 {
+            c.record(
+                peer_u64(i),
+                addr(&format!("/ip4/10.0.0.1/tcp/{}", i % 60000)),
+                1000 + i,
+            );
+        }
+        // record() never caps entry count.
+        assert_eq!(
+            c.len(),
+            over,
+            "record must not cap the entry count; that's prune's job"
+        );
+        // A single prune brings the resident map back to the hard cap.
+        c.prune(1000 + over as u64, 86_400, MAX_PEER_CACHE_ENTRIES);
+        assert_eq!(
+            c.len(),
+            MAX_PEER_CACHE_ENTRIES,
+            "prune must bring the map down to exactly the cap"
+        );
+    }
+
+    /// Churn ~50k distinct peers through the cache the way a node on the
+    /// global rendezvous namespace would, pruning on the (simulated)
+    /// rendezvous tick. The resident map must stay `<= MAX_PEER_CACHE_ENTRIES`
+    /// throughout, and a real co-member — refreshed on every "tick", so always
+    /// the most-recently-seen entry — must never be evicted, while stale
+    /// transients churn out under the LRU cap.
+    #[test]
+    fn churn_50k_stays_within_cap_and_keeps_refreshed_co_member() {
+        let ttl = 86_400u64; // 24h — nothing ages out by TTL within this test.
+        let now_base = 1_000_000u64;
+        let mut c = PeerAddrCache::default();
+
+        // A genuine collaborator we keep touching, plus an early transient we
+        // expect to be evicted by the churn.
+        let co_member = peer_u64(u64::MAX);
+        let co_member_addr = addr("/ip4/192.168.1.1/tcp/4242");
+        let early_transient = peer_u64(0);
+
+        let total = 50_000u64;
+        for i in 0..total {
+            // A fresh, one-shot churning peer.
+            c.record(
+                peer_u64(i),
+                addr(&format!("/ip4/10.0.0.1/tcp/{}", i % 60000)),
+                now_base + i,
+            );
+            // The co-member is seen again this tick → always the newest entry.
+            c.record(co_member, co_member_addr.clone(), now_base + i);
+
+            // Prune on the (simulated) rendezvous tick; the cap must always hold.
+            if i % 1000 == 0 {
+                c.prune(now_base + i, ttl, MAX_PEER_CACHE_ENTRIES);
+                assert!(
+                    c.len() <= MAX_PEER_CACHE_ENTRIES,
+                    "resident map exceeded the cap mid-churn at i={i}: {}",
+                    c.len()
+                );
+            }
+        }
+
+        let final_now = now_base + total;
+        c.prune(final_now, ttl, MAX_PEER_CACHE_ENTRIES);
+
+        // Bound holds after the final prune.
+        assert!(
+            c.len() <= MAX_PEER_CACHE_ENTRIES,
+            "resident map exceeded the cap after churn: {}",
+            c.len()
+        );
+
+        // The continuously-refreshed co-member survived the churn...
+        let resident: std::collections::BTreeSet<PeerId> = c
+            .dial_candidates(final_now, ttl)
+            .into_iter()
+            .map(|p| p.peer_id)
+            .collect();
+        assert!(
+            resident.contains(&co_member),
+            "a co-member refreshed every tick must never be evicted by churn"
+        );
+        // ...while an early, since-untouched transient did not (proving the
+        // cap actually evicted, i.e. the survival above is non-vacuous).
+        assert!(
+            !resident.contains(&early_transient),
+            "a long-untouched transient must be evicted under the LRU cap"
+        );
+    }
 }
