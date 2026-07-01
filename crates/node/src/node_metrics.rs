@@ -114,14 +114,16 @@ pub(crate) struct NodeMetrics {
     pub(crate) governance_drain_outcomes_total: Family<GovernanceDrainLabels, Counter>,
 
     // Process resource gauges — polled periodically on linux via
-    // /proc/self/status + /proc/self/fd; no-op on other platforms.
-    #[allow(dead_code, reason = "recorded by the linux-only /proc resource poller")]
+    // /proc/self/status + /proc/self/fd. Only present (and only registered)
+    // on linux: on other platforms there is no /proc to read, and exposing
+    // permanently-zero gauges misleads dashboards into reading a real 0.
+    #[cfg(target_os = "linux")]
     pub(crate) process_resident_memory_bytes: Gauge,
-    #[allow(dead_code, reason = "recorded by the linux-only /proc resource poller")]
+    #[cfg(target_os = "linux")]
     pub(crate) process_virtual_memory_bytes: Gauge,
-    #[allow(dead_code, reason = "recorded by the linux-only /proc resource poller")]
+    #[cfg(target_os = "linux")]
     pub(crate) process_threads: Gauge,
-    #[allow(dead_code, reason = "recorded by the linux-only /proc resource poller")]
+    #[cfg(target_os = "linux")]
     pub(crate) process_open_fds: Gauge,
 }
 
@@ -271,28 +273,38 @@ impl NodeMetrics {
             governance_drain_outcomes_total.clone(),
         );
 
+        // Registered only on linux — see the field docs. On other platforms
+        // these series simply don't exist rather than reading a constant 0.
+        #[cfg(target_os = "linux")]
         let process_resident_memory_bytes = Gauge::default();
+        #[cfg(target_os = "linux")]
         registry.register(
             "process_resident_memory_bytes",
-            "Resident set size of the merod process, in bytes (linux only; 0 elsewhere)",
+            "Resident set size of the merod process, in bytes",
             process_resident_memory_bytes.clone(),
         );
+        #[cfg(target_os = "linux")]
         let process_virtual_memory_bytes = Gauge::default();
+        #[cfg(target_os = "linux")]
         registry.register(
             "process_virtual_memory_bytes",
-            "Virtual memory size of the merod process, in bytes (linux only; 0 elsewhere)",
+            "Virtual memory size of the merod process, in bytes",
             process_virtual_memory_bytes.clone(),
         );
+        #[cfg(target_os = "linux")]
         let process_threads = Gauge::default();
+        #[cfg(target_os = "linux")]
         registry.register(
             "process_threads",
-            "Thread count of the merod process (linux only; 0 elsewhere)",
+            "Thread count of the merod process",
             process_threads.clone(),
         );
+        #[cfg(target_os = "linux")]
         let process_open_fds = Gauge::default();
+        #[cfg(target_os = "linux")]
         registry.register(
             "process_open_fds",
-            "Open file descriptors of the merod process (linux only; 0 elsewhere)",
+            "Open file descriptors of the merod process",
             process_open_fds.clone(),
         );
 
@@ -315,9 +327,13 @@ impl NodeMetrics {
             dag_compaction_deltas_pruned_total,
             hc_leaf_drops_total,
             governance_drain_outcomes_total,
+            #[cfg(target_os = "linux")]
             process_resident_memory_bytes,
+            #[cfg(target_os = "linux")]
             process_virtual_memory_bytes,
+            #[cfg(target_os = "linux")]
             process_threads,
+            #[cfg(target_os = "linux")]
             process_open_fds,
         }
     }

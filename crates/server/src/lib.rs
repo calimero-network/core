@@ -1,6 +1,8 @@
 use core::net::{IpAddr, SocketAddr};
+use core::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
 use tower as _;
 
 use axum::http::Method;
@@ -29,12 +31,70 @@ mod service_mounts;
 pub mod sse;
 pub mod ws;
 
+/// Node lifecycle state consulted by the readiness (`/ready`) probe.
+///
+/// A k8s readiness probe asks a single question — "should traffic be routed
+/// here right now?" — so a node exposes one coarse lifecycle signal rather
+/// than the per-namespace governance readiness FSM (which has no single
+/// node-wide tier). `run::start` flips it to [`READY`](Self::READY) once every
+/// subsystem is up, and to [`SHUTTING_DOWN`](Self::SHUTTING_DOWN) the moment a
+/// termination signal arrives so the orchestrator stops routing new traffic
+/// while in-flight requests drain.
+#[derive(Debug)]
+pub struct NodeReadiness(AtomicU8);
+
+impl NodeReadiness {
+    /// Subsystems still coming up — not yet safe to route traffic.
+    pub const STARTING: u8 = 0;
+    /// Fully started and serving.
+    pub const READY: u8 = 1;
+    /// Termination in progress — draining in-flight work, refuse new traffic.
+    pub const SHUTTING_DOWN: u8 = 2;
+
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(AtomicU8::new(Self::STARTING))
+    }
+
+    pub fn set_ready(&self) {
+        self.0.store(Self::READY, Ordering::SeqCst);
+    }
+
+    pub fn set_shutting_down(&self) {
+        self.0.store(Self::SHUTTING_DOWN, Ordering::SeqCst);
+    }
+
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.0.load(Ordering::SeqCst) == Self::READY
+    }
+
+    /// Lower-case label for logs and probe responses.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self.0.load(Ordering::SeqCst) {
+            Self::READY => "ready",
+            Self::SHUTTING_DOWN => "shutting_down",
+            _ => "starting",
+        }
+    }
+}
+
+impl Default for NodeReadiness {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct AdminState {
     pub store: Store,
     pub ctx_client: ContextClient,
     pub node_client: NodeClient,
+    /// Node lifecycle signal driven by `run::start`; read by the readiness
+    /// probe.
+    pub readiness: Arc<NodeReadiness>,
     /// DEV/TEST ONLY. When true, the TEE admin handlers produce and accept mock
     /// attestation quotes instead of requiring real TDX hardware. Insecure —
     /// never enable in production. Sourced from `merod run --mock-tee`
@@ -48,23 +108,31 @@ impl AdminState {
         store: Store,
         ctx_client: ContextClient,
         node_client: NodeClient,
+        readiness: Arc<NodeReadiness>,
         mock_tee: bool,
     ) -> Self {
         Self {
             store,
             ctx_client,
             node_client,
+            readiness,
             mock_tee,
         }
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "top-level server entry point wiring node-wide handles"
+)]
 pub async fn start(
     config: ServerConfig,
     ctx_client: ContextClient,
     node_client: NodeClient,
     datastore: Store,
     mut prom_registry: Registry,
+    readiness: Arc<NodeReadiness>,
+    shutdown: CancellationToken,
     mock_tee: bool,
 ) -> EyreResult<()> {
     let mut config = config;
@@ -125,6 +193,7 @@ pub async fn start(
         datastore.clone(),
         ctx_client.clone(),
         node_client.clone(),
+        readiness,
         mock_tee,
     ));
     let mounted = mount_runtime_services(
@@ -167,7 +236,16 @@ pub async fn start(
 
     for listener in listeners {
         let app = app.clone();
-        drop(set.spawn(async move { axum::serve(listener, app).await }));
+        let shutdown = shutdown.clone();
+        // `with_graceful_shutdown` stops accepting new connections when the
+        // token fires and then waits for in-flight requests to finish before
+        // the serve future resolves — so a termination signal drains requests
+        // instead of the server task being dropped mid-response.
+        drop(set.spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move { shutdown.cancelled().await })
+                .await
+        }));
     }
 
     while let Some(result) = set.join_next().await {

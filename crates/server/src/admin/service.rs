@@ -351,6 +351,7 @@ pub(crate) fn setup(
 
     let public_routes = Router::new()
         .route("/health", get(health_check_handler))
+        .route("/ready", get(readiness_check_handler))
         .route("/is-authed", get(is_authed_handler))
         .route("/certificate", get(certificate_handler))
         .nest("/tee", tee::service())
@@ -583,15 +584,61 @@ struct HealthStatus {
     status: String,
 }
 
-async fn health_check_handler() -> impl IntoResponse {
-    ApiResponse {
-        payload: GetHealthResponse {
-            data: HealthStatus {
-                status: "alive".to_owned(),
+/// Liveness probe. Reports healthy only if the datastore answers a probe read —
+/// a wedged store now surfaces as unhealthy instead of a constant "alive". This
+/// is deliberately independent of the readiness lifecycle: liveness answers
+/// "is the process still functioning" (a k8s liveness failure restarts the
+/// pod), so a still-starting or draining node is live as long as its store
+/// responds.
+async fn health_check_handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
+    match state.store.ping() {
+        Ok(()) => ApiResponse {
+            payload: GetHealthResponse {
+                data: HealthStatus {
+                    status: "alive".to_owned(),
+                },
             },
-        },
+        }
+        .into_response(),
+        Err(err) => {
+            tracing::warn!(%err, "health check: datastore ping failed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({ "data": { "status": "store_unavailable" } })),
+            )
+                .into_response()
+        }
     }
-    .into_response()
+}
+
+/// Readiness probe. Returns 200 only when the node has finished starting AND is
+/// not shutting down AND the datastore responds; otherwise 503 with the current
+/// lifecycle label. A k8s readiness probe consults this to decide whether to
+/// route traffic, so a Starting or ShuttingDown node is removed from the
+/// service endpoints while it comes up or drains.
+async fn readiness_check_handler(
+    Extension(state): Extension<Arc<AdminState>>,
+) -> impl IntoResponse {
+    let lifecycle = state.readiness.label();
+    let store_ok = state.store.ping().is_ok();
+    if state.readiness.is_ready() && store_ok {
+        (
+            StatusCode::OK,
+            axum::Json(json!({ "data": { "status": "ready" } })),
+        )
+            .into_response()
+    } else {
+        let status = if store_ok {
+            lifecycle
+        } else {
+            "store_unavailable"
+        };
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({ "data": { "status": status } })),
+        )
+            .into_response()
+    }
 }
 #[derive(Debug, Serialize)]
 struct IsAuthedResponse {

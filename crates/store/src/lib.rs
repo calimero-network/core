@@ -46,6 +46,28 @@ impl Store {
         Handle::new(self.clone())
     }
 
+    /// Flush in-memory buffers (memtable + WAL) to durable storage.
+    ///
+    /// Invoked on a controlled shutdown so an abrupt process stop immediately
+    /// afterwards cannot lose recently-written state. No-op for non-persistent
+    /// backends. This is a best-effort durability barrier and does not close
+    /// the database — the `Arc<dyn Database>` may still be shared elsewhere.
+    pub fn flush(&self) -> EyreResult<()> {
+        self.db.flush()
+    }
+
+    /// Cheap reachability probe used by the readiness/health endpoints.
+    ///
+    /// Performs a single point lookup against a metadata column: it exercises
+    /// the column-family handle and read path without materialising an
+    /// iterator, and surfaces an `Err` if the underlying database has become
+    /// unavailable. A missing key is success — we only care that the read
+    /// completed.
+    pub fn ping(&self) -> EyreResult<()> {
+        let _ = self.db.get(Column::Meta, Slice::from(&[][..]))?;
+        Ok(())
+    }
+
     /// Best-effort on-disk byte estimate for `col` over `[start, end)`.
     /// Backed by `Database::approximate_size` — for RocksDB this is sampled
     /// from SST metadata (sub-millisecond, no scan); in-memory / default

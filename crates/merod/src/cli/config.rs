@@ -43,18 +43,18 @@ impl FromStr for KeyValuePair {
 
 impl ConfigCommand {
     pub async fn run(self, root_args: &cli::RootArgs) -> EyreResult<()> {
-        let path = root_args.home.join(&root_args.node_name);
+        let home = root_args.home.join(&root_args.node_name);
 
-        if !ConfigFile::exists(&path) {
-            bail!("Node is not initialized in {:?}", path);
+        if !ConfigFile::exists(&home) {
+            bail!("Node is not initialized in {:?}", home);
         }
 
-        let path = path.join(CONFIG_FILE);
+        let config_path = home.join(CONFIG_FILE);
 
         // Load the existing TOML file
-        let toml_str = read_to_string(&path)
+        let toml_str = read_to_string(&config_path)
             .await
-            .map_err(|_| eyre!("Node is not initialized in {:?}", path))?;
+            .map_err(|_| eyre!("Node is not initialized in {:?}", config_path))?;
 
         let mut doc = toml_str.parse::<toml_edit::DocumentMut>()?;
 
@@ -71,17 +71,29 @@ impl ConfigCommand {
             current[key_parts[key_parts.len() - 1]] = Item::Value(kv.value.clone());
         }
 
-        self.validate_toml(&doc).await?;
+        self.validate_toml(&doc, &home).await?;
 
         // Save the updated TOML back to the file
-        write(&path, doc.to_string()).await?;
+        write(&config_path, doc.to_string()).await?;
 
         info!("Node configuration has been updated");
 
         Ok(())
     }
 
-    pub async fn validate_toml(self, doc: &toml_edit::DocumentMut) -> EyreResult<()> {
+    /// Validate the candidate config the same way `merod run` does, so a
+    /// `merod config` write cannot persist values the node would reject at
+    /// startup. Previously this only round-tripped the deserialize (catching
+    /// type errors) but let semantically-invalid values through — e.g. a
+    /// zeroed sync deadline, a port conflict, or an out-of-range limit —
+    /// which then failed at the next `run`. We load the candidate from a temp
+    /// file and run the full [`validate_config`], passing the real node home
+    /// so path-accessibility checks are meaningful.
+    pub async fn validate_toml(
+        &self,
+        doc: &toml_edit::DocumentMut,
+        home: &camino::Utf8Path,
+    ) -> EyreResult<()> {
         let tmp_dir = temp_dir();
         let tmp_path = tmp_dir.join(CONFIG_FILE);
 
@@ -89,7 +101,8 @@ impl ConfigCommand {
 
         let tmp_path_utf8 = Utf8PathBuf::try_from(tmp_dir)?;
 
-        drop(ConfigFile::load(&tmp_path_utf8).await?);
+        let config = ConfigFile::load(&tmp_path_utf8).await?;
+        crate::cli::validation::validate_config(&config, home)?;
 
         Ok(())
     }
