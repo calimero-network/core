@@ -119,7 +119,7 @@ impl ScopeState {
 
     /// Apply one op with an explicit causal `generation` for its LWW stamp.
     pub fn apply_with_generation(&mut self, op: &Op, generation: u32) {
-        let stamp: Stamp = (op.hlc, generation, op.id);
+        let stamp: Stamp = (op.hlc, generation, op.id());
         match &op.payload {
             OpPayload::Put { entity, value } => {
                 if wins(stamp, self.data_clock.get(entity)) {
@@ -220,7 +220,7 @@ impl ScopeState {
                 capabilities,
             } => {
                 if wins(stamp, self.default_caps_clock.get(group)) {
-                    let _ = self.default_caps.insert(*group, *capabilities);
+                    let _ = self.default_caps.insert(*group, capabilities.bits());
                     let _ = self.default_caps_clock.insert(*group, stamp);
                 }
             }
@@ -231,7 +231,7 @@ impl ScopeState {
             } => {
                 let key = (*group, *member);
                 if wins(stamp, self.member_caps_clock.get(&key)) {
-                    let _ = self.member_caps.insert(key, *capabilities);
+                    let _ = self.member_caps.insert(key, capabilities.bits());
                     let _ = self.member_caps_clock.insert(key, stamp);
                 }
             }
@@ -289,7 +289,7 @@ impl ScopeState {
     /// fully-materialized ancestry.
     #[must_use]
     pub fn acl_view_at(log: &[Op], parents: &[[u8; 32]]) -> AclView {
-        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id, op)).collect();
+        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id(), op)).collect();
         let mut visited: HashSet<[u8; 32]> = HashSet::new();
         let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
         let mut ancestry: Vec<&Op> = Vec::new();
@@ -310,13 +310,13 @@ impl ScopeState {
         // It orders causally-related governance ops (whose `hlc` is all `0`) so a
         // re-add beats an earlier remove. Iterative post-order over the DAG (no
         // cycles), so deep chains can't blow the stack.
-        let anc_by_id: HashMap<[u8; 32], &Op> = ancestry.iter().map(|op| (op.id, *op)).collect();
+        let anc_by_id: HashMap<[u8; 32], &Op> = ancestry.iter().map(|op| (op.id(), *op)).collect();
         let mut generation: HashMap<[u8; 32], u32> = HashMap::new();
         for &start in &ancestry {
-            if generation.contains_key(&start.id) {
+            if generation.contains_key(&start.id()) {
                 continue;
             }
-            let mut stack = vec![start.id];
+            let mut stack = vec![start.id()];
             while let Some(&top) = stack.last() {
                 let Some(top_op) = anc_by_id.get(&top) else {
                     let _ = generation.insert(top, 0);
@@ -350,7 +350,7 @@ impl ScopeState {
 
         let mut state = Self::default();
         for &op in &ancestry {
-            state.apply_with_generation(op, generation.get(&op.id).copied().unwrap_or(0));
+            state.apply_with_generation(op, generation.get(&op.id()).copied().unwrap_or(0));
         }
         state.acl_view()
     }
@@ -366,7 +366,7 @@ impl ScopeState {
     /// grant can abstain (defer to live) unless it has the whole history.
     #[must_use]
     pub fn cut_ancestry_complete(log: &[Op], parents: &[[u8; 32]]) -> bool {
-        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id, op)).collect();
+        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id(), op)).collect();
         let mut visited: HashSet<[u8; 32]> = HashSet::new();
         let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
         while let Some(id) = queue.pop_front() {
@@ -529,17 +529,7 @@ mod tests {
         let scope = ScopeId::from([0u8; 32]);
         let author = PublicKey::from([1u8; 32]);
         let h = hlc(hlc_ns);
-        let id = Op::compute_id(scope, &[], &author, &h, &payload);
-        Op {
-            id,
-            scope,
-            parents: vec![],
-            author,
-            hlc: h,
-            payload,
-            expected_scope_root: [0u8; 32],
-            signature: [0u8; 64],
-        }
+        Op::new(scope, vec![], author, h, payload, [0u8; 32], [0u8; 64])
     }
 
     fn sample_ops() -> Vec<Op> {
@@ -730,17 +720,15 @@ mod tests {
                         .collect(),
                 },
             };
-            let id = Op::compute_id(scope, &[], &author, &h, &payload);
-            ops.push(Op {
-                id,
+            ops.push(Op::new(
                 scope,
-                parents: vec![],
+                vec![],
                 author,
-                hlc: h,
+                h,
                 payload,
-                expected_scope_root: [0u8; 32],
-                signature: [0u8; 64],
-            });
+                [0u8; 32],
+                [0u8; 64],
+            ));
         }
 
         // The model must converge + isolate across many delivery orders.
@@ -797,19 +785,19 @@ mod tests {
                 writers: BTreeMap::new(),
             },
         );
-        revoke.parents = vec![genesis.id];
+        revoke.parents = vec![genesis.id()];
 
         let log = vec![genesis.clone(), revoke.clone()];
 
         // View at the cut [genesis] (pre-revoke) still sees the owner.
-        let pre = ScopeState::acl_view_at(&log, &[genesis.id]);
+        let pre = ScopeState::acl_view_at(&log, &[genesis.id()]);
         assert!(
             pre.is_owner(&owner, object),
             "pre-revoke cut keeps the owner"
         );
 
         // View at the cut [revoke] (post) does not.
-        let post = ScopeState::acl_view_at(&log, &[revoke.id]);
+        let post = ScopeState::acl_view_at(&log, &[revoke.id()]);
         assert!(
             !post.is_owner(&owner, object),
             "post-revoke cut drops the owner"
@@ -828,17 +816,7 @@ mod tests {
         let author = PublicKey::from([1u8; 32]);
         let zero = hlc(0);
         let mk = |parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
-            let id = Op::compute_id(scope, &parents, &author, &zero, &payload);
-            Op {
-                id,
-                scope,
-                parents,
-                author,
-                hlc: zero,
-                payload,
-                expected_scope_root: [0u8; 32],
-                signature: [0u8; 64],
-            }
+            Op::new(scope, parents, author, zero, payload, [0u8; 32], [0u8; 64])
         };
         let add = mk(
             vec![],
@@ -848,9 +826,9 @@ mod tests {
                 role: GroupMemberRole::Member,
             },
         );
-        let remove = mk(vec![add.id], OpPayload::MemberRemoved { group, member });
+        let remove = mk(vec![add.id()], OpPayload::MemberRemoved { group, member });
         let readd = mk(
-            vec![remove.id],
+            vec![remove.id()],
             OpPayload::MemberAdded {
                 group,
                 member,
@@ -860,7 +838,7 @@ mod tests {
         let log = vec![add.clone(), remove.clone(), readd.clone()];
 
         // At the re-add cut: present as Admin (generation readd > remove > add).
-        let at_readd = ScopeState::acl_view_at(&log, &[readd.id]);
+        let at_readd = ScopeState::acl_view_at(&log, &[readd.id()]);
         assert_eq!(
             at_readd.groups.get(&group).and_then(|m| m.get(&member)),
             Some(&GroupMemberRole::Admin),
@@ -868,7 +846,7 @@ mod tests {
         );
 
         // At the remove cut: absent.
-        let at_remove = ScopeState::acl_view_at(&log, &[remove.id]);
+        let at_remove = ScopeState::acl_view_at(&log, &[remove.id()]);
         assert_eq!(
             at_remove.groups.get(&group).and_then(|m| m.get(&member)),
             None,
@@ -888,17 +866,7 @@ mod tests {
         let author = PublicKey::from([1u8; 32]);
         let zero = hlc(0);
         let mk = |parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
-            let id = Op::compute_id(scope, &parents, &author, &zero, &payload);
-            Op {
-                id,
-                scope,
-                parents,
-                author,
-                hlc: zero,
-                payload,
-                expected_scope_root: [0u8; 32],
-                signature: [0u8; 64],
-            }
+            Op::new(scope, parents, author, zero, payload, [0u8; 32], [0u8; 64])
         };
         let add = mk(
             vec![],
@@ -908,18 +876,21 @@ mod tests {
                 role: GroupMemberRole::Member,
             },
         );
-        let remove = mk(vec![add.id], OpPayload::MemberRemoved { group, member });
+        let remove = mk(vec![add.id()], OpPayload::MemberRemoved { group, member });
 
         // Complete log: ancestry of [remove] = {remove, add}, both present.
         let complete = vec![add.clone(), remove.clone()];
-        assert!(ScopeState::cut_ancestry_complete(&complete, &[remove.id]));
+        assert!(ScopeState::cut_ancestry_complete(&complete, &[remove.id()]));
 
         // Missing the mid-ancestry `add` (remove's parent) → truncated → false.
         let truncated = vec![remove.clone()];
-        assert!(!ScopeState::cut_ancestry_complete(&truncated, &[remove.id]));
+        assert!(!ScopeState::cut_ancestry_complete(
+            &truncated,
+            &[remove.id()]
+        ));
 
         // A cited head absent from the log → also incomplete.
-        assert!(!ScopeState::cut_ancestry_complete(&[], &[remove.id]));
+        assert!(!ScopeState::cut_ancestry_complete(&[], &[remove.id()]));
     }
 
     #[test]

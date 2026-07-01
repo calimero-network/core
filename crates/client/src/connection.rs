@@ -41,11 +41,16 @@ where
     A: ClientAuthenticator + Clone + Send + Sync,
     S: ClientStorage + Clone + Send + Sync,
 {
-    pub api_url: Url,
-    pub client: Client,
-    pub node_name: Option<String>,
-    pub authenticator: A,
-    pub client_storage: S,
+    // Private: the HTTP transport (`client`), the `authenticator` (holds
+    // credentials), and `client_storage` must not leak out of the connection,
+    // and none of the fields may be swapped mid-flight by a caller. Access the
+    // non-sensitive bits through the accessors below; everything else goes
+    // through the request methods.
+    api_url: Url,
+    client: Client,
+    node_name: Option<String>,
+    authenticator: A,
+    client_storage: S,
 }
 
 impl<A, S> ConnectionInfo<A, S>
@@ -66,6 +71,18 @@ where
             authenticator,
             client_storage,
         }
+    }
+
+    /// The base API URL this connection targets.
+    #[must_use]
+    pub fn api_url(&self) -> &Url {
+        &self.api_url
+    }
+
+    /// The configured node name, if any.
+    #[must_use]
+    pub fn node_name(&self) -> Option<&str> {
+        self.node_name.as_deref()
     }
 
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {

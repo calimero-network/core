@@ -106,6 +106,9 @@ pub fn timeout_for_namespace_op(op: &NamespaceOp) -> Duration {
             OP_ACK_HEAVY_TIMEOUT
         }
         NamespaceOp::Group { .. } => OP_ACK_MEMBER_CHANGE_TIMEOUT,
+        // `NamespaceOp` is `#[non_exhaustive]`; a future op type gets the
+        // conservative member-change timeout until classified explicitly.
+        _ => OP_ACK_MEMBER_CHANGE_TIMEOUT,
     }
 }
 

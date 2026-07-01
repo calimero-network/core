@@ -70,6 +70,10 @@ impl<T> Alias<T> {
     ///
     /// Panics if the string exceeds `MAX_ALIAS_LEN`.
     #[must_use]
+    #[deprecated(
+        note = "panics on aliases longer than MAX_ALIAS_LEN; use `Alias::try_from_str` \
+                (or `str::parse`) and handle `InvalidAlias` instead"
+    )]
     pub fn new(s: &str) -> Self {
         s.parse().expect("alias too long")
     }
