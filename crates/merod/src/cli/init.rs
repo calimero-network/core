@@ -257,6 +257,26 @@ impl InitCommand {
                 return Ok(());
             }
 
+            // Refuse to recurse through a symlink. `remove_dir_all` follows a
+            // symlinked final component, so an attacker who swaps `path` for a
+            // symlink between the checks above and this removal could redirect
+            // the recursive delete onto an arbitrary target directory. Re-stat
+            // the path without following symlinks (lstat) and require a real
+            // directory immediately before deleting.
+            let metadata = fs::symlink_metadata(&path)
+                .await
+                .wrap_err_with(|| format!("failed to stat existing path {path:?}"))?;
+            if !metadata.is_dir() {
+                bail!(
+                    "refusing to remove {path:?}: expected a directory, found {}",
+                    if metadata.is_symlink() {
+                        "a symlink"
+                    } else {
+                        "a non-directory"
+                    }
+                );
+            }
+
             fs::remove_dir_all(&path).await?;
         }
 
