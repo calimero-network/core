@@ -1418,7 +1418,9 @@ fn remove_group_member_clears_member_metadata() {
             &member,
             &MetadataRecord {
                 name: Some("departing".to_owned()),
-                ..Default::default()
+                data: Default::default(),
+                updated_at: 0,
+                updated_by: [1_u8; 32].into(),
             },
         )
         .unwrap();

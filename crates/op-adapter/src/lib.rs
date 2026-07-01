@@ -342,16 +342,9 @@ mod tests {
             };
             let parents: Vec<[u8; 32]> = prev_id.into_iter().collect();
             let id = Op::compute_id(scope, &parents, &admin, &h, &payload);
-            ops.push(Op {
-                id,
-                scope,
-                parents,
-                author: admin,
-                hlc: h,
-                payload,
-                expected_scope_root: [0u8; 32],
-                signature: [0u8; 64],
-            });
+            ops.push(Op::from_parts(
+                id, scope, parents, admin, h, payload, [0u8; 32], [0u8; 64],
+            ));
             prev_id = Some(id);
         }
 
@@ -399,17 +392,15 @@ mod tests {
             writers_nonce: 1,
         };
         let payload = set_writers_payload(object, &entry);
-        let id = Op::compute_id(scope, &[], &admin, &entry.delta_hlc, &payload);
-        let op = Op {
-            id,
+        let op = Op::new(
             scope,
-            parents: vec![],
-            author: admin,
-            hlc: entry.delta_hlc,
+            vec![],
+            admin,
+            entry.delta_hlc,
             payload,
-            expected_scope_root: [0u8; 32],
-            signature: [0u8; 64],
-        };
+            [0u8; 32],
+            [0u8; 64],
+        );
 
         let resolved = ScopeState::from_ops([&op])
             .acl_view()
@@ -640,17 +631,7 @@ mod tests {
 
         let build = |ns: u64, payload: OpPayload| -> Op {
             let h = hlc(ns);
-            let id = Op::compute_id(scope, &[], &admin, &h, &payload);
-            Op {
-                id,
-                scope,
-                parents: vec![],
-                author: admin,
-                hlc: h,
-                payload,
-                expected_scope_root: [0u8; 32],
-                signature: [0u8; 64],
-            }
+            Op::new(scope, vec![], admin, h, payload, [0u8; 32], [0u8; 64])
         };
 
         // Add(Member)@10 → Remove@20 → Add(Admin)@30 → present as Admin.

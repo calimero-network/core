@@ -363,12 +363,12 @@ impl InitCommand {
                 ),
                 server_config,
             ),
-            SyncConfig {
-                timeout: DEFAULT_SYNC_TIMEOUT,
-                session_deadline: DEFAULT_SYNC_SESSION_DEADLINE,
-                interval: DEFAULT_SYNC_INTERVAL,
-                frequency: DEFAULT_SYNC_FREQUENCY,
-            },
+            SyncConfig::new(
+                DEFAULT_SYNC_TIMEOUT,
+                DEFAULT_SYNC_SESSION_DEADLINE,
+                DEFAULT_SYNC_INTERVAL,
+                DEFAULT_SYNC_FREQUENCY,
+            ),
             StoreConfigFile::new("data".into()),
             BlobStoreConfig::new("blobs".into()),
             ContextConfig {

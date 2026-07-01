@@ -486,6 +486,10 @@ impl<'a> NamespaceGovernance<'a> {
                     }
                 }
             }
+            // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op type
+            // contributes nothing to apply (it folds as a `Noop` in decode),
+            // so there is no state to mutate here.
+            _ => {}
         }
 
         // Ordering: advance the head first, then write the op to the log —

@@ -202,9 +202,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             &group_id,
                             &calimero_primitives::metadata::MetadataRecord {
                                 name: name.clone(),
+                                data: std::collections::BTreeMap::new(),
                                 updated_at: calimero_governance_store::now_millis(),
                                 updated_by: admin_identity,
-                                ..Default::default()
                             },
                         )?,
                         Err(e) => {

@@ -29,7 +29,7 @@ use calimero_storage::logical_clock::HybridTimestamp;
 #[derive(
     Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, BorshSerialize, BorshDeserialize,
 )]
-pub struct ScopeId(pub [u8; 32]);
+pub struct ScopeId([u8; 32]);
 
 impl ScopeId {
     #[must_use]
@@ -54,7 +54,10 @@ impl From<[u8; 32]> for ScopeId {
 #[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct Op {
     /// `compute_id(scope, parents, author, hlc, payload)` — content address.
-    pub id: [u8; 32],
+    /// **Private** and computed by [`Op::new`] so a caller can't desync the id
+    /// from the content it addresses; read it via [`Op::id`] and re-check it
+    /// with [`Op::verify`].
+    id: [u8; 32],
     /// The scope this op belongs to.
     pub scope: ScopeId,
     /// Causal predecessors (may cross scopes — see the struct docs).
@@ -169,6 +172,102 @@ pub enum OpPayload {
 }
 
 impl Op {
+    /// Build an op, computing its content-address [`id`](Op::id) from the
+    /// content so the two can never disagree. `signature` is the author's
+    /// Ed25519 signature over that id (see the [`signature`](Op::signature)
+    /// field docs); callers sign `Op::compute_id(...)` with the author key.
+    #[must_use]
+    pub fn new(
+        scope: ScopeId,
+        parents: Vec<[u8; 32]>,
+        author: PublicKey,
+        hlc: HybridTimestamp,
+        payload: OpPayload,
+        expected_scope_root: [u8; 32],
+        signature: [u8; 64],
+    ) -> Self {
+        let id = Self::compute_id(scope, &parents, &author, &hlc, &payload);
+        Self {
+            id,
+            scope,
+            parents,
+            author,
+            hlc,
+            payload,
+            expected_scope_root,
+            signature,
+        }
+    }
+
+    /// Build an op from an **explicit** `id` rather than recomputing it from the
+    /// content.
+    ///
+    /// This exists only for the unified-op *bridge*: a [`SignedNamespaceOp`] /
+    /// rotation entry is already a node in the governance DAG with its own
+    /// identity (`content_hash` / `delta_id`), and the unified `Op` mirrors that
+    /// node verbatim — keyed in the op-store by that same id — rather than by
+    /// `Op::compute_id` of the projected payload. These bridge ops are internal,
+    /// unsigned projections of already-verified governance ops, so they are not
+    /// passed through [`Op::verify`]. Fresh, independently-signed ops must use
+    /// [`Op::new`] instead, so their id is a true content address.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one parameter per Op field (incl. the explicit id); a builder \
+                  would obscure the deliberate 1:1 field mapping for the bridge"
+    )]
+    #[must_use]
+    pub fn from_parts(
+        id: [u8; 32],
+        scope: ScopeId,
+        parents: Vec<[u8; 32]>,
+        author: PublicKey,
+        hlc: HybridTimestamp,
+        payload: OpPayload,
+        expected_scope_root: [u8; 32],
+        signature: [u8; 64],
+    ) -> Self {
+        Self {
+            id,
+            scope,
+            parents,
+            author,
+            hlc,
+            payload,
+            expected_scope_root,
+            signature,
+        }
+    }
+
+    /// Content address of this op.
+    #[must_use]
+    pub const fn id(&self) -> [u8; 32] {
+        self.id
+    }
+
+    /// Verify this op end-to-end: the cached [`id`](Op::id) actually addresses
+    /// the content, **and** the signature is a valid Ed25519 signature over
+    /// that id by [`author`](Op::author).
+    ///
+    /// `calimero-projection`/`calimero-authz` assume already-verified ops, so
+    /// every op crossing a trust boundary (deserialized, received from a peer)
+    /// MUST pass this before being folded.
+    #[must_use]
+    pub fn verify(&self) -> bool {
+        let recomputed = Self::compute_id(
+            self.scope,
+            &self.parents,
+            &self.author,
+            &self.hlc,
+            &self.payload,
+        );
+        if recomputed != self.id {
+            return false;
+        }
+        self.author
+            .verify_raw_signature(&self.id, &self.signature)
+            .is_ok()
+    }
+
     /// Content address of an op: `Sha256(scope ‖ sorted(parents) ‖ author ‖
     /// hlc ‖ borsh(payload))`. Parents are sorted so the id is independent of
     /// the order a builder happened to list them in.

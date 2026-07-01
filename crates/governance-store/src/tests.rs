@@ -168,7 +168,9 @@ fn group_settings_service_enforces_permissions_and_persists_values() {
             &gid,
             &calimero_primitives::metadata::MetadataRecord {
                 name: Some("group-main".to_owned()),
-                ..Default::default()
+                data: Default::default(),
+                updated_at: 0,
+                updated_by: [1_u8; 32].into(),
             },
         )
         .unwrap();
@@ -2501,7 +2503,9 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
             &gid,
             &calimero_primitives::metadata::MetadataRecord {
                 name: Some("g-alias".to_owned()),
-                ..Default::default()
+                data: Default::default(),
+                updated_at: 0,
+                updated_by: [1_u8; 32].into(),
             },
         )
         .unwrap();
@@ -2518,7 +2522,9 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
             &member2,
             &calimero_primitives::metadata::MetadataRecord {
                 name: Some("member2".to_owned()),
-                ..Default::default()
+                data: Default::default(),
+                updated_at: 0,
+                updated_by: [1_u8; 32].into(),
             },
         )
         .unwrap();
