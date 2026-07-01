@@ -212,12 +212,19 @@ async fn c2_directional_partition_conflicting_writes_order_independent() {
     // the intent. `DUP_RATE` is the per-pull duplicate probability.
     const DUP_RATE: f64 = 0.5;
 
-    // Directional semantics: A->B blocked, B->A still open. This is a
-    // standalone invariant check of the PartitionManager primitive (asymmetric
-    // block through the manager's time-windowed `is_partitioned` path, which the
-    // spec-level `test_directional_partition` unit test does not cover). It is
-    // intentionally not wired into the convergence loop below — it only proves
-    // the partition primitive behaves directionally before we rely on it.
+    // Directional semantics: A->B blocked, B->A still open. This block is a
+    // deliberate, self-contained invariant check of the PartitionManager
+    // primitive — it is NOT dead code and NOT part of the convergence exercise.
+    // It builds its own throwaway `pm`/`nodes`-free manager and asserts the
+    // *time-windowed* `is_partitioned` path resolves an asymmetric block
+    // directionally; that is a distinct code path from the spec-level
+    // `test_directional_partition` unit test (which checks the spec directly,
+    // without the time window). It is intentionally decoupled from the `nodes`
+    // and the convergence loop below — we pin down that the partition primitive
+    // behaves directionally *first*, because the reconciliation portion below
+    // depends on exactly that behavior (an A<->B session cannot complete while
+    // one direction is blocked). The manager is dropped once the invariant is
+    // proven; nothing downstream consumes it.
     {
         let a = NodeId::new("A");
         let b = NodeId::new("B");
@@ -243,9 +250,15 @@ async fn c2_directional_partition_conflicting_writes_order_independent() {
         for &ab_first in &[true, false] {
             let mut nodes = build_conflict_scenario();
 
-            // While A->B is blocked, an A<->B HC session cannot complete (its
-            // bidirectional stream needs the blocked direction), so the two
-            // stay diverged until heal.
+            // Guard on the fixture, not the sync logic: `build_conflict_scenario`
+            // deliberately seeds divergent writers (conflicting LWW value on the
+            // same entity plus a unique entity each), so this inequality holds by
+            // construction — while A->B is blocked an A<->B HC session cannot
+            // complete anyway (its bidirectional stream needs the blocked
+            // direction). The assert exists to catch a regression where the
+            // fixture stops producing an actual conflict (e.g. both writers
+            // collapse to the same state), which would silently make the
+            // convergence check below vacuous.
             assert_ne!(
                 nodes[0].root_hash(),
                 nodes[1].root_hash(),
@@ -323,8 +336,13 @@ async fn c5_dropped_gossip_deltas_recovered_via_sync() {
             // Author on alice.
             alice.insert_entity_with_metadata(id, data.clone(), meta.clone());
 
-            // Gossip to each consumer through the lossy router. Survivors are
-            // applied; drops are recorded by the router and never delivered.
+            // Deliberate hybrid simulation: the NetworkRouter yields the *real*
+            // per-message drop decision (its `messages_dropped_loss` metric is
+            // genuine, driven by the seeded RNG loss path), while entity
+            // application is done manually on the non-dropped path below. This
+            // isolates the loss+recovery behavior under test without standing up
+            // a full gossip/delivery stack — the router owns "was this message
+            // lost?", the test owns "apply the survivor to the consumer".
             for consumer in [&mut bob, &mut carol] {
                 let before = router.metrics.messages_dropped_loss;
                 // `route_message` does NOT dedup by `msg_id` — it only consults the
@@ -357,11 +375,15 @@ async fn c5_dropped_gossip_deltas_recovered_via_sync() {
             "seed {seed}: router and effect drop metrics must agree"
         );
 
-        // Dropped gossip left entities unapplied pre-sync. bob and carol each
-        // start empty and gain exactly one entity per surviving gossip, so their
-        // combined applied count is precisely (sent - dropped) and must fall
-        // short of the full `burst * 2` that alice authored — a direct check on
-        // the real invariant rather than a root-hash inequality.
+        // Pre-sync divergence is asserted via entity_count, not root_hash,
+        // because entity_count directly *quantifies* how many gossiped entities
+        // actually landed: bob and carol each start empty and gain exactly one
+        // entity per surviving gossip, so their combined applied count is
+        // precisely (sent - dropped). A `root_hash` inequality would only prove
+        // "they differ" without pinning the magnitude to the router's drop
+        // metric, so it could pass even if the drop accounting were wrong. The
+        // byte-identical root_hash convergence (that recovery fully closes the
+        // gap) is still asserted separately after the recovery sync below.
         let bob_applied = bob.entity_count();
         let carol_applied = carol.entity_count();
         let total_sent = (burst * 2) as usize;
