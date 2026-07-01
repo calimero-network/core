@@ -332,3 +332,143 @@ fn test_map_union_merge_with_disjoint_keys() {
         2
     );
 }
+
+// ============================================================
+// D5 — iteration-order independence of serialized/hashed state
+// ============================================================
+//
+// A node's state is content-addressed: an entry's entity id is
+// `compute_id(parent_id, key)` and a collection's own id is
+// `compute_collection_id(parent, field_name)` — neither depends on when
+// the entry was inserted. The parent Merkle hash sorts children by id
+// (content-derived) before hashing, and an entry's own hash is
+// `Sha256(borsh(Entry))` over `(item, id)` only — the `#[storage] Element`
+// serializes just its id, NOT the local `created_at`/`updated_at` clocks.
+// Together these make the stored Merkle digest a pure function of the
+// logical key/value SET, independent of physical insertion order.
+//
+// This guards against a regression that would hash raw HashMap iteration
+// order (or fold a per-entry local timestamp into the leaf hash): either
+// would make two nodes that applied the same writes in different orders
+// diverge on root hash forever, blocking sync convergence.
+//
+// Each `build_*` closure resets storage first, so the two orderings are
+// built against a clean store under the SAME deterministic collection id
+// (same `field_name`) — the only thing that varies between h1/h2 is the
+// physical insert order. The digest is read from the storage Index (the
+// same Merkle root sync compares), mirroring `rga.rs`'s `root_hash`
+// helper.
+
+#[test]
+#[serial]
+fn test_unordered_map_digest_is_insert_order_independent() {
+    use crate::collections::compute_collection_id;
+    use crate::index::Index;
+    use crate::store::MainStorage;
+
+    // Build the same {key -> value} set in the given physical insert order,
+    // return (merkle_digest, sorted_entries). Same field name ⇒ same map id
+    // ⇒ same content-addressed child ids regardless of order.
+    let build = |order: &[&str]| -> ([u8; 32], Vec<(String, String)>) {
+        env::reset_for_testing();
+        let mut m: UnorderedMap<String, String> = UnorderedMap::new_with_field_name("items");
+        for k in order {
+            m.insert((*k).to_string(), format!("v-{k}")).unwrap();
+        }
+        let id = compute_collection_id(None, "items");
+        let digest = Index::<MainStorage>::get_hashes_for(id)
+            .unwrap()
+            .map(|(full, _)| full)
+            .unwrap_or([0; 32]);
+        let mut entries: Vec<(String, String)> = m.entries().unwrap().collect();
+        entries.sort();
+        (digest, entries)
+    };
+
+    let (h1, e1) = build(&["alpha", "beta", "gamma", "delta"]);
+    let (h2, e2) = build(&["delta", "gamma", "beta", "alpha"]);
+    let (h3, e3) = build(&["gamma", "alpha", "delta", "beta"]);
+
+    // The digest must be non-trivial (entries actually landed and were hashed).
+    assert_ne!(h1, [0u8; 32], "map merkle digest must be non-empty");
+
+    // Same keys, different insert order ⇒ IDENTICAL digest.
+    assert_eq!(
+        h1, h2,
+        "UnorderedMap merkle digest must not depend on insert order (reverse)"
+    );
+    assert_eq!(
+        h1, h3,
+        "UnorderedMap merkle digest must not depend on insert order (shuffled)"
+    );
+
+    // And `entries()` yields the same LOGICAL set regardless of order.
+    assert_eq!(
+        e1, e2,
+        "map entries set must be order-independent (reverse)"
+    );
+    assert_eq!(
+        e1, e3,
+        "map entries set must be order-independent (shuffled)"
+    );
+    assert_eq!(
+        e1,
+        vec![
+            ("alpha".to_string(), "v-alpha".to_string()),
+            ("beta".to_string(), "v-beta".to_string()),
+            ("delta".to_string(), "v-delta".to_string()),
+            ("gamma".to_string(), "v-gamma".to_string()),
+        ]
+    );
+}
+
+#[test]
+#[serial]
+fn test_unordered_set_digest_is_insert_order_independent() {
+    use crate::collections::{compute_collection_id, UnorderedSet};
+    use crate::index::Index;
+    use crate::store::MainStorage;
+
+    let build = |order: &[&str]| -> ([u8; 32], Vec<String>) {
+        env::reset_for_testing();
+        let mut s: UnorderedSet<String> = UnorderedSet::new_with_field_name("items");
+        for k in order {
+            s.insert((*k).to_string()).unwrap();
+        }
+        let id = compute_collection_id(None, "items");
+        let digest = Index::<MainStorage>::get_hashes_for(id)
+            .unwrap()
+            .map(|(full, _)| full)
+            .unwrap_or([0; 32]);
+        let mut members: Vec<String> = s.iter().unwrap().collect();
+        members.sort();
+        (digest, members)
+    };
+
+    let (h1, m1) = build(&["one", "two", "three", "four"]);
+    let (h2, m2) = build(&["four", "three", "two", "one"]);
+    let (h3, m3) = build(&["three", "one", "four", "two"]);
+
+    assert_ne!(h1, [0u8; 32], "set merkle digest must be non-empty");
+
+    assert_eq!(
+        h1, h2,
+        "UnorderedSet merkle digest must not depend on insert order (reverse)"
+    );
+    assert_eq!(
+        h1, h3,
+        "UnorderedSet merkle digest must not depend on insert order (shuffled)"
+    );
+
+    assert_eq!(m1, m2, "set members must be order-independent (reverse)");
+    assert_eq!(m1, m3, "set members must be order-independent (shuffled)");
+    assert_eq!(
+        m1,
+        vec![
+            "four".to_string(),
+            "one".to_string(),
+            "three".to_string(),
+            "two".to_string(),
+        ]
+    );
+}
