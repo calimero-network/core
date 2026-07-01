@@ -578,6 +578,27 @@ mod tests {
             MAX_PEER_CACHE_ENTRIES,
             "prune must bring the map down to exactly the cap"
         );
+
+        // And it evicts by recency: peers were recorded with monotonically
+        // increasing `last_seen_secs` (1000 + i), so the 10 oldest (i in
+        // 0..10) must be gone and every one of the newer entries retained.
+        let survivors: std::collections::BTreeSet<PeerId> = c
+            .dial_candidates(1000 + over as u64, 86_400)
+            .into_iter()
+            .map(|p| p.peer_id)
+            .collect();
+        for i in 0..10u64 {
+            assert!(
+                !survivors.contains(&peer_u64(i)),
+                "oldest peer {i} must be evicted by the recency cap"
+            );
+        }
+        for i in 10..over as u64 {
+            assert!(
+                survivors.contains(&peer_u64(i)),
+                "most-recently-seen peer {i} must survive the prune"
+            );
+        }
     }
 
     /// Churn ~50k distinct peers through the cache the way a node on the

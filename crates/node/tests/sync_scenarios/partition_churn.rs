@@ -206,21 +206,11 @@ fn build_conflict_scenario() -> Vec<SimNode> {
 async fn c2_directional_partition_conflicting_writes_order_independent() {
     // Reorder shuffles the reconciling pair order; duplication re-runs some
     // sessions. HC sync is idempotent, so a converged result must be invariant
-    // under both — these rates drive that perturbation.
-    //
-    // `fc` is used here as a parameter bag to drive the manual perturbation
-    // below (shuffle + duplicate delivery); it is NOT wired into a
-    // NetworkRouter. So sanity-check that the builders actually populated the
-    // fields we gate on — otherwise the perturbation would silently no-op.
-    let fc = FaultConfig::none().with_reorder(50).with_duplicates(0.5);
-    assert!(
-        fc.reorder_window_ms > 0,
-        "reorder must be configured or the perturbation silently no-ops"
-    );
-    assert!(
-        fc.duplicate_rate > 0.0,
-        "duplication must be configured or the perturbation silently no-ops"
-    );
+    // under both. These plain local constants drive the manual perturbation
+    // below (shuffle + duplicate delivery) directly — there is no NetworkRouter
+    // in this test, so a FaultConfig param-bag would only obscure the intent.
+    const REORDER: bool = true;
+    const DUP_RATE: f64 = 0.5;
 
     // Directional semantics: A->B blocked, B->A still open.
     {
@@ -265,13 +255,13 @@ async fn c2_directional_partition_conflicting_writes_order_independent() {
             } else {
                 vec![(1usize, 0usize), (0, 1)]
             };
-            if fc.reorder_window_ms > 0 {
+            if REORDER {
                 rng.shuffle(&mut order);
             }
             for _ in 0..4 {
                 for &(i, j) in &order {
                     pull(&mut nodes, i, j).await;
-                    if rng.bool_with_probability(fc.duplicate_rate) {
+                    if rng.bool_with_probability(DUP_RATE) {
                         pull(&mut nodes, i, j).await; // duplicate delivery
                     }
                 }
@@ -334,6 +324,11 @@ async fn c5_dropped_gossip_deltas_recovered_via_sync() {
             // applied; drops are recorded by the router and never delivered.
             for consumer in [&mut bob, &mut carol] {
                 let before = router.metrics.messages_dropped_loss;
+                // `route_message` does NOT dedup by `msg_id` — it only consults the
+                // RNG loss path for the drop decision, so the drop metric is genuine
+                // and independent of the id. The id here is illustrative only (node
+                // dedup via `is_duplicate` lives on the delivery path, which this
+                // gossip test never drains). Seq is still `k` (unique per delta).
                 let out = OutgoingMessage {
                     to: consumer.id().clone(),
                     msg: SyncMessage::SyncComplete { success: true },
@@ -359,16 +354,22 @@ async fn c5_dropped_gossip_deltas_recovered_via_sync() {
             "seed {seed}: router and effect drop metrics must agree"
         );
 
-        // A dropped delta left at least one consumer diverged from alice.
-        //
-        // The real drop evidence is the `messages_dropped_loss > 0` assertion
-        // above; this check only needs ONE consumer to still show divergence
-        // pre-sync, which is robust. Requiring BOTH to diverge (`&&`) would be
-        // more fragile — a single consumer can receive every gossip by chance —
-        // so the `||` is deliberate, not a weakening.
+        // Dropped gossip left entities unapplied pre-sync. bob and carol each
+        // start empty and gain exactly one entity per surviving gossip, so their
+        // combined applied count is precisely (sent - dropped) and must fall
+        // short of the full `burst * 2` that alice authored — a direct check on
+        // the real invariant rather than a root-hash inequality.
+        let bob_applied = bob.entity_count();
+        let carol_applied = carol.entity_count();
+        let total_sent = (burst * 2) as usize;
         assert!(
-            alice.root_hash() != bob.root_hash() || alice.root_hash() != carol.root_hash(),
-            "seed {seed}: dropped gossip must leave a consumer diverged before sync"
+            bob_applied + carol_applied < total_sent,
+            "seed {seed}: dropped gossip must leave at least one entity unapplied pre-sync"
+        );
+        assert_eq!(
+            bob_applied + carol_applied,
+            total_sent - total_dropped as usize,
+            "seed {seed}: applied gossip count must equal sent minus dropped"
         );
 
         // Periodic HashComparison sync recovers the missed deltas.
