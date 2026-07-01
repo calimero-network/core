@@ -163,6 +163,19 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                         Some(Either::Right(fut)) => Some(fut.await),
                         None => None,
                     };
+                    // Re-verify the caller UNDER the per-context write guard. The
+                    // handler-entry check ran before the module load / guard await,
+                    // and this actor interleaves other messages at those await
+                    // points — so an identity deprovisioned in that window could
+                    // otherwise let a just-revoked caller drive the migration. This
+                    // re-check is serialized against state mutations by the same
+                    // guard, closing that window.
+                    if let Err(err) =
+                        authorize_update_application(&datastore, &context_id, &public_key)
+                    {
+                        drop(_guard);
+                        return Err(err);
+                    }
                     let result = update_application_with_migration(
                         datastore,
                         node_client,
@@ -381,12 +394,13 @@ fn authorize_update_application(
     context_id: &ContextId,
     caller: &PublicKey,
 ) -> eyre::Result<()> {
-    // This authz check opens its own datastore handle, separate from the handle
-    // the downstream business logic uses. That leaves a tiny check-then-use window
-    // in which the identity could be deprovisioned between here and the actual
-    // update. This is a benign TOCTOU: identity deprovisioning is rare, and the
-    // operation re-reads context/identity state downstream, so a race can at worst
-    // let one already-in-flight update proceed on a just-revoked identity.
+    // Callable both at the handler entry (fast fail before the module load) and,
+    // for the migration path, again under the per-context write guard — the
+    // downstream business logic does NOT otherwise re-check the caller identity
+    // (it treats `public_key` as already authorized). The under-guard re-check in
+    // the migration task is what actually closes the check-then-use window; the
+    // no-migration path performs only a code-only application-id swap gated by the
+    // entry check.
     let handle = datastore.handle();
     let key = calimero_store::key::ContextIdentity::new(*context_id, *caller);
     match handle.get(&key)? {
