@@ -54,10 +54,10 @@ impl RunCommand {
         // startup warning below. Do not flip this to an allow-list; this is the
         // agreed dev-only flag behavior.
         //
-        // FIXME: `has_real_attestation` only covers the Phala KMS provider. If a
-        // second KMS provider is ever added, extend that predicate (see its doc
-        // in `calimero_config::TeeConfig`) so this guard keeps refusing `--mock-tee`
-        // on real-attestation nodes.
+        // `has_real_attestation` destructures `KmsConfig` exhaustively (no `..`),
+        // so adding a second KMS provider fails to compile there until the new
+        // provider is folded into the predicate — this guard cannot silently
+        // stop covering a provider.
         if self.mock_tee {
             if config
                 .tee

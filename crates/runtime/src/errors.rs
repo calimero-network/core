@@ -49,6 +49,8 @@ pub enum FunctionCallError {
     ExecutionError(Vec<u8>),
     #[error("module size limit (max_module_size) exceeded: {size} bytes > {max} bytes limit")]
     ModuleSizeLimitExceeded { size: u64, max: u64 },
+    #[error("module rejected by validation: {reason}")]
+    ModuleValidationError { reason: String },
 }
 
 /// Error returned by

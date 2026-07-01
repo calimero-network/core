@@ -854,44 +854,6 @@ impl ContextRegistry {
         Ok(())
     }
 
-    /// Verifies that the stored root hash matches the actual state.
-    ///
-    /// Computes the root hash from storage and compares with the claimed hash.
-    /// Returns Ok(()) if they match, or an error describing the mismatch.
-    ///
-    /// # Arguments
-    ///
-    /// * `context_id` - The ID of the context to verify.
-    /// * `claimed_hash` - The hash to verify against.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating success if hashes match, or an error if they don't.
-    pub fn verify_root_hash(
-        &self,
-        context_id: &ContextId,
-        claimed_hash: [u8; 32],
-    ) -> eyre::Result<()> {
-        let computed = self.compute_root_hash(context_id)?;
-
-        if computed != claimed_hash {
-            eyre::bail!(
-                "Root hash verification failed for context {}: computed {} != claimed {}",
-                context_id,
-                hex::encode(computed),
-                hex::encode(claimed_hash)
-            );
-        }
-
-        tracing::debug!(
-            %context_id,
-            hash = ?Hash::from(computed),
-            "Root hash verified successfully"
-        );
-
-        Ok(())
-    }
-
     /// Reads ROOT's index entry + `Key::Entry(ROOT)` bytes in a single
     /// pass and returns both the self-dump (own_hash/full_hash/entry
     /// summary) and the children list — diagnostic for #2319.
@@ -1433,15 +1395,6 @@ impl ContextClient {
     /// Forces the root hash for a context to a specific value.
     pub fn force_root_hash(&self, context_id: &ContextId, root_hash: Hash) -> eyre::Result<()> {
         self.registry.force_root_hash(context_id, root_hash)
-    }
-
-    /// Verifies that the stored root hash matches the actual state.
-    pub fn verify_root_hash(
-        &self,
-        context_id: &ContextId,
-        claimed_hash: [u8; 32],
-    ) -> eyre::Result<()> {
-        self.registry.verify_root_hash(context_id, claimed_hash)
     }
 
     /// Diagnostic — dump ROOT's self summary + children list in one read.

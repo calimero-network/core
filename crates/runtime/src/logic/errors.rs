@@ -24,13 +24,15 @@ impl TryFrom<VMLogicError> for FunctionCallError {
     fn try_from(err: VMLogicError) -> Result<Self, Self::Error> {
         match err {
             VMLogicError::StorageError(err) => Err(VMRuntimeError::StorageError(err)),
-            // todo! is it fine to panic the node on host errors
-            // todo! because that is a bug in the node, or do we
-            // todo! include it in the result? and record it on chain
-            // VMLogicError::HostError(HostError::Panic {
-            //     context: PanicContext::Host,
-            //     message,
-            // }) => Err(VMRuntimeError::HostError(err)),
+            // Host errors surface as an ordinary failed call
+            // (`FunctionCallError::HostError`); they never panic or halt the
+            // node. Host-error paths are reachable while running guest code, so
+            // turning them into a node panic would let a crafted app that can
+            // provoke one take the node down — a denial-of-service. Keeping them
+            // as call failures also matches the `catch_unwind` boundary in
+            // `Module::run_with_origin`, whose whole purpose is that nothing in
+            // execution can crash the node. Surfacing host-side bugs through a
+            // durable/on-chain record is a separate concern, not handled here.
             VMLogicError::HostError(err) => Ok(Self::HostError(err)),
         }
     }
