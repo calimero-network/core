@@ -38,16 +38,10 @@ pub struct MetadataRecord {
     pub updated_by: PublicKey,
 }
 
-impl Default for MetadataRecord {
-    fn default() -> Self {
-        Self {
-            name: None,
-            data: BTreeMap::new(),
-            updated_at: 0,
-            updated_by: PublicKey::from([0_u8; 32]),
-        }
-    }
-}
+// Deliberately no `Default` impl: a `MetadataRecord` always has a real signer
+// (`updated_by`), and a `Default` would have to fabricate an all-zero
+// `PublicKey` — an invalid signer that silently looks authentic. Construct one
+// explicitly with the actual signer instead.
 
 /// Max length of [`MetadataRecord::name`], in bytes.
 pub const MAX_METADATA_NAME_LEN: usize = 64;
@@ -142,8 +136,15 @@ mod tests {
     }
 
     #[test]
-    fn default_is_empty() {
-        let rec = MetadataRecord::default();
+    fn empty_record_has_real_signer() {
+        // There is intentionally no `Default`; a record always carries a real
+        // signer rather than a fabricated all-zero key.
+        let rec = MetadataRecord {
+            name: None,
+            data: BTreeMap::new(),
+            updated_at: 0,
+            updated_by: [7_u8; 32].into(),
+        };
         assert!(rec.name.is_none());
         assert!(rec.data.is_empty());
         assert_eq!(rec.updated_at, 0);

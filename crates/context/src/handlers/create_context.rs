@@ -230,7 +230,7 @@ impl Prepared<'_> {
         if !MembershipRepository::new(datastore).is_admin_or_has_capability(
             &group_id,
             &identity_pk,
-            MemberCapabilities::CAN_CREATE_CONTEXT,
+            MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
         )? {
             bail!(
                 "identity lacks permission to create a context in group '{group_id:?}' \

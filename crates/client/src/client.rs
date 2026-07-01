@@ -130,7 +130,7 @@ where
     }
 
     pub fn api_url(&self) -> &Url {
-        &self.connection.api_url
+        self.connection.api_url()
     }
 
     /// The WebSocket endpoint URL (`ws(s)://…/ws`) for this connection, derived
@@ -141,7 +141,7 @@ where
     /// unexpected scheme errors rather than silently degrading to cleartext
     /// `ws://`, which would leak the bearer token attached to the handshake.
     pub fn ws_url(&self) -> Result<Url> {
-        let mut url = self.connection.api_url.clone();
+        let mut url = self.connection.api_url().clone();
 
         let scheme = match url.scheme() {
             "http" => "ws",

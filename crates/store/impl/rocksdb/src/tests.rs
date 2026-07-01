@@ -4,13 +4,13 @@ use calimero_store::config::StoreConfig;
 use calimero_store::db::{Column, Database};
 use calimero_store::slice::Slice;
 use eyre::Ok as EyreOk;
-use tempdir::TempDir;
+use tempfile::TempDir;
 
 use crate::RocksDB;
 
 #[test]
 fn test_rocksdb() {
-    let dir = TempDir::new("_calimero_store_rocksdb").expect("tempdir should be created");
+    let dir = TempDir::with_prefix("_calimero_store_rocksdb").expect("tempdir should be created");
 
     let dir_path = dir
         .path()
@@ -91,7 +91,7 @@ fn test_rocksdb() {
 
 #[test]
 fn test_rocksdb_iter() {
-    let dir = TempDir::new("_calimero_store_rocks").expect("tempdir should be created");
+    let dir = TempDir::with_prefix("_calimero_store_rocks").expect("tempdir should be created");
 
     let dir_path = dir
         .path()
@@ -157,7 +157,7 @@ fn test_rocksdb_entries_survive_collection() {
     // each advance. Because `Iterator::next` does not tie its item to the
     // `&mut self` borrow, collecting the items into a `Vec` (or otherwise
     // retaining them) must not expose freed/overwritten memory.
-    let dir = TempDir::new("_calimero_store_collect").expect("tempdir should be created");
+    let dir = TempDir::with_prefix("_calimero_store_collect").expect("tempdir should be created");
     let dir_path = dir
         .path()
         .to_owned()
@@ -257,7 +257,8 @@ fn test_rocksdb_entries_survive_collection() {
 #[test]
 fn test_data_persistence() {
     // Test that data persists across open/close cycles
-    let dir = TempDir::new("_calimero_store_persistence").expect("tempdir should be created");
+    let dir =
+        TempDir::with_prefix("_calimero_store_persistence").expect("tempdir should be created");
 
     let dir_path = dir
         .path()
@@ -295,7 +296,7 @@ fn test_approximate_size_scopes_to_range() {
     // `get_approximate_sizes_cf` samples SST metadata so the reported
     // value may be 0 in-memory (nothing flushed). We still assert the
     // in-range probe ≤ total-range probe to catch range inversion bugs.
-    let dir = TempDir::new("_calimero_store_approx_size").expect("tempdir");
+    let dir = TempDir::with_prefix("_calimero_store_approx_size").expect("tempdir");
     let dir_path = dir.path().to_owned().try_into().expect("path conversion");
     let config = StoreConfig::new(dir_path);
     let db = RocksDB::open(&config).expect("db open");
@@ -344,7 +345,7 @@ fn test_approximate_size_scopes_to_range() {
 fn test_delete_range_drops_only_in_range_keys() {
     // The native range tombstone backing `SortedMap::clear`'s index drop must
     // delete exactly `[lo, hi)` and leave neighbouring prefixes untouched.
-    let dir = TempDir::new("_calimero_store_delete_range").expect("tempdir");
+    let dir = TempDir::with_prefix("_calimero_store_delete_range").expect("tempdir");
     let dir_path = dir.path().to_owned().try_into().expect("path conversion");
     let config = StoreConfig::new(dir_path);
     let db = RocksDB::open(&config).expect("db open");

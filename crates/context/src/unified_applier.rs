@@ -118,23 +118,13 @@ mod tests {
     fn op(scope: ScopeId, ns: u64, parents: Vec<[u8; 32]>, payload: OpPayload) -> Op {
         let author = PublicKey::from([7u8; 32]);
         let h = hlc(ns);
-        let id = Op::compute_id(scope, &parents, &author, &h, &payload);
-        Op {
-            id,
-            scope,
-            parents,
-            author,
-            hlc: h,
-            payload,
-            expected_scope_root: [0u8; 32],
-            signature: [0u8; 64],
-        }
+        Op::new(scope, parents, author, h, payload, [0u8; 32], [0u8; 64])
     }
 
     fn delta(op: &Op) -> CausalDelta<Op> {
         // The unified delta IS the op: mirror id/parents so the DAG's causal model
         // matches the op's own parent set.
-        CausalDelta::new(op.id, op.parents.clone(), op.clone(), op.hlc, [0u8; 32])
+        CausalDelta::new(op.id(), op.parents.clone(), op.clone(), op.hlc, [0u8; 32])
     }
 
     /// Fold a causal chain of mixed-plane ops (admin → member → writers → data)
@@ -159,7 +149,7 @@ mod tests {
         let op_member = op(
             scope,
             20,
-            vec![op_admin.id],
+            vec![op_admin.id()],
             OpPayload::MemberAdded {
                 group,
                 member,
@@ -169,7 +159,7 @@ mod tests {
         let op_writers = op(
             scope,
             30,
-            vec![op_member.id],
+            vec![op_member.id()],
             OpPayload::SetWriters {
                 object: Id::new([9u8; 32]),
                 writers: [(member, OpMask::FULL)].into_iter().collect(),
@@ -178,7 +168,7 @@ mod tests {
         let op_put = op(
             scope,
             40,
-            vec![op_writers.id],
+            vec![op_writers.id()],
             OpPayload::Put {
                 entity: Id::new([9u8; 32]),
                 value: b"v1".to_vec(),
@@ -215,7 +205,7 @@ mod tests {
             }
             // Every op must have applied (none stuck pending) regardless of order.
             for op in ops {
-                assert!(dag.is_applied(&op.id), "op {order:?} left unapplied");
+                assert!(dag.is_applied(&op.id()), "op {order:?} left unapplied");
             }
             let got = applier
                 .projection()

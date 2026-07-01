@@ -815,7 +815,11 @@ fn two_nodes_converge_on_context_alias_as_admin() {
             .add_member(&gid, &creator_pk, GroupMemberRole::Member)
             .unwrap();
         calimero_context::group_store::CapabilitiesRepository::new(store)
-            .set_member_capability(&gid, &creator_pk, MemberCapabilities::CAN_CREATE_CONTEXT)
+            .set_member_capability(
+                &gid,
+                &creator_pk,
+                MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
+            )
             .unwrap();
     }
 

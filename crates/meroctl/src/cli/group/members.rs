@@ -278,25 +278,25 @@ impl SetCapabilitiesCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let mut capabilities: u32 = 0;
         if self.can_create_context {
-            capabilities |= MemberCapabilities::CAN_CREATE_CONTEXT;
+            capabilities |= MemberCapabilities::CAN_CREATE_CONTEXT.bits();
         }
         if self.can_invite_members {
-            capabilities |= MemberCapabilities::CAN_INVITE_MEMBERS;
+            capabilities |= MemberCapabilities::CAN_INVITE_MEMBERS.bits();
         }
         if self.can_join_open_subgroups {
-            capabilities |= MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS;
+            capabilities |= MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits();
         }
         if self.can_create_subgroup {
-            capabilities |= MemberCapabilities::CAN_CREATE_SUBGROUP;
+            capabilities |= MemberCapabilities::CAN_CREATE_SUBGROUP.bits();
         }
         if self.can_delete_subgroup {
-            capabilities |= MemberCapabilities::CAN_DELETE_SUBGROUP;
+            capabilities |= MemberCapabilities::CAN_DELETE_SUBGROUP.bits();
         }
         if self.can_manage_visibility {
-            capabilities |= MemberCapabilities::CAN_MANAGE_VISIBILITY;
+            capabilities |= MemberCapabilities::CAN_MANAGE_VISIBILITY.bits();
         }
         if self.can_manage_metadata {
-            capabilities |= MemberCapabilities::CAN_MANAGE_METADATA;
+            capabilities |= MemberCapabilities::CAN_MANAGE_METADATA.bits();
         }
 
         let identity_hex = hex::encode(self.identity.digest());
@@ -374,31 +374,31 @@ impl CheckAccessCommand {
         println!("Role:                    {role}");
         println!(
             "CAN_CREATE_CONTEXT:      {}",
-            caps & MemberCapabilities::CAN_CREATE_CONTEXT != 0
+            caps & MemberCapabilities::CAN_CREATE_CONTEXT.bits() != 0
         );
         println!(
             "CAN_INVITE_MEMBERS:      {}",
-            caps & MemberCapabilities::CAN_INVITE_MEMBERS != 0
+            caps & MemberCapabilities::CAN_INVITE_MEMBERS.bits() != 0
         );
         println!(
             "CAN_JOIN_OPEN_SUBGROUPS: {}",
-            caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS != 0
+            caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits() != 0
         );
         println!(
             "CAN_CREATE_SUBGROUP:     {}",
-            caps & MemberCapabilities::CAN_CREATE_SUBGROUP != 0
+            caps & MemberCapabilities::CAN_CREATE_SUBGROUP.bits() != 0
         );
         println!(
             "CAN_DELETE_SUBGROUP:     {}",
-            caps & MemberCapabilities::CAN_DELETE_SUBGROUP != 0
+            caps & MemberCapabilities::CAN_DELETE_SUBGROUP.bits() != 0
         );
         println!(
             "CAN_MANAGE_VISIBILITY:   {}",
-            caps & MemberCapabilities::CAN_MANAGE_VISIBILITY != 0
+            caps & MemberCapabilities::CAN_MANAGE_VISIBILITY.bits() != 0
         );
         println!(
             "CAN_MANAGE_METADATA:     {}",
-            caps & MemberCapabilities::CAN_MANAGE_METADATA != 0
+            caps & MemberCapabilities::CAN_MANAGE_METADATA.bits() != 0
         );
 
         Ok(())
