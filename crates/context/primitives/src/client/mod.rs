@@ -2254,6 +2254,10 @@ mod atomic_persist_tests {
         }
 
         fn delete(&self, col: Column, key: Slice<'_>) -> EyreResult<()> {
+            assert!(
+                !self.armed.load(Ordering::SeqCst),
+                "atomic persist must not write via direct `delete`; all writes go through `apply`"
+            );
             self.inner.delete(col, key)
         }
 
@@ -2340,6 +2344,94 @@ mod atomic_persist_tests {
         assert!(
             !has_delta(&failing, &cid, DELTA_A),
             "delta A must not persist"
+        );
+    }
+
+    // Compaction interrupt safety: `DeltaStore::compact` prunes in-memory first,
+    // then mirrors the prune to durable storage via `prune_delta_records`. That
+    // durable delete is one atomic transaction, so a crash mid-prune can only
+    // leave the delta column fully pruned or fully intact — never a partial
+    // state where an ancestor still reachable from a retained head has been
+    // deleted out from under it. Here DELTA_A stands in for a retained ancestor
+    // batched alongside the prunable DELTA_B: a failed (interrupted) prune must
+    // drop neither.
+    #[test]
+    fn interrupted_prune_deletes_nothing() {
+        let cid = ctx();
+
+        // Happy path: pruning only the prunable delta removes it while the
+        // retained ancestor stays put.
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let registry = ContextRegistry::new(store.clone());
+        registry
+            .persist_delta_records(&[delta_record(&cid, DELTA_A), delta_record(&cid, DELTA_B)])
+            .expect("seed records");
+        registry
+            .prune_delta_records(&[key::ContextDagDelta::new(cid, DELTA_B)])
+            .expect("prune succeeds");
+        assert!(
+            has_delta(&store, &cid, DELTA_A),
+            "retained ancestor must survive a normal prune"
+        );
+        assert!(
+            !has_delta(&store, &cid, DELTA_B),
+            "prunable delta must be deleted on a normal prune"
+        );
+
+        // Interrupt path: a backend whose `apply` fails at commit deletes
+        // nothing, so both the retained ancestor and the prune target remain —
+        // the atomic transaction is the interrupt guarantee.
+        let armed = Arc::new(AtomicBool::new(false));
+        let failing = Store::new(Arc::new(FailOnApply {
+            inner: InMemoryDB::owned(),
+            armed: Arc::clone(&armed),
+        }));
+        let failing_registry = ContextRegistry::new(failing.clone());
+
+        // Seed via direct `put` while disarmed (the failing backend rejects
+        // every `apply`, so records can't be seeded through the atomic path).
+        {
+            let (ka, ra) = delta_record(&cid, DELTA_A);
+            let (kb, rb) = delta_record(&cid, DELTA_B);
+            let mut handle = failing.handle();
+            handle.put(&ka, &ra).expect("seed A");
+            handle.put(&kb, &rb).expect("seed B");
+        }
+
+        // Sanity: the seeded rows are readable before we arm the backend, so the
+        // survival assertions below test a real delete-nothing outcome rather
+        // than rows that were never present.
+        assert!(
+            has_delta(&failing, &cid, DELTA_A),
+            "seeded A must be readable"
+        );
+        assert!(
+            has_delta(&failing, &cid, DELTA_B),
+            "seeded B must be readable"
+        );
+
+        // Arm the backend, then attempt to prune BOTH keys in one batch.
+        armed.store(true, Ordering::SeqCst);
+        let err = failing_registry
+            .prune_delta_records(&[
+                key::ContextDagDelta::new(cid, DELTA_A),
+                key::ContextDagDelta::new(cid, DELTA_B),
+            ])
+            .expect_err("interrupted prune must surface the backend failure");
+        assert!(
+            err.to_string().contains("injected apply failure"),
+            "unexpected error: {err}"
+        );
+
+        // Nothing was deleted — a retained head's ancestor is never dropped by
+        // an interrupted prune.
+        assert!(
+            has_delta(&failing, &cid, DELTA_A),
+            "retained ancestor must survive an interrupted prune"
+        );
+        assert!(
+            has_delta(&failing, &cid, DELTA_B),
+            "prune target must survive an interrupted prune (all-or-nothing)"
         );
     }
 

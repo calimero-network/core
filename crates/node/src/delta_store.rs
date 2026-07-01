@@ -3829,3 +3829,56 @@ mod seed_topology_tests {
         assert_eq!(topology.len(), 100);
     }
 }
+
+#[cfg(test)]
+mod apply_lock_poison_recovery_tests {
+    //! Crash recovery for the per-context apply-lock relay slot.
+    //!
+    //! If an apply panics while holding `apply_lock_slot`, the mutex is poisoned.
+    //! `lock_apply_slot` recovers it via `PoisonError::into_inner` so a single
+    //! transient panic can't turn every later apply on the context into a crash.
+    //! This drives that path: poison the real slot from a panicking thread, then
+    //! assert the recovery accessor still acquires it (and observes an untorn
+    //! `Option`, since every access takes/replaces the value wholesale).
+
+    use std::sync::Arc;
+    use std::thread;
+
+    use crate::test_support::build_delta_store;
+
+    #[tokio::test]
+    async fn lock_apply_slot_recovers_poisoned_relay_mutex() {
+        let (ds, _tmp, _rx) = build_delta_store().await;
+        let applier = Arc::clone(&ds.applier);
+
+        // A thread panics while holding the relay slot — exactly the shape of an
+        // apply unwinding mid-relay — which poisons the mutex.
+        let poisoner = Arc::clone(&applier);
+        let handle = thread::spawn(move || {
+            let _guard = poisoner
+                .apply_lock_slot
+                .lock()
+                .expect("first lock is clean");
+            panic!("simulated apply panic while holding the relay slot");
+        });
+        assert!(
+            handle.join().is_err(),
+            "poisoner thread must have unwound to poison the mutex"
+        );
+
+        // Sanity: a naive `.lock()` now fails — the mutex really is poisoned, so
+        // the recovery below is exercising the poisoned path, not a clean one.
+        assert!(
+            applier.apply_lock_slot.lock().is_err(),
+            "mutex must report poisoned after the holder panicked"
+        );
+
+        // The recovery accessor acquires the slot without panicking and observes
+        // a consistent value (no retained key was stashed before the panic).
+        let guard = applier.lock_apply_slot();
+        assert!(
+            guard.is_none(),
+            "recovered relay slot must hold no retained apply-lock key"
+        );
+    }
+}

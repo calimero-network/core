@@ -9,24 +9,13 @@
 //! pending classification, the no-apply persist gate, and behavioural
 //! equivalence to a loop of single `add_delta` calls.
 
-use std::sync::Arc;
-
-use calimero_blobstore::config::BlobStoreConfig;
-use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
-use calimero_context_client::client::ContextClient;
 use calimero_dag::{CausalDelta, DeltaKind};
-use calimero_network_primitives::client::NetworkClient;
-use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
-use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
 use calimero_storage::logical_clock::HybridTimestamp;
-use calimero_store::db::InMemoryDB;
-use calimero_store::Store;
-use calimero_utils_actix::LazyRecipient;
-use tokio::sync::{broadcast, mpsc};
 
-use crate::delta_store::{BatchDeltaInput, DeltaStore};
+use crate::delta_store::BatchDeltaInput;
+use crate::test_support::build_delta_store;
 
 /// A parent id that is never supplied, so every delta referencing it stays
 /// pending (and the applier — i.e. WASM — is never invoked).
@@ -57,57 +46,9 @@ fn pending_input(id: [u8; 32], hash: [u8; 32]) -> BatchDeltaInput {
     }
 }
 
-/// Build a standalone `DeltaStore` backed by an in-memory store. Returns the
-/// store plus the `TempDir` guard, which the caller must keep alive for the
-/// blob filesystem to stay valid.
-async fn build_delta_store() -> (DeltaStore, tempfile::TempDir) {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let store = Store::new(Arc::new(InMemoryDB::owned()));
-
-    let blob_config =
-        BlobStoreConfig::new(tmp.path().to_path_buf().try_into().expect("utf8 blob path"));
-    let file_system = FileSystem::new(&blob_config).await.expect("blob fs");
-    let blob_store = BlobStore::new(store.clone(), file_system);
-    let blob_manager = BlobManager::new(blob_store);
-
-    let node_recipient = LazyRecipient::new();
-    let context_recipient = LazyRecipient::new();
-    let network_recipient = LazyRecipient::new();
-
-    let network_client = NetworkClient::new(network_recipient);
-    let (event_sender, _) = broadcast::channel(16);
-    let (ctx_sync_tx, _ctx_sync_rx) = mpsc::channel(1);
-    let (ns_sync_tx, _ns_sync_rx) = mpsc::channel(1);
-    let (ns_join_tx, _ns_join_rx) = mpsc::channel(1);
-    let (open_subgroup_join_tx, _open_subgroup_join_rx) = mpsc::channel(1);
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
-
-    let node_client = NodeClient::new(
-        store.clone(),
-        blob_manager,
-        network_client,
-        node_recipient,
-        event_sender,
-        sync_client,
-        String::new(),
-        None,
-    );
-
-    let context_client = ContextClient::new(store, node_client, context_recipient);
-
-    let context_id = ContextId::from([0xAA; 32]);
-    let our_identity = PublicKey::from([0xBB; 32]);
-    let root = [0u8; 32];
-
-    (
-        DeltaStore::new(root, context_client, context_id, our_identity),
-        tmp,
-    )
-}
-
 #[tokio::test]
 async fn add_deltas_batch_empty_is_noop() {
-    let (delta_store, _tmp) = build_delta_store().await;
+    let (delta_store, _tmp, _rx) = build_delta_store().await;
 
     let result = delta_store
         .add_deltas_batch(Vec::new())
@@ -125,7 +66,7 @@ async fn add_deltas_batch_empty_is_noop() {
 
 #[tokio::test]
 async fn add_deltas_batch_classifies_all_pending() {
-    let (delta_store, _tmp) = build_delta_store().await;
+    let (delta_store, _tmp, _rx) = build_delta_store().await;
 
     let ids = [[0x01u8; 32], [0x02u8; 32], [0x03u8; 32]];
     let inputs: Vec<BatchDeltaInput> = ids
@@ -165,7 +106,7 @@ async fn add_deltas_batch_matches_single_path_for_pending() {
     let hashes = [[0x10u8; 32], [0x20u8; 32], [0x30u8; 32], [0x40u8; 32]];
 
     // Store A: single-delta path, one call per delta.
-    let (store_a, _tmp_a) = build_delta_store().await;
+    let (store_a, _tmp_a, _rx_a) = build_delta_store().await;
     for (id, hash) in ids.iter().zip(hashes.iter()) {
         let applied = store_a
             .add_delta(
@@ -180,7 +121,7 @@ async fn add_deltas_batch_matches_single_path_for_pending() {
     }
 
     // Store B: batch path, one call for all deltas.
-    let (store_b, _tmp_b) = build_delta_store().await;
+    let (store_b, _tmp_b, _rx_b) = build_delta_store().await;
     let inputs: Vec<BatchDeltaInput> = ids
         .iter()
         .zip(hashes.iter())

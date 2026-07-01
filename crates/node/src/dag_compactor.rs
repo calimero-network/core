@@ -160,3 +160,35 @@ impl Actor for DagCompactor {
         info!("DAG compaction actor stopped");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A compaction sweep that unwinds mid-run must still clear
+    /// `sweep_in_progress`, or the guard permanently wedges the compactor and no
+    /// later sweep ever starts. The flag is released by `SweepGuard::drop`, which
+    /// runs on panic, so catching a simulated panic must leave it cleared.
+    #[test]
+    fn panicking_sweep_clears_in_progress_flag() {
+        let flag = Arc::new(AtomicBool::new(false));
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Set the flag BEFORE constructing the guard, matching production
+            // (`spawn_sweep` sets it via `compare_exchange`, then builds the
+            // guard). If it were set after — or not at all — the flag would
+            // already be `false` and the final assertion would pass even with a
+            // no-op `Drop`; setting it first makes the assertion actually prove
+            // the guard cleared it.
+            flag.store(true, Ordering::Release);
+            let _guard = SweepGuard(Arc::clone(&flag));
+            panic!("simulated compaction sweep panic");
+        }));
+        assert!(result.is_err(), "the sweep must have unwound");
+
+        assert!(
+            !flag.load(Ordering::Acquire),
+            "SweepGuard must clear the in-progress flag even when the sweep panics"
+        );
+    }
+}
