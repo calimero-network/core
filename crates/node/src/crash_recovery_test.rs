@@ -132,12 +132,18 @@ async fn phase0_applied_false_row_not_promoted_on_restart() {
     );
     // The re-drive was ATTEMPTED (the row went to the unapplied re-drive path,
     // not the applied-topology restore). Its parent is genesis, so `add_delta`
-    // tries to apply immediately; with no WASM runtime that apply fails, leaving
-    // the delta neither applied nor pending — never silently promoted.
+    // treats it as ready and tries to apply immediately (rather than enqueuing it
+    // as pending). With no WASM runtime that apply returns `Err`, which
+    // propagates out of `add_delta`/`add_delta_internal` BEFORE the delta is
+    // registered anywhere — so it is neither applied nor added to the pending
+    // queue, and the DB row stays `applied: false` for the next restart. Hence
+    // `pending_stats().count == 0`: this specifically asserts the apply erred (the
+    // "ready" path) rather than the delta silently going pending. (A missing
+    // parent would instead enqueue it as pending — a different, deliberate path.)
     assert_eq!(
         delta_store.pending_stats().await.count,
         0,
-        "a re-driven delta whose apply cannot complete is not left dangling in pending"
+        "a genesis-parented re-driven delta whose apply errors is not left dangling in pending"
     );
 
     let dag_applied = delta_store.dag_has_delta_applied(&delta_id).await;
