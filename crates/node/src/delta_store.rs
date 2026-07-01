@@ -1306,12 +1306,15 @@ impl DeltaStore {
         // Persisted rows written in Phase 0 (`applied: false`) whose atomic heads
         // commit never landed — either interrupted by a crash, or a gossip delta
         // buffered before its parents arrived. Their actions were NEVER committed,
-        // so they must be re-driven through the normal apply-or-pend path
-        // (`add_delta_with_outcome`, which executes actions) rather than restored
-        // as already-applied via `restore_applied_delta` (topology only). Loading
-        // them as applied would insert them as DAG heads without ever running
-        // their effects — advertising committed state that was never written.
-        let mut unapplied_deltas: Vec<CausalDelta<Vec<Action>>> = Vec::new();
+        // so they must be re-driven through the full `add_delta_internal` path
+        // (which executes actions, persists `applied: true`, and commits the new
+        // heads) rather than restored as already-applied via `restore_applied_delta`
+        // (topology only). Loading them as applied would insert them as DAG heads
+        // without ever running their effects — advertising committed state that was
+        // never written. Re-driving carries the stored author / governance edge /
+        // signature so the receive-time verification the row already passed is
+        // reproduced (never re-applied unverified on a governance-gated context).
+        let mut unapplied_deltas: Vec<BatchDeltaInput> = Vec::new();
         let mut pending_handler_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
         // Process the seek result's (key, value) manually — entries()
@@ -1424,7 +1427,13 @@ impl DeltaStore {
 
                 drop(all_deltas.insert(stored_delta.delta_id, dag_delta));
             } else {
-                unapplied_deltas.push(dag_delta);
+                unapplied_deltas.push(BatchDeltaInput {
+                    delta: dag_delta,
+                    events: stored_delta.events.clone(),
+                    author_id: stored_delta.author_id,
+                    governance_position_blob: stored_delta.governance_position_blob.clone(),
+                    delta_signature: stored_delta.delta_signature,
+                });
             }
         }
 
@@ -1530,18 +1539,36 @@ impl DeltaStore {
         }
 
         // Re-drive rows that were persisted but never committed (`applied: false`)
-        // through the real apply path AFTER the applied topology is restored, so
-        // their parents are present. `add_delta` executes their actions (or pends
-        // them if a parent is still missing, in which case `try_process_pending`
-        // below / a later parent's arrival drives them). This is the same path a
-        // gossip-received delta takes, so effects are actually applied — never
-        // silently promoted to a DAG head with uncommitted state.
+        // AFTER the applied topology is restored, so their parents are present.
+        // Each goes through the FULL single-delta path (`add_delta_internal`), the
+        // same one a gossip-received delta takes: it executes the actions (or pends
+        // the delta if a parent is still missing), re-verifies with the stored
+        // author/governance/signature, seeds `head_root_hashes`, buffers orphan
+        // `SharedMember` deltas whose anchor hasn't synced, retains the per-context
+        // apply lock across the heads commit, and — on success — atomically flips
+        // the row to `applied: true` and advances `dag_heads`. That last step is
+        // why a re-driven delta is not re-driven again on the next restart, and why
+        // its head/root-hash is visible to concurrent readers.
+        //
+        // Crucially we do NOT hold the `dag` write lock across this loop: each WASM
+        // apply can run for up to the apply timeout, and `add_delta_internal` takes
+        // (and releases) its own locks per delta, so concurrent gossip application
+        // and head lookups are not starved.
         if !unapplied_deltas.is_empty() {
+            let total = unapplied_deltas.len();
             let mut redriven = 0;
-            let mut dag = self.dag.write().await;
-            for delta in unapplied_deltas {
-                let delta_id = delta.id;
-                match dag.add_delta(delta, &*self.applier).await {
+            for input in unapplied_deltas {
+                let delta_id = input.delta.id;
+                match self
+                    .add_delta_internal(
+                        input.delta,
+                        input.events,
+                        input.author_id,
+                        input.governance_position_blob,
+                        input.delta_signature,
+                    )
+                    .await
+                {
                     Ok(_) => redriven += 1,
                     Err(e) => warn!(
                         ?e,
@@ -1554,6 +1581,7 @@ impl DeltaStore {
             debug!(
                 context_id = %self.applier.context_id,
                 redriven,
+                total,
                 "Re-drove persisted-but-unapplied deltas through the apply path"
             );
         }
