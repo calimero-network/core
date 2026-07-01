@@ -338,38 +338,51 @@ where
     type Item = (EyreResult<K::Key>, EyreResult<V::Value>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let key = 'key: {
-            let key = loop {
-                if self.iter.done {
-                    return None;
-                }
+        // Resolve the key first. Any key error — an I/O failure from the
+        // underlying iterator, or a structured decode error — is terminal: fuse
+        // the iterator and surface the error WITHOUT reading a value. A read
+        // here would either run against an already-errored cursor or pair a
+        // value with a key we could not decode, yielding a misleading
+        // `(Err, Ok(value))` tuple a caller might consume as if the value were
+        // valid. Size-mismatched keys (a different key type sharing the column)
+        // are still skipped rather than treated as errors.
+        let key = loop {
+            if self.iter.done {
+                return None;
+            }
 
-                match self.iter.inner.next() {
-                    Ok(Some(raw_key)) => {
-                        // Copy into an owned buffer before yielding: the borrowed
-                        // slice points into the underlying iterator's buffer, which
-                        // is invalidated by the next `next()`/`read()` call. See the
-                        // matching note in `IterKeys::next`.
-                        let raw_key: Slice<'static> = raw_key.into_boxed().into();
-                        match K::try_into_key(raw_key) {
-                            Ok(key) => break key,
-                            // Skip keys with mismatched sizes (different key type in same column)
-                            Err(e) if K::is_size_mismatch(&e) => continue,
-                            Err(e) => break 'key Err(e.into()),
+            match self.iter.inner.next() {
+                Ok(Some(raw_key)) => {
+                    // Copy into an owned buffer before yielding: the borrowed
+                    // slice points into the underlying iterator's buffer, which
+                    // is invalidated by the next `next()`/`read()` call. See the
+                    // matching note in `IterKeys::next`.
+                    let raw_key: Slice<'static> = raw_key.into_boxed().into();
+                    match K::try_into_key(raw_key) {
+                        Ok(key) => break key,
+                        // Skip keys with mismatched sizes (different key type in same column)
+                        Err(e) if K::is_size_mismatch(&e) => continue,
+                        Err(e) => {
+                            self.iter.done = true;
+                            return Some((
+                                Err(e.into()),
+                                Err(eyre::eyre!("value skipped: key failed to decode")),
+                            ));
                         }
                     }
-                    Err(e) => {
-                        self.iter.done = true;
-                        break 'key Err(e);
-                    }
-                    Ok(None) => {
-                        self.iter.done = true;
-                        return None;
-                    }
                 }
-            };
-
-            Ok(key)
+                Err(e) => {
+                    self.iter.done = true;
+                    return Some((
+                        Err(e),
+                        Err(eyre::eyre!("value skipped: key iteration failed")),
+                    ));
+                }
+                Ok(None) => {
+                    self.iter.done = true;
+                    return None;
+                }
+            }
         };
 
         let value = 'value: {
@@ -391,7 +404,7 @@ where
             V::try_into_value(value).map_err(Into::into)
         };
 
-        Some((key, value))
+        Some((Ok(key), value))
     }
 }
 

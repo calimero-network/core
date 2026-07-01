@@ -1,6 +1,7 @@
 use core::fmt::{self, Debug, Formatter};
 use core::pin::{pin, Pin};
 use core::task::{Context, Poll};
+use std::collections::HashSet;
 use std::io::ErrorKind as IoErrorKind;
 
 use async_stream::try_stream;
@@ -28,7 +29,14 @@ const _: [(); { (usize::BITS - CHUNK_SIZE.leading_zeros()) > 32 } as usize] = [
     /* CHUNK_SIZE must be a 32-bit number */
 ];
 
-// const MAX_LINKS_PER_BLOB: usize = 128;
+/// Hard bounds on a blob's meta-graph traversal. The graph is persisted and
+/// synced from peers, so it is untrusted input: a deeply-nested chain would
+/// overflow the stack under the old recursive walk, and a back-edge (cycle)
+/// would loop forever. `put` only ever produces a shallow tree (root → leaf
+/// parts), so these caps are far above any legitimate graph and only trip on
+/// corrupt or malicious meta.
+const MAX_BLOB_DEPTH: usize = 64;
+const MAX_BLOB_NODES: usize = 1 << 20;
 
 #[derive(Clone, Debug)]
 pub struct BlobManager {
@@ -335,55 +343,116 @@ pub struct Blob {
 
 impl Blob {
     fn new(id: BlobId, blob_mgr: BlobManager) -> EyreResult<Option<Self>> {
-        let Some(blob_meta) = blob_mgr.data_store.handle().get(&BlobMetaKey::new(id))? else {
+        // Resolve the root meta up front so an unknown blob (`None`) stays
+        // distinguishable from a known-but-empty/corrupt one.
+        let Some(root_meta) = blob_mgr.data_store.handle().get(&BlobMetaKey::new(id))? else {
             trace!(?id, "blob metadata not found");
             return Ok(None);
         };
 
         let stream = Box::pin(try_stream!({
+            // Iterative pre-order walk of the meta graph. The old version
+            // recursed via `Self::new` per link, so a deep chain overflowed the
+            // stack and a cycle looped forever. An explicit stack plus a visited
+            // set and depth/node budgets bound both while preserving link order.
+            let mut visited: HashSet<BlobId> = HashSet::new();
+            let mut nodes_seen: usize = 0;
             let mut chunk_index: u64 = 0;
-            trace!(
-                ?id,
-                link_count = blob_meta.links.len(),
-                "initializing blob stream"
-            );
-            if blob_meta.links.is_empty() {
-                let maybe_blob = blob_mgr.blob_store.get(id).await;
-                let maybe_blob = maybe_blob.map_err(BlobError::RepoError)?;
-                let blob = maybe_blob.ok_or_else(|| BlobError::DanglingBlob { id })?;
-                trace!(
-                    ?id,
-                    chunk_index,
-                    chunk_size = blob.len(),
-                    "serving single blob chunk"
-                );
-                return yield blob;
-            }
 
-            for link_meta in blob_meta.links {
-                let child_id = link_meta.blob_id();
-                trace!(?id, child_id = %child_id, "resolving linked blob");
-                let maybe_link = Self::new(child_id, blob_mgr.clone());
-                let maybe_link = maybe_link.map_err(BlobError::RepoError)?;
-                let mut link_stream = maybe_link.ok_or_else(|| {
-                    error!(
-                        ?id,
-                        missing_child = %child_id,
-                        "blob metadata missing referenced child"
-                    );
-                    BlobError::DanglingBlob { id: child_id }
-                })?;
-                while let Some(data) = link_stream.try_next().await? {
-                    let current_index = chunk_index;
-                    chunk_index += 1;
+            // Frames carry the node's already-loaded meta so a missing child is
+            // caught as `DanglingBlob` when it is enqueued (matching the old
+            // recursive behaviour). Children are pushed in reverse so the LIFO
+            // stack emits them in link order.
+            let mut stack: Vec<(BlobId, BlobMetaValue, usize)> = vec![(id, root_meta, 0)];
+
+            while let Some((node_id, meta, depth)) = stack.pop() {
+                nodes_seen += 1;
+                if nodes_seen > MAX_BLOB_NODES {
+                    error!(?id, nodes_seen, "blob meta graph exceeds node budget");
+                    Err(BlobError::CorruptGraph {
+                        id,
+                        reason: "meta graph exceeds node budget",
+                    })?;
+                }
+
+                // A DAG can legitimately reach a node twice, but the tree `put`
+                // produces never does; a repeat is a back-edge that would loop
+                // forever, so reject it.
+                if !visited.insert(node_id) {
+                    error!(?id, %node_id, "cycle detected in blob meta graph");
+                    Err(BlobError::CorruptGraph {
+                        id,
+                        reason: "meta graph contains a cycle",
+                    })?;
+                }
+
+                if meta.links.is_empty() {
+                    // Leaf: bytes live in the blob store, content-addressed by
+                    // the node id. A zero-byte blob legitimately has no stored
+                    // file — yield nothing rather than reporting it dangling.
+                    if meta.size == 0 {
+                        trace!(?id, %node_id, "empty blob, nothing to serve");
+                        continue;
+                    }
+
+                    let blob = blob_mgr
+                        .blob_store
+                        .get(node_id)
+                        .await
+                        .map_err(BlobError::RepoError)?
+                        .ok_or(BlobError::DanglingBlob { id: node_id })?;
+
+                    // Re-hash before serving. The chunk on disk (or supplied by a
+                    // peer) is untrusted, and a leaf's id IS the sha256 of its
+                    // bytes, so a tampered or corrupt chunk fails this check
+                    // instead of being served as authentic.
+                    let actual = *AsRef::<[u8; 32]>::as_ref(&Sha256::digest(&blob));
+                    if actual != *node_id {
+                        error!(?id, %node_id, "blob chunk hash mismatch; refusing to serve");
+                        Err(BlobError::IntegrityMismatch { id: node_id })?;
+                    }
+
                     trace!(
                         ?id,
-                        child_id = %child_id,
-                        chunk_index = current_index,
-                        chunk_size = data.len(),
-                        "serving linked blob chunk"
+                        %node_id,
+                        chunk_index,
+                        chunk_size = blob.len(),
+                        "serving verified blob chunk"
                     );
-                    yield data;
+                    chunk_index += 1;
+                    yield blob;
+                    continue;
+                }
+
+                if depth >= MAX_BLOB_DEPTH {
+                    error!(?id, %node_id, depth, "blob meta graph exceeds depth budget");
+                    Err(BlobError::CorruptGraph {
+                        id,
+                        reason: "meta graph exceeds depth budget",
+                    })?;
+                }
+
+                let mut children: Vec<(BlobId, BlobMetaValue, usize)> =
+                    Vec::with_capacity(meta.links.len());
+                for link_meta in meta.links.iter() {
+                    let child_id = link_meta.blob_id();
+                    let child_meta = blob_mgr
+                        .data_store
+                        .handle()
+                        .get(&BlobMetaKey::new(child_id))
+                        .map_err(|e| BlobError::RepoError(e.into()))?
+                        .ok_or_else(|| {
+                            error!(
+                                ?id,
+                                missing_child = %child_id,
+                                "blob metadata missing referenced child"
+                            );
+                            BlobError::DanglingBlob { id: child_id }
+                        })?;
+                    children.push((child_id, child_meta, depth + 1));
+                }
+                for child in children.into_iter().rev() {
+                    stack.push(child);
                 }
             }
         }));
@@ -404,6 +473,10 @@ impl Debug for Blob {
 pub enum BlobError {
     #[error("encountered a dangling Blob ID: `{id}`, the blob store may be corrupt")]
     DanglingBlob { id: BlobId },
+    #[error("blob chunk `{id}` failed its content-hash check; refusing to serve tampered data")]
+    IntegrityMismatch { id: BlobId },
+    #[error("blob `{id}` meta graph is corrupt: {reason}")]
+    CorruptGraph { id: BlobId, reason: &'static str },
     #[error(transparent)]
     RepoError(Report),
 }
@@ -570,5 +643,125 @@ mod delete_tests {
 
         // A second delete has nothing left to remove.
         assert!(!mgr.delete(id).await.unwrap());
+    }
+}
+
+#[cfg(test)]
+mod traversal_tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store as DataStore;
+    use camino::Utf8PathBuf;
+    use futures_util::TryStreamExt;
+    use tempfile::tempdir;
+
+    use super::*;
+
+    async fn manager(root: &Path) -> BlobManager {
+        let data_store = DataStore::new(Arc::new(InMemoryDB::owned()));
+        let config = BlobStoreConfig::new(Utf8PathBuf::from_path_buf(root.to_path_buf()).unwrap());
+        let blob_store = FileSystem::new(&config).await.unwrap();
+        BlobManager::new(data_store, blob_store)
+    }
+
+    async fn collect(mgr: &BlobManager, id: BlobId) -> Result<Vec<u8>, BlobError> {
+        let blob = mgr.get(id).unwrap().expect("blob should exist");
+        let chunks: Vec<Box<[u8]>> = blob.try_collect().await?;
+        Ok(chunks.concat())
+    }
+
+    /// A zero-byte blob has no stored chunk file, but must still read back as
+    /// empty rather than surfacing as a `DanglingBlob`.
+    #[tokio::test]
+    async fn empty_blob_reads_back_empty() {
+        let dir = tempdir().unwrap();
+        let mgr = manager(dir.path()).await;
+
+        let (id, _hash, size) = mgr.put(&b""[..]).await.unwrap();
+        assert_eq!(size, 0);
+
+        let bytes = collect(&mgr, id)
+            .await
+            .expect("empty blob must be readable");
+        assert!(bytes.is_empty(), "empty blob must yield no bytes");
+    }
+
+    /// A normal round-trip still works with the content-hash verification in
+    /// place (the honest chunk hashes to its own id).
+    #[tokio::test]
+    async fn roundtrip_verifies_and_serves() {
+        let dir = tempdir().unwrap();
+        let mgr = manager(dir.path()).await;
+
+        let data = b"the quick brown fox jumps over the lazy dog";
+        let (id, _hash, _size) = mgr.put(&data[..]).await.unwrap();
+
+        let bytes = collect(&mgr, id).await.expect("honest blob must serve");
+        assert_eq!(bytes, data);
+    }
+
+    /// A chunk tampered on disk must fail its content-hash check instead of
+    /// being served as authentic.
+    #[tokio::test]
+    async fn tampered_chunk_is_rejected() {
+        let dir = tempdir().unwrap();
+        let mgr = manager(dir.path()).await;
+
+        let data = b"authentic payload";
+        let (id, _hash, _size) = mgr.put(&data[..]).await.unwrap();
+
+        // The root's single link points at the leaf chunk actually stored on
+        // disk; overwrite that file with different bytes.
+        let root_meta = mgr
+            .data_store
+            .handle()
+            .get(&BlobMetaKey::new(id))
+            .unwrap()
+            .unwrap();
+        let leaf_id = root_meta.links[0].blob_id();
+        mgr.blob_store.put(leaf_id, b"tampered!!").await.unwrap();
+
+        let err = collect(&mgr, id)
+            .await
+            .expect_err("tampered chunk must be rejected");
+        assert!(
+            matches!(err, BlobError::IntegrityMismatch { id } if id == leaf_id),
+            "expected IntegrityMismatch, got {err:?}"
+        );
+    }
+
+    /// A back-edge (cycle) in the meta graph must be rejected, not looped over
+    /// forever.
+    #[tokio::test]
+    async fn cycle_in_meta_graph_is_rejected() {
+        let dir = tempdir().unwrap();
+        let mgr = manager(dir.path()).await;
+
+        let a = BlobId::from([1u8; 32]);
+        let b = BlobId::from([2u8; 32]);
+        let mut handle = mgr.data_store.handle();
+        // A -> B and B -> A: both are internal nodes (non-empty links).
+        handle
+            .put(
+                &BlobMetaKey::new(a),
+                &BlobMetaValue::new(1, *a, vec![BlobMetaKey::new(b)].into_boxed_slice()),
+            )
+            .unwrap();
+        handle
+            .put(
+                &BlobMetaKey::new(b),
+                &BlobMetaValue::new(1, *b, vec![BlobMetaKey::new(a)].into_boxed_slice()),
+            )
+            .unwrap();
+
+        let err = collect(&mgr, a)
+            .await
+            .expect_err("a cyclic meta graph must be rejected");
+        assert!(
+            matches!(err, BlobError::CorruptGraph { .. }),
+            "expected CorruptGraph, got {err:?}"
+        );
     }
 }

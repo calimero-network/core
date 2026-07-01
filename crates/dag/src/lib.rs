@@ -33,6 +33,13 @@ pub const MAX_DELTA_QUERY_LIMIT: usize = 3000;
 /// in a future sync.
 pub const MAX_PENDING_DELTAS: usize = 10_000;
 
+/// Maximum number of pruned-ancestor ids remembered by [`DagStore::prune_to_recent`]
+/// so a later delta that references a deliberately-dropped parent is treated as
+/// applicable instead of triggering a doomed backfill. Bounded FIFO: once an id
+/// ages out, a reference to it falls back to state-based sync (the peer answers
+/// "not found", which is the cue for HashComparison/Snapshot).
+pub const MAX_PRUNED_TRACKED: usize = 100_000;
+
 /// Type of delta - regular operation or checkpoint (snapshot boundary)
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub enum DeltaKind {
@@ -270,6 +277,19 @@ pub struct DagStore<T> {
     /// Root delta (genesis)
     root: [u8; 32],
 
+    /// Ids of applied deltas that [`Self::prune_to_recent`] deliberately dropped
+    /// from `deltas`/`applied`. A later delta naming one of these as a parent
+    /// must not be reported as missing — backfilling a parent we intentionally
+    /// deleted just strands the delta (the peer returns not-found). We instead
+    /// treat a pruned ancestor as an already-satisfied parent: it was applied
+    /// before pruning, so its own ancestry was applied too, which is exactly the
+    /// causal guarantee `can_apply` needs. Bounded FIFO via `pruned_order`.
+    pruned: HashSet<[u8; 32]>,
+
+    /// Arrival-order index into `pruned` for O(1) FIFO eviction once the set
+    /// reaches [`MAX_PRUNED_TRACKED`].
+    pruned_order: VecDeque<[u8; 32]>,
+
     /// Maximum number of items returned by query methods to prevent resource exhaustion.
     /// Even if a caller requests more, the DAG will cap the result at this size.
     /// By default, equal to `MAX_DELTA_QUERY_SIZE`.
@@ -298,6 +318,8 @@ impl<T: Clone> DagStore<T> {
             next_pending_seq: 0,
             heads,
             root,
+            pruned: HashSet::new(),
+            pruned_order: VecDeque::new(),
             delta_query_limit: MAX_DELTA_QUERY_LIMIT,
             max_pending: MAX_PENDING_DELTAS,
         }
@@ -547,9 +569,24 @@ impl<T: Clone> DagStore<T> {
     /// Returns true if all parent deltas have been applied and exist in the DAG.
     /// This ensures topological ordering and prevents phantom references.
     fn can_apply(&self, delta: &CausalDelta<T>) -> bool {
+        // NOTE: an empty parent list is NOT rejected here. In the unified-op
+        // layer a genesis op legitimately carries `parents: []` (it descends
+        // from the DAG root implicitly), and it must apply immediately as a
+        // root — pending it would strand the whole causal chain built on it.
+        // `all()` over an empty list is vacuously true, which is exactly the
+        // wanted behaviour for that genesis convention.
         delta.parents.iter().all(|p| {
             // Genesis (zero hash) is always considered applied
             if *p == [0; 32] {
+                return true;
+            }
+
+            // A parent we deliberately pruned counts as satisfied: it was
+            // applied (with its whole ancestry) before we dropped it, so a
+            // delta building on it is safe to apply. Without this the pruned
+            // parent reads as "missing" and the delta strands in pending,
+            // backfilling a parent no peer still holds.
+            if self.pruned.contains(p) {
                 return true;
             }
 
@@ -672,6 +709,14 @@ impl<T: Clone> DagStore<T> {
                     continue;
                 }
 
+                // Never backfill a parent we deliberately pruned: no peer is
+                // guaranteed to still hold it, so requesting it just strands
+                // the pending delta. `can_apply` already treats it as
+                // satisfied, so the delta cascades without the parent.
+                if self.pruned.contains(parent) {
+                    continue;
+                }
+
                 // Only return parents that aren't in the DAG at all
                 // Parents that are in the DAG but pending will cascade when ready
                 if !self.deltas.contains_key(parent) {
@@ -766,6 +811,18 @@ impl<T: Clone> DagStore<T> {
     ///    amount, without raising an error. Only a warning log will be produced.
     ///    In future, we might change it, if needed, but for now looks like a clean behaviour, the
     ///    client should be responsible for the pagination himself.
+    ///
+    /// # Known limitation: cross-page re-emission on diamond DAGs
+    ///
+    /// The `visited` set is local to a single call, and the cursor carries only
+    /// the unexpanded frontier — not the set of deltas already returned. So
+    /// across paginated calls a delta reachable by two branches (a diamond) can
+    /// be emitted again on a later page: page 1 emits it via one branch, and a
+    /// page-2 frontier node re-reaches it through the other branch with a fresh
+    /// `visited`. This is bandwidth/CPU waste, never a correctness problem —
+    /// applying a delta twice is idempotent (`add_delta` dedups by id). Carrying
+    /// the returned-id set in the cursor would remove the waste but is a
+    /// wire/API change to the sync protocol; it is intentionally not done here.
     pub fn get_deltas_since(
         &self,
         ancestor: [u8; 32],
@@ -931,9 +988,26 @@ impl<T: Clone> DagStore<T> {
         for id in &pruned {
             let _ = self.deltas.remove(id);
             let _ = self.applied.remove(id);
+            self.remember_pruned(*id);
         }
 
         pruned
+    }
+
+    /// Record `id` as a deliberately-pruned ancestor, bounding the tracking set
+    /// with FIFO eviction so it can't grow without limit. See [`Self::pruned`].
+    fn remember_pruned(&mut self, id: [u8; 32]) {
+        if !self.pruned.insert(id) {
+            return;
+        }
+        self.pruned_order.push_back(id);
+        while self.pruned.len() > MAX_PRUNED_TRACKED {
+            if let Some(oldest) = self.pruned_order.pop_front() {
+                let _ = self.pruned.remove(&oldest);
+            } else {
+                break;
+            }
+        }
     }
 }
 
@@ -1357,5 +1431,46 @@ mod basic_tests {
             .expect("retry should succeed after rollback");
         assert!(matches!(outcome, AddDeltaOutcome::Applied));
         assert!(dag.applied.contains(&delta_id));
+    }
+
+    /// After `prune_to_recent` drops old applied history, a later delta that
+    /// references one of those pruned parents must still apply (its ancestry
+    /// was already applied) and must NOT be reported as a missing parent to
+    /// backfill — the peer no longer holds it.
+    #[tokio::test]
+    async fn delta_on_pruned_parent_applies_without_backfill() {
+        let applier = TestApplier {
+            applied: Arc::new(Mutex::new(Vec::new())),
+        };
+        let mut dag = DagStore::new([0; 32]);
+
+        // Linear chain root -> 1 -> 2 -> 3 -> 4 -> 5.
+        let mut prev = [0u8; 32];
+        for i in 1..=5u8 {
+            let d = CausalDelta::new_test([i; 32], vec![prev], TestPayload { value: i as u32 });
+            dag.add_delta(d, &applier).await.unwrap();
+            prev = [i; 32];
+        }
+
+        // Retain only the head; 1..=4 are pruned.
+        let pruned = dag.prune_to_recent(1);
+        assert!(!pruned.is_empty(), "old history should be pruned");
+        let pruned_parent = pruned[0];
+        assert!(!dag.has_delta(&pruned_parent), "parent was really dropped");
+
+        // A new delta building on a pruned parent applies immediately.
+        let child =
+            CausalDelta::new_test([200; 32], vec![pruned_parent], TestPayload { value: 200 });
+        let applied = dag.add_delta(child, &applier).await.unwrap();
+        assert!(
+            applied,
+            "delta on a pruned-but-applied parent must apply, not strand"
+        );
+        assert_eq!(dag.pending_stats().count, 0, "must not be left pending");
+        assert!(
+            !dag.get_missing_parents(MAX_DELTA_QUERY_LIMIT)
+                .contains(&pruned_parent),
+            "must not backfill a deliberately-pruned parent"
+        );
     }
 }

@@ -149,26 +149,57 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
     /// `SortedMap`'s whole index slice on `clear()` without materialising the
     /// key set in memory first.
     ///
-    /// The default buffers the in-range keys and deletes them one by one (so
-    /// backends without a native range delete still work); RocksDB overrides
-    /// this with `delete_range_cf`, a single range tombstone — `O(1)` write,
-    /// no per-key I/O and no unbounded buffer.
+    /// The default deletes in-range keys in bounded batches (so backends
+    /// without a native range delete still work); RocksDB overrides this with
+    /// `delete_range_cf`, a single range tombstone — `O(1)` write, no per-key
+    /// I/O and no buffer.
+    ///
+    /// Each batch collects at most `DELETE_RANGE_BATCH` keys, deletes them, then
+    /// re-seeks to `lo` — the just-deleted keys are gone, so the seek lands on
+    /// the next surviving in-range key. This caps peak memory at one batch
+    /// regardless of range size, where buffering the whole range first would
+    /// grow without bound on a large slice.
     fn delete_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> EyreResult<()> {
-        let mut iter = self.iter(col)?;
+        /// Keys buffered (and deleted) per batch. Bounds peak memory; a larger
+        /// value trades memory for fewer re-seeks.
+        const DELETE_RANGE_BATCH: usize = 4096;
+
+        let lo_bytes: Vec<u8> = lo.as_ref().to_vec();
         let hi_bytes: Vec<u8> = hi.as_ref().to_vec();
-        let mut keys: Vec<Vec<u8>> = Vec::new();
-        let mut pos = iter.seek(lo)?.map(|k| k.as_ref().to_vec());
-        while let Some(key) = pos {
-            if key.as_slice() >= hi_bytes.as_slice() {
+
+        loop {
+            let mut iter = self.iter(col)?;
+            let mut keys: Vec<Vec<u8>> = Vec::new();
+            let mut pos = iter
+                .seek(Slice::from(&lo_bytes))?
+                .map(|k| k.as_ref().to_vec());
+            while let Some(key) = pos {
+                if key.as_slice() >= hi_bytes.as_slice() {
+                    break;
+                }
+                keys.push(key);
+                if keys.len() >= DELETE_RANGE_BATCH {
+                    break;
+                }
+                pos = iter.next()?.map(|k| k.as_ref().to_vec());
+            }
+            drop(iter);
+
+            if keys.is_empty() {
                 break;
             }
-            keys.push(key);
-            pos = iter.next()?.map(|k| k.as_ref().to_vec());
+
+            let drained = keys.len();
+            for key in keys {
+                self.delete(col, Slice::from(&key))?;
+            }
+
+            // A short batch means we reached `hi`; no more keys remain.
+            if drained < DELETE_RANGE_BATCH {
+                break;
+            }
         }
-        drop(iter);
-        for key in keys {
-            self.delete(col, Slice::from(&key))?;
-        }
+
         Ok(())
     }
 
