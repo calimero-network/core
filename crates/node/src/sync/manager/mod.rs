@@ -3641,12 +3641,38 @@ impl SyncManager {
     fn should_attempt_stage(&self, context_id: ContextId, blob: [u8; 32]) -> bool {
         const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
         const MAX_ATTEMPTS: u32 = 12; // ~1h of retries, then give up
+
+        // Cap on tracked (context, blob) pairs. Entries parked at MAX_ATTEMPTS
+        // are never cleared by `clear_stage_attempt` (only successes clear), so
+        // without a bound a node that meets many never-resolving pairs would
+        // grow this memo for its whole lifetime. The memo is a best-effort
+        // backoff, not a correctness invariant: an evicted pair simply restarts
+        // its backoff, costing at most a few extra doomed BlobShares.
+        const MAX_TRACKED: usize = 4096;
+
         let mut memo = self
             .stale_blob_attempts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = Instant::now();
-        let entry = memo.entry((context_id, blob)).or_insert((None, 0));
+        let key = (context_id, blob);
+        if !memo.contains_key(&key) && memo.len() >= MAX_TRACKED {
+            // Evict the least-recently-attempted entry (a never-attempted `None`
+            // sorts first, then the oldest timestamp) to make room. This is an
+            // O(MAX_TRACKED) scan, but it runs only on a cap-boundary miss (a
+            // new key while already at 4096 entries), not on the common
+            // already-tracked path, so the amortised cost stays negligible. If
+            // this map ever grows much larger or the miss rate climbs, switch to
+            // an O(1)-eviction structure (e.g. an LRU cache).
+            if let Some(oldest) = memo
+                .iter()
+                .min_by_key(|(_, (last, _))| *last)
+                .map(|(k, _)| *k)
+            {
+                let _ = memo.remove(&oldest);
+            }
+        }
+        let entry = memo.entry(key).or_insert((None, 0));
         if entry.1 >= MAX_ATTEMPTS {
             return false;
         }
