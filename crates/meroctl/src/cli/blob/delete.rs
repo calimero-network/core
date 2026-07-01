@@ -3,6 +3,8 @@ use clap::Parser;
 use eyre::Result;
 
 use crate::cli::Environment;
+use crate::confirm::confirm;
+use crate::output::InfoLine;
 
 #[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Delete a blob by its ID")]
@@ -14,10 +16,21 @@ pub struct DeleteCommand {
         help = "ID of the blob to delete"
     )]
     pub blob_id: BlobId,
+
+    #[clap(long, short = 'y', help = "Skip the confirmation prompt")]
+    pub yes: bool,
 }
 
 impl DeleteCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        if !confirm(
+            &format!("Delete blob '{}'? This cannot be undone.", self.blob_id),
+            self.yes,
+        )? {
+            environment.output.write(&InfoLine("Aborted."));
+            return Ok(());
+        }
+
         let client = environment.client()?;
 
         let response = client.delete_blob(&self.blob_id).await?;
