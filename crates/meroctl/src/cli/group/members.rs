@@ -59,15 +59,17 @@ pub enum MembersSubCommands {
 
 impl MembersCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        match self.subcommand {
-            MembersSubCommands::List(cmd) => cmd.run(environment).await,
-            MembersSubCommands::Add(cmd) => cmd.run(environment).await,
-            MembersSubCommands::Remove(cmd) => cmd.run(environment).await,
-            MembersSubCommands::SetRole(cmd) => cmd.run(environment).await,
-            MembersSubCommands::SetCapabilities(cmd) => cmd.run(environment).await,
-            MembersSubCommands::GetCapabilities(cmd) => cmd.run(environment).await,
-            MembersSubCommands::CheckAccess(cmd) => cmd.run(environment).await,
-        }
+        crate::cli::dispatch_subcommands!(
+            self.subcommand,
+            environment,
+            MembersSubCommands::List,
+            MembersSubCommands::Add,
+            MembersSubCommands::Remove,
+            MembersSubCommands::SetRole,
+            MembersSubCommands::SetCapabilities,
+            MembersSubCommands::GetCapabilities,
+            MembersSubCommands::CheckAccess,
+        )
     }
 }
 
@@ -296,28 +298,15 @@ pub struct SetCapabilitiesCommand {
 
 impl SetCapabilitiesCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let mut capabilities: u32 = 0;
-        if self.can_create_context {
-            capabilities |= MemberCapabilities::CAN_CREATE_CONTEXT.bits();
-        }
-        if self.can_invite_members {
-            capabilities |= MemberCapabilities::CAN_INVITE_MEMBERS.bits();
-        }
-        if self.can_join_open_subgroups {
-            capabilities |= MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits();
-        }
-        if self.can_create_subgroup {
-            capabilities |= MemberCapabilities::CAN_CREATE_SUBGROUP.bits();
-        }
-        if self.can_delete_subgroup {
-            capabilities |= MemberCapabilities::CAN_DELETE_SUBGROUP.bits();
-        }
-        if self.can_manage_visibility {
-            capabilities |= MemberCapabilities::CAN_MANAGE_VISIBILITY.bits();
-        }
-        if self.can_manage_metadata {
-            capabilities |= MemberCapabilities::CAN_MANAGE_METADATA.bits();
-        }
+        let capabilities = encode_capabilities(
+            self.can_create_context,
+            self.can_invite_members,
+            self.can_join_open_subgroups,
+            self.can_create_subgroup,
+            self.can_delete_subgroup,
+            self.can_manage_visibility,
+            self.can_manage_metadata,
+        );
 
         let identity_hex = hex::encode(self.identity.digest());
 
@@ -430,5 +419,87 @@ impl CheckAccessCommand {
         );
 
         Ok(())
+    }
+}
+
+/// Encode the seven member-capability flags into the `MemberCapabilities`
+/// bitmask sent to the node.
+fn encode_capabilities(
+    can_create_context: bool,
+    can_invite_members: bool,
+    can_join_open_subgroups: bool,
+    can_create_subgroup: bool,
+    can_delete_subgroup: bool,
+    can_manage_visibility: bool,
+    can_manage_metadata: bool,
+) -> u32 {
+    let mut capabilities: u32 = 0;
+    if can_create_context {
+        capabilities |= MemberCapabilities::CAN_CREATE_CONTEXT.bits();
+    }
+    if can_invite_members {
+        capabilities |= MemberCapabilities::CAN_INVITE_MEMBERS.bits();
+    }
+    if can_join_open_subgroups {
+        capabilities |= MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits();
+    }
+    if can_create_subgroup {
+        capabilities |= MemberCapabilities::CAN_CREATE_SUBGROUP.bits();
+    }
+    if can_delete_subgroup {
+        capabilities |= MemberCapabilities::CAN_DELETE_SUBGROUP.bits();
+    }
+    if can_manage_visibility {
+        capabilities |= MemberCapabilities::CAN_MANAGE_VISIBILITY.bits();
+    }
+    if can_manage_metadata {
+        capabilities |= MemberCapabilities::CAN_MANAGE_METADATA.bits();
+    }
+    capabilities
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_capabilities;
+    use calimero_context_config::MemberCapabilities;
+
+    #[test]
+    fn no_flags_encodes_to_zero() {
+        assert_eq!(
+            encode_capabilities(false, false, false, false, false, false, false),
+            0
+        );
+    }
+
+    #[test]
+    fn each_flag_maps_to_its_bit() {
+        assert_eq!(
+            encode_capabilities(true, false, false, false, false, false, false),
+            MemberCapabilities::CAN_CREATE_CONTEXT.bits()
+        );
+        assert_eq!(
+            encode_capabilities(false, true, false, false, false, false, false),
+            MemberCapabilities::CAN_INVITE_MEMBERS.bits()
+        );
+        assert_eq!(
+            encode_capabilities(false, false, false, false, false, false, true),
+            MemberCapabilities::CAN_MANAGE_METADATA.bits()
+        );
+    }
+
+    #[test]
+    fn all_flags_or_together() {
+        let all = encode_capabilities(true, true, true, true, true, true, true);
+        let expected = (MemberCapabilities::CAN_CREATE_CONTEXT
+            | MemberCapabilities::CAN_INVITE_MEMBERS
+            | MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS
+            | MemberCapabilities::CAN_CREATE_SUBGROUP
+            | MemberCapabilities::CAN_DELETE_SUBGROUP
+            | MemberCapabilities::CAN_MANAGE_VISIBILITY
+            | MemberCapabilities::CAN_MANAGE_METADATA)
+            .bits();
+        assert_eq!(all, expected);
+        // Every set bit is distinct (no two flags collide on a bit).
+        assert_eq!(all.count_ones(), 7);
     }
 }

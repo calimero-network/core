@@ -45,6 +45,19 @@ use tee::TeeCommand;
 
 use crate::auth::{authenticate_with_session_cache, check_authentication, TokenScope};
 
+/// Dispatch a subcommand enum whose every variant wraps a command type that
+/// exposes `async fn run(self, &mut Environment) -> Result<...>`. Replaces the
+/// repetitive `match { V(cmd) => cmd.run(environment).await, ... }` blocks that
+/// were duplicated across ~10 command modules.
+macro_rules! dispatch_subcommands {
+    ($value:expr, $environment:expr, $( $variant:path ),+ $(,)?) => {
+        match $value {
+            $( $variant(cmd) => cmd.run($environment).await, )+
+        }
+    };
+}
+pub(crate) use dispatch_subcommands;
+
 pub const EXAMPLES: &str = r"
   # List all applications
   $ meroctl --node node1 app ls

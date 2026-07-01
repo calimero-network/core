@@ -60,12 +60,14 @@ pub enum BlobSubCommands {
 
 impl BlobCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        match self.subcommand {
-            BlobSubCommands::Upload(upload) => upload.run(environment).await,
-            BlobSubCommands::Download(download) => download.run(environment).await,
-            BlobSubCommands::Delete(delete) => delete.run(environment).await,
-            BlobSubCommands::Info(info) => info.run(environment).await,
-            BlobSubCommands::List(list) => list.run(environment).await,
-        }
+        crate::cli::dispatch_subcommands!(
+            self.subcommand,
+            environment,
+            BlobSubCommands::Upload,
+            BlobSubCommands::Download,
+            BlobSubCommands::Delete,
+            BlobSubCommands::Info,
+            BlobSubCommands::List,
+        )
     }
 }
