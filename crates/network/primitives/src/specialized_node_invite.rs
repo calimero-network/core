@@ -20,6 +20,11 @@ pub const CALIMERO_SPECIALIZED_NODE_INVITE_PROTOCOL: StreamProtocol =
 /// Maximum size of a specialized node invite message (1MB should be sufficient for attestation + invitation)
 pub const MAX_SPECIALIZED_NODE_INVITE_MESSAGE_SIZE: u64 = 1024 * 1024;
 
+// The message size is framed with a u32 length prefix, so the cap must fit a
+// u32. Enforcing this at compile time lets the write path bound against the cap
+// and then cast to u32 without a fallible conversion.
+const _: () = assert!(MAX_SPECIALIZED_NODE_INVITE_MESSAGE_SIZE <= u32::MAX as u64);
+
 /// Type of specialized node being invited
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub enum SpecializedNodeType {
@@ -123,7 +128,8 @@ impl Codec for SpecializedNodeInviteCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        // Read length prefix (4 bytes, big endian)
+        // Read length prefix (4 bytes, big endian). A u32 always fits usize on
+        // 32-bit and wider targets, so this cast is lossless everywhere.
         let mut len_buf = [0u8; 4];
         io.read_exact(&mut len_buf).await?;
         let len = u32::from_be_bytes(len_buf) as usize;
@@ -151,7 +157,8 @@ impl Codec for SpecializedNodeInviteCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        // Read length prefix (4 bytes, big endian)
+        // Read length prefix (4 bytes, big endian). A u32 always fits usize on
+        // 32-bit and wider targets, so this cast is lossless everywhere.
         let mut len_buf = [0u8; 4];
         io.read_exact(&mut len_buf).await?;
         let len = u32::from_be_bytes(len_buf) as usize;
@@ -183,7 +190,18 @@ impl Codec for SpecializedNodeInviteCodec {
         // Serialize
         let buf = borsh::to_vec(&req).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        // Write length prefix
+        // Bound the message size so the u32 framing prefix cannot truncate or
+        // misrepresent the payload length (the read side rejects anything larger).
+        if buf.len() as u64 > MAX_SPECIALIZED_NODE_INVITE_MESSAGE_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "request too large",
+            ));
+        }
+
+        // Write length prefix. The runtime check above bounds `buf.len()` to
+        // MAX_SPECIALIZED_NODE_INVITE_MESSAGE_SIZE, which the compile-time assert
+        // bounds to u32::MAX, so together they make this cast lossless.
         let len = buf.len() as u32;
         io.write_all(&len.to_be_bytes()).await?;
 
@@ -206,7 +224,18 @@ impl Codec for SpecializedNodeInviteCodec {
         // Serialize
         let buf = borsh::to_vec(&res).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        // Write length prefix
+        // Bound the message size so the u32 framing prefix cannot truncate or
+        // misrepresent the payload length (the read side rejects anything larger).
+        if buf.len() as u64 > MAX_SPECIALIZED_NODE_INVITE_MESSAGE_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "response too large",
+            ));
+        }
+
+        // Write length prefix. The runtime check above bounds `buf.len()` to
+        // MAX_SPECIALIZED_NODE_INVITE_MESSAGE_SIZE, which the compile-time assert
+        // bounds to u32::MAX, so together they make this cast lossless.
         let len = buf.len() as u32;
         io.write_all(&len.to_be_bytes()).await?;
 

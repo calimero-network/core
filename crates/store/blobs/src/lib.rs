@@ -70,14 +70,12 @@ pub enum Size {
 }
 
 impl Size {
-    const fn hint(&self) -> usize {
-        // TODO: Check this, as the incoming int is a u64
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "This is never expected to overflow"
-        )]
+    fn hint(&self) -> usize {
+        // The size is a u64; on a 32-bit host a plain cast would truncate and
+        // mis-size the links vector. Clamp to usize::MAX instead — it only ever
+        // feeds `Vec::with_capacity`, so a saturated hint is harmless.
         match self {
-            Self::Hint(size) | Self::Exact(size) => *size as usize,
+            Self::Hint(size) | Self::Exact(size) => usize::try_from(*size).unwrap_or(usize::MAX),
         }
     }
 

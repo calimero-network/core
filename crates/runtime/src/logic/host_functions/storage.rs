@@ -584,8 +584,10 @@ impl VMHostFunctions<'_> {
         let lo = self.read_guest_memory_slice(&lo)?.to_vec();
         let hi = self.read_guest_memory_slice(&hi)?.to_vec();
 
-        // `n + 1`-encoded: 0 = unbounded, else `limit - 1`.
-        let limit = (limit != 0).then(|| (limit - 1) as usize);
+        // `n + 1`-encoded: 0 = unbounded, else `limit - 1`. Saturate rather than
+        // silently truncate `u64 -> usize` (usize is 32-bit on a wasm32 host
+        // build); a clamp to usize::MAX just caps at the largest possible bound.
+        let limit = (limit != 0).then(|| usize::try_from(limit - 1).unwrap_or(usize::MAX));
         // Saturate rather than silently truncate `u64 -> usize` (usize is 32-bit
         // on a wasm32 host build); a clamp to usize::MAX just means "skip all".
         let offset = usize::try_from(offset).unwrap_or(usize::MAX);

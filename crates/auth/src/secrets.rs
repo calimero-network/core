@@ -99,13 +99,20 @@ impl fmt::Debug for VersionedSecret {
     }
 }
 
+/// Seconds since the UNIX epoch. Degrades to `0` if the system clock is set
+/// before 1970 rather than panicking, so a misconfigured clock can't crash the
+/// auth service. Pairs with the saturating arithmetic on the values it feeds.
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 impl VersionedSecret {
     /// Create a new versioned secret
     pub fn new(secret_type: SecretType, rotation_config: &SecretRotationConfig) -> Self {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = now_secs();
 
         // Generate a secure random secret
         let secret: [u8; 32] = rand::thread_rng().gen();
@@ -114,7 +121,9 @@ impl VersionedSecret {
             value: URL_SAFE_NO_PAD.encode(secret),
             version: format!("v{now}"),
             created_at: now,
-            expires_at: now + rotation_config.grace_period,
+            // Saturate so a far-future clock plus a large grace period can't
+            // overflow the u64 expiry.
+            expires_at: now.saturating_add(rotation_config.grace_period),
             is_primary: true,
             secret_type,
         }
@@ -122,10 +131,7 @@ impl VersionedSecret {
 
     /// Check if this secret has expired
     pub fn is_expired(&self) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = now_secs();
         self.expires_at < now
     }
 }
@@ -277,11 +283,11 @@ impl SecretManager {
             .iter()
             .find(|s| s.secret_type == secret_type && s.is_primary)
         {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            if now - secret.created_at >= self.rotation_config.rotation_interval {
+            let now = now_secs();
+            // Saturate so a backward wall-clock step (NTP correction) that puts
+            // `now` before `created_at` can't underflow into a spurious early
+            // rotation (or panic in debug builds).
+            if now.saturating_sub(secret.created_at) >= self.rotation_config.rotation_interval {
                 drop(secrets);
                 self.rotate_secret(secret_type).await?;
             }

@@ -25,6 +25,10 @@ use x509_cert::Certificate;
 
 const POLICY_RELEASE_BASE: &str = "https://github.com/calimero-network/mero-tee/releases/download";
 const POLICY_FETCH_RETRIES: usize = 3;
+/// Upper bound on the exponential fetch backoff. Without it a large `attempt`
+/// would saturate to `u64::MAX` milliseconds (~585 million years); this caps
+/// the wait at a practical ceiling.
+const POLICY_FETCH_MAX_BACKOFF_MS: u64 = 60_000;
 const DEFAULT_ALLOWED_TCB_STATUSES: &[&str] = &["uptodate"];
 const POLICY_JSON_ASSET: &str = "kms-phala-attestation-policy.json";
 const POLICY_SIG_ASSET: &str = "kms-phala-attestation-policy.json.sig";
@@ -616,8 +620,14 @@ fn is_valid_release_version(version: &str) -> bool {
 }
 
 fn policy_fetch_backoff(attempt: usize) -> std::time::Duration {
-    let exponent = (attempt as u32).saturating_sub(1);
-    std::time::Duration::from_millis(250_u64.saturating_mul(1_u64 << exponent))
+    let exponent = u32::try_from(attempt).unwrap_or(u32::MAX).saturating_sub(1);
+    // `1 << exponent` panics once `exponent >= 64` (attempts past ~64); fall back
+    // to u64::MAX so the saturating_mul below just clamps to the max backoff.
+    let factor = 1_u64.checked_shl(exponent).unwrap_or(u64::MAX);
+    let millis = 250_u64
+        .saturating_mul(factor)
+        .min(POLICY_FETCH_MAX_BACKOFF_MS);
+    std::time::Duration::from_millis(millis)
 }
 
 /// Resolve policy: fetch from release when version is set, else None.
@@ -652,6 +662,27 @@ mod tests {
     use super::*;
     use base64::Engine;
     use sigstore::cosign::bundle::{Bundle as RekorBundle, Payload as RekorPayload};
+
+    #[test]
+    fn policy_fetch_backoff_grows_then_caps() {
+        // The first attempts grow exponentially from the 250ms base.
+        assert_eq!(policy_fetch_backoff(1).as_millis(), 250);
+        assert_eq!(policy_fetch_backoff(2).as_millis(), 500);
+        assert_eq!(policy_fetch_backoff(4).as_millis(), 2000);
+
+        // The `.min(cap)` engages well before any shift-width concern: attempt 8
+        // (250 * 128 = 32s) is the last value under the 60s ceiling, and attempt
+        // 9 (250 * 256 = 64s) is the first clamped to it.
+        let cap = u128::from(POLICY_FETCH_MAX_BACKOFF_MS);
+        assert_eq!(policy_fetch_backoff(8).as_millis(), 32_000);
+        assert_eq!(policy_fetch_backoff(9).as_millis(), cap);
+
+        // Extreme attempts stay clamped: attempt 65 (exponent 64) is the exact
+        // u64 shift-width boundary where `checked_shl` returns None, so the
+        // `checked_shl`/`try_from` guards must keep it at the ceiling, not panic.
+        assert_eq!(policy_fetch_backoff(65).as_millis(), cap);
+        assert_eq!(policy_fetch_backoff(usize::MAX).as_millis(), cap);
+    }
 
     #[test]
     fn release_version_from_env_uses_priority_order() {

@@ -980,3 +980,104 @@ fn d1_map_delete_vs_update_convergence_is_apply_order_independent() {
         "map-container root hash must be identical regardless of apply order"
     );
 }
+
+type BranchNode = MockedStorage<7103>;
+type BranchIface = Interface<BranchNode>;
+
+/// `save_internal` picks its LWW-by-HLC branch by comparing `updated_at` under
+/// both `>` (`Ord`) and `==` (`PartialEq`). While `UpdatedAt::eq` was hard-coded
+/// to always return `true`, every non-stale write took the equal-timestamp
+/// branch and the strictly-newer branch was unreachable. This drives all three
+/// branches explicitly and asserts each applies the write it should — a
+/// regression guard for the corrected value-based `PartialEq`.
+#[test]
+#[serial]
+fn save_internal_selects_branch_by_updated_at() {
+    super::common::register_test_merge_functions();
+    crate::env::reset_for_testing();
+
+    let id = Id::new([0x5b; 32]);
+    let ancestors = vec![crate::entities::ChildInfo::new(
+        Id::root(),
+        [0; 32],
+        Metadata::default(),
+    )];
+
+    let make = |value: &str, updated_at: u64, is_add: bool| -> Action {
+        let mut page = Page::new_from_element(value, Element::new(Some(id)));
+        page.element_mut().set_updated_at(updated_at);
+        let data = borsh::to_vec(&page).unwrap();
+        let metadata = page.element().metadata.clone();
+        if is_add {
+            Action::Add {
+                id,
+                data,
+                ancestors: ancestors.clone(),
+                metadata,
+            }
+        } else {
+            Action::Update {
+                id,
+                data,
+                ancestors: vec![],
+                metadata,
+            }
+        }
+    };
+
+    let stored_nonce = || {
+        *Index::<BranchNode>::get_index(id)
+            .unwrap()
+            .unwrap()
+            .metadata
+            .updated_at
+    };
+
+    let base = time_now();
+    let t = base - 10_000_000;
+
+    // Base write at `t`.
+    BranchIface::apply_action(make("v0", t, true), &ApplyContext::empty()).unwrap();
+    assert_eq!(
+        BranchIface::find_by_id::<Page>(id).unwrap().unwrap().title,
+        "v0"
+    );
+    assert_eq!(stored_nonce(), t);
+
+    // Older write (`updated_at < stored`): the `>` guard must stale-skip it, so
+    // the stored value is unchanged and the nonce does not regress.
+    BranchIface::apply_action(make("v_old", t - 1, false), &ApplyContext::empty()).unwrap();
+    assert_eq!(
+        BranchIface::find_by_id::<Page>(id).unwrap().unwrap().title,
+        "v0",
+        "older write must be stale-skipped"
+    );
+    assert_eq!(stored_nonce(), t, "older write must not regress the nonce");
+
+    // Equal-timestamp write: the equal branch must merge, not drop the entity.
+    BranchIface::apply_action(make("v_eq", t, false), &ApplyContext::empty()).unwrap();
+    assert!(
+        BranchIface::find_by_id::<Page>(id).unwrap().is_some(),
+        "equal-timestamp write must merge, not drop the entity"
+    );
+    assert_eq!(
+        stored_nonce(),
+        t,
+        "equal-timestamp write keeps the same nonce"
+    );
+
+    // Strictly-newer write: the branch that was unreachable under the always-true
+    // `eq`. It must apply and win by LWW, advancing the nonce.
+    let t_new = t + 10_000_000;
+    BranchIface::apply_action(make("v_new", t_new, false), &ApplyContext::empty()).unwrap();
+    assert_eq!(
+        BranchIface::find_by_id::<Page>(id).unwrap().unwrap().title,
+        "v_new",
+        "strictly-newer write must win by LWW"
+    );
+    assert_eq!(
+        stored_nonce(),
+        t_new,
+        "strictly-newer write advances the nonce"
+    );
+}

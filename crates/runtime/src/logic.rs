@@ -628,7 +628,10 @@ impl VMHostFunctions<'_> {
     /// memory region (ptr + len) exceeds the bounds of guest memory.
     fn read_guest_memory_slice(&self, slice: &sys::Buffer<'_>) -> VMLogicResult<&[u8]> {
         let ptr = slice.ptr().value().as_usize();
-        let len = slice.len() as usize;
+        // The buffer length is a u64; on a 32-bit (wasm32) host a plain cast
+        // would silently keep only the low bits, letting the bounds check below
+        // pass while the true length exceeds addressable memory.
+        let len = usize::try_from(slice.len()).map_err(|_| HostError::InvalidMemoryAccess)?;
 
         trace!(
             target: "runtime::memory",
@@ -668,7 +671,9 @@ impl VMHostFunctions<'_> {
     /// memory region (ptr + len) exceeds the bounds of guest memory.
     fn check_guest_memory_bounds(&self, slice: &sys::BufferMut<'_>) -> VMLogicResult<()> {
         let ptr = slice.ptr().value().as_usize();
-        let len = slice.len() as usize;
+        // See `read_guest_memory_slice`: reject u64 lengths that don't fit usize
+        // rather than truncating them on a 32-bit host.
+        let len = usize::try_from(slice.len()).map_err(|_| HostError::InvalidMemoryAccess)?;
 
         let memory = self.borrow_memory();
         let memory_size = memory.data_size() as usize;
@@ -708,7 +713,9 @@ impl VMHostFunctions<'_> {
         data: &[u8],
     ) -> VMLogicResult<()> {
         let ptr = slice.ptr().value().as_usize();
-        let len = slice.len() as usize;
+        // See `read_guest_memory_slice`: reject u64 lengths that don't fit usize
+        // rather than truncating them on a 32-bit host.
+        let len = usize::try_from(slice.len()).map_err(|_| HostError::InvalidMemoryAccess)?;
 
         trace!(
             target: "runtime::memory",

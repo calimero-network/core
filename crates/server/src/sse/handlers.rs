@@ -381,7 +381,8 @@ pub async fn sse_handler(
             match load_session(&state.store, existing_session_id) {
                 Ok(Some(persisted_data)) => {
                     // Check if session expired
-                    if now_secs() - persisted_data.last_activity > SESSION_EXPIRY_SECS {
+                    if now_secs().saturating_sub(persisted_data.last_activity) > SESSION_EXPIRY_SECS
+                    {
                         warn!(%existing_session_id, "Persisted session expired, creating new session");
                         // Clean up expired session
                         let mut store = state.store.clone();
@@ -623,7 +624,7 @@ pub async fn get_session_handler(
         Ok(Some(persisted_data)) => {
             // Check if expired
             use super::session::now_secs;
-            if now_secs() - persisted_data.last_activity > SESSION_EXPIRY_SECS {
+            if now_secs().saturating_sub(persisted_data.last_activity) > SESSION_EXPIRY_SECS {
                 (
                     StatusCode::GONE,
                     Json(SseResponse {
