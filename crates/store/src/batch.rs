@@ -75,3 +75,147 @@ impl<'a> StoreBatch<'a> {
         self.store.apply(&self.tx)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::db::{Column, InMemoryDB};
+    use crate::entry::Codec;
+    use crate::key::{AsKeyParts, Generic, Key};
+    use crate::slice::Slice;
+    use crate::types::{GenericData, PredefinedEntry};
+    use crate::Store;
+
+    use super::StoreBatch;
+
+    fn store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    fn gkey(fragment: u8) -> Generic {
+        Generic::new([0u8; 16], [fragment; 32])
+    }
+
+    fn present(store: &Store, key: &Generic) -> bool {
+        store.handle().get(key).expect("read").is_some()
+    }
+
+    // Multi-key all-or-nothing: several staged puts either all land at commit or,
+    // if the batch is dropped before commit, none do. This pins the invariant the
+    // one atomic `Store::apply` (a single RocksDB `WriteBatch`) exists to provide.
+    #[test]
+    fn commit_persists_all_keys_and_drop_persists_none() {
+        let store = store();
+        let (a, b, c) = (gkey(1), gkey(2), gkey(3));
+
+        // Dropping an uncommitted batch writes nothing, even with many staged ops.
+        let mut dropped = StoreBatch::new(&store);
+        dropped
+            .put(&a, &GenericData::from(Slice::from(&b"a"[..])))
+            .expect("stage a");
+        dropped
+            .put(&b, &GenericData::from(Slice::from(&b"b"[..])))
+            .expect("stage b");
+        assert_eq!(dropped.len(), 2);
+        drop(dropped);
+        assert!(!present(&store, &a), "dropped batch must not persist a");
+        assert!(!present(&store, &b), "dropped batch must not persist b");
+
+        // Committing lands every staged key together.
+        let mut batch = StoreBatch::new(&store);
+        batch
+            .put(&a, &GenericData::from(Slice::from(&b"a"[..])))
+            .expect("stage a");
+        batch
+            .put(&b, &GenericData::from(Slice::from(&b"b"[..])))
+            .expect("stage b");
+        batch
+            .put(&c, &GenericData::from(Slice::from(&b"c"[..])))
+            .expect("stage c");
+        batch.commit().expect("commit");
+        assert!(present(&store, &a) && present(&store, &b) && present(&store, &c));
+    }
+
+    // A value that fails to encode surfaces the error from `put` itself — before
+    // anything reaches the backend. Because the caller aborts the batch (never
+    // reaching `commit`), an earlier good put staged in the same batch is also
+    // never written: a mid-batch serialization failure is all-or-nothing too.
+    #[test]
+    fn encode_failure_surfaces_at_put_before_any_write() {
+        // A key whose codec always fails to encode, so `put` must return `Err`.
+        // It shares `Generic`'s column and key shape, so a leaked write (if the
+        // error did not short-circuit) would be observable via `Handle::get`.
+        #[derive(Clone, Copy)]
+        struct FailKey(Generic);
+
+        impl AsKeyParts for FailKey {
+            type Components = <Generic as AsKeyParts>::Components;
+
+            fn column() -> Column {
+                Column::Generic
+            }
+
+            fn as_key(&self) -> &Key<Self::Components> {
+                self.0.as_key()
+            }
+        }
+
+        #[derive(Debug)]
+        struct EncodeAlwaysFails;
+
+        impl core::fmt::Display for EncodeAlwaysFails {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("intentional encode failure")
+            }
+        }
+
+        impl std::error::Error for EncodeAlwaysFails {}
+
+        enum FailCodec {}
+
+        impl<'a> Codec<'a, ()> for FailCodec {
+            type Error = EncodeAlwaysFails;
+
+            fn encode(_: &()) -> Result<Slice<'_>, Self::Error> {
+                Err(EncodeAlwaysFails)
+            }
+
+            fn decode(_: Slice<'a>) -> Result<(), Self::Error> {
+                Err(EncodeAlwaysFails)
+            }
+        }
+
+        impl PredefinedEntry for FailKey {
+            type Codec = FailCodec;
+            type DataType<'a> = ();
+        }
+
+        let store = store();
+        let good = gkey(1);
+        let bad = FailKey(gkey(2));
+
+        let mut batch = StoreBatch::new(&store);
+        batch
+            .put(&good, &GenericData::from(Slice::from(&b"good"[..])))
+            .expect("good put stages");
+
+        // `put` returns `&mut Self` on success, which is not `Debug`, so match
+        // rather than `expect_err`.
+        let err = match batch.put(&bad, &()) {
+            Ok(_) => panic!("encode failure must surface from put"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("intentional encode failure"),
+            "unexpected error: {err}"
+        );
+
+        // The batch was abandoned mid-way (commit never reached), so not even the
+        // earlier good put reached the backend.
+        assert!(
+            !present(&store, &good),
+            "no key may persist when the batch is aborted before commit"
+        );
+    }
+}

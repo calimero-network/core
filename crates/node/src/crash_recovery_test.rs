@@ -1,0 +1,235 @@
+//! Crash-recovery / persistence tests for `DeltaStore` restart behavior.
+//!
+//! These exercise the real persistence + reload path (`load_persisted_deltas`)
+//! over an in-memory store: a `DeltaStore` is built, `ContextDagDelta` rows are
+//! written directly to simulate what was on disk at crash time, then a FRESH
+//! `DeltaStore` is built over the SAME store and `load_persisted_deltas` is run
+//! — exactly the sequence a node performs on restart.
+
+use std::sync::Arc;
+
+use calimero_blobstore::config::BlobStoreConfig;
+use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
+use calimero_context_client::client::ContextClient;
+use calimero_network_primitives::client::NetworkClient;
+use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
+use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
+use calimero_storage::action::Action;
+use calimero_storage::address::Id;
+use calimero_storage::entities::Metadata;
+use calimero_storage::logical_clock::HybridTimestamp;
+use calimero_store::db::InMemoryDB;
+use calimero_store::Store;
+use calimero_utils_actix::LazyRecipient;
+use tokio::sync::{broadcast, mpsc};
+
+use crate::delta_store::DeltaStore;
+
+const GENESIS: [u8; 32] = [0u8; 32];
+
+fn context() -> ContextId {
+    ContextId::from([0xAA; 32])
+}
+
+/// Build a `DeltaStore` over the supplied `store` (so a caller can pre-seed the
+/// store, then "restart" by building a fresh `DeltaStore` over the same rows).
+/// Mirrors `delta_store_batch_test`'s helper. The returned `TempDir` must be
+/// kept alive for the blob filesystem.
+async fn delta_store_over(store: Store) -> (DeltaStore, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+
+    let blob_config =
+        BlobStoreConfig::new(tmp.path().to_path_buf().try_into().expect("utf8 blob path"));
+    let file_system = FileSystem::new(&blob_config).await.expect("blob fs");
+    let blob_store = BlobStore::new(store.clone(), file_system);
+    let blob_manager = BlobManager::new(blob_store);
+
+    let network_client = NetworkClient::new(LazyRecipient::new());
+    let (event_sender, _) = broadcast::channel(16);
+    let (ctx_sync_tx, _r0) = mpsc::channel(1);
+    let (ns_sync_tx, _r1) = mpsc::channel(1);
+    let (ns_join_tx, _r2) = mpsc::channel(1);
+    let (open_subgroup_join_tx, _r3) = mpsc::channel(1);
+    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+
+    let node_client = NodeClient::new(
+        store.clone(),
+        blob_manager,
+        network_client,
+        LazyRecipient::new(),
+        event_sender,
+        sync_client,
+        String::new(),
+        None,
+    );
+
+    let context_client = ContextClient::new(store, node_client, LazyRecipient::new());
+    let our_identity = PublicKey::from([0xBB; 32]);
+
+    (
+        DeltaStore::new(GENESIS, context_client, context(), our_identity),
+        tmp,
+    )
+}
+
+/// A single non-empty action so the reconstructed delta is classified as a
+/// regular delta (a genesis-parented, empty-action delta would be inferred as a
+/// checkpoint by `load_persisted_deltas`).
+fn one_action(tag: u8) -> Vec<Action> {
+    vec![Action::Add {
+        id: Id::new([tag; 32]),
+        data: vec![tag, tag, tag],
+        ancestors: vec![],
+        metadata: Metadata::default(),
+    }]
+}
+
+/// Write a `ContextDagDelta` row into the store exactly as the persistence path
+/// would, with an explicit `applied` flag.
+fn persist_row(
+    store: &Store,
+    delta_id: [u8; 32],
+    parents: Vec<[u8; 32]>,
+    applied: bool,
+    expected_root_hash: [u8; 32],
+) {
+    let mut handle = store.handle();
+    let actions = borsh::to_vec(&one_action(delta_id[0])).expect("serialize actions");
+    handle
+        .put(
+            &calimero_store::key::ContextDagDelta::new(context(), delta_id),
+            &calimero_store::types::ContextDagDelta {
+                delta_id,
+                parents,
+                actions,
+                hlc: HybridTimestamp::default(),
+                applied,
+                expected_root_hash,
+                // Phase-0 only pre-persists event-carrying inputs; carry a
+                // non-None events blob so the row matches that shape.
+                events: Some(vec![1, 2, 3]),
+                author_id: Some(PublicKey::from([0xBB; 32])),
+                governance_position_blob: None,
+                delta_signature: None,
+            },
+        )
+        .expect("persist ContextDagDelta row");
+}
+
+/// B1 — Phase-0 kill before the atomic heads commit.
+///
+/// `add_deltas_batch` / `add_delta_internal` pre-persist an event-carrying input
+/// as a standalone `applied: false` row BEFORE the DAG apply and BEFORE the
+/// atomic `dag_heads` commit that would flip it to `applied: true`. If the node
+/// is killed in that window, the row is left `applied: false`.
+///
+/// Correct restart behavior: such a row — whose state effects were never
+/// committed (root hash unchanged, heads never advanced) — must NOT be treated
+/// as applied on reload. It must be re-driven through apply or left pending;
+/// otherwise the DAG believes a delta is applied whose actions never reached
+/// committed state, an unconvergeable divergence.
+///
+/// This test is `#[ignore]`d because it currently fails: `load_persisted_deltas`
+/// restores rows purely by parent-reachability (`restore_applied_delta`) and
+/// never consults the persisted `applied` flag, so a genesis-parented
+/// `applied: false` row is promoted to applied (and made a head) on restart
+/// without re-executing its actions.
+#[tokio::test]
+#[ignore = "reveals possible bug: load_persisted_deltas ignores the persisted \
+            `applied` flag and promotes a Phase-0 applied:false row (killed \
+            before the heads commit) to applied on restart via \
+            restore_applied_delta, without re-executing its actions"]
+async fn phase0_applied_false_row_not_promoted_on_restart() {
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let delta_id = [0x01; 32];
+
+    // On-disk state at crash time: the standalone applied:false row, no heads
+    // commit (nothing advanced the DAG heads past genesis).
+    persist_row(&store, delta_id, vec![GENESIS], false, [0x11; 32]);
+
+    // Restart: fresh DeltaStore over the same store, then reload from disk.
+    let (delta_store, _tmp) = delta_store_over(store).await;
+    let _ = delta_store
+        .load_persisted_deltas()
+        .await
+        .expect("reload from persisted rows");
+
+    assert!(
+        !delta_store.dag_has_delta_applied(&delta_id).await,
+        "an applied:false row that never reached the heads commit must not be \
+         promoted to applied on restart"
+    );
+    assert!(
+        !delta_store.get_heads().await.contains(&delta_id),
+        "an uncommitted delta must not become a DAG head on restart"
+    );
+}
+
+/// B2 — merge topology and persisted root hash are byte-identical across restart.
+///
+/// Two concurrent branches (A, B off genesis) plus a merge delta M (parents
+/// [A, B]) are persisted as applied, exactly as a committed merge would leave
+/// them on disk. A restart (`load_persisted_deltas` on a fresh `DeltaStore`)
+/// must reconstruct the identical DAG: M is the single head (the two branches
+/// collapse to one — the merge-vs-sequential shape is preserved) and M's stored
+/// `expected_root_hash` and parent set round-trip byte-for-byte.
+///
+/// Note: the WASM-side CRDT recompute of a merge root hash needs a full context
+/// + application and is covered by the e2e sync-catchup suites; this pins the
+/// persistence/topology determinism that a deterministic root relies on.
+#[tokio::test]
+async fn merge_topology_and_root_hash_identical_across_restart() {
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (a, b, m) = ([0x0A; 32], [0x0B; 32], [0x0C; 32]);
+    let (root_a, root_b, root_m) = ([0xAA; 32], [0xBB; 32], [0xCC; 32]);
+
+    // Concurrent branches off genesis, then a committed merge over both.
+    persist_row(&store, a, vec![GENESIS], true, root_a);
+    persist_row(&store, b, vec![GENESIS], true, root_b);
+    persist_row(&store, m, vec![a, b], true, root_m);
+
+    // First restart.
+    let (ds1, _tmp1) = delta_store_over(store.clone()).await;
+    let _ = ds1.load_persisted_deltas().await.expect("reload #1");
+
+    assert!(ds1.dag_has_delta_applied(&a).await);
+    assert!(ds1.dag_has_delta_applied(&b).await);
+    assert!(ds1.dag_has_delta_applied(&m).await);
+
+    // The merge collapses both branches into a single head, M.
+    assert_eq!(
+        ds1.get_heads().await,
+        vec![m],
+        "merge must leave exactly one head after restart"
+    );
+
+    // The merge delta's persisted root hash and parents survive byte-identically.
+    let m_reloaded = ds1.get_delta(&m).await.expect("merge delta reloaded");
+    assert_eq!(
+        m_reloaded.expected_root_hash, root_m,
+        "merge root hash must round-trip byte-for-byte across restart"
+    );
+    let mut parents = m_reloaded.parents.clone();
+    parents.sort_unstable();
+    let mut expected_parents = vec![a, b];
+    expected_parents.sort_unstable();
+    assert_eq!(
+        parents, expected_parents,
+        "merge parent set must be preserved"
+    );
+
+    // A second, independent restart reproduces the identical head and root hash
+    // — the reconstruction is deterministic, not order-dependent.
+    let (ds2, _tmp2) = delta_store_over(store).await;
+    let _ = ds2.load_persisted_deltas().await.expect("reload #2");
+    assert_eq!(ds2.get_heads().await, vec![m]);
+    assert_eq!(
+        ds2.get_delta(&m)
+            .await
+            .expect("merge reloaded #2")
+            .expected_root_hash,
+        root_m,
+        "root hash must be identical across repeated restarts"
+    );
+}

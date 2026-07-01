@@ -3829,3 +3829,117 @@ mod seed_topology_tests {
         assert_eq!(topology.len(), 100);
     }
 }
+
+#[cfg(test)]
+mod apply_lock_poison_recovery_tests {
+    //! Crash recovery for the per-context apply-lock relay slot.
+    //!
+    //! If an apply panics while holding `apply_lock_slot`, the mutex is poisoned.
+    //! `lock_apply_slot` recovers it via `PoisonError::into_inner` so a single
+    //! transient panic can't turn every later apply on the context into a crash.
+    //! This drives that path: poison the real slot from a panicking thread, then
+    //! assert the recovery accessor still acquires it (and observes an untorn
+    //! `Option`, since every access takes/replaces the value wholesale).
+
+    use std::sync::Arc;
+    use std::thread;
+
+    use calimero_blobstore::config::BlobStoreConfig;
+    use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
+    use calimero_context_client::client::ContextClient;
+    use calimero_network_primitives::client::NetworkClient;
+    use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
+    use tokio::sync::{broadcast, mpsc};
+
+    use super::DeltaStore;
+
+    /// Build a standalone `DeltaStore` (and its live `ContextStorageApplier`)
+    /// backed by an in-memory store. Mirrors `delta_store_batch_test`'s helper;
+    /// the returned `TempDir` guard must be kept alive for the blob fs.
+    async fn build_delta_store() -> (DeltaStore, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+
+        let blob_config =
+            BlobStoreConfig::new(tmp.path().to_path_buf().try_into().expect("utf8 blob path"));
+        let file_system = FileSystem::new(&blob_config).await.expect("blob fs");
+        let blob_store = BlobStore::new(store.clone(), file_system);
+        let blob_manager = BlobManager::new(blob_store);
+
+        let node_recipient = LazyRecipient::new();
+        let context_recipient = LazyRecipient::new();
+        let network_recipient = LazyRecipient::new();
+
+        let network_client = NetworkClient::new(network_recipient);
+        let (event_sender, _) = broadcast::channel(16);
+        let (ctx_sync_tx, _ctx_sync_rx) = mpsc::channel(1);
+        let (ns_sync_tx, _ns_sync_rx) = mpsc::channel(1);
+        let (ns_join_tx, _ns_join_rx) = mpsc::channel(1);
+        let (open_subgroup_join_tx, _open_subgroup_join_rx) = mpsc::channel(1);
+        let sync_client =
+            SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+
+        let node_client = NodeClient::new(
+            store.clone(),
+            blob_manager,
+            network_client,
+            node_recipient,
+            event_sender,
+            sync_client,
+            String::new(),
+            None,
+        );
+
+        let context_client = ContextClient::new(store, node_client, context_recipient);
+
+        let context_id = ContextId::from([0xAA; 32]);
+        let our_identity = PublicKey::from([0xBB; 32]);
+        let root = [0u8; 32];
+
+        (
+            DeltaStore::new(root, context_client, context_id, our_identity),
+            tmp,
+        )
+    }
+
+    #[tokio::test]
+    async fn lock_apply_slot_recovers_poisoned_relay_mutex() {
+        let (ds, _tmp) = build_delta_store().await;
+        let applier = Arc::clone(&ds.applier);
+
+        // A thread panics while holding the relay slot — exactly the shape of an
+        // apply unwinding mid-relay — which poisons the mutex.
+        let poisoner = Arc::clone(&applier);
+        let handle = thread::spawn(move || {
+            let _guard = poisoner
+                .apply_lock_slot
+                .lock()
+                .expect("first lock is clean");
+            panic!("simulated apply panic while holding the relay slot");
+        });
+        assert!(
+            handle.join().is_err(),
+            "poisoner thread must have unwound to poison the mutex"
+        );
+
+        // Sanity: a naive `.lock()` now fails — the mutex really is poisoned, so
+        // the recovery below is exercising the poisoned path, not a clean one.
+        assert!(
+            applier.apply_lock_slot.lock().is_err(),
+            "mutex must report poisoned after the holder panicked"
+        );
+
+        // The recovery accessor acquires the slot without panicking and observes
+        // a consistent value (no retained key was stashed before the panic).
+        let guard = applier.lock_apply_slot();
+        assert!(
+            guard.is_none(),
+            "recovered relay slot must hold no retained apply-lock key"
+        );
+    }
+}

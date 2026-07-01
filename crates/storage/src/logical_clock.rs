@@ -469,6 +469,56 @@ mod tests {
     }
 
     #[test]
+    fn test_hlc_monotonic_across_backward_wall_clock_jump() {
+        // Crash-recovery / NTP-correction scenario: after a reading is taken the
+        // wall clock jumps BACKWARD (e.g. the machine's clock is corrected on
+        // restart). The HLC must never emit a timestamp that sorts at or before
+        // one it already emitted — even a delta_id derived from a later reading
+        // must be strictly greater — or two distinct events collide and one is
+        // silently lost. Monotonicity is preserved by holding physical time at
+        // the last observed value and advancing the logical counter instead.
+        let time = AtomicU64::new(2_000_000_000_000_000_000);
+        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+
+        let before = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+
+        // Move the wall clock a full second into the past.
+        let jumped_back = time.load(Ordering::Relaxed) - 1_000_000_000;
+        time.store(jumped_back, Ordering::Relaxed);
+
+        let after = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+
+        // Strictly monotonic despite the backward jump: no collision, no
+        // regression. This is the invariant a delta_id derived from the HLC
+        // relies on for uniqueness across a clock correction.
+        assert!(
+            after.get_time().as_u64() > before.get_time().as_u64(),
+            "HLC regressed across a backward wall-clock jump: {after} !> {before}",
+        );
+        assert_ne!(
+            after.get_time().as_u64(),
+            before.get_time().as_u64(),
+            "backward jump produced a colliding timestamp",
+        );
+
+        // Physical time was pinned to the pre-jump value (the clock did not
+        // follow the wall clock backward); progress came from the counter.
+        assert_eq!(
+            physical_time_secs(&after),
+            physical_time_secs(&before),
+            "physical time must hold at the last observed value, not regress",
+        );
+        assert!(
+            logical_counter(&after) > logical_counter(&before),
+            "the logical counter must advance to preserve ordering",
+        );
+
+        // And a third reading, still on the rewound clock, keeps advancing.
+        let third = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+        assert!(third.get_time().as_u64() > after.get_time().as_u64());
+    }
+
+    #[test]
     fn test_hybrid_timestamp_borsh() {
         let time = AtomicU64::new(1_000_000_000_000_000_000);
         let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));

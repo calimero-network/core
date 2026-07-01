@@ -433,6 +433,31 @@ mod tests {
         store.get(key).unwrap().is_some()
     }
 
+    /// A sweep that panics mid-run must still clear `sweep_in_progress` so the
+    /// next tick is not permanently skipped. The flag lives in a `SweepGuard`
+    /// held inside the sweep task; its `Drop` runs on unwind, so catching a
+    /// simulated panic must leave the flag cleared.
+    #[test]
+    fn panicking_sweep_clears_in_progress_flag() {
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        // Enter a sweep: claim the flag exactly as `spawn_sweep` does.
+        assert!(!flag.load(std::sync::atomic::Ordering::Acquire));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = SweepGuard(Arc::clone(&flag));
+            flag.store(true, std::sync::atomic::Ordering::Release);
+            // A sweep aborting mid-run (e.g. a store error surfacing as a panic).
+            panic!("simulated sweep panic");
+        }));
+        assert!(result.is_err(), "the sweep must have unwound");
+
+        // The guard's Drop ran during unwind, so a later tick can start.
+        assert!(
+            !flag.load(std::sync::atomic::Ordering::Acquire),
+            "SweepGuard must clear the in-progress flag even when the sweep panics"
+        );
+    }
+
     /// A delete stamps every descendant index row with the same `deleted_at`, so
     /// a single sweep reclaims the whole tombstoned subtree at once — while a
     /// still-live row (no `deleted_at`) and a within-retention tombstone survive.
