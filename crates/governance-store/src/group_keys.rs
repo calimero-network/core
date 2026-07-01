@@ -74,22 +74,21 @@ impl<'a> GroupKeyring<'a> {
     /// making the node pick a stale "current" key (the very divergence the epoch
     /// exists to prevent). The lock makes the check-then-write atomic.
     ///
-    /// Two properties make the lock sufficient without store-level snapshot
-    /// isolation: (1) `handle.put` is write-through to the shared DB, so a write
-    /// by one lock holder is visible to the next holder's freshly-opened
-    /// `handle.get`; and (2) `handle` is declared *after* `_guard`, so it drops
-    /// (flushing any layer buffering) *before* the lock is released — the next
-    /// holder can never observe a half-applied write. A single process-global
-    /// lock (rather than a per-group lock) is deliberate: group-key writes are
-    /// rare (rotations / deliveries), never on a hot path, so cross-group
-    /// contention is negligible and not worth a per-key lock map.
+    /// The lock is sufficient without store-level snapshot isolation because a
+    /// base-`Store` `handle.put` is **write-through** to the shared DB (it calls
+    /// `db.put` directly; the layer's `commit` is a no-op, so there is no
+    /// per-handle write buffer). The write is therefore durable and visible the
+    /// instant `put` returns — before the lock is released — so the next lock
+    /// holder's freshly-opened `handle.get` always observes it. Correctness does
+    /// **not** depend on when `handle` is dropped. A single process-global lock
+    /// (rather than a per-group lock) is deliberate: group-key writes are rare
+    /// (rotations / deliveries), never on a hot path, so cross-group contention
+    /// is negligible and not worth a per-key lock map.
     pub fn store_key_with_epoch(&self, group_key: &[u8; 32], epoch: u64) -> EyreResult<[u8; 32]> {
         let key_id = Self::key_id_for(group_key);
         let entry = GroupKeyEntry::new(self.group_id.to_bytes(), key_id);
         // Serialize the read-modify-write; recover a poisoned lock (the guarded
         // state lives in the store, not the guard, so a prior panic is benign).
-        // NOTE: `_guard` is declared before `handle` on purpose — `handle` must
-        // drop first (see doc above).
         let _guard = GROUP_KEY_EPOCH_WRITE_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
