@@ -503,7 +503,7 @@ impl Report for GetMemberCapabilitiesApiResponse {
         ]);
         let _ = table.add_row(vec![
             "CAN_CREATE_CONTEXT".to_owned(),
-            if caps & MemberCapabilities::CAN_CREATE_CONTEXT != 0 {
+            if caps & MemberCapabilities::CAN_CREATE_CONTEXT.bits() != 0 {
                 "yes"
             } else {
                 "no"
@@ -512,7 +512,7 @@ impl Report for GetMemberCapabilitiesApiResponse {
         ]);
         let _ = table.add_row(vec![
             "CAN_INVITE_MEMBERS".to_owned(),
-            if caps & MemberCapabilities::CAN_INVITE_MEMBERS != 0 {
+            if caps & MemberCapabilities::CAN_INVITE_MEMBERS.bits() != 0 {
                 "yes"
             } else {
                 "no"
@@ -521,7 +521,7 @@ impl Report for GetMemberCapabilitiesApiResponse {
         ]);
         let _ = table.add_row(vec![
             "CAN_JOIN_OPEN_SUBGROUPS".to_owned(),
-            if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS != 0 {
+            if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits() != 0 {
                 "yes"
             } else {
                 "no"

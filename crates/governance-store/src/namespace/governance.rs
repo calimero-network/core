@@ -486,6 +486,10 @@ impl<'a> NamespaceGovernance<'a> {
                     }
                 }
             }
+            // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op type
+            // contributes nothing to apply (it folds as a `Noop` in decode),
+            // so there is no state to mutate here.
+            _ => {}
         }
 
         // Ordering: advance the head first, then write the op to the log —
@@ -970,8 +974,10 @@ impl<'a> NamespaceGovernance<'a> {
             .default_capabilities(&gid)?
             .is_some();
         if !default_caps_existed {
-            CapabilitiesRepository::new(self.store)
-                .set_default_capabilities(&gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)?;
+            CapabilitiesRepository::new(self.store).set_default_capabilities(
+                &gid,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )?;
         }
 
         // Nothing to do (and nothing to log) if all halves were already

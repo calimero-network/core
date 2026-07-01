@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
@@ -65,7 +65,7 @@ jobs:
           ./build.sh
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-rust-apps-release-build-artifacts
           path: |
@@ -82,12 +82,12 @@ jobs:
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: e2e-rust-apps-release-build-artifacts
           path: apps
@@ -366,7 +366,7 @@ jobs:
 
       - name: Upload Workflow Data Artifacts
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-rust-apps-release-data-${{ github.sha }}
           path: |
@@ -382,7 +382,7 @@ jobs:
 
       - name: Upload Docker Logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-rust-apps-release-docker-logs-${{ github.sha }}
           path: docker-logs/

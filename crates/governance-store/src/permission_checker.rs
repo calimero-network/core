@@ -93,7 +93,9 @@ impl<'a> PermissionChecker<'a> {
     }
 
     pub fn require_manage_members(&self, identity: &PublicKey, operation: &str) -> EyreResult<()> {
-        if self.is_authorized_with_capability(identity, MemberCapabilities::MANAGE_MEMBERS)? {
+        if self
+            .is_authorized_with_capability(identity, MemberCapabilities::MANAGE_MEMBERS.bits())?
+        {
             return Ok(());
         }
         // `is_authorized_with_capability` is a strict superset of the
@@ -129,11 +131,14 @@ impl<'a> PermissionChecker<'a> {
     /// descendant before issuing any writes, so a per-descendant cap
     /// mismatch can't leave the store in a partial-cascade state.
     pub fn can_manage_application(&self, identity: &PublicKey) -> EyreResult<bool> {
-        self.is_authorized_with_capability(identity, MemberCapabilities::MANAGE_APPLICATION)
+        self.is_authorized_with_capability(identity, MemberCapabilities::MANAGE_APPLICATION.bits())
     }
 
     pub fn require_can_create_context(&self, identity: &PublicKey) -> EyreResult<()> {
-        if self.is_authorized_with_capability(identity, MemberCapabilities::CAN_CREATE_CONTEXT)? {
+        if self.is_authorized_with_capability(
+            identity,
+            MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
+        )? {
             return Ok(());
         }
         bail!(CapabilitiesError::Unauthorized {
@@ -148,7 +153,10 @@ impl<'a> PermissionChecker<'a> {
     /// root-level scoping of that capability (`execute_group_created`,
     /// `create_group`) layer the `parent == namespace_root` check on top.
     pub fn require_can_create_subgroup(&self, identity: &PublicKey) -> EyreResult<()> {
-        if self.is_authorized_with_capability(identity, MemberCapabilities::CAN_CREATE_SUBGROUP)? {
+        if self.is_authorized_with_capability(
+            identity,
+            MemberCapabilities::CAN_CREATE_SUBGROUP.bits(),
+        )? {
             return Ok(());
         }
         bail!(CapabilitiesError::Unauthorized {
@@ -160,7 +168,10 @@ impl<'a> PermissionChecker<'a> {
     /// `self.group_id` is the namespace root: a member may cascade-delete a
     /// subgroup if they are a root admin or hold `CAN_DELETE_SUBGROUP`.
     pub fn require_can_delete_subgroup(&self, identity: &PublicKey) -> EyreResult<()> {
-        if self.is_authorized_with_capability(identity, MemberCapabilities::CAN_DELETE_SUBGROUP)? {
+        if self.is_authorized_with_capability(
+            identity,
+            MemberCapabilities::CAN_DELETE_SUBGROUP.bits(),
+        )? {
             return Ok(());
         }
         bail!(CapabilitiesError::Unauthorized {
@@ -171,9 +182,10 @@ impl<'a> PermissionChecker<'a> {
 
     /// `self.group_id` is the subgroup whose visibility is being changed.
     pub fn require_can_manage_visibility(&self, identity: &PublicKey) -> EyreResult<()> {
-        if self
-            .is_authorized_with_capability(identity, MemberCapabilities::CAN_MANAGE_VISIBILITY)?
-        {
+        if self.is_authorized_with_capability(
+            identity,
+            MemberCapabilities::CAN_MANAGE_VISIBILITY.bits(),
+        )? {
             return Ok(());
         }
         bail!(CapabilitiesError::Unauthorized {
@@ -187,7 +199,10 @@ impl<'a> PermissionChecker<'a> {
     /// ops (a member setting *their own* member metadata bypasses this — see
     /// the apply path).
     pub fn require_can_manage_metadata(&self, identity: &PublicKey) -> EyreResult<()> {
-        if self.is_authorized_with_capability(identity, MemberCapabilities::CAN_MANAGE_METADATA)? {
+        if self.is_authorized_with_capability(
+            identity,
+            MemberCapabilities::CAN_MANAGE_METADATA.bits(),
+        )? {
             return Ok(());
         }
         bail!(CapabilitiesError::Unauthorized {

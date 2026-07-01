@@ -979,7 +979,7 @@ fn authorized_for_state_op_admits_inherited_members_via_open_subgroup() {
     MetaRepository::new(&store).save(&child, &meta).unwrap();
 
     CapabilitiesRepository::new(&store)
-        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
         .unwrap();
     MembershipRepository::new(&store)
         .add_member(&ns, &admin, GroupMemberRole::Admin)
@@ -1223,7 +1223,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
         CapabilitiesRepository::new(&store)
             .default_capabilities(&ns_gid)
             .unwrap(),
-        Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS),
+        Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits()),
         "genesis/seed must set the root's default caps so members admitted \
          before the DefaultCapabilitiesSet gossip inherit CAN_JOIN_OPEN_SUBGROUPS"
     );
@@ -1331,7 +1331,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
         .unwrap()
         .unwrap_or(0);
     assert_ne!(
-        tee_root_caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+        tee_root_caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         0,
         "TEE root row must carry CAN_JOIN_OPEN_SUBGROUPS (got caps={tee_root_caps:#b})"
     );
@@ -1533,7 +1533,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
             CapabilitiesRepository::new(&store)
                 .default_capabilities(&ns_gid)
                 .unwrap(),
-            Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS),
+            Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits()),
             "genesis seeds default CAN_JOIN_OPEN_SUBGROUPS caps"
         );
 
@@ -1837,7 +1837,7 @@ fn namespace_created_genesis_ensures_member_row_for_established_founder() {
         CapabilitiesRepository::new(&store)
             .default_capabilities(&ns_gid)
             .unwrap(),
-        Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS),
+        Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits()),
         "#2474 item 2: same-founder re-arrival seeds default CAN_JOIN_OPEN_SUBGROUPS caps"
     );
 }
@@ -2967,7 +2967,11 @@ fn recursive_remove_skips_inherited_only_members() {
         .add_member(&root, &member, GroupMemberRole::Member)
         .unwrap();
     CapabilitiesRepository::new(&store)
-        .set_member_capability(&root, &member, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .set_member_capability(
+            &root,
+            &member,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
         .unwrap();
     CapabilitiesRepository::new(&store)
         .set_subgroup_visibility(&open_child, VisibilityMode::Open)
@@ -4416,7 +4420,11 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     // Granting CAN_CREATE_SUBGROUP at the namespace root lets them create one
     // directly under the root, and they become its owner.
     CapabilitiesRepository::new(&store)
-        .set_member_capability(&ns_gid, &member_pk, MemberCapabilities::CAN_CREATE_SUBGROUP)
+        .set_member_capability(
+            &ns_gid,
+            &member_pk,
+            MemberCapabilities::CAN_CREATE_SUBGROUP.bits(),
+        )
         .unwrap();
     gov.apply_signed_op(&create(&member_sk, chan, ns_id, 3))
         .expect("member with CAN_CREATE_SUBGROUP creates a subgroup under the root");
@@ -4602,7 +4610,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
         .set_member_capability(
             &ns_gid,
             &janitor_pk,
-            MemberCapabilities::CAN_DELETE_SUBGROUP,
+            MemberCapabilities::CAN_DELETE_SUBGROUP.bits(),
         )
         .unwrap();
     gov.apply_signed_op(&del(&janitor_sk, s3, 5))

@@ -207,8 +207,10 @@ impl SyncManager {
                 context_id: *context_id,
                 payload: ContextEventPayload::AppVersionChanged(AppVersionChangedPayload {
                     from_version: self.application_version(old_app_id),
-                    to_version: Some(installed_application.version.clone())
-                        .filter(|v| !v.is_empty()),
+                    to_version: installed_application
+                        .version
+                        .as_ref()
+                        .map(|v| v.as_str().to_owned()),
                 }),
             });
             let _ = self.node_client.send_event(event);

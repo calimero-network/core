@@ -447,7 +447,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     && MetadataRepository::new(&datastore).group_metadata(&group_id)?.is_none()
                 {
                     MetadataRepository::new(&datastore).set_group(&group_id, &calimero_primitives::metadata::MetadataRecord {
-                            name: group_name.clone(), updated_at: calimero_governance_store::now_millis(), updated_by: joiner_identity, ..Default::default()
+                            name: group_name.clone(), data: std::collections::BTreeMap::new(), updated_at: calimero_governance_store::now_millis(), updated_by: joiner_identity,
                         }, )?;
                 }
 

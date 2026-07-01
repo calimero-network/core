@@ -567,7 +567,7 @@ fn provision_tee_owner_with_sk(
     calimero_context::group_store::CapabilitiesRepository::new(&node.store)
         .set_default_capabilities(
             gid,
-            calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         )
         .expect("set namespace-root default capabilities");
 

@@ -192,9 +192,9 @@ pub async fn handler(
                     &group_id,
                     &calimero_primitives::metadata::MetadataRecord {
                         name: body.group_name.clone(),
+                        data: std::collections::BTreeMap::new(),
                         updated_at: calimero_context::group_store::now_millis(),
                         updated_by: signer_pk,
-                        ..Default::default()
                     },
                 ) {
                     warn!(

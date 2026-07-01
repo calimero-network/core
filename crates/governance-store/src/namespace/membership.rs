@@ -169,7 +169,7 @@ impl<'a> NamespaceMembershipService<'a> {
         if !MembershipRepository::new(self.store).is_admin_or_has_capability(
             group_id,
             inviter_pk,
-            MemberCapabilities::CAN_INVITE_MEMBERS,
+            MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
         )? {
             bail!(
                 "invitation inviter {} lacks permission for group {:?}",
