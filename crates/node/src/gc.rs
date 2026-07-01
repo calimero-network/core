@@ -10,7 +10,6 @@
 //! sweep over the committed keyspace reclaims an entire deleted subtree once its
 //! retention elapses — not just the directly-deleted row.
 
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -104,8 +103,13 @@ impl GarbageCollector {
         }
 
         let this = self.clone();
-        let in_progress = self.sweep_in_progress.clone();
+        // Clear the flag via an RAII guard rather than a trailing statement, so
+        // it is released even if this future is dropped/cancelled mid-sweep
+        // (e.g. actor teardown) — not only on the normal completion path. A
+        // leaked `true` would silently lock out GC for the actor's lifetime.
+        let guard = SweepGuard(self.sweep_in_progress.clone());
         let _handle = actix::spawn(async move {
+            let _guard = guard;
             let outcome = tokio::task::spawn_blocking(move || this.sweep(now_nanos())).await;
 
             match outcome {
@@ -123,8 +127,6 @@ impl GarbageCollector {
                 Ok(Err(e)) => error!(error = ?e, "Garbage collection failed"),
                 Err(join_err) => error!(error = ?join_err, "Garbage collection task panicked"),
             }
-
-            in_progress.store(false, Ordering::Release);
         });
     }
 
@@ -144,12 +146,29 @@ impl GarbageCollector {
         // the column while its iterator is live.
         let mut iter = self.store.iter::<ContextState>()?;
         let mut keys_to_delete = Vec::new();
-        let mut contexts = HashSet::new();
         let mut capped = false;
 
-        while let Some(entry) = iter.next()? {
-            let _ = contexts.insert(entry.context_id());
+        // Count distinct contexts (a log-only metric) in O(1) memory: the column
+        // is keyed `context_id ‖ state_key`, so entries iterate grouped by
+        // context and a change of `context_id` marks a new context. If iteration
+        // order ever differed this would only over-count the metric, never affect
+        // reclamation.
+        let mut contexts_scanned = 0usize;
+        let mut last_context = None;
 
+        while let Some(entry) = iter.next()? {
+            let context_id = entry.context_id();
+            if last_context != Some(context_id) {
+                contexts_scanned += 1;
+                last_context = Some(context_id);
+            }
+
+            // The iterator's key snapshot and this per-key `get` are not atomic;
+            // a concurrent writer could change the value in between. Every outcome
+            // is safe: a delete makes `get` return `None` (skipped), and an update
+            // to a non-tombstone fails `tombstone_deleted_at` (skipped). The
+            // round-trip guard below is the backstop against acting on stale or
+            // non-index bytes.
             let Some(value) = self.store.get(&entry)? else {
                 continue;
             };
@@ -193,7 +212,7 @@ impl GarbageCollector {
 
         Ok(GCStats {
             tombstones_collected: collected,
-            contexts_scanned: contexts.len(),
+            contexts_scanned,
             duration_ms: start.elapsed().as_millis() as u64,
             capped,
         })
@@ -207,9 +226,17 @@ impl GarbageCollector {
 /// pre-image and can't be recovered from the key), so an index row can only be
 /// told apart from entity data by its value shape. A value qualifies only if it
 /// deserializes as an `EntityIndex`, carries a `deleted_at`, AND re-serializes to
-/// the exact same bytes: borsh is canonical, so a coincidental partial decode of
-/// application data fails the round-trip. This guarantees GC never deletes live
-/// entity data that merely happens to borsh-decode.
+/// the exact same bytes: borsh is canonical for `EntityIndex`'s field types, so a
+/// coincidental partial decode of application data fails the round-trip. This
+/// guarantees GC never deletes live entity data that merely happens to
+/// borsh-decode. (`entity_index_borsh_roundtrips` locks the canonical invariant;
+/// a future field of a non-canonical type would break it.)
+///
+/// The guard is deliberately conservative in the false-negative direction: if
+/// the on-disk `EntityIndex` layout ever changes, pre-change tombstone bytes may
+/// fail to decode/round-trip and simply won't be reclaimed (they leak, never
+/// mis-deleted) until migrated — same as any code that reads `EntityIndex` from
+/// disk.
 fn tombstone_deleted_at(value: &[u8]) -> Option<u64> {
     let index = borsh::from_slice::<EntityIndex>(value).ok()?;
     // Cheap check first: only round-trip values that are actually tombstones.
@@ -259,6 +286,20 @@ impl Handler<RunGC> for GarbageCollector {
     fn handle(&mut self, _msg: RunGC, _ctx: &mut Self::Context) -> Self::Result {
         debug!("Starting garbage collection cycle");
         self.spawn_sweep();
+    }
+}
+
+/// Releases the sweep-in-progress flag on drop.
+///
+/// Held inside the spawned sweep future so the flag is cleared on completion
+/// AND on cancellation (the future being dropped, e.g. actor teardown). Without
+/// this, a cancelled sweep would leave the flag set and permanently skip every
+/// later tick.
+struct SweepGuard(Arc<AtomicBool>);
+
+impl Drop for SweepGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -446,5 +487,24 @@ mod tests {
 
         assert_eq!(stats.tombstones_collected, 0);
         assert!(exists(&store, &key), "entity data must never be reclaimed");
+    }
+
+    /// `tombstone_deleted_at`'s index-vs-data guard assumes `EntityIndex` borsh
+    /// is canonical — re-serializing a decoded value yields identical bytes.
+    /// Lock that invariant so a future field of a non-canonical type (e.g. a
+    /// `HashMap`) is caught here rather than silently weakening the guard.
+    #[test]
+    fn entity_index_borsh_roundtrips() {
+        let mut index = EntityIndex::minimal_for_test(Id::new([9u8; 32]));
+        index.deleted_at = Some(123);
+        let bytes = borsh::to_vec(&index).unwrap();
+
+        let decoded = borsh::from_slice::<EntityIndex>(&bytes).unwrap();
+        assert_eq!(
+            borsh::to_vec(&decoded).unwrap(),
+            bytes,
+            "EntityIndex borsh must be canonical for the round-trip guard to hold"
+        );
+        assert_eq!(super::tombstone_deleted_at(&bytes), Some(123));
     }
 }
