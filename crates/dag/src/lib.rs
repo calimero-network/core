@@ -100,12 +100,22 @@ impl<T: BorshDeserialize> BorshDeserialize for CausalDelta<T> {
         let expected_root_hash = <[u8; 32]>::deserialize_reader(reader)?;
 
         // `DeltaKind` is a unit-variant enum, so its borsh encoding is a single
-        // discriminant byte: 0 = Regular, 1 = Checkpoint. Read it tolerating a
-        // clean EOF (legacy pre-`kind` delta) while retrying `Interrupted`.
+        // discriminant byte: 0 = Regular, 1 = Checkpoint. A pre-`kind` delta
+        // omits it, so a clean EOF at this boundary must decode as Regular.
+        //
+        // We deliberately read the byte with a raw `read()` loop rather than
+        // `u8::deserialize_reader`: borsh's reader maps an at-EOF read to
+        // `ErrorKind::InvalidData` ("Unexpected length of input"), which is
+        // indistinguishable by kind from a genuine corrupt-data error — so it
+        // can't detect the trailing-field boundary. `read()` distinguishes them
+        // directly: `Ok(0)` is end-of-input (→ Regular), `Ok(1)` is a present
+        // discriminant, and `Interrupted` retries. This mirrors the existing
+        // `read_option_tag` helper used for the same trailing-field pattern in
+        // the sync types.
         let mut tag = [0u8; 1];
         let kind = loop {
             match reader.read(&mut tag) {
-                Ok(0) => break DeltaKind::Regular, // clean EOF: legacy delta
+                Ok(0) => break DeltaKind::Regular, // end of input: legacy delta
                 Ok(_) => {
                     break match tag[0] {
                         0 => DeltaKind::Regular,
