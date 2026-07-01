@@ -43,7 +43,7 @@ use node::NodeCommand;
 use peers::PeersCommand;
 use tee::TeeCommand;
 
-use crate::auth::{authenticate_with_session_cache, check_authentication};
+use crate::auth::{authenticate_with_session_cache, check_authentication, TokenScope};
 
 pub const EXAMPLES: &str = r"
   # List all applications
@@ -146,9 +146,67 @@ impl Environment {
     }
 }
 
+impl SubCommands {
+    /// Least-privilege token scope this command needs at login.
+    ///
+    /// Read-only resource commands request a narrow, non-admin scope so they no
+    /// longer persist a full-`admin` token. Anything that mutates, manages keys
+    /// or the node, or whose required permissions we cannot conservatively
+    /// narrow, requests `Admin`.
+    fn required_scope(&self) -> TokenScope {
+        use crate::cli::app::AppSubCommands;
+        use crate::cli::blob::BlobSubCommands;
+        use crate::cli::context::ContextSubCommands;
+
+        // The App/Blob/Context arms are matched *exhaustively* (no wildcard) so
+        // adding a new subcommand variant is a compile error until its scope is
+        // classified here — a new read-only variant can't silently over-scope to
+        // Admin, nor a new mutating one silently under-scope to Resource.
+        match self {
+            SubCommands::App(c) => match c.subcommand {
+                AppSubCommands::Get(_)
+                | AppSubCommands::List(_)
+                | AppSubCommands::Versions(_)
+                | AppSubCommands::ListPackages(_)
+                | AppSubCommands::ListVersions(_)
+                | AppSubCommands::GetLatestVersion(_) => TokenScope::Resource,
+                AppSubCommands::Install(_)
+                | AppSubCommands::Uninstall(_)
+                | AppSubCommands::Watch(_) => TokenScope::Admin,
+            },
+            SubCommands::Blob(c) => match c.subcommand {
+                BlobSubCommands::List(_)
+                | BlobSubCommands::Info(_)
+                | BlobSubCommands::Download(_) => TokenScope::Resource,
+                BlobSubCommands::Upload(_) | BlobSubCommands::Delete(_) => TokenScope::Admin,
+            },
+            SubCommands::Context(c) => match c.subcommand {
+                ContextSubCommands::List(_) | ContextSubCommands::Get(_) => TokenScope::Resource,
+                ContextSubCommands::Create(_)
+                | ContextSubCommands::InviteSpecializedNode(_)
+                | ContextSubCommands::Delete(_)
+                | ContextSubCommands::Watch(_)
+                | ContextSubCommands::Update(_)
+                | ContextSubCommands::Identity(_)
+                | ContextSubCommands::Alias(_)
+                | ContextSubCommands::Use(_)
+                | ContextSubCommands::Sync(_) => TokenScope::Admin,
+            },
+            // Everything else (mutations, key/node management, call, and the
+            // network/peers/tee reads whose permissions are not in the Resource
+            // set) conservatively requests Admin.
+            _ => TokenScope::Admin,
+        }
+    }
+}
+
 impl RootCommand {
     pub async fn run(self) -> Result<(), CliError> {
         let output = Output::new(self.args.output_format);
+
+        // Record the least-privilege scope this command needs before any
+        // authentication (and token persistence) happens.
+        crate::auth::set_requested_scope(self.action.required_scope());
 
         // Some commands don't require a connection (like node commands)
         let needs_connection = !matches!(&self.action, SubCommands::Node(_));

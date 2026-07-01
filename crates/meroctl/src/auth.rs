@@ -330,6 +330,85 @@ fn generate_state() -> String {
     hex::encode(bytes)
 }
 
+/// The token scope a command requests at login.
+///
+/// Read-only commands no longer have to persist a full-`admin` token; they can
+/// request a narrower, non-admin scope so a leaked CLI token can do less.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenScope {
+    /// Full administrative access. Used for mutating/admin/node commands and any
+    /// command whose required permissions we do not conservatively narrow.
+    Admin,
+    /// Non-admin resource access (no `admin`, no `keys`): sufficient for
+    /// read-only resource commands (list/get/info/download).
+    Resource,
+}
+
+impl TokenScope {
+    /// The `permissions` value sent to `/auth/login` for this scope.
+    fn as_permissions(self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::Resource => "application,package,context,blob",
+        }
+    }
+
+    /// Parse an explicit scope override (e.g. from `MEROCTL_AUTH_SCOPE`),
+    /// case-insensitively. Unrecognised values return `None`.
+    fn parse_override(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "admin" => Some(Self::Admin),
+            "resource" => Some(Self::Resource),
+            _ => None,
+        }
+    }
+}
+
+static REQUESTED_SCOPE: std::sync::OnceLock<TokenScope> = std::sync::OnceLock::new();
+
+/// Record the least-privilege token scope for the current command, applying the
+/// `MEROCTL_AUTH_SCOPE` override once. Called exactly once at startup, before any
+/// authentication happens.
+///
+/// The final scope is stored in a process-global `OnceLock`, so a second call
+/// can't change it. Rather than silently discard the repeat (which would let one
+/// command's scope bleed into another) we surface it: a warning in every build,
+/// plus a hard `debug_assert` failure in debug/test builds.
+pub fn set_requested_scope(command_scope: TokenScope) {
+    let scope = resolve_scope_override(command_scope);
+    if REQUESTED_SCOPE.set(scope).is_err() {
+        eprintln!("warning: token scope already set; ignoring repeated set_requested_scope call");
+        debug_assert!(false, "set_requested_scope called more than once");
+    }
+}
+
+/// Apply the `MEROCTL_AUTH_SCOPE` env override (`admin`/`resource`,
+/// case-insensitive) to the command-derived scope — an escape hatch in either
+/// direction if the command-derived scope is wrong for a particular server. An
+/// unrecognised value is warned about and ignored. Read exactly once, from
+/// [`set_requested_scope`], so the env read and any warning happen a single time.
+fn resolve_scope_override(command_scope: TokenScope) -> TokenScope {
+    let Ok(raw) = std::env::var("MEROCTL_AUTH_SCOPE") else {
+        return command_scope;
+    };
+    TokenScope::parse_override(&raw).unwrap_or_else(|| {
+        // Make misconfiguration visible: an operator who fat-fingers the value
+        // (e.g. `resourc`) would otherwise silently get the per-command scope
+        // while believing they had overridden it.
+        eprintln!(
+            "warning: unrecognised MEROCTL_AUTH_SCOPE value {raw:?} (expected `admin` or `resource`); ignoring"
+        );
+        command_scope
+    })
+}
+
+/// The resolved scope to request at login, recorded by [`set_requested_scope`]
+/// (defaults to `Admin` when unset). A pure reader — deterministic across the
+/// multiple `build_auth_url` calls in a single command.
+fn requested_scope() -> TokenScope {
+    REQUESTED_SCOPE.get().copied().unwrap_or(TokenScope::Admin)
+}
+
 fn build_auth_url(api_url: &Url, callback_port: u16, state: &str) -> Result<Url> {
     let mut auth_url = api_url.clone();
     auth_url.set_path("/auth/login");
@@ -341,7 +420,7 @@ fn build_auth_url(api_url: &Url, callback_port: u16, state: &str) -> Result<Url>
         .query_pairs_mut()
         .append_pair("callback-url", &callback)
         .append_pair("app-url", api_url.as_str().trim_end_matches('/'))
-        .append_pair("permissions", "admin");
+        .append_pair("permissions", requested_scope().as_permissions());
 
     Ok(auth_url)
 }
@@ -727,6 +806,31 @@ mod tests {
             .expect("callback-url present");
         assert_eq!(callback, "http://127.0.0.1:9080/callback?state=abc123");
         assert!(url.query_pairs().any(|(k, _)| k == "permissions"));
+    }
+
+    #[test]
+    fn token_scope_permission_strings() {
+        use super::TokenScope;
+        assert_eq!(TokenScope::Admin.as_permissions(), "admin");
+        // Resource scope never grants `admin` or `keys`.
+        let resource = TokenScope::Resource.as_permissions();
+        assert!(!resource.split(',').any(|p| p == "admin" || p == "keys"));
+        assert!(resource.split(',').any(|p| p == "context"));
+    }
+
+    #[test]
+    fn token_scope_override_parses_both_directions() {
+        use super::TokenScope;
+        assert_eq!(TokenScope::parse_override("admin"), Some(TokenScope::Admin));
+        assert_eq!(
+            TokenScope::parse_override("RESOURCE"),
+            Some(TokenScope::Resource)
+        );
+        assert_eq!(
+            TokenScope::parse_override(" resource "),
+            Some(TokenScope::Resource)
+        );
+        assert_eq!(TokenScope::parse_override("bogus"), None);
     }
 
     fn make_tokens(access: &str) -> JwtToken {
