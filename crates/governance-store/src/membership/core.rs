@@ -123,6 +123,15 @@ impl<'a> MembershipRepository<'a> {
         )?;
         drop(handle);
 
+        // Two-phase write (member row, then the default-caps row on its own
+        // handle), identical to `add_member_with_keys`. It is NOT a transaction,
+        // and deliberately so: the store is unbuffered/write-through, so a single
+        // shared handle would not make the two puts atomic across a crash anyway.
+        // Safety rests on the apply model, not a lock: group-op apply is
+        // serialized per group_id by the single-threaded ContextManager actor, so
+        // no concurrent reader observes the in-between state; and apply is
+        // replay-safe/idempotent, so a crash landing between the two writes is
+        // healed when the op re-applies (set_role re-runs and re-seeds the caps).
         if !is_admin {
             let capabilities = CapabilitiesRepository::new(self.store);
             if let Some(defaults) = capabilities.default_capabilities(group_id)? {
