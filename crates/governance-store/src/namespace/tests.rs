@@ -3625,6 +3625,7 @@ fn rotation_test_setup() -> (
 /// Build a `NamespaceOp::Group` carrying an encrypted `MemberRemoved` plus a
 /// key rotation, wrapped + signed by `signer_sk`.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn build_rotation_op(
     store: &Store,
     ns_gid: ContextGroupId,
