@@ -112,7 +112,9 @@ impl GarbageCollector {
         // store, which would otherwise let a new tick race the in-flight sweep.
         // The guard also covers the normal-completion and panic paths. (If the
         // runtime is shutting down and the blocking closure never runs, the flag
-        // stays set — benign: no further ticks fire on a stopping actor.)
+        // stays set — benign: no further ticks fire on a stopping actor, and a
+        // freshly-constructed actor gets a fresh flag, since `run.rs` builds a
+        // new `GarbageCollector` with its own `Arc<AtomicBool>`.)
         let guard = SweepGuard(self.sweep_in_progress.clone());
         // Dropping this handle does not cancel the task (Actix/tokio detach it);
         // the `SweepGuard`, not the handle, owns the flag-release invariant.
@@ -225,6 +227,26 @@ impl GarbageCollector {
         let mut store = self.store.clone();
         let mut collected = 0usize;
         for key in keys_to_delete {
+            // Re-validate against the CURRENT value right before deleting. The
+            // collect phase snapshotted this key earlier in the same scan, and a
+            // concurrent writer could have resurrected the entity in that window
+            // (tombstone → live re-add). Deleting only while it is STILL a
+            // reclaimable tombstone shrinks the collect→delete race to a single
+            // read+delete, so GC never removes a resurrected live row.
+            let still_reclaimable = match self.store.get(&key) {
+                Ok(Some(value)) => tombstone_deleted_at(value.as_ref()).is_some_and(|deleted_at| {
+                    now_nanos.saturating_sub(deleted_at) > self.retention_nanos
+                }),
+                Ok(None) => false, // already gone
+                Err(e) => {
+                    warn!(error = ?e, "GC failed to re-read a tombstone; will retry next cycle");
+                    continue;
+                }
+            };
+            if !still_reclaimable {
+                continue;
+            }
+
             match store.delete(&key) {
                 Ok(()) => collected += 1,
                 Err(e) => {

@@ -311,6 +311,13 @@ impl<S: StorageAdaptor> Drop for DeferredAncestorScope<S> {
 }
 
 /// Index entry for an entity.
+///
+/// New fields must use borsh-CANONICAL types (no `HashMap`/`HashSet` or other
+/// nondeterministically-ordered containers): the node's tombstone GC tells an
+/// index row apart from opaque entity data by re-serializing a decoded value and
+/// requiring byte-identical output. A non-canonical field would silently break
+/// that guard. `calimero_node::gc`'s `entity_index_borsh_roundtrips` test locks
+/// the invariant and must stay green.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct EntityIndex {
     /// Entity ID.
