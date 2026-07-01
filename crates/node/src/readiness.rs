@@ -289,7 +289,7 @@ impl ReadinessCache {
 
         let now = Instant::now();
         let mut g = self.entries_lock();
-        let key = (beacon.namespace_id, beacon.peer_pubkey);
+        let key = (beacon.namespace_id.to_bytes(), beacon.peer_pubkey);
         if let Some(existing) = g.get(&key) {
             // Drop the beacon if it's older or equal-clock-but-not-fresher.
             if beacon.ts_millis < existing.ts_millis
@@ -309,7 +309,8 @@ impl ReadinessCache {
         // against this prune.
         let evict_window = Duration::from_millis(MAX_BEACON_CLOCK_DRIFT_MS.saturating_mul(2));
         g.retain(|(ns, _), entry| {
-            *ns != beacon.namespace_id || now.duration_since(entry.received_at) <= evict_window
+            *ns != beacon.namespace_id.to_bytes()
+                || now.duration_since(entry.received_at) <= evict_window
         });
 
         let _ = g.insert(
@@ -601,7 +602,7 @@ impl ReadinessManager {
         // Build with a placeholder signature, sign over the canonical
         // signable_bytes(), then write the real signature back.
         let mut beacon = SignedReadinessBeacon {
-            namespace_id: ns_id,
+            namespace_id: ns_id.into(),
             peer_pubkey,
             dag_head,
             applied_through: state.local_applied_through,
@@ -630,7 +631,7 @@ impl ReadinessManager {
         };
         beacon.signature = signature;
 
-        let topic = calimero_context::governance_broadcast::ns_topic(ns_id);
+        let topic = calimero_context::governance_broadcast::ns_topic(ns_id.into());
         // Wrap the NamespaceTopicMsg in the BroadcastMessage envelope used
         // on `ns/<id>` topics — the receiver-side dispatch in
         // `network_event::handle_namespace_governance_delta` unwraps

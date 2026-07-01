@@ -98,13 +98,13 @@ fn fold_subgroup_structure(
 ) -> [u8; 32] {
     let created = SignedNamespaceOp {
         version: 1,
-        namespace_id: namespace,
+        namespace_id: namespace.into(),
         parent_op_hashes: Vec::new(),
         signer: admin,
         nonce: 0,
         op: NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: subgroup.to_bytes(),
-            parent_id: namespace,
+            group_id: subgroup.to_bytes().into(),
+            parent_id: namespace.into(),
             restricted: true,
         }),
         signature: [0u8; 64],
@@ -138,13 +138,13 @@ fn ns_group_envelope(
 ) -> SignedNamespaceOp {
     SignedNamespaceOp {
         version: 1,
-        namespace_id: namespace,
+        namespace_id: namespace.into(),
         parent_op_hashes: Vec::new(),
         signer,
         nonce: 0,
         op: NamespaceOp::Group {
-            group_id: group.to_bytes(),
-            key_id: [0u8; 32],
+            group_id: group.to_bytes().into(),
+            key_id: [0u8; 32].into(),
             encrypted: EncryptedGroupOp {
                 nonce: [0u8; 12],
                 ciphertext: Vec::new(),
@@ -203,7 +203,7 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
     // (1) joiner joins the namespace root via invitation — a DIRECT membership.
     let join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns.to_bytes(),
+        ns.to_bytes().into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
@@ -220,12 +220,12 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
     // live writes NO direct row; membership is re-derived from the anchor.
     let join_sub = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns.to_bytes(),
+        ns.to_bytes().into(),
         vec![],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
-            group_id: subgroup.to_bytes(),
+            group_id: subgroup.to_bytes().into(),
         }),
     )
     .expect("sign join_sub");
@@ -356,7 +356,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
     // join ns (nonce 1) + inherit subgroup (nonce 2).
     let join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns.to_bytes(),
+        ns.to_bytes().into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
@@ -376,12 +376,12 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
 
     let join_sub = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns.to_bytes(),
+        ns.to_bytes().into(),
         vec![],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
-            group_id: subgroup.to_bytes(),
+            group_id: subgroup.to_bytes().into(),
         }),
     )
     .unwrap();
@@ -422,7 +422,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
     // REJOIN ns via invitation (direct root membership again).
     let rejoin_ns = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns.to_bytes(),
+        ns.to_bytes().into(),
         vec![],
         3,
         NamespaceOp::Root(RootOp::MemberJoined {
@@ -502,7 +502,7 @@ fn projection_defers_when_cut_ancestry_incomplete() {
     // live resolver authoritatively sees the joiner as an inherited member.
     let join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns.to_bytes(),
+        ns.to_bytes().into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
@@ -514,12 +514,12 @@ fn projection_defers_when_cut_ancestry_incomplete() {
     group_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     let join_sub = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns.to_bytes(),
+        ns.to_bytes().into(),
         vec![],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
-            group_id: subgroup.to_bytes(),
+            group_id: subgroup.to_bytes().into(),
         }),
     )
     .unwrap();
@@ -610,7 +610,7 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
     // after the backfill pull delivered them.
     let join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns.to_bytes(),
+        ns.to_bytes().into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
@@ -622,12 +622,12 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
     group_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     let join_sub = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns.to_bytes(),
+        ns.to_bytes().into(),
         vec![],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
-            group_id: subgroup.to_bytes(),
+            group_id: subgroup.to_bytes().into(),
         }),
     )
     .unwrap();

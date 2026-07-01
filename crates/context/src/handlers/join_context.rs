@@ -255,14 +255,14 @@ impl Handler<JoinContextRequest> for ContextManager {
                     let op = calimero_context_client::local_governance::NamespaceOp::Root(
                         calimero_context_client::local_governance::RootOp::MemberJoinedOpen {
                             member: joiner_identity,
-                            group_id: group_id.to_bytes(),
+                            group_id: group_id.to_bytes().into(),
                         },
                     );
                     if let Err(e) = calimero_governance_store::sign_apply_and_publish_namespace_op(
                         &datastore,
                         &node_client,
                         &ack_router,
-                        ns_id.to_bytes(),
+                        ns_id.to_bytes().into(),
                         &signer_sk,
                         op,
                     )

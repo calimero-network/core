@@ -306,7 +306,7 @@ impl<'a> GroupKeyring<'a> {
         }
 
         Ok(KeyRotation {
-            new_key_id,
+            new_key_id: new_key_id.into(),
             envelopes,
         })
     }

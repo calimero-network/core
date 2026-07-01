@@ -44,8 +44,10 @@ pub(super) fn compute_governance_position_for_context(
         }
     };
 
-    let dag =
-        calimero_governance_store::NamespaceDagService::new(datastore, namespace_id.to_bytes());
+    let dag = calimero_governance_store::NamespaceDagService::new(
+        datastore,
+        namespace_id.to_bytes().into(),
+    );
 
     // The parent edge is just the governance heads at sign time. There is no
     // embedded `group_state_hash` anymore, so the old double-read (which

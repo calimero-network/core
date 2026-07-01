@@ -256,7 +256,7 @@ mod tests {
     ) -> SignedGroupOp {
         SignedGroupOp::sign(
             signer_sk,
-            ns_gid.to_bytes(),
+            ns_gid,
             vec![],
             nonce,
             GroupOp::MemberJoinedViaTeeAttestation {
@@ -286,7 +286,7 @@ mod tests {
         let signer_sk = PrivateKey::random(&mut rng);
         let tee_op = SignedGroupOp::sign(
             &signer_sk,
-            ns_gid.to_bytes(),
+            ns_gid,
             vec![],
             1,
             GroupOp::MemberJoinedViaTeeAttestation {

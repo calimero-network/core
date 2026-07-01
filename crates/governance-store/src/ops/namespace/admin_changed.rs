@@ -15,7 +15,7 @@ pub(crate) fn apply(
     new_admin: PublicKey,
 ) -> EyreResult<()> {
     ctx.require_namespace_admin(&op.signer)?;
-    let ns_gid = ContextGroupId::from(ctx.namespace_id());
+    let ns_gid = ContextGroupId::from(ctx.namespace_id().to_bytes());
     let store = ctx.store();
 
     // The incoming admin must already be a member of the namespace root.
@@ -27,7 +27,7 @@ pub(crate) fn apply(
     let existing_role = membership.role_of(&ns_gid, &new_admin)?;
     if existing_role.is_none() {
         bail!(MembershipError::NotMember {
-            group_id: hex::encode(ctx.namespace_id()),
+            group_id: hex::encode(ns_gid.to_bytes()),
             identity: format!("{new_admin:?}"),
         });
     }

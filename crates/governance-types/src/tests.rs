@@ -87,7 +87,7 @@ const GOLDEN_GROUP_OP_UPGRADE_POLICY_SET: &[u8] = &[
     1, // UpgradePolicy::LazyOnAccess (ordinal 1, the Default)
 ];
 
-/// GroupOp ordinal 8 — TargetApplicationSet { app_key: [0;32], target: [0;32] }
+/// GroupOp ordinal 8 — TargetApplicationSet { app_key: [0;32].into(), target: [0;32] }
 const GOLDEN_GROUP_OP_TARGET_APPLICATION_SET: &[u8] = &[
     8, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -220,7 +220,7 @@ const GOLDEN_GROUP_OP_TRANSFER_OWNERSHIP: &[u8] = &[
     0, // new_owner
 ];
 
-/// GroupOp ordinal 23 — CascadeTargetApplicationSet { from_app_key: [0;32], app_key: [0;32], target: [0;32] }
+/// GroupOp ordinal 23 — CascadeTargetApplicationSet { from_app_key: [0;32].into(), app_key: [0;32].into(), target: [0;32] }
 const GOLDEN_GROUP_OP_CASCADE_TARGET_APPLICATION_SET: &[u8] = &[
     23, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -231,7 +231,7 @@ const GOLDEN_GROUP_OP_CASCADE_TARGET_APPLICATION_SET: &[u8] = &[
     0, // target_application_id
 ];
 
-/// GroupOp ordinal 24 — CascadeGroupMigrationSet { from_app_key: [0;32], migration: None }
+/// GroupOp ordinal 24 — CascadeGroupMigrationSet { from_app_key: [0;32].into(), migration: None }
 const GOLDEN_GROUP_OP_CASCADE_GROUP_MIGRATION_SET: &[u8] = &[
     24, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -651,11 +651,11 @@ fn root_op_discriminants_are_golden() {
     );
 }
 
-fn sample_group_id() -> [u8; 32] {
+fn sample_group_id() -> ContextGroupId {
     let mut g = [0u8; 32];
     g[0] = 7;
     g[31] = 3;
-    g
+    g.into()
 }
 
 #[test]
@@ -771,7 +771,7 @@ fn signable_bytes_deterministic() {
     let pk = sk.public_key();
     let s = SignableGroupOp {
         version: SIGNED_GROUP_OP_SCHEMA_VERSION,
-        group_id: [1u8; 32],
+        group_id: [1u8; 32].into(),
         parent_op_hashes: vec![],
         signer: pk,
         nonce: 42,
@@ -785,11 +785,11 @@ fn signable_bytes_deterministic() {
 
 // --- Namespace op tests ---
 
-fn sample_namespace_id() -> [u8; 32] {
+fn sample_namespace_id() -> NamespaceId {
     let mut ns = [0u8; 32];
     ns[0] = 0xAA;
     ns[31] = 0xBB;
-    ns
+    ns.into()
 }
 
 #[test]
@@ -804,7 +804,7 @@ fn namespace_op_sign_verify_root() {
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
-            parent_id: sample_namespace_id(),
+            parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
         }),
     )
@@ -831,7 +831,7 @@ fn namespace_op_sign_verify_group() {
         1,
         NamespaceOp::Group {
             group_id: sample_group_id(),
-            key_id: [0u8; 32],
+            key_id: [0u8; 32].into(),
             encrypted,
             key_rotation: None,
         },
@@ -874,7 +874,7 @@ fn namespace_op_content_hash_distinct() {
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
-            parent_id: sample_namespace_id(),
+            parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
         }),
     )
@@ -887,7 +887,7 @@ fn namespace_op_content_hash_distinct() {
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
-            parent_id: sample_namespace_id(),
+            parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
         }),
     )
@@ -913,7 +913,7 @@ fn namespace_signable_bytes_deterministic() {
         nonce: 42,
         op: NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
-            parent_id: sample_namespace_id(),
+            parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
         }),
     };
@@ -943,8 +943,8 @@ fn cascade_target_application_set_sign_verify() {
         vec![],
         1,
         GroupOp::CascadeTargetApplicationSet {
-            from_app_key: [9u8; 32],
-            app_key: [10u8; 32],
+            from_app_key: [9u8; 32].into(),
+            app_key: [10u8; 32].into(),
             target_application_id: sample_application_id(0x42),
         },
     )
@@ -969,7 +969,7 @@ fn cascade_group_migration_set_sign_verify() {
         vec![],
         1,
         GroupOp::CascadeGroupMigrationSet {
-            from_app_key: [9u8; 32],
+            from_app_key: [9u8; 32].into(),
             migration: Some(b"migrate_v1_to_v2".to_vec()),
         },
     )
@@ -999,7 +999,7 @@ fn cascade_target_distinct_from_single_group_target() {
         vec![],
         1,
         GroupOp::TargetApplicationSet {
-            app_key: new_app_key,
+            app_key: new_app_key.into(),
             target_application_id: target,
         },
     )
@@ -1011,8 +1011,8 @@ fn cascade_target_distinct_from_single_group_target() {
         vec![],
         1,
         GroupOp::CascadeTargetApplicationSet {
-            from_app_key: [9u8; 32],
-            app_key: new_app_key,
+            from_app_key: [9u8; 32].into(),
+            app_key: new_app_key.into(),
             target_application_id: target,
         },
     )
@@ -1047,8 +1047,8 @@ fn cascade_target_from_app_key_changes_hash() {
         vec![],
         1,
         GroupOp::CascadeTargetApplicationSet {
-            from_app_key: [9u8; 32],
-            app_key: new_app_key,
+            from_app_key: [9u8; 32].into(),
+            app_key: new_app_key.into(),
             target_application_id: target,
         },
     )
@@ -1060,8 +1060,8 @@ fn cascade_target_from_app_key_changes_hash() {
         vec![],
         1,
         GroupOp::CascadeTargetApplicationSet {
-            from_app_key: [8u8; 32], // only this differs
-            app_key: new_app_key,
+            from_app_key: [8u8; 32].into(), // only this differs
+            app_key: new_app_key.into(),
             target_application_id: target,
         },
     )
@@ -1085,8 +1085,8 @@ fn cascade_target_application_set_borsh_round_trip() {
     // op decodes as; this guards against that by asserting field
     // equality after a round trip.
     let original = GroupOp::CascadeTargetApplicationSet {
-        from_app_key: [9u8; 32],
-        app_key: [10u8; 32],
+        from_app_key: [9u8; 32].into(),
+        app_key: [10u8; 32].into(),
         target_application_id: sample_application_id(0x42),
     };
 
@@ -1099,8 +1099,8 @@ fn cascade_target_application_set_borsh_round_trip() {
             app_key,
             target_application_id,
         } => {
-            assert_eq!(from_app_key, [9u8; 32]);
-            assert_eq!(app_key, [10u8; 32]);
+            assert_eq!(from_app_key.to_bytes(), [9u8; 32]);
+            assert_eq!(app_key.to_bytes(), [10u8; 32]);
             assert_eq!(target_application_id, sample_application_id(0x42));
         }
         other => panic!("expected CascadeTargetApplicationSet, got {other:?}"),
@@ -1111,7 +1111,7 @@ fn cascade_target_application_set_borsh_round_trip() {
 fn cascade_group_migration_set_borsh_round_trip() {
     // Symmetric round-trip guard for the migration variant.
     let original = GroupOp::CascadeGroupMigrationSet {
-        from_app_key: [9u8; 32],
+        from_app_key: [9u8; 32].into(),
         migration: Some(b"migrate_v1_to_v2".to_vec()),
     };
 
@@ -1123,7 +1123,7 @@ fn cascade_group_migration_set_borsh_round_trip() {
             from_app_key,
             migration,
         } => {
-            assert_eq!(from_app_key, [9u8; 32]);
+            assert_eq!(from_app_key.to_bytes(), [9u8; 32]);
             assert_eq!(migration.as_deref(), Some(b"migrate_v1_to_v2".as_ref()));
         }
         other => panic!("expected CascadeGroupMigrationSet, got {other:?}"),
@@ -1131,7 +1131,7 @@ fn cascade_group_migration_set_borsh_round_trip() {
 
     // Also cover migration = None.
     let original_none = GroupOp::CascadeGroupMigrationSet {
-        from_app_key: [0u8; 32],
+        from_app_key: [0u8; 32].into(),
         migration: None,
     };
     let bytes_none = borsh::to_vec(&original_none).expect("serialize none");
@@ -1141,7 +1141,7 @@ fn cascade_group_migration_set_borsh_round_trip() {
             from_app_key,
             migration,
         } => {
-            assert_eq!(from_app_key, [0u8; 32]);
+            assert_eq!(from_app_key.to_bytes(), [0u8; 32]);
             assert!(migration.is_none());
         }
         other => panic!("expected CascadeGroupMigrationSet, got {other:?}"),
@@ -1166,8 +1166,8 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
     //
     // Golden encoding of:
     //   GroupOp::CascadeUpgrade {
-    //       from_app_key: [3u8; 32],
-    //       app_key: [4u8; 32],
+    //       from_app_key: [3u8; 32].into(),
+    //       app_key: [4u8; 32].into(),
     //       target_application_id: sample_application_id(5),
     //       migration: Some(b"migrate".to_vec()),
     //       cascade_hlc: HybridTimestamp::zero(),
@@ -1203,8 +1203,8 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
             migration,
             cascade_hlc,
         } => {
-            assert_eq!(from_app_key, [3u8; 32]);
-            assert_eq!(app_key, [4u8; 32]);
+            assert_eq!(from_app_key.to_bytes(), [3u8; 32]);
+            assert_eq!(app_key.to_bytes(), [4u8; 32]);
             assert_eq!(target_application_id, sample_application_id(5));
             assert_eq!(migration, Some(b"migrate".to_vec()));
             assert_eq!(cascade_hlc, HybridTimestamp::zero());
@@ -1251,7 +1251,7 @@ fn pre_flag_day_namespace_op_version_is_rejected() {
     let signer = PrivateKey::random(&mut OsRng).public_key();
     let stale = SignedNamespaceOp {
         version: SIGNED_NAMESPACE_OP_SCHEMA_VERSION - 1,
-        namespace_id: sample_group_id(),
+        namespace_id: sample_group_id().to_bytes().into(),
         parent_op_hashes: vec![],
         signer,
         nonce: 1,
@@ -1295,7 +1295,7 @@ fn v7_borsh_layout_group_op_is_rejected_not_misparsed() {
     let signer = PrivateKey::random(&mut OsRng).public_key();
     let v7 = V7SignedGroupOp {
         version: SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
-        group_id: sample_group_id(),
+        group_id: sample_group_id().to_bytes(),
         parent_op_hashes: vec![],
         state_hash: [0xAB; 32],
         signer,
@@ -1368,7 +1368,7 @@ mod governance_op_storage_roundtrip {
 
     fn signed(op: NamespaceOp) -> SignedNamespaceOp {
         let sk = PrivateKey::random(&mut OsRng);
-        SignedNamespaceOp::sign(&sk, [0x77; 32], vec![[0x01; 32], [0x02; 32]], 7, op)
+        SignedNamespaceOp::sign(&sk, [0x77; 32].into(), vec![[0x01; 32], [0x02; 32]], 7, op)
             .expect("sign namespace op")
     }
 
@@ -1414,18 +1414,18 @@ mod governance_op_storage_roundtrip {
     fn every_root_op_roundtrips_through_stored_signed_entry() {
         let ops = [
             RootOp::GroupCreated {
-                group_id: [1; 32],
-                parent_id: [2; 32],
+                group_id: [1; 32].into(),
+                parent_id: [2; 32].into(),
                 restricted: true,
             },
             RootOp::GroupReparented {
-                child_group_id: [1; 32],
-                new_parent_id: [2; 32],
+                child_group_id: [1; 32].into(),
+                new_parent_id: [2; 32].into(),
             },
             RootOp::GroupDeleted {
-                root_group_id: [1; 32],
-                cascade_group_ids: vec![[3; 32]],
-                cascade_context_ids: vec![[4; 32]],
+                root_group_id: [1; 32].into(),
+                cascade_group_ids: vec![[3; 32].into()],
+                cascade_context_ids: vec![[4; 32].into()],
             },
             RootOp::AdminChanged {
                 new_admin: PrivateKey::random(&mut OsRng).public_key(),
@@ -1439,7 +1439,7 @@ mod governance_op_storage_roundtrip {
             },
             RootOp::MemberJoinedOpen {
                 member: PrivateKey::random(&mut OsRng).public_key(),
-                group_id: [7; 32],
+                group_id: [7; 32].into(),
             },
             RootOp::MemberJoinedAt {
                 member: PrivateKey::random(&mut OsRng).public_key(),
