@@ -183,8 +183,18 @@ impl Codec for SpecializedNodeInviteCodec {
         // Serialize
         let buf = borsh::to_vec(&req).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
+        // Bound the message size so the u32 framing prefix cannot truncate or
+        // misrepresent the payload length (the read side rejects anything larger).
+        if buf.len() as u64 > MAX_SPECIALIZED_NODE_INVITE_MESSAGE_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "request too large",
+            ));
+        }
+
         // Write length prefix
-        let len = buf.len() as u32;
+        let len =
+            u32::try_from(buf.len()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         io.write_all(&len.to_be_bytes()).await?;
 
         // Write message
@@ -206,8 +216,18 @@ impl Codec for SpecializedNodeInviteCodec {
         // Serialize
         let buf = borsh::to_vec(&res).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
+        // Bound the message size so the u32 framing prefix cannot truncate or
+        // misrepresent the payload length (the read side rejects anything larger).
+        if buf.len() as u64 > MAX_SPECIALIZED_NODE_INVITE_MESSAGE_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "response too large",
+            ));
+        }
+
         // Write length prefix
-        let len = buf.len() as u32;
+        let len =
+            u32::try_from(buf.len()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         io.write_all(&len.to_be_bytes()).await?;
 
         // Write message

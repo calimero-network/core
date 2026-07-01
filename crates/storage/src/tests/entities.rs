@@ -545,3 +545,34 @@ mod op_mask__borsh {
         }
     }
 }
+
+#[cfg(test)]
+mod updated_at__eq_ord_contract {
+    use crate::entities::UpdatedAt;
+
+    #[test]
+    fn eq_agrees_with_ord() {
+        // `PartialEq` must agree with `Ord`: `a == b` iff `a.cmp(&b) == Equal`.
+        // An always-true `eq` (the previous behaviour) violated this and made
+        // the equal-vs-newer timestamp branch in `save_internal` unreachable.
+        let a = UpdatedAt::from(10);
+        let b = UpdatedAt::from(20);
+        let a2 = UpdatedAt::from(10);
+
+        assert_eq!(a, a2);
+        assert_ne!(a, b);
+        assert!(a < b);
+        assert!(b > a);
+        assert_eq!(a.cmp(&a2), core::cmp::Ordering::Equal);
+
+        for &(x, y) in &[(0u64, 0u64), (0, 1), (5, 5), (7, 3), (u64::MAX, 0)] {
+            let lhs = UpdatedAt::from(x);
+            let rhs = UpdatedAt::from(y);
+            assert_eq!(
+                lhs == rhs,
+                lhs.cmp(&rhs) == core::cmp::Ordering::Equal,
+                "eq must match cmp==Equal for ({x}, {y})"
+            );
+        }
+    }
+}

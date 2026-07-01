@@ -102,7 +102,10 @@ impl SessionStateInner {
     #[must_use]
     pub fn is_expired(&self) -> bool {
         let last = self.last_activity.load(Ordering::SeqCst);
-        now_secs() - last > SESSION_EXPIRY_SECS
+        // `last` is persisted; a backward wall-clock step (NTP correction) can
+        // make it exceed `now`, so subtract saturatingly to avoid an underflow
+        // panic/wrap that would spuriously flag the session as fresh forever.
+        now_secs().saturating_sub(last) > SESSION_EXPIRY_SECS
     }
 }
 

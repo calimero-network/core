@@ -114,7 +114,9 @@ impl VersionedSecret {
             value: URL_SAFE_NO_PAD.encode(secret),
             version: format!("v{now}"),
             created_at: now,
-            expires_at: now + rotation_config.grace_period,
+            // Saturate so a far-future clock plus a large grace period can't
+            // overflow the u64 expiry.
+            expires_at: now.saturating_add(rotation_config.grace_period),
             is_primary: true,
             secret_type,
         }
@@ -281,7 +283,10 @@ impl SecretManager {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
-            if now - secret.created_at >= self.rotation_config.rotation_interval {
+            // Saturate so a backward wall-clock step (NTP correction) that puts
+            // `now` before `created_at` can't underflow into a spurious early
+            // rotation (or panic in debug builds).
+            if now.saturating_sub(secret.created_at) >= self.rotation_config.rotation_interval {
                 drop(secrets);
                 self.rotate_secret(secret_type).await?;
             }

@@ -617,7 +617,10 @@ fn is_valid_release_version(version: &str) -> bool {
 
 fn policy_fetch_backoff(attempt: usize) -> std::time::Duration {
     let exponent = (attempt as u32).saturating_sub(1);
-    std::time::Duration::from_millis(250_u64.saturating_mul(1_u64 << exponent))
+    // `1 << exponent` panics once `exponent >= 64` (attempts past ~64); fall back
+    // to u64::MAX so the saturating_mul below just clamps to the max backoff.
+    let factor = 1_u64.checked_shl(exponent).unwrap_or(u64::MAX);
+    std::time::Duration::from_millis(250_u64.saturating_mul(factor))
 }
 
 /// Resolve policy: fetch from release when version is set, else None.
@@ -652,6 +655,21 @@ mod tests {
     use super::*;
     use base64::Engine;
     use sigstore::cosign::bundle::{Bundle as RekorBundle, Payload as RekorPayload};
+
+    #[test]
+    fn policy_fetch_backoff_saturates_past_shift_width() {
+        // The first attempts grow exponentially from the 250ms base.
+        assert_eq!(policy_fetch_backoff(1).as_millis(), 250);
+        assert_eq!(policy_fetch_backoff(2).as_millis(), 500);
+        assert_eq!(policy_fetch_backoff(4).as_millis(), 2000);
+
+        // Attempts past the u64 shift width (exponent >= 64) must clamp to the
+        // saturated backoff instead of panicking on the `1 << exponent`.
+        let far = policy_fetch_backoff(1_000);
+        assert_eq!(far.as_millis(), u128::from(u64::MAX));
+        // And it must not panic at the exact boundary either.
+        let _ = policy_fetch_backoff(65);
+    }
 
     #[test]
     fn release_version_from_env_uses_priority_order() {

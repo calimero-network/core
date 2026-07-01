@@ -765,15 +765,17 @@ pub fn needs_owner_convert(metadata: &Metadata, target_version: u32) -> bool {
 // Breaking change: Old data without crdt_type/field_name fields will fail to deserialize.
 // This is intentional - we require fresh nodes with the new data format.
 
-/// Update timestamp (PartialEq always true for CRDT semantics).
-#[derive(BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Default, Eq, Ord, PartialOrd)]
+/// Update timestamp.
+///
+/// `PartialEq` compares the inner value like `Ord`/`PartialOrd` do: an
+/// always-true `eq` would violate the `Eq`/`Ord` contract (`a == b` must agree
+/// with `a.cmp(b) == Equal`) and, because it is compared field-wise inside
+/// `Metadata`'s derived `PartialEq`, would make the equal-vs-newer timestamp
+/// distinction in `save_internal` collapse to a single always-taken branch.
+#[derive(
+    BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd,
+)]
 pub struct UpdatedAt(u64);
-
-impl PartialEq for UpdatedAt {
-    fn eq(&self, _other: &Self) -> bool {
-        true
-    }
-}
 
 impl Deref for UpdatedAt {
     type Target = u64;
