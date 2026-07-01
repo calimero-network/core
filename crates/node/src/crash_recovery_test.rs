@@ -96,10 +96,6 @@ fn persist_row(
 /// `applied: false` row is promoted to applied (and made a head) on restart
 /// without re-executing its actions.
 #[tokio::test]
-#[ignore = "reveals possible bug: load_persisted_deltas ignores the persisted \
-            `applied` flag and promotes a Phase-0 applied:false row (killed \
-            before the heads commit) to applied on restart via \
-            restore_applied_delta, without re-executing its actions"]
 async fn phase0_applied_false_row_not_promoted_on_restart() {
     let store = Store::new(Arc::new(InMemoryDB::owned()));
     let delta_id = [0x01; 32];

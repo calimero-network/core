@@ -1303,6 +1303,15 @@ impl DeltaStore {
         let first_key = iter.seek(start_key)?;
 
         let mut all_deltas: HashMap<[u8; 32], CausalDelta<Vec<Action>>> = HashMap::new();
+        // Persisted rows written in Phase 0 (`applied: false`) whose atomic heads
+        // commit never landed — either interrupted by a crash, or a gossip delta
+        // buffered before its parents arrived. Their actions were NEVER committed,
+        // so they must be re-driven through the normal apply-or-pend path
+        // (`add_delta_with_outcome`, which executes actions) rather than restored
+        // as already-applied via `restore_applied_delta` (topology only). Loading
+        // them as applied would insert them as DAG heads without ever running
+        // their effects — advertising committed state that was never written.
+        let mut unapplied_deltas: Vec<CausalDelta<Vec<Action>>> = Vec::new();
         let mut pending_handler_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
         // Process the seek result's (key, value) manually — entries()
@@ -1396,17 +1405,27 @@ impl DeltaStore {
             // as the computed hash (they should be the same for non-merge deltas).
             // For merge deltas, the actual computed hash may have differed, but we don't
             // persist that - this is a minor approximation that works for most cases.
-            {
-                let mut head_hashes = self.head_root_hashes.write().await;
-                let _ = head_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
-            }
-            {
-                let mut parent_hashes = self.applier.parent_hashes.write().await;
-                let _ =
-                    parent_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
-            }
+            // Only rows that were actually committed (`applied: true`) seed the
+            // root-hash maps and the topology restore. An `applied: false` row's
+            // `expected_root_hash` is a prediction that never committed, so it
+            // must not pre-seed these maps; it is re-driven below, where the
+            // apply path records the real post-apply hash.
+            if stored_delta.applied {
+                {
+                    let mut head_hashes = self.head_root_hashes.write().await;
+                    let _ =
+                        head_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
+                }
+                {
+                    let mut parent_hashes = self.applier.parent_hashes.write().await;
+                    let _ = parent_hashes
+                        .insert(stored_delta.delta_id, stored_delta.expected_root_hash);
+                }
 
-            drop(all_deltas.insert(stored_delta.delta_id, dag_delta));
+                drop(all_deltas.insert(stored_delta.delta_id, dag_delta));
+            } else {
+                unapplied_deltas.push(dag_delta);
+            }
         }
 
         // Historically this function bailed early when `all_deltas`
@@ -1507,6 +1526,35 @@ impl DeltaStore {
                 context_id = %self.applier.context_id,
                 loaded_count,
                 "Loaded persisted deltas into DAG from database"
+            );
+        }
+
+        // Re-drive rows that were persisted but never committed (`applied: false`)
+        // through the real apply path AFTER the applied topology is restored, so
+        // their parents are present. `add_delta` executes their actions (or pends
+        // them if a parent is still missing, in which case `try_process_pending`
+        // below / a later parent's arrival drives them). This is the same path a
+        // gossip-received delta takes, so effects are actually applied — never
+        // silently promoted to a DAG head with uncommitted state.
+        if !unapplied_deltas.is_empty() {
+            let mut redriven = 0;
+            let mut dag = self.dag.write().await;
+            for delta in unapplied_deltas {
+                let delta_id = delta.id;
+                match dag.add_delta(delta, &*self.applier).await {
+                    Ok(_) => redriven += 1,
+                    Err(e) => warn!(
+                        ?e,
+                        context_id = %self.applier.context_id,
+                        delta_id = %Hash::from(delta_id).to_base58(),
+                        "Failed to re-drive a persisted-but-unapplied delta on load"
+                    ),
+                }
+            }
+            debug!(
+                context_id = %self.applier.context_id,
+                redriven,
+                "Re-drove persisted-but-unapplied deltas through the apply path"
             );
         }
 
