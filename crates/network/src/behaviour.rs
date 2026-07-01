@@ -64,9 +64,13 @@ const KAD_RECORD_PUBLICATION_INTERVAL: Duration = Duration::from_secs(6 * 60 * 6
 // indefinitely.
 const KAD_QUERY_TIMEOUT: Duration = Duration::from_secs(60);
 // Records replicate to at most this many peers. Calimero clusters are small
-// (2–20 peers), so this both saturates availability within a real cluster and
-// bounds how far a single record fans out.
-const KAD_REPLICATION_FACTOR: NonZeroUsize = match NonZeroUsize::new(20) {
+// (2–20 peers); 10 still saturates a typical cluster with redundant copies of
+// each record — a record survives unless all 10 holders drop — while leaving
+// headroom below the libp2p default of 20 (K_VALUE). If the peer count
+// transiently spikes (e.g. a churny bootstrap phase), replication fan-out and
+// the write traffic it drives stay bounded at 10 instead of tracking the
+// cluster size upward.
+const KAD_REPLICATION_FACTOR: NonZeroUsize = match NonZeroUsize::new(10) {
     Some(factor) => factor,
     None => panic!("KAD_REPLICATION_FACTOR must be non-zero"),
 };

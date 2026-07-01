@@ -137,10 +137,19 @@ impl EventHandler<Event> for NetworkManager {
                 InboundRequest::AddProvider { .. } => {
                     debug!("ignoring inbound AddProvider record (provider records unused)");
                 }
+                // FilterBoth always attaches the record, so a PutRecord with no
+                // payload is an unexpected protocol state (or config drift) —
+                // log it so it's distinguishable from a routine routing event.
+                InboundRequest::PutRecord {
+                    source,
+                    record: None,
+                    ..
+                } => {
+                    debug!(%source, "received PutRecord with no record payload — ignoring");
+                }
                 InboundRequest::FindNode { .. }
                 | InboundRequest::GetProvider { .. }
-                | InboundRequest::GetRecord { .. }
-                | InboundRequest::PutRecord { record: None, .. } => {}
+                | InboundRequest::GetRecord { .. } => {}
             },
             Event::OutboundQueryProgressed { .. }
             | Event::ModeChanged { .. }
