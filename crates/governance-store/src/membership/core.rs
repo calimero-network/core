@@ -94,9 +94,11 @@ impl<'a> MembershipRepository<'a> {
     /// nothing else. Bails with `MemberNotFound` if the row does not already
     /// exist, so callers must have verified membership first.
     ///
-    /// Mirrors `add_member_with_keys`' default-capability seeding for a
-    /// non-admin role, keeping behaviour identical to the prior add_member-based
-    /// role-set path apart from the field preservation.
+    /// For a non-admin role, baseline capabilities are seeded ONLY when the
+    /// member has no capability row yet. A role change — unlike a fresh add —
+    /// must not overwrite an existing grant: `set_role` can demote an admin who
+    /// holds custom capabilities to a non-admin role, and unconditionally
+    /// re-seeding the group defaults would silently wipe them.
     pub fn set_role(
         &self,
         group_id: &ContextGroupId,
@@ -133,11 +135,20 @@ impl<'a> MembershipRepository<'a> {
         // no concurrent reader observes the in-between state; and apply is
         // replay-safe/idempotent, so a crash landing between the two writes is
         // healed when the op re-applies (set_role re-runs and re-seeds the caps).
+        //
+        // Seed baseline caps ONLY when no capability row exists yet — never
+        // clobber an existing grant on a role change (e.g. demoting an admin who
+        // held custom caps). The `is_none` gate also keeps re-apply idempotent.
         if !is_admin {
             let capabilities = CapabilitiesRepository::new(self.store);
-            if let Some(defaults) = capabilities.default_capabilities(group_id)? {
-                if defaults != 0 {
-                    capabilities.set_member_capability(group_id, identity, defaults)?;
+            if capabilities
+                .member_capability(group_id, identity)?
+                .is_none()
+            {
+                if let Some(defaults) = capabilities.default_capabilities(group_id)? {
+                    if defaults != 0 {
+                        capabilities.set_member_capability(group_id, identity, defaults)?;
+                    }
                 }
             }
         }

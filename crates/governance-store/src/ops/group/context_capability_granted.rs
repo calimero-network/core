@@ -33,10 +33,14 @@ pub(crate) fn apply(
             context_id: format!("{context_id:?}"),
         });
     }
-    // The grantee must be a direct member of this group, mirroring
-    // `MemberCapabilitySet`. Without this a `manage_members` signer could write a
-    // per-context capability row for an arbitrary non-member identity — an orphan
-    // row the enumeration/authorization paths never reconcile.
+    // The grantee must be a DIRECT member of this group (a `GroupMember` row),
+    // mirroring `MemberCapabilitySet`. Without this a `manage_members` signer
+    // could write a per-context capability row for an arbitrary non-member
+    // identity — an orphan row the enumeration/authorization paths never
+    // reconcile. `role_of` is deliberately direct-only: an INHERITED member
+    // (e.g. a parent-group admin who never joined this subgroup) is rejected
+    // here and must be added as a direct member before receiving a per-context
+    // grant.
     if MembershipRepository::new(store)
         .role_of(group_id, member)?
         .is_none()
