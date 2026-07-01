@@ -153,10 +153,19 @@ pub enum VisibilityMode {
 /// capability mask apart from any other `u32`. The named flags are associated
 /// constants of this type; combine them with `|`, test with
 /// [`contains`](MemberCapabilities::contains), and cross wire/storage
-/// boundaries with [`bits`](MemberCapabilities::bits) /
-/// [`from_bits`](MemberCapabilities::from_bits). Borsh/serde encode it as the
-/// underlying `u32` (wire-compatible with the old representation) but reject
-/// undefined bits on the way in.
+/// boundaries with [`bits`](MemberCapabilities::bits).
+///
+/// Borsh/serde encode it as the underlying `u32`, byte-compatible with the
+/// old representation. Deserialization preserves every bit, including ones
+/// this build does not define: a newer peer may introduce a capability bit,
+/// and rejecting it on the wire would make older peers fail to decode the op
+/// and diverge from consensus. Validation is therefore a construction-time
+/// choice, not a wire invariant —
+/// [`from_bits`](MemberCapabilities::from_bits) rejects undefined bits (use it
+/// for operator/API input you want to refuse),
+/// [`from_bits_truncate`](MemberCapabilities::from_bits_truncate) drops them
+/// when interpreting a stored/received mask, and the named-flag API only ever
+/// tests defined bits.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct MemberCapabilities(u32);
 
@@ -170,7 +179,7 @@ impl MemberCapabilities {
     /// out of `Open` subgroups even though they remain in the parent.
     ///
     /// Reuses bit slot `1 << 2`, vacated by the prior `CAN_JOIN_OPEN_CONTEXTS`
-    /// (never enforced — see issue #2256).
+    /// bit, which was never enforced anywhere and has been removed.
     pub const CAN_JOIN_OPEN_SUBGROUPS: Self = Self(1 << 2);
     pub const MANAGE_MEMBERS: Self = Self(1 << 3);
     pub const MANAGE_APPLICATION: Self = Self(1 << 4);
@@ -214,15 +223,15 @@ impl MemberCapabilities {
 
     /// The union of every defined capability bit.
     pub const ALL: Self = Self(
-        Self::CAN_CREATE_CONTEXT.0
-            | Self::CAN_INVITE_MEMBERS.0
-            | Self::CAN_JOIN_OPEN_SUBGROUPS.0
-            | Self::MANAGE_MEMBERS.0
-            | Self::MANAGE_APPLICATION.0
-            | Self::CAN_CREATE_SUBGROUP.0
-            | Self::CAN_DELETE_SUBGROUP.0
-            | Self::CAN_MANAGE_VISIBILITY.0
-            | Self::CAN_MANAGE_METADATA.0,
+        Self::CAN_CREATE_CONTEXT.bits()
+            | Self::CAN_INVITE_MEMBERS.bits()
+            | Self::CAN_JOIN_OPEN_SUBGROUPS.bits()
+            | Self::MANAGE_MEMBERS.bits()
+            | Self::MANAGE_APPLICATION.bits()
+            | Self::CAN_CREATE_SUBGROUP.bits()
+            | Self::CAN_DELETE_SUBGROUP.bits()
+            | Self::CAN_MANAGE_VISIBILITY.bits()
+            | Self::CAN_MANAGE_METADATA.bits(),
     );
 
     /// The empty capability set.
@@ -283,6 +292,12 @@ impl core::ops::BitAnd for MemberCapabilities {
     type Output = Self;
     fn bitand(self, rhs: Self) -> Self {
         Self(self.0 & rhs.0)
+    }
+}
+
+impl core::ops::BitAndAssign for MemberCapabilities {
+    fn bitand_assign(&mut self, rhs: Self) {
+        self.0 &= rhs.0;
     }
 }
 
