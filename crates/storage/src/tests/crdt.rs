@@ -846,9 +846,6 @@ fn d1_delete(id: Id, deleted_at: u64) -> Action {
 /// updates should win over older deletes (LWW-including-deletes / add-wins).
 #[test]
 #[serial]
-#[ignore = "reveals possible bug: a strictly-newer Update does not clear an older \
-            deleted_at tombstone, so the newer write is stored but stays invisible \
-            (over-suppressed) and replicas diverge on delete-then-update vs update-only"]
 fn d1_map_update_newer_than_delete_is_not_over_suppressed() {
     super::common::register_test_merge_functions();
     crate::env::reset_for_testing();

@@ -750,6 +750,45 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(())
     }
 
+    /// Lifts a tombstone when a strictly-newer write outlives it.
+    ///
+    /// This is the counterpart to [`mark_deleted`](Self::mark_deleted). Once an
+    /// entity is tombstoned, [`find_by_id`](crate::Interface::find_by_id) hides
+    /// it regardless of any later value write. A concurrent update that
+    /// causally follows the delete (`at > deleted_at`) must win under LWW, so
+    /// the value write has to clear the tombstone or the freshly-written bytes
+    /// stay invisible — an over-suppression that diverges replicas (the replica
+    /// that saw `delete` before the newer `update` keeps hiding the value while
+    /// the replica that only saw the newer `update` shows it).
+    ///
+    /// The `at > deleted_at` guard is strict and monotonic, mirroring
+    /// `mark_deleted`: an equal-HLC write does NOT resurrect (delete wins ties),
+    /// and an older write never lifts a newer tombstone.
+    ///
+    /// When it clears the tombstone it also advances the `updated_at` replay
+    /// nonce to at least `at` (monotonically, mirroring `mark_deleted`). This
+    /// keeps `clear_deleted` self-defensive regardless of call ordering: after
+    /// a resurrection the nonce is at least `at`, so a replayed older
+    /// `DeleteRef` carrying the original `deleted_at` still loses the
+    /// `apply_delete_ref_action` comparison even if this ever runs before the
+    /// caller's `update_hash_for` has persisted the new `updated_at`.
+    pub(crate) fn clear_deleted(id: Id, at: u64) -> Result<(), StorageError> {
+        let _mutation_guard = index_mutation_guard();
+        if let Some(mut index) = Self::get_index(id)? {
+            if index.deleted_at.is_some_and(|deleted_at| at > deleted_at) {
+                index.deleted_at = None;
+                // Advance the `updated_at` replay nonce alongside the
+                // resurrection, mirroring `mark_deleted`. Monotonic: an older
+                // write never lowers it. Without this, a `clear_deleted` that
+                // ran before `update_hash_for` would leave the nonce below
+                // `at`, reopening a replay window for the original delete.
+                *index.metadata.updated_at = (*index.metadata.updated_at).max(at);
+                Self::save_index(&index)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Returns children from a specific collection.
     ///
     /// Collection param is ignored - entity only has one collection.
