@@ -3501,6 +3501,277 @@ fn governance_group_created_is_idempotent() {
         .expect("duplicate GroupCreated should be idempotent");
 }
 
+#[test]
+fn governance_group_created_rejects_cross_namespace_parent() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+    use crate::{ApplyError, GroupCreatedRejection};
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+
+    // Namespace A, where our admin has authority.
+    let ns_a = [0xA0u8; 32];
+    let ns_a_gid = ContextGroupId::from(ns_a);
+    MetaRepository::new(&store)
+        .save(&ns_a_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_a_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_a_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
+
+    // A group that belongs to a DIFFERENT namespace B.
+    let root_b = ContextGroupId::from([0xB0u8; 32]);
+    let foreign = ContextGroupId::from([0xB1u8; 32]);
+    MetaRepository::new(&store)
+        .save(&root_b, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&foreign, &test_meta())
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root_b, &foreign)
+        .unwrap();
+
+    // Namespace-A admin tries to graft a subgroup under namespace-B's group.
+    let new_group = [0xCCu8; 32];
+    let op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_a.into(),
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: new_group.into(),
+            parent_id: foreign.to_bytes().into(),
+            restricted: true,
+        }),
+    )
+    .expect("sign GroupCreated");
+
+    let err = NamespaceGovernance::new(&store, ns_a.into())
+        .apply_signed_op(&op)
+        .expect_err("cross-namespace parent must be rejected");
+    assert!(
+        matches!(
+            err.downcast_ref::<ApplyError>(),
+            Some(ApplyError::GroupCreatedRejected(
+                GroupCreatedRejection::ParentCrossNamespace { .. }
+            ))
+        ),
+        "expected cross-namespace parent rejection, got: {err}"
+    );
+}
+
+/// Shared setup for the key-rotation apply tests: a namespace where `admin` is
+/// an Admin, `local` is the node under test (its namespace identity + a Member
+/// row), `removed` is a Member the rotation will exclude, and the local node
+/// already holds the pre-rotation ("old") key.
+#[cfg(test)]
+fn rotation_test_setup() -> (
+    Store,
+    ContextGroupId,
+    calimero_primitives::identity::PrivateKey, // admin (signs + wraps)
+    calimero_primitives::identity::PrivateKey, // local node identity
+    calimero_primitives::identity::PublicKey,  // removed member
+    [u8; 32],                                  // old_key_id
+) {
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    let ns_id = [0xA7u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let local_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let local_sk = PrivateKey::from(local_sk_bytes);
+    let local_pk = local_sk.public_key();
+    let removed_pk = PrivateKey::random(&mut rng).public_key();
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    let m = MembershipRepository::new(&store);
+    m.add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    m.add_member(&ns_gid, &local_pk, GroupMemberRole::Member)
+        .unwrap();
+    m.add_member(&ns_gid, &removed_pk, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &local_pk, &local_sk_bytes, &[0u8; 32])
+        .unwrap();
+
+    let old_key = [0x97u8; 32];
+    let old_key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&old_key)
+        .unwrap();
+
+    (store, ns_gid, admin_sk, local_sk, removed_pk, old_key_id)
+}
+
+/// Build a `NamespaceOp::Group` carrying an encrypted `MemberRemoved` plus a
+/// key rotation, wrapped + signed by `signer_sk`.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn build_rotation_op(
+    store: &Store,
+    ns_gid: ContextGroupId,
+    signer_sk: &calimero_primitives::identity::PrivateKey,
+    removed_pk: &calimero_primitives::identity::PublicKey,
+    old_key: &[u8; 32],
+    old_key_id: [u8; 32],
+    new_group_key: &[u8; 32],
+    tamper_new_key_id: bool,
+) -> calimero_context_client::local_governance::SignedNamespaceOp {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+
+    let inner = GroupOp::MemberRemoved {
+        member: *removed_pk,
+        expected_group_state_hash: [0u8; 32],
+        expected_context_state_hashes: vec![],
+    };
+    let encrypted = GroupKeyring::encrypt_op(old_key, &inner).unwrap();
+    let mut rotation = GroupKeyring::new(store, ns_gid)
+        .build_rotation(new_group_key, signer_sk, Some(removed_pk))
+        .unwrap();
+    if tamper_new_key_id {
+        rotation.new_key_id = [0xFFu8; 32].into();
+    }
+    SignedNamespaceOp::sign(
+        signer_sk,
+        ns_gid.to_bytes().into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: ns_gid.to_bytes().into(),
+            key_id: old_key_id.into(),
+            encrypted,
+            key_rotation: Some(rotation),
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn rotation_apply_stores_key_for_authorized_admin() {
+    use super::NamespaceGovernance;
+
+    let (store, ns_gid, admin_sk, _local_sk, removed_pk, old_key_id) = rotation_test_setup();
+    let old_key = [0x97u8; 32];
+    let new_group_key = [0x42u8; 32];
+
+    let op = build_rotation_op(
+        &store,
+        ns_gid,
+        &admin_sk,
+        &removed_pk,
+        &old_key,
+        old_key_id,
+        &new_group_key,
+        false,
+    );
+    NamespaceGovernance::new(&store, ns_gid.to_bytes().into())
+        .apply_signed_op(&op)
+        .expect("authorized rotation must apply");
+
+    // The rotated key is stored (authorized admin, matching key_id).
+    let new_key_id = GroupKeyring::key_id_for(&new_group_key);
+    assert_eq!(
+        GroupKeyring::new(&store, ns_gid)
+            .load_key_by_id(&new_key_id)
+            .unwrap(),
+        Some(new_group_key),
+        "the rotated key must be stored for an authorized admin rotation"
+    );
+    // ...and it is the current key (higher DAG epoch than the genesis key).
+    assert_eq!(
+        GroupKeyring::new(&store, ns_gid)
+            .load_current_key()
+            .unwrap()
+            .map(|(_, k)| k),
+        Some(new_group_key),
+        "the rotated key must become current"
+    );
+}
+
+#[test]
+fn rotation_apply_rejects_new_key_id_mismatch() {
+    use super::NamespaceGovernance;
+
+    let (store, ns_gid, admin_sk, _local_sk, removed_pk, old_key_id) = rotation_test_setup();
+    let old_key = [0x97u8; 32];
+    let new_group_key = [0x42u8; 32];
+
+    // Same authorized admin, but the advertised `new_key_id` is a lie.
+    let op = build_rotation_op(
+        &store,
+        ns_gid,
+        &admin_sk,
+        &removed_pk,
+        &old_key,
+        old_key_id,
+        &new_group_key,
+        true,
+    );
+    NamespaceGovernance::new(&store, ns_gid.to_bytes().into())
+        .apply_signed_op(&op)
+        .expect("apply itself must not error (rotation is skipped, not fatal)");
+
+    assert!(
+        GroupKeyring::new(&store, ns_gid)
+            .load_key_by_id(&GroupKeyring::key_id_for(&new_group_key))
+            .unwrap()
+            .is_none(),
+        "a rotation whose unwrapped key does not match new_key_id must be ignored"
+    );
+}
+
+#[test]
+fn rotation_apply_ignored_when_signer_not_admin() {
+    use super::NamespaceGovernance;
+
+    let (store, ns_gid, _admin_sk, local_sk, removed_pk, old_key_id) = rotation_test_setup();
+    let old_key = [0x97u8; 32];
+    let new_group_key = [0x42u8; 32];
+
+    // The local node (a non-admin Member) signs + wraps its own rotation — the
+    // exact injection the authorized-rotator gate must block.
+    let op = build_rotation_op(
+        &store,
+        ns_gid,
+        &local_sk,
+        &removed_pk,
+        &old_key,
+        old_key_id,
+        &new_group_key,
+        false,
+    );
+    // Inner MemberRemoved by a non-admin fails authorization, so apply surfaces
+    // an error — but crucially the key must NOT have been stored either way.
+    let _ = NamespaceGovernance::new(&store, ns_gid.to_bytes().into()).apply_signed_op(&op);
+
+    assert!(
+        GroupKeyring::new(&store, ns_gid)
+            .load_key_by_id(&GroupKeyring::key_id_for(&new_group_key))
+            .unwrap()
+            .is_none(),
+        "a rotation from a non-admin signer must never poison the keyring"
+    );
+}
+
 /// #2771: `GroupCreated { restricted: false }` must write an Open visibility
 /// key at apply time (born-Open atomic create), and `restricted: true` must
 /// leave the subgroup Restricted. This is the store-level guard that the live
@@ -4139,9 +4410,15 @@ fn is_descendant_of_self_is_false() {
 #[test]
 fn reparent_group_swaps_parent_edge() {
     let store = test_store();
+    // Both parents live under a common namespace root, so the reparent stays
+    // within one namespace (the same-namespace guard requires this).
+    let root = ContextGroupId::from([0xEF; 32]);
     let old_parent = ContextGroupId::from([0xE0; 32]);
     let new_parent = ContextGroupId::from([0xE1; 32]);
     let child = ContextGroupId::from([0xE2; 32]);
+    MetaRepository::new(&store)
+        .save(&root, &test_meta())
+        .unwrap();
     MetaRepository::new(&store)
         .save(&old_parent, &test_meta())
         .unwrap();
@@ -4150,6 +4427,12 @@ fn reparent_group_swaps_parent_edge() {
         .unwrap();
     MetaRepository::new(&store)
         .save(&child, &test_meta())
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &old_parent)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &new_parent)
         .unwrap();
     NamespaceRepository::new(&store)
         .nest(&old_parent, &child)
@@ -4201,6 +4484,38 @@ fn reparent_group_idempotent_on_same_parent() {
             .unwrap()
             .len(),
         1
+    );
+}
+
+#[test]
+fn reparent_rejects_cross_namespace() {
+    let store = test_store();
+    // Two independent namespace roots, each with a child group.
+    let root_a = ContextGroupId::from([0xA0; 32]);
+    let root_b = ContextGroupId::from([0xB0; 32]);
+    let child_a = ContextGroupId::from([0xA1; 32]);
+    let group_b = ContextGroupId::from([0xB1; 32]);
+    for g in [&root_a, &root_b, &child_a, &group_b] {
+        MetaRepository::new(&store).save(g, &test_meta()).unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&root_a, &child_a)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root_b, &group_b)
+        .unwrap();
+
+    // Reparenting a namespace-A group under a namespace-B group is rejected —
+    // it would graft A's crypto/access boundary into B.
+    let err = NamespaceRepository::new(&store)
+        .reparent(&child_a, &group_b)
+        .unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<NamespaceError>(),
+            Some(NamespaceError::ReparentCrossNamespace { .. })
+        ),
+        "expected cross-namespace rejection, got: {err}"
     );
 }
 
@@ -4740,11 +5055,27 @@ fn apply_received_group_key_stores_key_for_recipient() {
         )
         .unwrap();
 
+    // Establish the subgroup's parent edge so it resolves to this namespace —
+    // in the real flow the subgroup's `GroupCreated` (which writes this edge)
+    // applies before any key delivery, and `apply_received_group_key` now
+    // requires the group to belong to this namespace (cross-namespace pin).
+    {
+        use calimero_store::key::GroupParentRef;
+        let mut h = store.handle();
+        h.put(&GroupParentRef::new(group_id), &namespace_id)
+            .unwrap();
+    }
+
     // A remote key-holder wraps the group key for us.
     let sender_sk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
     let group_key = [0x6Au8; 32];
-    let envelope =
-        GroupKeyring::wrap_for_member(&sender_sk, &recipient_sk.public_key(), &group_key).unwrap();
+    let envelope = GroupKeyring::wrap_for_member(
+        &sender_sk,
+        &recipient_sk.public_key(),
+        &group_id,
+        &group_key,
+    )
+    .unwrap();
     let envelope_bytes = borsh::to_vec(&envelope).unwrap();
 
     // Precondition: we hold no key yet.
@@ -4791,11 +5122,21 @@ fn apply_received_group_key_ignores_envelope_for_other_recipient() {
         )
         .unwrap();
 
+    // Resolve the subgroup into this namespace so the cross-namespace pin
+    // passes and we actually exercise the recipient-mismatch path below.
+    {
+        use calimero_store::key::GroupParentRef;
+        let mut h = store.handle();
+        h.put(&GroupParentRef::new(group_id), &namespace_id)
+            .unwrap();
+    }
+
     // Envelope wrapped for somebody else entirely.
     let sender_sk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
     let other_pk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng)).public_key();
     let group_key = [0x6Bu8; 32];
-    let envelope = GroupKeyring::wrap_for_member(&sender_sk, &other_pk, &group_key).unwrap();
+    let envelope =
+        GroupKeyring::wrap_for_member(&sender_sk, &other_pk, &group_id, &group_key).unwrap();
     let envelope_bytes = borsh::to_vec(&envelope).unwrap();
 
     // Not addressed to us: benign no-op, no key stored.
@@ -4971,6 +5312,7 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
         namespace_id.into(),
         subgroup_id,
         joiner_pk,
+        None,
     )
     .unwrap();
     assert!(
@@ -5094,6 +5436,7 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
         namespace_id.into(),
         subgroup_id,
         joiner_pk,
+        None,
     )
     .unwrap();
     assert!(
@@ -5194,7 +5537,8 @@ fn responder_refuses_delivery_to_non_member() {
     // The requester is NOT a member of the subgroup → empty envelope: no key
     // wrapped, and no membership oracle leaked (same reply as "key not held").
     let (envelope_bytes, _responder_identity) =
-        build_group_key_delivery(&store, namespace_id.into(), subgroup_id, stranger_pk).unwrap();
+        build_group_key_delivery(&store, namespace_id.into(), subgroup_id, stranger_pk, None)
+            .unwrap();
     assert!(
         envelope_bytes.is_empty(),
         "responder must not wrap a key for a non-member"

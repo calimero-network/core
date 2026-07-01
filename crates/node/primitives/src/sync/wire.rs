@@ -286,6 +286,12 @@ pub enum InitPayload {
         /// The requester's namespace identity public key, used both for
         /// the membership check and as the ECDH wrap recipient.
         requester_public_key: PublicKey,
+        /// The specific key epoch the requester needs (the `key_id` of a
+        /// buffered op it can't decrypt), or `None` to ask for the group's
+        /// current key (a keyless joiner bootstrapping). Serving the exact
+        /// epoch lets a member recover a rotated-out key its stranded op was
+        /// encrypted under, which a current-key-only responder could not.
+        key_id: Option<[u8; 32]>,
     },
 }
 

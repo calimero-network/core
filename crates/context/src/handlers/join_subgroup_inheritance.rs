@@ -113,7 +113,12 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                         .await?;
                     let envelope: KeyEnvelope = borsh::from_slice(&envelope_bytes)
                         .map_err(|e| eyre::eyre!("decode KeyEnvelope from peer response: {e}"))?;
-                    let group_key = GroupKeyring::unwrap_for_recipient(&signer_sk, &envelope)?;
+                    let group_key = GroupKeyring::unwrap_for_recipient(
+                        &signer_sk,
+                        &group_id.to_bytes(),
+                        None,
+                        &envelope,
+                    )?;
                     let _key_id = GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
                 } else {
                     info!(

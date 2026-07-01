@@ -11,6 +11,11 @@ use sha2::{Digest, Sha256};
 
 use super::collect_keys_with_prefix;
 
+/// Serializes the read-check-write in [`GroupKeyring::store_key_with_epoch`]
+/// across all callers (governance apply and the sync-task pull/join paths),
+/// making the epoch monotonicity atomic without a store-level compare-and-swap.
+static GROUP_KEY_EPOCH_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StoredGroupKey {
     pub key_id: [u8; 32],
@@ -40,9 +45,60 @@ impl<'a> GroupKeyring<'a> {
         hasher.finalize().into()
     }
 
+    /// Store a genesis / bootstrap group key at `epoch = 0`.
+    ///
+    /// Use [`store_key_with_epoch`](Self::store_key_with_epoch) for a key
+    /// introduced by a governance op (a rotation or an on-DAG delivery), whose
+    /// deterministic DAG sequence is the epoch that decides which key is
+    /// "current". A bare genesis key is always the oldest (`epoch 0`), so any
+    /// later rotation deterministically supersedes it.
     pub fn store_key(&self, group_key: &[u8; 32]) -> EyreResult<[u8; 32]> {
+        self.store_key_with_epoch(group_key, 0)
+    }
+
+    /// Store a group key stamped with an explicit deterministic `epoch` (the DAG
+    /// sequence of the op that introduced it).
+    ///
+    /// The epoch is stored **monotonically and never lowered**: a write only
+    /// touches the store when the entry is absent or when it strictly *raises*
+    /// the epoch. A lower/equal write (e.g. an epoch-`0` pull for a key a
+    /// rotation already stored) is a no-op.
+    ///
+    /// The read-check-write is serialized by a process-global lock. The store
+    /// layer has no compare-and-swap, and `store_key` (epoch `0`) is called from
+    /// the direct-pull path (`apply_received_group_key`) and join handlers, which
+    /// run on sync tasks *outside* the per-namespace governance-apply actor lock.
+    /// Without serialization an epoch-`0` write and a rotation's epoch-`N` write
+    /// for the same fresh `key_id` could both observe an absent entry and the
+    /// epoch-`0` put could land last, regressing the stored epoch to `0` and
+    /// making the node pick a stale "current" key (the very divergence the epoch
+    /// exists to prevent). The lock makes the check-then-write atomic.
+    ///
+    /// The lock is sufficient without store-level snapshot isolation because a
+    /// base-`Store` `handle.put` is **write-through** to the shared DB (it calls
+    /// `db.put` directly; the layer's `commit` is a no-op, so there is no
+    /// per-handle write buffer). The write is therefore durable and visible the
+    /// instant `put` returns — before the lock is released — so the next lock
+    /// holder's freshly-opened `handle.get` always observes it. Correctness does
+    /// **not** depend on when `handle` is dropped. A single process-global lock
+    /// (rather than a per-group lock) is deliberate: group-key writes are rare
+    /// (rotations / deliveries), never on a hot path, so cross-group contention
+    /// is negligible and not worth a per-key lock map.
+    pub fn store_key_with_epoch(&self, group_key: &[u8; 32], epoch: u64) -> EyreResult<[u8; 32]> {
         let key_id = Self::key_id_for(group_key);
         let entry = GroupKeyEntry::new(self.group_id.to_bytes(), key_id);
+        // Serialize the read-modify-write; recover a poisoned lock (the guarded
+        // state lives in the store, not the guard, so a prior panic is benign).
+        let _guard = GROUP_KEY_EPOCH_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut handle = self.store.handle();
+        if let Some(existing) = handle.get(&entry)? {
+            let existing: GroupKeyValue = existing;
+            if epoch <= existing.epoch {
+                return Ok(key_id);
+            }
+        }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -50,8 +106,8 @@ impl<'a> GroupKeyring<'a> {
         let value = GroupKeyValue {
             group_key: *group_key,
             created_at: now,
+            epoch,
         };
-        let mut handle = self.store.handle();
         handle.put(&entry, &value)?;
         Ok(key_id)
     }
@@ -76,7 +132,20 @@ impl<'a> GroupKeyring<'a> {
         Ok(())
     }
 
-    /// Returns the latest key by `created_at`.
+    /// Returns the "current" key: the one with the highest deterministic
+    /// `epoch` (the DAG sequence of the op that introduced it), breaking ties by
+    /// the larger `key_id`. This is fully deterministic across nodes — unlike
+    /// the old wall-clock `created_at` ordering, two rotations within the same
+    /// second or a skewed clock can no longer make two nodes pick different
+    /// "current" keys (which caused decrypt divergence).
+    ///
+    /// The `key_id` tie-break is what makes two *concurrent* rotations (e.g. two
+    /// admins removing members on causally-unordered ops that land at the same
+    /// epoch) **converge** rather than diverge: once both keys are present, every
+    /// node picks the same one (larger `key_id` wins — a total order over a
+    /// sha256 hash). And the choice is safety-neutral either way, because both
+    /// concurrent rotations exclude the removed member(s) from their envelopes,
+    /// so whichever key wins, a removed member holds neither.
     pub fn load_current_key_record(&self) -> EyreResult<Option<StoredGroupKey>> {
         let gid = self.group_id.to_bytes();
         let keys = collect_keys_with_prefix(
@@ -96,8 +165,15 @@ impl<'a> GroupKeyring<'a> {
                 key_id: key.key_id(),
                 group_key: val.group_key,
             };
-            if best.as_ref().is_none_or(|(_, ts)| val.created_at > *ts) {
-                best = Some((current, val.created_at));
+            let better = match best.as_ref() {
+                None => true,
+                Some((best_rec, best_epoch)) => {
+                    val.epoch > *best_epoch
+                        || (val.epoch == *best_epoch && current.key_id > best_rec.key_id)
+                }
+            };
+            if better {
+                best = Some((current, val.epoch));
             }
         }
 
@@ -233,14 +309,28 @@ impl<'a> GroupKeyring<'a> {
         })
     }
 
+    /// Wrap `group_key` for `recipient_pk`, authenticated by `sender_sk` and
+    /// bound to `group_id`.
+    ///
+    /// Forward secrecy: a fresh ephemeral keypair is generated per call and the
+    /// ECDH secret is derived from `SharedKey::new(ephemeral_sk, recipient_pk)`,
+    /// so a later compromise of `sender_sk` does not decrypt this envelope.
+    /// Authentication: `sender_sk` signs the canonical envelope bytes (see
+    /// [`KeyEnvelope::signing_payload`]) so a recipient can verify who wrapped
+    /// the key and reject forged / cross-group-replayed envelopes.
     pub fn wrap_for_member(
         sender_sk: &PrivateKey,
         recipient_pk: &PublicKey,
+        group_id: &[u8; 32],
         group_key: &[u8; 32],
     ) -> EyreResult<KeyEnvelope> {
         use calimero_crypto::SharedKey;
 
-        let shared = SharedKey::new(sender_sk, recipient_pk).map_err(|e| {
+        // Per-envelope ephemeral keypair — the source of forward secrecy.
+        let ephemeral_sk = PrivateKey::random(&mut rand::thread_rng());
+        let ephemeral_pk = ephemeral_sk.public_key();
+
+        let shared = SharedKey::new(&ephemeral_sk, recipient_pk).map_err(|e| {
             KeyringError::KeyAgreementFailed {
                 details: format!("{e:?}"),
             }
@@ -255,19 +345,82 @@ impl<'a> GroupKeyring<'a> {
             .encrypt(group_key.to_vec(), nonce)
             .ok_or(KeyringError::EncryptionFailed)?;
 
+        let sender = sender_sk.public_key();
+        let payload = KeyEnvelope::signing_payload(
+            group_id,
+            recipient_pk,
+            &sender,
+            &ephemeral_pk,
+            &nonce,
+            &ciphertext,
+        );
+        let signature = sender_sk
+            .sign(&payload)
+            .map_err(|e| KeyringError::EnvelopeAuthFailed(format!("sign: {e}")))?
+            .to_bytes();
+
         Ok(KeyEnvelope {
             recipient: *recipient_pk,
-            ephemeral_pk: sender_sk.public_key(),
+            sender,
+            ephemeral_pk,
             nonce,
             ciphertext,
+            signature,
         })
     }
 
+    /// Unwrap a [`KeyEnvelope`] addressed to `recipient_sk`, verifying the
+    /// sender's authenticating signature (bound to `group_id`) before
+    /// decrypting.
+    ///
+    /// When `expected_sender` is `Some`, the envelope's `sender` must equal it —
+    /// callers that know who is authorized to wrap (e.g. the admin who authored
+    /// a rotation) pass it to reject an otherwise-valid envelope minted by the
+    /// wrong identity. On success the (verified) sender is available on the
+    /// returned key's envelope; the raw group key is returned.
     pub fn unwrap_for_recipient(
         recipient_sk: &PrivateKey,
+        group_id: &[u8; 32],
+        expected_sender: Option<&PublicKey>,
         envelope: &KeyEnvelope,
     ) -> EyreResult<[u8; 32]> {
         use calimero_crypto::SharedKey;
+
+        if let Some(expected) = expected_sender {
+            if envelope.sender != *expected {
+                bail!(KeyringError::EnvelopeAuthFailed(format!(
+                    "sender {} is not the required {expected}",
+                    envelope.sender
+                )));
+            }
+        }
+
+        // Cheap identity gate first: the envelope must be addressed to us. This
+        // is checked against our own key (not a value we have to trust from the
+        // envelope), so it is safe to do before signature verification and gives
+        // a clear "wrong recipient" error instead of a downstream
+        // `DecryptionFailed` from ECDH-ing with the wrong key. Callers already
+        // filter by `recipient`; this is defense in depth.
+        if envelope.recipient != recipient_sk.public_key() {
+            bail!(KeyringError::EnvelopeAuthFailed(
+                "envelope is not addressed to this recipient".to_owned()
+            ));
+        }
+
+        // Authenticate the sender before doing any ECDH/decrypt work: a forged
+        // or cross-group-replayed envelope fails here.
+        let payload = KeyEnvelope::signing_payload(
+            group_id,
+            &envelope.recipient,
+            &envelope.sender,
+            &envelope.ephemeral_pk,
+            &envelope.nonce,
+            &envelope.ciphertext,
+        );
+        envelope
+            .sender
+            .verify_raw_signature(&payload, &envelope.signature)
+            .map_err(|e| KeyringError::EnvelopeAuthFailed(format!("verify: {e}")))?;
 
         let shared = SharedKey::new(recipient_sk, &envelope.ephemeral_pk).map_err(|e| {
             KeyringError::KeyAgreementFailed {
@@ -295,6 +448,7 @@ impl<'a> GroupKeyring<'a> {
         excluded_member: Option<&PublicKey>,
     ) -> EyreResult<KeyRotation> {
         let members = MembershipRepository::new(self.store).list(&self.group_id, 0, usize::MAX)?;
+        let group_id = self.group_id.to_bytes();
         let new_key_id = Self::key_id_for(new_group_key);
         let mut envelopes = Vec::new();
 
@@ -302,7 +456,12 @@ impl<'a> GroupKeyring<'a> {
             if excluded_member == Some(member_pk) {
                 continue;
             }
-            envelopes.push(Self::wrap_for_member(sender_sk, member_pk, new_group_key)?);
+            envelopes.push(Self::wrap_for_member(
+                sender_sk,
+                member_pk,
+                &group_id,
+                new_group_key,
+            )?);
         }
 
         Ok(KeyRotation {
@@ -391,5 +550,117 @@ mod delete_tests {
         // After clearing, the ring is empty again.
         ring.delete_all_for_group().unwrap();
         assert!(!ring.holds_any_key().unwrap());
+    }
+
+    #[test]
+    fn envelope_roundtrips_and_authenticates_sender() {
+        let group_id = [0x11u8; 32];
+        let group_key = [0x22u8; 32];
+        let sender = PrivateKey::from([0x01u8; 32]);
+        let recipient = PrivateKey::from([0x02u8; 32]);
+
+        let env =
+            GroupKeyring::wrap_for_member(&sender, &recipient.public_key(), &group_id, &group_key)
+                .unwrap();
+
+        // Sender is authenticated, and the ephemeral key is NOT the sender's
+        // long-term key (forward secrecy).
+        assert_eq!(env.sender, sender.public_key());
+        assert_ne!(env.ephemeral_pk, sender.public_key());
+
+        // Round-trips for the addressed recipient.
+        assert_eq!(
+            GroupKeyring::unwrap_for_recipient(&recipient, &group_id, None, &env).unwrap(),
+            group_key
+        );
+
+        // `expected_sender` is enforced.
+        assert!(GroupKeyring::unwrap_for_recipient(
+            &recipient,
+            &group_id,
+            Some(&sender.public_key()),
+            &env
+        )
+        .is_ok());
+        let wrong = PrivateKey::from([0x09u8; 32]).public_key();
+        assert!(
+            GroupKeyring::unwrap_for_recipient(&recipient, &group_id, Some(&wrong), &env).is_err()
+        );
+    }
+
+    #[test]
+    fn envelope_rejects_tamper_forgery_and_cross_group_replay() {
+        let group_id = [0x11u8; 32];
+        let group_key = [0x22u8; 32];
+        let sender = PrivateKey::from([0x01u8; 32]);
+        let recipient = PrivateKey::from([0x02u8; 32]);
+        let env =
+            GroupKeyring::wrap_for_member(&sender, &recipient.public_key(), &group_id, &group_key)
+                .unwrap();
+
+        // Replaying the envelope under a different group_id fails: the
+        // signature is bound to the group.
+        let other_group = [0x33u8; 32];
+        assert!(GroupKeyring::unwrap_for_recipient(&recipient, &other_group, None, &env).is_err());
+
+        // A flipped signature byte fails verification.
+        let mut tampered = env.clone();
+        tampered.signature[0] ^= 0xFF;
+        assert!(
+            GroupKeyring::unwrap_for_recipient(&recipient, &group_id, None, &tampered).is_err()
+        );
+
+        // Claiming a different sender (without a matching signature) fails.
+        let mut spoofed = env.clone();
+        spoofed.sender = PrivateKey::from([0x07u8; 32]).public_key();
+        assert!(GroupKeyring::unwrap_for_recipient(&recipient, &group_id, None, &spoofed).is_err());
+    }
+
+    #[test]
+    fn current_key_selected_by_epoch_then_key_id() {
+        let store = test_store();
+        let gid = ContextGroupId::from([0x42u8; 32]);
+        let ring = GroupKeyring::new(&store, gid);
+
+        // Higher epoch wins regardless of key bytes.
+        let old = [0x01u8; 32];
+        let new = [0x02u8; 32];
+        ring.store_key_with_epoch(&old, 5).unwrap();
+        ring.store_key_with_epoch(&new, 9).unwrap();
+        assert_eq!(
+            ring.load_current_key_record().unwrap().unwrap().group_key,
+            new
+        );
+
+        // Epoch is monotonic: re-storing `new` at a LOWER epoch keeps epoch 9,
+        // so `new` is still current.
+        ring.store_key_with_epoch(&new, 0).unwrap();
+        assert_eq!(
+            ring.load_current_key_record().unwrap().unwrap().group_key,
+            new
+        );
+    }
+
+    #[test]
+    fn current_key_breaks_equal_epoch_tie_by_key_id_deterministically() {
+        let store = test_store();
+        let gid = ContextGroupId::from([0x43u8; 32]);
+        let ring = GroupKeyring::new(&store, gid);
+
+        let a = [0x01u8; 32];
+        let b = [0x02u8; 32];
+        ring.store_key_with_epoch(&a, 7).unwrap();
+        ring.store_key_with_epoch(&b, 7).unwrap();
+
+        // Deterministic tie-break: the larger key_id wins on every node.
+        let expected = if GroupKeyring::key_id_for(&a) > GroupKeyring::key_id_for(&b) {
+            a
+        } else {
+            b
+        };
+        assert_eq!(
+            ring.load_current_key_record().unwrap().unwrap().group_key,
+            expected
+        );
     }
 }

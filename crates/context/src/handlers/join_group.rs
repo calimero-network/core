@@ -169,7 +169,12 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         borsh::from_slice(&join_result.key_envelope_bytes)
                             .map_err(|e| eyre::eyre!("failed to deserialize key envelope: {e}"))?;
 
-                    let group_key = GroupKeyring::unwrap_for_recipient(&sk, &envelope)?;
+                    let group_key = GroupKeyring::unwrap_for_recipient(
+                        &sk,
+                        &group_id.to_bytes(),
+                        None,
+                        &envelope,
+                    )?;
                     GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
                     info!("received group key via direct join response");
                 }
