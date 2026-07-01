@@ -3848,7 +3848,7 @@ mod apply_lock_poison_recovery_tests {
 
     #[tokio::test]
     async fn lock_apply_slot_recovers_poisoned_relay_mutex() {
-        let (ds, _tmp) = build_delta_store().await;
+        let (ds, _tmp, _rx) = build_delta_store().await;
         let applier = Arc::clone(&ds.applier);
 
         // A thread panics while holding the relay slot — exactly the shape of an

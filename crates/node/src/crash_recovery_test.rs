@@ -38,6 +38,10 @@ fn persist_row(
     parents: Vec<[u8; 32]>,
     applied: bool,
     expected_root_hash: [u8; 32],
+    // Only Phase-0 pre-persisted (`applied: false`) rows carry an events blob;
+    // a committed row leaves it `None` so a restart harvests no phantom handler
+    // replays. Explicit per-call so the two concerns aren't conflated.
+    events: Option<Vec<u8>>,
 ) {
     let mut handle = store.handle();
     let actions = borsh::to_vec(&one_action(delta_id[0])).expect("serialize actions");
@@ -51,9 +55,7 @@ fn persist_row(
                 hlc: HybridTimestamp::default(),
                 applied,
                 expected_root_hash,
-                // Phase-0 only pre-persists event-carrying inputs; carry a
-                // non-None events blob so the row matches that shape.
-                events: Some(vec![1, 2, 3]),
+                events,
                 author_id: Some(PublicKey::from([0xBB; 32])),
                 governance_position_blob: None,
                 delta_signature: None,
@@ -91,10 +93,17 @@ async fn phase0_applied_false_row_not_promoted_on_restart() {
 
     // On-disk state at crash time: the standalone applied:false row, no heads
     // commit (nothing advanced the DAG heads past genesis).
-    persist_row(&store, delta_id, vec![GENESIS], false, [0x11; 32]);
+    persist_row(
+        &store,
+        delta_id,
+        vec![GENESIS],
+        false,
+        [0x11; 32],
+        Some(vec![1, 2, 3]),
+    );
 
     // Restart: fresh DeltaStore over the same store, then reload from disk.
-    let (delta_store, _tmp) = delta_store_over(store).await;
+    let (delta_store, _tmp, _rx) = delta_store_over(store).await;
     let _ = delta_store
         .load_persisted_deltas()
         .await
@@ -130,12 +139,12 @@ async fn merge_topology_and_root_hash_identical_across_restart() {
     let (root_a, root_b, root_m) = ([0xAA; 32], [0xBB; 32], [0xCC; 32]);
 
     // Concurrent branches off genesis, then a committed merge over both.
-    persist_row(&store, a, vec![GENESIS], true, root_a);
-    persist_row(&store, b, vec![GENESIS], true, root_b);
-    persist_row(&store, m, vec![a, b], true, root_m);
+    persist_row(&store, a, vec![GENESIS], true, root_a, None);
+    persist_row(&store, b, vec![GENESIS], true, root_b, None);
+    persist_row(&store, m, vec![a, b], true, root_m, None);
 
     // First restart.
-    let (ds1, _tmp1) = delta_store_over(store.clone()).await;
+    let (ds1, _tmp1, _rx1) = delta_store_over(store.clone()).await;
     let _ = ds1.load_persisted_deltas().await.expect("reload #1");
 
     assert!(ds1.dag_has_delta_applied(&a).await);
@@ -169,7 +178,7 @@ async fn merge_topology_and_root_hash_identical_across_restart() {
 
     // A second, independent restart reproduces the identical head and root hash
     // — the reconstruction is deterministic, not order-dependent.
-    let (ds2, _tmp2) = delta_store_over(store).await;
+    let (ds2, _tmp2, _rx2) = delta_store_over(store).await;
     let _ = ds2.load_persisted_deltas().await.expect("reload #2");
     let mut heads2 = ds2.get_heads().await;
     heads2.sort_unstable();

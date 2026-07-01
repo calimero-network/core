@@ -48,7 +48,7 @@ fn pending_input(id: [u8; 32], hash: [u8; 32]) -> BatchDeltaInput {
 
 #[tokio::test]
 async fn add_deltas_batch_empty_is_noop() {
-    let (delta_store, _tmp) = build_delta_store().await;
+    let (delta_store, _tmp, _rx) = build_delta_store().await;
 
     let result = delta_store
         .add_deltas_batch(Vec::new())
@@ -66,7 +66,7 @@ async fn add_deltas_batch_empty_is_noop() {
 
 #[tokio::test]
 async fn add_deltas_batch_classifies_all_pending() {
-    let (delta_store, _tmp) = build_delta_store().await;
+    let (delta_store, _tmp, _rx) = build_delta_store().await;
 
     let ids = [[0x01u8; 32], [0x02u8; 32], [0x03u8; 32]];
     let inputs: Vec<BatchDeltaInput> = ids
@@ -106,7 +106,7 @@ async fn add_deltas_batch_matches_single_path_for_pending() {
     let hashes = [[0x10u8; 32], [0x20u8; 32], [0x30u8; 32], [0x40u8; 32]];
 
     // Store A: single-delta path, one call per delta.
-    let (store_a, _tmp_a) = build_delta_store().await;
+    let (store_a, _tmp_a, _rx_a) = build_delta_store().await;
     for (id, hash) in ids.iter().zip(hashes.iter()) {
         let applied = store_a
             .add_delta(
@@ -121,7 +121,7 @@ async fn add_deltas_batch_matches_single_path_for_pending() {
     }
 
     // Store B: batch path, one call for all deltas.
-    let (store_b, _tmp_b) = build_delta_store().await;
+    let (store_b, _tmp_b, _rx_b) = build_delta_store().await;
     let inputs: Vec<BatchDeltaInput> = ids
         .iter()
         .zip(hashes.iter())

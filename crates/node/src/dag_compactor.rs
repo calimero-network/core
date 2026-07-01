@@ -174,8 +174,14 @@ mod tests {
         let flag = Arc::new(AtomicBool::new(false));
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = SweepGuard(Arc::clone(&flag));
+            // Set the flag BEFORE constructing the guard, matching production
+            // (`spawn_sweep` sets it via `compare_exchange`, then builds the
+            // guard). If it were set after — or not at all — the flag would
+            // already be `false` and the final assertion would pass even with a
+            // no-op `Drop`; setting it first makes the assertion actually prove
+            // the guard cleared it.
             flag.store(true, Ordering::Release);
+            let _guard = SweepGuard(Arc::clone(&flag));
             panic!("simulated compaction sweep panic");
         }));
         assert!(result.is_err(), "the sweep must have unwound");

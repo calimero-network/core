@@ -31,10 +31,22 @@ pub(crate) fn context() -> ContextId {
     ContextId::from([0xAA; 32])
 }
 
+/// Keeps a test `DeltaStore`'s client channel receivers alive.
+///
+/// The node/sync clients hold the *senders*; if the paired receivers were
+/// dropped at the end of `delta_store_over` (which is what a `_`-binding does —
+/// the `_` prefix silences the lint but does NOT extend the binding's lifetime),
+/// every sender would see a closed channel and an emit/send would exercise a
+/// degraded path. Returning them to the caller keeps them alive for the whole
+/// test, not just for construction. Opaque so the (nameable-only-via-inference)
+/// receiver types don't leak into the return signature; bind it (e.g. `_rx`).
+pub(crate) struct KeepAlive(#[allow(dead_code)] Box<dyn std::any::Any>);
+
 /// Build a `DeltaStore` over the supplied `store`, so a caller can pre-seed the
 /// store and then "restart" by building a fresh `DeltaStore` over the same rows.
-/// The returned `TempDir` guard must be kept alive for the blob filesystem.
-pub(crate) async fn delta_store_over(store: Store) -> (DeltaStore, tempfile::TempDir) {
+/// The returned `TempDir` guard must be kept alive for the blob filesystem, and
+/// the [`KeepAlive`] for the client channel receivers.
+pub(crate) async fn delta_store_over(store: Store) -> (DeltaStore, tempfile::TempDir, KeepAlive) {
     let tmp = tempfile::tempdir().expect("tempdir");
 
     let blob_config =
@@ -45,19 +57,22 @@ pub(crate) async fn delta_store_over(store: Store) -> (DeltaStore, tempfile::Tem
 
     let network_client = NetworkClient::new(LazyRecipient::new());
 
-    // Keep every channel receiver bound for the life of this helper. Binding to a
-    // discard pattern (`_`) would drop the receiver at the `let`, leaving the
-    // paired sender with no receivers — so an emit/send would observe a closed
-    // channel and the constructed clients would exercise a degraded path. These
-    // receivers can't be threaded back through the `(DeltaStore, TempDir)` return
-    // shape, so keeping them alive to the end of construction is the documented
-    // minimum.
-    let (event_sender, _event_rx) = broadcast::channel(16);
-    let (ctx_sync_tx, _ctx_sync_rx) = mpsc::channel(1);
-    let (ns_sync_tx, _ns_sync_rx) = mpsc::channel(1);
-    let (ns_join_tx, _ns_join_rx) = mpsc::channel(1);
-    let (open_subgroup_join_tx, _open_subgroup_join_rx) = mpsc::channel(1);
+    let (event_sender, event_rx) = broadcast::channel(16);
+    let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(1);
+    let (ns_sync_tx, ns_sync_rx) = mpsc::channel(1);
+    let (ns_join_tx, ns_join_rx) = mpsc::channel(1);
+    let (open_subgroup_join_tx, open_subgroup_join_rx) = mpsc::channel(1);
     let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+
+    // Handed back to the caller so the senders inside the clients keep live
+    // receivers for the duration of the test (see `KeepAlive`).
+    let keep_alive = KeepAlive(Box::new((
+        event_rx,
+        ctx_sync_rx,
+        ns_sync_rx,
+        ns_join_rx,
+        open_subgroup_join_rx,
+    )));
 
     let node_client = NodeClient::new(
         store.clone(),
@@ -76,10 +91,11 @@ pub(crate) async fn delta_store_over(store: Store) -> (DeltaStore, tempfile::Tem
     (
         DeltaStore::new(GENESIS, context_client, context(), our_identity),
         tmp,
+        keep_alive,
     )
 }
 
 /// Build a standalone `DeltaStore` over a fresh in-memory store.
-pub(crate) async fn build_delta_store() -> (DeltaStore, tempfile::TempDir) {
+pub(crate) async fn build_delta_store() -> (DeltaStore, tempfile::TempDir, KeepAlive) {
     delta_store_over(Store::new(Arc::new(InMemoryDB::owned()))).await
 }

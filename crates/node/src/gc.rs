@@ -444,8 +444,13 @@ mod tests {
         // Enter a sweep: claim the flag exactly as `spawn_sweep` does.
         assert!(!flag.load(std::sync::atomic::Ordering::Acquire));
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = SweepGuard(Arc::clone(&flag));
+            // Claim the flag BEFORE constructing the guard, matching production
+            // (`spawn_sweep` sets it, then builds the guard). Setting it after —
+            // or not at all — would leave it `false`, so the final assertion
+            // would pass even with a no-op `Drop`; setting it first makes the
+            // assertion actually prove the guard cleared it.
             flag.store(true, std::sync::atomic::Ordering::Release);
+            let _guard = SweepGuard(Arc::clone(&flag));
             // A sweep aborting mid-run (e.g. a store error surfacing as a panic).
             panic!("simulated sweep panic");
         }));
