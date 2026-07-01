@@ -128,7 +128,8 @@ impl Codec for SpecializedNodeInviteCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        // Read length prefix (4 bytes, big endian)
+        // Read length prefix (4 bytes, big endian). A u32 always fits usize on
+        // 32-bit and wider targets, so this cast is lossless everywhere.
         let mut len_buf = [0u8; 4];
         io.read_exact(&mut len_buf).await?;
         let len = u32::from_be_bytes(len_buf) as usize;
@@ -156,7 +157,8 @@ impl Codec for SpecializedNodeInviteCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        // Read length prefix (4 bytes, big endian)
+        // Read length prefix (4 bytes, big endian). A u32 always fits usize on
+        // 32-bit and wider targets, so this cast is lossless everywhere.
         let mut len_buf = [0u8; 4];
         io.read_exact(&mut len_buf).await?;
         let len = u32::from_be_bytes(len_buf) as usize;

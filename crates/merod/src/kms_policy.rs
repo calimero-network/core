@@ -620,7 +620,7 @@ fn is_valid_release_version(version: &str) -> bool {
 }
 
 fn policy_fetch_backoff(attempt: usize) -> std::time::Duration {
-    let exponent = (attempt as u32).saturating_sub(1);
+    let exponent = u32::try_from(attempt).unwrap_or(u32::MAX).saturating_sub(1);
     // `1 << exponent` panics once `exponent >= 64` (attempts past ~64); fall back
     // to u64::MAX so the saturating_mul below just clamps to the max backoff.
     let factor = 1_u64.checked_shl(exponent).unwrap_or(u64::MAX);
@@ -670,12 +670,18 @@ mod tests {
         assert_eq!(policy_fetch_backoff(2).as_millis(), 500);
         assert_eq!(policy_fetch_backoff(4).as_millis(), 2000);
 
-        // Growth is bounded by the practical ceiling rather than running away.
+        // The `.min(cap)` engages well before any shift-width concern: attempt 8
+        // (250 * 128 = 32s) is the last value under the 60s ceiling, and attempt
+        // 9 (250 * 256 = 64s) is the first clamped to it.
         let cap = u128::from(POLICY_FETCH_MAX_BACKOFF_MS);
-        assert_eq!(policy_fetch_backoff(1_000).as_millis(), cap);
-        // exponent == 64 (attempt 65) is the exact u64 shift-width boundary: it
-        // must clamp to the ceiling rather than panicking on the `1 << exponent`.
+        assert_eq!(policy_fetch_backoff(8).as_millis(), 32_000);
+        assert_eq!(policy_fetch_backoff(9).as_millis(), cap);
+
+        // Extreme attempts stay clamped: attempt 65 (exponent 64) is the exact
+        // u64 shift-width boundary where `checked_shl` returns None, so the
+        // `checked_shl`/`try_from` guards must keep it at the ceiling, not panic.
         assert_eq!(policy_fetch_backoff(65).as_millis(), cap);
+        assert_eq!(policy_fetch_backoff(usize::MAX).as_millis(), cap);
     }
 
     #[test]

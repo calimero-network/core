@@ -196,11 +196,15 @@ impl SessionState {
     }
 }
 
-/// Get current timestamp in seconds since UNIX epoch
+/// Get current timestamp in seconds since UNIX epoch.
+///
+/// Degrades to `0` if the system clock is set before 1970 rather than panicking,
+/// so a misconfigured clock can't crash the SSE service. Callers subtract this
+/// saturatingly, so a `0` reading just makes a session look maximally stale.
 #[must_use]
 pub fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("System time before UNIX epoch")
+        .unwrap_or_default()
         .as_secs()
 }
