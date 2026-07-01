@@ -3313,12 +3313,14 @@ impl SyncManager {
             namespace_id,
             group_id,
             requester_public_key,
+            key_id,
         } = &payload
         {
             self.handle_group_key_request(
                 *namespace_id,
                 *group_id,
                 *requester_public_key,
+                *key_id,
                 stream,
                 nonce,
             )

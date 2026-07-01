@@ -1984,8 +1984,9 @@ async fn restricted_ctx_redriven_after_group_created() {
     // ---- Step 2: KeyDelivery → retry fires, fails meta-absent (stranded) -----
     // Wrap the subgroup key for the receiver's namespace identity (member_pk),
     // exactly as `admit_tee_node` / `add_group_members` would.
-    let envelope = GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &subgroup_key)
-        .expect("wrap subgroup key for receiver");
+    let envelope =
+        GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &sub_gid.to_bytes(), &subgroup_key)
+            .expect("wrap subgroup key for receiver");
 
     let key_delivery_op = SignedNamespaceOp::sign(
         &owner_sk,
@@ -2568,8 +2569,9 @@ async fn tee_matrix_restricted_late_join() {
     // retry on apply_received_group_key must re-drive the buffered op; because
     // the subgroup meta already exists (GroupCreated applied in step 1), the
     // staleness check passes and the context registers.
-    let envelope = GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &subgroup_key)
-        .expect("wrap subgroup key for receiver");
+    let envelope =
+        GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &sub_gid.to_bytes(), &subgroup_key)
+            .expect("wrap subgroup key for receiver");
     let key_delivery_op = SignedNamespaceOp::sign(
         &owner_sk,
         namespace_id.into(),

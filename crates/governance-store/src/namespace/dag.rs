@@ -94,7 +94,42 @@ impl<'a> NamespaceDagService<'a> {
         let current = handle.get(&ns_key)?;
         drop(handle);
 
-        let parent_set: HashSet<[u8; 32]> = parent_ids.iter().copied().collect();
+        let current_heads: HashSet<[u8; 32]> = current
+            .as_ref()
+            .map(|h| h.dag_heads.iter().copied().collect())
+            .unwrap_or_default();
+
+        // Validate cited parents are RESOLVABLE — either a current head or an
+        // op we have already applied and logged. A resolvable parent is trusted
+        // to advance the head frontier that `compute_governance_position`
+        // depends on; an unresolvable one (absent / fabricated) must not, or a
+        // crafted op could pad the frontier and desync every peer's position
+        // check. The in-memory DagStore already gates apply on parent
+        // availability (an op with absent parents is held `Pending` and its
+        // ancestors are back-filled first), so for ops arriving through the
+        // normal path every parent is resolvable here; this guard defends the
+        // governance-head write against a direct/edge caller that bypasses that
+        // gate, and makes the anomaly observable rather than silent.
+        let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
+        let mut resolvable_parents: HashSet<[u8; 32]> = HashSet::with_capacity(parent_ids.len());
+        for parent in parent_ids {
+            if current_heads.contains(parent) || op_log.contains_op(*parent)? {
+                let _ = resolvable_parents.insert(*parent);
+            } else {
+                tracing::warn!(
+                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                    delta_id = %hex::encode(delta_id),
+                    parent = %hex::encode(parent),
+                    "advance_dag_head: op cites an unresolvable parent (not a current \
+                     head nor a known applied op); ignoring it for head supersession"
+                );
+            }
+        }
+
+        // Only resolvable parents may supersede current heads. Unresolvable ones
+        // are dropped, so they can neither remove a real head nor otherwise
+        // influence the frontier.
+        let parent_set = resolvable_parents;
         // Drop the heads this op supersedes (its parents) and collapse any
         // pre-existing duplicates: a stored head set must be unique, otherwise
         // `compute_governance_position` refuses to embed a position and every
