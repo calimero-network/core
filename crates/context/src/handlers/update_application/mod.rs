@@ -403,7 +403,14 @@ fn authorize_update_application(
     // entry check.
     let handle = datastore.handle();
     let key = calimero_store::key::ContextIdentity::new(*context_id, *caller);
-    match handle.get(&key)? {
+    // Map a store read failure to a generic infra error rather than letting the
+    // raw store error text propagate to the caller (`?`). It's distinct from the
+    // authz rejection below so a genuine I/O failure isn't mislabeled as
+    // "unauthorized", but it still leaks no store internals.
+    let identity = handle
+        .get(&key)
+        .map_err(|_| eyre::eyre!("failed to verify caller authorization"))?;
+    match identity {
         Some(identity) if identity.private_key.is_some() => Ok(()),
         // Keep the caller-facing error generic so it can't be used as a
         // membership-enumeration oracle: the reply is returned to the (possibly
