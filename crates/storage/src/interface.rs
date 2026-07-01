@@ -3178,6 +3178,11 @@ impl<S: StorageAdaptor> Interface<S> {
         // the delete path (deletes go through `apply_delete_ref_action`), and the
         // `> deleted_at` guard inside `clear_deleted` keeps ties and older writes
         // from resurrecting.
+        //
+        // Ordering: `update_hash_for` above already persisted the new
+        // `updated_at`, and both calls run inside the same reentrant
+        // `index_mutation_guard`, so no concurrent writer interleaves between
+        // them (`clear_deleted` also re-advances the nonce defensively).
         <Index<S>>::clear_deleted(id, *metadata.updated_at)?;
 
         if id.is_root() {
