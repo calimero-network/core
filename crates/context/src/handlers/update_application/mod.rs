@@ -418,11 +418,15 @@ fn authorize_update_application(
         })?;
     match identity {
         Some(identity) if identity.private_key.is_some() => Ok(()),
-        // Keep the caller-facing error generic so it can't be used as a
-        // membership-enumeration oracle: the reply is returned to the (possibly
-        // unauthorized) caller, and interpolating the caller key / context id
-        // would confirm whether a given key is a known member. Operators still get
-        // the full diagnostic from the `warn!` log at the call site.
+        // This arm deliberately collapses two distinct rejections — an entirely
+        // unknown key (`None`) and a known-but-remote identity that carries no
+        // private key here (`Some` without `private_key`) — into one identical
+        // message. Distinguishing them is exactly the membership-enumeration
+        // oracle we must not expose: a differing reply would let a (possibly
+        // unauthorized) caller confirm whether a given key is a known member of
+        // this context. For the same reason the message interpolates neither the
+        // caller key nor the context id. Operators still get the full, specific
+        // diagnostic from the `warn!` log at the call site.
         _ => bail!("unauthorized: caller is not a permitted identity for this context"),
     }
 }
