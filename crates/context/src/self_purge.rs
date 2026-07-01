@@ -225,9 +225,17 @@ async fn run(store: Store, node_client: NodeClient) {
             // The `JoinHandle` is intentionally dropped: `handle_member_removed`
             // returns `()` (no error to propagate — per-step failures are
             // already surfaced via `record_purge_failure` + logs inside it), and
-            // a panic in the task still fires the process panic hook, so it is
-            // not silently lost. Detaching also isolates a panicking purge from
-            // the recv loop, which is the point of spawning here.
+            // a panic in the task fires the process panic hook (unless a custom
+            // hook swallows it), so it is not silently lost. Detaching also
+            // isolates a panicking purge from the recv loop, which is the point
+            // of spawning here.
+            //
+            // Not joined on shutdown: a namespace-root purge interrupted by
+            // process exit is durably recoverable — the pending-self-purge marker
+            // is written BEFORE the cascade, and `reconcile_sweep` completes any
+            // marked-but-unfinished purge on the next startup. So a shutdown race
+            // does not strand key material; it only defers completion to the next
+            // start, the same guarantee a crash mid-cascade already relies on.
             let store = store.clone();
             let node_client = node_client.clone();
             drop(tokio::spawn(async move {

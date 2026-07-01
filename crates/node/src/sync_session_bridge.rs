@@ -443,10 +443,24 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                             // giving up. The grace is deliberately shorter than
                             // `session_timeout` so total wall time stays under
                             // the 2× watchdog grace (a permit-starved session
-                            // must not trip a spurious synthetic failure). We do
-                            // NOT warn yet — a session that finishes within the
-                            // grace completed successfully, so warning here would
-                            // log a spurious timeout for a healthy session.
+                            // must not trip a spurious synthetic failure).
+                            //
+                            // TRADEOFF (deliberate): the permit lives INSIDE
+                            // `session`, so if the session already acquired one it
+                            // keeps holding it for the grace window — a stuck
+                            // session pins its slot for up to 1.5× `session_timeout`
+                            // rather than releasing at 1×. This is the accepted
+                            // cost of not dropping a possibly-mid-protocol future:
+                            // it is still strictly bounded (unlike an unbounded
+                            // re-await) and stays under the 2× watchdog grace, so
+                            // it cannot deadlock the actor the way an unbounded
+                            // hold would. A session that timed out while STILL
+                            // waiting for a permit holds nothing, so grace-extending
+                            // it is free.
+                            //
+                            // We do NOT warn yet — a session that finishes within
+                            // the grace completed successfully, so warning here
+                            // would log a spurious timeout for a healthy session.
                             match tokio::time::timeout(session_timeout / 2, &mut session).await {
                                 Ok(()) => {
                                     debug!(

@@ -19,7 +19,6 @@ use tracing::{debug, error, info, warn};
 
 // Timeout settings for blob serving
 const BLOB_SERVE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes total
-const CHUNK_SEND_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds per chunk
 
 // Replay-protection window for a signed blob request: the auth envelope's
 // timestamp must be within 30s in the past / 10s in the future. Tight on
@@ -64,12 +63,15 @@ pub async fn handle_blob_protocol_stream(
         };
         let response_data = serde_json::to_vec(&response)?;
 
-        timeout(
-            CHUNK_SEND_TIMEOUT,
-            stream.send(StreamMessage::new(response_data)),
-        )
-        .await
-        .map_err(|_| eyre::eyre!("Timeout sending auth rejection"))??;
+        // No per-send timeout: a timeout that fires mid-flush would drop the
+        // send while a frame is half-written, leaving a truncated frame on the
+        // wire (same reasoning as the data path). The stream is closed right
+        // after this send regardless, so a stuck send is bounded by the peer's
+        // own read timeout.
+        stream
+            .send(StreamMessage::new(response_data))
+            .await
+            .map_err(|e| eyre::eyre!("Failed to send auth rejection: {}", e))?;
 
         return Ok(());
     }
