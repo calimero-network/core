@@ -25,6 +25,10 @@ use x509_cert::Certificate;
 
 const POLICY_RELEASE_BASE: &str = "https://github.com/calimero-network/mero-tee/releases/download";
 const POLICY_FETCH_RETRIES: usize = 3;
+/// Upper bound on the exponential fetch backoff. Without it a large `attempt`
+/// would saturate to `u64::MAX` milliseconds (~585 million years); this caps
+/// the wait at a practical ceiling.
+const POLICY_FETCH_MAX_BACKOFF_MS: u64 = 60_000;
 const DEFAULT_ALLOWED_TCB_STATUSES: &[&str] = &["uptodate"];
 const POLICY_JSON_ASSET: &str = "kms-phala-attestation-policy.json";
 const POLICY_SIG_ASSET: &str = "kms-phala-attestation-policy.json.sig";
@@ -620,7 +624,10 @@ fn policy_fetch_backoff(attempt: usize) -> std::time::Duration {
     // `1 << exponent` panics once `exponent >= 64` (attempts past ~64); fall back
     // to u64::MAX so the saturating_mul below just clamps to the max backoff.
     let factor = 1_u64.checked_shl(exponent).unwrap_or(u64::MAX);
-    std::time::Duration::from_millis(250_u64.saturating_mul(factor))
+    let millis = 250_u64
+        .saturating_mul(factor)
+        .min(POLICY_FETCH_MAX_BACKOFF_MS);
+    std::time::Duration::from_millis(millis)
 }
 
 /// Resolve policy: fetch from release when version is set, else None.
@@ -657,19 +664,18 @@ mod tests {
     use sigstore::cosign::bundle::{Bundle as RekorBundle, Payload as RekorPayload};
 
     #[test]
-    fn policy_fetch_backoff_saturates_past_shift_width() {
+    fn policy_fetch_backoff_grows_then_caps() {
         // The first attempts grow exponentially from the 250ms base.
         assert_eq!(policy_fetch_backoff(1).as_millis(), 250);
         assert_eq!(policy_fetch_backoff(2).as_millis(), 500);
         assert_eq!(policy_fetch_backoff(4).as_millis(), 2000);
 
-        // Attempts past the u64 shift width (exponent >= 64) must clamp to the
-        // saturated backoff instead of panicking on the `1 << exponent`.
-        let far = policy_fetch_backoff(1_000);
-        assert_eq!(far.as_millis(), u128::from(u64::MAX));
-        // exponent == 64 (attempt 65) is the exact shift-width boundary: it must
-        // saturate rather than panic.
-        assert_eq!(policy_fetch_backoff(65).as_millis(), u128::from(u64::MAX));
+        // Growth is bounded by the practical ceiling rather than running away.
+        let cap = u128::from(POLICY_FETCH_MAX_BACKOFF_MS);
+        assert_eq!(policy_fetch_backoff(1_000).as_millis(), cap);
+        // exponent == 64 (attempt 65) is the exact u64 shift-width boundary: it
+        // must clamp to the ceiling rather than panicking on the `1 << exponent`.
+        assert_eq!(policy_fetch_backoff(65).as_millis(), cap);
     }
 
     #[test]

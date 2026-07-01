@@ -772,6 +772,12 @@ pub fn needs_owner_convert(metadata: &Metadata, target_version: u32) -> bool {
 /// with `a.cmp(b) == Equal`) and, because it is compared field-wise inside
 /// `Metadata`'s derived `PartialEq`, would make the equal-vs-newer timestamp
 /// distinction in `save_internal` collapse to a single always-taken branch.
+///
+/// Consequence for callers: two `Metadata` values that differ only in
+/// `updated_at` now compare unequal (they previously compared equal under the
+/// always-true `eq`). Metadata equality is not on any production hot path — only
+/// convergence assertions in tests compare it — so this is the intended, safer
+/// behaviour rather than a regression.
 #[derive(
     BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd,
 )]
