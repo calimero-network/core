@@ -23,6 +23,11 @@ fi
 # Configuration
 VMAGENT_VERSION="1.132.0"
 VMAGENT_ARCH="amd64"
+# SHA-256 of vmutils-linux-${VMAGENT_ARCH}-v${VMAGENT_VERSION}.tar.gz, pinned
+# here in-repo (taken from the upstream _checksums.txt) so the trust root is
+# this reviewed file rather than a checksums file fetched from the same host as
+# the archive. Refresh it whenever VMAGENT_VERSION or VMAGENT_ARCH changes.
+VMAGENT_SHA256="fd3eaa294050fc849931e8947212c736825a7a49e5509ee4555e288750861fc8"
 VMAGENT_DIR="/tmp/vmagent-${TEST_CASE}"
 VICTORIA_WRITE_URL="https://victoria-lb.apps.dev.p2p.aws.calimero.network/api/v1/write"
 VMAGENT_CONFIG="/tmp/vmagent_scrape_${TEST_CASE}.yml"
@@ -31,64 +36,42 @@ VMAGENT_LOG="/tmp/vmagent-${TEST_CASE}.log"
 VMAGENT_ASSET="vmutils-linux-${VMAGENT_ARCH}-v${VMAGENT_VERSION}.tar.gz"
 VMAGENT_BASE_URL="https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v${VMAGENT_VERSION}"
 TARBALL="/tmp/vmutils-${TEST_CASE}.tar.gz"
-CHECKSUMS="/tmp/vmutils-${TEST_CASE}_checksums.txt"
 
 # Create directories
 mkdir -p "$VMAGENT_DIR"
 
-# Download vmagent binary and its upstream-published checksums file
+# Download vmagent archive. wget exits non-zero on HTTP errors and `set -e`
+# aborts the script, so a failed download never reaches the checks below.
 echo "Downloading vmagent v${VMAGENT_VERSION}..."
 wget -q -O "$TARBALL" "${VMAGENT_BASE_URL}/${VMAGENT_ASSET}"
-wget -q -O "$CHECKSUMS" "${VMAGENT_BASE_URL}/${VMAGENT_ASSET%.tar.gz}_checksums.txt"
 
-if [ ! -f "$TARBALL" ]; then
-    echo "ERROR: Failed to download vmagent"
-    exit 1
-fi
-
-# Verify the archive against the upstream SHA-256 before extracting/executing.
-EXPECTED_SHA=$(awk -v f="$VMAGENT_ASSET" '$2 == f {print $1}' "$CHECKSUMS")
-if [ -z "$EXPECTED_SHA" ]; then
-    echo "ERROR: no checksum for $VMAGENT_ASSET found in checksums file" >&2
-    rm -f "$TARBALL" "$CHECKSUMS"
-    exit 1
-fi
+# Verify against the pinned SHA-256 before extracting/executing anything.
 ACTUAL_SHA=$(sha256sum "$TARBALL" | awk '{print $1}')
-if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+if [ "$ACTUAL_SHA" != "$VMAGENT_SHA256" ]; then
     echo "ERROR: vmagent archive checksum mismatch" >&2
-    echo "  expected: $EXPECTED_SHA" >&2
+    echo "  expected: $VMAGENT_SHA256" >&2
     echo "  actual:   $ACTUAL_SHA" >&2
-    rm -f "$TARBALL" "$CHECKSUMS"
+    rm -f "$TARBALL"
     exit 1
 fi
 echo "vmagent archive checksum verified"
 
-# Extract vmagent-prod binary from tar
-tar -xzf "$TARBALL" -C "$VMAGENT_DIR" vmagent-prod
-
-# Rename to vmagent
-mv "$VMAGENT_DIR/vmagent-prod" "$VMAGENT_DIR/vmagent"
-
-# Verify binary was extracted
-if [ ! -f "$VMAGENT_DIR/vmagent" ]; then
-    echo "ERROR: vmagent-prod binary not found in tar archive"
-    echo "Archive URL: ${VMAGENT_BASE_URL}/${VMAGENT_ASSET}"
-    echo "Archive contents:"
-    tar -tzf "$TARBALL" | head -10 || true
-    rm -f "$TARBALL" "$CHECKSUMS"
+# Extract vmagent-prod. Handle failure explicitly (rather than letting `set -e`
+# abort) so the archive contents can be printed for diagnosis while the tarball
+# still exists.
+if ! tar -xzf "$TARBALL" -C "$VMAGENT_DIR" vmagent-prod; then
+    echo "ERROR: vmagent-prod not found in $VMAGENT_ASSET" >&2
+    echo "Archive contents:" >&2
+    tar -tzf "$TARBALL" | head -10 >&2 || true
+    rm -f "$TARBALL"
     exit 1
 fi
 
-# Clean up downloaded files
-rm -f "$TARBALL" "$CHECKSUMS"
+# Rename to vmagent and clean up the archive
+mv "$VMAGENT_DIR/vmagent-prod" "$VMAGENT_DIR/vmagent"
+rm -f "$TARBALL"
 
 chmod +x "$VMAGENT_DIR/vmagent"
-
-# Verify binary exists
-if [ ! -f "$VMAGENT_DIR/vmagent" ]; then
-    echo "ERROR: Failed to extract vmagent binary"
-    exit 1
-fi
 
 # Save bearer token to file
 AUTH_ENABLED="false"

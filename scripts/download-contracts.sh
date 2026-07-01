@@ -19,9 +19,12 @@ RELEASE_DATA=$(curl --fail --silent --show-error \
   -H "Accept: application/vnd.github+json" "$API_URL")
 
 # Emit "<download-url>\t<sha256-digest>" per .tar.gz asset. The digest is the
-# hash GitHub computed for the stored asset and returns over TLS from the API;
-# we verify each download against it before extracting so a tampered or
-# truncated archive from the download CDN is rejected.
+# hash GitHub itself computed for the stored asset, returned over TLS from
+# api.github.com; each download is verified against it before extracting.
+# Trust boundary: this rejects corruption or tampering between GitHub and us
+# (CDN / transit), but is only as trustworthy as the GitHub API response — it
+# does NOT defend against a compromised GitHub release. Defending against that
+# would require the contracts repo to publish a signed checksum manifest.
 ASSETS=$(echo "$RELEASE_DATA" \
   | jq -r '.assets[] | select(.name | endswith(".tar.gz")) | [.browser_download_url, .digest] | @tsv')
 

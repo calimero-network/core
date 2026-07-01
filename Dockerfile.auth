@@ -73,9 +73,11 @@ RUN adduser \
     --uid "${UID}" \
     user
 
-# Copy to a fixed name so the entrypoint can use exec form (which does not do
-# variable expansion) — exec form makes the binary PID 1 and receive signals
-# directly, so SIGTERM/SIGINT propagate for a clean shutdown.
+# APP_NAME selects which crate binary the build stage produced; we always install
+# it under the fixed name mero-auth (regardless of APP_NAME) so the entrypoint can
+# use exec form, which does not do variable expansion. Exec form makes the binary
+# PID 1 and receive signals directly, so SIGTERM/SIGINT propagate for a clean
+# shutdown.
 COPY --from=build \
     /usr/local/bin/${APP_NAME} \
     /usr/local/bin/mero-auth
