@@ -48,11 +48,11 @@ jobs:
       pull-requests: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -64,7 +64,7 @@ jobs:
       # come from meroreviewer[bot] (not whatever GH_PAT/GITHUB_TOKEN
       # resolves to), matching the --reviewer-name label below.
       - name: Create GitHub App token
-        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
           app-id: ${{ vars.MERO_REVIEWER_APP_ID }}

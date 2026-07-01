@@ -10,6 +10,11 @@ name: SDK E2E (paired)
 permissions:
   contents: read
 
+# Cancel superseded PR runs; never cancel a master run.
+concurrency:
+  group: sdk-e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
 on:
   pull_request:
     paths:
@@ -33,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout core (PR head)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -42,7 +47,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -67,14 +72,14 @@ jobs:
           echo "Testing against mero-js@$REF"
 
       - name: Checkout mero-js (paired ref)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: calimero-network/mero-js
           ref: ${{ steps.sdkref.outputs.ref }}
           path: _mero-js
 
       - name: Setup Node + pnpm
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
       - run: npm install -g pnpm

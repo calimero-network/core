@@ -185,7 +185,7 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
         .unwrap();
     CapabilitiesRepository::new(&store)
-        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
         .unwrap();
 
     let mut proj = ScopeProjections::new();
@@ -340,7 +340,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
         .unwrap();
     CapabilitiesRepository::new(&store)
-        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
         .unwrap();
 
     let mut proj = ScopeProjections::new();
@@ -495,7 +495,7 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
         .unwrap();
     CapabilitiesRepository::new(&store)
-        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
         .unwrap();
 
     // LIVE applies the full chain — root join + inherited subgroup join — so the
@@ -603,7 +603,7 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
         .unwrap();
     CapabilitiesRepository::new(&store)
-        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
         .unwrap();
 
     // Both join ops are durably applied to the op-store — the state a node holds

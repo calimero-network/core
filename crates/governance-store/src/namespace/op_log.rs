@@ -149,6 +149,9 @@ impl<'a> NamespaceOpLogService<'a> {
             .ok()
             .flatten(),
             NamespaceOp::Root(_) => None,
+            // `NamespaceOp` is `#[non_exhaustive]`; nothing to decrypt for an
+            // unknown future op variant.
+            _ => None,
         };
 
         let unified_op = crate::unified_op_decode::op_from_namespace_op(
@@ -160,13 +163,17 @@ impl<'a> NamespaceOpLogService<'a> {
         );
 
         let scope = calimero_op::ScopeId::from(self.namespace_id);
-        let key = calimero_store::key::ScopeUnifiedOp::new(*scope.as_bytes(), unified_op.id);
+        let key = calimero_store::key::ScopeUnifiedOp::new(*scope.as_bytes(), unified_op.id());
         let bytes = borsh::to_vec(&unified_op).map_err(|e| eyre::eyre!("borsh op: {e}"))?;
         let value =
             calimero_store::types::ScopeUnifiedOp::from(calimero_store::slice::Slice::from(bytes));
         handle.put(&key, &value)?;
         // Sanity: the op-store and the gov-DAG must key the same op identity.
-        debug_assert_eq!(unified_op.id, delta_id, "unified op id != gov-DAG delta id");
+        debug_assert_eq!(
+            unified_op.id(),
+            delta_id,
+            "unified op id != gov-DAG delta id"
+        );
         Ok(())
     }
 

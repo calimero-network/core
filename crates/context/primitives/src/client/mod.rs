@@ -2524,7 +2524,9 @@ mod get_context_version_tests {
                     &key::GroupContextMetadata::new(gid, cid),
                     &calimero_primitives::metadata::MetadataRecord {
                         name: Some("docs-workspace".to_owned()),
-                        ..Default::default()
+                        data: Default::default(),
+                        updated_at: 0,
+                        updated_by: calimero_primitives::identity::PublicKey::from([1_u8; 32]),
                     },
                 )
                 .expect("seed context metadata");

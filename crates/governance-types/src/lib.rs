@@ -25,7 +25,7 @@ use std::io;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_context_config::types::SignedGroupOpenInvitation;
-use calimero_context_config::VisibilityMode;
+use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -239,10 +239,10 @@ pub enum GroupOp {
     /// Per-member capability bitmask (`GroupMemberCapability` store).
     MemberCapabilitySet {
         member: PublicKey,
-        capabilities: u32,
+        capabilities: MemberCapabilities,
     },
     /// Default capability bitmask for new members.
-    DefaultCapabilitiesSet { capabilities: u32 },
+    DefaultCapabilitiesSet { capabilities: MemberCapabilities },
     /// Update group upgrade policy in [`GroupMetaValue`].
     UpgradePolicySet { policy: UpgradePolicy },
     /// Update target application and app key in group metadata.
@@ -462,6 +462,7 @@ impl GroupOp {
 /// - `Group` ops have a cleartext `group_id` tag (for topic routing and
 ///   skeleton storage) but the actual mutation is encrypted.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+#[non_exhaustive]
 pub enum NamespaceOp {
     /// Cleartext namespace-wide administrative operation.
     Root(RootOp),
@@ -481,6 +482,10 @@ pub enum NamespaceOp {
 }
 
 /// Cleartext administrative operations that affect the entire namespace.
+// Intentionally NOT #[non_exhaustive]: `RootOp` is dispatched by a central
+// exhaustive `match root` (governance op-apply) that must fail to compile when
+// a variant is added so the new op gets a handler, rather than silently
+// hitting a `_` arm and being dropped from application.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub enum RootOp {
     /// A new group was created AND atomically nested under `parent_id`.
@@ -745,8 +750,7 @@ pub const NAMESPACE_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.namespace.v1";
 pub fn namespace_signable_bytes(
     signable: &SignableNamespaceOp,
 ) -> Result<Vec<u8>, GovernanceError> {
-    let mut body =
-        borsh::to_vec(signable).map_err(|e| GovernanceError::BorshSerialize(e.to_string()))?;
+    let mut body = borsh::to_vec(signable)?;
     let mut out = Vec::with_capacity(NAMESPACE_GOVERNANCE_SIGN_DOMAIN.len() + body.len());
     out.extend_from_slice(NAMESPACE_GOVERNANCE_SIGN_DOMAIN);
     out.append(&mut body);
@@ -907,13 +911,12 @@ pub enum GovernanceError {
     #[error("signature verification failed: {0}")]
     Signature(#[from] SignatureError),
     #[error("borsh serialization failed: {0}")]
-    BorshSerialize(String),
+    BorshSerialize(#[from] std::io::Error),
 }
 
 /// Bytes that are hashed/signed: `GROUP_GOVERNANCE_SIGN_DOMAIN` || `borsh(SignableGroupOp)`.
 pub fn signable_bytes(signable: &SignableGroupOp) -> Result<Vec<u8>, GovernanceError> {
-    let mut body =
-        borsh::to_vec(signable).map_err(|e| GovernanceError::BorshSerialize(e.to_string()))?;
+    let mut body = borsh::to_vec(signable)?;
     let mut out = Vec::with_capacity(GROUP_GOVERNANCE_SIGN_DOMAIN.len() + body.len());
     out.extend_from_slice(GROUP_GOVERNANCE_SIGN_DOMAIN);
     out.append(&mut body);

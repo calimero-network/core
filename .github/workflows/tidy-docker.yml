@@ -40,12 +40,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Cleanup non-persistent images, except open PRs
-        uses: dataaxiom/ghcr-cleanup-action@v1
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1
         with:
           dry-run: ${{ github.event.inputs.dry-run }}
           package: ${{ env.PACKAGES }}
@@ -72,7 +72,7 @@ jobs:
           echo "active_prs=$expr" >> $GITHUB_OUTPUT
 
       - name: Cleanup closed PR images
-        uses: dataaxiom/ghcr-cleanup-action@v1
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1
         with:
           dry-run: ${{ github.event.inputs.dry-run }}
           package: ${{ env.PACKAGES }}
