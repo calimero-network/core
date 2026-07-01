@@ -16,6 +16,7 @@ use super::{
 };
 #[cfg(test)]
 use super::{GCounter, PNCounter};
+use crate::collections::error::StoreError;
 use crate::store::StorageAdaptor;
 
 // ============================================================================
@@ -330,8 +331,12 @@ where
                 // This is where nested CRDT merging happens!
                 our_value.merge(&other_value)?;
                 drop(self.insert(key, our_value)?);
-            } else {
-                // Key only in other - add it (add-wins semantics)
+            } else if !crate::index::Index::<S>::is_deleted(self.entry_id(&key))
+                .map_err(StoreError::from)?
+            {
+                // Add-wins, but a key we tombstoned must not be resurrected by
+                // other's live copy (delete wins; mirrors rga merge_chars_from).
+                // entry_id is self's: the tombstone lives in self's namespace.
                 drop(self.insert(key, other_value)?);
             }
         }
@@ -387,7 +392,10 @@ where
             if let Some(mut our_value) = self.get(&key)?.map(ValueRef::into_inner) {
                 our_value.merge(&other_value)?;
                 drop(self.insert(key, our_value)?);
-            } else {
+            } else if !crate::index::Index::<S>::is_deleted(self.entry_id(&key))
+                .map_err(StoreError::from)?
+            {
+                // See UnorderedMap::merge — local tombstone wins over add.
                 drop(self.insert(key, other_value)?);
             }
         }
@@ -449,8 +457,13 @@ where
         let other_values = other.iter()?;
 
         for value in other_values {
-            // Insert returns true if new, false if already exists
-            // We don't care - idempotent add-wins semantics
+            // Add-wins, but never resurrect a value we tombstoned (delete wins;
+            // see UnorderedMap::merge / rga merge_chars_from).
+            if crate::index::Index::<S>::is_deleted(self.entry_id(&value))
+                .map_err(StoreError::from)?
+            {
+                continue;
+            }
             let _ = self.insert(value)?;
         }
 
@@ -495,6 +508,12 @@ where
     /// element-ordered. Order falls out of `T: Ord`, so convergence is inherited.
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         for value in other.iter()? {
+            // See UnorderedSet::merge — local tombstone wins over add.
+            if crate::index::Index::<S>::is_deleted(self.entry_id(&value))
+                .map_err(StoreError::from)?
+            {
+                continue;
+            }
             let _ = self.insert(value)?;
         }
         Ok(())
@@ -1059,5 +1078,127 @@ mod tests {
         // Test AsRef with bool
         let reg3 = LwwRegister::new(true);
         assert_eq!(reg3.as_ref(), &true);
+    }
+}
+
+/// Add-wins map/set merges must not resurrect a key/value this replica
+/// tombstoned: `self` deletes an entry, a peer holds it live, and merging the
+/// peer in must leave the deletion intact. Mirrors the RGA `tombstone_merge_tests`.
+#[cfg(test)]
+mod mapset_tombstone_merge_tests {
+    use crate::collections::crdt_meta::Mergeable;
+    use crate::collections::{LwwRegister, UnorderedMap, UnorderedSet};
+    use crate::index::Index;
+    use crate::store::MockedStorage;
+
+    // Map values must be a CRDT; `LwwRegister` is the simplest Mergeable value.
+    type Reg = LwwRegister<String>;
+
+    #[test]
+    fn map_merge_does_not_resurrect_locally_deleted_key() {
+        type S = MockedStorage<861>;
+
+        // `a` tombstones "k"; `b` is a separate replica (different collection id)
+        // holding "k" live. The guard checks `a`'s own id, so `a`'s delete wins.
+        let mut a = UnorderedMap::<String, Reg, S>::new_with_field_name("a_map");
+        drop(a.insert("k".to_owned(), Reg::new("v".to_owned())).unwrap());
+        drop(a.remove("k").unwrap());
+
+        let mut b = UnorderedMap::<String, Reg, S>::new_with_field_name("b_map");
+        drop(
+            b.insert("k".to_owned(), Reg::new("from_b".to_owned()))
+                .unwrap(),
+        );
+
+        // Precondition: the resurrection scenario is real. `b` must hold "k"
+        // live, else the merge is a no-op and the test passes vacuously.
+        assert!(b.get("k").unwrap().is_some());
+        let entry = a.entry_id("k");
+        assert!(a.get("k").unwrap().is_none());
+        assert!(Index::<S>::is_deleted(entry).unwrap());
+        let parent = Index::<S>::get_parent_id(entry).unwrap().unwrap();
+        let pre = Index::<S>::get_index(parent).unwrap().unwrap();
+        let pre_hash = pre.full_hash();
+        assert!(pre.deleted_children().contains(&entry));
+
+        Mergeable::merge(&mut a, &b).unwrap();
+
+        let post = Index::<S>::get_index(parent).unwrap().unwrap();
+        assert!(
+            a.get("k").unwrap().is_none(),
+            "merge resurrected a deleted key"
+        );
+        assert!(
+            post.deleted_children().contains(&entry),
+            "merge dropped the key from the deleted-children advertisement"
+        );
+        assert_eq!(post.full_hash(), pre_hash, "merge diverged the parent hash");
+    }
+
+    #[test]
+    fn map_merge_still_adds_unseen_key() {
+        type S = MockedStorage<862>;
+        let mut a = UnorderedMap::<String, Reg, S>::new_with_field_name("a_map2");
+        let mut b = UnorderedMap::<String, Reg, S>::new_with_field_name("b_map2");
+        drop(
+            b.insert("new".to_owned(), Reg::new("v".to_owned()))
+                .unwrap(),
+        );
+
+        Mergeable::merge(&mut a, &b).unwrap();
+
+        assert!(
+            a.get("new").unwrap().is_some(),
+            "merge dropped a genuinely new key"
+        );
+    }
+
+    #[test]
+    fn set_merge_does_not_resurrect_locally_deleted_value() {
+        type S = MockedStorage<863>;
+
+        let mut a = UnorderedSet::<String, S>::new_with_field_name("a_set");
+        let _ = a.insert("x".to_owned()).unwrap();
+        let _ = a.remove("x").unwrap();
+
+        let mut b = UnorderedSet::<String, S>::new_with_field_name("b_set");
+        let _ = b.insert("x".to_owned()).unwrap();
+
+        // `b` must hold "x" live, else the merge is a no-op (vacuous pass).
+        assert!(b.contains("x").unwrap());
+        let entry = a.entry_id("x");
+        assert!(Index::<S>::is_deleted(entry).unwrap());
+        let parent = Index::<S>::get_parent_id(entry).unwrap().unwrap();
+        let pre = Index::<S>::get_index(parent).unwrap().unwrap();
+        let pre_hash = pre.full_hash();
+        assert!(pre.deleted_children().contains(&entry));
+
+        Mergeable::merge(&mut a, &b).unwrap();
+
+        let post = Index::<S>::get_index(parent).unwrap().unwrap();
+        assert!(
+            !a.contains("x").unwrap(),
+            "merge resurrected a deleted value"
+        );
+        assert!(
+            post.deleted_children().contains(&entry),
+            "merge dropped the value from the deleted-children advertisement"
+        );
+        assert_eq!(post.full_hash(), pre_hash, "merge diverged the parent hash");
+    }
+
+    #[test]
+    fn set_merge_still_adds_unseen_value() {
+        type S = MockedStorage<864>;
+        let mut a = UnorderedSet::<String, S>::new_with_field_name("a_set2");
+        let mut b = UnorderedSet::<String, S>::new_with_field_name("b_set2");
+        let _ = b.insert("new".to_owned()).unwrap();
+
+        Mergeable::merge(&mut a, &b).unwrap();
+
+        assert!(
+            a.contains("new").unwrap(),
+            "merge dropped a genuinely new value"
+        );
     }
 }

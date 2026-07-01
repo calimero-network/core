@@ -243,6 +243,17 @@ where
         self.inner.contains(id)
     }
 
+    /// The deterministic storage entity id this `value` maps to — lets the
+    /// add-wins merge consult `Index::is_deleted` without re-deriving
+    /// `compute_id`. See [`UnorderedSet::entry_id`](super::UnorderedSet::entry_id).
+    pub(crate) fn entry_id<Q>(&self, value: &Q) -> Id
+    where
+        V: Borrow<Q>,
+        Q: AsRef<[u8]> + ?Sized,
+    {
+        compute_id(self.inner.id(), value.as_ref())
+    }
+
     /// Remove `value`, returning `true` if it was present.
     ///
     /// # Errors
