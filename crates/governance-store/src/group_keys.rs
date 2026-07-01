@@ -72,13 +72,24 @@ impl<'a> GroupKeyring<'a> {
     /// for the same fresh `key_id` could both observe an absent entry and the
     /// epoch-`0` put could land last, regressing the stored epoch to `0` and
     /// making the node pick a stale "current" key (the very divergence the epoch
-    /// exists to prevent). The lock makes the check-then-write atomic; group-key
-    /// writes are rare (rotations / deliveries) so contention is negligible.
+    /// exists to prevent). The lock makes the check-then-write atomic.
+    ///
+    /// Two properties make the lock sufficient without store-level snapshot
+    /// isolation: (1) `handle.put` is write-through to the shared DB, so a write
+    /// by one lock holder is visible to the next holder's freshly-opened
+    /// `handle.get`; and (2) `handle` is declared *after* `_guard`, so it drops
+    /// (flushing any layer buffering) *before* the lock is released — the next
+    /// holder can never observe a half-applied write. A single process-global
+    /// lock (rather than a per-group lock) is deliberate: group-key writes are
+    /// rare (rotations / deliveries), never on a hot path, so cross-group
+    /// contention is negligible and not worth a per-key lock map.
     pub fn store_key_with_epoch(&self, group_key: &[u8; 32], epoch: u64) -> EyreResult<[u8; 32]> {
         let key_id = Self::key_id_for(group_key);
         let entry = GroupKeyEntry::new(self.group_id.to_bytes(), key_id);
         // Serialize the read-modify-write; recover a poisoned lock (the guarded
         // state lives in the store, not the guard, so a prior panic is benign).
+        // NOTE: `_guard` is declared before `handle` on purpose — `handle` must
+        // drop first (see doc above).
         let _guard = GROUP_KEY_EPOCH_WRITE_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -128,6 +139,14 @@ impl<'a> GroupKeyring<'a> {
     /// the old wall-clock `created_at` ordering, two rotations within the same
     /// second or a skewed clock can no longer make two nodes pick different
     /// "current" keys (which caused decrypt divergence).
+    ///
+    /// The `key_id` tie-break is what makes two *concurrent* rotations (e.g. two
+    /// admins removing members on causally-unordered ops that land at the same
+    /// epoch) **converge** rather than diverge: once both keys are present, every
+    /// node picks the same one (larger `key_id` wins — a total order over a
+    /// sha256 hash). And the choice is safety-neutral either way, because both
+    /// concurrent rotations exclude the removed member(s) from their envelopes,
+    /// so whichever key wins, a removed member holds neither.
     pub fn load_current_key_record(&self) -> EyreResult<Option<StoredGroupKey>> {
         let gid = self.group_id.to_bytes();
         let keys = collect_keys_with_prefix(
