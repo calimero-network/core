@@ -451,7 +451,7 @@ mod tests {
             .set_member_capability(
                 &namespace,
                 member,
-                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
             )
             .unwrap();
         CapabilitiesRepository::new(&store)

@@ -176,15 +176,16 @@ impl<'a> MembershipRepository<'a> {
                 let caps = CapabilitiesRepository::new(self.store)
                     .member_capability(&parent, identity)?
                     .unwrap_or(0);
-                anchor_decision =
-                    Some(if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS != 0 {
+                anchor_decision = Some(
+                    if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits() != 0 {
                         MembershipPath::Inherited {
                             anchor: parent,
                             via_admin: false,
                         }
                     } else {
                         MembershipPath::None
-                    });
+                    },
+                );
             }
             current = parent;
         }

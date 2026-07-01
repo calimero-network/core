@@ -1222,6 +1222,8 @@ impl SyncManager {
                                         calimero_context_client::local_governance::NamespaceOp::Group { .. } => {
                                             "Group".to_owned()
                                         }
+                                        // `NamespaceOp` is `#[non_exhaustive]`.
+                                        _ => "Unknown".to_owned(),
                                     };
                                     warn!(
                                         namespace_id = %hex::encode(namespace_id),
