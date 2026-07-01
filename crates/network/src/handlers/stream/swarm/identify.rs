@@ -15,6 +15,12 @@ use super::{EventHandler, NetworkManager};
 /// (`fc00::/7`) ranges are kept: they're valid for same-network / overlay
 /// deployments. Addresses with no IP component (e.g. a DNS multiaddr) pass
 /// through unchanged.
+///
+/// Unlike `is_seedable_external_address` in `lib.rs`, this filter stays silent
+/// on private/unique-local ranges rather than warning. That counterpart vets
+/// *our own* operator-configured external address, where a private range is a
+/// likely misconfiguration worth flagging; here the addresses belong to other
+/// peers, so a per-peer warning would be noise, not an actionable signal.
 fn is_dialable_advertised_addr(addr: &Multiaddr) -> bool {
     for proto in addr.iter() {
         match proto {

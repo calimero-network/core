@@ -6,7 +6,7 @@ use libp2p::kad::{Event, GetRecordError, GetRecordOk, InboundRequest, QueryResul
 use libp2p::PeerId;
 use libp2p_metrics::Recorder;
 use owo_colors::OwoColorize;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{EventHandler, NetworkManager};
 
@@ -124,7 +124,12 @@ impl EventHandler<Event> for NetworkManager {
                                 debug!(%source, "stored validated inbound DHT record");
                             }
                             Err(err) => {
-                                debug!(%source, ?err, "rejected inbound DHT record: store put failed");
+                                // Surfaced at warn, not debug: the validator
+                                // already rejects oversized values, so a put
+                                // failure here is most likely the store hitting
+                                // its `max_records` ceiling — a capacity signal
+                                // an operator should see without debug logging.
+                                warn!(%source, ?err, "rejected inbound DHT record: store put failed (store may be full)");
                             }
                         }
                     } else {

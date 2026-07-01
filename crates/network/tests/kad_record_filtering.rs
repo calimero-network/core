@@ -30,7 +30,7 @@ impl KadOnly {
         let peer_id = k.public().to_peer_id();
         let mut config = kad::Config::new(kad::PROTOCOL_NAME);
         // Mirror production: never auto-store an inbound record.
-        let _ = config.set_record_filtering(StoreInserts::FilterBoth);
+        config.set_record_filtering(StoreInserts::FilterBoth);
         Self {
             kad: kad::Behaviour::with_config(peer_id, MemoryStore::new(peer_id), config),
         }
