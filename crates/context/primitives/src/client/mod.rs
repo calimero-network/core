@@ -2254,6 +2254,10 @@ mod atomic_persist_tests {
         }
 
         fn delete(&self, col: Column, key: Slice<'_>) -> EyreResult<()> {
+            assert!(
+                !self.armed.load(Ordering::SeqCst),
+                "atomic persist must not write via direct `delete`; all writes go through `apply`"
+            );
             self.inner.delete(col, key)
         }
 
@@ -2393,6 +2397,18 @@ mod atomic_persist_tests {
             handle.put(&ka, &ra).expect("seed A");
             handle.put(&kb, &rb).expect("seed B");
         }
+
+        // Sanity: the seeded rows are readable before we arm the backend, so the
+        // survival assertions below test a real delete-nothing outcome rather
+        // than rows that were never present.
+        assert!(
+            has_delta(&failing, &cid, DELTA_A),
+            "seeded A must be readable"
+        );
+        assert!(
+            has_delta(&failing, &cid, DELTA_B),
+            "seeded B must be readable"
+        );
 
         // Arm the backend, then attempt to prune BOTH keys in one batch.
         armed.store(true, Ordering::SeqCst);

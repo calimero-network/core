@@ -101,15 +101,13 @@ mod tests {
         store.handle().get(key).expect("read").is_some()
     }
 
-    // Multi-key all-or-nothing: several staged puts either all land at commit or,
-    // if the batch is dropped before commit, none do. This pins the invariant the
-    // one atomic `Store::apply` (a single RocksDB `WriteBatch`) exists to provide.
+    // Dropping an uncommitted batch writes nothing, even with many staged ops:
+    // staging is invisible until `commit`, and abandoning the batch discards it.
     #[test]
-    fn commit_persists_all_keys_and_drop_persists_none() {
+    fn drop_persists_nothing() {
         let store = store();
-        let (a, b, c) = (gkey(1), gkey(2), gkey(3));
+        let (a, b) = (gkey(1), gkey(2));
 
-        // Dropping an uncommitted batch writes nothing, even with many staged ops.
         let mut dropped = StoreBatch::new(&store);
         dropped
             .put(&a, &GenericData::from(Slice::from(&b"a"[..])))
@@ -118,11 +116,31 @@ mod tests {
             .put(&b, &GenericData::from(Slice::from(&b"b"[..])))
             .expect("stage b");
         assert_eq!(dropped.len(), 2);
+
+        // Staged-but-uncommitted keys are not yet observable in the store.
+        assert!(
+            !present(&store, &a),
+            "staged a must be invisible before commit"
+        );
+        assert!(
+            !present(&store, &b),
+            "staged b must be invisible before commit"
+        );
+
         drop(dropped);
         assert!(!present(&store, &a), "dropped batch must not persist a");
         assert!(!present(&store, &b), "dropped batch must not persist b");
+    }
 
-        // Committing lands every staged key together.
+    // Multi-key all-or-nothing on the happy path: several staged puts stay
+    // invisible until `commit`, then all land together. This pins the invariant
+    // the one atomic `Store::apply` (a single RocksDB `WriteBatch`) exists to
+    // provide.
+    #[test]
+    fn commit_persists_all_keys() {
+        let store = store();
+        let (a, b, c) = (gkey(1), gkey(2), gkey(3));
+
         let mut batch = StoreBatch::new(&store);
         batch
             .put(&a, &GenericData::from(Slice::from(&b"a"[..])))
@@ -133,6 +151,21 @@ mod tests {
         batch
             .put(&c, &GenericData::from(Slice::from(&b"c"[..])))
             .expect("stage c");
+
+        // Nothing is visible while the batch is still staged.
+        assert!(
+            !present(&store, &a),
+            "staged a must be invisible before commit"
+        );
+        assert!(
+            !present(&store, &b),
+            "staged b must be invisible before commit"
+        );
+        assert!(
+            !present(&store, &c),
+            "staged c must be invisible before commit"
+        );
+
         batch.commit().expect("commit");
         assert!(present(&store, &a) && present(&store, &b) && present(&store, &c));
     }

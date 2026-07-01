@@ -8,12 +8,6 @@
 
 use std::sync::Arc;
 
-use calimero_blobstore::config::BlobStoreConfig;
-use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
-use calimero_context_client::client::ContextClient;
-use calimero_network_primitives::client::NetworkClient;
-use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
-use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
@@ -21,57 +15,8 @@ use calimero_storage::entities::Metadata;
 use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_store::db::InMemoryDB;
 use calimero_store::Store;
-use calimero_utils_actix::LazyRecipient;
-use tokio::sync::{broadcast, mpsc};
 
-use crate::delta_store::DeltaStore;
-
-const GENESIS: [u8; 32] = [0u8; 32];
-
-fn context() -> ContextId {
-    ContextId::from([0xAA; 32])
-}
-
-/// Build a `DeltaStore` over the supplied `store` (so a caller can pre-seed the
-/// store, then "restart" by building a fresh `DeltaStore` over the same rows).
-/// Mirrors `delta_store_batch_test`'s helper. The returned `TempDir` must be
-/// kept alive for the blob filesystem.
-async fn delta_store_over(store: Store) -> (DeltaStore, tempfile::TempDir) {
-    let tmp = tempfile::tempdir().expect("tempdir");
-
-    let blob_config =
-        BlobStoreConfig::new(tmp.path().to_path_buf().try_into().expect("utf8 blob path"));
-    let file_system = FileSystem::new(&blob_config).await.expect("blob fs");
-    let blob_store = BlobStore::new(store.clone(), file_system);
-    let blob_manager = BlobManager::new(blob_store);
-
-    let network_client = NetworkClient::new(LazyRecipient::new());
-    let (event_sender, _) = broadcast::channel(16);
-    let (ctx_sync_tx, _r0) = mpsc::channel(1);
-    let (ns_sync_tx, _r1) = mpsc::channel(1);
-    let (ns_join_tx, _r2) = mpsc::channel(1);
-    let (open_subgroup_join_tx, _r3) = mpsc::channel(1);
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
-
-    let node_client = NodeClient::new(
-        store.clone(),
-        blob_manager,
-        network_client,
-        LazyRecipient::new(),
-        event_sender,
-        sync_client,
-        String::new(),
-        None,
-    );
-
-    let context_client = ContextClient::new(store, node_client, LazyRecipient::new());
-    let our_identity = PublicKey::from([0xBB; 32]);
-
-    (
-        DeltaStore::new(GENESIS, context_client, context(), our_identity),
-        tmp,
-    )
-}
+use crate::test_support::{context, delta_store_over, GENESIS};
 
 /// A single non-empty action so the reconstructed delta is classified as a
 /// regular delta (a genesis-parented, empty-action delta would be inferred as a
@@ -197,9 +142,12 @@ async fn merge_topology_and_root_hash_identical_across_restart() {
     assert!(ds1.dag_has_delta_applied(&b).await);
     assert!(ds1.dag_has_delta_applied(&m).await);
 
-    // The merge collapses both branches into a single head, M.
+    // The merge collapses both branches into a single head, M. `get_heads()`
+    // order is DAG-impl-dependent, so sort before the exact-equality compare.
+    let mut heads1 = ds1.get_heads().await;
+    heads1.sort_unstable();
     assert_eq!(
-        ds1.get_heads().await,
+        heads1,
         vec![m],
         "merge must leave exactly one head after restart"
     );
@@ -223,7 +171,9 @@ async fn merge_topology_and_root_hash_identical_across_restart() {
     // — the reconstruction is deterministic, not order-dependent.
     let (ds2, _tmp2) = delta_store_over(store).await;
     let _ = ds2.load_persisted_deltas().await.expect("reload #2");
-    assert_eq!(ds2.get_heads().await, vec![m]);
+    let mut heads2 = ds2.get_heads().await;
+    heads2.sort_unstable();
+    assert_eq!(heads2, vec![m]);
     assert_eq!(
         ds2.get_delta(&m)
             .await
