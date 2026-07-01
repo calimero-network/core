@@ -27,3 +27,12 @@ updates:
     groups:
       npm:
         patterns: ["*"]
+
+  # Dockerfile base images — keeps the @sha256 digest pins current.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      docker:
+        patterns: ["*"]
