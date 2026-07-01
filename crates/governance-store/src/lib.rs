@@ -923,7 +923,30 @@ pub(crate) fn verify_post_apply_state_hashes(
     // signed expected context as divergent (false-positive storm).
     // `None` here means the check was skipped or the snapshot
     // errored; the warn omits the per-context fields in that case.
-    let context_diff: Option<ContextHashDiff> = if check_context_hashes {
+    let context_diff: Option<ContextHashDiff> = if !check_context_hashes {
+        None
+    } else if !expected_context_state_hashes
+        .windows(2)
+        .all(|w| w[0].0 < w[1].0)
+    {
+        // The `diff_sorted_context_hashes` merge-scan is only correct when
+        // `expected` is strictly increasing (and duplicate-free) by ContextId.
+        // `expected` rides on a signed op authored by a possibly-Byzantine peer;
+        // an unsorted or duplicate-keyed vector would make the scan emit
+        // spurious only_in_*/hash_differs entries and trigger a needless
+        // reconcile. A legitimate signer always sorts (it builds this from
+        // `snapshot_context_state_hashes`), so an unsorted claim is malformed —
+        // skip the per-context check rather than trust a bogus diff. The
+        // `debug_assert!` inside the merge-scan does not run in release, so this
+        // runtime guard is what actually protects convergence in production.
+        tracing::warn!(
+            group_id = %hex::encode(group_id.to_bytes()),
+            op_kind,
+            "signed expected context-hash snapshot is not strictly sorted/unique by \
+             ContextId; skipping per-context convergence check (malformed or hostile op)"
+        );
+        None
+    } else {
         match MetaRepository::new(store).snapshot_context_state_hashes(group_id) {
             Ok(actual_context_state_hashes) => Some(diff_sorted_context_hashes(
                 group_id,
@@ -946,8 +969,6 @@ pub(crate) fn verify_post_apply_state_hashes(
                 None
             }
         }
-    } else {
-        None
     };
 
     let group_diverges = matches!(group_outcome, Some((true, _)));

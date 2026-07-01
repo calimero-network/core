@@ -84,6 +84,78 @@ impl<'a> MembershipRepository<'a> {
         Ok(())
     }
 
+    /// Change ONLY the role of an existing member, preserving every other
+    /// field on the row (`private_key`, `sender_key`, `auto_follow`).
+    ///
+    /// This is the correct primitive for a role change (`MemberRoleSet`, admin
+    /// promotion): unlike [`add_member`](Self::add_member) — which rewrites the
+    /// whole `GroupMemberValue` and therefore zeroes `private_key`/`sender_key`
+    /// (it preserves only `auto_follow`) — `set_role` touches the role and
+    /// nothing else. Bails with `MemberNotFound` if the row does not already
+    /// exist, so callers must have verified membership first.
+    ///
+    /// For a non-admin role, baseline capabilities are seeded ONLY when the
+    /// member has no capability row yet. A role change — unlike a fresh add —
+    /// must not overwrite an existing grant: `set_role` can demote an admin who
+    /// holds custom capabilities to a non-admin role, and unconditionally
+    /// re-seeding the group defaults would silently wipe them.
+    pub fn set_role(
+        &self,
+        group_id: &ContextGroupId,
+        identity: &PublicKey,
+        role: GroupMemberRole,
+    ) -> EyreResult<()> {
+        let is_admin = role == GroupMemberRole::Admin;
+        let mut handle = self.store.handle();
+        let key = GroupMember::new(group_id.to_bytes(), *identity);
+        let existing =
+            handle
+                .get::<GroupMember>(&key)?
+                .ok_or_else(|| MembershipError::MemberNotFound {
+                    group_id: format!("{group_id:?}"),
+                    member: format!("{identity:?}"),
+                })?;
+        handle.put(
+            &key,
+            &GroupMemberValue {
+                role,
+                private_key: existing.private_key,
+                sender_key: existing.sender_key,
+                auto_follow: existing.auto_follow,
+            },
+        )?;
+        drop(handle);
+
+        // Two-phase write (member row, then the default-caps row on its own
+        // handle), identical to `add_member_with_keys`. It is NOT a transaction,
+        // and deliberately so: the store is unbuffered/write-through, so a single
+        // shared handle would not make the two puts atomic across a crash anyway.
+        // Safety rests on the apply model, not a lock: group-op apply is
+        // serialized per group_id by the single-threaded ContextManager actor, so
+        // no concurrent reader observes the in-between state; and apply is
+        // replay-safe/idempotent, so a crash landing between the two writes is
+        // healed when the op re-applies (set_role re-runs and re-seeds the caps).
+        //
+        // Seed baseline caps ONLY when no capability row exists yet — never
+        // clobber an existing grant on a role change (e.g. demoting an admin who
+        // held custom caps). The `is_none` gate also keeps re-apply idempotent.
+        if !is_admin {
+            let capabilities = CapabilitiesRepository::new(self.store);
+            if capabilities
+                .member_capability(group_id, identity)?
+                .is_none()
+            {
+                if let Some(defaults) = capabilities.default_capabilities(group_id)? {
+                    if defaults != 0 {
+                        capabilities.set_member_capability(group_id, identity, defaults)?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn remove_member(&self, group_id: &ContextGroupId, identity: &PublicKey) -> EyreResult<()> {
         {
             let mut handle = self.store.handle();

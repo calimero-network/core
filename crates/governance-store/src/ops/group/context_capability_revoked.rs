@@ -2,11 +2,11 @@
 //! `apply_group_op_mutations` in #2304.
 
 use super::context::GroupApplyCtx;
-use crate::CapabilitiesRepository;
+use crate::{get_group_for_context, CapabilitiesRepository, ContextRegistrationError};
 use calimero_governance_types::ContextCapabilityBits;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
@@ -20,6 +20,20 @@ pub(crate) fn apply(
 
     ctx.permissions()
         .require_manage_members(signer, "revoke context capability")?;
+    // Mirror the context↔group guard on the grant path: only touch a
+    // per-context capability row for a context registered in this group.
+    if get_group_for_context(store, context_id)? != Some(*group_id) {
+        bail!(ContextRegistrationError::NotInGroup {
+            group_id: hex::encode(group_id.to_bytes()),
+            context_id: format!("{context_id:?}"),
+        });
+    }
+    // Deliberate asymmetry with the grant path (and `MemberCapabilitySet`):
+    // revoke does NOT require `member` to still be a group member. Revoke must
+    // remain able to DELETE an existing per-context capability row for an
+    // identity that has since left the group — or an orphan row left by an older
+    // code path — and gating on current membership would strand exactly those
+    // rows. Revoking for a non-member with no row is a harmless no-op.
     let caps = CapabilitiesRepository::new(store);
     let current = caps
         .context_member_capability(group_id, context_id, member)?
