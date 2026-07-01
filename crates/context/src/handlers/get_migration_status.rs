@@ -274,7 +274,7 @@ mod tests {
             .set_member_capability(
                 &parent,
                 &inherited,
-                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
             )
             .unwrap();
         // `direct` is a direct member of the child.

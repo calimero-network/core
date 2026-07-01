@@ -21,7 +21,9 @@ impl Handler<SetDefaultCapabilitiesRequest> for ContextManager {
             requester,
             true,
             GroupOp::DefaultCapabilitiesSet {
-                capabilities: default_capabilities,
+                capabilities: calimero_context_config::MemberCapabilities::from_bits_truncate(
+                    default_capabilities,
+                ),
             },
         )
     }

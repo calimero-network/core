@@ -480,10 +480,17 @@ mod tests {
         assert_eq!(payload_from_group_op(group, &GroupOp::Noop), None);
         // Capability plane is now folded (gates inherited membership).
         assert_eq!(
-            payload_from_group_op(group, &GroupOp::DefaultCapabilitiesSet { capabilities: 7 }),
+            payload_from_group_op(
+                group,
+                &GroupOp::DefaultCapabilitiesSet {
+                    capabilities: calimero_context_config::MemberCapabilities::from_bits_truncate(
+                        7
+                    )
+                }
+            ),
             Some(OpPayload::DefaultCapabilitiesSet {
                 group,
-                capabilities: 7,
+                capabilities: calimero_context_config::MemberCapabilities::from_bits_truncate(7),
             })
         );
     }

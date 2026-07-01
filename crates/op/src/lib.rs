@@ -16,6 +16,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
@@ -151,14 +152,14 @@ pub enum OpPayload {
     /// inheritance into open subgroups.
     DefaultCapabilitiesSet {
         group: ContextGroupId,
-        capabilities: u32,
+        capabilities: MemberCapabilities,
     },
     /// Set `member`'s explicit capability bitmask in `group` (overrides the
     /// group default for that member).
     MemberCapabilitySet {
         group: ContextGroupId,
         member: PublicKey,
-        capabilities: u32,
+        capabilities: MemberCapabilities,
     },
 
     // ---- graph-only ----

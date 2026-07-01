@@ -974,8 +974,10 @@ impl<'a> NamespaceGovernance<'a> {
             .default_capabilities(&gid)?
             .is_some();
         if !default_caps_existed {
-            CapabilitiesRepository::new(self.store)
-                .set_default_capabilities(&gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)?;
+            CapabilitiesRepository::new(self.store).set_default_capabilities(
+                &gid,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )?;
         }
 
         // Nothing to do (and nothing to log) if all halves were already
