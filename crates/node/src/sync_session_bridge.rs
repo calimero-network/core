@@ -42,6 +42,7 @@
 //! per-session `tokio::time::timeout`, and counters for
 //! processed/error/timeout/dropped logged once a minute.
 
+use std::pin::pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -425,11 +426,37 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                     // by a stuck session) would park this job
                     // indefinitely and pin the peer's inbound stream
                     // open until the peer itself gives up.
-                    let outcome = tokio::time::timeout(session_timeout, async move {
+                    // Pin the session so a timeout can re-await it (bounded)
+                    // rather than dropping it. Dropping a responder future
+                    // mid-step can leave local storage and the DAG partially
+                    // applied and diverged from the peer; a clean completion
+                    // keeps them consistent.
+                    let mut session = pin!(async move {
                         let _permit = concurrency.acquire_owned().await.ok();
                         sync_manager.handle_opened_stream(peer_id, stream).await
-                    })
-                    .await;
+                    });
+                    let outcome = match tokio::time::timeout(session_timeout, &mut session).await {
+                        Ok(()) => Ok(()),
+                        Err(_elapsed) => {
+                            // Bounded grace re-await: give a slow-but-progressing
+                            // session one more window to finish CLEANLY before
+                            // giving up. The grace is deliberately shorter than
+                            // `session_timeout` so total wall time stays under
+                            // the 2× watchdog grace (a permit-starved session
+                            // must not trip a spurious synthetic failure).
+                            warn!(
+                                %peer_id,
+                                timeout_secs = session_timeout.as_secs(),
+                                "SyncSession responder exceeded timeout — re-awaiting under a bounded grace to finish cleanly (avoids mid-protocol drop / storage-DAG divergence)"
+                            );
+                            // If the grace ALSO elapses the session is genuinely
+                            // stuck: drop it so its concurrency permit is
+                            // released and other sessions aren't starved (the
+                            // #2319 rationale). The next periodic sync repairs
+                            // the rare divergence a hard drop can leave.
+                            tokio::time::timeout(session_timeout / 2, &mut session).await
+                        }
+                    };
                     match &outcome {
                         Ok(()) => {
                             let _prev = processed_total.fetch_add(1, Ordering::Relaxed);
@@ -522,13 +549,32 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                     // below still yields a (failure) result, so
                     // `apply_session_result` clears the flag and the
                     // periodic loop retries.
-                    let outcome = tokio::time::timeout(session_timeout, async move {
+                    // Pin the session so a timeout can re-await it (bounded)
+                    // instead of dropping the in-flight interval-sync future
+                    // mid-step (which can leave storage/DAG diverged).
+                    let mut session = pin!(async move {
                         let _permit = concurrency.acquire_owned().await.ok();
                         sync_manager
                             .perform_interval_sync(context_id, peer_id)
                             .await
-                    })
-                    .await;
+                    });
+                    let outcome = match tokio::time::timeout(session_timeout, &mut session).await {
+                        Ok(res) => Ok(res),
+                        Err(_elapsed) => {
+                            // Bounded grace re-await (see the responder path for
+                            // the rationale): let a slow-but-progressing session
+                            // finish cleanly, but cap the grace below
+                            // `session_timeout` so total wall time stays under
+                            // the 2× watchdog grace. If the grace also elapses,
+                            // drop it so the permit is released (#2319).
+                            warn!(
+                                %context_id,
+                                timeout_secs = session_timeout.as_secs(),
+                                "SyncSession initiator exceeded timeout — re-awaiting under a bounded grace to finish cleanly (avoids mid-protocol drop / storage-DAG divergence)"
+                            );
+                            tokio::time::timeout(session_timeout / 2, &mut session).await
+                        }
+                    };
 
                     let chosen_peer = outcome
                         .as_ref()

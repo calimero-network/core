@@ -320,9 +320,19 @@ impl NodeClient {
         let request = GetBlobBytesRequest { blob_id };
         let (tx, rx) = tokio::sync::oneshot::channel();
 
-        // Use a short timeout to avoid hanging if NodeManager is unavailable
+        // Bound the mailbox enqueue so a dead/absent NodeManager can't hang us,
+        // but keep the bound generous. The handler replies asynchronously via
+        // `tx`, so `send()` resolves as soon as the message is dequeued — a fast
+        // operation. The previous 10ms bound raced that mailbox handoff: under
+        // any NodeManager load `send()` had not resolved yet, so this path was
+        // abandoned as if the actor were down, the blob was then read from disk
+        // directly here, AND the actor still processed the enqueued message and
+        // wrote the result into the now-dropped `tx` — a wasted second disk
+        // read on every contended call. A whole second is far longer than a
+        // healthy handoff ever takes, so it fires only when the actor is truly
+        // unavailable, while eliminating the load-induced double read.
         let send_result = tokio::time::timeout(
-            tokio::time::Duration::from_millis(10),
+            tokio::time::Duration::from_secs(1),
             self.node_manager.send(GetBlobBytes {
                 request,
                 outcome: tx,

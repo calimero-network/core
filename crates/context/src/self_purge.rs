@@ -210,7 +210,22 @@ async fn run(store: Store, node_client: NodeClient) {
         // module docstring for why we don't also react to
         // `OpEvent::MemberRemoved` here.
         if let Some((group_id, member)) = dispatch_target(&event) {
-            handle_member_removed(&store, &node_client, group_id, member).await;
+            // Process each eviction on its own detached task rather than inline.
+            // A namespace-root hard-purge (subtree cascade + per-group
+            // signing-key deletes + gossipsub unsubscribe) can be slow; running
+            // it inline stalls `rx.recv()`, and a slow enough purge lets the
+            // bounded broadcast channel lag and DROP subsequent events. A
+            // dropped `TeeMemberRemoved` leaves un-purged key residue that the
+            // marker-gated startup reconcile sweep cannot recover (see the
+            // `Lagged` arm above). Spawning keeps the recv loop hot so the
+            // channel does not back up. The purge helpers are idempotent and
+            // distinct evictions target distinct groups, so concurrent purges
+            // are safe. `Store` and `NodeClient` are cheap handle clones.
+            let store = store.clone();
+            let node_client = node_client.clone();
+            tokio::spawn(async move {
+                handle_member_removed(&store, &node_client, group_id, member).await;
+            });
         }
     }
 }

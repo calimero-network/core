@@ -28,7 +28,7 @@ use serde_json::{
     to_value as to_json_value, Value,
 };
 use tokio::spawn;
-use tokio::sync::{mpsc, RwLock, Semaphore};
+use tokio::sync::{mpsc, oneshot, RwLock, Semaphore};
 use tokio::time::interval;
 use tracing::{debug, error, field, info, info_span, warn, Instrument};
 use uuid::Uuid;
@@ -274,10 +274,20 @@ async fn handle_socket(
 
     debug!(%connection_id, "Client connection established");
 
+    // Cancellation signal for the node-event task. The sender lives on this
+    // stack frame; when the read loop below ends and `handle_socket` returns,
+    // dropping it resolves the receiver and stops the task. Without it, on a
+    // quiet node the task would park in `events.next()` indefinitely, holding a
+    // broadcast-receiver subscription and a `command_sender` clone long after
+    // the client disconnected — a per-disconnect leak that also delays shutdown.
+    let (events_shutdown_tx, events_shutdown_rx) = oneshot::channel::<()>();
+
     drop(spawn(handle_node_events(
         connection_id,
         Arc::clone(&state),
+        connection_state.clone(),
         commands_sender.clone(),
+        events_shutdown_rx,
     )));
 
     let (socket_sender, mut socket_receiver) = socket.split();
@@ -360,6 +370,11 @@ async fn handle_socket(
 
     debug!(%connection_id, "Client connection terminated");
 
+    // Stop the node-event task now rather than at the end of scope, so it
+    // releases its broadcast subscription promptly even if the client went quiet
+    // long before disconnecting.
+    drop(events_shutdown_tx);
+
     let mut state = state.connections.write().await;
     drop(state.remove(&connection_id));
 }
@@ -367,17 +382,34 @@ async fn handle_socket(
 async fn handle_node_events(
     connection_id: ConnectionId,
     state: Arc<ServiceState>,
+    connection_state: ConnectionState,
     command_sender: mpsc::Sender<Command>,
+    mut shutdown: oneshot::Receiver<()>,
 ) {
     let events = state.node_client.receive_events();
 
     let mut events = pin!(events);
 
-    while let Some(event) = events.next().await {
-        let Some(connection_state) = state.connections.read().await.get(&connection_id).cloned()
-        else {
-            error!(%connection_id, "Unexpected state, client_id not found in client state map");
-            return;
+    loop {
+        let event = tokio::select! {
+            // Poll cancellation first so a disconnected connection stops this
+            // task promptly even under a steady event stream.
+            biased;
+            // Resolves as soon as `handle_socket` drops the shutdown sender at
+            // connection teardown (whether the client sent frames recently or
+            // not). This is what lets a quiet-node connection stop parking in
+            // `events.next()` and release its broadcast subscription.
+            _ = &mut shutdown => {
+                debug!(%connection_id, "WS connection closed, stopping event handler");
+                break;
+            }
+            maybe_event = events.next() => match maybe_event {
+                Some(event) => event,
+                None => {
+                    debug!(%connection_id, "Node event stream ended, stopping event handler");
+                    break;
+                }
+            },
         };
 
         debug!(
@@ -416,11 +448,15 @@ async fn handle_node_events(
         let response = Response { id: None, body };
 
         if let Err(err) = command_sender.send(Command::Send(response)).await {
-            error!(
+            // The command receiver is gone (connection tearing down), so stop
+            // instead of logging an error for every subsequent event until the
+            // shutdown signal arrives.
+            debug!(
                 %connection_id,
                 %err,
-                "Failed to send WsCommand::Send",
+                "Failed to send WsCommand::Send (connection closed), stopping event handler",
             );
+            break;
         };
     }
 }

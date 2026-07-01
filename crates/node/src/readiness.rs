@@ -891,35 +891,108 @@ impl Handler<ApplyBeaconLocal> for ReadinessManager {
 /// going through the actor mailbox.
 #[derive(Debug, Default)]
 pub struct ReadinessCacheNotify {
-    waiters: Mutex<HashMap<[u8; 32], Arc<tokio::sync::Notify>>>,
+    waiters: Mutex<HashMap<[u8; 32], WaiterSlot>>,
+}
+
+/// One namespace's wake handle plus a count of the in-flight
+/// [`ReadinessCache::await_first_fresh_beacon`] calls holding it. The slot is
+/// removed once the count reaches zero, so the map stays bounded by the number
+/// of namespaces with a waiter *right now* rather than every namespace the node
+/// has ever waited on.
+#[derive(Debug)]
+struct WaiterSlot {
+    notify: Arc<tokio::sync::Notify>,
+    refs: usize,
+}
+
+/// RAII handle for an active waiter registration. Holds the namespace's
+/// `Notify` for use across `.await` points, and drops the namespace's refcount
+/// (evicting the slot at zero) when the awaiting call finishes or is cancelled.
+///
+/// Private and only constructed by [`ReadinessCacheNotify::acquire_waiter`],
+/// which releases the `waiters` mutex before handing the guard back. `drop`
+/// re-acquires that same non-reentrant `ReadinessCacheNotify::waiters` mutex,
+/// so a guard must never be dropped while the caller already holds it — none of
+/// the internal call sites do (the guard is only ever held as a local across
+/// `.await`s).
+struct WaiterGuard<'a> {
+    registry: &'a ReadinessCacheNotify,
+    ns: [u8; 32],
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl WaiterGuard<'_> {
+    /// The namespace's shared `Notify`, for creating per-iteration `Notified`
+    /// futures. Named `notifier` (not `notify`) to avoid colliding with
+    /// [`ReadinessCacheNotify::notify`], which *fires* a wake rather than
+    /// returning the primitive.
+    fn notifier(&self) -> &tokio::sync::Notify {
+        &self.notify
+    }
+}
+
+impl Drop for WaiterGuard<'_> {
+    fn drop(&mut self) {
+        let mut g = self.registry.waiters_lock();
+        // A live guard's slot must still be present with refs >= 1: guards are
+        // minted by `acquire_waiter` (refs += 1), aren't Clone, and only the
+        // last guard's drop removes the slot. Assert both invariants in
+        // debug/test builds rather than papering over an accounting bug (a
+        // silent no-op on a missing slot, or a saturating decrement on zero).
+        // Both `debug_assert!`s compile out entirely in release.
+        debug_assert!(
+            g.contains_key(&self.ns),
+            "WaiterGuard dropped but its namespace slot was already gone"
+        );
+        if let std::collections::hash_map::Entry::Occupied(mut e) = g.entry(self.ns) {
+            let slot = e.get_mut();
+            debug_assert!(
+                slot.refs > 0,
+                "WaiterGuard dropped more times than acquired"
+            );
+            slot.refs -= 1;
+            if slot.refs == 0 {
+                let _ = e.remove();
+            }
+        }
+    }
 }
 
 impl ReadinessCacheNotify {
     /// Acquire the waiters map, recovering from a poisoned mutex.
     /// See [`ReadinessCache::entries_lock`] for rationale (mirrors
     /// `AckRouter::lock` from PR #2264).
-    fn waiters_lock(
-        &self,
-    ) -> std::sync::MutexGuard<'_, HashMap<[u8; 32], Arc<tokio::sync::Notify>>> {
+    fn waiters_lock(&self) -> std::sync::MutexGuard<'_, HashMap<[u8; 32], WaiterSlot>> {
         self.waiters
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Get-or-create the per-namespace `Notify`. Cloned so the caller
-    /// holds it across `.await` points without keeping the registry
-    /// lock.
-    pub fn waiter_for(&self, ns: [u8; 32]) -> Arc<tokio::sync::Notify> {
+    /// Register a waiter for `ns`, returning a guard that keeps the namespace's
+    /// `Notify` alive in the map for as long as the guard is held. Because the
+    /// slot exists for the entire lifetime of the guard, any [`Self::notify`]
+    /// fired during that window reaches this waiter; the slot is evicted only
+    /// once no waiters remain.
+    fn acquire_waiter(&self, ns: [u8; 32]) -> WaiterGuard<'_> {
         let mut g = self.waiters_lock();
-        g.entry(ns)
-            .or_insert_with(|| Arc::new(tokio::sync::Notify::new()))
-            .clone()
+        let slot = g.entry(ns).or_insert_with(|| WaiterSlot {
+            notify: Arc::new(tokio::sync::Notify::new()),
+            refs: 0,
+        });
+        slot.refs += 1;
+        let notify = Arc::clone(&slot.notify);
+        drop(g);
+        WaiterGuard {
+            registry: self,
+            ns,
+            notify,
+        }
     }
 
     pub fn notify(&self, ns: [u8; 32]) {
         let g = self.waiters_lock();
-        if let Some(n) = g.get(&ns) {
-            n.notify_waiters();
+        if let Some(slot) = g.get(&ns) {
+            slot.notify.notify_waiters();
         }
     }
 }
@@ -948,12 +1021,16 @@ impl ReadinessCache {
         ttl: Duration,
         deadline: Duration,
     ) -> Option<(PublicKey, CacheEntry)> {
-        let waiter = notify.waiter_for(ns);
+        // Held for the whole call, so the namespace's slot stays in the waiters
+        // map until we return and any `notify()` in between reaches us. Dropping
+        // it (return or cancellation) releases the refcount and evicts the slot
+        // when we were the last waiter, keeping the map bounded.
+        let waiter = notify.acquire_waiter(ns);
         let timeout_fut = tokio::time::sleep(deadline);
         tokio::pin!(timeout_fut);
         loop {
             // 1. Create + pin a fresh Notified for this iteration.
-            let notified = waiter.notified();
+            let notified = waiter.notifier().notified();
             tokio::pin!(notified);
             // 2. Register without polling. From here on, any
             //    `notify_waiters()` is guaranteed to wake us, even if
