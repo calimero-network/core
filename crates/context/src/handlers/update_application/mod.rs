@@ -62,6 +62,12 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
         // path and only the new application's signer *continuity* was checked,
         // never the requester, so any key could drive a migration.
         if let Err(err) = authorize_update_application(&self.datastore, &context_id, &public_key) {
+            // `%public_key` is logged deliberately: this is an operator-facing
+            // audit line for a rejected privileged operation (never returned to
+            // the caller, so it is not the membership oracle the generic error
+            // guards against). Recording which identity attempted an
+            // unauthorized migration is the point of the log — useful for
+            // spotting abuse.
             warn!(
                 %context_id,
                 %application_id,
