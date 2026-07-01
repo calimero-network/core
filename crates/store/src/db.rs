@@ -160,26 +160,76 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
     /// `SortedMap`'s whole index slice on `clear()` without materialising the
     /// key set in memory first.
     ///
-    /// The default buffers the in-range keys and deletes them one by one (so
-    /// backends without a native range delete still work); RocksDB overrides
-    /// this with `delete_range_cf`, a single range tombstone — `O(1)` write,
-    /// no per-key I/O and no unbounded buffer.
+    /// The default deletes in-range keys in bounded batches (so backends
+    /// without a native range delete still work); RocksDB overrides this with
+    /// `delete_range_cf`, a single range tombstone — `O(1)` write, no per-key
+    /// I/O and no buffer.
+    ///
+    /// Each batch collects at most `DELETE_RANGE_BATCH` keys, deletes them, then
+    /// resumes at the byte-successor of the batch's last key. That target is
+    /// strictly greater than every key just deleted, so the next seek lands on
+    /// the first surviving in-range key using only the `seek` contract's `>=`
+    /// semantics — progress does not depend on how a backend's `seek` treats an
+    /// absent (just-deleted) key, which keeps the loop terminating for any
+    /// conforming backend, not just those whose seek skips to the next survivor.
+    /// Resuming from the batch boundary (rather than re-seeking to `lo`) also
+    /// keeps each seek local to where the previous one stopped. Peak memory is
+    /// one batch regardless of range size, where buffering the whole range first
+    /// would grow without bound on a large slice.
+    ///
+    /// Not atomic: this issues per-key deletes, so an error mid-range leaves the
+    /// keys deleted so far gone and the rest intact. Callers that need
+    /// all-or-nothing must wrap it in their own transaction. (The prior
+    /// buffer-everything default had the same non-atomicity.)
     fn delete_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> EyreResult<()> {
-        let mut iter = self.iter(col)?;
+        /// Keys buffered (and deleted) per batch. Bounds peak memory; a larger
+        /// value trades memory for fewer re-seeks.
+        const DELETE_RANGE_BATCH: usize = 4096;
+
         let hi_bytes: Vec<u8> = hi.as_ref().to_vec();
-        let mut keys: Vec<Vec<u8>> = Vec::new();
-        let mut pos = iter.seek(lo)?.map(|k| k.as_ref().to_vec());
-        while let Some(key) = pos {
-            if key.as_slice() >= hi_bytes.as_slice() {
+        // First batch seeks to `lo` (inclusive); later batches resume strictly
+        // after the previous batch's last key.
+        let mut seek_key: Vec<u8> = lo.as_ref().to_vec();
+
+        loop {
+            let mut iter = self.iter(col)?;
+            let mut keys: Vec<Vec<u8>> = Vec::new();
+            let mut pos = iter
+                .seek(Slice::from(&seek_key))?
+                .map(|k| k.as_ref().to_vec());
+            while let Some(key) = pos {
+                if key.as_slice() >= hi_bytes.as_slice() {
+                    break;
+                }
+                keys.push(key);
+                if keys.len() >= DELETE_RANGE_BATCH {
+                    break;
+                }
+                pos = iter.next()?.map(|k| k.as_ref().to_vec());
+            }
+            drop(iter);
+
+            if keys.is_empty() {
                 break;
             }
-            keys.push(key);
-            pos = iter.next()?.map(|k| k.as_ref().to_vec());
+
+            let drained = keys.len();
+            // Resume strictly after this batch's last key: its byte-successor is
+            // greater than every key deleted below, independent of seek's
+            // treatment of the now-absent keys.
+            let mut next_seek = keys.last().cloned().unwrap_or_default();
+            next_seek.push(0u8);
+            for key in keys {
+                self.delete(col, Slice::from(&key))?;
+            }
+
+            // A short batch means we reached `hi`; no more keys remain.
+            if drained < DELETE_RANGE_BATCH {
+                break;
+            }
+            seek_key = next_seek;
         }
-        drop(iter);
-        for key in keys {
-            self.delete(col, Slice::from(&key))?;
-        }
+
         Ok(())
     }
 

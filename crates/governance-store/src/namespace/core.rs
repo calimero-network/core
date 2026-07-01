@@ -434,6 +434,17 @@ impl<'a> NamespaceRepository<'a> {
             )));
         }
 
+        // Both must live in the same namespace. Meta rows are keyed by group id
+        // alone, so the target-exists check above does not prove same-namespace;
+        // without this an admin of namespace A could reparent an A-group under a
+        // B-group, grafting A's crypto/access boundary into B.
+        if self.resolve(child)? != self.resolve(new_parent)? {
+            eyre::bail!(NamespaceError::ReparentCrossNamespace {
+                child: format!("{child:?}"),
+                new_parent: format!("{new_parent:?}"),
+            });
+        }
+
         if self.is_descendant_of(new_parent, child)? {
             eyre::bail!(NamespaceError::ReparentCycle {
                 new_parent: format!("{new_parent:?}"),

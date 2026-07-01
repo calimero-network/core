@@ -733,21 +733,62 @@ pub struct EncryptedGroupOp {
     pub ciphertext: Vec<u8>,
 }
 
-/// ECDH-wrapped group key for a specific recipient.
+/// Domain separation prefix for the Ed25519 signature that authenticates a
+/// [`KeyEnvelope`]'s sender. Distinct from the op-signing domains so an
+/// envelope signature can never be replayed as an op signature or vice versa.
+pub const KEY_ENVELOPE_SIGN_DOMAIN: &[u8] = b"calimero.keyenvelope.v1";
+
+/// Authenticated, forward-secret ECDH-wrapped group key for a recipient.
 ///
-/// The sender encrypts the group key using a shared secret derived from
-/// `SharedKey::new(sender_sk, recipient_pk)`. The recipient decrypts with
-/// `SharedKey::new(recipient_sk, ephemeral_pk)`.
+/// The sender generates a fresh ephemeral keypair per envelope and encrypts the
+/// group key under `SharedKey::new(ephemeral_sk, recipient_pk)`; the recipient
+/// decrypts with `SharedKey::new(recipient_sk, ephemeral_pk)`. Because the
+/// ephemeral key is discarded after wrapping, compromising the sender's
+/// long-term key does not retroactively decrypt past envelopes. The `signature`
+/// authenticates `sender` over the whole envelope (bound to a `group_id`), so a
+/// recipient rejects forged or cross-group-replayed envelopes.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct KeyEnvelope {
     /// Recipient's namespace identity public key.
     pub recipient: PublicKey,
-    /// Sender's public key used for ECDH key agreement.
+    /// Identity that wrapped this key, authenticated by `signature`.
+    pub sender: PublicKey,
+    /// Per-envelope ephemeral public key used for ECDH key agreement. Fresh for
+    /// every wrap — this is what gives the wrap forward secrecy.
     pub ephemeral_pk: PublicKey,
     /// 12-byte AES-GCM nonce.
     pub nonce: [u8; 12],
     /// `AES-256-GCM(group_key)` using the ECDH shared secret.
     pub ciphertext: Vec<u8>,
+    /// Ed25519 signature by `sender` over [`KeyEnvelope::signing_payload`].
+    pub signature: [u8; 64],
+}
+
+impl KeyEnvelope {
+    /// Canonical bytes signed by `sender` to authenticate an envelope. Binds
+    /// the wrap to `group_id` (preventing cross-group replay) and every
+    /// envelope field except the signature itself. Callers on both the wrap and
+    /// unwrap sides must build the payload identically.
+    #[must_use]
+    pub fn signing_payload(
+        group_id: &[u8; 32],
+        recipient: &PublicKey,
+        sender: &PublicKey,
+        ephemeral_pk: &PublicKey,
+        nonce: &[u8; 12],
+        ciphertext: &[u8],
+    ) -> Vec<u8> {
+        let mut out =
+            Vec::with_capacity(KEY_ENVELOPE_SIGN_DOMAIN.len() + 32 * 4 + 12 + ciphertext.len());
+        out.extend_from_slice(KEY_ENVELOPE_SIGN_DOMAIN);
+        out.extend_from_slice(group_id);
+        out.extend_from_slice(recipient.as_ref());
+        out.extend_from_slice(sender.as_ref());
+        out.extend_from_slice(ephemeral_pk.as_ref());
+        out.extend_from_slice(nonce);
+        out.extend_from_slice(ciphertext);
+        out
+    }
 }
 
 /// Key rotation bundle attached to a `MemberRemoved` governance op.
@@ -795,7 +836,12 @@ pub struct SignedNamespaceOp {
 /// being an apply gate in C5.S3a (`scope_root` is the convergence signal now);
 /// removing it from the signable/​signed structs changes every op id, hence the
 /// version bump and the flag-day re-bootstrap.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 2;
+///
+/// v3: the `KeyEnvelope` carried in a `NamespaceOp::Group` key rotation gained
+/// authenticated `sender` + `signature` fields (and its `ephemeral_pk` became a
+/// true per-envelope ephemeral). That changes the borsh layout of every group
+/// op that carries a rotation, so every op id changes — another flag-day.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 3;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 pub const NAMESPACE_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.namespace.v1";

@@ -1542,6 +1542,48 @@ mod tests {
         assert_eq!(returned_err_value_str, err_value);
     }
 
+    /// A guest that supplies an out-of-range `ValueReturn` discriminant is
+    /// rejected with a clean `DeserializationError` rather than being
+    /// reinterpreted. The discriminant is read and validated as a plain `u64`
+    /// before the enum payload is ever materialized, so an invalid tag can never
+    /// drive an `assume_init` on an uninitialized variant (run under Miri to
+    /// confirm the absence of UB).
+    #[test]
+    fn test_value_return_rejects_invalid_discriminant() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // A fully valid payload buffer — the rejection must come from the
+        // discriminant alone, not from a malformed buffer descriptor.
+        let value = "payload for an invalid discriminant";
+        let value_ptr = 200u64;
+        write_str(&host, value_ptr, value);
+
+        // Neither 0 (Ok) nor 1 (Err): the only two legal discriminants.
+        for bad_discriminant in [2u8, 42u8, 255u8] {
+            let return_ptr = 32u64;
+            // Clear the 8 discriminant bytes, then write the bad tag.
+            host.borrow_memory().write(return_ptr, &[0u8; 8]).unwrap();
+            host.borrow_memory()
+                .write(return_ptr, &[bad_discriminant])
+                .unwrap();
+            prepare_guest_buf_descriptor(&host, return_ptr + 8, value_ptr, value.len() as u64);
+
+            let err = host.value_return(return_ptr).unwrap_err();
+            assert!(
+                matches!(err, VMLogicError::HostError(HostError::DeserializationError)),
+                "discriminant {bad_discriminant} must be rejected with DeserializationError, got {err:?}"
+            );
+            // Nothing must have been captured as the execution's return value.
+            assert!(
+                host.borrow_logic().returns.is_none(),
+                "an invalid discriminant must not capture a return value"
+            );
+        }
+    }
+
     /// `emit_migration_witness` captures the guest blob into the transient
     /// migrate→check channel on VMLogic (never via storage).
     #[test]
@@ -1713,6 +1755,45 @@ mod tests {
             err,
             VMLogicError::HostError(HostError::LogLengthOverflow)
         ));
+    }
+
+    /// A guest that hands `js_std_d_print` an enormous `message_len` must be
+    /// rejected by the memory-bounds check *before* any host allocation. Sizing
+    /// `vec![0u8; len]` straight from an unchecked guest length would let the
+    /// guest force a multi-gigabyte allocation (OOM) purely by lying about the
+    /// length; the `ptr + len` overflow / out-of-bounds guard catches it first,
+    /// returning `InvalidMemoryAccess` with no large allocation and no panic.
+    #[test]
+    fn test_js_std_d_print_huge_length_does_not_allocate() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let msg_ptr = 512u64;
+
+        // u64::MAX length: `ptr + len` overflows the address space, so the
+        // bounds check fails before `vec![0u8; len]` can run.
+        let err = host.js_std_d_print(0, msg_ptr, u64::MAX).unwrap_err();
+        assert!(
+            matches!(err, VMLogicError::HostError(HostError::InvalidMemoryAccess)),
+            "u64::MAX length must be rejected with InvalidMemoryAccess, got {err:?}"
+        );
+
+        // A length that does not overflow arithmetically but still runs past the
+        // end of guest memory must also be rejected pre-allocation.
+        let past_end = host.borrow_memory().data_size() + 1;
+        let err = host.js_std_d_print(0, msg_ptr, past_end).unwrap_err();
+        assert!(
+            matches!(err, VMLogicError::HostError(HostError::InvalidMemoryAccess)),
+            "a length past the end of memory must be rejected with InvalidMemoryAccess, got {err:?}"
+        );
+
+        // No log was recorded on either rejection.
+        assert!(
+            host.borrow_logic().logs.is_empty(),
+            "a rejected oversized print must not record a log"
+        );
     }
 
     /// Tests the `panic()` host function (without a custom message).

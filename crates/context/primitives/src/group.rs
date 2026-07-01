@@ -1617,4 +1617,50 @@ mod migration_status_tests {
         assert!(!empty.rollup.all_migrated);
         assert_eq!(empty.rollup.total, 0);
     }
+
+    /// A heartbeat whose member-signed wall-clock stamp is `reported_at == 0`
+    /// — the value a `SystemTime::now()` failure would collapse to (`now_ms == 0`)
+    /// — must NOT be blanket-rejected by the rollup. The rollup keys on the
+    /// member's schema/residue/sync facts, never on `reported_at`, so a zero
+    /// stamp is counted exactly like any other in-cohort report: the cohort can
+    /// still go green, and there is no panic or overflow while clamping/comparing
+    /// a zero timestamp.
+    ///
+    /// (Far-future/clamp freshness filtering lives in the node's heartbeat cache
+    /// selection, upstream of this pure rollup; by the time a report reaches the
+    /// rollup it has already been chosen as the freshest in-TTL heartbeat. This
+    /// asserts the rollup itself does not second-guess a zero stamp and silently
+    /// drop the member.)
+    #[test]
+    fn zero_reported_at_is_counted_not_rejected() {
+        let (a, b) = (pk(0xA), pk(0xB));
+        // Both members fully migrated (v2, no residue) but with a zero wall-clock
+        // stamp — the exact shape a `now_ms == 0` clock failure produces.
+        let zero_stamp = MemberMigrationReport {
+            schema_version: 2,
+            residue_auto: 0,
+            residue_identity: 0,
+            synced_up_to_hlc: u64::MAX,
+            reported_at: 0,
+            authored_remaining: 0,
+            migration_failed: None,
+        };
+        assert_eq!(zero_stamp.reported_at, 0, "modeling a now_ms == 0 clock");
+
+        let st = compute_migration_status_rollup(2, None, None, &[a, b], |_| Some(zero_stamp));
+
+        // The zero-stamp reports are counted as migrated, not discarded.
+        assert_eq!(st.rollup.total, 2);
+        assert_eq!(st.rollup.migrated, 2);
+        assert_eq!(st.rollup.unknown, 0);
+        assert!(
+            st.rollup.all_migrated,
+            "a reported_at == 0 heartbeat must still count toward a green cohort"
+        );
+        // The report is surfaced verbatim (its zero stamp preserved), so the
+        // member is not silently dropped.
+        let a_row = st.members.iter().find(|m| m.peer == a).expect("A present");
+        assert_eq!(a_row.state, MemberMigrationState::Migrated);
+        assert_eq!(a_row.report.expect("report kept").reported_at, 0);
+    }
 }

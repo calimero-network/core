@@ -113,6 +113,25 @@ impl ScopeState {
     /// Apply one op, last-writer-wins per affected slot. Streaming entry point
     /// (no ancestry context), so it uses causal generation `0`; the cut-aware
     /// [`Self::acl_view_at`] supplies real generations.
+    ///
+    /// # The maintained projection is convergent but NOT causally authoritative
+    ///
+    /// Because this path stamps every op with generation `0`, the **governance**
+    /// plane — whose ops all carry `hlc = 0` — tie-breaks purely by `op_id`. An
+    /// add → remove → re-add chain on one `(group, member)` slot therefore
+    /// resolves by content hash, not by causal order, so a re-add can lose to the
+    /// earlier remove. The result is still **deterministic and order-independent**
+    /// (every node folds the same ops to the same state, so a projection built
+    /// this way — e.g. behind `scope_root_for` — converges across nodes and is
+    /// safe to use as a sync convergence signal). It is simply not the
+    /// *causally-correct* membership view: it can encode a member as absent while
+    /// [`Self::acl_view_at`] (which walks each op's ancestry and assigns real
+    /// generations) resolves them present.
+    ///
+    /// So: use the maintained projection for convergence, and use
+    /// [`Self::acl_view_at`] — never this streaming fold — as the authoritative
+    /// answer to "is this identity a member at this causal cut" for
+    /// authorization.
     pub fn apply(&mut self, op: &Op) {
         self.apply_with_generation(op, 0);
     }
@@ -206,6 +225,13 @@ impl ScopeState {
             OpPayload::SubgroupReparented { child, new_parent } => {
                 let slot = self.subgroups.entry(*child).or_default();
                 lww_set(&mut slot.parent, stamp, *new_parent);
+                // Reparenting a subgroup asserts it exists: an op that reparents
+                // it causally follows its creation. Without this, a reparent that
+                // arrives (or folds) before the create op leaves `exists` unset,
+                // so the subgroup is transiently hidden from `acl_view`/
+                // `governance_hash` even though it is live. A later delete still
+                // wins by its higher stamp, so this only fills the create gap.
+                lww_set(&mut slot.exists, stamp, true);
             }
             OpPayload::SubgroupDeleted { scope } => {
                 let slot = self.subgroups.entry(*scope).or_default();
@@ -214,6 +240,10 @@ impl ScopeState {
             OpPayload::SubgroupVisibilitySet { scope, restricted } => {
                 let slot = self.subgroups.entry(*scope).or_default();
                 lww_set(&mut slot.restricted, stamp, *restricted);
+                // Setting visibility likewise asserts existence (see reparent):
+                // it's a mutation of a live subgroup, so it must not leave the
+                // slot non-existent when it folds before the create.
+                lww_set(&mut slot.exists, stamp, true);
             }
             OpPayload::DefaultCapabilitiesSet {
                 group,
@@ -891,6 +921,57 @@ mod tests {
 
         // A cited head absent from the log → also incomplete.
         assert!(!ScopeState::cut_ancestry_complete(&[], &[remove.id()]));
+    }
+
+    #[test]
+    fn reparent_or_visibility_before_create_does_not_hide_subgroup() {
+        let child = ScopeId::from([0xC1; 32]);
+        let p2 = ScopeId::from([0x22; 32]);
+
+        // Only a reparent has folded so far (the create hasn't arrived yet): the
+        // subgroup must still resolve as live, not be transiently hidden.
+        let reparent = op(
+            20,
+            OpPayload::SubgroupReparented {
+                child,
+                new_parent: p2,
+            },
+        );
+        assert!(
+            ScopeState::from_ops([&reparent])
+                .acl_view()
+                .subgroups
+                .contains_key(&child),
+            "a reparent must assert the subgroup exists even before the create folds"
+        );
+
+        // Same for a visibility change arriving before the create. A visibility
+        // op carries no parent, so a parent-less subgroup never appears in
+        // `acl_view` (a tree node needs a parent edge); the existence assertion
+        // instead shows up as the subgroup now folding into the governance root.
+        let vis = op(
+            20,
+            OpPayload::SubgroupVisibilitySet {
+                scope: child,
+                restricted: true,
+            },
+        );
+        assert_ne!(
+            ScopeState::from_ops([&vis]).root(),
+            ScopeState::default().root(),
+            "a visibility set must assert the subgroup exists (folds into the root)"
+        );
+
+        // A later delete still wins by its higher stamp — the assertion only
+        // fills the create gap, it does not resurrect a deleted subgroup.
+        let del = op(30, OpPayload::SubgroupDeleted { scope: child });
+        assert!(
+            !ScopeState::from_ops([&reparent, &del])
+                .acl_view()
+                .subgroups
+                .contains_key(&child),
+            "a later delete must still remove the subgroup"
+        );
     }
 
     #[test]

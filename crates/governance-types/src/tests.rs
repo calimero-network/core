@@ -521,6 +521,9 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
 ];
 
 /// NamespaceOp::Root(RootOp::KeyDelivery) — RootOp ordinal 6
+///
+/// `KeyEnvelope` field order: recipient, sender, ephemeral_pk, nonce,
+/// ciphertext, signature (the authenticated + forward-secret envelope).
 const GOLDEN_ROOT_OP_KEY_DELIVERY: &[u8] = &[
     0, // NamespaceOp::Root
     6, // RootOp::KeyDelivery discriminant
@@ -528,11 +531,15 @@ const GOLDEN_ROOT_OP_KEY_DELIVERY: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // envelope.recipient [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // envelope.sender [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // envelope.ephemeral_pk [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // envelope.nonce [0u8;12]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // envelope.ciphertext vec len = 0:
-    0, 0, 0, 0,
+    0, 0, 0, 0, // envelope.signature [0u8;64]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
 /// NamespaceOp::Root(RootOp::MemberJoinedOpen) — RootOp ordinal 7
