@@ -409,7 +409,13 @@ fn authorize_update_application(
     // "unauthorized", but it still leaks no store internals.
     let identity = handle
         .get(&key)
-        .map_err(|_| eyre::eyre!("failed to verify caller authorization"))?;
+        .map_err(|e| {
+            // Log the real store error for operators (so a persistently-broken
+            // store is distinguishable from an authz rejection), but hand the
+            // caller only the generic message.
+            debug!(%e, %context_id, %caller, "store read failed during update_application authorization");
+            eyre::eyre!("failed to verify caller authorization")
+        })?;
     match identity {
         Some(identity) if identity.private_key.is_some() => Ok(()),
         // Keep the caller-facing error generic so it can't be used as a
