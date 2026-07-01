@@ -118,6 +118,17 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
         self.iter(col)
     }
 
+    /// Flush any in-memory buffers (memtable, write-ahead log) to durable
+    /// storage. Called on a controlled shutdown so a subsequent abrupt process
+    /// stop cannot lose writes that had not yet been persisted.
+    ///
+    /// The default is a no-op for backends without a durable buffer (the
+    /// in-memory DB); persistent backends override it (RocksDB flushes the WAL
+    /// and memtable).
+    fn flush(&self) -> EyreResult<()> {
+        Ok(())
+    }
+
     /// The largest `(key, value)` in `col` over `[lo, hi)` — i.e. a reverse
     /// seek to the last key in the range. Used for `SortedMap::last` (an
     /// `O(log n)` "max key" lookup instead of a forward walk to the end).

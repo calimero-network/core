@@ -443,20 +443,24 @@ pub struct NamespaceOpApplied {
 
 /// Read the canonical local-applied sequence for a namespace from the
 /// store. Returns 0 if the head record is missing (legitimate for a
-/// brand-new namespace with no applied ops) or if the read fails
-/// transiently. The two cases are distinguished in the log:
+/// brand-new namespace with no applied ops); on a transient read failure
+/// it returns `fallback` — the caller's last-known sequence. The three
+/// cases are distinguished in the log:
 ///
 ///   - `Ok(None)` is silent — empty-DAG is the well-defined start state.
 ///   - `Err(_)` emits a `warn!` so a transiently broken store layer
 ///     does not silently regress the FSM. With this log present, an
 ///     operator chasing a `*Ready → Bootstrapping` regression has a
-///     clear breadcrumb instead of guessing at a fail-soft `0`.
+///     clear breadcrumb.
 ///
-/// Returning `0` on the error path (rather than propagating) keeps
-/// the FSM evaluation total — `evaluate_readiness` is a pure
-/// transition fn and should not have to handle store I/O errors.
-/// On the next successful read the FSM recovers naturally.
-pub(crate) fn read_local_applied_through(store: &Store, ns_id: [u8; 32]) -> u64 {
+/// Returning `fallback` (rather than `0`) on the error path stops a
+/// single transient store `Err` from collapsing `local_applied_through`
+/// to 0 and demoting a `*Ready` namespace back to `Bootstrapping`; the
+/// sequence is monotonic, so the last-known value is the safe estimate
+/// until the next successful read. Returning a value (rather than
+/// propagating) also keeps `evaluate_readiness` a total pure transition
+/// fn that never has to handle store I/O errors.
+pub(crate) fn read_local_applied_through(store: &Store, ns_id: [u8; 32], fallback: u64) -> u64 {
     let handle = store.handle();
     let key = calimero_store::key::NamespaceGovHead::new(ns_id);
     match handle.get(&key) {
@@ -466,10 +470,11 @@ pub(crate) fn read_local_applied_through(store: &Store, ns_id: [u8; 32]) -> u64 
             tracing::warn!(
                 ?err,
                 namespace_id = %hex::encode(ns_id),
-                "read_local_applied_through: store read failed; treating as 0 — \
-                 FSM may regress until the next successful read"
+                fallback,
+                "read_local_applied_through: store read failed; retaining last-known \
+                 sequence to avoid a spurious readiness regression"
             );
-            0
+            fallback
         }
     }
 }
@@ -501,8 +506,14 @@ impl ReadinessManager {
             let peers = self.cache.peer_summary(ns_id, ttl);
             // Refresh canonical sequence from the store before each
             // evaluation so the periodic tick observes publisher-side
-            // applies that don't fire `NamespaceOpApplied`.
-            let applied_through = read_local_applied_through(&self.datastore, ns_id);
+            // applies that don't fire `NamespaceOpApplied`. Fall back to the
+            // last-known sequence on a transient store error so a read blip
+            // can't demote a ready namespace.
+            let fallback = self
+                .state_per_namespace
+                .get(&ns_id)
+                .map_or(0, |e| e.local_applied_through);
+            let applied_through = read_local_applied_through(&self.datastore, ns_id, fallback);
             let snapshot = if let Some(entry) = self.state_per_namespace.get_mut(&ns_id) {
                 entry.local_applied_through = applied_through;
                 let new_tier = evaluate_readiness(entry, &peers, &cfg, now);
@@ -712,7 +723,12 @@ impl Handler<NamespaceOpApplied> for ReadinessManager {
         // scoped-borrow pattern as `Handler<ApplyBeaconLocal>` so
         // `clear_probe_window_for` and `publish_beacon` can re-borrow
         // self after the entry borrow ends.
-        let applied_through = read_local_applied_through(&self.datastore, msg.namespace_id);
+        let fallback = self
+            .state_per_namespace
+            .get(&msg.namespace_id)
+            .map_or(0, |e| e.local_applied_through);
+        let applied_through =
+            read_local_applied_through(&self.datastore, msg.namespace_id, fallback);
         let to_emit = {
             let entry = self
                 .state_per_namespace
@@ -831,8 +847,13 @@ impl Handler<ApplyBeaconLocal> for ReadinessManager {
             return;
         };
         // Refresh from the store before evaluating — see
-        // `Handler<NamespaceOpApplied>` for rationale.
-        state.local_applied_through = read_local_applied_through(&self.datastore, msg.namespace_id);
+        // `Handler<NamespaceOpApplied>` for rationale. Retain the current
+        // value on a transient store error rather than regressing to 0.
+        state.local_applied_through = read_local_applied_through(
+            &self.datastore,
+            msg.namespace_id,
+            state.local_applied_through,
+        );
         let peers = self
             .cache
             .peer_summary(msg.namespace_id, self.config.ttl_heartbeat);

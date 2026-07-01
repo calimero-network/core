@@ -29,6 +29,7 @@ use libp2p::gossipsub::IdentTopic;
 use libp2p::identity::Keypair;
 use prometheus_client::registry::Registry;
 use tokio::sync::{broadcast, mpsc};
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use crate::arbiter_pool::ArbiterPool;
@@ -43,6 +44,48 @@ use crate::sync_session_bridge::{start_sync_session_actor, SYNC_SESSION_CHANNEL_
 use crate::NodeManager;
 
 pub use calimero_node_primitives::NodeMode;
+
+/// Upper bound on how long controlled shutdown waits for a single stage
+/// (HTTP drain, bridge stop) before giving up and moving on. Bounds total
+/// teardown time so a wedged subsystem cannot block process exit indefinitely
+/// past a `SIGTERM` (past which an orchestrator would `SIGKILL` us anyway).
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+
+/// Resolve when the process receives a termination signal (`SIGINT`/Ctrl-C or,
+/// on unix, `SIGTERM`). Used as a `tokio::select!` arm so the node can drain
+/// in-flight work and flush the datastore instead of being aborted mid-request
+/// by the default signal disposition. Mirrors the auth server's handler.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(err) = tokio::signal::ctrl_c().await {
+            tracing::error!(%err, "failed to install Ctrl-C handler");
+            // Never resolve: fall back to the SIGTERM arm rather than
+            // reporting a spurious shutdown.
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                let _ = sig.recv().await;
+            }
+            Err(err) => {
+                tracing::error!(%err, "failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {},
+        () = terminate => {},
+    }
+}
 
 /// Configuration for specialized node functionality (e.g., read-only nodes).
 #[derive(Debug, Clone)]
@@ -110,7 +153,11 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let datastore = if let Some(ref key) = config.datastore.encryption_key {
         info!("Opening encrypted datastore");
         let inner_db = RocksDB::open(&config.datastore)?;
-        let encrypted_db = EncryptedDatabase::wrap(inner_db, key.clone())?;
+        // `to_vec` copies the key bytes out of the `Zeroizing` config field
+        // into the value `wrap` consumes; `KeyManager` is itself
+        // `ZeroizeOnDrop`, and the config's copy is wiped when the config
+        // drops, so no plaintext key lingers past its owners.
+        let encrypted_db = EncryptedDatabase::wrap(inner_db, key.to_vec())?;
         Store::new(std::sync::Arc::new(encrypted_db))
     } else {
         Store::open::<RocksDB>(&config.datastore)?
@@ -247,7 +294,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // updates the registered gauges. Gives operators a dashboard view
     // of buffer / cache / session counts without instrumenting every
     // mutation site.
-    let _metrics_tick =
+    let metrics_tick =
         crate::node_metrics::spawn_metrics_tick(node_metrics.clone(), node_state.clone());
 
     // Hydrate the persistent peer-identity cache from disk and seed the
@@ -258,23 +305,23 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // Apply gossipsub scores for the just-hydrated members immediately,
     // rather than waiting for the first snapshot tick (~30s).
     crate::peer_identity_persist::reconcile_peer_scores(&node_state, &network_client, true);
-    let _peer_identity_tick = crate::peer_identity_persist::spawn_snapshot_tick(
+    let peer_identity_tick = crate::peer_identity_persist::spawn_snapshot_tick(
         node_state.clone(),
         datastore.clone(),
         network_client.clone(),
     );
     // Drop removed members from the cache promptly on `MemberRemoved`,
     // rather than waiting for their entries to age out via TTL.
-    let _peer_identity_invalidation =
+    let peer_identity_invalidation =
         crate::peer_identity_persist::spawn_invalidation_task(node_state.clone());
 
     // Drain locally-applied delta notifications from the execute path
     // and register them into the in-memory DeltaStore. Replaces the
     // per-interval-sync `load_persisted_deltas` rescan that existed
     // solely to catch up on execute-side writes.
-    {
+    let drainer = {
         let delta_stores = node_state.delta_stores_handle();
-        let _drainer = tokio::spawn(async move {
+        tokio::spawn(async move {
             while let Some(msg) = local_delta_rx.recv().await {
                 // Clone the DeltaStore value out of the DashMap and
                 // drop the Ref before awaiting — holding a shard lock
@@ -330,8 +377,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                     }
                 }
             }
-        });
-    }
+        })
+    };
 
     let mut sync_manager = SyncManager::new(
         config.sync,
@@ -418,12 +465,22 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let bridge_shutdown = bridge.shutdown_handle();
     let bridge_handle = tokio::spawn(bridge.run());
 
+    // Node lifecycle signal + graceful-shutdown token shared with the HTTP
+    // server. `node_readiness` drives the `/ready` probe (flipped to ready
+    // once startup finishes, and to shutting-down on a termination signal);
+    // `shutdown_token` fans out to axum's `with_graceful_shutdown` so in-flight
+    // requests drain on teardown.
+    let node_readiness = Arc::new(calimero_server::NodeReadiness::new());
+    let shutdown_token = CancellationToken::new();
+
     let server = calimero_server::start(
         config.server.clone(),
         context_client.clone(),
         node_client.clone(),
         datastore.clone(),
         registry,
+        node_readiness.clone(),
+        shutdown_token.clone(),
         config.mock_tee,
     );
 
@@ -458,26 +515,101 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let mut sync = pin!(sync_manager.start());
     let mut server = tokio::spawn(server);
     let mut bridge = bridge_handle;
+    let mut term_signal = pin!(shutdown_signal());
 
     info!("Node started successfully");
+    // All subsystems are up and the server is spawned — advertise readiness.
+    node_readiness.set_ready();
 
-    loop {
+    // Track which long-lived task (if any) already resolved so the cleanup
+    // sequence does not re-await a completed `JoinHandle` (polling a finished
+    // one panics).
+    let mut server_done = false;
+    let mut bridge_done = false;
+
+    let exit: eyre::Result<()> = loop {
         tokio::select! {
             _ = &mut sync => {},
-            res = &mut server => res??,
+            res = &mut server => {
+                server_done = true;
+                break res.map_err(eyre::Report::from).and_then(|inner| inner);
+            }
             res = &mut bridge => {
-                // Bridge task completed (channel closed or shutdown signal)
+                // Bridge task completed (channel closed or shutdown signal).
+                bridge_done = true;
                 tracing::warn!("Network event bridge stopped: {:?}", res);
+                break Ok(());
             }
             res = &mut arbiter_pool.system_handle => {
-                // Signal bridge shutdown before exiting. The
-                // StateDelta arbiter handle (`state_delta_arbiter`)
-                // lives until this function returns; the underlying
-                // Actix arbiter thread is owned by the System and
-                // shuts down with it.
-                bridge_shutdown.notify_one();
-                break res?;
+                // The Actix System stopped. The StateDelta arbiter handle
+                // (`state_delta_arbiter`) lives until this function returns;
+                // the underlying Actix arbiter thread is owned by the System
+                // and shuts down with it.
+                break res.map_err(eyre::Report::from).and_then(|inner| inner);
+            }
+            () = &mut term_signal => {
+                info!("Shutdown signal received; draining and flushing before exit");
+                break Ok(());
+            }
+        }
+    };
+
+    // ---- Controlled shutdown / drain sequence ----
+    //
+    // 1. Stop advertising readiness so an orchestrator drains this node from
+    //    its rotation before we tear anything down.
+    node_readiness.set_shutting_down();
+
+    // 2. Gracefully stop the HTTP server. Cancelling the token trips axum's
+    //    `with_graceful_shutdown`, which stops accepting new connections and
+    //    lets in-flight requests finish; awaiting (bounded) lets those
+    //    requests — and any datastore writes they trigger — complete before
+    //    we flush.
+    shutdown_token.cancel();
+    if !server_done {
+        match tokio::time::timeout(SHUTDOWN_GRACE, &mut server).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(err))) => tracing::warn!(%err, "HTTP server errored during shutdown"),
+            Ok(Err(join_err)) => {
+                tracing::warn!(%join_err, "HTTP server task join error during shutdown");
+            }
+            Err(_) => tracing::warn!("HTTP server did not drain within the shutdown grace period"),
+        }
+    }
+
+    // 3. Signal and drain the network-event bridge.
+    bridge_shutdown.notify_one();
+    if !bridge_done {
+        if let Err(_elapsed) = tokio::time::timeout(SHUTDOWN_GRACE, &mut bridge).await {
+            tracing::warn!("Network event bridge did not stop within the shutdown grace period");
+        }
+    }
+
+    // 4. Abort + reap the detached background tasks so none of them can wake
+    //    up and touch the datastore after we flush. RocksDB writes inside them
+    //    are synchronous, so an abort can only land at an `.await` boundary —
+    //    never mid-write — making this safe against torn writes.
+    for (name, handle) in [
+        ("metrics_tick", metrics_tick),
+        ("peer_identity_tick", peer_identity_tick),
+        ("peer_identity_invalidation", peer_identity_invalidation),
+        ("local_delta_drainer", drainer),
+    ] {
+        handle.abort();
+        if let Err(err) = handle.await {
+            if !err.is_cancelled() {
+                tracing::warn!(task = name, %err, "background task join error during shutdown");
             }
         }
     }
+
+    // 5. Flush the datastore so an abrupt process exit immediately afterwards
+    //    cannot lose what the just-drained writers persisted. The RocksDB
+    //    `Drop` impl is a backstop for any path that skips this.
+    if let Err(err) = datastore.flush() {
+        tracing::warn!(%err, "datastore flush on shutdown failed");
+    }
+
+    info!("Node shutdown complete");
+    exit
 }
