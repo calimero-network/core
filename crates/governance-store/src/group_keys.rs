@@ -11,6 +11,11 @@ use sha2::{Digest, Sha256};
 
 use super::collect_keys_with_prefix;
 
+/// Serializes the read-check-write in [`GroupKeyring::store_key_with_epoch`]
+/// across all callers (governance apply and the sync-task pull/join paths),
+/// making the epoch monotonicity atomic without a store-level compare-and-swap.
+static GROUP_KEY_EPOCH_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StoredGroupKey {
     pub key_id: [u8; 32],
@@ -56,26 +61,28 @@ impl<'a> GroupKeyring<'a> {
     ///
     /// The epoch is stored **monotonically and never lowered**: a write only
     /// touches the store when the entry is absent or when it strictly *raises*
-    /// the epoch. This matters because `store_key` (epoch `0`) is also called
-    /// outside the per-namespace governance-apply lock — from the direct-pull
-    /// path (`apply_received_group_key`) and the join handlers — so an epoch-`0`
-    /// write could otherwise race a rotation's epoch-`N` write and clobber it.
-    /// Since a lowering (or equal) write is a no-op here, an epoch-`0` write can
-    /// never overwrite a higher stored epoch regardless of interleaving; the
-    /// only writes that hit the store are the absent-entry seed and genuine
-    /// epoch increases (a rotation), and those never contend for the same
-    /// `key_id` (`key_id = sha256(group_key)`, and each rotation mints a fresh
-    /// key, so a given key_id has exactly one "real" epoch — two writers raising
-    /// it to the same value are idempotent). Result: nodes converge on the same
-    /// "current" key without needing an atomic read-modify-write.
+    /// the epoch. A lower/equal write (e.g. an epoch-`0` pull for a key a
+    /// rotation already stored) is a no-op.
+    ///
+    /// The read-check-write is serialized by a process-global lock. The store
+    /// layer has no compare-and-swap, and `store_key` (epoch `0`) is called from
+    /// the direct-pull path (`apply_received_group_key`) and join handlers, which
+    /// run on sync tasks *outside* the per-namespace governance-apply actor lock.
+    /// Without serialization an epoch-`0` write and a rotation's epoch-`N` write
+    /// for the same fresh `key_id` could both observe an absent entry and the
+    /// epoch-`0` put could land last, regressing the stored epoch to `0` and
+    /// making the node pick a stale "current" key (the very divergence the epoch
+    /// exists to prevent). The lock makes the check-then-write atomic; group-key
+    /// writes are rare (rotations / deliveries) so contention is negligible.
     pub fn store_key_with_epoch(&self, group_key: &[u8; 32], epoch: u64) -> EyreResult<[u8; 32]> {
         let key_id = Self::key_id_for(group_key);
         let entry = GroupKeyEntry::new(self.group_id.to_bytes(), key_id);
+        // Serialize the read-modify-write; recover a poisoned lock (the guarded
+        // state lives in the store, not the guard, so a prior panic is benign).
+        let _guard = GROUP_KEY_EPOCH_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut handle = self.store.handle();
-        // Only write when absent or strictly raising the epoch — a lower/equal
-        // epoch (e.g. an epoch-0 pull for a key a rotation already stored) is a
-        // no-op, so it can never regress a higher stored epoch even under a
-        // racing interleave with a concurrent writer.
         if let Some(existing) = handle.get(&entry)? {
             let existing: GroupKeyValue = existing;
             if epoch <= existing.epoch {
@@ -384,6 +391,17 @@ impl<'a> GroupKeyring<'a> {
             .sender
             .verify_raw_signature(&payload, &envelope.signature)
             .map_err(|e| KeyringError::EnvelopeAuthFailed(format!("verify: {e}")))?;
+
+        // The envelope must actually be addressed to us. Callers already filter
+        // by `recipient`, but checking here too means a misaddressed (e.g.
+        // replayed-from-another-delivery) envelope fails with a clear
+        // "wrong recipient" error instead of a downstream `DecryptionFailed`
+        // from ECDH-ing with the wrong key.
+        if envelope.recipient != recipient_sk.public_key() {
+            bail!(KeyringError::EnvelopeAuthFailed(
+                "envelope is not addressed to this recipient".to_owned()
+            ));
+        }
 
         let shared = SharedKey::new(recipient_sk, &envelope.ephemeral_pk).map_err(|e| {
             KeyringError::KeyAgreementFailed {
