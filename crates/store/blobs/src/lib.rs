@@ -144,12 +144,15 @@ impl BlobManager {
     /// which increments the root and every chunk on add.
     ///
     /// Returns `true` if `id` existed (its reference was released), `false` if
-    /// it was already absent.
+    /// it was already absent. Note that `true` does *not* imply the bytes were
+    /// physically removed — if other owners still reference the content, only
+    /// the count was decremented and the blob remains readable for them.
     ///
     /// The read-decrement-write is not atomic against a concurrent add/delete of
     /// the *same* content id; callers today drive blob lifecycle serially per
-    /// id. Making it fully atomic would move the refcount update onto the
-    /// store's transaction path ([`calimero_store::Store::apply`]).
+    /// id (see the INVARIANT on [`Self::release_ref`]). Making it fully atomic
+    /// would move the refcount update onto the store's transaction path
+    /// ([`calimero_store::Store::apply`]).
     pub async fn delete(&self, id: BlobId) -> EyreResult<bool> {
         let Some(meta) = self.data_store.handle().get(&BlobMetaKey::new(id))? else {
             // No metadata references this id. Best-effort remove any orphan file
@@ -186,8 +189,22 @@ impl BlobManager {
     /// reaches zero — the metadata row is deleted and the caller must remove the
     /// backing file — or `false` when references remain, in which case the
     /// decremented count is persisted and the blob is kept.
+    ///
+    /// INVARIANT: this and [`Self::persist_ref`] read-modify-write a single
+    /// metadata row across separate store operations and are NOT atomic. Callers
+    /// must serialize add/delete for the same blob id (the node drives blob
+    /// lifecycle serially per id today). A concurrent add interleaved with a
+    /// delete could lose an increment and free content that still has a live
+    /// owner; making it atomic means moving the update onto the store's
+    /// transaction path ([`calimero_store::Store::apply`]).
     fn release_ref(&self, id: BlobId, meta: &BlobMetaValue) -> EyreResult<bool> {
         let key = BlobMetaKey::new(id);
+        // refs should never be 0 for a stored entry; if it is (store corruption
+        // or a bug that wrote a zero-ref row), surface it rather than silently
+        // "fixing" it, then proceed to reclaim the row via the zero arm below.
+        if meta.refs == 0 {
+            tracing::warn!(%id, "release_ref on a blob with refs == 0; reclaiming as last reference");
+        }
         match meta.refs.saturating_sub(1) {
             0 => {
                 self.data_store.handle().delete(&key)?;
@@ -207,6 +224,9 @@ impl BlobManager {
     /// entry already exists. Deduplicated content re-added by another owner (or
     /// a chunk shared by another root) bumps the count instead of silently
     /// aliasing a single reference that the first delete would tear down.
+    ///
+    /// INVARIANT: like [`Self::release_ref`], the read-modify-write here is not
+    /// atomic; callers must serialize add/delete for the same blob id.
     fn persist_ref(
         &self,
         id: BlobId,

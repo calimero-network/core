@@ -217,15 +217,17 @@ impl Engine {
     /// sandbox contract the runtime relies on. Runs once per compile, after
     /// wasmer has validated the bytes are well-formed WASM.
     ///
-    /// Two checks:
+    /// Three checks:
     ///
-    /// * **No imported memory.** Every guest must define and *export* its own
-    ///   linear memory named `memory` — the host reads guest state through
-    ///   `instance.exports.get_memory("memory")`. A module that instead
-    ///   *imports* its memory expects the host to hand it one, which the runtime
-    ///   never provides; such a module could only be attempting to alias
-    ///   host-supplied memory, so it is rejected outright rather than failing
-    ///   deeper in instantiation.
+    /// * **No imported memory.** A module that *imports* its linear memory
+    ///   expects the host to hand it one, which the runtime never provides; such
+    ///   a module could only be attempting to alias host-supplied memory, so it
+    ///   is rejected outright rather than failing deeper in instantiation.
+    /// * **Exports a memory named `memory`.** The host reads guest state through
+    ///   `instance.exports.get_memory("memory")`, so a guest that exports no such
+    ///   memory cannot be run. Requiring it here turns what would otherwise be a
+    ///   confusing export-not-found failure at instantiation into a clear
+    ///   validation error at compile time.
     /// * **No `_start` export.** `_start` is the entry point a WASI *command*
     ///   build emits (`wasm32-wasip1`/`wasm32-wasi` toolchains) — the WASI ABI's
     ///   equivalent of `main`, meant to run once on start. It is a property of
@@ -259,6 +261,17 @@ impl Engine {
             return Err(FunctionCallError::ModuleValidationError {
                 reason: "guest exports a `_start` function; WASI command entry points are \
                          not supported (guests are invoked by explicit method name)"
+                    .to_owned(),
+            });
+        }
+
+        let exports_memory = module.exports().any(|export| {
+            export.name() == "memory" && matches!(export.ty(), ExternType::Memory(_))
+        });
+        if !exports_memory {
+            return Err(FunctionCallError::ModuleValidationError {
+                reason: "guest does not export a linear memory named `memory`; the host \
+                         reads guest state through that export"
                     .to_owned(),
             });
         }
@@ -1315,6 +1328,27 @@ mod wasm_integration_tests {
                 assert!(reason.contains("_start"), "unexpected reason: {reason}");
             }
             other => panic!("expected ModuleValidationError for `_start`, got: {other:?}"),
+        }
+    }
+
+    /// A guest that exports no linear memory named `memory` is rejected with a
+    /// clear validation error rather than failing later at instantiation.
+    #[test]
+    fn guest_without_memory_export_is_rejected() {
+        let wat = r#"
+            (module
+                (func (export "app_method"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::new(wasmer::Engine::default(), VMLimits::default());
+
+        match engine.compile(&wasm) {
+            Err(FunctionCallError::ModuleValidationError { reason }) => {
+                assert!(reason.contains("memory"), "unexpected reason: {reason}");
+            }
+            other => panic!("expected ModuleValidationError for missing memory, got: {other:?}"),
         }
     }
 
