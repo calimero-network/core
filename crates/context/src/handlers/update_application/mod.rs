@@ -54,6 +54,30 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             "Handling UpdateApplicationRequest"
         );
 
+        // Authorize the *requester* before touching any state. `update_application`
+        // swaps the context's bytecode and can drive a whole-context state
+        // migration, so it must be gated to this context's own provisioned
+        // identities — the same bar `execute` enforces. Previously the caller
+        // `public_key` was threaded straight through to the migration/finalize
+        // path and only the new application's signer *continuity* was checked,
+        // never the requester, so any key could drive a migration.
+        if let Err(err) = authorize_update_application(&self.datastore, &context_id, &public_key) {
+            // `%public_key` is logged deliberately: this is an operator-facing
+            // audit line for a rejected privileged operation (never returned to
+            // the caller, so it is not the membership oracle the generic error
+            // guards against). Recording which identity attempted an
+            // unauthorized migration is the point of the log — useful for
+            // spotting abuse.
+            warn!(
+                %context_id,
+                %application_id,
+                %public_key,
+                %err,
+                "Rejecting unauthorized update_application"
+            );
+            return ActorResponse::reply(Err(err));
+        }
+
         let context_meta = self.contexts.get(&context_id).map(|c| c.meta.clone());
 
         // Skip update only when the application ID is unchanged AND no migration is requested.
@@ -145,6 +169,19 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                         Some(Either::Right(fut)) => Some(fut.await),
                         None => None,
                     };
+                    // Re-verify the caller UNDER the per-context write guard. The
+                    // handler-entry check ran before the module load / guard await,
+                    // and this actor interleaves other messages at those await
+                    // points — so an identity deprovisioned in that window could
+                    // otherwise let a just-revoked caller drive the migration. This
+                    // re-check is serialized against state mutations by the same
+                    // guard, closing that window.
+                    if let Err(err) =
+                        authorize_update_application(&datastore, &context_id, &public_key)
+                    {
+                        drop(_guard);
+                        return Err(err);
+                    }
                     let result = update_application_with_migration(
                         datastore,
                         node_client,
@@ -346,6 +383,60 @@ fn app_version_changed_event(
     })
 }
 
+/// Authorize the caller of an `UpdateApplicationRequest`.
+///
+/// `update_application` runs new bytecode and can migrate the whole context's
+/// state, so — like `execute` — it is restricted to a *provisioned local
+/// identity* of this context: a stored `ContextIdentity` that carries a private
+/// key on this node. A key that is unknown here, or a known-but-remote identity
+/// with no private key, is refused before any state is read or written.
+///
+/// This gates only the external `Handler<UpdateApplicationRequest>` entry. The
+/// in-WASM callers of `update_application_id` (the execute path) are already
+/// authorized by `execute`'s own identity check and are intentionally not
+/// re-gated here.
+fn authorize_update_application(
+    datastore: &calimero_store::Store,
+    context_id: &ContextId,
+    caller: &PublicKey,
+) -> eyre::Result<()> {
+    // Callable both at the handler entry (fast fail before the module load) and,
+    // for the migration path, again under the per-context write guard — the
+    // downstream business logic does NOT otherwise re-check the caller identity
+    // (it treats `public_key` as already authorized). The under-guard re-check in
+    // the migration task is what actually closes the check-then-use window; the
+    // no-migration path performs only a code-only application-id swap gated by the
+    // entry check.
+    let handle = datastore.handle();
+    let key = calimero_store::key::ContextIdentity::new(*context_id, *caller);
+    // Map a store read failure to a generic infra error rather than letting the
+    // raw store error text propagate to the caller (`?`). It's distinct from the
+    // authz rejection below so a genuine I/O failure isn't mislabeled as
+    // "unauthorized", but it still leaks no store internals.
+    let identity = handle.get(&key).map_err(|e| {
+        // Log the real store error for operators (so a persistently-broken
+        // store is distinguishable from an authz rejection), but hand the
+        // caller only the generic message. The caller key is deliberately
+        // omitted here for the same info-hiding reason as the rejection
+        // message below: it must not become a membership-enumeration oracle.
+        debug!(%e, %context_id, "store read failed during update_application authorization");
+        eyre::eyre!("failed to verify caller authorization")
+    })?;
+    match identity {
+        Some(identity) if identity.private_key.is_some() => Ok(()),
+        // This arm deliberately collapses two distinct rejections — an entirely
+        // unknown key (`None`) and a known-but-remote identity that carries no
+        // private key here (`Some` without `private_key`) — into one identical
+        // message. Distinguishing them is exactly the membership-enumeration
+        // oracle we must not expose: a differing reply would let a (possibly
+        // unauthorized) caller confirm whether a given key is a known member of
+        // this context. For the same reason the message interpolates neither the
+        // caller key nor the context id. Operators still get the full, specific
+        // diagnostic from the `warn!` log at the call site.
+        _ => bail!("unauthorized: caller is not a permitted identity for this context"),
+    }
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "orthogonal args (runtime deps, context identity, crypto keys, module) on a split-brain-critical handler; no cohesive grouping"
@@ -358,6 +449,9 @@ pub async fn update_application_id(
     context: Option<Context>,
     application_id: ApplicationId,
     application: Option<Application>,
+    // intentionally unused: the caller is authorized at the Handler<UpdateApplicationRequest>
+    // entry (and re-verified under the write guard on the migration path) before this function
+    // is reached; kept for signature symmetry with update_application_with_migration.
     _public_key: PublicKey,
 ) -> eyre::Result<Application> {
     let (mut context, application) = resolve_context_and_application(
@@ -1551,11 +1645,95 @@ mod tests {
 
     use calimero_primitives::events::{ContextEvent, ContextEventPayload, NodeEvent};
 
+    use calimero_primitives::identity::PublicKey;
+
     use super::ContextStorage;
     use super::{
-        app_version_changed_event, application_version, same_id_update_is_noop,
-        verify_appkey_continuity,
+        app_version_changed_event, application_version, authorize_update_application,
+        same_id_update_is_noop, verify_appkey_continuity,
     };
+
+    /// Write a `ContextIdentity` row exactly as identity provisioning would, so
+    /// the authz check sees a member of `context_id`. `private_key` present marks
+    /// it a *local* identity (`Some`) vs a known-but-remote one (`None`).
+    fn seed_identity(
+        store: &Store,
+        context_id: ContextId,
+        public_key: PublicKey,
+        private_key: Option<[u8; 32]>,
+    ) {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &key::ContextIdentity::new(context_id, public_key),
+                &types::ContextIdentity {
+                    private_key,
+                    sender_key: None,
+                },
+            )
+            .expect("seed identity");
+    }
+
+    /// A caller unknown to this context cannot drive an application update /
+    /// migration — the request is refused before any state is touched (E3).
+    #[test]
+    fn authorize_update_application_rejects_unknown_caller() {
+        let store = create_test_store();
+        let context_id = ContextId::from([1u8; 32]);
+        let stranger = PublicKey::from([9u8; 32]);
+
+        assert!(
+            authorize_update_application(&store, &context_id, &stranger).is_err(),
+            "an identity that is not a member of the context must be refused"
+        );
+    }
+
+    /// A provisioned local identity (a `ContextIdentity` carrying a private key
+    /// on this node) is authorized — the same bar `execute` enforces.
+    #[test]
+    fn authorize_update_application_accepts_local_member() {
+        let store = create_test_store();
+        let context_id = ContextId::from([1u8; 32]);
+        let member = PublicKey::from([2u8; 32]);
+        seed_identity(&store, context_id, member, Some([7u8; 32]));
+
+        assert!(
+            authorize_update_application(&store, &context_id, &member).is_ok(),
+            "a local provisioned identity must be authorized"
+        );
+    }
+
+    /// A known-but-remote identity (present in the context but with no private
+    /// key on this node) is not a local member and must not drive an update.
+    #[test]
+    fn authorize_update_application_rejects_remote_identity_without_private_key() {
+        let store = create_test_store();
+        let context_id = ContextId::from([1u8; 32]);
+        let remote = PublicKey::from([3u8; 32]);
+        seed_identity(&store, context_id, remote, None);
+
+        assert!(
+            authorize_update_application(&store, &context_id, &remote).is_err(),
+            "a remote identity without a local private key must be refused"
+        );
+    }
+
+    /// Membership is scoped per context: a valid local identity in one context
+    /// cannot authorize an update to a different context.
+    #[test]
+    fn authorize_update_application_is_scoped_to_the_context() {
+        let store = create_test_store();
+        let ctx_a = ContextId::from([1u8; 32]);
+        let ctx_b = ContextId::from([2u8; 32]);
+        let member = PublicKey::from([4u8; 32]);
+        seed_identity(&store, ctx_a, member, Some([7u8; 32]));
+
+        assert!(authorize_update_application(&store, &ctx_a, &member).is_ok());
+        assert!(
+            authorize_update_application(&store, &ctx_b, &member).is_err(),
+            "an identity provisioned in context A must not authorize context B"
+        );
+    }
 
     /// Creates a test store with in-memory database.
     fn create_test_store() -> Store {
