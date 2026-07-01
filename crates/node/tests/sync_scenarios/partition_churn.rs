@@ -212,7 +212,12 @@ async fn c2_directional_partition_conflicting_writes_order_independent() {
     // the intent. `DUP_RATE` is the per-pull duplicate probability.
     const DUP_RATE: f64 = 0.5;
 
-    // Directional semantics: A->B blocked, B->A still open.
+    // Directional semantics: A->B blocked, B->A still open. This is a
+    // standalone invariant check of the PartitionManager primitive (asymmetric
+    // block through the manager's time-windowed `is_partitioned` path, which the
+    // spec-level `test_directional_partition` unit test does not cover). It is
+    // intentionally not wired into the convergence loop below — it only proves
+    // the partition primitive behaves directionally before we rely on it.
     {
         let a = NodeId::new("A");
         let b = NodeId::new("B");
@@ -366,7 +371,7 @@ async fn c5_dropped_gossip_deltas_recovered_via_sync() {
         );
         assert_eq!(
             bob_applied + carol_applied,
-            total_sent - total_dropped as usize,
+            total_sent - usize::try_from(total_dropped).expect("drop count fits usize"),
             "seed {seed}: applied gossip count must equal sent minus dropped"
         );
 
