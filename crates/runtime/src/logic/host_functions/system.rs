@@ -34,57 +34,61 @@ pub(super) fn build_runtime_env(
     context_id: [u8; DIGEST_SIZE],
     executor_id: [u8; DIGEST_SIZE],
 ) -> RuntimeEnv {
+    // Erase the borrow lifetime of the storage trait object so the callbacks
+    // can satisfy `RuntimeEnv`'s `'static` closure bound. Crucially we keep the
+    // trait-object pointer *intact* as a single fat pointer rather than
+    // splitting it into its (data, vtable) halves: that split relied on the
+    // unspecified internal layout of Rust trait-object pointers. `*mut dyn _`
+    // is `Copy`, so the fat pointer lives happily inside a `Cell`.
+    //
+    // SAFETY: the transmute only extends the lifetime of the trait object;
+    //         source and target are both `*mut dyn RuntimeStorage` fat pointers
+    //         with identical layout. The extended lifetime never actually
+    //         outlives `storage`: the pointer is only ever dereferenced while
+    //         this `RuntimeEnv` is installed via `with_runtime_env`, which
+    //         happens strictly within the host call that created it (see the
+    //         per-closure safety notes below).
     let raw_ptr: *mut dyn RuntimeStorage = storage;
-    let (data_ptr, vtable_ptr): (*mut (), *mut ()) = unsafe { mem::transmute(raw_ptr) };
-    let storage_cell = Rc::new(Cell::new((data_ptr as usize, vtable_ptr as usize)));
+    let raw_static: *mut (dyn RuntimeStorage + 'static) = unsafe { mem::transmute(raw_ptr) };
+    let storage_cell = Rc::new(Cell::new(raw_static));
 
     let reader_cell = Rc::clone(&storage_cell);
     let reader = Rc::new(move |key: &calimero_storage::store::Key| {
-        let (data_addr, vtable_addr) = reader_cell.get();
-        if data_addr == 0 {
-            return None;
-        }
-
+        let ptr = reader_cell.get();
         let key_vec = key.to_bytes().to_vec();
-        let raw = (data_addr as *mut (), vtable_addr as *mut ());
-        let ptr: *mut dyn RuntimeStorage = unsafe { mem::transmute(raw) };
+        // SAFETY: see `build_runtime_env`. While the host function is executing
+        //         the VM guarantees exclusivity over `logic.storage`, so it is
+        //         sound to dereference `ptr` here — the only place this closure
+        //         runs.
         unsafe { (&*ptr).get(&key_vec) }
     });
 
     let writer_cell = Rc::clone(&storage_cell);
     let writer = Rc::new(move |key: calimero_storage::store::Key, value: &[u8]| {
-        let (data_addr, vtable_addr) = writer_cell.get();
-        if data_addr == 0 {
-            return false;
-        }
-
+        let ptr = writer_cell.get();
         let key_vec = key.to_bytes().to_vec();
-        let raw = (data_addr as *mut (), vtable_addr as *mut ());
-        let ptr: *mut dyn RuntimeStorage = unsafe { mem::transmute(raw) };
+        // SAFETY: as above; exclusive access to `logic.storage` is guaranteed
+        //         for the duration of the host call.
         unsafe { (&mut *ptr).set(key_vec, value.to_vec()).is_some() }
     });
 
     let remover_cell = Rc::clone(&storage_cell);
     let remover = Rc::new(move |key: &calimero_storage::store::Key| {
-        let (data_addr, vtable_addr) = remover_cell.get();
-        if data_addr == 0 {
-            return false;
-        }
-
+        let ptr = remover_cell.get();
         let key_vec = key.to_bytes().to_vec();
-        let raw = (data_addr as *mut (), vtable_addr as *mut ());
-        let ptr: *mut dyn RuntimeStorage = unsafe { mem::transmute(raw) };
+        // SAFETY: as above; exclusive access to `logic.storage` is guaranteed
+        //         for the duration of the host call.
         unsafe { (&mut *ptr).remove(&key_vec).is_some() }
     });
 
     // Safety notes:
     //
-    // * The closures below capture the data and vtable pointers of `storage`
-    //   at the time `build_runtime_env` is called.  While the host function is
-    //   executing the VM guarantees exclusivity over `logic.storage`, so it is
-    //   safe to dereference those pointers inside the closures.
-    // * The pointers are stored in a `Cell` to keep the closures `Fn` (instead
-    //   of `FnMut`) which matches the storage crate’s expectations.
+    // * The closures above capture the (lifetime-erased) fat pointer to
+    //   `storage`. While the host function is executing the VM guarantees
+    //   exclusivity over `logic.storage`, so it is safe to dereference that
+    //   pointer inside the closures.
+    // * The pointer is stored in a `Cell` to keep the closures `Fn` (instead of
+    //   `FnMut`), which matches the storage crate’s expectations.
     // * When the host function returns the `RuntimeEnv` drops out of scope and
     //   the storage crate falls back to its default environment, so subsequent
     //   calls that do not install an override will continue to use the mock /
@@ -395,12 +399,28 @@ impl VMHostFunctions<'_> {
 
         let len = usize::try_from(message_len).map_err(|_| HostError::IntegerOverflow)?;
 
-        let mut bytes = vec![0u8; len];
-        if len > 0 {
-            self.borrow_memory()
-                .read(message_ptr, &mut bytes)
+        // Bound the guest-provided length against actual guest memory *before*
+        // allocating. Sizing `vec![0u8; len]` directly from an unchecked guest
+        // length lets the guest force an enormous host allocation (OOM); the
+        // read below would reject an out-of-bounds region, but only after the
+        // allocation had already happened.
+        let bytes = if len == 0 {
+            Vec::new()
+        } else {
+            let ptr = usize::try_from(message_ptr).map_err(|_| HostError::IntegerOverflow)?;
+            let memory = self.borrow_memory();
+            let memory_size = memory.data_size() as usize;
+            let end = ptr.checked_add(len).ok_or(HostError::InvalidMemoryAccess)?;
+            if end > memory_size {
+                return Err(HostError::InvalidMemoryAccess.into());
+            }
+
+            let mut buf = vec![0u8; len];
+            memory
+                .read(message_ptr, &mut buf)
                 .map_err(|_| HostError::InvalidMemoryAccess)?;
-        }
+            buf
+        };
 
         let message = String::from_utf8_lossy(&bytes).to_string();
         let max_len = {
@@ -524,16 +544,40 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn value_return(&mut self, src_value_ptr: u64) -> VMLogicResult<()> {
-        // SAFETY: `sys::ValueReturn<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
-        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
-        //         it is sound; the guest SDK wrote a well-formed instance at this
-        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
-        let result =
-            unsafe { self.read_guest_memory_typed::<sys::ValueReturn<'_>>(src_value_ptr)? };
+        // `sys::ValueReturn` is a `#[repr(C, u64)]` enum: an 8-byte discriminant
+        // followed by a `Buffer` payload. The discriminant comes straight from
+        // guest memory, so reinterpreting the whole enum with `assume_init`
+        // would be undefined behaviour if the guest supplied an out-of-range
+        // tag. Read and validate the discriminant as a plain `u64` first, then
+        // read the `Buffer` payload separately — this never materializes a
+        // `ValueReturn` with an invalid discriminant.
+        let mut discriminant_bytes = [0u8; mem::size_of::<u64>()];
+        self.borrow_memory()
+            .read(src_value_ptr, &mut discriminant_bytes)?;
+        let discriminant = u64::from_le_bytes(discriminant_bytes);
 
-        let result = match result {
-            sys::ValueReturn::Ok(value) => Ok(self.read_guest_memory_slice(&value)?.to_vec()),
-            sys::ValueReturn::Err(value) => Err(self.read_guest_memory_slice(&value)?.to_vec()),
+        // The `Buffer` payload follows the 8-byte discriminant.
+        let payload_ptr = src_value_ptr
+            .checked_add(mem::size_of::<u64>() as u64)
+            .ok_or(HostError::InvalidMemoryAccess)?;
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the read is bounds-checked. See `read_guest_memory_typed`.
+        let value = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(payload_ptr)? };
+        let bytes = self.read_guest_memory_slice(&value)?.to_vec();
+
+        // Discriminant layout matches `sys::ValueReturn`: 0 = Ok, 1 = Err.
+        let result = match discriminant {
+            0 => Ok(bytes),
+            1 => Err(bytes),
+            other => {
+                warn!(
+                    target: "runtime::host::system",
+                    discriminant = other,
+                    "value_return got an out-of-range ValueReturn discriminant"
+                );
+                return Err(HostError::DeserializationError.into());
+            }
         };
 
         let result_len = match &result {

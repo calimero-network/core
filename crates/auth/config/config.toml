@@ -55,9 +55,14 @@ max_password_length = 128
 
 # Development/testing configuration
 [development]
-# Enable mock token endpoint for CI/testing (SECURITY: disabled by default)
-enable_mock_auth = true
+# Mock token endpoint that mints tokens without real authentication. The handler
+# and its route are additionally compiled out of release builds (see the
+# `#[cfg(debug_assertions)]` gates in the auth crate), so this must never be true
+# in a shipped image. Left false; enable it only in a local dev config and set
+# your own `mock_auth_header_value`.
+enable_mock_auth = false
 # Require authorization header for mock endpoint
 mock_auth_require_header = true
-# Authorization header value required for mock endpoint (set to enable)
-mock_auth_header_value = "Bearer test-auth-token" 
+# Authorization header value required for the mock endpoint. Empty by default so
+# no usable token is baked into the image; set it alongside enable_mock_auth.
+mock_auth_header_value = ""
