@@ -48,7 +48,9 @@ pub(crate) fn apply(
     // `is_admin` return false for the very identity the meta names as admin.
     // (`existing_role` is `Some` here — the `None` case bailed above.)
     if !matches!(existing_role, Some(GroupMemberRole::Admin)) {
-        membership.add_member(&ns_gid, &new_admin, GroupMemberRole::Admin)?;
+        // Role-only update — `set_role` preserves the row's other fields rather
+        // than zeroing them as a full-row `add_member` overwrite would.
+        membership.set_role(&ns_gid, &new_admin, GroupMemberRole::Admin)?;
     }
     Ok(())
 }

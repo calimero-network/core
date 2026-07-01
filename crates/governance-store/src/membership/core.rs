@@ -83,6 +83,58 @@ impl<'a> MembershipRepository<'a> {
         Ok(())
     }
 
+    /// Change ONLY the role of an existing member, preserving every other
+    /// field on the row (`private_key`, `sender_key`, `auto_follow`).
+    ///
+    /// This is the correct primitive for a role change (`MemberRoleSet`, admin
+    /// promotion): unlike [`add_member`](Self::add_member) — which rewrites the
+    /// whole `GroupMemberValue` and therefore zeroes `private_key`/`sender_key`
+    /// (it preserves only `auto_follow`) — `set_role` touches the role and
+    /// nothing else. Bails with `MemberNotFound` if the row does not already
+    /// exist, so callers must have verified membership first.
+    ///
+    /// Mirrors `add_member_with_keys`' default-capability seeding for a
+    /// non-admin role, keeping behaviour identical to the prior add_member-based
+    /// role-set path apart from the field preservation.
+    pub fn set_role(
+        &self,
+        group_id: &ContextGroupId,
+        identity: &PublicKey,
+        role: GroupMemberRole,
+    ) -> EyreResult<()> {
+        let is_admin = role == GroupMemberRole::Admin;
+        let mut handle = self.store.handle();
+        let key = GroupMember::new(group_id.to_bytes(), *identity);
+        let existing =
+            handle
+                .get::<GroupMember>(&key)?
+                .ok_or_else(|| MembershipError::MemberNotFound {
+                    group_id: format!("{group_id:?}"),
+                    member: format!("{identity:?}"),
+                })?;
+        handle.put(
+            &key,
+            &GroupMemberValue {
+                role,
+                private_key: existing.private_key,
+                sender_key: existing.sender_key,
+                auto_follow: existing.auto_follow,
+            },
+        )?;
+        drop(handle);
+
+        if !is_admin {
+            let capabilities = CapabilitiesRepository::new(self.store);
+            if let Some(defaults) = capabilities.default_capabilities(group_id)? {
+                if defaults != 0 {
+                    capabilities.set_member_capability(group_id, identity, defaults)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn remove_member(&self, group_id: &ContextGroupId, identity: &PublicKey) -> EyreResult<()> {
         {
             let mut handle = self.store.handle();

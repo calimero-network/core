@@ -36,6 +36,9 @@ pub(crate) fn apply(
     }
     ctx.membership_policy()
         .ensure_not_last_admin_demotion(member, role)?;
-    membership.add_member(group_id, member, role.clone())?;
+    // Role-only update: preserve the member row's other fields
+    // (`private_key`/`sender_key`/`auto_follow`) instead of the full-row
+    // overwrite `add_member` would do.
+    membership.set_role(group_id, member, role.clone())?;
     Ok(())
 }
