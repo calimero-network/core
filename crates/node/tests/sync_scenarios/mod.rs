@@ -18,5 +18,7 @@
 //! - `partitions.rs` - Network partition tests
 //! - `failures.rs` - Fault tolerance tests
 
+pub mod byzantine_delta_auth;
+pub mod byzantine_handshake;
 pub mod protocol_dispatch;
 pub mod snapshot_merge_protection;
