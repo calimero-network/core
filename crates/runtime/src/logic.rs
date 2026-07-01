@@ -253,7 +253,8 @@ pub struct VMLimits {
 
 impl VMLimits {
     /// Check cross-field invariants that the individual field types can't
-    /// express on their own. Returns a message describing the first violation.
+    /// express on their own. Returns `Ok(())` if all invariants hold, or `Err`
+    /// with a message describing the first violation.
     /// (Named `validate_invariants`, not `validate`, so it does not collide with
     /// the blanket [`Constraint::validate`](crate::Constraint) method that every
     /// type gets.)

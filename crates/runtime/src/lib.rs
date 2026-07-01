@@ -257,7 +257,9 @@ impl Engine {
             }
         }
 
-        if module.exports().any(|export| export.name() == "_start") {
+        if module.exports().any(|export| {
+            export.name() == "_start" && matches!(export.ty(), ExternType::Function(_))
+        }) {
             return Err(FunctionCallError::ModuleValidationError {
                 reason: "guest exports a `_start` function; WASI command entry points are \
                          not supported (guests are invoked by explicit method name)"

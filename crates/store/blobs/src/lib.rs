@@ -155,9 +155,13 @@ impl BlobManager {
     /// ([`calimero_store::Store::apply`]).
     pub async fn delete(&self, id: BlobId) -> EyreResult<bool> {
         let Some(meta) = self.data_store.handle().get(&BlobMetaKey::new(id))? else {
-            // No metadata references this id. Best-effort remove any orphan file
-            // so `has` (metadata-only) and `get` (file-backed) stay consistent.
-            return self.blob_store.delete(id).await;
+            // No metadata row references this id, so as a *referenced blob* it was
+            // already absent — return `false` regardless of whether an orphan file
+            // happened to linger. Still sweep any such file best-effort (ignoring
+            // its outcome) so `has` (metadata-only) and `get` (file-backed) stay
+            // consistent.
+            let _ = self.blob_store.delete(id).await;
+            return Ok(false);
         };
 
         // Release the root's own reference. A root blob keeps its content in its
@@ -165,7 +169,7 @@ impl BlobManager {
         // the root id is a harmless no-op; it is kept for blobs that ever carry
         // their own file.
         if self.release_ref(id, &meta)? {
-            let _ = self.blob_store.delete(id).await?;
+            self.blob_store.delete(id).await?;
         }
 
         // Release one reference from every chunk, mirroring the per-chunk
@@ -178,7 +182,7 @@ impl BlobManager {
                 continue;
             };
             if self.release_ref(chunk_id, &chunk_meta)? {
-                let _ = self.blob_store.delete(chunk_id).await?;
+                self.blob_store.delete(chunk_id).await?;
             }
         }
 
@@ -235,11 +239,16 @@ impl BlobManager {
         links: Box<[BlobMetaKey]>,
     ) -> EyreResult<()> {
         let key = BlobMetaKey::new(id);
-        let refs = self
-            .data_store
-            .handle()
-            .get(&key)?
-            .map_or(1, |existing| existing.refs.saturating_add(1));
+        let refs = match self.data_store.handle().get(&key)? {
+            // Overflow is not physically reachable (it needs u32::MAX live
+            // references to one content id) but is surfaced rather than saturated:
+            // a saturated count could never decrement back to zero, permanently
+            // leaking the blob.
+            Some(existing) => existing.refs.checked_add(1).ok_or_else(|| {
+                eyre::eyre!("blob refcount overflow for {id}: already at u32::MAX references")
+            })?,
+            None => 1,
+        };
         self.data_store
             .handle()
             .put(&key, &BlobMetaValue::new(size, hash, links, refs))?;
