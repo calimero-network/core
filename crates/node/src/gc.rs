@@ -110,7 +110,9 @@ impl GarbageCollector {
         // so tying the guard to the blocking closure — not the outer future —
         // means the flag can never clear while a scan is still deleting from the
         // store, which would otherwise let a new tick race the in-flight sweep.
-        // The guard also covers the normal-completion and panic paths.
+        // The guard also covers the normal-completion and panic paths. (If the
+        // runtime is shutting down and the blocking closure never runs, the flag
+        // stays set — benign: no further ticks fire on a stopping actor.)
         let guard = SweepGuard(self.sweep_in_progress.clone());
         // Dropping this handle does not cancel the task (Actix/tokio detach it);
         // the `SweepGuard`, not the handle, owns the flag-release invariant.
@@ -192,6 +194,13 @@ impl GarbageCollector {
             // safe: if `now < deleted_at` the age underflows to 0, so a tombstone
             // is never reclaimed before its retention has genuinely elapsed — no
             // premature mass-deletion of still-needed tombstones.
+            //
+            // The `>` is deliberate (skip when `age <= retention`): a tombstone
+            // must be strictly OLDER than the retention period to be reclaimed,
+            // matching the deleted storage-layer cutoff (`deleted_at < now -
+            // retention`). At the exact boundary it waits one more cycle; the
+            // difference is a single nanosecond at day-scale retention. Don't
+            // "fix" this to `<` — the conservative direction is intentional.
             let age = now_nanos.saturating_sub(deleted_at);
             if age <= self.retention_nanos {
                 continue;
@@ -263,6 +272,10 @@ fn tombstone_deleted_at(value: &[u8]) -> Option<u64> {
     let index = borsh::from_slice::<EntityIndex>(value).ok()?;
     // Cheap check first: only round-trip values that are actually tombstones.
     let deleted_at = index.deleted_at?;
+    // INVARIANT (load-bearing): `EntityIndex` borsh is canonical, so a genuine
+    // index row re-serializes to identical bytes; `entity_index_borsh_roundtrips`
+    // locks this. If it ever gains a non-canonical field this guard silently
+    // weakens, so keep that test green.
     let reserialized = borsh::to_vec(&index).ok()?;
     if reserialized == value {
         return Some(deleted_at);
@@ -280,9 +293,12 @@ fn tombstone_deleted_at(value: &[u8]) -> Option<u64> {
 /// makes every tombstone's age saturate to `0`, so a broken clock skips
 /// reclamation rather than deleting live-needed tombstones.
 fn now_nanos() -> u64 {
+    // `as_nanos()` is `u128`; `try_from` (rather than an `as` truncation that
+    // would wrap ~year 2554) falls back to `0`, keeping the broken-clock-skips
+    // direction — a wrapped-small `now` would also skip, but `0` is explicit.
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as u64)
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(0))
 }
 
 impl Actor for GarbageCollector {
