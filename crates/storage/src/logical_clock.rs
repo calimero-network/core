@@ -194,13 +194,15 @@ impl BorshDeserialize for HybridTimestamp {
         let time_u64 = u64::deserialize_reader(reader)?;
         let id_u128 = u128::deserialize_reader(reader)?;
         let time = NTP64(time_u64);
-        let id = if id_u128 == 0 {
-            ID::from(DEFAULT_ID)
-        } else {
-            NonZeroU128::new(id_u128).map(ID::from).ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "ID cannot be zero")
-            })?
-        };
+        // A serialized HLC id is always a NonZeroU128 (see `BorshSerialize`), so
+        // an on-wire `id == 0` can only come from corruption or a crafted frame.
+        // Reject it rather than coercing to `DEFAULT_ID`: coercion is
+        // non-injective — two distinct byte strings (`id == 0` and `id == 1`)
+        // would decode to the same timestamp, breaking the globally-unique-id
+        // invariant that HLC ordering and CRDT tiebreaks depend on.
+        let id = NonZeroU128::new(id_u128).map(ID::from).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "HLC id cannot be zero")
+        })?;
         Ok(Self(Timestamp::new(time, id)))
     }
 }
@@ -479,6 +481,28 @@ mod tests {
         let deserialized: HybridTimestamp = borsh::from_slice(&serialized).unwrap();
 
         assert_eq!(ts, deserialized);
+    }
+
+    #[test]
+    fn test_hybrid_timestamp_borsh_rejects_zero_id() {
+        // A crafted/corrupt frame with `id == 0` must be rejected, not coerced
+        // to id 1 — coercion would let two distinct byte strings decode to the
+        // same timestamp and collide otherwise-unique HLC ids.
+        let mut bytes = Vec::new();
+        0u64.serialize(&mut bytes).unwrap(); // time
+        0u128.serialize(&mut bytes).unwrap(); // id == 0 (invalid)
+
+        let result: Result<HybridTimestamp, _> = borsh::from_slice(&bytes);
+        assert!(
+            result.is_err(),
+            "id == 0 must fail to decode, got {result:?}"
+        );
+
+        // A valid non-zero id still decodes.
+        let mut ok = Vec::new();
+        0u64.serialize(&mut ok).unwrap();
+        1u128.serialize(&mut ok).unwrap();
+        assert!(borsh::from_slice::<HybridTimestamp>(&ok).is_ok());
     }
 
     #[test]
