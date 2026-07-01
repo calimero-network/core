@@ -366,39 +366,46 @@ impl TokenScope {
 
 static REQUESTED_SCOPE: std::sync::OnceLock<TokenScope> = std::sync::OnceLock::new();
 
-/// Record the token scope the current command needs. Called once at startup
-/// before any authentication happens.
+/// Record the least-privilege token scope for the current command, applying the
+/// `MEROCTL_AUTH_SCOPE` override once. Called exactly once at startup, before any
+/// authentication happens.
 ///
-/// The scope is stored in a process-global `OnceLock`, so only the first call
-/// takes effect. A second call would be silently discarded and let one
-/// command's scope bleed into another, so we `debug_assert` the invariant to
-/// catch accidental double-sets in debug/test builds.
-pub fn set_requested_scope(scope: TokenScope) {
-    debug_assert!(
-        REQUESTED_SCOPE.get().is_none(),
-        "set_requested_scope called more than once"
-    );
-    let _ = REQUESTED_SCOPE.set(scope);
+/// The final scope is stored in a process-global `OnceLock`, so a second call
+/// can't change it. Rather than silently discard the repeat (which would let one
+/// command's scope bleed into another) we surface it: a warning in every build,
+/// plus a hard `debug_assert` failure in debug/test builds.
+pub fn set_requested_scope(command_scope: TokenScope) {
+    let scope = resolve_scope_override(command_scope);
+    if REQUESTED_SCOPE.set(scope).is_err() {
+        eprintln!("warning: token scope already set; ignoring repeated set_requested_scope call");
+        debug_assert!(false, "set_requested_scope called more than once");
+    }
 }
 
-/// The scope to request at login. An explicit `MEROCTL_AUTH_SCOPE` env var
-/// (`admin` or `resource`, case-insensitive) overrides the per-command scope —
-/// an escape hatch in either direction if the command-derived scope is wrong
-/// for a particular server. An unrecognised value is warned about and ignored.
-/// Otherwise the scope recorded by [`set_requested_scope`] is used, defaulting
-/// to `Admin`.
-fn requested_scope() -> TokenScope {
-    if let Ok(raw) = std::env::var("MEROCTL_AUTH_SCOPE") {
-        if let Some(scope) = TokenScope::parse_override(&raw) {
-            return scope;
-        }
+/// Apply the `MEROCTL_AUTH_SCOPE` env override (`admin`/`resource`,
+/// case-insensitive) to the command-derived scope — an escape hatch in either
+/// direction if the command-derived scope is wrong for a particular server. An
+/// unrecognised value is warned about and ignored. Read exactly once, from
+/// [`set_requested_scope`], so the env read and any warning happen a single time.
+fn resolve_scope_override(command_scope: TokenScope) -> TokenScope {
+    let Ok(raw) = std::env::var("MEROCTL_AUTH_SCOPE") else {
+        return command_scope;
+    };
+    TokenScope::parse_override(&raw).unwrap_or_else(|| {
         // Make misconfiguration visible: an operator who fat-fingers the value
         // (e.g. `resourc`) would otherwise silently get the per-command scope
         // while believing they had overridden it.
         eprintln!(
             "warning: unrecognised MEROCTL_AUTH_SCOPE value {raw:?} (expected `admin` or `resource`); ignoring"
         );
-    }
+        command_scope
+    })
+}
+
+/// The resolved scope to request at login, recorded by [`set_requested_scope`]
+/// (defaults to `Admin` when unset). A pure reader — deterministic across the
+/// multiple `build_auth_url` calls in a single command.
+fn requested_scope() -> TokenScope {
     REQUESTED_SCOPE.get().copied().unwrap_or(TokenScope::Admin)
 }
 
