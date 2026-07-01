@@ -66,6 +66,7 @@ fn test_invariant_error_payload_structure() {
         }],
         intent: MethodIntent::Unspecified,
         xcall_callable: false,
+        xcall_callers: Default::default(),
     });
 
     // This should pass validation
@@ -94,6 +95,7 @@ fn test_invariant_variable_bytes_no_size() {
         errors: vec![],
         intent: MethodIntent::Unspecified,
         xcall_callable: false,
+        xcall_callers: Default::default(),
     });
 
     // This should pass validation
@@ -126,6 +128,7 @@ fn test_invariant_map_string_key() {
         errors: vec![],
         intent: MethodIntent::Unspecified,
         xcall_callable: false,
+        xcall_callers: Default::default(),
     });
 
     // This should pass validation
@@ -156,6 +159,7 @@ fn test_invariant_no_dangling_refs() {
         errors: vec![],
         intent: MethodIntent::Unspecified,
         xcall_callable: false,
+        xcall_callers: Default::default(),
     });
 
     // This should pass validation
@@ -181,6 +185,7 @@ fn test_invariant_detects_dangling_refs() {
         errors: vec![],
         intent: MethodIntent::Unspecified,
         xcall_callable: false,
+        xcall_callers: Default::default(),
     });
 
     // This should fail validation
@@ -219,6 +224,7 @@ fn test_invariant_detects_dangling_refs_in_inner_type() {
         errors: vec![],
         intent: MethodIntent::Unspecified,
         xcall_callable: false,
+        xcall_callers: Default::default(),
     });
 
     // This should fail validation because NonExistentType is referenced in inner_type
@@ -250,6 +256,7 @@ fn test_invariant_deterministic_ordering() {
         errors: vec![],
         intent: MethodIntent::Unspecified,
         xcall_callable: false,
+        xcall_callers: Default::default(),
     });
     manifest.methods.push(Method {
         name: "a_method".to_string(),
@@ -259,6 +266,7 @@ fn test_invariant_deterministic_ordering() {
         errors: vec![],
         intent: MethodIntent::Unspecified,
         xcall_callable: false,
+        xcall_callers: Default::default(),
     });
 
     // This should fail validation because methods are not sorted

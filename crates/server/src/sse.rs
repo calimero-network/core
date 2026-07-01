@@ -67,6 +67,7 @@ pub fn service(
     config: &ServerConfig,
     node_client: NodeClient,
     store: Store,
+    auth_enabled: bool,
 ) -> Option<(&'static str, Router)> {
     let _ = match &config.sse {
         Some(config) if config.enabled => config,
@@ -82,7 +83,7 @@ pub fn service(
         info!("SSE server listening on {}/http{{{}}}", listen, path);
     }
 
-    let state = Arc::new(ServiceState::new(node_client, store));
+    let state = Arc::new(ServiceState::new(node_client, store, auth_enabled));
 
     let router = Router::new()
         .route("/", get(sse_handler))

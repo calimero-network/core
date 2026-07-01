@@ -24,6 +24,13 @@ pub struct PersistedSessionData {
     pub subscriptions: HashSet<ContextId>,
     pub event_counter: u64,
     pub last_activity: u64, // Unix timestamp
+    /// Principal that owns this session (the authenticated caller that created
+    /// it). `None` for sessions created with auth disabled, and for sessions
+    /// persisted before owner-binding existed — both are treated as unowned and
+    /// freely accessible for backward compatibility. `#[serde(default)]` lets
+    /// pre-upgrade persisted records deserialize with `owner: None`.
+    #[serde(default)]
+    pub owner: Option<String>,
 }
 
 /// In-memory session state
@@ -32,6 +39,10 @@ pub struct SessionStateInner {
     pub subscriptions: HashSet<ContextId>,
     pub event_counter: AtomicU64,
     pub last_activity: AtomicU64,
+    /// See [`PersistedSessionData::owner`]. Set once at session creation and
+    /// never mutated; reconnects and session lookups compare the caller's
+    /// principal against it to prevent cross-principal session access (IDOR).
+    pub owner: Option<String>,
 }
 
 impl Default for SessionStateInner {
@@ -40,11 +51,21 @@ impl Default for SessionStateInner {
             subscriptions: HashSet::new(),
             event_counter: AtomicU64::new(0),
             last_activity: AtomicU64::new(now_secs()),
+            owner: None,
         }
     }
 }
 
 impl SessionStateInner {
+    /// Create a fresh session owned by `owner`.
+    #[must_use]
+    pub fn with_owner(owner: Option<String>) -> Self {
+        Self {
+            owner,
+            ..Self::default()
+        }
+    }
+
     /// Create session state from persisted data
     #[must_use]
     pub fn from_persisted(data: PersistedSessionData) -> Self {
@@ -52,6 +73,7 @@ impl SessionStateInner {
             subscriptions: data.subscriptions,
             event_counter: AtomicU64::new(data.event_counter),
             last_activity: AtomicU64::new(data.last_activity),
+            owner: data.owner,
         }
     }
 
@@ -62,6 +84,7 @@ impl SessionStateInner {
             subscriptions: self.subscriptions.clone(),
             event_counter: self.event_counter.load(Ordering::SeqCst),
             last_activity: self.last_activity.load(Ordering::SeqCst),
+            owner: self.owner.clone(),
         }
     }
 

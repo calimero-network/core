@@ -1,0 +1,29 @@
+version: 2
+updates:
+  # Rust crates (workspace root).
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      cargo:
+        patterns: ["*"]
+
+  # GitHub Actions — also keeps the SHA-pinned `uses:` refs current.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Docs site (npm).
+  - package-ecosystem: npm
+    directory: "/docs-site"
+    schedule:
+      interval: weekly
+    groups:
+      npm:
+        patterns: ["*"]
