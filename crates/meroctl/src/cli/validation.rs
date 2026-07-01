@@ -92,6 +92,29 @@ pub fn valid_node_name(s: &str) -> Result<String, String> {
     Ok(s.to_string())
 }
 
+/// Clap value parser for hex-encoded group IDs.
+///
+/// A group ID is exactly 32 bytes, hex-encoded (64 hex characters). Validating
+/// at parse time turns an opaque post-round-trip server error into an immediate,
+/// actionable CLI error. Returns the normalised (lowercased) hex string.
+///
+/// Can be used with `#[clap(value_parser = group_id)]`.
+pub fn group_id(s: &str) -> Result<String, String> {
+    // Validate and report on the same (trimmed) value so the error never refers
+    // to a different string than the one actually checked.
+    let trimmed = s.trim();
+    let bytes = hex::decode(trimmed).map_err(|_| {
+        format!("Invalid group id '{trimmed}': expected hex-encoded 32 bytes (64 hex characters)")
+    })?;
+    if bytes.len() != 32 {
+        return Err(format!(
+            "Invalid group id '{trimmed}': must be exactly 32 bytes (64 hex characters), got {} bytes",
+            bytes.len()
+        ));
+    }
+    Ok(trimmed.to_ascii_lowercase())
+}
+
 /// Clap value parser for valid URLs.
 ///
 /// Can be used with `#[arg(value_parser = valid_url)]`
@@ -177,5 +200,20 @@ mod tests {
     fn test_valid_url_parser() {
         assert!(valid_url("http://localhost:8080").is_ok());
         assert!(valid_url("not-a-url").is_err());
+    }
+
+    #[test]
+    fn test_group_id_parser() {
+        let valid = "a".repeat(64);
+        assert_eq!(group_id(&valid).unwrap(), valid);
+        // Uppercase is normalised to lowercase.
+        assert_eq!(group_id(&"A".repeat(64)).unwrap(), "a".repeat(64));
+        // Too short / too long.
+        assert!(group_id(&"ab".repeat(10)).is_err());
+        assert!(group_id(&"a".repeat(66)).is_err());
+        // Non-hex.
+        assert!(group_id(&"z".repeat(64)).is_err());
+        // Empty.
+        assert!(group_id("").is_err());
     }
 }

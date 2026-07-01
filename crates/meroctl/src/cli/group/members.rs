@@ -74,7 +74,11 @@ impl MembersCommand {
 #[derive(Clone, Debug, Parser)]
 #[command(about = "List all members of a group")]
 pub struct ListMembersCommand {
-    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    #[clap(
+        name = "GROUP_ID",
+        value_parser = crate::cli::validation::group_id,
+        help = "The hex-encoded group ID"
+    )]
     pub group_id: String,
 }
 
@@ -92,7 +96,11 @@ impl ListMembersCommand {
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Add a member to a group")]
 pub struct AddMembersCommand {
-    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    #[clap(
+        name = "GROUP_ID",
+        value_parser = crate::cli::validation::group_id,
+        help = "The hex-encoded group ID"
+    )]
     pub group_id: String,
 
     #[clap(name = "IDENTITY", help = "Public key of the identity to add")]
@@ -135,7 +143,11 @@ impl AddMembersCommand {
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Remove members from a group")]
 pub struct RemoveMembersCommand {
-    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    #[clap(
+        name = "GROUP_ID",
+        value_parser = crate::cli::validation::group_id,
+        help = "The hex-encoded group ID"
+    )]
     pub group_id: String,
 
     #[clap(
@@ -186,7 +198,11 @@ impl RemoveMembersCommand {
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Update the role of a group member")]
 pub struct SetRoleCommand {
-    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    #[clap(
+        name = "GROUP_ID",
+        value_parser = crate::cli::validation::group_id,
+        help = "The hex-encoded group ID"
+    )]
     pub group_id: String,
 
     #[clap(
@@ -228,7 +244,11 @@ impl SetRoleCommand {
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Set capabilities for a group member")]
 pub struct SetCapabilitiesCommand {
-    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    #[clap(
+        name = "GROUP_ID",
+        value_parser = crate::cli::validation::group_id,
+        help = "The hex-encoded group ID"
+    )]
     pub group_id: String,
 
     #[clap(name = "IDENTITY", help = "Public key of the member")]
@@ -320,7 +340,11 @@ impl SetCapabilitiesCommand {
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Get capabilities of a group member")]
 pub struct GetCapabilitiesCommand {
-    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    #[clap(
+        name = "GROUP_ID",
+        value_parser = crate::cli::validation::group_id,
+        help = "The hex-encoded group ID"
+    )]
     pub group_id: String,
 
     #[clap(name = "IDENTITY", help = "Public key of the member")]
@@ -345,7 +369,11 @@ impl GetCapabilitiesCommand {
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Diagnostic: check an identity's role and capabilities in a group")]
 pub struct CheckAccessCommand {
-    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    #[clap(
+        name = "GROUP_ID",
+        value_parser = crate::cli::validation::group_id,
+        help = "The hex-encoded group ID"
+    )]
     pub group_id: String,
 
     #[clap(name = "IDENTITY", help = "Public key of the identity to check")]
