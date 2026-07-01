@@ -166,16 +166,23 @@ impl SubCommands {
                 | AppSubCommands::ListPackages(_)
                 | AppSubCommands::ListVersions(_)
                 | AppSubCommands::GetLatestVersion(_) => TokenScope::Resource,
+                // Everything else (install/uninstall/watch) mutates. NOTE: a new
+                // read-only variant falls through here and safely over-scopes to
+                // Admin — add it to the Resource list above when introduced.
                 _ => TokenScope::Admin,
             },
             SubCommands::Blob(c) => match c.subcommand {
                 BlobSubCommands::List(_)
                 | BlobSubCommands::Info(_)
                 | BlobSubCommands::Download(_) => TokenScope::Resource,
+                // NOTE: new read-only Blob variants must be added to the Resource
+                // list above; otherwise they safely over-scope to Admin here.
                 _ => TokenScope::Admin,
             },
             SubCommands::Context(c) => match c.subcommand {
                 ContextSubCommands::List(_) | ContextSubCommands::Get(_) => TokenScope::Resource,
+                // NOTE: new read-only Context variants must be added to the
+                // Resource list above; otherwise they over-scope to Admin here.
                 _ => TokenScope::Admin,
             },
             // Everything else (mutations, key/node management, call, and the
