@@ -1,11 +1,12 @@
 use calimero_network_primitives::messages::NetworkEvent;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
-use libp2p::kad::{Event, GetRecordError, GetRecordOk, QueryResult};
+use libp2p::kad::store::RecordStore;
+use libp2p::kad::{Event, GetRecordError, GetRecordOk, InboundRequest, QueryResult, Record};
 use libp2p::PeerId;
 use libp2p_metrics::Recorder;
 use owo_colors::OwoColorize;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{EventHandler, NetworkManager};
 
@@ -106,13 +107,192 @@ impl EventHandler<Event> for NetworkManager {
                     let _ignored = sender.send(peers);
                 }
             }
-            Event::InboundRequest { .. }
-            | Event::OutboundQueryProgressed { .. }
+            // Record filtering is enabled (`StoreInserts::FilterBoth`), so a
+            // record replicated to us by another peer surfaces here as an
+            // inbound request rather than being written to our store blind.
+            // Validate its shape before admitting it; anything else is a
+            // routing/read request with nothing to store.
+            Event::InboundRequest { request } => match request {
+                InboundRequest::PutRecord {
+                    source,
+                    record: Some(record),
+                    ..
+                } => {
+                    if is_valid_blob_provider_record(&record) {
+                        match self.swarm.behaviour_mut().kad.store_mut().put(record) {
+                            Ok(()) => {
+                                debug!(%source, "stored validated inbound DHT record");
+                            }
+                            Err(err) => {
+                                // Surfaced at warn, not debug: the validator
+                                // already rejects oversized values, so a put
+                                // failure here is most likely the store hitting
+                                // its `max_records` ceiling — a capacity signal
+                                // an operator should see without debug logging.
+                                warn!(%source, ?err, "rejected inbound DHT record: store put failed (store may be full)");
+                            }
+                        }
+                    } else {
+                        debug!(%source, "rejected malformed inbound DHT record");
+                    }
+                }
+                // We announce blobs via `put_record`, never `start_providing`,
+                // so this node holds no provider records — drop any a peer
+                // tries to add rather than storing on its behalf.
+                InboundRequest::AddProvider { .. } => {
+                    debug!("ignoring inbound AddProvider record (provider records unused)");
+                }
+                // FilterBoth always attaches the record, so a PutRecord with no
+                // payload is an unexpected protocol state (or config drift) —
+                // log it so it's distinguishable from a routine routing event.
+                InboundRequest::PutRecord {
+                    source,
+                    record: None,
+                    ..
+                } => {
+                    debug!(%source, "received PutRecord with no record payload — ignoring");
+                }
+                InboundRequest::FindNode { .. }
+                | InboundRequest::GetProvider { .. }
+                | InboundRequest::GetRecord { .. } => {}
+            },
+            Event::OutboundQueryProgressed { .. }
             | Event::ModeChanged { .. }
             | Event::PendingRoutablePeer { .. }
             | Event::RoutablePeer { .. }
             | Event::RoutingUpdated { .. }
             | Event::UnroutablePeer { .. } => {}
         }
+    }
+}
+
+/// Structural validation for an inbound blob-provider record before we admit
+/// it to our store.
+///
+/// With record filtering enabled every record another peer replicates to us
+/// arrives for inspection instead of being written blind. We can't authorize
+/// the *content* — these records are unsigned and the network layer has no
+/// view of context membership — but we can reject anything not shaped like the
+/// blob announcement this node itself produces (see the `AnnounceBlob`
+/// handler): a 64-byte key (context id + blob id) whose value is a parseable
+/// peer id followed by an 8-byte little-endian size. We also enforce the
+/// store's `KAD_MAX_VALUE_BYTES` ceiling here, so an oversized value is dropped
+/// in our own code rather than relying on the store's `put` as the only guard.
+/// That drops malformed, oversized, and garbage records cheaply; the store's
+/// own `max_value_bytes` / `max_records` bounds are the backstop.
+fn is_valid_blob_provider_record(record: &Record) -> bool {
+    /// context_id (32) + blob_id (32).
+    const EXPECTED_KEY_LEN: usize = 64;
+    /// Trailing little-endian `u64` blob size.
+    const SIZE_LEN: usize = 8;
+
+    if record.key.as_ref().len() != EXPECTED_KEY_LEN {
+        return false;
+    }
+
+    // Reject anything larger than the store would accept, up front — a valid
+    // blob-provider value is ~50 bytes, far below this ceiling.
+    if record.value.len() > crate::behaviour::KAD_MAX_VALUE_BYTES {
+        return false;
+    }
+
+    let Some(peer_id_bytes) = record
+        .value
+        .len()
+        .checked_sub(SIZE_LEN)
+        .map(|end| &record.value[..end])
+    else {
+        return false;
+    };
+
+    // A zero-length peer id can never be valid; `from_bytes` also rejects it,
+    // but bail explicitly so intent is clear.
+    !peer_id_bytes.is_empty() && PeerId::from_bytes(peer_id_bytes).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use libp2p::kad::RecordKey;
+
+    use super::*;
+
+    fn record(key: Vec<u8>, value: Vec<u8>) -> Record {
+        Record::new(RecordKey::new(&key), value)
+    }
+
+    fn valid_value() -> Vec<u8> {
+        let peer_id = PeerId::random();
+        let size: u64 = 4096;
+        [peer_id.to_bytes().as_slice(), &size.to_le_bytes()].concat()
+    }
+
+    #[test]
+    fn accepts_a_well_formed_blob_record() {
+        let rec = record(vec![7u8; 64], valid_value());
+        assert!(is_valid_blob_provider_record(&rec));
+    }
+
+    #[test]
+    fn rejects_wrong_key_length() {
+        // One byte short and one byte long — only exactly 64 is a blob key.
+        assert!(!is_valid_blob_provider_record(&record(
+            vec![7u8; 63],
+            valid_value()
+        )));
+        assert!(!is_valid_blob_provider_record(&record(
+            vec![7u8; 65],
+            valid_value()
+        )));
+    }
+
+    #[test]
+    fn rejects_value_too_short_for_a_size_suffix() {
+        // At most 8 bytes (<= SIZE_LEN) leaves no room for a peer id: below 8
+        // the `checked_sub` fails, and exactly 8 yields an empty prefix caught
+        // by the `is_empty` guard.
+        assert!(!is_valid_blob_provider_record(&record(
+            vec![7u8; 64],
+            vec![0u8; 4]
+        )));
+        assert!(!is_valid_blob_provider_record(&record(
+            vec![7u8; 64],
+            vec![0u8; 8]
+        )));
+        // One byte past the size suffix is a non-empty prefix, so it clears the
+        // `is_empty` guard and must instead be rejected by the peer-id parse.
+        assert!(!is_valid_blob_provider_record(&record(
+            vec![7u8; 64],
+            vec![0u8; 9]
+        )));
+    }
+
+    #[test]
+    fn rejects_unparseable_peer_id() {
+        // Right shape (>8 bytes) but the leading bytes aren't a valid peer id.
+        let value = [vec![0xffu8; 16], 1024u64.to_le_bytes().to_vec()].concat();
+        assert!(!is_valid_blob_provider_record(&record(
+            vec![7u8; 64],
+            value
+        )));
+    }
+
+    #[test]
+    fn rejects_value_over_the_store_ceiling() {
+        // A parseable peer id + size suffix, but padded past the store's
+        // `max_value_bytes`: the validator drops it up front rather than
+        // leaving the store's `put` as the only guard.
+        let peer_id = PeerId::random();
+        let padding = vec![0u8; crate::behaviour::KAD_MAX_VALUE_BYTES];
+        let value = [
+            peer_id.to_bytes().as_slice(),
+            &padding,
+            &4096u64.to_le_bytes(),
+        ]
+        .concat();
+        assert!(value.len() > crate::behaviour::KAD_MAX_VALUE_BYTES);
+        assert!(!is_valid_blob_provider_record(&record(
+            vec![7u8; 64],
+            value
+        )));
     }
 }
