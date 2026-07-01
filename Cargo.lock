@@ -1483,6 +1483,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-util",
  "tracing",
  "zeroize",
 ]
@@ -1776,6 +1777,7 @@ dependencies = [
  "strum 0.26.3",
  "thiserror 1.0.69",
  "thunderdome",
+ "zeroize",
 ]
 
 [[package]]
@@ -6074,6 +6076,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "x509-cert",
+ "zeroize",
 ]
 
 [[package]]
