@@ -103,14 +103,23 @@ impl GarbageCollector {
         }
 
         let this = self.clone();
-        // Clear the flag via an RAII guard rather than a trailing statement, so
-        // it is released even if this future is dropped/cancelled mid-sweep
-        // (e.g. actor teardown) — not only on the normal completion path. A
-        // leaked `true` would silently lock out GC for the actor's lifetime.
+        // Release the in-progress flag via an RAII guard that lives INSIDE the
+        // blocking task, so the flag stays set for the entire lifetime of the
+        // actual store scan. A `spawn_blocking` task runs to completion even if
+        // its `JoinHandle` is dropped (e.g. the actor is torn down mid-sweep),
+        // so tying the guard to the blocking closure — not the outer future —
+        // means the flag can never clear while a scan is still deleting from the
+        // store, which would otherwise let a new tick race the in-flight sweep.
+        // The guard also covers the normal-completion and panic paths.
         let guard = SweepGuard(self.sweep_in_progress.clone());
+        // Dropping this handle does not cancel the task (Actix/tokio detach it);
+        // the `SweepGuard`, not the handle, owns the flag-release invariant.
         let _handle = actix::spawn(async move {
-            let _guard = guard;
-            let outcome = tokio::task::spawn_blocking(move || this.sweep(now_nanos())).await;
+            let outcome = tokio::task::spawn_blocking(move || {
+                let _guard = guard;
+                this.sweep(now_nanos())
+            })
+            .await;
 
             match outcome {
                 Ok(Ok(stats)) => {
@@ -164,11 +173,14 @@ impl GarbageCollector {
             }
 
             // The iterator's key snapshot and this per-key `get` are not atomic;
-            // a concurrent writer could change the value in between. Every outcome
-            // is safe: a delete makes `get` return `None` (skipped), and an update
-            // to a non-tombstone fails `tombstone_deleted_at` (skipped). The
-            // round-trip guard below is the backstop against acting on stale or
-            // non-index bytes.
+            // a concurrent writer could change the keyspace mid-scan. Every
+            // outcome is safe for a maintenance sweep: a delete makes `get`
+            // return `None` (skipped), an update to a non-tombstone fails
+            // `tombstone_deleted_at` (skipped), and a tombstone inserted past the
+            // cursor is simply missed this pass — harmless, since a just-created
+            // tombstone isn't retention-eligible yet and the next sweep catches
+            // it (GC is eventually consistent). The round-trip guard below is the
+            // backstop against acting on stale or non-index bytes.
             let Some(value) = self.store.get(&entry)? else {
                 continue;
             };
@@ -196,10 +208,20 @@ impl GarbageCollector {
         // store write, so an interrupted sweep leaves the store consistent: the
         // tombstones already deleted stay deleted, the rest remain valid
         // tombstones and are reclaimed on the next pass.
-        let collected = keys_to_delete.len();
+        //
+        // Best-effort: a single failed delete must not abort the sweep and
+        // strand the remaining reclaimable tombstones. `collected` counts actual
+        // removals (work done), not the number intended; leftovers retry next
+        // cycle.
         let mut store = self.store.clone();
+        let mut collected = 0usize;
         for key in keys_to_delete {
-            store.delete(&key)?;
+            match store.delete(&key) {
+                Ok(()) => collected += 1,
+                Err(e) => {
+                    warn!(error = ?e, "GC failed to delete a tombstone; will retry next cycle");
+                }
+            }
         }
 
         if capped {
@@ -242,7 +264,15 @@ fn tombstone_deleted_at(value: &[u8]) -> Option<u64> {
     // Cheap check first: only round-trip values that are actually tombstones.
     let deleted_at = index.deleted_at?;
     let reserialized = borsh::to_vec(&index).ok()?;
-    (reserialized == value).then_some(deleted_at)
+    if reserialized == value {
+        return Some(deleted_at);
+    }
+    // Decoded as a tombstoned `EntityIndex` but re-serialized to different bytes
+    // — coincidental app data, or on-disk layout drift after a schema change.
+    // Skipped (never mis-deleted); logged at debug so layout drift is
+    // diagnosable without noising the common path (this is ~never hit normally).
+    debug!("GC skipped a value that decoded as a tombstone but failed the borsh round-trip");
+    None
 }
 
 /// Current wall-clock time in nanoseconds since the Unix epoch, or `0` if the
