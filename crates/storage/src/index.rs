@@ -15,7 +15,6 @@ use tracing::info;
 
 use crate::address::Id;
 use crate::entities::{ChildInfo, Metadata, UpdatedAt};
-use crate::env::time_now;
 use crate::interface::StorageError;
 use crate::store::{IterableStorage, Key, StorageAdaptor};
 
@@ -1129,72 +1128,6 @@ impl<S: StorageAdaptor> Index<S> {
         Self::save_index(&index)?;
         <Index<S>>::recalculate_ancestor_hashes_for(id)?;
         Ok(index.full_hash)
-    }
-
-    /// Garbage collects tombstones older than the retention period.
-    ///
-    /// Only available for storage backends that implement `IterableStorage`.
-    /// Removes index entries marked as deleted that are older than the specified
-    /// retention period. This reclaims storage space while maintaining CRDT semantics
-    /// for recent deletions.
-    ///
-    /// # Parameters
-    ///
-    /// * `retention_nanos` - Retention period in nanoseconds (e.g., 86_400_000_000_000 for 1 day)
-    ///
-    /// # Returns
-    ///
-    /// Number of tombstones garbage collected
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // GC tombstones older than 1 day (requires IterableStorage)
-    /// type MyStorage = MockedStorage<1>;
-    /// const ONE_DAY_NANOS: u64 = 86_400_000_000_000;
-    /// let collected = Index::<MyStorage>::garbage_collect_tombstones(ONE_DAY_NANOS)?;
-    /// println!("Garbage collected {} tombstones", collected);
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] if an index entry cannot be loaded while
-    /// scanning. Failure to remove an individual tombstone key is ignored so a
-    /// single bad key does not abort the whole sweep.
-    ///
-    /// # Scheduling
-    ///
-    /// This is a manually-invoked maintenance operation: it performs one full
-    /// pass over the index keys and returns. It is intentionally not
-    /// auto-scheduled — when and how often to reclaim tombstones (and any
-    /// batching or rate-limiting) is a policy decision left to the caller.
-    pub fn garbage_collect_tombstones(retention_nanos: u64) -> Result<usize, StorageError>
-    where
-        S: IterableStorage,
-    {
-        let cutoff_time = time_now().saturating_sub(retention_nanos);
-        let mut collected = 0;
-
-        // Iterate over all keys in storage
-        let all_keys = S::storage_iter_keys();
-
-        for key in all_keys {
-            // Only process Index keys (not Entry keys)
-            if let Key::Index(id) = key {
-                // Check if this index is a tombstone older than cutoff
-                if let Some(index) = Self::get_index(id)? {
-                    if let Some(deleted_at) = index.deleted_at {
-                        if deleted_at < cutoff_time {
-                            // Tombstone is old enough - remove it
-                            let _ignored = S::storage_remove(Key::Index(id));
-                            collected += 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(collected)
     }
 
     /// Residue: a LOCAL DERIVED count of identity-gated entries that still
