@@ -197,8 +197,9 @@ impl Codec for SpecializedNodeInviteCodec {
             ));
         }
 
-        // Write length prefix. The bound above (<= MAX <= u32::MAX, asserted at
-        // compile time) guarantees this cast is lossless.
+        // Write length prefix. The runtime check above bounds `buf.len()` to
+        // MAX_SPECIALIZED_NODE_INVITE_MESSAGE_SIZE, which the compile-time assert
+        // bounds to u32::MAX, so together they make this cast lossless.
         let len = buf.len() as u32;
         io.write_all(&len.to_be_bytes()).await?;
 
@@ -230,8 +231,9 @@ impl Codec for SpecializedNodeInviteCodec {
             ));
         }
 
-        // Write length prefix. The bound above (<= MAX <= u32::MAX, asserted at
-        // compile time) guarantees this cast is lossless.
+        // Write length prefix. The runtime check above bounds `buf.len()` to
+        // MAX_SPECIALIZED_NODE_INVITE_MESSAGE_SIZE, which the compile-time assert
+        // bounds to u32::MAX, so together they make this cast lossless.
         let len = buf.len() as u32;
         io.write_all(&len.to_be_bytes()).await?;
 
