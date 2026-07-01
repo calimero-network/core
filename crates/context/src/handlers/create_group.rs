@@ -174,7 +174,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // into Open subgroups beneath this group.
                 CapabilitiesRepository::new(&datastore).set_default_capabilities(
                     &group_id,
-                    calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+                    calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
                 )?;
 
                 // Generate and store the group encryption key.
@@ -202,9 +202,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             &group_id,
                             &calimero_primitives::metadata::MetadataRecord {
                                 name: name.clone(),
+                                data: std::collections::BTreeMap::new(),
                                 updated_at: calimero_governance_store::now_millis(),
                                 updated_by: admin_identity,
-                                ..Default::default()
                             },
                         )?,
                         Err(e) => {

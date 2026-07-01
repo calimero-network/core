@@ -45,7 +45,7 @@ pub(crate) fn apply(
             && MembershipRepository::new(store).is_admin_or_has_capability(
                 &ns_gid,
                 &op.signer,
-                calimero_context_config::MemberCapabilities::CAN_CREATE_SUBGROUP,
+                calimero_context_config::MemberCapabilities::CAN_CREATE_SUBGROUP.bits(),
             )?);
     if !authorized {
         bail!(ApplyError::GroupCreatedRejected(

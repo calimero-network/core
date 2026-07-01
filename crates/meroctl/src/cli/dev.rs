@@ -196,9 +196,8 @@ impl StartCommand {
 
         let signer_display = app
             .as_ref()
-            .map(|a| &a.signer_id)
-            .filter(|s| !s.is_empty())
-            .map_or_else(|| "<none>".to_owned(), |s| s.clone());
+            .and_then(|a| a.signer_id.as_ref())
+            .map_or_else(|| "<none>".to_owned(), |s| s.as_str().to_owned());
 
         eprintln!();
         eprintln!("  Dev session ready");

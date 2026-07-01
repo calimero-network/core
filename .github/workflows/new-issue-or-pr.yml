@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Add Label to Issue or PR
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -57,7 +57,7 @@ jobs:
     steps:
       - name: Get Author Information
         id: get_author
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
 
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -67,7 +67,7 @@ jobs:
 
       - name: Get Organization Members
         id: get_org_members
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -113,7 +113,7 @@ jobs:
 
       - name: Add External Label if Necessary
         if: steps.determine_if_external.outputs.is_external == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |

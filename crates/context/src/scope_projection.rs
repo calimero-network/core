@@ -74,16 +74,16 @@ fn build_op(
     parents: &[[u8; 32]],
     payload: OpPayload,
 ) -> Op {
-    Op {
+    Op::from_parts(
         id,
         scope,
-        parents: parents.to_vec(),
+        parents.to_vec(),
         author,
         hlc,
         payload,
-        expected_scope_root: [0u8; 32],
-        signature: [0u8; 64],
-    }
+        [0u8; 32],
+        [0u8; 64],
+    )
 }
 
 /// Convert a writer-set rotation ([`RotationLogEntry`]) into the unified
@@ -257,7 +257,7 @@ impl ScopeProjections {
     pub fn ingest_op(&mut self, op: &Op) {
         self.states.entry(op.scope).or_default().apply(op);
         // O(1) dedup: `insert` is true only for a not-yet-seen id.
-        if self.seen.entry(op.scope).or_default().insert(op.id) {
+        if self.seen.entry(op.scope).or_default().insert(op.id()) {
             let log = self.logs.entry(op.scope).or_default();
             if matches!(op.payload, OpPayload::Noop) {
                 // Remember where this still-undecrypted op sits so a later decrypted
@@ -266,11 +266,11 @@ impl ScopeProjections {
                     .noop_log_pos
                     .entry(op.scope)
                     .or_default()
-                    .insert(op.id, log.len());
+                    .insert(op.id(), log.len());
             }
             log.push(op.clone());
         } else if !matches!(op.payload, OpPayload::Noop) {
-            // Already seen, but `op.id` is the SIGNED op's content hash, not the decoded
+            // Already seen, but `op.id()` is the SIGNED op's content hash, not the decoded
             // payload's — so an encrypted op first folded as `Noop` (applied before its
             // group key arrived) shares an id with its later, decrypted form. The op-log
             // is what the at-cut auth view (`acl_view_at` → `member_at_cut`) folds, so a
@@ -283,7 +283,7 @@ impl ScopeProjections {
             if let Some(idx) = self
                 .noop_log_pos
                 .get_mut(&op.scope)
-                .and_then(|m| m.remove(&op.id))
+                .and_then(|m| m.remove(&op.id()))
             {
                 if let Some(entry) = self.logs.get_mut(&op.scope).and_then(|l| l.get_mut(idx)) {
                     *entry = op.clone();
@@ -1059,6 +1059,9 @@ impl ScopeProjections {
                 .ok()
                 .flatten(),
                 calimero_governance_types::NamespaceOp::Root(_) => None,
+                // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op has
+                // nothing to decrypt and folds as `Noop`.
+                _ => None,
             };
             ops.push(op_from_namespace_op(
                 &signed,
@@ -1099,7 +1102,7 @@ impl ScopeProjections {
                 Err(err) => tracing::warn!(
                     %err,
                     namespace = ?namespace_id,
-                    op = ?op.id,
+                    op = ?op.id(),
                     "op-store: failed to re-persist governance op after key delivery"
                 ),
             }
@@ -1149,7 +1152,7 @@ impl ScopeProjections {
         let scope = ScopeId::from(namespace_id);
         let store_ids: HashSet<[u8; 32]> =
             match crate::unified_op_store::load_scope_ops(store, &scope) {
-                Ok(ops) => ops.iter().map(|op| op.id).collect(),
+                Ok(ops) => ops.iter().map(|op| op.id()).collect(),
                 Err(err) => {
                     // A load fault must NOT read as "complete": CI treats no
                     // `op_store_incomplete` as a clean op-store, so a store error would
@@ -1168,7 +1171,7 @@ impl ScopeProjections {
             };
         let missing: Vec<[u8; 32]> = dag_ops
             .iter()
-            .map(|op| op.id)
+            .map(|op| op.id())
             .filter(|id| !store_ids.contains(id))
             .collect();
         if !missing.is_empty() {
@@ -1542,7 +1545,7 @@ impl ScopeProjections {
         let log_len = log.map_or(0, Vec::len);
         let heads_in_log = match log {
             Some(l) => {
-                let ids: HashSet<[u8; 32]> = l.iter().map(|o| o.id).collect();
+                let ids: HashSet<[u8; 32]> = l.iter().map(|o| o.id()).collect();
                 heads.iter().filter(|h| ids.contains(*h)).count()
             }
             None => 0,
@@ -1737,7 +1740,7 @@ mod tests {
             &[[0x88; 32]],
         );
 
-        assert_eq!(op.id, [0x99; 32], "op still occupies its DAG node");
+        assert_eq!(op.id(), [0x99; 32], "op still occupies its DAG node");
         assert_eq!(op.scope, ScopeId::from(ns));
         assert_eq!(op.parents, vec![[0x88; 32]], "with its real parents");
         assert_eq!(
@@ -1828,7 +1831,7 @@ mod tests {
             OpPayload::Noop,
             "undecryptable group op is a Noop node"
         );
-        assert_eq!(op.id, [0x99; 32], "but it still occupies its DAG node");
+        assert_eq!(op.id(), [0x99; 32], "but it still occupies its DAG node");
         assert_eq!(op.parents, vec![[0x88; 32]], "with its real parents");
     }
 
@@ -1873,17 +1876,7 @@ mod tests {
 
         let build = |ns: u64, parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
             let h = hlc(ns);
-            let id = Op::compute_id(scope, &parents, &admin, &h, &payload);
-            Op {
-                id,
-                scope,
-                parents,
-                author: admin,
-                hlc: h,
-                payload,
-                expected_scope_root: [0u8; 32],
-                signature: [0u8; 64],
-            }
+            Op::new(scope, parents, admin, h, payload, [0u8; 32], [0u8; 64])
         };
 
         let add = build(
@@ -1895,7 +1888,11 @@ mod tests {
                 role: GroupMemberRole::Member,
             },
         );
-        let remove = build(20, vec![add.id], OpPayload::MemberRemoved { group, member });
+        let remove = build(
+            20,
+            vec![add.id()],
+            OpPayload::MemberRemoved { group, member },
+        );
 
         let mut reg = ScopeProjections::new();
         reg.ingest_op(&add);
@@ -1903,19 +1900,19 @@ mod tests {
 
         // Cut at the add (pre-removal ancestry): the member is present — a write
         // authored here stays authorized even though we've since seen the remove.
-        let pre = reg.acl_view_at(&scope, &[add.id]).expect("scope fed");
+        let pre = reg.acl_view_at(&scope, &[add.id()]).expect("scope fed");
         assert_eq!(
             pre.groups.get(&group).and_then(|m| m.get(&member)),
             Some(&GroupMemberRole::Member),
         );
 
         // Cut at the remove (its ancestry includes both): the member is gone.
-        let post = reg.acl_view_at(&scope, &[remove.id]).expect("scope fed");
+        let post = reg.acl_view_at(&scope, &[remove.id()]).expect("scope fed");
         assert_eq!(post.groups.get(&group).and_then(|m| m.get(&member)), None);
 
         // Unknown scope ⇒ no view.
         assert!(reg
-            .acl_view_at(&ScopeId::from([0xEE; 32]), &[add.id])
+            .acl_view_at(&ScopeId::from([0xEE; 32]), &[add.id()])
             .is_none());
     }
 
@@ -1931,17 +1928,7 @@ mod tests {
 
         let build = |ns: u64, parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
             let h = hlc(ns);
-            let id = Op::compute_id(scope, &parents, &admin, &h, &payload);
-            Op {
-                id,
-                scope,
-                parents,
-                author: admin,
-                hlc: h,
-                payload,
-                expected_scope_root: [0u8; 32],
-                signature: [0u8; 64],
-            }
+            Op::new(scope, parents, admin, h, payload, [0u8; 32], [0u8; 64])
         };
 
         // An unfolded scope can't be compared — None, never a false divergence.
@@ -1961,7 +1948,7 @@ mod tests {
         // MemberAdded is a causal child of the prior op, not a sibling at genesis).
         reg.ingest_op(&build(
             20,
-            vec![admin_op.id],
+            vec![admin_op.id()],
             OpPayload::MemberAdded {
                 group,
                 member,
@@ -2035,7 +2022,7 @@ mod tests {
             add.scope, ns_scope,
             "group ops key under the namespace scope"
         );
-        assert_eq!(add.id, [0xAB; 32], "op carries the namespace delta id");
+        assert_eq!(add.id(), [0xAB; 32], "op carries the namespace delta id");
 
         let mut reg = ScopeProjections::new();
         reg.ingest_op(&add);

@@ -31,7 +31,7 @@ jobs:
     runs-on: big-machine
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -80,6 +80,7 @@ jobs:
       - name: Cargo deny
         if: ${{ !cancelled() }}
         run: |
-          # Pin cargo-deny to 0.16.3 for compatibility with Rust 1.88.0 (from rust-toolchain.toml)
-          cargo install cargo-deny --version 0.16.3 --locked
-          cargo deny check bans licenses sources
+          # Pin cargo-deny to 0.19.9: parses modern (CVSS 4.0) advisories and builds
+          # on Rust 1.88.0. 0.16.3 could not load the current advisory DB.
+          cargo install cargo-deny --version 0.19.9 --locked
+          cargo deny check advisories bans licenses sources
