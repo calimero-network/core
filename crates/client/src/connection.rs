@@ -11,6 +11,7 @@ use serde::Serialize;
 use url::Url;
 
 // Local crate
+use crate::errors::ClientError;
 use crate::storage::JwtToken;
 use crate::traits::{ClientAuthenticator, ClientStorage};
 
@@ -353,11 +354,16 @@ where
             if !response.status().is_success() {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
-                // Use the shared formatter so every non-success error is
-                // status-prefixed ("HTTP {code}[: detail]"), consistent with the
-                // token-refresh path and reliably classifiable by callers (e.g.
-                // a 404 → "HTTP 404…").
-                bail!("{}", extract_error_message(&body, status));
+                // Return a typed error carrying the numeric status so callers can
+                // classify the failure (e.g. 404 → not-found) by matching the
+                // variant rather than parsing the message string. The rendered
+                // message is still status-prefixed via `extract_error_message`,
+                // so the `Display` output stays "HTTP {code}[: detail]".
+                return Err(ClientError::Http {
+                    status: status.as_u16(),
+                    message: extract_error_message(&body, status),
+                }
+                .into());
             }
 
             return Ok(response);

@@ -1,3 +1,4 @@
+use calimero_client::ClientError;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use clap::Parser;
@@ -196,49 +197,51 @@ async fn context_exists(client: &crate::client::Client, target_id: &ContextId) -
 
 /// Whether a `get_context` error represents a genuine 404 / not-found.
 ///
-/// The client formats HTTP failures as a status-prefixed message — `"HTTP 404"`
-/// or `"HTTP 404: <detail>"` (see `extract_error_message` in `calimero-client`).
-/// We match on that *prefix* rather than a substring so that a different status
-/// whose body happens to mention "HTTP 404" (e.g. `"HTTP 500: ... HTTP 404 ..."`)
-/// is not misread as not-found.
-///
-/// The check runs against the **root cause**, not `err.to_string()`, so a
-/// `.wrap_err("…")` context layer added anywhere up the chain can't hide the
-/// `"HTTP 404…"` message and silently turn a 404 into a propagated error.
-///
-/// This relies on the client layer propagating the error by *value* — via
-/// `.wrap_err(…)` / `?` — so the original `"HTTP 404…"` stays the root cause.
-/// If a layer instead re-creates it by formatting (e.g. `eyre!("…: {err}")`),
-/// the status prefix ends up embedded mid-string, the root cause becomes the
-/// new message, and the `starts_with("HTTP 404")` check will miss it.
+/// The client surfaces non-success HTTP responses as a typed
+/// [`ClientError::Http`] carrying the numeric status code. We walk the error
+/// chain and match on `status == 404`, so the check is compiler-checked and
+/// independent of how the message string is formatted: a later change to the
+/// rendered text (or a `.wrap_err(…)` context layer) can't silently break
+/// not-found detection. An untyped error (e.g. a plain `eyre!` string that
+/// merely mentions "404") is correctly *not* treated as not-found.
 fn is_not_found(err: &eyre::Report) -> bool {
-    let msg = err.root_cause().to_string();
-    msg == "HTTP 404" || msg.starts_with("HTTP 404:") || msg.starts_with("HTTP 404 ")
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<ClientError>()
+            .is_some_and(ClientError::is_not_found)
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use eyre::eyre;
+    use calimero_client::ClientError;
+    use eyre::{eyre, Report};
 
     use super::is_not_found;
 
+    fn http(status: u16, message: &str) -> Report {
+        ClientError::Http {
+            status,
+            message: message.to_owned(),
+        }
+        .into()
+    }
+
     #[test]
     fn only_http_404_is_not_found() {
-        assert!(is_not_found(&eyre!("HTTP 404: context not found")));
-        assert!(is_not_found(&eyre!("HTTP 404")));
-        // Non-404 failures must NOT be treated as "does not exist".
-        assert!(!is_not_found(&eyre!("HTTP 500: internal error")));
-        assert!(!is_not_found(&eyre!(
-            "Access denied — your token may not have sufficient permissions."
-        )));
+        assert!(is_not_found(&http(404, "HTTP 404: context not found")));
+        assert!(is_not_found(&http(404, "HTTP 404")));
+        // Non-404 statuses must NOT be treated as "does not exist".
+        assert!(!is_not_found(&http(500, "HTTP 500: internal error")));
+        assert!(!is_not_found(&http(403, "HTTP 403: access denied")));
+        // Untyped errors are never not-found, even if the text mentions 404.
+        assert!(!is_not_found(&eyre!("HTTP 500: upstream said HTTP 404")));
         assert!(!is_not_found(&eyre!(
             "Connection failed: connection refused"
         )));
-        // A non-404 status whose body merely mentions "HTTP 404" must not match.
-        assert!(!is_not_found(&eyre!("HTTP 500: upstream said HTTP 404")));
-        // A 404 wrapped with extra context is still detected (root-cause match).
+        // A 404 wrapped with extra context is still detected (chain walk).
         assert!(is_not_found(
-            &eyre!("HTTP 404: not found").wrap_err("failed to fetch context")
+            &http(404, "HTTP 404: not found").wrap_err("failed to fetch context")
         ));
     }
 }
