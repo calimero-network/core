@@ -38,9 +38,14 @@ fn persist_row(
     parents: Vec<[u8; 32]>,
     applied: bool,
     expected_root_hash: [u8; 32],
-    // Only Phase-0 pre-persisted (`applied: false`) rows carry an events blob;
-    // a committed row leaves it `None` so a restart harvests no phantom handler
-    // replays. Explicit per-call so the two concerns aren't conflated.
+    // Passed through verbatim. This is a per-call test convention, NOT an
+    // enforced invariant: the B1 phase-0 row uses `Some(..)` (the event-carrying
+    // pre-persist shape) and the B2 committed rows use `None` (a clean restart
+    // harvests no phantom handler replays). An `applied: true` row with
+    // `events: Some(..)` is itself a legitimate production state — a committed
+    // row whose handler events were not yet cleared, replayed via
+    // `pending_handler_events` on reload — so there is no invariant to assert
+    // here; these tests simply don't exercise that combination.
     events: Option<Vec<u8>>,
 ) {
     let mut handle = store.handle();
