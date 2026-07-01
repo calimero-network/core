@@ -210,7 +210,37 @@ async fn run(store: Store, node_client: NodeClient) {
         // module docstring for why we don't also react to
         // `OpEvent::MemberRemoved` here.
         if let Some((group_id, member)) = dispatch_target(&event) {
-            handle_member_removed(&store, &node_client, group_id, member).await;
+            // Process each eviction on its own detached task rather than inline.
+            // A namespace-root hard-purge (subtree cascade + per-group
+            // signing-key deletes + gossipsub unsubscribe) can be slow; running
+            // it inline stalls `rx.recv()`, and a slow enough purge lets the
+            // bounded broadcast channel lag and DROP subsequent events. A
+            // dropped `TeeMemberRemoved` leaves un-purged key residue that the
+            // marker-gated startup reconcile sweep cannot recover (see the
+            // `Lagged` arm above). Spawning keeps the recv loop hot so the
+            // channel does not back up. The purge helpers are idempotent and
+            // distinct evictions target distinct groups, so concurrent purges
+            // are safe. `Store` and `NodeClient` are cheap handle clones.
+            //
+            // The `JoinHandle` is intentionally dropped: `handle_member_removed`
+            // returns `()` (no error to propagate — per-step failures are
+            // already surfaced via `record_purge_failure` + logs inside it), and
+            // a panic in the task fires the process panic hook (unless a custom
+            // hook swallows it), so it is not silently lost. Detaching also
+            // isolates a panicking purge from the recv loop, which is the point
+            // of spawning here.
+            //
+            // Not joined on shutdown: a namespace-root purge interrupted by
+            // process exit is durably recoverable — the pending-self-purge marker
+            // is written BEFORE the cascade, and `reconcile_sweep` completes any
+            // marked-but-unfinished purge on the next startup. So a shutdown race
+            // does not strand key material; it only defers completion to the next
+            // start, the same guarantee a crash mid-cascade already relies on.
+            let store = store.clone();
+            let node_client = node_client.clone();
+            drop(tokio::spawn(async move {
+                handle_member_removed(&store, &node_client, group_id, member).await;
+            }));
         }
     }
 }

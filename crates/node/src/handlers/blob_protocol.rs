@@ -19,7 +19,6 @@ use tracing::{debug, error, info, warn};
 
 // Timeout settings for blob serving
 const BLOB_SERVE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes total
-const CHUNK_SEND_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds per chunk
 
 // Replay-protection window for a signed blob request: the auth envelope's
 // timestamp must be within 30s in the past / 10s in the future. Tight on
@@ -64,12 +63,15 @@ pub async fn handle_blob_protocol_stream(
         };
         let response_data = serde_json::to_vec(&response)?;
 
-        timeout(
-            CHUNK_SEND_TIMEOUT,
-            stream.send(StreamMessage::new(response_data)),
-        )
-        .await
-        .map_err(|_| eyre::eyre!("Timeout sending auth rejection"))??;
+        // No per-send timeout: a timeout that fires mid-flush would drop the
+        // send while a frame is half-written, leaving a truncated frame on the
+        // wire (same reasoning as the data path). The stream is closed right
+        // after this send regardless, so a stuck send is bounded by the peer's
+        // own read timeout.
+        stream
+            .send(StreamMessage::new(response_data))
+            .await
+            .map_err(|e| eyre::eyre!("Failed to send auth rejection: {}", e))?;
 
         return Ok(());
     }
@@ -134,13 +136,16 @@ async fn handle_blob_request_stream(
         let response_data = serde_json::to_vec(&response)
             .map_err(|e| eyre::eyre!("Failed to serialize blob response: {}", e))?;
 
-        timeout(
-            CHUNK_SEND_TIMEOUT,
-            stream.send(StreamMessage::new(response_data)),
-        )
-        .await
-        .map_err(|_| eyre::eyre!("Timeout sending response"))?
-        .map_err(|e| eyre::eyre!("Failed to send blob response: {}", e))?;
+        // No per-send timeout: the whole serve is already bounded by the outer
+        // `BLOB_SERVE_TIMEOUT`. A per-chunk `timeout` that fires mid-flush drops
+        // the send future while a frame is half-written, leaving a truncated
+        // frame on the wire that the peer decodes as an error. A single outer
+        // deadline plus the explicit `close()` at the end of this function gives
+        // the peer a clean end-of-stream instead.
+        stream
+            .send(StreamMessage::new(response_data))
+            .await
+            .map_err(|e| eyre::eyre!("Failed to send blob response: {}", e))?;
 
         // If blob was found, stream the chunks
         if response.found {
@@ -180,14 +185,13 @@ async fn handle_blob_request_stream(
                             "Sending binary chunk data"
                         );
 
-                        // Send chunk with timeout
-                        timeout(
-                            CHUNK_SEND_TIMEOUT,
-                            stream.send(StreamMessage::new(chunk_data)),
-                        )
-                        .await
-                        .map_err(|_| eyre::eyre!("Timeout sending chunk {}", chunk_count))?
-                        .map_err(|e| eyre::eyre!("Failed to send blob chunk: {}", e))?;
+                        // Bounded by the outer `BLOB_SERVE_TIMEOUT`; no per-chunk
+                        // timeout (which could drop this send mid-flush and put a
+                        // half-written frame on the wire).
+                        stream
+                            .send(StreamMessage::new(chunk_data))
+                            .await
+                            .map_err(|e| eyre::eyre!("Failed to send blob chunk: {}", e))?;
                     }
                     Err(e) => {
                         warn!(%peer_id, error = %e, "Failed to read blob chunk");
@@ -204,13 +208,10 @@ async fn handle_blob_request_stream(
             let final_chunk_data = borsh::to_vec(&final_chunk)
                 .map_err(|e| eyre::eyre!("Failed to serialize final chunk: {}", e))?;
 
-            timeout(
-                CHUNK_SEND_TIMEOUT,
-                stream.send(StreamMessage::new(final_chunk_data)),
-            )
-            .await
-            .map_err(|_| eyre::eyre!("Timeout sending final chunk"))?
-            .map_err(|e| eyre::eyre!("Failed to send final blob chunk: {}", e))?;
+            stream
+                .send(StreamMessage::new(final_chunk_data))
+                .await
+                .map_err(|e| eyre::eyre!("Failed to send final blob chunk: {}", e))?;
 
             debug!(
                 %peer_id,
@@ -226,7 +227,7 @@ async fn handle_blob_request_stream(
     .await;
 
     // Handle timeout result
-    match serve_result {
+    let outcome = match serve_result {
         Ok(result) => result,
         Err(_) => {
             warn!(
@@ -237,7 +238,18 @@ async fn handle_blob_request_stream(
             );
             Err(eyre::eyre!("Blob serving timed out"))
         }
+    };
+
+    // Explicitly close the sink on every exit path (success, error, or the
+    // outer timeout). `close()` flushes and shuts the stream down gracefully so
+    // the peer sees a clean end-of-stream rather than the abrupt reset it would
+    // get from simply dropping `stream` here. Best-effort: a close failure only
+    // means the peer already went away.
+    if let Err(err) = stream.close().await {
+        debug!(%peer_id, error = %err, "Failed to close blob stream cleanly after serving");
     }
+
+    outcome
 }
 
 /// Helper function to check if the blob access is authorized.

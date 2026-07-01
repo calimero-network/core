@@ -25,6 +25,7 @@ use calimero_store_encryption::EncryptedDatabase;
 use calimero_store_rocksdb::RocksDB;
 use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
+use futures_util::FutureExt;
 use libp2p::gossipsub::IdentTopic;
 use libp2p::identity::Keypair;
 use prometheus_client::registry::Registry;
@@ -455,7 +456,12 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |_ctx| compactor);
     }
 
-    let mut sync = pin!(sync_manager.start());
+    // Fuse the sync driver. It is normally long-lived, but if it ever resolves
+    // a bare `&mut sync` arm would keep being selected and re-poll a completed
+    // future on the next loop iteration — which panics. A fused future parks
+    // (returns `Pending`) forever once complete, so the arm simply goes quiet
+    // and the other arms keep the node serving.
+    let mut sync = pin!(sync_manager.start().fuse());
     let mut server = tokio::spawn(server);
     let mut bridge = bridge_handle;
 
@@ -463,11 +469,33 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     loop {
         tokio::select! {
-            _ = &mut sync => {},
-            res = &mut server => res??,
+            _ = &mut sync => {
+                // Sync driver resolved unexpectedly; the fuse keeps this arm
+                // from being re-selected. Nothing to do — keep serving.
+            }
+            res = &mut server => {
+                // Server task ended: abort the remaining background tasks so
+                // they don't outlive this function as detached tasks (dropping
+                // a `JoinHandle` detaches — it does NOT cancel), then break with
+                // its result. Breaking (rather than falling through) avoids
+                // re-polling this completed `JoinHandle` on the next iteration,
+                // which would panic. `res?` unwraps the `JoinError`; the inner
+                // `eyre::Result<()>` becomes the loop's value.
+                bridge.abort();
+                break res?;
+            }
             res = &mut bridge => {
-                // Bridge task completed (channel closed or shutdown signal)
+                // The network-event bridge feeds inbound events to NodeManager;
+                // if it stops on its own (channel closed / task ended) the node
+                // is deaf to the network and cannot make progress. Treat it as
+                // terminal rather than looping — continuing would also re-poll
+                // this now-completed `JoinHandle` on the next iteration, which
+                // panics. Abort the server and exit; on a normal shutdown the
+                // `system_handle` arm wins first, so reaching here means the
+                // bridge died unexpectedly.
                 tracing::warn!("Network event bridge stopped: {:?}", res);
+                server.abort();
+                break Err(eyre::eyre!("network event bridge stopped unexpectedly"));
             }
             res = &mut arbiter_pool.system_handle => {
                 // Signal bridge shutdown before exiting. The
@@ -476,6 +504,11 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 // Actix arbiter thread is owned by the System and
                 // shuts down with it.
                 bridge_shutdown.notify_one();
+                // Abort the server and bridge tasks explicitly. Dropping their
+                // `JoinHandle`s on return would only detach them, leaving the
+                // HTTP/WS server and network-event bridge running past shutdown.
+                server.abort();
+                bridge.abort();
                 break res?;
             }
         }
