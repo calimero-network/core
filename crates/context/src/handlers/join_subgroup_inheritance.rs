@@ -140,13 +140,13 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                 // wouldn't know to retry.
                 let op = NamespaceOp::Root(RootOp::MemberJoinedOpen {
                     member: joiner_identity,
-                    group_id: group_id.to_bytes(),
+                    group_id: group_id.to_bytes().into(),
                 });
                 calimero_governance_store::sign_apply_and_publish_namespace_op(
                     &datastore,
                     &node_client,
                     &ack_router,
-                    ns_id.to_bytes(),
+                    ns_id.to_bytes().into(),
                     &signer_sk,
                     op,
                 )

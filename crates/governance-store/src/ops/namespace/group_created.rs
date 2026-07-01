@@ -39,9 +39,9 @@ pub(crate) fn apply(
     // because every peer applying this op must be able to verify the
     // creator's authority, and only the root group's capability rows are
     // readable by all namespace members (see the capability's doc).
-    let ns_gid = ContextGroupId::from(namespace_id);
+    let ns_gid = ContextGroupId::from(namespace_id.to_bytes());
     let authorized = MembershipRepository::new(store).is_admin(&ns_gid, &op.signer)?
-        || (parent_id == namespace_id
+        || (parent_id == namespace_id.to_bytes()
             && MembershipRepository::new(store).is_admin_or_has_capability(
                 &ns_gid,
                 &op.signer,
@@ -51,7 +51,7 @@ pub(crate) fn apply(
         bail!(ApplyError::GroupCreatedRejected(
             GroupCreatedRejection::Unauthorized {
                 signer: format!("{}", op.signer),
-                namespace: hex::encode(namespace_id),
+                namespace: hex::encode(namespace_id.as_bytes()),
             }
         ));
     }

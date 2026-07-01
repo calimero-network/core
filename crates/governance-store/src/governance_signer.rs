@@ -1,5 +1,6 @@
 use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_types::NamespaceId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -55,7 +56,7 @@ impl<'a> GovernanceSigner<'a> {
 
     pub async fn publish_namespace_op(
         &self,
-        namespace_id: [u8; 32],
+        namespace_id: NamespaceId,
         signer_sk: &PrivateKey,
         op: NamespaceOp,
     ) -> EyreResult<DeliveryReport> {
@@ -66,7 +67,7 @@ impl<'a> GovernanceSigner<'a> {
 
     pub async fn publish_namespace_op_without_apply(
         &self,
-        namespace_id: [u8; 32],
+        namespace_id: NamespaceId,
         signer_sk: &PrivateKey,
         op: NamespaceOp,
         required_signers: Option<Vec<PublicKey>>,

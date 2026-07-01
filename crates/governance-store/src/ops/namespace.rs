@@ -41,22 +41,34 @@ pub(crate) fn dispatch_root_op(
             group_id,
             parent_id,
             restricted,
-        } => group_created::apply(ctx, op, *group_id, *parent_id, *restricted),
+        } => group_created::apply(
+            ctx,
+            op,
+            group_id.to_bytes(),
+            parent_id.to_bytes(),
+            *restricted,
+        ),
         RootOp::GroupDeleted {
             root_group_id,
             cascade_group_ids,
             cascade_context_ids,
-        } => group_deleted::apply(
-            ctx,
-            op,
-            *root_group_id,
-            cascade_group_ids,
-            cascade_context_ids,
-        ),
+        } => {
+            let cascade_group_ids: Vec<[u8; 32]> =
+                cascade_group_ids.iter().map(|g| g.to_bytes()).collect();
+            let cascade_context_ids: Vec<[u8; 32]> =
+                cascade_context_ids.iter().map(|c| *c.digest()).collect();
+            group_deleted::apply(
+                ctx,
+                op,
+                root_group_id.to_bytes(),
+                &cascade_group_ids,
+                &cascade_context_ids,
+            )
+        }
         RootOp::GroupReparented {
             child_group_id,
             new_parent_id,
-        } => group_reparented::apply(ctx, op, *child_group_id, *new_parent_id),
+        } => group_reparented::apply(ctx, op, child_group_id.to_bytes(), new_parent_id.to_bytes()),
         RootOp::AdminChanged { new_admin } => admin_changed::apply(ctx, op, *new_admin),
         RootOp::PolicyUpdated { .. } => policy_updated::apply(ctx, op),
         RootOp::MemberJoined {
@@ -69,7 +81,7 @@ pub(crate) fn dispatch_root_op(
             joined_at,
         } => member_joined::apply(ctx, op, member, signed_invitation, Some(*joined_at)),
         RootOp::MemberJoinedOpen { member, group_id } => {
-            member_joined_open::apply(ctx, op, *member, *group_id)
+            member_joined_open::apply(ctx, op, *member, group_id.to_bytes())
         }
         // Self-authorizing namespace genesis. SECURITY residual (#2932): a
         // self-consistent forged genesis on a BARE namespace is not blocked here

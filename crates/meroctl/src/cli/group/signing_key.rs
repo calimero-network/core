@@ -33,16 +33,17 @@ pub struct RegisterSigningKeyCommand {
 
     #[clap(
         name = "SIGNING_KEY",
-        help = "The hex-encoded private signing key to register"
+        help = "Source of the hex-encoded private signing key: `env:NAME`, `file:PATH`, `-` \
+                (stdin), or the raw value (discouraged — exposed in shell history / ps / /proc)"
     )]
     pub signing_key: String,
 }
 
 impl RegisterSigningKeyCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let request = RegisterGroupSigningKeyApiRequest {
-            signing_key: self.signing_key,
-        };
+        let signing_key =
+            crate::secret::resolve_required_secret(Some(&self.signing_key), "signing key")?;
+        let request = RegisterGroupSigningKeyApiRequest { signing_key };
 
         let client = environment.client()?;
         let response = client

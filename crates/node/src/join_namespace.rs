@@ -197,7 +197,7 @@ pub async fn join_namespace(
     // the probe simply doesn't reach anyone, and `await_first_fresh_beacon`
     // below will time out with `NoReadyPeers`.
     let probe = ReadinessProbe {
-        namespace_id,
+        namespace_id: namespace_id.into(),
         nonce: rand::random(),
     };
     let inner = borsh::to_vec(&NamespaceTopicMsg::ReadinessProbe(probe))
@@ -214,7 +214,7 @@ pub async fn join_namespace(
         payload: inner,
     };
     let bytes = borsh::to_vec(&envelope).map_err(|e| JoinError::Transport(e.to_string()))?;
-    let topic = ns_topic(namespace_id);
+    let topic = ns_topic(namespace_id.into());
     if let Err(err) = node_client.network_client().publish(topic, bytes).await {
         debug!(
             ?err,
@@ -323,7 +323,7 @@ pub async fn await_namespace_ready(
         let mesh = node_client
             .mesh_peer_count_for_namespace(namespace_id)
             .await;
-        let topic = ns_topic(namespace_id);
+        let topic = ns_topic(namespace_id.into());
         let known = node_client.known_subscribers(&topic);
         let required = std::cmp::min(mesh_n_low, known);
         if mesh >= required {
@@ -366,7 +366,7 @@ pub async fn await_namespace_ready(
         signed_invitation: invitation,
         joined_at: now_secs,
     });
-    let report = NamespaceGovernance::new(store, namespace_id)
+    let report = NamespaceGovernance::new(store, namespace_id.into())
         .sign_and_publish_without_apply(node_client, ack_router, &signing_key, op, None)
         .await
         .map_err(|e| ReadyError::PublishMemberJoined(e.to_string()))?;
@@ -376,7 +376,7 @@ pub async fn await_namespace_ready(
     // store read fails we substitute defaults rather than fail the
     // whole join, since the caller's primary signal is `acked_by`.
     let members_learned = MembershipRepository::new(store)
-        .namespace_pubkeys(namespace_id)
+        .namespace_pubkeys(namespace_id.into())
         .map(|m| m.len())
         .unwrap_or(0);
 
