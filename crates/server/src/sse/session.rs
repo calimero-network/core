@@ -49,7 +49,12 @@ impl Default for SessionStateInner {
     fn default() -> Self {
         Self {
             subscriptions: HashSet::new(),
-            event_counter: AtomicU64::new(0),
+            // Event IDs start at 1. The connection's initial "connect" event is
+            // emitted with the reserved id `{session_id}-0`, so the first real
+            // event must not also be `-0` (`fetch_add` returns the pre-increment
+            // value). Starting at 1 keeps every real event id distinct from the
+            // connect frame.
+            event_counter: AtomicU64::new(1),
             last_activity: AtomicU64::new(now_secs()),
             owner: None,
         }
@@ -105,6 +110,87 @@ impl SessionStateInner {
 #[derive(Clone, Debug)]
 pub struct SessionState {
     pub inner: Arc<RwLock<SessionStateInner>>,
+    /// Abort handle for the node-event task currently bound to this session.
+    ///
+    /// A session outlives the individual SSE connections that use it (it
+    /// persists across reconnects). Each connection spawns its own node-event
+    /// task that forwards matching broadcast events into that connection's
+    /// command channel, and the connection's response stream stamps each
+    /// forwarded event with the next value of the shared `event_counter`. When a
+    /// new connection (re)binds to this session, the task from the previous
+    /// connection must be aborted: otherwise two live connections drain the
+    /// broadcast stream in parallel and their response streams both bump the one
+    /// shared `event_counter`, corrupting event IDs and delivering each event
+    /// more than once.
+    ///
+    /// Aborting the prior task cannot bump-without-deliver: the counter is
+    /// incremented in the response stream as an event is emitted, not by the
+    /// task being aborted (which only forwards commands), so a killed task drops
+    /// only events it had not yet forwarded — no phantom gap beyond the
+    /// skip-on-disconnect gaps the session already tolerates. `None` until the
+    /// first task is bound.
+    ///
+    /// Private on purpose: the abort-before-replace invariant only holds if
+    /// every mutation goes through [`SessionState::bind_event_task`], so callers
+    /// must not touch the handle directly.
+    ///
+    /// Dropping a `SessionState` does not abort the task. `SessionState` is
+    /// `Clone` (several clones coexist — in the session map, in the request
+    /// handler, and inside the task itself), so a `Drop` impl here would abort
+    /// on every transient clone drop, not on eviction. Eviction-time
+    /// cancellation is instead deferred to the task noticing its connection's
+    /// command channel has closed; this handle exists only to cancel a
+    /// superseded task when a new connection rebinds the same session.
+    event_task: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,
+    /// Serializes persistence of this session's state (the subscribe/unsubscribe
+    /// store writes) so concurrent mutations of the *same* session commit to the
+    /// store in the order they mutated the in-memory state.
+    ///
+    /// Held (via [`SessionState::persist_guard`]) across the blocking
+    /// `save_session` call, but deliberately kept separate from `inner`: event
+    /// delivery only reads `inner`, so a slow store write serializes persists
+    /// without stalling the broadcast fan-out. Lock order is always
+    /// persist-guard → `inner`; nothing acquires them the other way.
+    persist_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl SessionState {
+    /// Wrap freshly-built session state, with no node-event task bound yet.
+    #[must_use]
+    pub fn new(inner: SessionStateInner) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(inner)),
+            event_task: Arc::new(std::sync::Mutex::new(None)),
+            persist_lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
+    /// Acquire this session's persistence guard. Hold it across a `save_session`
+    /// call so concurrent subscribe/unsubscribe requests persist in mutation
+    /// order. Snapshot `inner` (a brief write-lock, no I/O) and drop that lock
+    /// before the store write, so event delivery — which reads `inner` — is
+    /// never blocked on the store.
+    pub async fn persist_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.persist_lock.lock().await
+    }
+
+    /// Bind a newly-spawned node-event task to this session, aborting any task
+    /// bound by a previous connection. Aborting an already-finished task is a
+    /// no-op, so a normally-closed prior connection costs nothing here.
+    pub fn bind_event_task(&self, handle: tokio::task::AbortHandle) {
+        // Swap the handle under the lock, then release the lock before calling
+        // `abort()` — never hold this std::sync::Mutex across external code.
+        let prev = {
+            let mut slot = self
+                .event_task
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            slot.replace(handle)
+        };
+        if let Some(prev) = prev {
+            prev.abort();
+        }
+    }
 }
 
 /// Get current timestamp in seconds since UNIX epoch

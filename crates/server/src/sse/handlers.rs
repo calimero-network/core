@@ -51,7 +51,7 @@ use serde_json::to_string as to_json_string;
 use std::collections::hash_map::Entry;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info, warn};
 
@@ -180,30 +180,37 @@ pub async fn handle_subscription(
                 session_id, ctxs
             );
 
-            let sessions = state.sessions.read().await;
+            // Clone the session handle out of the map and release the map lock
+            // immediately — the map read-lock must not span the store write below.
+            let session = state.sessions.read().await.get(&session_id).cloned();
 
-            if let Some(session) = sessions.get(&session_id) {
-                let mut inner = session.inner.write().await;
-                if !owner_allows_access(&inner.owner, &caller) {
-                    drop(inner);
-                    drop(sessions);
-                    warn!(%session_id, "SSE subscribe denied: caller is not the session owner");
-                    return forbidden();
-                }
-                for ctx in &ctxs.context_ids {
-                    let _ = inner.subscriptions.insert(*ctx);
-                }
-                inner.touch();
+            if let Some(session) = session {
+                // Serialize persistence for this session so concurrent
+                // subscribe/unsubscribe commit to the store in mutation order.
+                // The data lock (`inner`) is taken only to mutate + snapshot
+                // (no I/O) and released before the blocking `save_session`, so a
+                // slow store write can't stall event delivery, which reads
+                // `inner`. Lock order is persist-guard → `inner`.
+                let _persist = session.persist_guard().await;
 
-                // Persist to store
-                let persisted = inner.to_persisted();
-                drop(inner);
-                drop(sessions);
+                let persisted = {
+                    let mut inner = session.inner.write().await;
+                    if !owner_allows_access(&inner.owner, &caller) {
+                        warn!(%session_id, "SSE subscribe denied: caller is not the session owner");
+                        return forbidden();
+                    }
+                    for ctx in &ctxs.context_ids {
+                        let _ = inner.subscriptions.insert(*ctx);
+                    }
+                    inner.touch();
+                    inner.to_persisted()
+                };
 
                 let mut store = state.store.clone();
                 if let Err(err) = save_session(&mut store, session_id, &persisted) {
                     error!(%session_id, %err, "Failed to persist session subscriptions");
                 }
+                drop(_persist);
 
                 (
                     StatusCode::OK,
@@ -231,36 +238,36 @@ pub async fn handle_subscription(
                 session_id, ctxs
             );
 
-            let sessions = state.sessions.read().await;
-            if let Some(session) = sessions.get(&session_id) {
-                let mut inner = session.inner.write().await;
-                if !owner_allows_access(&inner.owner, &caller) {
-                    drop(inner);
-                    drop(sessions);
-                    warn!(%session_id, "SSE unsubscribe denied: caller is not the session owner");
-                    return forbidden();
-                }
+            let session = state.sessions.read().await.get(&session_id).cloned();
+            if let Some(session) = session {
+                // See the subscribe path: serialize persistence per session and
+                // keep the store write off the data lock.
+                let _persist = session.persist_guard().await;
+
                 let mut unsubscribed = Vec::new();
-
-                // Remove contexts that were actually subscribed
-                // This is an idempotent operation - attempting to unsubscribe from
-                // a context that wasn't subscribed is not an error
-                for ctx in &ctxs.context_ids {
-                    if inner.subscriptions.remove(ctx) {
-                        unsubscribed.push(*ctx);
+                let persisted = {
+                    let mut inner = session.inner.write().await;
+                    if !owner_allows_access(&inner.owner, &caller) {
+                        warn!(%session_id, "SSE unsubscribe denied: caller is not the session owner");
+                        return forbidden();
                     }
-                }
-                inner.touch();
 
-                // Persist to store
-                let persisted = inner.to_persisted();
-                drop(inner);
-                drop(sessions);
+                    // Remove contexts that were actually subscribed. Idempotent:
+                    // unsubscribing from a context that wasn't subscribed is fine.
+                    for ctx in &ctxs.context_ids {
+                        if inner.subscriptions.remove(ctx) {
+                            unsubscribed.push(*ctx);
+                        }
+                    }
+                    inner.touch();
+                    inner.to_persisted()
+                };
 
                 let mut store = state.store.clone();
                 if let Err(err) = save_session(&mut store, session_id, &persisted) {
                     error!(%session_id, %err, "Failed to persist session after unsubscribe");
                 }
+                drop(_persist);
 
                 // Idempotent operation - always return OK with info about what was unsubscribed
                 // Response includes:
@@ -386,11 +393,8 @@ pub async fn sse_handler(
                     } else {
                         info!(%existing_session_id, "Client reconnecting to persisted session");
                         // Restore session from storage
-                        let session_state = SessionState {
-                            inner: Arc::new(RwLock::new(SessionStateInner::from_persisted(
-                                persisted_data,
-                            ))),
-                        };
+                        let session_state =
+                            SessionState::new(SessionStateInner::from_persisted(persisted_data));
                         // Add to in-memory cache
                         drop(
                             state
@@ -508,12 +512,17 @@ pub async fn sse_handler(
     // makes `command_sender.closed()` resolve and the handler exit. (axum streams
     // the SSE body lazily via `Sse::new`, so the receiver is not held alive by the
     // handler future itself.)
-    drop(tokio::spawn(handle_node_events(
+    // Bind the task to the session, aborting any task a previous connection
+    // left running for the same session. Two live tasks would share this
+    // session's `event_counter` and each bump it per broadcast event, corrupting
+    // event IDs and double-delivering events.
+    let event_task = tokio::spawn(handle_node_events(
         session_id,
         Arc::clone(&state),
         session_state.clone(),
         commands_sender,
-    )));
+    ));
+    session_state.bind_event_task(event_task.abort_handle());
 
     // Build response with session ID in header for easy client access
     let sse_response = Sse::new(stream).keep_alive(KeepAlive::default());
@@ -674,9 +683,7 @@ async fn create_new_session(
         match sessions.entry(session_id) {
             Entry::Occupied(_) => continue,
             Entry::Vacant(entry) => {
-                let session_state = SessionState {
-                    inner: Arc::new(RwLock::new(SessionStateInner::with_owner(owner.clone()))),
-                };
+                let session_state = SessionState::new(SessionStateInner::with_owner(owner.clone()));
                 let _ = entry.insert(session_state.clone());
 
                 // Persist new session to store
