@@ -309,9 +309,15 @@ impl core::ops::Sub for MemberCapabilities {
 }
 
 // Wire/storage representation: the raw `u32`, byte-compatible with the bare
-// `u32` these masks used to be. Unknown bits are preserved on the wire
-// (forward-compatible with capabilities a newer peer may define); the
-// named-flag API masks against the defined set when interpreting them.
+// `u32` these masks used to be. Both Borsh (peer-to-peer op wire) and serde
+// (JSON API surface) deserialize permissively — unknown bits are preserved,
+// not rejected — so an older peer or handler can always decode a mask an
+// newer version produced with an extra capability bit. Undefined bits are
+// dropped at the point of interpretation, not decode: the `SetMemberCapabilities`
+// / `SetDefaultCapabilities` handlers run the incoming value through
+// `from_bits_truncate` before applying it, so a JSON caller sending `0xFFFFFFFF`
+// never persists garbage bits. Use `from_bits` when you want to *reject* an
+// undefined bit at construction instead of silently masking it.
 impl borsh::BorshSerialize for MemberCapabilities {
     fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
         borsh::BorshSerialize::serialize(&self.0, writer)
@@ -393,4 +399,59 @@ pub enum GroupRequestKind<'a> {
 pub enum SystemRequest {
     #[serde(rename_all = "camelCase")]
     SetValidityThreshold { threshold_ms: Timestamp },
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::MemberCapabilities as C;
+
+    /// Every named capability constant must be part of `ALL`. `from_bits`
+    /// rejects any bit outside `ALL`, so a constant missing from the union
+    /// would be silently rejected on the strict path and dropped on the
+    /// truncating one. Adding a capability without adding it here (and to
+    /// `ALL`) fails this test.
+    #[test]
+    fn all_is_the_union_of_every_named_capability() {
+        let named = [
+            C::CAN_CREATE_CONTEXT,
+            C::CAN_INVITE_MEMBERS,
+            C::CAN_JOIN_OPEN_SUBGROUPS,
+            C::MANAGE_MEMBERS,
+            C::MANAGE_APPLICATION,
+            C::CAN_CREATE_SUBGROUP,
+            C::CAN_DELETE_SUBGROUP,
+            C::CAN_MANAGE_VISIBILITY,
+            C::CAN_MANAGE_METADATA,
+        ];
+
+        let mut union = C::empty();
+        for cap in named {
+            assert!(
+                C::ALL.contains(cap),
+                "ALL is missing a named capability bit"
+            );
+            union |= cap;
+        }
+        assert_eq!(
+            union,
+            C::ALL,
+            "ALL must equal the union of every named capability"
+        );
+    }
+
+    /// `from_bits` accepts exactly the defined set and rejects any bit above it.
+    #[test]
+    fn from_bits_accepts_all_and_rejects_undefined() {
+        assert_eq!(C::from_bits(C::ALL.bits()), Some(C::ALL));
+        assert_eq!(C::from_bits(0), Some(C::empty()));
+        assert_eq!(C::from_bits(C::ALL.bits() | (1 << 31)), None);
+    }
+
+    /// The wire/serde paths preserve undefined bits (forward-compat), while
+    /// `from_bits_truncate` drops them at interpretation time.
+    #[test]
+    fn truncate_drops_undefined_bits() {
+        let garbage = C::ALL.bits() | (1 << 30);
+        assert_eq!(C::from_bits_truncate(garbage), C::ALL);
+    }
 }
