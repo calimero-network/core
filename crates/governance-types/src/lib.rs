@@ -44,15 +44,19 @@ pub use wire::{
 // (they depend on `tokio::sync::broadcast` and connect actor mailboxes).
 // This crate is pure-data: types, signing, hashing, borsh layout.
 
-/// Define a 32-byte id newtype. Borsh-transparent (a derived `[u8; 32]`, no tag
-/// or length prefix) so it is byte-compatible with the bare `[u8; 32]` these
-/// ids used to be, while making the distinct id kinds non-interchangeable.
+/// Define a 32-byte id newtype. Borsh- and serde-transparent (a derived
+/// `[u8; 32]`, no tag or length prefix — a serde newtype struct serializes as
+/// its inner value) so it is byte-compatible with the bare `[u8; 32]` these ids
+/// used to be, while making the distinct id kinds non-interchangeable. Serde
+/// parity with `AppKey`/`ContextGroupId` keeps the ids usable across the JSON
+/// API surface, not just the borsh op wire.
 macro_rules! id_newtype {
     ($(#[$m:meta])* $name:ident) => {
         $(#[$m])*
         #[derive(
             Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash,
             BorshSerialize, BorshDeserialize,
+            serde::Serialize, serde::Deserialize,
         )]
         pub struct $name([u8; 32]);
 

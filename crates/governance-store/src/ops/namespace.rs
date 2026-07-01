@@ -56,7 +56,7 @@ pub(crate) fn dispatch_root_op(
             let cascade_group_ids: Vec<[u8; 32]> =
                 cascade_group_ids.iter().map(|g| g.to_bytes()).collect();
             let cascade_context_ids: Vec<[u8; 32]> =
-                cascade_context_ids.iter().map(|c| *c.as_ref()).collect();
+                cascade_context_ids.iter().map(|c| *c.digest()).collect();
             group_deleted::apply(
                 ctx,
                 op,
