@@ -20,11 +20,14 @@ use crate::test_support::{context, delta_store_over, GENESIS};
 
 /// A single non-empty action so the reconstructed delta is classified as a
 /// regular delta (a genesis-parented, empty-action delta would be inferred as a
-/// checkpoint by `load_persisted_deltas`).
-fn one_action(tag: u8) -> Vec<Action> {
+/// checkpoint by `load_persisted_deltas`). The action's entity id is the full
+/// `delta_id`, so distinct deltas always target distinct entities — deriving it
+/// from a single tag byte would collide whenever two delta ids shared a first
+/// byte (and an all-zero tag would alias the root/genesis id).
+fn one_action(delta_id: [u8; 32]) -> Vec<Action> {
     vec![Action::Add {
-        id: Id::new([tag; 32]),
-        data: vec![tag, tag, tag],
+        id: Id::new(delta_id),
+        data: delta_id[..3].to_vec(),
         ancestors: vec![],
         metadata: Metadata::default(),
     }]
@@ -49,7 +52,7 @@ fn persist_row(
     events: Option<Vec<u8>>,
 ) {
     let mut handle = store.handle();
-    let actions = borsh::to_vec(&one_action(delta_id[0])).expect("serialize actions");
+    let actions = borsh::to_vec(&one_action(delta_id)).expect("serialize actions");
     handle
         .put(
             &calimero_store::key::ContextDagDelta::new(context(), delta_id),
