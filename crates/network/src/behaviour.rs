@@ -66,17 +66,21 @@ const KAD_QUERY_TIMEOUT: Duration = Duration::from_secs(60);
 // Records replicate to at most this many peers. Calimero clusters are small
 // (2–20 peers), so this both saturates availability within a real cluster and
 // bounds how far a single record fans out.
-const KAD_REPLICATION_FACTOR: usize = 20;
+const KAD_REPLICATION_FACTOR: NonZeroUsize = match NonZeroUsize::new(20) {
+    Some(factor) => factor,
+    None => panic!("KAD_REPLICATION_FACTOR must be non-zero"),
+};
 
 // Kademlia in-memory store bounds — the resource ceiling for records this node
 // will hold on behalf of the network. Provider records are unused (we announce
 // via `put_record`, not `start_providing`), so the provider fields are kept
 // minimal. `max_value_bytes` is the load-bearing anti-abuse bound: a valid
 // blob-provider value is a peer id plus an 8-byte size (~50 bytes), so 256
-// bytes rejects any oversized forged record cheaply, before it ever reaches
-// the structural validation in the inbound-record handler.
+// bytes rejects any oversized forged record cheaply. The inbound-record
+// validator enforces the same ceiling directly (see the kad handler), so an
+// oversized record is dropped in our own code; the store bound is the backstop.
 const KAD_MAX_RECORDS: usize = 4096;
-const KAD_MAX_VALUE_BYTES: usize = 256;
+pub(crate) const KAD_MAX_VALUE_BYTES: usize = 256;
 const KAD_MAX_PROVIDERS_PER_KEY: usize = 20;
 const KAD_MAX_PROVIDED_KEYS: usize = 1024;
 
@@ -206,9 +210,7 @@ impl Behaviour {
                         let _ = kad_config
                             .set_publication_interval(Some(KAD_RECORD_PUBLICATION_INTERVAL));
                         let _ = kad_config.set_query_timeout(KAD_QUERY_TIMEOUT);
-                        if let Some(replication) = NonZeroUsize::new(KAD_REPLICATION_FACTOR) {
-                            let _ = kad_config.set_replication_factor(replication);
-                        }
+                        let _ = kad_config.set_replication_factor(KAD_REPLICATION_FACTOR);
 
                         let store = kad::store::MemoryStore::with_config(
                             peer_id,

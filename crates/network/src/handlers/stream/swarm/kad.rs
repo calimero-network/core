@@ -161,9 +161,11 @@ impl EventHandler<Event> for NetworkManager {
 /// view of context membership — but we can reject anything not shaped like the
 /// blob announcement this node itself produces (see the `AnnounceBlob`
 /// handler): a 64-byte key (context id + blob id) whose value is a parseable
-/// peer id followed by an 8-byte little-endian size. That drops malformed and
-/// garbage records cheaply; the store's own `max_value_bytes` / `max_records`
-/// bounds cap everything that passes.
+/// peer id followed by an 8-byte little-endian size. We also enforce the
+/// store's `KAD_MAX_VALUE_BYTES` ceiling here, so an oversized value is dropped
+/// in our own code rather than relying on the store's `put` as the only guard.
+/// That drops malformed, oversized, and garbage records cheaply; the store's
+/// own `max_value_bytes` / `max_records` bounds are the backstop.
 fn is_valid_blob_provider_record(record: &Record) -> bool {
     /// context_id (32) + blob_id (32).
     const EXPECTED_KEY_LEN: usize = 64;
@@ -171,6 +173,12 @@ fn is_valid_blob_provider_record(record: &Record) -> bool {
     const SIZE_LEN: usize = 8;
 
     if record.key.as_ref().len() != EXPECTED_KEY_LEN {
+        return false;
+    }
+
+    // Reject anything larger than the store would accept, up front — a valid
+    // blob-provider value is ~50 bytes, far below this ceiling.
+    if record.value.len() > crate::behaviour::KAD_MAX_VALUE_BYTES {
         return false;
     }
 
@@ -240,6 +248,26 @@ mod tests {
     fn rejects_unparseable_peer_id() {
         // Right shape (>8 bytes) but the leading bytes aren't a valid peer id.
         let value = [vec![0xffu8; 16], 1024u64.to_le_bytes().to_vec()].concat();
+        assert!(!is_valid_blob_provider_record(&record(
+            vec![7u8; 64],
+            value
+        )));
+    }
+
+    #[test]
+    fn rejects_value_over_the_store_ceiling() {
+        // A parseable peer id + size suffix, but padded past the store's
+        // `max_value_bytes`: the validator drops it up front rather than
+        // leaving the store's `put` as the only guard.
+        let peer_id = PeerId::random();
+        let padding = vec![0u8; crate::behaviour::KAD_MAX_VALUE_BYTES];
+        let value = [
+            peer_id.to_bytes().as_slice(),
+            &padding,
+            &4096u64.to_le_bytes(),
+        ]
+        .concat();
+        assert!(value.len() > crate::behaviour::KAD_MAX_VALUE_BYTES);
         assert!(!is_valid_blob_provider_record(&record(
             vec![7u8; 64],
             value
