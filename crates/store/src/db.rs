@@ -155,23 +155,32 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
     /// I/O and no buffer.
     ///
     /// Each batch collects at most `DELETE_RANGE_BATCH` keys, deletes them, then
-    /// re-seeks to `lo` — the just-deleted keys are gone, so the seek lands on
-    /// the next surviving in-range key. This caps peak memory at one batch
-    /// regardless of range size, where buffering the whole range first would
-    /// grow without bound on a large slice.
+    /// re-seeks to the last key of that batch to resume: it was just deleted, so
+    /// the seek lands on the next surviving in-range key. Resuming from the batch
+    /// boundary (rather than re-seeking to `lo` every time) keeps each seek local
+    /// to where the previous one stopped. Peak memory is one batch regardless of
+    /// range size, where buffering the whole range first would grow without
+    /// bound on a large slice.
+    ///
+    /// Not atomic: this issues per-key deletes, so an error mid-range leaves the
+    /// keys deleted so far gone and the rest intact. Callers that need
+    /// all-or-nothing must wrap it in their own transaction. (The prior
+    /// buffer-everything default had the same non-atomicity.)
     fn delete_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> EyreResult<()> {
         /// Keys buffered (and deleted) per batch. Bounds peak memory; a larger
         /// value trades memory for fewer re-seeks.
         const DELETE_RANGE_BATCH: usize = 4096;
 
-        let lo_bytes: Vec<u8> = lo.as_ref().to_vec();
         let hi_bytes: Vec<u8> = hi.as_ref().to_vec();
+        // First batch seeks to `lo`; later batches resume from the last-deleted
+        // key (which is gone, so the seek advances to the next survivor).
+        let mut resume_from: Vec<u8> = lo.as_ref().to_vec();
 
         loop {
             let mut iter = self.iter(col)?;
             let mut keys: Vec<Vec<u8>> = Vec::new();
             let mut pos = iter
-                .seek(Slice::from(&lo_bytes))?
+                .seek(Slice::from(&resume_from))?
                 .map(|k| k.as_ref().to_vec());
             while let Some(key) = pos {
                 if key.as_slice() >= hi_bytes.as_slice() {
@@ -190,6 +199,10 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
             }
 
             let drained = keys.len();
+            // The last key of the batch is where the next seek resumes.
+            if let Some(last) = keys.last() {
+                resume_from.clone_from(last);
+            }
             for key in keys {
                 self.delete(col, Slice::from(&key))?;
             }

@@ -33,8 +33,13 @@ const _: [(); { (usize::BITS - CHUNK_SIZE.leading_zeros()) > 32 } as usize] = [
 /// synced from peers, so it is untrusted input: a deeply-nested chain would
 /// overflow the stack under the old recursive walk, and a back-edge (cycle)
 /// would loop forever. `put` only ever produces a shallow tree (root → leaf
-/// parts), so these caps are far above any legitimate graph and only trip on
+/// parts), so these caps sit far above any legitimate graph and only trip on
 /// corrupt or malicious meta.
+///
+/// `MAX_BLOB_DEPTH` bounds the chain of *internal* nodes (a second guard against
+/// cycles); `MAX_BLOB_NODES` caps the number of *distinct internal* nodes
+/// walked. Leaves are neither depth- nor count-limited here — they don't recurse
+/// and duplicates are legitimate — so a large file's many chunk leaves are fine.
 const MAX_BLOB_DEPTH: usize = 64;
 const MAX_BLOB_NODES: usize = 1 << 20;
 
@@ -341,6 +346,38 @@ pub struct Blob {
     stream: Pin<Box<dyn Stream<Item = Result<Box<[u8]>, BlobError>> + Send>>,
 }
 
+/// Load a leaf blob's bytes and verify them against their content-addressed id.
+///
+/// A leaf's id IS the sha256 of its bytes, so re-hashing rejects a tampered or
+/// corrupt on-disk / peer-supplied chunk (`IntegrityMismatch`) instead of
+/// serving it as authentic. A zero-byte blob has no stored file, so it resolves
+/// to `None` (nothing to serve) rather than a `DanglingBlob`.
+async fn load_verified_leaf(
+    blob_mgr: &BlobManager,
+    id: BlobId,
+    size: u64,
+) -> Result<Option<Box<[u8]>>, BlobError> {
+    if size == 0 {
+        trace!(%id, "empty blob, nothing to serve");
+        return Ok(None);
+    }
+
+    let bytes = blob_mgr
+        .blob_store
+        .get(id)
+        .await
+        .map_err(BlobError::RepoError)?
+        .ok_or(BlobError::DanglingBlob { id })?;
+
+    let actual = *AsRef::<[u8; 32]>::as_ref(&Sha256::digest(&bytes));
+    if actual != *id {
+        error!(%id, "blob chunk hash mismatch; refusing to serve");
+        return Err(BlobError::IntegrityMismatch { id });
+    }
+
+    Ok(Some(bytes))
+}
+
 impl Blob {
     fn new(id: BlobId, blob_mgr: BlobManager) -> EyreResult<Option<Self>> {
         // Resolve the root meta up front so an unknown blob (`None`) stays
@@ -351,108 +388,97 @@ impl Blob {
         };
 
         let stream = Box::pin(try_stream!({
-            // Iterative pre-order walk of the meta graph. The old version
+            // Streaming pre-order DFS over the meta graph. The old version
             // recursed via `Self::new` per link, so a deep chain overflowed the
-            // stack and a cycle looped forever. An explicit stack plus a visited
-            // set and depth/node budgets bound both while preserving link order.
+            // stack and a cycle looped forever. Each frame is a *cursor* over one
+            // internal node's links, so at most `depth` link-lists are held at
+            // once — the old recursive walk's memory profile, never the whole
+            // graph materialised.
+            //
+            // Cycles: `visited` tracks *internal* nodes only. `put` never shares
+            // an internal node, so a revisit is a genuine back-edge — reject it.
+            // Duplicate *leaves* are deliberately NOT rejected: repeated file
+            // content hashes to the same part id, so a valid blob's links can
+            // name the same leaf twice and each occurrence must be served.
             let mut visited: HashSet<BlobId> = HashSet::new();
-            let mut nodes_seen: usize = 0;
             let mut chunk_index: u64 = 0;
 
-            // Frames carry the node's already-loaded meta so a missing child is
-            // caught as `DanglingBlob` when it is enqueued (matching the old
-            // recursive behaviour). Children are pushed in reverse so the LIFO
-            // stack emits them in link order.
-            let mut stack: Vec<(BlobId, BlobMetaValue, usize)> = vec![(id, root_meta, 0)];
-
-            while let Some((node_id, meta, depth)) = stack.pop() {
-                nodes_seen += 1;
-                if nodes_seen > MAX_BLOB_NODES {
-                    error!(?id, nodes_seen, "blob meta graph exceeds node budget");
-                    Err(BlobError::CorruptGraph {
-                        id,
-                        reason: "meta graph exceeds node budget",
-                    })?;
+            // The root may itself be a leaf: a single stored part, or an empty
+            // (zero-byte) blob that has no stored file at all.
+            if root_meta.links.is_empty() {
+                if let Some(bytes) = load_verified_leaf(&blob_mgr, id, root_meta.size).await? {
+                    chunk_index += 1;
+                    yield bytes;
                 }
+            } else {
+                let _ = visited.insert(id);
+                // Frame = (links, next index into them, depth of these children).
+                let mut stack: Vec<(Box<[BlobMetaKey]>, usize, usize)> =
+                    vec![(root_meta.links, 0, 1)];
 
-                // A DAG can legitimately reach a node twice, but the tree `put`
-                // produces never does; a repeat is a back-edge that would loop
-                // forever, so reject it.
-                if !visited.insert(node_id) {
-                    error!(?id, %node_id, "cycle detected in blob meta graph");
-                    Err(BlobError::CorruptGraph {
-                        id,
-                        reason: "meta graph contains a cycle",
-                    })?;
-                }
-
-                if meta.links.is_empty() {
-                    // Leaf: bytes live in the blob store, content-addressed by
-                    // the node id. A zero-byte blob legitimately has no stored
-                    // file — yield nothing rather than reporting it dangling.
-                    if meta.size == 0 {
-                        trace!(?id, %node_id, "empty blob, nothing to serve");
+                while let Some((links, mut idx, depth)) = stack.pop() {
+                    if idx >= links.len() {
                         continue;
                     }
+                    let child_id = links[idx].blob_id();
+                    idx += 1;
+                    let parent = (links, idx, depth);
 
-                    let blob = blob_mgr
-                        .blob_store
-                        .get(node_id)
-                        .await
-                        .map_err(BlobError::RepoError)?
-                        .ok_or(BlobError::DanglingBlob { id: node_id })?;
-
-                    // Re-hash before serving. The chunk on disk (or supplied by a
-                    // peer) is untrusted, and a leaf's id IS the sha256 of its
-                    // bytes, so a tampered or corrupt chunk fails this check
-                    // instead of being served as authentic.
-                    let actual = *AsRef::<[u8; 32]>::as_ref(&Sha256::digest(&blob));
-                    if actual != *node_id {
-                        error!(?id, %node_id, "blob chunk hash mismatch; refusing to serve");
-                        Err(BlobError::IntegrityMismatch { id: node_id })?;
-                    }
-
-                    trace!(
-                        ?id,
-                        %node_id,
-                        chunk_index,
-                        chunk_size = blob.len(),
-                        "serving verified blob chunk"
-                    );
-                    chunk_index += 1;
-                    yield blob;
-                    continue;
-                }
-
-                if depth >= MAX_BLOB_DEPTH {
-                    error!(?id, %node_id, depth, "blob meta graph exceeds depth budget");
-                    Err(BlobError::CorruptGraph {
-                        id,
-                        reason: "meta graph exceeds depth budget",
-                    })?;
-                }
-
-                let mut children: Vec<(BlobId, BlobMetaValue, usize)> =
-                    Vec::with_capacity(meta.links.len());
-                for link_meta in meta.links.iter() {
-                    let child_id = link_meta.blob_id();
                     let child_meta = blob_mgr
                         .data_store
                         .handle()
                         .get(&BlobMetaKey::new(child_id))
                         .map_err(|e| BlobError::RepoError(e.into()))?
                         .ok_or_else(|| {
-                            error!(
-                                ?id,
-                                missing_child = %child_id,
-                                "blob metadata missing referenced child"
-                            );
+                            error!(?id, missing_child = %child_id, "blob metadata missing referenced child");
                             BlobError::DanglingBlob { id: child_id }
                         })?;
-                    children.push((child_id, child_meta, depth + 1));
-                }
-                for child in children.into_iter().rev() {
-                    stack.push(child);
+
+                    if child_meta.links.is_empty() {
+                        // Leaf: resume the parent afterwards, then serve this
+                        // chunk (an empty leaf yields nothing).
+                        stack.push(parent);
+                        if let Some(bytes) =
+                            load_verified_leaf(&blob_mgr, child_id, child_meta.size).await?
+                        {
+                            trace!(?id, %child_id, chunk_index, chunk_size = bytes.len(), "serving verified blob chunk");
+                            chunk_index += 1;
+                            yield bytes;
+                        }
+                        continue;
+                    }
+
+                    // Internal node: bound the internal chain depth, reject a
+                    // true cycle (a revisited internal node), cap the distinct
+                    // internal-node count, then descend before the next sibling
+                    // (LIFO: push the parent cursor first, the child on top).
+                    if depth > MAX_BLOB_DEPTH {
+                        error!(?id, %child_id, depth, "blob meta graph exceeds depth budget");
+                        Err(BlobError::CorruptGraph {
+                            id,
+                            reason: "meta graph exceeds depth budget",
+                        })?;
+                    }
+                    if !visited.insert(child_id) {
+                        error!(?id, %child_id, "cycle detected in blob meta graph");
+                        Err(BlobError::CorruptGraph {
+                            id,
+                            reason: "meta graph contains a cycle",
+                        })?;
+                    }
+                    if visited.len() > MAX_BLOB_NODES {
+                        error!(
+                            ?id,
+                            nodes = visited.len(),
+                            "blob meta graph exceeds node budget"
+                        );
+                        Err(BlobError::CorruptGraph {
+                            id,
+                            reason: "meta graph exceeds node budget",
+                        })?;
+                    }
+                    stack.push(parent);
+                    stack.push((child_meta.links, 0, depth + 1));
                 }
             }
         }));
@@ -729,6 +755,39 @@ mod traversal_tests {
         assert!(
             matches!(err, BlobError::IntegrityMismatch { id } if id == leaf_id),
             "expected IntegrityMismatch, got {err:?}"
+        );
+    }
+
+    /// A file whose content repeats across chunk boundaries produces duplicate
+    /// leaf links (identical bytes hash to the same part id). Those duplicates
+    /// are legitimate and every occurrence must be served — the traversal must
+    /// NOT mistake a repeated leaf for a cycle.
+    #[tokio::test]
+    async fn repeated_chunks_round_trip() {
+        let dir = tempdir().unwrap();
+        let mgr = manager(dir.path()).await;
+
+        // Two identical full chunks -> `links` = [part, part] with one part id.
+        let data = vec![0xABu8; CHUNK_SIZE * 2];
+        let (id, _hash, size) = mgr.put(&data[..]).await.unwrap();
+        assert_eq!(size as usize, data.len());
+
+        // Sanity: the root really does reference the same leaf twice.
+        let root_meta = mgr
+            .data_store
+            .handle()
+            .get(&BlobMetaKey::new(id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(root_meta.links.len(), 2);
+        assert_eq!(root_meta.links[0].blob_id(), root_meta.links[1].blob_id());
+
+        let bytes = collect(&mgr, id)
+            .await
+            .expect("repeated-chunk blob must serve both copies");
+        assert_eq!(
+            bytes, data,
+            "both duplicate chunks must be served, in order"
         );
     }
 
