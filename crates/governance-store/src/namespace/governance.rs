@@ -1454,6 +1454,14 @@ impl<'a> NamespaceGovernance<'a> {
             if envelope.recipient != recipient_pk {
                 continue;
             }
+            // Invariant: `op.signer` MUST be the same identity that wrapped the
+            // rotation envelopes. The publisher guarantees this by signing the
+            // outer namespace op and wrapping every envelope with the SAME
+            // namespace identity key (see `build_rotation` call in
+            // `group_governance_publisher`). If a future refactor ever signs the
+            // outer op with a different key than it wraps with, this
+            // `expected_sender` check will reject the rotation rather than
+            // silently accept a mismatched wrapper — fail-closed by design.
             match GroupKeyring::unwrap_for_recipient(
                 &recipient_sk,
                 &group_id.to_bytes(),

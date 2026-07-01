@@ -54,38 +54,38 @@ impl<'a> GroupKeyring<'a> {
     /// Store a group key stamped with an explicit deterministic `epoch` (the DAG
     /// sequence of the op that introduced it).
     ///
-    /// The epoch is stored **monotonically**: if this `key_id` is already
-    /// present with a higher epoch, the higher value is kept. That makes the
-    /// two orderings in which a key can arrive commute — e.g. a keyless joiner
-    /// that pulls the current key at `epoch 0` and later replays the rotation op
-    /// that minted it (real epoch) ends up with the real epoch either way — so
-    /// nodes never disagree on the "current" key from write-ordering alone.
-    ///
-    /// The read-modify-write below (get the existing epoch, take the max, put)
-    /// is **not** an atomic store transaction, but it does not need to be: every
-    /// writer of a `GroupKeyEntry` runs inside the per-namespace governance
-    /// apply, which is serialized by the `DagStore` lock the `ContextManager`
-    /// actor holds (the same single-writer invariant `advance_dag_head` and
-    /// `delete_all_for_group` rely on). There is therefore no concurrent writer
-    /// for the same `(group_id, key_id)` to interleave between the get and the
-    /// put. `key_id = sha256(group_key)`, so any two writes for the same key_id
-    /// carry the identical `group_key`; only the `epoch`/`created_at` can differ,
-    /// and the monotonic-max keeps the write idempotent regardless.
+    /// The epoch is stored **monotonically and never lowered**: a write only
+    /// touches the store when the entry is absent or when it strictly *raises*
+    /// the epoch. This matters because `store_key` (epoch `0`) is also called
+    /// outside the per-namespace governance-apply lock — from the direct-pull
+    /// path (`apply_received_group_key`) and the join handlers — so an epoch-`0`
+    /// write could otherwise race a rotation's epoch-`N` write and clobber it.
+    /// Since a lowering (or equal) write is a no-op here, an epoch-`0` write can
+    /// never overwrite a higher stored epoch regardless of interleaving; the
+    /// only writes that hit the store are the absent-entry seed and genuine
+    /// epoch increases (a rotation), and those never contend for the same
+    /// `key_id` (`key_id = sha256(group_key)`, and each rotation mints a fresh
+    /// key, so a given key_id has exactly one "real" epoch — two writers raising
+    /// it to the same value are idempotent). Result: nodes converge on the same
+    /// "current" key without needing an atomic read-modify-write.
     pub fn store_key_with_epoch(&self, group_key: &[u8; 32], epoch: u64) -> EyreResult<[u8; 32]> {
         let key_id = Self::key_id_for(group_key);
         let entry = GroupKeyEntry::new(self.group_id.to_bytes(), key_id);
+        let mut handle = self.store.handle();
+        // Only write when absent or strictly raising the epoch — a lower/equal
+        // epoch (e.g. an epoch-0 pull for a key a rotation already stored) is a
+        // no-op, so it can never regress a higher stored epoch even under a
+        // racing interleave with a concurrent writer.
+        if let Some(existing) = handle.get(&entry)? {
+            let existing: GroupKeyValue = existing;
+            if epoch <= existing.epoch {
+                return Ok(key_id);
+            }
+        }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let mut handle = self.store.handle();
-        let epoch = match handle.get(&entry)? {
-            Some(existing) => {
-                let existing: GroupKeyValue = existing;
-                existing.epoch.max(epoch)
-            }
-            None => epoch,
-        };
         let value = GroupKeyValue {
             group_key: *group_key,
             created_at: now,
