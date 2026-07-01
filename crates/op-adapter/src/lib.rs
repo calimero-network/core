@@ -195,7 +195,7 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
             role: GroupMemberRole::from_invited_role(signed_invitation.invitation.invited_role),
         }),
         RootOp::MemberJoinedOpen { member, group_id } => Some(OpPayload::MemberAdded {
-            group: ContextGroupId::from(*group_id),
+            group: *group_id,
             member: *member,
             role: GroupMemberRole::Member,
         }),
@@ -204,8 +204,8 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
             parent_id,
             restricted,
         } => Some(OpPayload::SubgroupCreated {
-            child: ScopeId::from(*group_id),
-            parent: ScopeId::from(*parent_id),
+            child: ScopeId::from(group_id.to_bytes()),
+            parent: ScopeId::from(parent_id.to_bytes()),
             // Visibility is now carried atomically on the live op (#2771):
             // `restricted: true` = Restricted (default), `false` = born-Open.
             // This aligns the projection-plane `SubgroupCreated.restricted`
@@ -217,11 +217,11 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
             child_group_id,
             new_parent_id,
         } => Some(OpPayload::SubgroupReparented {
-            child: ScopeId::from(*child_group_id),
-            new_parent: ScopeId::from(*new_parent_id),
+            child: ScopeId::from(child_group_id.to_bytes()),
+            new_parent: ScopeId::from(new_parent_id.to_bytes()),
         }),
         RootOp::GroupDeleted { root_group_id, .. } => Some(OpPayload::SubgroupDeleted {
-            scope: ScopeId::from(*root_group_id),
+            scope: ScopeId::from(root_group_id.to_bytes()),
         }),
         // Out-of-model: `KeyDelivery` is key transport, not authorization
         // state. (`RootOp` is `#[non_exhaustive]`, so a `_` arm is mandatory.)
@@ -523,7 +523,7 @@ mod tests {
             payload_from_root_op(
                 &RootOp::MemberJoinedOpen {
                     member: m,
-                    group_id: gid,
+                    group_id: gid.into(),
                 },
                 PublicKey::from([1u8; 32])
             ),
@@ -584,8 +584,8 @@ mod tests {
         assert_eq!(
             payload_from_root_op(
                 &RootOp::GroupCreated {
-                    group_id: gid,
-                    parent_id: parent,
+                    group_id: gid.into(),
+                    parent_id: parent.into(),
                     restricted: true,
                 },
                 PublicKey::from([1u8; 32])
@@ -601,8 +601,8 @@ mod tests {
         assert_eq!(
             payload_from_root_op(
                 &RootOp::GroupReparented {
-                    child_group_id: gid,
-                    new_parent_id: [9u8; 32],
+                    child_group_id: gid.into(),
+                    new_parent_id: [9u8; 32].into(),
                 },
                 PublicKey::from([1u8; 32])
             ),
@@ -614,7 +614,7 @@ mod tests {
         assert_eq!(
             payload_from_root_op(
                 &RootOp::GroupDeleted {
-                    root_group_id: gid,
+                    root_group_id: gid.into(),
                     cascade_group_ids: vec![],
                     cascade_context_ids: vec![],
                 },

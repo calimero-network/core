@@ -164,7 +164,7 @@ impl MigrationStatusCache {
 
         let now = Instant::now();
         let mut g = self.entries_lock();
-        let key = (hb.namespace_id, hb.peer_pubkey);
+        let key = (hb.namespace_id.to_bytes(), hb.peer_pubkey);
         if let Some(existing) = g.get(&key) {
             // Drop the heartbeat if it's older or equal-clock-but-not-fresher.
             if hb.ts_millis < existing.ts_millis
@@ -182,7 +182,8 @@ impl MigrationStatusCache {
         // (filtered by per-call `ttl`) without competing against this prune.
         let evict_window = Duration::from_millis(MAX_HEARTBEAT_CLOCK_DRIFT_MS.saturating_mul(2));
         g.retain(|(ns, _), entry| {
-            *ns != hb.namespace_id || now.duration_since(entry.received_at) <= evict_window
+            *ns != hb.namespace_id.to_bytes()
+                || now.duration_since(entry.received_at) <= evict_window
         });
 
         let _ = g.insert(
@@ -689,7 +690,7 @@ pub fn build_signed_heartbeat(
 ) -> Result<SignedMigrationHeartbeat, calimero_context_client::local_governance::GovernanceError> {
     let peer_pubkey = signer_sk.public_key();
     let mut hb = SignedMigrationHeartbeat {
-        namespace_id,
+        namespace_id: namespace_id.into(),
         peer_pubkey,
         schema_version: facts.schema_version,
         residue_auto: facts.residue_auto,
@@ -845,7 +846,7 @@ impl MigrationEmitter {
             }
         };
 
-        let topic = calimero_context::governance_broadcast::ns_topic(ns_id);
+        let topic = calimero_context::governance_broadcast::ns_topic(ns_id.into());
         // Wrap in the `BroadcastMessage::NamespaceGovernanceDelta` envelope
         // the receiver decodes on `ns/<id>` topics, then borsh the inner
         // `NamespaceTopicMsg::MigrationHeartbeat`. delta_id/parent_ids are
@@ -917,7 +918,7 @@ mod tests {
     ) -> SignedMigrationHeartbeat {
         let peer_pubkey = sk.public_key();
         let body = SignableMigrationHeartbeat {
-            namespace_id: ns,
+            namespace_id: ns.into(),
             peer_pubkey,
             schema_version,
             residue_auto,
@@ -930,7 +931,7 @@ mod tests {
         signable.extend_from_slice(&borsh::to_vec(&body).unwrap());
         let signature = sk.sign(&signable).unwrap().to_bytes();
         SignedMigrationHeartbeat {
-            namespace_id: ns,
+            namespace_id: ns.into(),
             peer_pubkey,
             schema_version,
             residue_auto,

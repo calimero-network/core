@@ -11,6 +11,7 @@ mod connection;
 mod defaults;
 
 mod output;
+mod secret;
 mod storage;
 mod ws;
 

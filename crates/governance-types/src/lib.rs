@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use std::io;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_context_config::types::SignedGroupOpenInvitation;
+use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
@@ -43,6 +43,60 @@ pub use wire::{
 // `AckRouter` and its pub/sub plumbing stay in `calimero-context-client`
 // (they depend on `tokio::sync::broadcast` and connect actor mailboxes).
 // This crate is pure-data: types, signing, hashing, borsh layout.
+
+/// Define a 32-byte id newtype. Borsh- and serde-transparent (a derived
+/// `[u8; 32]`, no tag or length prefix — a serde newtype struct serializes as
+/// its inner value) so it is byte-compatible with the bare `[u8; 32]` these ids
+/// used to be, while making the distinct id kinds non-interchangeable. Serde
+/// parity with `AppKey`/`ContextGroupId` keeps the ids usable across the JSON
+/// API surface, not just the borsh op wire.
+macro_rules! id_newtype {
+    ($(#[$m:meta])* $name:ident) => {
+        $(#[$m])*
+        #[derive(
+            Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash,
+            BorshSerialize, BorshDeserialize,
+            serde::Serialize, serde::Deserialize,
+        )]
+        pub struct $name([u8; 32]);
+
+        impl $name {
+            #[must_use]
+            pub const fn new(bytes: [u8; 32]) -> Self {
+                Self(bytes)
+            }
+            #[must_use]
+            pub const fn as_bytes(&self) -> &[u8; 32] {
+                &self.0
+            }
+            #[must_use]
+            pub const fn to_bytes(self) -> [u8; 32] {
+                self.0
+            }
+        }
+
+        impl From<[u8; 32]> for $name {
+            fn from(bytes: [u8; 32]) -> Self {
+                Self(bytes)
+            }
+        }
+
+        impl From<$name> for [u8; 32] {
+            fn from(id: $name) -> Self {
+                id.0
+            }
+        }
+    };
+}
+
+id_newtype! {
+    /// Stable id of a namespace (the root governance group of a DAG).
+    NamespaceId
+}
+id_newtype! {
+    /// Stable id of a group/namespace encryption key.
+    KeyId
+}
 
 /// Wire/schema version for [`SignedGroupOp`].
 ///
@@ -247,7 +301,7 @@ pub enum GroupOp {
     UpgradePolicySet { policy: UpgradePolicy },
     /// Update target application and app key in group metadata.
     TargetApplicationSet {
-        app_key: [u8; 32],
+        app_key: AppKey,
         target_application_id: ApplicationId,
     },
     /// Register a context index under this group (must match `ContextGroupRef` invariants).
@@ -374,8 +428,8 @@ pub enum GroupOp {
     /// `#[deprecated]` because the enum's derived borsh/Debug impls reference
     /// every variant and would warn at the derive site.)
     CascadeTargetApplicationSet {
-        from_app_key: [u8; 32],
-        app_key: [u8; 32],
+        from_app_key: AppKey,
+        app_key: AppKey,
         target_application_id: ApplicationId,
     },
     /// Cascade variant of [`Self::GroupMigrationSet`]: emitted alongside
@@ -388,7 +442,7 @@ pub enum GroupOp {
     /// DEPRECATED: superseded by [`Self::CascadeUpgrade`] (see that variant).
     /// Do NOT emit; apply arm retained for one release for wire-compat.
     CascadeGroupMigrationSet {
-        from_app_key: [u8; 32],
+        from_app_key: AppKey,
         migration: Option<Vec<u8>>,
     },
     /// Atomic namespace cascade upgrade. Applies target_application_id, app_key,
@@ -403,8 +457,8 @@ pub enum GroupOp {
     /// timestamp predates this value is rejected post-`Completed` to prevent
     /// offline-writer stale-schema state from overwriting migrated state.
     CascadeUpgrade {
-        from_app_key: [u8; 32],
-        app_key: [u8; 32],
+        from_app_key: AppKey,
+        app_key: AppKey,
         target_application_id: ApplicationId,
         migration: Option<Vec<u8>>,
         cascade_hlc: HybridTimestamp,
@@ -470,9 +524,9 @@ pub enum NamespaceOp {
     /// cleartext so non-members can store the skeleton; the payload is only
     /// readable by holders of the group key identified by `key_id`.
     Group {
-        group_id: [u8; 32],
+        group_id: ContextGroupId,
         /// `sha256(group_key)` — identifies which group key encrypted this op.
-        key_id: [u8; 32],
+        key_id: KeyId,
         encrypted: EncryptedGroupOp,
         /// Present only on `MemberRemoved` ops: wraps a NEW group key for
         /// each remaining member. Lives outside the encrypted payload so
@@ -501,8 +555,8 @@ pub enum RootOp {
     /// `ReadOnlyTee` row that the old Restricted-then-flip path produced.
     /// Visibility can still be changed later via `SubgroupVisibilitySet`.
     GroupCreated {
-        group_id: [u8; 32],
-        parent_id: [u8; 32],
+        group_id: ContextGroupId,
+        parent_id: ContextGroupId,
         restricted: bool,
     },
     /// Atomically move `child_group_id` from its current parent to
@@ -514,8 +568,8 @@ pub enum RootOp {
     /// Replaces the old `GroupNested` + `GroupUnnested` two-op pattern;
     /// orphan state is no longer expressible.
     GroupReparented {
-        child_group_id: [u8; 32],
-        new_parent_id: [u8; 32],
+        child_group_id: ContextGroupId,
+        new_parent_id: ContextGroupId,
     },
     /// Delete `root_group_id` AND its entire subtree AND all contained
     /// contexts in one op. The signer pre-computes `cascade_group_ids`
@@ -525,9 +579,9 @@ pub enum RootOp {
     /// with their state — deterministic-application check that catches
     /// silent divergence.
     GroupDeleted {
-        root_group_id: [u8; 32],
-        cascade_group_ids: Vec<[u8; 32]>,
-        cascade_context_ids: Vec<[u8; 32]>,
+        root_group_id: ContextGroupId,
+        cascade_group_ids: Vec<ContextGroupId>,
+        cascade_context_ids: Vec<ContextId>,
     },
     /// The namespace administrator was changed.
     AdminChanged { new_admin: PublicKey },
@@ -570,7 +624,7 @@ pub enum RootOp {
     /// (`recover_missing_group_keys`) is the durable retry that covers a
     /// member who misses this delivery.
     KeyDelivery {
-        group_id: [u8; 32],
+        group_id: ContextGroupId,
         envelope: KeyEnvelope,
     },
     /// A namespace member just self-joined an `Open` subgroup whose
@@ -593,7 +647,7 @@ pub enum RootOp {
     /// it. See `handlers/join_context.rs`.
     MemberJoinedOpen {
         member: PublicKey,
-        group_id: [u8; 32],
+        group_id: ContextGroupId,
     },
     /// Invitation-based join carrying the joiner's claimed redemption
     /// time (`joined_at`, unix seconds, covered by the joiner's
@@ -704,7 +758,7 @@ pub struct KeyEnvelope {
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct KeyRotation {
     /// `sha256(new_group_key)` — identifies the new epoch.
-    pub new_key_id: [u8; 32],
+    pub new_key_id: KeyId,
     /// One envelope per remaining member, each wrapping the new group key.
     pub envelopes: Vec<KeyEnvelope>,
 }
@@ -716,7 +770,7 @@ pub struct KeyRotation {
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SignableNamespaceOp {
     pub version: u8,
-    pub namespace_id: [u8; 32],
+    pub namespace_id: NamespaceId,
     pub parent_op_hashes: Vec<[u8; 32]>,
     pub signer: PublicKey,
     pub nonce: u64,
@@ -727,7 +781,7 @@ pub struct SignableNamespaceOp {
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SignedNamespaceOp {
     pub version: u8,
-    pub namespace_id: [u8; 32],
+    pub namespace_id: NamespaceId,
     pub parent_op_hashes: Vec<[u8; 32]>,
     pub signer: PublicKey,
     pub nonce: u64,
@@ -769,7 +823,7 @@ impl SignedNamespaceOp {
     /// Build and sign a new namespace operation.
     pub fn sign(
         sk: &PrivateKey,
-        namespace_id: [u8; 32],
+        namespace_id: NamespaceId,
         parent_op_hashes: Vec<[u8; 32]>,
         nonce: u64,
         op: NamespaceOp,
@@ -841,7 +895,7 @@ impl SignedNamespaceOp {
 
     /// Extract the group_id if this is a group-scoped op.
     #[must_use]
-    pub fn group_id(&self) -> Option<[u8; 32]> {
+    pub fn group_id(&self) -> Option<ContextGroupId> {
         match &self.op {
             NamespaceOp::Group { group_id, .. } => Some(*group_id),
             NamespaceOp::Root(_) => None,
@@ -855,7 +909,7 @@ impl SignedNamespaceOp {
 pub struct OpaqueSkeleton {
     pub delta_id: [u8; 32],
     pub parent_op_hashes: Vec<[u8; 32]>,
-    pub group_id: [u8; 32],
+    pub group_id: ContextGroupId,
     pub signer: PublicKey,
 }
 
@@ -881,7 +935,7 @@ pub enum StoredNamespaceEntry {
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SignableGroupOp {
     pub version: u8,
-    pub group_id: [u8; 32],
+    pub group_id: ContextGroupId,
     pub parent_op_hashes: Vec<[u8; 32]>,
     pub signer: PublicKey,
     pub nonce: u64,
@@ -896,7 +950,7 @@ pub struct SignableGroupOp {
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SignedGroupOp {
     pub version: u8,
-    pub group_id: [u8; 32],
+    pub group_id: ContextGroupId,
     pub parent_op_hashes: Vec<[u8; 32]>,
     pub signer: PublicKey,
     pub nonce: u64,
@@ -936,7 +990,7 @@ impl SignedGroupOp {
     /// latest applied ops). Empty vec for the first op in a group (genesis).
     pub fn sign(
         sk: &PrivateKey,
-        group_id: [u8; 32],
+        group_id: ContextGroupId,
         parent_op_hashes: Vec<[u8; 32]>,
         nonce: u64,
         op: GroupOp,

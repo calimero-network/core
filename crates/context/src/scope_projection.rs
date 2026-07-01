@@ -527,7 +527,7 @@ impl ScopeProjections {
             .resolve(&group)
             .ok()?
             .to_bytes();
-        NamespaceDagService::new(store, namespace_id)
+        NamespaceDagService::new(store, namespace_id.into())
             .read_head_record()
             .ok()
             .map(|head| head.parent_hashes)
@@ -569,7 +569,7 @@ impl ScopeProjections {
         // op advanced the head mid-rebuild, the new head's ancestry isn't fully
         // folded and `member_at_cut`'s completeness guard returns `None` (defer to
         // live) rather than deciding against a stale cut that predates a revocation.
-        let heads = NamespaceDagService::new(store, namespace_id)
+        let heads = NamespaceDagService::new(store, namespace_id.into())
             .read_head_record()
             .ok()?
             .parent_hashes;
@@ -817,7 +817,7 @@ impl ScopeProjections {
             return None;
         };
         proj.apply_backfill(namespace_id, ops);
-        let heads = NamespaceDagService::new(store, namespace_id)
+        let heads = NamespaceDagService::new(store, namespace_id.into())
             .read_head_record()
             .ok()?
             .parent_hashes;
@@ -994,7 +994,7 @@ impl ScopeProjections {
     /// [`apply_backfill`]: Self::apply_backfill
     #[must_use]
     pub fn collect_namespace_ops(store: &Store, namespace_id: [u8; 32]) -> Option<Vec<Op>> {
-        let dag = NamespaceDagService::new(store, namespace_id);
+        let dag = NamespaceDagService::new(store, namespace_id.into());
         let heads = match dag.read_head_record() {
             Ok(head) => head.parent_hashes,
             Err(err) => {
@@ -1003,7 +1003,7 @@ impl ScopeProjections {
             }
         };
 
-        let op_log = NamespaceOpLogService::new(store, namespace_id);
+        let op_log = NamespaceOpLogService::new(store, namespace_id.into());
         let mut visited: HashSet<[u8; 32]> = HashSet::new();
         let mut queue: std::collections::VecDeque<[u8; 32]> = heads.into_iter().collect();
         let mut ops = Vec::new();
@@ -1051,9 +1051,9 @@ impl ScopeProjections {
                     ..
                 } => calimero_governance_store::decrypt_group_op(
                     store,
-                    namespace_id,
-                    ContextGroupId::from(*group_id),
-                    key_id,
+                    namespace_id.into(),
+                    *group_id,
+                    key_id.as_bytes(),
                     encrypted,
                 )
                 .ok()
@@ -1679,7 +1679,7 @@ mod tests {
     fn signed_root(namespace_id: [u8; 32], signer: PublicKey, op: RootOp) -> SignedNamespaceOp {
         SignedNamespaceOp {
             version: 1,
-            namespace_id,
+            namespace_id: namespace_id.into(),
             parent_op_hashes: Vec::new(),
             signer,
             nonce: 0,
@@ -1731,7 +1731,7 @@ mod tests {
                 signer,
                 RootOp::MemberJoinedOpen {
                     member,
-                    group_id: group,
+                    group_id: group.into(),
                 },
             ),
             None,
@@ -2111,13 +2111,13 @@ mod tests {
     ) -> SignedNamespaceOp {
         SignedNamespaceOp {
             version: 1,
-            namespace_id,
+            namespace_id: namespace_id.into(),
             parent_op_hashes: Vec::new(),
             signer,
             nonce: 0,
             op: NamespaceOp::Group {
-                group_id: group.to_bytes(),
-                key_id: [0u8; 32],
+                group_id: group.to_bytes().into(),
+                key_id: [0u8; 32].into(),
                 encrypted: calimero_governance_types::EncryptedGroupOp {
                     nonce: [0u8; 12],
                     ciphertext: Vec::new(),

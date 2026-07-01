@@ -251,15 +251,15 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // GroupMeta, which is exactly the gap #2474 closes.
                 if let Some(parent_id) = parent_group_id {
                     let create_op = NamespaceOp::Root(RootOp::GroupCreated {
-                        group_id: group_id.to_bytes(),
-                        parent_id: parent_id.to_bytes(),
+                        group_id: group_id.to_bytes().into(),
+                        parent_id: parent_id.to_bytes().into(),
                         restricted,
                     });
                     match calimero_governance_store::sign_apply_and_publish_namespace_op(
                         &datastore,
                         &node_client,
                         &ack_router,
-                        namespace_id.to_bytes(),
+                        namespace_id.to_bytes().into(),
                         &signer_sk,
                         create_op,
                     )
@@ -285,7 +285,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         &datastore,
                         &node_client,
                         &ack_router,
-                        namespace_id.to_bytes(),
+                        namespace_id.to_bytes().into(),
                         &signer_sk,
                         genesis_op,
                     )

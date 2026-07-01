@@ -89,7 +89,7 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
         GroupOp::TargetApplicationSet {
             app_key,
             target_application_id,
-        } => target_application_set::apply(ctx, app_key, target_application_id)?,
+        } => target_application_set::apply(ctx, &app_key.to_bytes(), target_application_id)?,
         GroupOp::ContextRegistered {
             context_id,
             application_id,
@@ -160,14 +160,14 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             target_application_id,
         } => cascade_target_application_set::apply(
             ctx,
-            from_app_key,
-            app_key,
+            &from_app_key.to_bytes(),
+            &app_key.to_bytes(),
             target_application_id,
         )?,
         GroupOp::CascadeGroupMigrationSet {
             from_app_key,
             migration,
-        } => cascade_group_migration_set::apply(ctx, from_app_key, migration)?,
+        } => cascade_group_migration_set::apply(ctx, &from_app_key.to_bytes(), migration)?,
         GroupOp::CascadeUpgrade {
             from_app_key,
             app_key,
@@ -176,8 +176,8 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             cascade_hlc,
         } => cascade_upgrade::apply(
             ctx,
-            from_app_key,
-            app_key,
+            &from_app_key.to_bytes(),
+            &app_key.to_bytes(),
             target_application_id,
             migration,
             *cascade_hlc,
