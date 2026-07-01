@@ -204,8 +204,8 @@ pub trait IterableStorage: StorageAdaptor {
     /// Iterates over all keys in storage.
     ///
     /// Returns all keys currently in storage. Used for:
-    /// - Garbage collection of old tombstones
     /// - Full resync snapshot generation
+    /// - Residue scans (counting entries that still need owner conversion)
     ///
     /// # Implementation Note
     ///

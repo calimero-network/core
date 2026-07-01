@@ -91,6 +91,22 @@ pub struct Op {
 }
 
 /// The change an [`Op`] carries, across all four planes folded into one model.
+///
+/// **Append-only wire format.** An op's content-address [`id`](Op::id) is a hash
+/// over `borsh(payload)`, and borsh encodes an enum variant by its *positional*
+/// discriminant (declaration order → tag byte). Inserting a variant in the
+/// middle, removing one, or reordering therefore renumbers every later variant,
+/// which silently changes the id — and thus the signature — of every already
+/// stored/persisted op that used one of the shifted variants. New variants MUST
+/// be appended at the end only; existing variants must never be reordered or
+/// removed. [`op_payload_discriminants_are_pinned`] guards this.
+///
+/// This enum is intentionally *not* `#[non_exhaustive]`: `calimero-authz`
+/// authorizes ops with an exhaustive match over `OpPayload`, so a newly added
+/// variant should fail to compile there until it is explicitly given an
+/// authorization rule, rather than being swept into a catch-all arm.
+///
+/// [`op_payload_discriminants_are_pinned`]: tests::op_payload_discriminants_are_pinned
 #[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub enum OpPayload {
     // ---- data plane ----
@@ -375,6 +391,100 @@ mod tests {
         assert_ne!(base, scope_root([1u8; 32], [0u8; 32], [0u8; 32]));
         assert_ne!(base, scope_root([0u8; 32], [1u8; 32], [0u8; 32]));
         assert_ne!(base, scope_root([0u8; 32], [0u8; 32], [1u8; 32]));
+    }
+
+    #[test]
+    fn op_payload_discriminants_are_pinned() {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_context_config::MemberCapabilities;
+        use calimero_primitives::context::GroupMemberRole;
+
+        let id = Id::new([1u8; 32]);
+        let pk = PublicKey::from([2u8; 32]);
+        let scope = ScopeId::from([3u8; 32]);
+        let group = ContextGroupId::from([4u8; 32]);
+        let caps = MemberCapabilities::empty();
+
+        // Every variant, paired with the borsh discriminant it MUST keep forever
+        // (see the append-only note on `OpPayload`). The exhaustive `match` below
+        // means adding a variant fails to compile until it is appended here with
+        // its own pinned tag — never inserted in the middle.
+        let all = [
+            OpPayload::Put {
+                entity: id,
+                value: vec![1],
+            },
+            OpPayload::Delete { entity: id },
+            OpPayload::SetWriters {
+                object: id,
+                writers: BTreeMap::new(),
+            },
+            OpPayload::MemberAdded {
+                group,
+                member: pk,
+                role: GroupMemberRole::Member,
+            },
+            OpPayload::MemberRemoved { group, member: pk },
+            OpPayload::AdminChanged { new_admin: pk },
+            OpPayload::PolicyUpdated {
+                policy_bytes: vec![],
+            },
+            OpPayload::SubgroupCreated {
+                child: scope,
+                parent: scope,
+                restricted: false,
+                admin: pk,
+            },
+            OpPayload::SubgroupReparented {
+                child: scope,
+                new_parent: scope,
+            },
+            OpPayload::SubgroupDeleted { scope },
+            OpPayload::SubgroupVisibilitySet {
+                scope,
+                restricted: true,
+            },
+            OpPayload::DefaultCapabilitiesSet {
+                group,
+                capabilities: caps,
+            },
+            OpPayload::MemberCapabilitySet {
+                group,
+                member: pk,
+                capabilities: caps,
+            },
+            OpPayload::Noop,
+        ];
+
+        // Exhaustive: a new variant forces a new arm here.
+        fn pinned_tag(p: &OpPayload) -> u8 {
+            match p {
+                OpPayload::Put { .. } => 0,
+                OpPayload::Delete { .. } => 1,
+                OpPayload::SetWriters { .. } => 2,
+                OpPayload::MemberAdded { .. } => 3,
+                OpPayload::MemberRemoved { .. } => 4,
+                OpPayload::AdminChanged { .. } => 5,
+                OpPayload::PolicyUpdated { .. } => 6,
+                OpPayload::SubgroupCreated { .. } => 7,
+                OpPayload::SubgroupReparented { .. } => 8,
+                OpPayload::SubgroupDeleted { .. } => 9,
+                OpPayload::SubgroupVisibilitySet { .. } => 10,
+                OpPayload::DefaultCapabilitiesSet { .. } => 11,
+                OpPayload::MemberCapabilitySet { .. } => 12,
+                OpPayload::Noop => 13,
+            }
+        }
+
+        assert_eq!(all.len(), 14, "every OpPayload variant must be listed");
+        for payload in &all {
+            let bytes = borsh::to_vec(payload).expect("serialize");
+            assert_eq!(
+                bytes[0],
+                pinned_tag(payload),
+                "borsh discriminant drifted for {payload:?} — variants must be append-only"
+            );
+        }
     }
 
     #[test]

@@ -25,6 +25,7 @@ use calimero_store_encryption::EncryptedDatabase;
 use calimero_store_rocksdb::RocksDB;
 use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
+use futures_util::FutureExt;
 use libp2p::gossipsub::IdentTopic;
 use libp2p::identity::Keypair;
 use prometheus_client::registry::Registry;
@@ -519,7 +520,12 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |_ctx| compactor);
     }
 
-    let mut sync = pin!(sync_manager.start());
+    // Fuse the sync driver. It is normally long-lived, but if it ever resolves
+    // a bare `&mut sync` arm would keep being selected and re-poll a completed
+    // future on the next loop iteration — which panics. A fused future parks
+    // (returns `Pending`) forever once complete, so the arm simply goes quiet
+    // and the other arms keep the node serving.
+    let mut sync = pin!(sync_manager.start().fuse());
     let mut server = tokio::spawn(server);
     let mut bridge = bridge_handle;
     let mut term_signal = pin!(shutdown_signal());
@@ -536,16 +542,26 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let exit: eyre::Result<()> = loop {
         tokio::select! {
-            _ = &mut sync => {},
+            _ = &mut sync => {
+                // Sync driver resolved unexpectedly; the fuse above keeps this
+                // arm from being re-selected. Nothing to do — keep serving.
+            }
             res = &mut server => {
+                // Server task ended (it normally runs until shutdown). Record it
+                // so the cleanup sequence below doesn't re-await a finished
+                // handle, then break with its result.
                 server_done = true;
                 break res.map_err(eyre::Report::from).and_then(|inner| inner);
             }
             res = &mut bridge => {
-                // Bridge task completed (channel closed or shutdown signal).
+                // The network-event bridge feeds inbound events to NodeManager;
+                // if it stops on its own the node is deaf to the network and
+                // cannot make progress. Treat it as terminal (error) rather than
+                // a clean exit; the cleanup sequence below still drains the
+                // server and flushes the datastore before returning.
                 bridge_done = true;
                 tracing::warn!("Network event bridge stopped: {:?}", res);
-                break Ok(());
+                break Err(eyre::eyre!("network event bridge stopped unexpectedly"));
             }
             res = &mut arbiter_pool.system_handle => {
                 // The Actix System stopped. The StateDelta arbiter handle

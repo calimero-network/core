@@ -1,4 +1,5 @@
 use super::*;
+use crate::env::time_now;
 use crate::store::MainStorage;
 
 mod index__public_methods {
@@ -710,83 +711,6 @@ mod index__private_methods {
         <Index<MainStorage>>::remove_index(id);
         assert!(<Index<MainStorage>>::get_index(id).unwrap().is_none());
     }
-
-    #[test]
-    fn garbage_collect_tombstones() {
-        use crate::env::time_now;
-        use crate::store::MockedStorage;
-
-        // Use MockedStorage which has working storage_iter_keys()
-        type TestStorage = MockedStorage<2000>;
-
-        // Create some entities
-        let root_id = Id::random();
-        let child1_id = Id::random();
-        let child2_id = Id::random();
-        let child3_id = Id::random();
-
-        <Index<TestStorage>>::add_root(ChildInfo::new(root_id, [1; 32], Metadata::default()))
-            .unwrap();
-
-        let _collection = "children";
-
-        // Add children
-        <Index<TestStorage>>::add_child_to(
-            root_id,
-            ChildInfo::new(child1_id, [2; 32], Metadata::default()),
-        )
-        .unwrap();
-
-        <Index<TestStorage>>::add_child_to(
-            root_id,
-            ChildInfo::new(child2_id, [3; 32], Metadata::default()),
-        )
-        .unwrap();
-
-        <Index<TestStorage>>::add_child_to(
-            root_id,
-            ChildInfo::new(child3_id, [4; 32], Metadata::default()),
-        )
-        .unwrap();
-
-        // Mark children as deleted at different times
-        let now = time_now();
-        let old_time = now - 2 * 86_400_000_000_000; // 2 days ago
-        let recent_time = now - 12 * 3_600_000_000_000; // 12 hours ago
-
-        <Index<TestStorage>>::mark_deleted(child1_id, old_time).unwrap(); // Old tombstone
-        <Index<TestStorage>>::mark_deleted(child2_id, recent_time).unwrap(); // Recent tombstone
-                                                                             // child3 not deleted
-
-        // Verify all exist before GC
-        assert!(<Index<TestStorage>>::get_index(child1_id)
-            .unwrap()
-            .is_some());
-        assert!(<Index<TestStorage>>::get_index(child2_id)
-            .unwrap()
-            .is_some());
-        assert!(<Index<TestStorage>>::get_index(child3_id)
-            .unwrap()
-            .is_some());
-
-        // Run GC with 1-day retention
-        let one_day = 86_400_000_000_000;
-        let collected = <Index<TestStorage>>::garbage_collect_tombstones(one_day).unwrap();
-
-        // Should have collected 1 tombstone (child1, which is 2 days old)
-        assert_eq!(collected, 1);
-
-        // Verify results
-        assert!(<Index<TestStorage>>::get_index(child1_id)
-            .unwrap()
-            .is_none()); // GC'd
-        assert!(<Index<TestStorage>>::get_index(child2_id)
-            .unwrap()
-            .is_some()); // Too recent
-        assert!(<Index<TestStorage>>::get_index(child3_id)
-            .unwrap()
-            .is_some()); // Not deleted
-    }
 }
 
 #[cfg(test)]
@@ -868,39 +792,34 @@ mod subtree_tombstoning {
         );
     }
 
-    /// The point of the fix: once the subtree is tombstoned, GC reclaims the
-    /// WHOLE subtree after retention — not just the directly-deleted node.
+    /// The point of the fix: every subtree row is tombstoned with the SAME
+    /// `deleted_at` as the delete, so the node's tombstone GC (which reclaims by
+    /// `deleted_at` age) later reclaims the WHOLE subtree in one pass — not just
+    /// the directly-deleted node. Reclamation itself is exercised against the
+    /// real store in `calimero_node::gc`; here we assert the subtree is left
+    /// uniformly reclaim-ready.
     #[test]
-    fn gc_reclaims_full_subtree_after_retention() {
+    fn subtree_delete_stamps_uniform_reclaim_ready_tombstones() {
         type TestStorage = MockedStorage<2100>;
 
         let (root, a, b, c) = build_chain::<TestStorage>();
 
-        // Delete two days ago so a one-day-retention GC reclaims the subtree.
-        let two_days = 2 * 86_400_000_000_000_u64;
-        let deleted_at = time_now() - two_days;
+        let deleted_at = time_now();
         <Index<TestStorage>>::remove_child_from(root, a, deleted_at).unwrap();
 
-        // All three subtree rows are tombstoned (root stays live).
+        // All three subtree rows are tombstoned at exactly `deleted_at`, so a
+        // single retention cutoff reclaims them together. The (live) root stays.
         for id in [a, b, c] {
-            assert!(
-                <Index<TestStorage>>::is_deleted(id).unwrap(),
-                "subtree row should be tombstoned before GC"
+            let index = <Index<TestStorage>>::get_index(id)
+                .unwrap()
+                .expect("tombstone index row retained for CRDT sync");
+            assert_eq!(
+                index.deleted_at,
+                Some(deleted_at),
+                "subtree row must carry the delete's nonce so GC reclaims it with the rest"
             );
         }
-
-        let one_day = 86_400_000_000_000_u64;
-        let collected = <Index<TestStorage>>::garbage_collect_tombstones(one_day).unwrap();
-
-        assert_eq!(collected, 3, "GC should reclaim all three subtree rows");
-        for id in [a, b, c] {
-            assert!(
-                <Index<TestStorage>>::get_index(id).unwrap().is_none(),
-                "subtree row should be reclaimed by GC"
-            );
-        }
-        // The (live) root survives.
-        assert!(<Index<TestStorage>>::get_index(root).unwrap().is_some());
+        assert!(!<Index<TestStorage>>::is_deleted(root).unwrap());
     }
 }
 

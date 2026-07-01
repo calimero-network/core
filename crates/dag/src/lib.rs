@@ -57,7 +57,14 @@ impl Default for DeltaKind {
 }
 
 /// A causal delta with parent references
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+///
+/// `kind` is a trailing field: it was added after the original wire format, so
+/// both the serde and borsh decoders tolerate its absence and default it to
+/// [`DeltaKind::Regular`]. serde gets this from `#[serde(default)]`; borsh — whose
+/// derive has no trailing-field tolerance — gets it from the hand-written
+/// [`BorshDeserialize`] below (the derive is intentionally omitted). Keep the two
+/// in step: a new trailing field needs the same treatment in both.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, Serialize, Deserialize)]
 pub struct CausalDelta<T> {
     /// Unique delta ID (content hash)
     pub id: [u8; 32],
@@ -74,9 +81,81 @@ pub struct CausalDelta<T> {
     /// Expected root hash after applying this delta
     pub expected_root_hash: [u8; 32],
 
-    /// Kind of delta (regular or checkpoint)
+    /// Kind of delta (regular or checkpoint). Trailing field — see the struct
+    /// docs; absent on deltas produced before it existed.
     #[serde(default)]
     pub kind: DeltaKind,
+}
+
+impl<T: BorshDeserialize> BorshDeserialize for CausalDelta<T> {
+    /// # Framing requirement
+    ///
+    /// The trailing-`kind` detection depends on the reader ending exactly at the
+    /// delta's last byte: end-of-input means "no `kind` present" (legacy delta →
+    /// `Regular`). So this impl is only correct when the reader is bounded to
+    /// exactly one delta — i.e. `borsh::from_slice` / `try_from_slice` over one
+    /// delta's bytes, or a length-delimited frame. Do **not** decode a
+    /// `CausalDelta` embedded mid-stream in a larger borsh aggregate (a field of
+    /// another struct, or an element of a `Vec<CausalDelta<_>>` with more
+    /// elements after it): there, the bytes that follow would be misread as the
+    /// `kind` discriminant. Today this holds — production never whole-borsh's a
+    /// `CausalDelta<T>` (the payload is serialized on its own and the other
+    /// fields live in separate store columns); if that changes, length-frame the
+    /// delta or promote `kind` to a non-trailing field.
+    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
+        // Field order must match the derived `BorshSerialize` (declaration
+        // order). `kind` is a backward-compatible trailing field: a pre-`kind`
+        // delta stops cleanly after `expected_root_hash`, so a clean EOF at that
+        // boundary decodes as `DeltaKind::Regular`.
+        let id = <[u8; 32]>::deserialize_reader(reader)?;
+        let parents = Vec::<[u8; 32]>::deserialize_reader(reader)?;
+        let payload = T::deserialize_reader(reader)?;
+        let hlc = calimero_storage::logical_clock::HybridTimestamp::deserialize_reader(reader)?;
+        let expected_root_hash = <[u8; 32]>::deserialize_reader(reader)?;
+
+        // `DeltaKind` is a unit-variant enum, so its borsh encoding is a single
+        // discriminant byte: 0 = Regular, 1 = Checkpoint. A pre-`kind` delta
+        // omits it, so a clean EOF at this boundary must decode as Regular.
+        //
+        // We deliberately read the byte with a raw `read()` loop rather than
+        // `u8::deserialize_reader`: borsh's reader maps an at-EOF read to
+        // `ErrorKind::InvalidData` ("Unexpected length of input"), which is
+        // indistinguishable by kind from a genuine corrupt-data error — so it
+        // can't detect the trailing-field boundary. `read()` distinguishes them
+        // directly: `Ok(0)` is end-of-input (→ Regular), `Ok(1)` is a present
+        // discriminant, and `Interrupted` retries. This mirrors the existing
+        // `read_option_tag` helper used for the same trailing-field pattern in
+        // the sync types.
+        let mut tag = [0u8; 1];
+        let kind = loop {
+            match reader.read(&mut tag) {
+                Ok(0) => break DeltaKind::Regular, // end of input: legacy delta
+                Ok(_) => {
+                    break match tag[0] {
+                        0 => DeltaKind::Regular,
+                        1 => DeltaKind::Checkpoint,
+                        other => {
+                            return Err(borsh::io::Error::new(
+                                borsh::io::ErrorKind::InvalidData,
+                                format!("invalid DeltaKind discriminant {other}"),
+                            ))
+                        }
+                    }
+                }
+                Err(e) if e.kind() == borsh::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            }
+        };
+
+        Ok(Self {
+            id,
+            parents,
+            payload,
+            hlc,
+            expected_root_hash,
+            kind,
+        })
+    }
 }
 
 impl<T> CausalDelta<T> {

@@ -75,8 +75,13 @@ impl DagCompactor {
         let config = self.config;
         let in_progress = self.sweep_in_progress.clone();
         actix::spawn(async move {
+            // Clear the in-progress flag on the way out via RAII, so a panic
+            // inside `compact_all` (e.g. a bug in DAG pruning) still releases the
+            // guard. A plain post-await `store(false)` would be skipped on unwind,
+            // leaving `sweep_in_progress` stuck `true` and silently disabling all
+            // future compaction sweeps for the process lifetime.
+            let _guard = SweepGuard(in_progress);
             DagCompactor::compact_all(delta_stores, config).await;
-            in_progress.store(false, Ordering::Release);
         });
     }
 
@@ -118,6 +123,17 @@ impl DagCompactor {
         }
 
         total_pruned
+    }
+}
+
+/// RAII guard that clears [`DagCompactor::sweep_in_progress`] when the sweep
+/// task finishes — whether it returns normally or unwinds on panic — so a
+/// failed sweep can never permanently wedge the compactor.
+struct SweepGuard(Arc<AtomicBool>);
+
+impl Drop for SweepGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
