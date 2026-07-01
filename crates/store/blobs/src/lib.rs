@@ -408,6 +408,12 @@ impl Blob {
             if root_meta.links.is_empty() {
                 if let Some(bytes) = load_verified_leaf(&blob_mgr, id, root_meta.size).await? {
                     chunk_index += 1;
+                    trace!(
+                        ?id,
+                        chunk_index,
+                        chunk_size = bytes.len(),
+                        "serving verified blob chunk"
+                    );
                     yield bytes;
                 }
             } else {
@@ -441,8 +447,8 @@ impl Blob {
                         if let Some(bytes) =
                             load_verified_leaf(&blob_mgr, child_id, child_meta.size).await?
                         {
-                            trace!(?id, %child_id, chunk_index, chunk_size = bytes.len(), "serving verified blob chunk");
                             chunk_index += 1;
+                            trace!(?id, %child_id, chunk_index, chunk_size = bytes.len(), "serving verified blob chunk");
                             yield bytes;
                         }
                         continue;
