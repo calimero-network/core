@@ -11,6 +11,7 @@ use serde::Serialize;
 use url::Url;
 
 // Local crate
+use crate::errors::ClientError;
 use crate::storage::JwtToken;
 use crate::traits::{ClientAuthenticator, ClientStorage};
 
@@ -353,11 +354,16 @@ where
             if !response.status().is_success() {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
-                let msg = serde_json::from_str::<serde_json::Value>(&body)
-                    .ok()
-                    .and_then(|v| v["error"].as_str().map(str::to_owned))
-                    .unwrap_or_else(|| format!("Request failed with status: {status}"));
-                bail!("{}", msg);
+                // Return a typed error carrying the numeric status so callers can
+                // classify the failure (e.g. 404 → not-found) by matching the
+                // variant rather than parsing the message string. The rendered
+                // message is still status-prefixed via `extract_error_message`,
+                // so the `Display` output stays "HTTP {code}[: detail]".
+                return Err(ClientError::Http {
+                    status: status.as_u16(),
+                    message: extract_error_message(&body, status),
+                }
+                .into());
             }
 
             return Ok(response);
