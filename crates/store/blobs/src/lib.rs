@@ -458,7 +458,7 @@ impl Blob {
                     // true cycle (a revisited internal node), cap the distinct
                     // internal-node count, then descend before the next sibling
                     // (LIFO: push the parent cursor first, the child on top).
-                    if depth > MAX_BLOB_DEPTH {
+                    if depth >= MAX_BLOB_DEPTH {
                         error!(?id, %child_id, depth, "blob meta graph exceeds depth budget");
                         Err(BlobError::CorruptGraph {
                             id,

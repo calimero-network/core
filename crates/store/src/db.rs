@@ -155,12 +155,16 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
     /// I/O and no buffer.
     ///
     /// Each batch collects at most `DELETE_RANGE_BATCH` keys, deletes them, then
-    /// re-seeks to the last key of that batch to resume: it was just deleted, so
-    /// the seek lands on the next surviving in-range key. Resuming from the batch
-    /// boundary (rather than re-seeking to `lo` every time) keeps each seek local
-    /// to where the previous one stopped. Peak memory is one batch regardless of
-    /// range size, where buffering the whole range first would grow without
-    /// bound on a large slice.
+    /// resumes at the byte-successor of the batch's last key. That target is
+    /// strictly greater than every key just deleted, so the next seek lands on
+    /// the first surviving in-range key using only the `seek` contract's `>=`
+    /// semantics — progress does not depend on how a backend's `seek` treats an
+    /// absent (just-deleted) key, which keeps the loop terminating for any
+    /// conforming backend, not just those whose seek skips to the next survivor.
+    /// Resuming from the batch boundary (rather than re-seeking to `lo`) also
+    /// keeps each seek local to where the previous one stopped. Peak memory is
+    /// one batch regardless of range size, where buffering the whole range first
+    /// would grow without bound on a large slice.
     ///
     /// Not atomic: this issues per-key deletes, so an error mid-range leaves the
     /// keys deleted so far gone and the rest intact. Callers that need
@@ -172,15 +176,15 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
         const DELETE_RANGE_BATCH: usize = 4096;
 
         let hi_bytes: Vec<u8> = hi.as_ref().to_vec();
-        // First batch seeks to `lo`; later batches resume from the last-deleted
-        // key (which is gone, so the seek advances to the next survivor).
-        let mut resume_from: Vec<u8> = lo.as_ref().to_vec();
+        // First batch seeks to `lo` (inclusive); later batches resume strictly
+        // after the previous batch's last key.
+        let mut seek_key: Vec<u8> = lo.as_ref().to_vec();
 
         loop {
             let mut iter = self.iter(col)?;
             let mut keys: Vec<Vec<u8>> = Vec::new();
             let mut pos = iter
-                .seek(Slice::from(&resume_from))?
+                .seek(Slice::from(&seek_key))?
                 .map(|k| k.as_ref().to_vec());
             while let Some(key) = pos {
                 if key.as_slice() >= hi_bytes.as_slice() {
@@ -199,10 +203,11 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
             }
 
             let drained = keys.len();
-            // The last key of the batch is where the next seek resumes.
-            if let Some(last) = keys.last() {
-                resume_from.clone_from(last);
-            }
+            // Resume strictly after this batch's last key: its byte-successor is
+            // greater than every key deleted below, independent of seek's
+            // treatment of the now-absent keys.
+            let mut next_seek = keys.last().cloned().unwrap_or_default();
+            next_seek.push(0u8);
             for key in keys {
                 self.delete(col, Slice::from(&key))?;
             }
@@ -211,6 +216,7 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
             if drained < DELETE_RANGE_BATCH {
                 break;
             }
+            seek_key = next_seek;
         }
 
         Ok(())

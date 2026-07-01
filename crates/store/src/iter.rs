@@ -314,15 +314,23 @@ where
 /// # Error Handling
 ///
 /// Each item yielded is a tuple of `(EyreResult<K::Key>, EyreResult<V::Value>)`.
-/// Callers should check both results and propagate errors appropriately.
+/// Callers should check both results and propagate errors appropriately —
+/// **the key result first**.
+///
+/// On a key error (decode failure or an I/O error from the underlying iterator)
+/// the iterator fuses and yields `(Err(key_error), Err(sentinel))`: the real
+/// cause is in the key slot, and the value slot carries only a
+/// `"value skipped: …"` sentinel because no value is read for a row whose key
+/// could not be resolved. So inspect (and propagate) the key result first; the
+/// value slot is meaningful only when the key result is `Ok`.
 ///
 /// ## Proper Usage
 ///
 /// ```ignore
 /// let mut iter = handle.iter::<MyKey>()?;
 /// for (key_result, value_result) in iter.entries() {
-///     let key = key_result?;     // Propagate key errors
-///     let value = value_result?; // Propagate value errors
+///     let key = key_result?;     // Propagate key errors FIRST
+///     let value = value_result?; // Only meaningful once the key is Ok
 ///     // ... use key and value
 /// }
 /// ```
