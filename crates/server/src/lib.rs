@@ -56,26 +56,37 @@ impl NodeReadiness {
         Self(AtomicU8::new(Self::STARTING))
     }
 
+    // A single independent flag with no cross-atomic ordering requirements, so
+    // `Release`/`Acquire` are sufficient — `SeqCst`'s total order buys nothing
+    // here.
     pub fn set_ready(&self) {
-        self.0.store(Self::READY, Ordering::SeqCst);
+        self.0.store(Self::READY, Ordering::Release);
     }
 
     pub fn set_shutting_down(&self) {
-        self.0.store(Self::SHUTTING_DOWN, Ordering::SeqCst);
+        self.0.store(Self::SHUTTING_DOWN, Ordering::Release);
     }
 
     #[must_use]
     pub fn is_ready(&self) -> bool {
-        self.0.load(Ordering::SeqCst) == Self::READY
+        self.0.load(Ordering::Acquire) == Self::READY
     }
 
     /// Lower-case label for logs and probe responses.
     #[must_use]
     pub fn label(&self) -> &'static str {
-        match self.0.load(Ordering::SeqCst) {
+        match self.0.load(Ordering::Acquire) {
             Self::READY => "ready",
             Self::SHUTTING_DOWN => "shutting_down",
-            _ => "starting",
+            Self::STARTING => "starting",
+            // Only the three constants above are ever stored; a fresh value
+            // means a new state was added without updating this match. Treat it
+            // as not-ready ("starting") in release, but trip in debug so the
+            // omission is caught in tests rather than silently masked.
+            other => {
+                debug_assert!(false, "NodeReadiness holds unknown state {other}");
+                "starting"
+            }
         }
     }
 }
