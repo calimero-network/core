@@ -20,8 +20,22 @@ pub(crate) fn apply(
         bail!(MembershipError::ReadOnlyTeeViaAttestationOnly);
     }
     ctx.permissions().require_admin(signer)?;
+    // A role change targets an EXISTING direct member. `add_member` is an
+    // unconditional upsert, so without this guard a `MemberRoleSet` on a
+    // non-member (or on a previously-removed member still on the deny-list)
+    // silently CREATES a member row — bypassing the `MemberAdded` path that
+    // clears the deny-list and restores per-context identities. Require a
+    // direct membership row so this op only ever mutates the role of someone
+    // who is already a member.
+    let membership = MembershipRepository::new(store);
+    if membership.role_of(group_id, member)?.is_none() {
+        bail!(MembershipError::NotMember {
+            group_id: hex::encode(group_id.to_bytes()),
+            identity: format!("{member:?}"),
+        });
+    }
     ctx.membership_policy()
         .ensure_not_last_admin_demotion(member, role)?;
-    MembershipRepository::new(store).add_member(group_id, member, role.clone())?;
+    membership.add_member(group_id, member, role.clone())?;
     Ok(())
 }

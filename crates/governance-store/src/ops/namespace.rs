@@ -75,11 +75,17 @@ pub(crate) fn dispatch_root_op(
         // self-consistent forged genesis on a BARE namespace is not blocked here
         // — see the SECURITY note in `namespace_created::apply`.
         RootOp::NamespaceCreated { founder } => namespace_created::apply(ctx, op, *founder),
-        // `RootOp` is `#[non_exhaustive]` in `calimero-governance-types`,
-        // so the wildcard is required at compile time. New variants land
-        // here as `Ok(())` (silent no-op) until wired up explicitly —
-        // reviewers must grep for `RootOp::` in this file when reviewing
-        // governance-types variant additions.
-        _ => Ok(()),
+        // `KeyDelivery` has no state mutation of its own here: the actual
+        // key-unwrap/store side effect is orchestrated by the outer
+        // `apply_signed_op` match in `namespace/governance.rs`, which owns the
+        // crate-internal state the per-op handlers can't reach. This arm is an
+        // intentional no-op so the match can stay EXHAUSTIVE.
+        RootOp::KeyDelivery { .. } => Ok(()),
+        // `RootOp` is deliberately NOT `#[non_exhaustive]` (see its definition in
+        // `calimero-governance-types`): the match is exhaustive so ADDING a
+        // variant fails to compile here until it gets an explicit handler, rather
+        // than silently no-op'ing while `apply_signed_op` still advances the DAG
+        // head — which would drop the op from application fleet-wide. Do NOT add a
+        // `_` wildcard.
     }
 }
