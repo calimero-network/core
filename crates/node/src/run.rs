@@ -58,9 +58,10 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(err) = tokio::signal::ctrl_c().await {
-            tracing::error!(%err, "failed to install Ctrl-C handler");
-            // Never resolve: fall back to the SIGTERM arm rather than
-            // reporting a spurious shutdown.
+            // Registration failed (rare). Don't resolve this arm — resolving
+            // would report a spurious shutdown. The other arm (SIGTERM) and
+            // the kernel's default signal dispositions remain in effect.
+            tracing::error!(%err, "failed to install Ctrl-C handler; relying on SIGTERM / OS default");
             std::future::pending::<()>().await;
         }
     };
@@ -72,7 +73,13 @@ async fn shutdown_signal() {
                 let _ = sig.recv().await;
             }
             Err(err) => {
-                tracing::error!(%err, "failed to install SIGTERM handler");
+                // Registration failed, so no SIGTERM handler is installed —
+                // the kernel's *default* SIGTERM disposition (terminate the
+                // process) stays in effect, which still stops the node (just
+                // abruptly, without this graceful drain). We therefore park
+                // this arm rather than resolve it; resolving would trigger a
+                // false graceful shutdown with no signal actually received.
+                tracing::error!(%err, "failed to install SIGTERM handler; OS default disposition applies");
                 std::future::pending::<()>().await;
             }
         }
@@ -573,22 +580,44 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
             Ok(Err(join_err)) => {
                 tracing::warn!(%join_err, "HTTP server task join error during shutdown");
             }
-            Err(_) => tracing::warn!("HTTP server did not drain within the shutdown grace period"),
+            Err(_) => {
+                // Grace elapsed with the server still draining. Dropping the
+                // `JoinHandle` only detaches the task — it would keep running
+                // (and could still write) past our flush and return. Abort and
+                // reap it so it is fully stopped before we flush.
+                tracing::warn!(
+                    "HTTP server did not drain within the shutdown grace period; aborting"
+                );
+                server.abort();
+                let _ = server.await;
+            }
         }
     }
 
-    // 3. Signal and drain the network-event bridge.
+    // 3. Signal and drain the network-event bridge. Best-effort: on the
+    //    system-stop exit path the Actix arbiters may already be gone, so the
+    //    notify/await is a courtesy drain rather than a guarantee.
     bridge_shutdown.notify_one();
     if !bridge_done {
-        if let Err(_elapsed) = tokio::time::timeout(SHUTDOWN_GRACE, &mut bridge).await {
-            tracing::warn!("Network event bridge did not stop within the shutdown grace period");
+        match tokio::time::timeout(SHUTDOWN_GRACE, &mut bridge).await {
+            Ok(_) => {}
+            Err(_elapsed) => {
+                tracing::warn!(
+                    "Network event bridge did not stop within the shutdown grace period; aborting"
+                );
+                bridge.abort();
+                let _ = bridge.await;
+            }
         }
     }
 
     // 4. Abort + reap the detached background tasks so none of them can wake
-    //    up and touch the datastore after we flush. RocksDB writes inside them
-    //    are synchronous, so an abort can only land at an `.await` boundary —
-    //    never mid-write — making this safe against torn writes.
+    //    up and touch the datastore after we flush. Their RocksDB writes are
+    //    synchronous and inline (none use `spawn_blocking`), so a cancellation
+    //    can only be observed at an `.await` boundary — after any in-progress
+    //    write has returned — making this safe against torn writes. A task
+    //    that panicked instead of cancelling surfaces as a non-cancelled
+    //    `JoinError` below and is logged rather than swallowed.
     for (name, handle) in [
         ("metrics_tick", metrics_tick),
         ("peer_identity_tick", peer_identity_tick),
