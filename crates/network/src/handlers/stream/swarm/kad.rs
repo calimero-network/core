@@ -233,14 +233,22 @@ mod tests {
 
     #[test]
     fn rejects_value_too_short_for_a_size_suffix() {
-        // Fewer than the 8 trailing size bytes leaves no room for a peer id.
+        // At most 8 bytes (<= SIZE_LEN) leaves no room for a peer id: below 8
+        // the `checked_sub` fails, and exactly 8 yields an empty prefix caught
+        // by the `is_empty` guard.
+        assert!(!is_valid_blob_provider_record(&record(
+            vec![7u8; 64],
+            vec![0u8; 4]
+        )));
         assert!(!is_valid_blob_provider_record(&record(
             vec![7u8; 64],
             vec![0u8; 8]
         )));
+        // One byte past the size suffix is a non-empty prefix, so it clears the
+        // `is_empty` guard and must instead be rejected by the peer-id parse.
         assert!(!is_valid_blob_provider_record(&record(
             vec![7u8; 64],
-            vec![0u8; 4]
+            vec![0u8; 9]
         )));
     }
 

@@ -205,12 +205,11 @@ impl Behaviour {
                         // can validate its shape and size before it enters our
                         // store. Without this any server-mode node would store
                         // arbitrary forged records for any (context, blob).
-                        let _ = kad_config.set_record_filtering(kad::StoreInserts::FilterBoth);
-                        let _ = kad_config.set_record_ttl(Some(KAD_RECORD_TTL));
-                        let _ = kad_config
-                            .set_publication_interval(Some(KAD_RECORD_PUBLICATION_INTERVAL));
-                        let _ = kad_config.set_query_timeout(KAD_QUERY_TIMEOUT);
-                        let _ = kad_config.set_replication_factor(KAD_REPLICATION_FACTOR);
+                        kad_config.set_record_filtering(kad::StoreInserts::FilterBoth);
+                        kad_config.set_record_ttl(Some(KAD_RECORD_TTL));
+                        kad_config.set_publication_interval(Some(KAD_RECORD_PUBLICATION_INTERVAL));
+                        kad_config.set_query_timeout(KAD_QUERY_TIMEOUT);
+                        kad_config.set_replication_factor(KAD_REPLICATION_FACTOR);
 
                         let store = kad::store::MemoryStore::with_config(
                             peer_id,
@@ -384,7 +383,7 @@ impl Behaviour {
 /// cap instead of the library's 8192 default.
 fn bounded_yamux_config() -> yamux::Config {
     let mut cfg = yamux::Config::default();
-    let _ = cfg.set_max_num_streams(YAMUX_MAX_NUM_STREAMS);
+    cfg.set_max_num_streams(YAMUX_MAX_NUM_STREAMS);
     cfg
 }
 

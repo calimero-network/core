@@ -11,6 +11,8 @@
 //! record from the event, would fail here instead of quietly breaking blob
 //! discovery in production.
 
+use std::time::Duration;
+
 use libp2p::identity::Keypair;
 use libp2p::kad::store::{MemoryStore, RecordStore};
 use libp2p::kad::{self, InboundRequest, Mode, Quorum, Record, RecordKey, StoreInserts};
@@ -81,36 +83,41 @@ async fn filtered_inbound_record_is_not_stored_until_handler_stores_it() {
 
     // Drive both swarms until the receiver surfaces the replicated record.
     // Polling the announcer keeps its side of the connection making progress.
-    loop {
-        let event = tokio::select! {
-            _ = announcer.next_swarm_event() => continue,
-            event = receiver.next_swarm_event() => event,
-        };
+    // Bounded so a routing regression fails loudly instead of hanging forever.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let event = tokio::select! {
+                _ = announcer.next_swarm_event() => continue,
+                event = receiver.next_swarm_event() => event,
+            };
 
-        if let SwarmEvent::Behaviour(KadOnlyEvent::Kad(kad::Event::InboundRequest {
-            request:
-                InboundRequest::PutRecord {
-                    record: Some(inbound),
-                    ..
-                },
-        })) = event
-        {
-            assert_eq!(inbound.key, key, "received the announced record");
-            // FilterBoth must have suppressed the blind auto-store.
-            assert!(
-                receiver.behaviour_mut().kad.store_mut().get(&key).is_none(),
-                "record must not be stored before the handler validates it",
-            );
-            // The handler's explicit store is what makes it retrievable.
-            receiver
-                .behaviour_mut()
-                .kad
-                .store_mut()
-                .put(inbound)
-                .expect("store put should succeed");
-            break;
+            if let SwarmEvent::Behaviour(KadOnlyEvent::Kad(kad::Event::InboundRequest {
+                request:
+                    InboundRequest::PutRecord {
+                        record: Some(inbound),
+                        ..
+                    },
+            })) = event
+            {
+                assert_eq!(inbound.key, key, "received the announced record");
+                // FilterBoth must have suppressed the blind auto-store.
+                assert!(
+                    receiver.behaviour_mut().kad.store_mut().get(&key).is_none(),
+                    "record must not be stored before the handler validates it",
+                );
+                // The handler's explicit store is what makes it retrievable.
+                receiver
+                    .behaviour_mut()
+                    .kad
+                    .store_mut()
+                    .put(inbound)
+                    .expect("store put should succeed");
+                break;
+            }
         }
-    }
+    })
+    .await
+    .expect("timed out waiting for the receiver to surface the replicated record");
 
     assert!(
         receiver.behaviour_mut().kad.store_mut().get(&key).is_some(),
