@@ -2,7 +2,10 @@
 //! `apply_group_op_mutations` in #2304.
 
 use super::context::GroupApplyCtx;
-use crate::{get_group_for_context, CapabilitiesRepository, ContextRegistrationError};
+use crate::{
+    get_group_for_context, CapabilitiesRepository, ContextRegistrationError, MembershipError,
+    MembershipRepository,
+};
 use calimero_governance_types::ContextCapabilityBits;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -28,6 +31,19 @@ pub(crate) fn apply(
         bail!(ContextRegistrationError::NotInGroup {
             group_id: hex::encode(group_id.to_bytes()),
             context_id: format!("{context_id:?}"),
+        });
+    }
+    // The grantee must be a direct member of this group, mirroring
+    // `MemberCapabilitySet`. Without this a `manage_members` signer could write a
+    // per-context capability row for an arbitrary non-member identity — an orphan
+    // row the enumeration/authorization paths never reconcile.
+    if MembershipRepository::new(store)
+        .role_of(group_id, member)?
+        .is_none()
+    {
+        bail!(MembershipError::NotMember {
+            group_id: hex::encode(group_id.to_bytes()),
+            identity: format!("{member:?}"),
         });
     }
     let caps = CapabilitiesRepository::new(store);

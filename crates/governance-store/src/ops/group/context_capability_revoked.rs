@@ -28,6 +28,12 @@ pub(crate) fn apply(
             context_id: format!("{context_id:?}"),
         });
     }
+    // Deliberate asymmetry with the grant path (and `MemberCapabilitySet`):
+    // revoke does NOT require `member` to still be a group member. Revoke must
+    // remain able to DELETE an existing per-context capability row for an
+    // identity that has since left the group — or an orphan row left by an older
+    // code path — and gating on current membership would strand exactly those
+    // rows. Revoking for a non-member with no row is a harmless no-op.
     let caps = CapabilitiesRepository::new(store);
     let current = caps
         .context_member_capability(group_id, context_id, member)?

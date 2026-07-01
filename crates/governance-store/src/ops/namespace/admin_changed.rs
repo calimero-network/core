@@ -40,11 +40,14 @@ pub(crate) fn apply(
     meta_repo.save(&ns_gid, &meta)?;
 
     // Ensure the new admin carries an explicit Admin member row so they are
-    // enumerable as Admin, mirroring the `NamespaceCreated` genesis path.
-    // Only upgrade a plain Member, so a richer future role is never clobbered
-    // on this transfer. (`existing_role` is `Some` here — the `None` case bailed
-    // above.)
-    if matches!(existing_role, Some(GroupMemberRole::Member)) {
+    // enumerable as Admin AND so authority checks that read the membership-row
+    // role (`MembershipRepository::is_admin`, reached via
+    // `require_namespace_admin`) agree with `meta.admin_identity`. Upgrade ANY
+    // non-Admin role: Admin is the top role, so this never downgrades, and
+    // leaving a `ReadOnlyTee` (or any future non-Admin role) in place would make
+    // `is_admin` return false for the very identity the meta names as admin.
+    // (`existing_role` is `Some` here — the `None` case bailed above.)
+    if !matches!(existing_role, Some(GroupMemberRole::Admin)) {
         membership.add_member(&ns_gid, &new_admin, GroupMemberRole::Admin)?;
     }
     Ok(())
