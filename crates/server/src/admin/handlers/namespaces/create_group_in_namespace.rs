@@ -162,7 +162,7 @@ pub async fn handler(
         &state.store,
         &state.node_client,
         state.ctx_client.ack_router(),
-        resolved_ns_id.to_bytes(),
+        resolved_ns_id.to_bytes().into(),
         &signer_sk,
         op,
     )

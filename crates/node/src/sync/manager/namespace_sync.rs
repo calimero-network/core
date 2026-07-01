@@ -468,7 +468,7 @@ impl SyncManager {
         // point-to-point, not folded governance state, so responders
         // disagreeing cannot diverge membership.
         let now_secs = calimero_context::group_store::now_secs();
-        if let Err(err) = NamespaceMembershipService::new(&store, namespace_id)
+        if let Err(err) = NamespaceMembershipService::new(&store, namespace_id.into())
             .validate_open_invitation(&invitation, now_secs)
         {
             let msg = StreamMessage::Message {
@@ -1350,7 +1350,7 @@ impl SyncManager {
 
         let awaiting = match calimero_context::group_store::namespace_groups_awaiting_key(
             &store,
-            namespace_id,
+            namespace_id.into(),
         ) {
             Ok(groups) => groups,
             Err(err) => {
@@ -1401,7 +1401,7 @@ impl SyncManager {
                 let store = self.context_client.datastore_handle().into_inner();
                 let outcome = calimero_context::group_store::apply_received_group_key(
                     &store,
-                    namespace_id,
+                    namespace_id.into(),
                     group_id,
                     &envelope_bytes,
                     responder_identity,
@@ -1552,7 +1552,7 @@ impl SyncManager {
         let (key_envelope_bytes, responder_identity) =
             match calimero_context::group_store::build_group_key_delivery(
                 &store,
-                namespace_id,
+                namespace_id.into(),
                 group_id,
                 requester_public_key,
             ) {

@@ -76,7 +76,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                                     &datastore,
                                     &node_client,
                                     &ack_router,
-                                    ns_id.to_bytes(),
+                                    ns_id.to_bytes().into(),
                                     &sk,
                                     delivery_op,
                                     Some(vec![*identity]),

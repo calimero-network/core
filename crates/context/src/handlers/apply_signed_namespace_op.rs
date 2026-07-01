@@ -16,7 +16,7 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let namespace_id = op.namespace_id;
-        let dag = self.get_or_create_namespace_dag(&namespace_id);
+        let dag = self.get_or_create_namespace_dag(namespace_id.as_bytes());
         let datastore = self.datastore.clone();
         // Separate handle for the shadow-compare (the one above is moved into
         // the applier).
@@ -292,7 +292,7 @@ fn apply_auth_requirement(
 
     match &signed.op {
         NamespaceOp::Root(root) => {
-            let ns_root = ContextGroupId::from(signed.namespace_id);
+            let ns_root = ContextGroupId::from(signed.namespace_id.to_bytes());
             match root {
                 RootOp::AdminChanged { .. }
                 | RootOp::PolicyUpdated { .. }

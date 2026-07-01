@@ -100,7 +100,7 @@ pub fn op_from_namespace_op(
     };
     build_op(
         id,
-        ScopeId::from(signed.namespace_id),
+        ScopeId::from(signed.namespace_id.to_bytes()),
         signed.signer,
         hlc,
         parents,

@@ -63,7 +63,7 @@ pub(super) fn handle_namespace_governance_delta(
         // cache from a Y subscription. Mirrors the existing `Op` arm
         // check below.
         NamespaceTopicMsg::ReadinessBeacon(beacon) => {
-            if beacon.namespace_id != namespace_id {
+            if beacon.namespace_id != namespace_id.into() {
                 warn!("ReadinessBeacon namespace_id mismatch with topic; dropping");
                 return;
             }
@@ -71,7 +71,7 @@ pub(super) fn handle_namespace_governance_delta(
             return;
         }
         NamespaceTopicMsg::ReadinessProbe(probe) => {
-            if probe.namespace_id != namespace_id {
+            if probe.namespace_id != namespace_id.into() {
                 warn!("ReadinessProbe namespace_id mismatch with topic; dropping");
                 return;
             }
@@ -88,7 +88,7 @@ pub(super) fn handle_namespace_governance_delta(
         // rollup. The heartbeat is ephemeral telemetry, not governance state,
         // so there is no apply / ack / backfill — just the cache upsert.
         NamespaceTopicMsg::MigrationHeartbeat(heartbeat) => {
-            if heartbeat.namespace_id != namespace_id {
+            if heartbeat.namespace_id != namespace_id.into() {
                 warn!("MigrationHeartbeat namespace_id mismatch with topic; dropping");
                 return;
             }
@@ -97,14 +97,14 @@ pub(super) fn handle_namespace_governance_delta(
                 &heartbeat,
             ) {
                 debug!(
-                    namespace_id = %hex::encode(heartbeat.namespace_id),
+                    namespace_id = %hex::encode(heartbeat.namespace_id.as_bytes()),
                     "MigrationHeartbeat failed verification (sig/membership); dropping"
                 );
                 return;
             }
             this.migration_status_cache.insert(&heartbeat);
             debug!(
-                namespace_id = %hex::encode(heartbeat.namespace_id),
+                namespace_id = %hex::encode(heartbeat.namespace_id.as_bytes()),
                 peer = %heartbeat.peer_pubkey,
                 schema_version = heartbeat.schema_version,
                 residue_auto = heartbeat.residue_auto,
@@ -115,7 +115,7 @@ pub(super) fn handle_namespace_governance_delta(
         }
     };
 
-    if op.namespace_id != namespace_id {
+    if op.namespace_id != namespace_id.into() {
         warn!("NamespaceGovernanceDelta namespace_id mismatch with topic");
         return;
     }

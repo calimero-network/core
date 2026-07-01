@@ -95,7 +95,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         // and both are handed to `sign_and_publish_post_gate`.
         let namespace_id = NamespaceRepository::new(self.store).resolve(&self.group_id)?;
         let namespace_bytes = namespace_id.to_bytes();
-        let topic = ns_topic(namespace_bytes);
+        let topic = ns_topic(namespace_bytes.into());
         let mesh = self
             .node_client
             .mesh_peer_count_for_namespace(namespace_bytes)
@@ -271,7 +271,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         // via sync. `sign_and_publish_post_gate` takes the `mesh` / `known`
         // snapshot directly and never runs `assert_transport_ready`, so
         // there is no gate that could reject after the local apply.
-        let mut report = NamespaceGovernance::new(self.store, namespace_bytes)
+        let mut report = NamespaceGovernance::new(self.store, namespace_bytes.into())
             .sign_and_publish_post_gate(
                 self.node_client,
                 ack_router,
@@ -282,7 +282,8 @@ impl<'a> GroupGovernancePublisher<'a> {
                 true,
             )
             .await?;
-        report.readiness = classify_report_readiness(self.store, namespace_bytes, &report, known);
+        report.readiness =
+            classify_report_readiness(self.store, namespace_bytes.into(), &report, known);
         tracing::debug!(
             op_kind,
             group_id = %hex::encode(self.group_id.to_bytes()),

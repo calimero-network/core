@@ -2796,7 +2796,7 @@ fn seed_bootstrap_admin_repairs_missing_member_row() {
     let namespace_id = [0xC6u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
 
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // ---- First seed: both meta and the (non-authoritative) member row are
     // written. #2474: the member row is `Member`, not `Admin`. ----
@@ -3862,7 +3862,7 @@ fn member_joined_open_clears_deny_list_and_restores_context_identity() {
     // Sign + apply a fresh `MemberJoinedOpen` for the rejoiner.
     let signed = SignedNamespaceOp::sign(
         &member_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
@@ -3973,7 +3973,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
 
     let signed = SignedNamespaceOp::sign(
         &member_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
@@ -6453,7 +6453,7 @@ mod auto_follow_tests {
 
         let op = SignedNamespaceOp::sign(
             &admin_sk,
-            ns_id,
+            ns_id.into(),
             vec![],
             1,
             NamespaceOp::Root(RootOp::GroupCreated {
@@ -6497,12 +6497,12 @@ mod auto_follow_tests {
                         namespace_id,
                         parent_group_id,
                         child_group_id,
-                    }) if namespace_id == ns_id
+                    }) if namespace_id == ns_id.into()
                         && parent_group_id == ns_id
                         && child_group_id == new_group_id =>
                     {
                         return Some(
-                            NamespaceOpLogService::new(&observer_store, ns_id)
+                            NamespaceOpLogService::new(&observer_store, ns_id.into())
                                 .contains_op(delta_id)
                                 .unwrap(),
                         );
@@ -6526,7 +6526,7 @@ mod auto_follow_tests {
 
         // Release the observer and immediately apply.
         barrier.wait();
-        NamespaceGovernance::new(&store, ns_id)
+        NamespaceGovernance::new(&store, ns_id.into())
             .apply_signed_op(&op)
             .unwrap();
 

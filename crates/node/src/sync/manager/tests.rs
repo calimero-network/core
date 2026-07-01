@@ -367,7 +367,7 @@ mod key_recovery_trigger {
         // steady state of a member that joined but never got its key.
         let op = SignedNamespaceOp::sign(
             &signer_sk,
-            namespace_id,
+            namespace_id.into(),
             vec![],
             1,
             NamespaceOp::Group {
@@ -378,7 +378,7 @@ mod key_recovery_trigger {
             },
         )
         .unwrap();
-        NamespaceOpLogService::new(&store, namespace_id)
+        NamespaceOpLogService::new(&store, namespace_id.into())
             .store_signed_operation(&op)
             .unwrap();
 
@@ -390,7 +390,7 @@ mod key_recovery_trigger {
         // Key recovery still has work to do: the group is awaiting a key.
         // The interval tick drives `recover_missing_group_keys` on this
         // signal, decoupled from the gate above.
-        let awaiting = namespace_groups_awaiting_key(&store, namespace_id).unwrap();
+        let awaiting = namespace_groups_awaiting_key(&store, namespace_id.into()).unwrap();
         assert_eq!(
             awaiting,
             vec![group_id],
@@ -401,7 +401,7 @@ mod key_recovery_trigger {
         GroupKeyring::new(&store, group_gid)
             .store_key(&[0xAA; 32])
             .unwrap();
-        assert!(namespace_groups_awaiting_key(&store, namespace_id)
+        assert!(namespace_groups_awaiting_key(&store, namespace_id.into())
             .unwrap()
             .is_empty());
     }

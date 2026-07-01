@@ -262,7 +262,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                         &datastore,
                         &node_client,
                         &ack_router,
-                        ns_id.to_bytes(),
+                        ns_id.to_bytes().into(),
                         &signer_sk,
                         op,
                     )

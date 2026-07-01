@@ -89,7 +89,7 @@ pub(crate) fn apply(
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
-    let ns_gid = ContextGroupId::from(namespace_id);
+    let ns_gid = ContextGroupId::from(namespace_id.to_bytes());
 
     // ---- Load the root meta and decide established-ness FIRST. ----
     // The established check (NOT the structural parents/signer checks) is the
@@ -150,7 +150,7 @@ pub(crate) fn apply(
                 // stall), we simply do not act on a non-genesis-shaped op.
                 if !op.parent_op_hashes.is_empty() {
                     tracing::debug!(
-                        namespace_id = %hex::encode(namespace_id),
+                        namespace_id = %hex::encode(namespace_id.as_bytes()),
                         %founder,
                         parent_count = op.parent_op_hashes.len(),
                         "NamespaceCreated: same-founder PARENTED op on an established \
@@ -204,7 +204,7 @@ pub(crate) fn apply(
                     repaired.owner_identity = founder;
                     MetaRepository::new(store).save(&ns_gid, &repaired)?;
                     tracing::debug!(
-                        namespace_id = %hex::encode(namespace_id),
+                        namespace_id = %hex::encode(namespace_id.as_bytes()),
                         %founder,
                         prior_owner = %meta.owner_identity,
                         "NamespaceCreated: same-founder re-arrival repaired diverged \
@@ -223,7 +223,7 @@ pub(crate) fn apply(
                     )?;
                 }
                 tracing::debug!(
-                    namespace_id = %hex::encode(namespace_id),
+                    namespace_id = %hex::encode(namespace_id.as_bytes()),
                     %founder,
                     "NamespaceCreated: founder already established; ensured Admin member row \
                      (genesis-shaped idempotent re-arrival)"
@@ -235,7 +235,7 @@ pub(crate) fn apply(
             // would grant its declared founder state on a namespace they do not
             // own. That is the anti-hijack guarantee.
             tracing::debug!(
-                namespace_id = %hex::encode(namespace_id),
+                namespace_id = %hex::encode(namespace_id.as_bytes()),
                 established_admin = %meta.admin_identity,
                 established_owner = %meta.owner_identity,
                 %founder,
@@ -400,7 +400,7 @@ pub(crate) fn apply(
     }
 
     tracing::info!(
-        namespace_id = %hex::encode(namespace_id),
+        namespace_id = %hex::encode(namespace_id.as_bytes()),
         %founder,
         "NamespaceCreated genesis applied: founder established as namespace admin/owner"
     );

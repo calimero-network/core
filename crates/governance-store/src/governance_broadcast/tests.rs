@@ -1,3 +1,4 @@
+use calimero_governance_types::NamespaceId;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -48,7 +49,7 @@ async fn verify_ack_rejects_wrong_op_hash() {
     let sk = PrivateKey::random(&mut rand::thread_rng());
     let ack = signed_ack(&sk, [1u8; 32]);
     // Caller is waiting on a different op_hash than the ack carries.
-    assert!(!verify_ack(&store, [42u8; 32], [9u8; 32], &ack));
+    assert!(!verify_ack(&store, [42u8; 32].into(), [9u8; 32], &ack));
 }
 
 #[tokio::test]
@@ -57,7 +58,7 @@ async fn verify_ack_rejects_invalid_signature() {
     // dummy_ack uses [0u8; 64] — Ed25519 verification fails before we
     // ever consult the membership store.
     let ack = dummy_ack([1u8; 32]);
-    assert!(!verify_ack(&store, [42u8; 32], [1u8; 32], &ack));
+    assert!(!verify_ack(&store, [42u8; 32].into(), [1u8; 32], &ack));
 }
 
 #[tokio::test]
@@ -66,7 +67,7 @@ async fn verify_ack_rejects_non_member_signer() {
     // Properly-signed ack, but `store` has no namespace members at all.
     let sk = PrivateKey::random(&mut rand::thread_rng());
     let ack = signed_ack(&sk, [7u8; 32]);
-    assert!(!verify_ack(&store, [42u8; 32], [7u8; 32], &ack));
+    assert!(!verify_ack(&store, [42u8; 32].into(), [7u8; 32], &ack));
 }
 
 // ---------------------------------------------------------------------------
@@ -173,7 +174,7 @@ impl BroadcastTransport for StubTransport {
     }
 }
 
-fn mk_signed_op(sk: &PrivateKey, namespace_id: [u8; 32]) -> SignedNamespaceOp {
+fn mk_signed_op(sk: &PrivateKey, namespace_id: NamespaceId) -> SignedNamespaceOp {
     SignedNamespaceOp::sign(
         sk,
         namespace_id,
@@ -188,10 +189,10 @@ fn mk_signed_op(sk: &PrivateKey, namespace_id: [u8; 32]) -> SignedNamespaceOp {
 
 fn plant_namespace_member(
     store: &Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     pk: &calimero_primitives::identity::PublicKey,
 ) {
-    let gid = ContextGroupId::from(namespace_id);
+    let gid = ContextGroupId::from(namespace_id.to_bytes());
     MembershipRepository::new(store)
         .add_member(&gid, pk, GroupMemberRole::Member)
         .expect("plant");
@@ -210,13 +211,13 @@ async fn publish_and_await_ack_times_out_with_empty_acked_by() {
     let transport = StubTransport;
     let topic = TopicHash::from_raw("ns/test");
     let signer = PrivateKey::random(&mut rand::thread_rng());
-    let signed_op = mk_signed_op(&signer, [42u8; 32]);
+    let signed_op = mk_signed_op(&signer, [42u8; 32].into());
 
     let report = publish_and_await_ack_namespace(
         &store,
         &transport,
         &router,
-        [42u8; 32],
+        [42u8; 32].into(),
         topic,
         signed_op,
         Duration::from_millis(50),
@@ -243,10 +244,10 @@ async fn publish_and_await_ack_dedups_acks_from_same_signer() {
     // namespace member that acks.
     let publisher = PrivateKey::random(&mut rand::thread_rng());
     let alice = PrivateKey::random(&mut rand::thread_rng());
-    plant_namespace_member(&store, namespace_id, &publisher.public_key());
-    plant_namespace_member(&store, namespace_id, &alice.public_key());
+    plant_namespace_member(&store, namespace_id.into(), &publisher.public_key());
+    plant_namespace_member(&store, namespace_id.into(), &alice.public_key());
 
-    let signed_op = mk_signed_op(&publisher, namespace_id);
+    let signed_op = mk_signed_op(&publisher, namespace_id.into());
     let op_hash = calimero_context_client::local_governance::hash_scoped_namespace(
         topic.as_str().as_bytes(),
         &signed_op,
@@ -274,7 +275,7 @@ async fn publish_and_await_ack_dedups_acks_from_same_signer() {
         &store,
         &transport,
         &router,
-        namespace_id,
+        namespace_id.into(),
         topic,
         signed_op,
         Duration::from_millis(200),
@@ -304,11 +305,11 @@ async fn publish_and_await_ack_returns_ok_on_min_acks_satisfied() {
     let publisher = PrivateKey::random(&mut rand::thread_rng());
     let alice = PrivateKey::random(&mut rand::thread_rng());
     let bob = PrivateKey::random(&mut rand::thread_rng());
-    plant_namespace_member(&store, namespace_id, &publisher.public_key());
-    plant_namespace_member(&store, namespace_id, &alice.public_key());
-    plant_namespace_member(&store, namespace_id, &bob.public_key());
+    plant_namespace_member(&store, namespace_id.into(), &publisher.public_key());
+    plant_namespace_member(&store, namespace_id.into(), &alice.public_key());
+    plant_namespace_member(&store, namespace_id.into(), &bob.public_key());
 
-    let signed_op = mk_signed_op(&publisher, namespace_id);
+    let signed_op = mk_signed_op(&publisher, namespace_id.into());
     let op_hash = calimero_context_client::local_governance::hash_scoped_namespace(
         topic.as_str().as_bytes(),
         &signed_op,
@@ -338,7 +339,7 @@ async fn publish_and_await_ack_returns_ok_on_min_acks_satisfied() {
         &store,
         &transport,
         &router,
-        namespace_id,
+        namespace_id.into(),
         topic,
         signed_op,
         Duration::from_millis(500),
@@ -367,14 +368,14 @@ async fn publish_and_await_ack_returns_ok_immediately_when_min_acks_is_zero() {
     let transport = StubTransport;
     let topic = TopicHash::from_raw("ns/min-acks-zero");
     let signer = PrivateKey::random(&mut rand::thread_rng());
-    let signed_op = mk_signed_op(&signer, [42u8; 32]);
+    let signed_op = mk_signed_op(&signer, [42u8; 32].into());
 
     let started = std::time::Instant::now();
     let res = publish_and_await_ack_namespace(
         &store,
         &transport,
         &router,
-        [42u8; 32],
+        [42u8; 32].into(),
         topic,
         signed_op,
         Duration::from_secs(5),
@@ -408,7 +409,7 @@ async fn verify_ack_rejects_signature_without_domain_prefix() {
         signer_pubkey: sk.public_key(),
         signature,
     };
-    assert!(!verify_ack(&store, [42u8; 32], op_hash, &ack));
+    assert!(!verify_ack(&store, [42u8; 32].into(), op_hash, &ack));
 }
 
 /// Transport stub whose publish always returns the libp2p
@@ -438,13 +439,13 @@ async fn no_peers_with_min_acks_zero_returns_ok_empty() {
     let transport = NoPeersTransport;
     let topic = TopicHash::from_raw("ns/test-solo");
     let signer = PrivateKey::random(&mut rand::thread_rng());
-    let signed_op = mk_signed_op(&signer, [42u8; 32]);
+    let signed_op = mk_signed_op(&signer, [42u8; 32].into());
 
     let report = publish_and_await_ack_namespace(
         &store,
         &transport,
         &router,
-        [42u8; 32],
+        [42u8; 32].into(),
         topic,
         signed_op,
         Duration::from_millis(50),
@@ -480,13 +481,13 @@ async fn no_peers_with_min_acks_positive_returns_no_ack_received() {
     let transport = NoPeersTransport;
     let topic = TopicHash::from_raw("ns/test-multi");
     let signer = PrivateKey::random(&mut rand::thread_rng());
-    let signed_op = mk_signed_op(&signer, [42u8; 32]);
+    let signed_op = mk_signed_op(&signer, [42u8; 32].into());
 
     let res = publish_and_await_ack_namespace(
         &store,
         &transport,
         &router,
-        [42u8; 32],
+        [42u8; 32].into(),
         topic,
         signed_op,
         Duration::from_millis(50),
@@ -511,7 +512,7 @@ async fn no_peers_with_min_acks_positive_returns_no_ack_received() {
 /// payload from `wire.rs`.
 fn signed_beacon(
     sk: &PrivateKey,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     applied_through: u64,
     strong: bool,
 ) -> SignedReadinessBeacon {
@@ -536,9 +537,9 @@ async fn verify_readiness_beacon_accepts_signed_member_beacon() {
     let store = empty_store();
     let sk = PrivateKey::random(&mut rand::thread_rng());
     let ns_id = [42u8; 32];
-    plant_namespace_member(&store, ns_id, &sk.public_key());
+    plant_namespace_member(&store, ns_id.into(), &sk.public_key());
 
-    let beacon = signed_beacon(&sk, ns_id, 17, true);
+    let beacon = signed_beacon(&sk, ns_id.into(), 17, true);
     assert!(
         verify_readiness_beacon(&store, &beacon),
         "signed beacon from a member must verify"
@@ -554,7 +555,7 @@ async fn verify_readiness_beacon_rejects_non_member_signer() {
     let sk = PrivateKey::random(&mut rand::thread_rng());
     let ns_id = [42u8; 32];
     // No plant_namespace_member call.
-    let beacon = signed_beacon(&sk, ns_id, 17, true);
+    let beacon = signed_beacon(&sk, ns_id.into(), 17, true);
     assert!(!verify_readiness_beacon(&store, &beacon));
 }
 
@@ -568,9 +569,9 @@ async fn verify_readiness_beacon_rejects_bad_signature() {
     let store = empty_store();
     let sk = PrivateKey::random(&mut rand::thread_rng());
     let ns_id = [42u8; 32];
-    plant_namespace_member(&store, ns_id, &sk.public_key());
+    plant_namespace_member(&store, ns_id.into(), &sk.public_key());
 
-    let mut beacon = signed_beacon(&sk, ns_id, 17, true);
+    let mut beacon = signed_beacon(&sk, ns_id.into(), 17, true);
     beacon.signature = [0u8; 64]; // clobber the signature
     assert!(!verify_readiness_beacon(&store, &beacon));
 }
@@ -585,7 +586,7 @@ async fn verify_readiness_beacon_rejects_bad_signature() {
 /// payload from `wire.rs`.
 fn signed_heartbeat(
     sk: &PrivateKey,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     schema_version: u32,
     residue_identity: u64,
 ) -> SignedMigrationHeartbeat {
@@ -613,9 +614,9 @@ async fn verify_migration_heartbeat_accepts_signed_member_heartbeat() {
     let store = empty_store();
     let sk = PrivateKey::random(&mut rand::thread_rng());
     let ns_id = [42u8; 32];
-    plant_namespace_member(&store, ns_id, &sk.public_key());
+    plant_namespace_member(&store, ns_id.into(), &sk.public_key());
 
-    let hb = signed_heartbeat(&sk, ns_id, 2, 0);
+    let hb = signed_heartbeat(&sk, ns_id.into(), 2, 0);
     assert!(
         verify_migration_heartbeat(&store, &hb),
         "signed heartbeat from a member must verify"
@@ -631,7 +632,7 @@ async fn verify_migration_heartbeat_rejects_non_member_signer() {
     let sk = PrivateKey::random(&mut rand::thread_rng());
     let ns_id = [42u8; 32];
     // No plant_namespace_member call.
-    let hb = signed_heartbeat(&sk, ns_id, 2, 0);
+    let hb = signed_heartbeat(&sk, ns_id.into(), 2, 0);
     assert!(!verify_migration_heartbeat(&store, &hb));
 }
 
@@ -643,9 +644,9 @@ async fn verify_migration_heartbeat_rejects_bad_signature() {
     let store = empty_store();
     let sk = PrivateKey::random(&mut rand::thread_rng());
     let ns_id = [42u8; 32];
-    plant_namespace_member(&store, ns_id, &sk.public_key());
+    plant_namespace_member(&store, ns_id.into(), &sk.public_key());
 
-    let mut hb = signed_heartbeat(&sk, ns_id, 2, 5);
+    let mut hb = signed_heartbeat(&sk, ns_id.into(), 2, 5);
     hb.residue_identity = 0; // tamper after signing — sig no longer covers body
     assert!(!verify_migration_heartbeat(&store, &hb));
 }

@@ -59,7 +59,7 @@ async fn deliver_group_key_to_member(
         store,
         node_client,
         ack_router,
-        namespace_id.to_bytes(),
+        namespace_id.to_bytes().into(),
         signer_sk,
         delivery_op,
         Some(vec![*member]),

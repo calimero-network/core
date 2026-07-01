@@ -59,7 +59,7 @@ pub(crate) fn admit_trigger(event: &OpEvent) -> Option<AdmitTrigger> {
             child_group_id,
             ..
         } => Some(AdmitTrigger::NewSubgroup {
-            namespace_id: *namespace_id,
+            namespace_id: namespace_id.to_bytes(),
             child_group_id: *child_group_id,
         }),
         OpEvent::TeeMemberAdmitted { group_id, member } => Some(AdmitTrigger::NewTeeMember {
@@ -425,7 +425,7 @@ mod dispatch_tests {
 
         assert_eq!(
             admit_trigger(&OpEvent::SubgroupCreated {
-                namespace_id: [1u8; 32],
+                namespace_id: [1u8; 32].into(),
                 parent_group_id: [2u8; 32],
                 child_group_id: [3u8; 32],
             }),

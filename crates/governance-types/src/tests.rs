@@ -785,11 +785,11 @@ fn signable_bytes_deterministic() {
 
 // --- Namespace op tests ---
 
-fn sample_namespace_id() -> [u8; 32] {
+fn sample_namespace_id() -> NamespaceId {
     let mut ns = [0u8; 32];
     ns[0] = 0xAA;
     ns[31] = 0xBB;
-    ns
+    ns.into()
 }
 
 #[test]
@@ -804,7 +804,7 @@ fn namespace_op_sign_verify_root() {
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
-            parent_id: sample_namespace_id(),
+            parent_id: sample_namespace_id().to_bytes(),
             restricted: true,
         }),
     )
@@ -874,7 +874,7 @@ fn namespace_op_content_hash_distinct() {
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
-            parent_id: sample_namespace_id(),
+            parent_id: sample_namespace_id().to_bytes(),
             restricted: true,
         }),
     )
@@ -887,7 +887,7 @@ fn namespace_op_content_hash_distinct() {
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
-            parent_id: sample_namespace_id(),
+            parent_id: sample_namespace_id().to_bytes(),
             restricted: true,
         }),
     )
@@ -913,7 +913,7 @@ fn namespace_signable_bytes_deterministic() {
         nonce: 42,
         op: NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
-            parent_id: sample_namespace_id(),
+            parent_id: sample_namespace_id().to_bytes(),
             restricted: true,
         }),
     };
@@ -1251,7 +1251,7 @@ fn pre_flag_day_namespace_op_version_is_rejected() {
     let signer = PrivateKey::random(&mut OsRng).public_key();
     let stale = SignedNamespaceOp {
         version: SIGNED_NAMESPACE_OP_SCHEMA_VERSION - 1,
-        namespace_id: sample_group_id(),
+        namespace_id: sample_group_id().into(),
         parent_op_hashes: vec![],
         signer,
         nonce: 1,
@@ -1368,7 +1368,7 @@ mod governance_op_storage_roundtrip {
 
     fn signed(op: NamespaceOp) -> SignedNamespaceOp {
         let sk = PrivateKey::random(&mut OsRng);
-        SignedNamespaceOp::sign(&sk, [0x77; 32], vec![[0x01; 32], [0x02; 32]], 7, op)
+        SignedNamespaceOp::sign(&sk, [0x77; 32].into(), vec![[0x01; 32], [0x02; 32]], 7, op)
             .expect("sign namespace op")
     }
 

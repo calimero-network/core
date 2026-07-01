@@ -766,7 +766,7 @@ pub struct KeyRotation {
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SignableNamespaceOp {
     pub version: u8,
-    pub namespace_id: [u8; 32],
+    pub namespace_id: NamespaceId,
     pub parent_op_hashes: Vec<[u8; 32]>,
     pub signer: PublicKey,
     pub nonce: u64,
@@ -777,7 +777,7 @@ pub struct SignableNamespaceOp {
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SignedNamespaceOp {
     pub version: u8,
-    pub namespace_id: [u8; 32],
+    pub namespace_id: NamespaceId,
     pub parent_op_hashes: Vec<[u8; 32]>,
     pub signer: PublicKey,
     pub nonce: u64,
@@ -819,7 +819,7 @@ impl SignedNamespaceOp {
     /// Build and sign a new namespace operation.
     pub fn sign(
         sk: &PrivateKey,
-        namespace_id: [u8; 32],
+        namespace_id: NamespaceId,
         parent_op_hashes: Vec<[u8; 32]>,
         nonce: u64,
         op: NamespaceOp,

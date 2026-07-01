@@ -1950,7 +1950,7 @@ async fn restricted_ctx_redriven_after_group_created() {
 
     let ctx_registered_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
@@ -1989,7 +1989,7 @@ async fn restricted_ctx_redriven_after_group_created() {
 
     let key_delivery_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         2,
         NamespaceOp::Root(RootOp::KeyDelivery {
@@ -2026,7 +2026,7 @@ async fn restricted_ctx_redriven_after_group_created() {
     // GroupCreated re-trigger the buffered-op retry.
     let group_created_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         3,
         NamespaceOp::Root(RootOp::GroupCreated {
@@ -2178,7 +2178,7 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
 
     let ctx_registered_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
@@ -2227,7 +2227,7 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
     // ---- Step 3: GroupCreated{restricted:false} applies → must re-drive ------
     let group_created_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
@@ -2506,7 +2506,7 @@ async fn tee_matrix_restricted_late_join() {
     // ---- Step 1 (late-join): the subgroup EXISTS first (GroupCreated) -------
     let group_created_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
@@ -2543,7 +2543,7 @@ async fn tee_matrix_restricted_late_join() {
     let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).expect("encrypt group op");
     let ctx_registered_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         2,
         NamespaceOp::Group {
@@ -2572,7 +2572,7 @@ async fn tee_matrix_restricted_late_join() {
         .expect("wrap subgroup key for receiver");
     let key_delivery_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         3,
         NamespaceOp::Root(RootOp::KeyDelivery {

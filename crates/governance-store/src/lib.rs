@@ -13,6 +13,7 @@
 
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_types::NamespaceId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_primitives::metadata::MetadataRecord;
@@ -652,23 +653,24 @@ impl<'a> GroupHandle<'a> {
 /// A scoped handle for namespace-level operations (identity, DAG heads, governance ops).
 pub struct NamespaceHandle<'a> {
     store: &'a Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
 }
 
 impl<'a> NamespaceHandle<'a> {
-    pub fn new(store: &'a Store, namespace_id: [u8; 32]) -> Self {
+    pub fn new(store: &'a Store, namespace_id: NamespaceId) -> Self {
         Self {
             store,
             namespace_id,
         }
     }
 
-    pub fn namespace_id(&self) -> [u8; 32] {
+    pub fn namespace_id(&self) -> NamespaceId {
         self.namespace_id
     }
 
     pub fn get_identity(&self) -> EyreResult<Option<ResolvedIdentity>> {
-        NamespaceRepository::new(self.store).identity(&ContextGroupId::from(self.namespace_id))
+        NamespaceRepository::new(self.store)
+            .identity(&ContextGroupId::from(self.namespace_id.to_bytes()))
     }
 
     pub fn store_identity(
@@ -678,7 +680,7 @@ impl<'a> NamespaceHandle<'a> {
         sender: &[u8; 32],
     ) -> EyreResult<()> {
         NamespaceRepository::new(self.store).store_identity(
-            &ContextGroupId::from(self.namespace_id),
+            &ContextGroupId::from(self.namespace_id.to_bytes()),
             pk,
             sk,
             sender,
@@ -729,7 +731,7 @@ impl<'a> GroupStoreIndex<'a> {
         GroupHandle::new(self.store, group_id)
     }
 
-    pub fn namespace(&self, namespace_id: [u8; 32]) -> NamespaceHandle<'a> {
+    pub fn namespace(&self, namespace_id: NamespaceId) -> NamespaceHandle<'a> {
         NamespaceHandle::new(self.store, namespace_id)
     }
 

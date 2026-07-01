@@ -7,6 +7,8 @@
 //! `group_store::test_fixtures` module. Namespace-only inline helpers
 //! (`raw_namespace_dag_heads`) came along with the move.
 
+use calimero_governance_types::NamespaceId;
+
 use crate::{
     CapabilitiesRepository, GroupDeletedRejection, GroupKeyring, MembershipRepository,
     MetaRepository, NamespaceRepository,
@@ -37,7 +39,7 @@ fn namespace_dag_service_store_operation_rejects_namespace_mismatch() {
 
     let signed = SignedNamespaceOp::sign(
         &signer_sk,
-        op_ns,
+        op_ns.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::PolicyUpdated {
@@ -46,7 +48,7 @@ fn namespace_dag_service_store_operation_rejects_namespace_mismatch() {
     )
     .unwrap();
 
-    let err = NamespaceDagService::new(&store, governance_ns)
+    let err = NamespaceDagService::new(&store, governance_ns.into())
         .store_operation(&signed)
         .unwrap_err();
     assert!(
@@ -100,7 +102,7 @@ fn validate_open_invitation_rejects_expired() {
         .unwrap();
 
     let signed = test_signed_invitation(&admin_sk, gid, 1_000_000);
-    let svc = NamespaceMembershipService::new(&store, ns_id);
+    let svc = NamespaceMembershipService::new(&store, ns_id.into());
 
     assert!(
         svc.validate_open_invitation(&signed, 2_000_000).is_err(),
@@ -140,7 +142,7 @@ fn validate_open_invitation_rejects_forged_inviter_signature() {
 
     let mut signed = test_signed_invitation(&admin_sk, gid, 9_999_999_999);
     signed.inviter_signature = hex::encode([0u8; 64]);
-    let svc = NamespaceMembershipService::new(&store, ns_id);
+    let svc = NamespaceMembershipService::new(&store, ns_id.into());
 
     assert!(
         svc.validate_open_invitation(&signed, 1_000).is_err(),
@@ -166,7 +168,7 @@ fn validate_open_invitation_rejects_unauthorized_inviter() {
         .unwrap();
 
     let signed = test_signed_invitation(&stranger_sk, gid, 9_999_999_999);
-    let svc = NamespaceMembershipService::new(&store, ns_id);
+    let svc = NamespaceMembershipService::new(&store, ns_id.into());
 
     assert!(
         svc.validate_open_invitation(&signed, 1_000).is_err(),
@@ -178,7 +180,7 @@ fn validate_open_invitation_rejects_unauthorized_inviter() {
 fn namespace_dag_service_advance_dag_head_prunes_parent_hashes() {
     let store = test_store();
     let namespace_id = [0x73; 32];
-    let dag = NamespaceDagService::new(&store, namespace_id);
+    let dag = NamespaceDagService::new(&store, namespace_id.into());
 
     let delta_a = [0xA1; 32];
     let delta_b = [0xB2; 32];
@@ -197,7 +199,7 @@ fn namespace_dag_service_advance_dag_head_prunes_parent_hashes() {
 fn namespace_dag_service_advance_dag_head_is_idempotent_for_same_delta() {
     let store = test_store();
     let namespace_id = [0x77; 32];
-    let dag = NamespaceDagService::new(&store, namespace_id);
+    let dag = NamespaceDagService::new(&store, namespace_id.into());
 
     let delta_a = [0xA1; 32];
     let delta_b = [0xB2; 32];
@@ -209,7 +211,7 @@ fn namespace_dag_service_advance_dag_head_is_idempotent_for_same_delta() {
     dag.advance_dag_head(delta_b, &[], 2).unwrap();
     dag.advance_dag_head(delta_b, &[], 2).unwrap();
 
-    let raw = raw_namespace_dag_heads(&store, namespace_id);
+    let raw = raw_namespace_dag_heads(&store, namespace_id.into());
     assert_eq!(
         raw,
         vec![delta_a, delta_b],
@@ -240,7 +242,7 @@ fn namespace_dag_service_heals_pre_existing_duplicate_heads() {
     drop(handle);
 
     // Read de-dups on the fly (preserving first-seen order).
-    let dag = NamespaceDagService::new(&store, namespace_id);
+    let dag = NamespaceDagService::new(&store, namespace_id.into());
     let head = dag.read_head_record().unwrap();
     assert_eq!(head.parent_hashes, vec![delta_a, delta_b]);
     assert_eq!(head.next_nonce, 6);
@@ -248,14 +250,16 @@ fn namespace_dag_service_heals_pre_existing_duplicate_heads() {
     // The next governance op heals the persisted value too: it supersedes
     // `delta_b` (a parent) and appends `delta_c` exactly once.
     dag.advance_dag_head(delta_c, &[delta_b], 6).unwrap();
-    let raw = raw_namespace_dag_heads(&store, namespace_id);
+    let raw = raw_namespace_dag_heads(&store, namespace_id.into());
     assert_eq!(raw, vec![delta_a, delta_c]);
 }
 
-fn raw_namespace_dag_heads(store: &Store, namespace_id: [u8; 32]) -> Vec<[u8; 32]> {
+fn raw_namespace_dag_heads(store: &Store, namespace_id: NamespaceId) -> Vec<[u8; 32]> {
     store
         .handle()
-        .get(&calimero_store::key::NamespaceGovHead::new(namespace_id))
+        .get(&calimero_store::key::NamespaceGovHead::new(
+            namespace_id.to_bytes(),
+        ))
         .unwrap()
         .map(|h| h.dag_heads)
         .unwrap_or_default()
@@ -269,7 +273,7 @@ fn namespace_dag_service_collects_skeleton_delta_ids_by_group() {
     let namespace_id = [0x74; 32];
     let group_a = ContextGroupId::from([0x75; 32]);
     let group_b = ContextGroupId::from([0x76; 32]);
-    let dag = NamespaceDagService::new(&store, namespace_id);
+    let dag = NamespaceDagService::new(&store, namespace_id.into());
     let delta_a = [0xA1; 32];
     let delta_b = [0xB2; 32];
     let delta_other_ns = [0xC3; 32];
@@ -336,7 +340,7 @@ fn namespace_op_log_service_reads_signed_and_skeleton_entries() {
 
     let signed_group = SignedNamespaceOp::sign(
         &signer_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
@@ -370,7 +374,7 @@ fn namespace_op_log_service_reads_signed_and_skeleton_entries() {
     handle.put(&key_skeleton, &val_skeleton).unwrap();
     drop(handle);
 
-    let op_log = NamespaceOpLogService::new(&store, namespace_id);
+    let op_log = NamespaceOpLogService::new(&store, namespace_id.into());
 
     let decoded_signed = op_log
         .collect_signed_group_ops_for_group(group_a.to_bytes())
@@ -405,7 +409,7 @@ fn namespace_op_log_service_reads_tagged_and_legacy_rows() {
 
     let tagged_signed = SignedNamespaceOp::sign(
         &signer_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
@@ -453,7 +457,7 @@ fn namespace_op_log_service_reads_tagged_and_legacy_rows() {
         .unwrap();
     drop(handle);
 
-    let op_log = NamespaceOpLogService::new(&store, namespace_id);
+    let op_log = NamespaceOpLogService::new(&store, namespace_id.into());
     let signed = op_log
         .collect_signed_group_ops_for_group(group.to_bytes())
         .unwrap();
@@ -481,7 +485,7 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
 
     let op_a = SignedNamespaceOp::sign(
         &signer_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
@@ -495,7 +499,7 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
 
     let op_b = SignedNamespaceOp::sign(
         &signer_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         2,
         NamespaceOp::Group {
@@ -509,7 +513,7 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
 
     let root = SignedNamespaceOp::sign(
         &signer_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         3,
         NamespaceOp::Root(RootOp::PolicyUpdated {
@@ -518,7 +522,7 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
     )
     .unwrap();
 
-    let op_log = NamespaceOpLogService::new(&store, namespace_id);
+    let op_log = NamespaceOpLogService::new(&store, namespace_id.into());
     op_log.store_signed_operation(&op_a).unwrap();
     op_log.store_signed_operation(&op_b).unwrap();
     op_log.store_signed_operation(&root).unwrap();
@@ -557,7 +561,7 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
 
     let group_a_op = SignedNamespaceOp::sign(
         &signer_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
@@ -571,7 +575,7 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
 
     let group_b_op = SignedNamespaceOp::sign(
         &signer_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         2,
         NamespaceOp::Group {
@@ -585,7 +589,7 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
 
     let root_op = SignedNamespaceOp::sign(
         &signer_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         3,
         NamespaceOp::Root(RootOp::PolicyUpdated {
@@ -594,12 +598,12 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
     )
     .unwrap();
 
-    let governance = NamespaceGovernance::new(&store, namespace_id);
+    let governance = NamespaceGovernance::new(&store, namespace_id.into());
     governance.store_operation(&group_a_op).unwrap();
     governance.store_operation(&group_b_op).unwrap();
     governance.store_operation(&root_op).unwrap();
 
-    let retry = NamespaceRetryService::new(&store, namespace_id);
+    let retry = NamespaceRetryService::new(&store, namespace_id.into());
     let retryable = retry
         .collect_retry_candidates_for_group(group_a.to_bytes())
         .unwrap();
@@ -664,7 +668,7 @@ fn namespace_retry_service_orders_candidates_by_signer_nonce() {
             .map(|nonce| {
                 SignedNamespaceOp::sign(
                     &signer_sk,
-                    namespace_id,
+                    namespace_id.into(),
                     vec![],
                     nonce,
                     NamespaceOp::Group {
@@ -697,11 +701,11 @@ fn namespace_retry_service_orders_candidates_by_signer_nonce() {
         // sibling test (`NamespaceGovernance::store_operation`), then
         // confirm the raw op-log iteration actually came back in the
         // predicted not-nonce-order — i.e. the bug path is reachable.
-        let governance = NamespaceGovernance::new(&store, namespace_id);
+        let governance = NamespaceGovernance::new(&store, namespace_id.into());
         for op in &signed_ops {
             governance.store_operation(op).unwrap();
         }
-        raw_nonces = NamespaceOpLogService::new(&store, namespace_id)
+        raw_nonces = NamespaceOpLogService::new(&store, namespace_id.into())
             .collect_signed_group_ops_for_group(group.to_bytes())
             .unwrap()
             .iter()
@@ -723,7 +727,7 @@ fn namespace_retry_service_orders_candidates_by_signer_nonce() {
          sort from a missing sort, so this test would silently pass on a regression."
     );
 
-    let retry = NamespaceRetryService::new(&store, namespace_id);
+    let retry = NamespaceRetryService::new(&store, namespace_id.into());
     let candidates = retry
         .collect_retry_candidates_for_group(group.to_bytes())
         .unwrap();
@@ -1040,7 +1044,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
         .store_key(&group_key)
         .unwrap();
 
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Sanity: before any op is applied the replica has no policy and the TEE
     // node is not yet a member.
@@ -1069,7 +1073,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     .unwrap();
     let policy_ns_op = SignedNamespaceOp::sign(
         &verifier_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
@@ -1112,7 +1116,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     .unwrap();
     let join_ns_op = SignedNamespaceOp::sign(
         &verifier_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         2,
         NamespaceOp::Group {
@@ -1197,7 +1201,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     let ns_gid = ContextGroupId::from(namespace_id);
     let open_child = ContextGroupId::from([0xB5u8; 32]);
 
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // ---- Genesis establishes the founder as the authoritative namespace admin
     // (#2474: this used to come from the bootstrap seed's KeyDelivery-signer
@@ -1207,8 +1211,9 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     {
         use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
         let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
-        let signed_genesis = SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], 0, genesis)
-            .expect("sign genesis");
+        let signed_genesis =
+            SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
+                .expect("sign genesis");
         gov.apply_signed_op(&signed_genesis)
             .expect("genesis NamespaceCreated establishes the founding admin");
     }
@@ -1266,7 +1271,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     );
     let policy_ns_op = SignedNamespaceOp::sign(
         &founder_sk,
-        namespace_id,
+        namespace_id.into(),
         head.parent_hashes.clone(),
         head.next_nonce,
         NamespaceOp::Group {
@@ -1302,7 +1307,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     let head = gov.read_head_record().expect("read head after policy op");
     let join_ns_op = SignedNamespaceOp::sign(
         &founder_sk,
-        namespace_id,
+        namespace_id.into(),
         head.parent_hashes.clone(),
         head.next_nonce,
         NamespaceOp::Group {
@@ -1395,7 +1400,7 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     let namespace_id = [0xC4u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
 
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // ---- Step 1: the GENESIS op the backfill replays FIRST. Signed by the true
     // owner with NO parents (the defining genesis invariant) — exactly what
@@ -1404,8 +1409,9 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     // an arbitrary placeholder the apply path does not consult for ordering.)
     // This establishes the founding admin authoritatively. ----
     let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner });
-    let signed_genesis = SignedNamespaceOp::sign(&owner_sk, namespace_id, vec![], 0, genesis)
-        .expect("owner signs NamespaceCreated genesis");
+    let signed_genesis =
+        SignedNamespaceOp::sign(&owner_sk, namespace_id.into(), vec![], 0, genesis)
+            .expect("owner signs NamespaceCreated genesis");
     gov.apply_signed_op(&signed_genesis)
         .expect("genesis NamespaceCreated must apply on the bare replica");
 
@@ -1463,7 +1469,7 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     });
     let signed = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         head.parent_hashes.clone(),
         head.next_nonce,
         create_op,
@@ -1512,11 +1518,11 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
         let store = test_store();
         let namespace_id = [0xA1u8; 32];
         let ns_gid = ContextGroupId::from(namespace_id);
-        let gov = NamespaceGovernance::new(&store, namespace_id);
+        let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
         let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
         let signed =
-            SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], 0, genesis).unwrap();
+            SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap();
         gov.apply_signed_op(&signed)
             .expect("bare-store genesis applies");
 
@@ -1540,7 +1546,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
         // ---- (b) anti-hijack: a second, forged genesis is a no-op ----
         let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder: attacker });
         let signed_forged =
-            SignedNamespaceOp::sign(&attacker_sk, namespace_id, vec![], 1, forged).unwrap();
+            SignedNamespaceOp::sign(&attacker_sk, namespace_id.into(), vec![], 1, forged).unwrap();
         gov.apply_signed_op(&signed_forged)
             .expect("forged second genesis applies as a no-op (no error)");
 
@@ -1562,7 +1568,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
         let store = test_store();
         let namespace_id = [0xA2u8; 32];
         let ns_gid = ContextGroupId::from(namespace_id);
-        let gov = NamespaceGovernance::new(&store, namespace_id);
+        let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
         // A non-owner seed runs first, writing placeholder meta (admin == zero).
         gov.seed_bootstrap_admin_if_absent(namespace_id, &attacker)
@@ -1583,7 +1589,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
         // Genesis then lands and fills in the real founder over the placeholder.
         let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
         let signed =
-            SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], 0, genesis).unwrap();
+            SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap();
         gov.apply_signed_op(&signed)
             .expect("genesis applies over the placeholder seed meta");
         let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
@@ -1607,13 +1613,13 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
         let store = test_store();
         let namespace_id = [0xA3u8; 32];
         let ns_gid = ContextGroupId::from(namespace_id);
-        let gov = NamespaceGovernance::new(&store, namespace_id);
+        let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
         // Attacker signs the genuine FIRST op (nonce=0, empty parents) but names
         // the founder as someone else (here: `founder`).
         let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
         let signed =
-            SignedNamespaceOp::sign(&attacker_sk, namespace_id, vec![], 0, forged).unwrap();
+            SignedNamespaceOp::sign(&attacker_sk, namespace_id.into(), vec![], 0, forged).unwrap();
         assert!(
             gov.apply_signed_op(&signed).is_err(),
             "nonce-0 forged genesis (signer != founder) must be REJECTED by the \
@@ -1663,7 +1669,7 @@ fn namespace_created_genesis_proceeds_when_only_admin_is_placeholder() {
     let store = test_store();
     let namespace_id = [0xA4u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Construct a partial-write state: admin_identity is still the placeholder
     // sentinel (no real admin), but owner_identity is a real (non-placeholder)
@@ -1675,7 +1681,7 @@ fn namespace_created_genesis_proceeds_when_only_admin_is_placeholder() {
     MetaRepository::new(&store).save(&ns_gid, &partial).unwrap();
 
     let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
-    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], 0, genesis)
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
         .expect("founder signs NamespaceCreated genesis");
     gov.apply_signed_op(&signed)
         .expect("genesis proceeds when admin_identity is still the placeholder");
@@ -1719,7 +1725,7 @@ fn namespace_created_genesis_upgrades_seeded_member_founder_to_admin() {
     let store = test_store();
     let namespace_id = [0xD9u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // ---- Seed FIRST, for the founder's OWN identity (the deliverer happens to
     // be the founder). The seed writes placeholder meta + the founder as a
@@ -1743,7 +1749,7 @@ fn namespace_created_genesis_upgrades_seeded_member_founder_to_admin() {
 
     // ---- Genesis lands and must UPGRADE the founder Member row to Admin. ----
     let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
-    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], 0, genesis)
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
         .expect("founder signs NamespaceCreated genesis");
     gov.apply_signed_op(&signed)
         .expect("genesis applies over the founder's seeded Member placeholder");
@@ -1792,7 +1798,7 @@ fn namespace_created_genesis_ensures_member_row_for_established_founder() {
     let store = test_store();
     let namespace_id = [0xE3u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Pre-establish the root meta with admin == owner == founder but write NO
     // member row — simulating a path that set a real `admin_identity` before
@@ -1811,7 +1817,7 @@ fn namespace_created_genesis_ensures_member_row_for_established_founder() {
     // Genesis arrives for the SAME founder. The established gate short-circuits
     // the meta rewrite but must still ensure the Admin member row.
     let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
-    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], 0, genesis)
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
         .expect("founder signs NamespaceCreated genesis");
     gov.apply_signed_op(&signed)
         .expect("genesis applies as an idempotent same-founder re-arrival");
@@ -1865,7 +1871,7 @@ fn namespace_created_genesis_same_founder_rearrival_does_not_downgrade_admin() {
     let store = test_store();
     let namespace_id = [0xF1u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Pre-establish the namespace fully: meta admin == owner == founder AND an
     // explicit Admin member row for the founder.
@@ -1885,7 +1891,7 @@ fn namespace_created_genesis_same_founder_rearrival_does_not_downgrade_admin() {
 
     // A parentless same-founder genesis re-arrives (e.g. via sync backfill).
     let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
-    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], 0, genesis)
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
         .expect("founder signs NamespaceCreated genesis");
     gov.apply_signed_op(&signed)
         .expect("parentless same-founder genesis is an idempotent re-arrival no-op");
@@ -1927,11 +1933,12 @@ fn namespace_created_genesis_signer_must_equal_founder() {
     let store = test_store();
     let namespace_id = [0xB7u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Attacker declares the victim as founder but signs with their OWN key.
     let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder: victim });
-    let signed = SignedNamespaceOp::sign(&attacker_sk, namespace_id, vec![], 0, forged).unwrap();
+    let signed =
+        SignedNamespaceOp::sign(&attacker_sk, namespace_id.into(), vec![], 0, forged).unwrap();
 
     let res = gov.apply_signed_op(&signed);
     assert!(
@@ -1986,14 +1993,19 @@ fn namespace_created_with_parents_is_rejected_as_non_genesis() {
     // independent under any future shared-store refactor.
     let namespace_id = [0xDAu8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Self-consistent (signer == founder) but PARENTED genesis: a fabricated
     // parent op-hash makes this not the DAG root.
     let parented = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
-    let signed =
-        SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![[0x11u8; 32]], 2, parented)
-            .unwrap();
+    let signed = SignedNamespaceOp::sign(
+        &founder_sk,
+        namespace_id.into(),
+        vec![[0x11u8; 32]],
+        2,
+        parented,
+    )
+    .unwrap();
 
     let res = gov.apply_signed_op(&signed);
     assert!(
@@ -2017,7 +2029,7 @@ fn namespace_created_with_parents_is_rejected_as_non_genesis() {
     // Sanity: the REAL genesis path (no parents, same founder) still applies.
     let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
     let signed_genesis =
-        SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], 1, genesis).unwrap();
+        SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 1, genesis).unwrap();
     gov.apply_signed_op(&signed_genesis)
         .expect("parentless genesis (the DAG root) still applies");
     assert!(
@@ -2055,7 +2067,7 @@ fn namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head() {
     let store = test_store();
     let namespace_id = [0xDBu8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Precondition: a brand-new namespace has an EMPTY head.
     let head_before = gov.read_head_record().expect("read head on bare namespace");
@@ -2066,9 +2078,14 @@ fn namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head() {
 
     // Parented (non-genesis) NamespaceCreated on the bare namespace.
     let parented = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
-    let signed =
-        SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![[0x22u8; 32]], 2, parented)
-            .unwrap();
+    let signed = SignedNamespaceOp::sign(
+        &founder_sk,
+        namespace_id.into(),
+        vec![[0x22u8; 32]],
+        2,
+        parented,
+    )
+    .unwrap();
     let res = gov.apply_signed_op(&signed);
     assert!(
         res.is_err(),
@@ -2090,7 +2107,7 @@ fn namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head() {
     // establishes the founder (it would be impossible if the head had advanced).
     let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
     let signed_genesis =
-        SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], 1, genesis).unwrap();
+        SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 1, genesis).unwrap();
     gov.apply_signed_op(&signed_genesis).expect(
         "the parentless genesis still applies because the rejected parented op did not \
          advance the head",
@@ -2124,12 +2141,12 @@ fn namespace_created_parented_on_established_namespace_is_noop_not_err() {
     let store = test_store();
     let namespace_id = [0xC4u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Establish the namespace via a clean parentless genesis.
     let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
     let signed_genesis =
-        SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], 1, genesis).unwrap();
+        SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 1, genesis).unwrap();
     gov.apply_signed_op(&signed_genesis)
         .expect("parentless genesis establishes the namespace");
     let meta_before = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
@@ -2141,9 +2158,14 @@ fn namespace_created_parented_on_established_namespace_is_noop_not_err() {
     // A PARENTED `NamespaceCreated` (same founder) now arrives late on the
     // established namespace. It must be a NO-OP, returning Ok — not Err.
     let parented = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
-    let signed_parented =
-        SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![[0x22u8; 32]], 2, parented)
-            .unwrap();
+    let signed_parented = SignedNamespaceOp::sign(
+        &founder_sk,
+        namespace_id.into(),
+        vec![[0x22u8; 32]],
+        2,
+        parented,
+    )
+    .unwrap();
     let res = gov.apply_signed_op(&signed_parented);
     assert!(
         res.is_ok(),
@@ -2181,7 +2203,7 @@ fn namespace_created_parented_same_founder_on_established_ns_does_no_repair() {
     let store = test_store();
     let namespace_id = [0xC6u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Pre-establish meta DIRECTLY (not via genesis): admin == founder
     // (established) but owner DIVERGED, and crucially NO Admin member row and
@@ -2212,9 +2234,14 @@ fn namespace_created_parented_same_founder_on_established_ns_does_no_repair() {
 
     // PARENTED same-founder `NamespaceCreated` arrives on the established ns.
     let parented = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
-    let signed_parented =
-        SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![[0x33u8; 32]], 2, parented)
-            .unwrap();
+    let signed_parented = SignedNamespaceOp::sign(
+        &founder_sk,
+        namespace_id.into(),
+        vec![[0x33u8; 32]],
+        2,
+        parented,
+    )
+    .unwrap();
     gov.apply_signed_op(&signed_parented)
         .expect("parented same-founder op on an established namespace is a no-op (Ok), per #591");
 
@@ -2264,7 +2291,7 @@ fn namespace_created_same_founder_repairs_diverged_owner_identity() {
     let store = test_store();
     let namespace_id = [0xC5u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Pre-establish meta: admin == founder (established), but owner DIVERGED to
     // a stray non-founder key. Use `sample_meta_with_admin` so other fields
@@ -2278,7 +2305,7 @@ fn namespace_created_same_founder_repairs_diverged_owner_identity() {
 
     // Same-founder genesis re-arrives (parentless idempotent re-arrival).
     let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
-    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id, vec![], 0, genesis)
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
         .expect("founder signs idempotent genesis");
     gov.apply_signed_op(&signed)
         .expect("idempotent same-founder re-arrival applies as a no-op-with-repair");
@@ -2353,7 +2380,7 @@ fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
 
     let store = test_store();
     let namespace_id = [0xDBu8; 32];
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Pre-genesis head is empty / absent: no heads, next_nonce starts at 1.
     let before = gov.read_head_record().unwrap();
@@ -2374,7 +2401,7 @@ fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
         founder: real_founder,
     });
     let signed_bad =
-        SignedNamespaceOp::sign(&attacker_sk, namespace_id, vec![], 1, bad_genesis).unwrap();
+        SignedNamespaceOp::sign(&attacker_sk, namespace_id.into(), vec![], 1, bad_genesis).unwrap();
 
     let res = gov.apply_signed_op(&signed_bad);
     assert!(
@@ -2399,8 +2426,14 @@ fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
     let good_genesis = NamespaceOp::Root(RootOp::NamespaceCreated {
         founder: real_founder,
     });
-    let signed_good =
-        SignedNamespaceOp::sign(&real_founder_sk, namespace_id, vec![], 1, good_genesis).unwrap();
+    let signed_good = SignedNamespaceOp::sign(
+        &real_founder_sk,
+        namespace_id.into(),
+        vec![],
+        1,
+        good_genesis,
+    )
+    .unwrap();
     gov.apply_signed_op(&signed_good)
         .expect("clean parentless genesis applies after a prior failed attempt");
 
@@ -2449,7 +2482,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
         .store_key(&group_key)
         .unwrap();
 
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Helper: build the SignedGroupOp exactly as `decrypt_and_apply_group_op`
     // reconstructs it from a namespace op, so we can compute its content hash.
@@ -2481,7 +2514,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
     let inner_a = make_policy_op("mA");
     let op_a = SignedNamespaceOp::sign(
         &signer_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
@@ -2508,7 +2541,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
     let inner_b = make_policy_op("mB");
     let op_b = SignedNamespaceOp::sign(
         &signer_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![hash_a],
         2,
         NamespaceOp::Group {
@@ -2593,7 +2626,7 @@ fn replica_concurrent_sibling_ops_apply_out_of_order_2516() {
         .store_key(&group_key)
         .unwrap();
 
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     let make_policy_op = |mrtd: &str| GroupOp::TeeAdmissionPolicySet {
         allowed_mrtd: vec![mrtd.to_owned()],
@@ -2609,7 +2642,7 @@ fn replica_concurrent_sibling_ops_apply_out_of_order_2516() {
     let sign_sibling = |inner: &GroupOp, nonce: u64| {
         SignedNamespaceOp::sign(
             &signer_sk,
-            namespace_id,
+            namespace_id.into(),
             vec![],
             nonce,
             NamespaceOp::Group {
@@ -2689,7 +2722,7 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
         .store_key(&group_key)
         .unwrap();
 
-    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     let group_op_content_hash = |ns_op: &SignedNamespaceOp, inner: &GroupOp| -> [u8; 32] {
         SignedGroupOp {
@@ -2719,7 +2752,7 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
     let inner_a = make_policy_op("mA");
     let op_a = SignedNamespaceOp::sign(
         &signer_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
@@ -2744,7 +2777,7 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
     let inner_b = make_policy_op("mB");
     let op_b = SignedNamespaceOp::sign(
         &signer_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         2,
         NamespaceOp::Group {
@@ -3234,7 +3267,7 @@ fn governance_group_reparented_via_signed_op() {
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
         .unwrap();
 
-    let gov = NamespaceGovernance::new(&store, ns_id);
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
 
     // Create three subgroups via GroupCreated ops (atomic create+nest):
     // namespace → mid, namespace → new_parent, mid → leaf.
@@ -3244,7 +3277,7 @@ fn governance_group_reparented_via_signed_op() {
     {
         let op = SignedNamespaceOp::sign(
             &admin_sk,
-            ns_id,
+            ns_id.into(),
             vec![],
             (i + 1) as u64,
             NamespaceOp::Root(RootOp::GroupCreated {
@@ -3265,7 +3298,7 @@ fn governance_group_reparented_via_signed_op() {
     // Reparent leaf from mid to new_parent.
     let reparent_op = SignedNamespaceOp::sign(
         &admin_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         4,
         NamespaceOp::Root(RootOp::GroupReparented {
@@ -3321,11 +3354,11 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
         .unwrap();
 
-    let gov = NamespaceGovernance::new(&store, ns_id);
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
 
     let op = SignedNamespaceOp::sign(
         &admin_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
@@ -3339,7 +3372,7 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
 
     gov.apply_signed_op(&op).expect("first apply");
     assert_eq!(
-        raw_namespace_dag_heads(&store, ns_id),
+        raw_namespace_dag_heads(&store, ns_id.into()),
         vec![delta_id],
         "head set after first apply"
     );
@@ -3348,7 +3381,7 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
     let replay = gov.apply_signed_op(&op).expect("replay apply");
     assert!(replay.key_unwrap_failures.is_empty());
     assert_eq!(
-        raw_namespace_dag_heads(&store, ns_id),
+        raw_namespace_dag_heads(&store, ns_id.into()),
         vec![delta_id],
         "head set must stay duplicate-free after replay"
     );
@@ -3383,12 +3416,12 @@ fn governance_rejects_non_admin_signer() {
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
         .unwrap();
 
-    let gov = NamespaceGovernance::new(&store, ns_id);
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
 
     // Non-admin tries to create a group
     let op = SignedNamespaceOp::sign(
         &intruder_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
@@ -3431,11 +3464,11 @@ fn governance_group_created_is_idempotent() {
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
         .unwrap();
 
-    let gov = NamespaceGovernance::new(&store, ns_id);
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
 
     let op1 = SignedNamespaceOp::sign(
         &admin_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
@@ -3452,7 +3485,7 @@ fn governance_group_created_is_idempotent() {
     // Apply same op again (different nonce but same group_id)
     let op2 = SignedNamespaceOp::sign(
         &admin_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
@@ -3504,13 +3537,13 @@ fn governance_group_created_writes_birth_visibility() {
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
         .unwrap();
 
-    let gov = NamespaceGovernance::new(&store, ns_id);
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
     let caps = CapabilitiesRepository::new(&store);
 
     // Born-Open: restricted = false ⇒ visibility key written as Open.
     let open_op = SignedNamespaceOp::sign(
         &admin_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
@@ -3532,7 +3565,7 @@ fn governance_group_created_writes_birth_visibility() {
     // Born-Restricted: restricted = true ⇒ Restricted.
     let restricted_op = SignedNamespaceOp::sign(
         &admin_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
@@ -3590,13 +3623,13 @@ fn governance_group_created_replay_does_not_reset_visibility() {
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
         .unwrap();
 
-    let gov = NamespaceGovernance::new(&store, ns_id);
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
     let caps = CapabilitiesRepository::new(&store);
 
     // 1. Create the subgroup born-Open.
     let create_op = SignedNamespaceOp::sign(
         &admin_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
@@ -3628,7 +3661,7 @@ fn governance_group_created_replay_does_not_reset_visibility() {
     // 3. Replay the SAME GroupCreated op (different nonce, same group_id).
     let replay_op = SignedNamespaceOp::sign(
         &admin_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
@@ -3693,10 +3726,10 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
         .unwrap();
 
     // Now apply the GroupCreated op — idempotency must NOT skip the edges.
-    let gov = NamespaceGovernance::new(&store, ns_id);
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
     let op = SignedNamespaceOp::sign(
         &admin_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
@@ -3759,7 +3792,7 @@ fn execute_group_created_rejects_self_parent() {
     // Attempt to emit GroupCreated with group_id == parent_id (the bug).
     let op = SignedNamespaceOp::sign(
         &admin_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
@@ -3770,7 +3803,7 @@ fn execute_group_created_rejects_self_parent() {
     )
     .expect("sign op");
 
-    let gov = NamespaceGovernance::new(&store, ns_id);
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
     let err = gov.apply_signed_op(&op).unwrap_err();
     assert!(
         matches!(
@@ -3823,7 +3856,7 @@ fn execute_group_created_inherits_app_key_and_application_from_parent() {
 
     let op = SignedNamespaceOp::sign(
         &admin_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
@@ -3834,7 +3867,7 @@ fn execute_group_created_inherits_app_key_and_application_from_parent() {
     )
     .expect("sign op");
 
-    let gov = NamespaceGovernance::new(&store, ns_id);
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
     gov.apply_signed_op(&op).expect("apply group_created");
 
     let sub_meta = MetaRepository::new(&store)
@@ -3910,10 +3943,10 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
     // Now the retry: cascade op has payload [B], but local subtree of A is
     // empty (B already gone). Subset check: local {} ⊆ payload {B} ✓ → apply
     // proceeds. Exact-match check would have rejected here — that's the bug.
-    let gov = NamespaceGovernance::new(&store, ns_id);
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
     let op = SignedNamespaceOp::sign(
         &admin_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupDeleted {
@@ -3980,10 +4013,10 @@ fn execute_group_deleted_ignores_payload_groups_outside_local_subtree() {
     // Hostile payload: deletes A (authorized) but also lists the unrelated
     // X. Local subtree of A is {B}, so {B} ⊆ {B, X} — the subset check
     // passes and X is a payload extra.
-    let gov = NamespaceGovernance::new(&store, ns_id);
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
     let op = SignedNamespaceOp::sign(
         &admin_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupDeleted {
@@ -4359,7 +4392,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
         .unwrap();
 
-    let gov = NamespaceGovernance::new(&store, ns_id);
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
     // `nonce` is informational only — `apply_signed_op` advances the DAG head
     // from `read_head_record().next_nonce`, not from `op.nonce`, and a rejected
     // op never advances the head or gets stored. Distinct `group_id`s already
@@ -4368,7 +4401,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     let create = |sk: &PrivateKey, group_id: [u8; 32], parent_id: [u8; 32], nonce: u64| {
         SignedNamespaceOp::sign(
             sk,
-            ns_id,
+            ns_id.into(),
             vec![],
             nonce,
             NamespaceOp::Root(RootOp::GroupCreated {
@@ -4527,7 +4560,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     let (s2, s2_gid) = mk_subgroup(0xC2);
     let (s3, s3_gid) = mk_subgroup(0xC3);
 
-    let gov = NamespaceGovernance::new(&store, ns_id);
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
     // `nonce` here is informational only — `apply_signed_op` advances the DAG
     // head from `read_head_record().next_nonce`, not from `op.nonce`; distinct
     // `root_group_id`s already give each op a distinct content hash. We still
@@ -4535,7 +4568,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     let del = |sk: &PrivateKey, root_group_id: [u8; 32], nonce: u64| {
         SignedNamespaceOp::sign(
             sk,
-            ns_id,
+            ns_id.into(),
             vec![],
             nonce,
             NamespaceOp::Root(RootOp::GroupDeleted {
@@ -4657,7 +4690,7 @@ fn group_created_with_no_key_skips_retry() {
 
     let op = SignedNamespaceOp::sign(
         &admin_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
@@ -4668,7 +4701,7 @@ fn group_created_with_no_key_skips_retry() {
     )
     .unwrap();
 
-    let gov = NamespaceGovernance::new(&store, ns_id);
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
     let result = gov
         .apply_signed_op(&op)
         .expect("GroupCreated with no held key must apply cleanly (cheap no-op retry gate)");
@@ -4722,7 +4755,7 @@ fn apply_received_group_key_stores_key_for_recipient() {
 
     apply_received_group_key(
         &store,
-        namespace_id,
+        namespace_id.into(),
         group_id,
         &envelope_bytes,
         sender_sk.public_key(),
@@ -4768,7 +4801,7 @@ fn apply_received_group_key_ignores_envelope_for_other_recipient() {
     // Not addressed to us: benign no-op, no key stored.
     let divergence = apply_received_group_key(
         &store,
-        namespace_id,
+        namespace_id.into(),
         group_id,
         &envelope_bytes,
         sender_sk.public_key(),
@@ -4797,7 +4830,7 @@ fn groups_awaiting_key_reports_then_clears() {
     // Buffer an encrypted group op for `group_id` whose key we don't hold.
     let op = SignedNamespaceOp::sign(
         &signer_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
@@ -4810,19 +4843,19 @@ fn groups_awaiting_key_reports_then_clears() {
         },
     )
     .unwrap();
-    NamespaceOpLogService::new(&store, namespace_id)
+    NamespaceOpLogService::new(&store, namespace_id.into())
         .store_signed_operation(&op)
         .unwrap();
 
     // Keyless: the group is reported as awaiting a key.
-    let awaiting = namespace_groups_awaiting_key(&store, namespace_id).unwrap();
+    let awaiting = namespace_groups_awaiting_key(&store, namespace_id.into()).unwrap();
     assert_eq!(awaiting, vec![group_id]);
 
     // Once the op's key is stored locally, the group drops out of the set.
     GroupKeyring::new(&store, group_gid)
         .store_key(&[0xAA; 32])
         .unwrap();
-    let awaiting = namespace_groups_awaiting_key(&store, namespace_id).unwrap();
+    let awaiting = namespace_groups_awaiting_key(&store, namespace_id.into()).unwrap();
     assert!(awaiting.is_empty());
 }
 
@@ -4858,7 +4891,7 @@ fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
     // key, which the node does NOT hold.
     let op = SignedNamespaceOp::sign(
         &signer_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
@@ -4869,13 +4902,13 @@ fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
         },
     )
     .unwrap();
-    NamespaceOpLogService::new(&store, namespace_id)
+    NamespaceOpLogService::new(&store, namespace_id.into())
         .store_signed_operation(&op)
         .unwrap();
 
     // The subgroup must still be reported as awaiting its key.
     assert_eq!(
-        namespace_groups_awaiting_key(&store, namespace_id).unwrap(),
+        namespace_groups_awaiting_key(&store, namespace_id.into()).unwrap(),
         vec![subgroup_id],
         "holding the namespace key must not mask a Restricted subgroup awaiting its own key"
     );
@@ -4933,8 +4966,13 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
         .unwrap();
 
     // Responder builds the delivery for the joiner (the `GroupKeyResponse`).
-    let (envelope_bytes, responder_identity) =
-        build_group_key_delivery(&responder_store, namespace_id, subgroup_id, joiner_pk).unwrap();
+    let (envelope_bytes, responder_identity) = build_group_key_delivery(
+        &responder_store,
+        namespace_id.into(),
+        subgroup_id,
+        joiner_pk,
+    )
+    .unwrap();
     assert!(
         !envelope_bytes.is_empty(),
         "responder holding the key must deliver it to a member"
@@ -4948,7 +4986,7 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
         .unwrap();
     let buffered = SignedNamespaceOp::sign(
         &responder_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
@@ -4961,20 +4999,20 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
         },
     )
     .unwrap();
-    NamespaceOpLogService::new(&joiner_store, namespace_id)
+    NamespaceOpLogService::new(&joiner_store, namespace_id.into())
         .store_signed_operation(&buffered)
         .unwrap();
 
     // Precondition: joiner awaits the key and holds none.
     assert_eq!(
-        namespace_groups_awaiting_key(&joiner_store, namespace_id).unwrap(),
+        namespace_groups_awaiting_key(&joiner_store, namespace_id.into()).unwrap(),
         vec![subgroup_id]
     );
 
     // Joiner applies the responder's delivery (the wire payload).
     apply_received_group_key(
         &joiner_store,
-        namespace_id,
+        namespace_id.into(),
         subgroup_id,
         &envelope_bytes,
         responder_identity,
@@ -4991,9 +5029,11 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
             .map(|(_, k)| k),
         Some(group_key)
     );
-    assert!(namespace_groups_awaiting_key(&joiner_store, namespace_id)
-        .unwrap()
-        .is_empty());
+    assert!(
+        namespace_groups_awaiting_key(&joiner_store, namespace_id.into())
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -5049,8 +5089,13 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
         .unwrap();
 
     // Responder builds the delivery for the joiner (the `GroupKeyResponse`).
-    let (envelope_bytes, responder_identity) =
-        build_group_key_delivery(&responder_store, namespace_id, subgroup_id, joiner_pk).unwrap();
+    let (envelope_bytes, responder_identity) = build_group_key_delivery(
+        &responder_store,
+        namespace_id.into(),
+        subgroup_id,
+        joiner_pk,
+    )
+    .unwrap();
     assert!(
         !envelope_bytes.is_empty(),
         "responder holding the key must deliver it to a ReadOnlyTee member"
@@ -5064,7 +5109,7 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
         .unwrap();
     let buffered = SignedNamespaceOp::sign(
         &responder_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
@@ -5077,20 +5122,20 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
         },
     )
     .unwrap();
-    NamespaceOpLogService::new(&joiner_store, namespace_id)
+    NamespaceOpLogService::new(&joiner_store, namespace_id.into())
         .store_signed_operation(&buffered)
         .unwrap();
 
     // Precondition: joiner awaits the key and holds none.
     assert_eq!(
-        namespace_groups_awaiting_key(&joiner_store, namespace_id).unwrap(),
+        namespace_groups_awaiting_key(&joiner_store, namespace_id.into()).unwrap(),
         vec![subgroup_id]
     );
 
     // Joiner applies the responder's delivery (the wire payload).
     apply_received_group_key(
         &joiner_store,
-        namespace_id,
+        namespace_id.into(),
         subgroup_id,
         &envelope_bytes,
         responder_identity,
@@ -5106,9 +5151,11 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
             .map(|(_, k)| k),
         Some(group_key)
     );
-    assert!(namespace_groups_awaiting_key(&joiner_store, namespace_id)
-        .unwrap()
-        .is_empty());
+    assert!(
+        namespace_groups_awaiting_key(&joiner_store, namespace_id.into())
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -5147,7 +5194,7 @@ fn responder_refuses_delivery_to_non_member() {
     // The requester is NOT a member of the subgroup → empty envelope: no key
     // wrapped, and no membership oracle leaked (same reply as "key not held").
     let (envelope_bytes, _responder_identity) =
-        build_group_key_delivery(&store, namespace_id, subgroup_id, stranger_pk).unwrap();
+        build_group_key_delivery(&store, namespace_id.into(), subgroup_id, stranger_pk).unwrap();
     assert!(
         envelope_bytes.is_empty(),
         "responder must not wrap a key for a non-member"
@@ -5227,7 +5274,7 @@ fn curative_sweep_redrives_stranded_context() {
     let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).unwrap();
     let ctx_registered_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
@@ -5248,7 +5295,7 @@ fn curative_sweep_redrives_stranded_context() {
         "buffered ContextRegistered must be effect-skipped before the key arrives"
     );
     assert!(
-        namespace_groups_with_held_key_buffered_ops(&store, namespace_id)
+        namespace_groups_with_held_key_buffered_ops(&store, namespace_id.into())
             .unwrap()
             .is_empty(),
         "no group should be enumerated while the key is still absent (awaiting-key state)"
@@ -5272,7 +5319,8 @@ fn curative_sweep_redrives_stranded_context() {
     nest_for_test(&store, &ns_gid, &sub_gid);
 
     // ---- Enumerator: exactly the stranded subgroup is returned -------------
-    let enumerated = namespace_groups_with_held_key_buffered_ops(&store, namespace_id).unwrap();
+    let enumerated =
+        namespace_groups_with_held_key_buffered_ops(&store, namespace_id.into()).unwrap();
     assert_eq!(
         enumerated,
         vec![sub_gid.to_bytes()],
@@ -5286,7 +5334,7 @@ fn curative_sweep_redrives_stranded_context() {
     );
 
     // ---- Re-drive: the buffered op applies ---------------------------------
-    let applied = redrive_buffered_ops_for_group(&store, namespace_id, sub_gid.to_bytes())
+    let applied = redrive_buffered_ops_for_group(&store, namespace_id.into(), sub_gid.to_bytes())
         .expect("re-drive must not error");
     assert_eq!(
         applied, 1,
@@ -5302,8 +5350,9 @@ fn curative_sweep_redrives_stranded_context() {
     // (The namespace op-log is append-only, so the group stays ENUMERATED, but
     // a re-drive of an already-applied op is a nonce-deduped no-op — this is
     // the sweep's convergence signal: applied-count drops to zero.)
-    let applied_again = redrive_buffered_ops_for_group(&store, namespace_id, sub_gid.to_bytes())
-        .expect("second re-drive must not error");
+    let applied_again =
+        redrive_buffered_ops_for_group(&store, namespace_id.into(), sub_gid.to_bytes())
+            .expect("second re-drive must not error");
     assert_eq!(
         applied_again, 0,
         "re-driving an already-applied group must apply nothing (idempotent no-op)"
@@ -5330,7 +5379,7 @@ fn curative_sweep_redrives_stranded_context() {
     let nokey_encrypted = GroupKeyring::encrypt_op(&nokey_key, &nokey_inner).unwrap();
     let nokey_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         2,
         NamespaceOp::Group {
@@ -5344,7 +5393,7 @@ fn curative_sweep_redrives_stranded_context() {
     apply_signed_namespace_op(&store, &nokey_op).expect("buffer no-key op (effect-skipped)");
 
     let enumerated_after =
-        namespace_groups_with_held_key_buffered_ops(&store, namespace_id).unwrap();
+        namespace_groups_with_held_key_buffered_ops(&store, namespace_id.into()).unwrap();
     assert!(
         !enumerated_after.contains(&nokey_gid.to_bytes()),
         "a no-key (deleted/never-keyed) group must NOT be enumerated by the curative sweep"
@@ -5360,7 +5409,7 @@ fn curative_sweep_redrives_stranded_context() {
 
     // Sanity: the no-key group IS in the awaiting-key set (the strict inverse).
     // The held-key subgroup is NOT (its key is held).
-    let awaiting = namespace_groups_awaiting_key(&store, namespace_id).unwrap();
+    let awaiting = namespace_groups_awaiting_key(&store, namespace_id.into()).unwrap();
     assert_eq!(
         awaiting,
         vec![nokey_gid.to_bytes()],

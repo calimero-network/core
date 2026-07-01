@@ -1356,7 +1356,7 @@ fn namespace_member_pubkeys_includes_meta_admin_without_member_row() {
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
 
     let pks = MembershipRepository::new(&store)
-        .namespace_pubkeys(namespace_id)
+        .namespace_pubkeys(namespace_id.into())
         .unwrap();
     assert!(
         pks.contains(&admin),
@@ -1391,7 +1391,7 @@ fn namespace_member_pubkeys_dedups_admin_with_member_row() {
         .unwrap();
 
     let pks = MembershipRepository::new(&store)
-        .namespace_pubkeys(namespace_id)
+        .namespace_pubkeys(namespace_id.into())
         .unwrap();
     assert_eq!(pks.iter().filter(|p| **p == admin).count(), 1);
     assert!(pks.contains(&other));
@@ -1413,7 +1413,7 @@ fn namespace_member_pubkeys_includes_member_rows() {
         .unwrap();
 
     let pks = MembershipRepository::new(&store)
-        .namespace_pubkeys(namespace_id)
+        .namespace_pubkeys(namespace_id.into())
         .unwrap();
     assert!(pks.contains(&m1));
     assert!(pks.contains(&m2));
@@ -2091,18 +2091,18 @@ fn is_authoritative_namespace_identity_recognizes_owner_admin_tee() {
     append_op_log_entry(&store, &gid, 1, &borsh::to_vec(&tee_op).unwrap()).unwrap();
 
     assert!(MembershipRepository::new(&store)
-        .is_authoritative_namespace_identity(namespace_id, &owner)
+        .is_authoritative_namespace_identity(namespace_id.into(), &owner)
         .unwrap());
     assert!(MembershipRepository::new(&store)
-        .is_authoritative_namespace_identity(namespace_id, &admin_member)
+        .is_authoritative_namespace_identity(namespace_id.into(), &admin_member)
         .unwrap());
     assert!(MembershipRepository::new(&store)
-        .is_authoritative_namespace_identity(namespace_id, &tee_node)
+        .is_authoritative_namespace_identity(namespace_id.into(), &tee_node)
         .unwrap());
     assert!(!MembershipRepository::new(&store)
-        .is_authoritative_namespace_identity(namespace_id, &ordinary)
+        .is_authoritative_namespace_identity(namespace_id.into(), &ordinary)
         .unwrap());
     assert!(!MembershipRepository::new(&store)
-        .is_authoritative_namespace_identity(namespace_id, &stranger)
+        .is_authoritative_namespace_identity(namespace_id.into(), &stranger)
         .unwrap());
 }

@@ -129,7 +129,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                     &datastore,
                     &node_client,
                     &ack_router,
-                    namespace_id_bytes,
+                    namespace_id_bytes.into(),
                     &signer_sk,
                     op,
                 )

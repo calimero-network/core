@@ -1,5 +1,6 @@
 use crate::{CapabilitiesRepository, MetadataRepository};
 use crate::{DenyListRepository, MetaRepository, NamespaceRepository};
+use calimero_governance_types::NamespaceId;
 use std::collections::BTreeSet;
 
 use calimero_context_config::types::ContextGroupId;
@@ -474,8 +475,8 @@ impl<'a> MembershipRepository<'a> {
     /// Public-key-only view of the current member set for a namespace.
     /// Includes the meta `admin_identity` if not already in the member
     /// rows — see the original `namespace_member_pubkeys` doc.
-    pub fn namespace_pubkeys(&self, namespace_id: [u8; 32]) -> EyreResult<Vec<PublicKey>> {
-        let group_id = ContextGroupId::from(namespace_id);
+    pub fn namespace_pubkeys(&self, namespace_id: NamespaceId) -> EyreResult<Vec<PublicKey>> {
+        let group_id = ContextGroupId::from(namespace_id.to_bytes());
         let members = self.list(&group_id, 0, usize::MAX)?;
         let mut pubkeys: Vec<PublicKey> = members.into_iter().map(|(pk, _role)| pk).collect();
         if let Some(meta) = MetaRepository::new(self.store).load(&group_id)? {
@@ -512,10 +513,10 @@ impl<'a> MembershipRepository<'a> {
     /// admitted TEE node. See original `is_authoritative_namespace_identity`.
     pub fn is_authoritative_namespace_identity(
         &self,
-        namespace_id: [u8; 32],
+        namespace_id: NamespaceId,
         identity: &PublicKey,
     ) -> EyreResult<bool> {
-        let gid = ContextGroupId::from(namespace_id);
+        let gid = ContextGroupId::from(namespace_id.to_bytes());
 
         if let Some(meta) = MetaRepository::new(self.store).load(&gid)? {
             if *identity == meta.owner_identity {

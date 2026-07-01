@@ -14,7 +14,7 @@ pub(crate) fn apply(
     new_admin: PublicKey,
 ) -> EyreResult<()> {
     ctx.require_namespace_admin(&op.signer)?;
-    let ns_gid = ContextGroupId::from(ctx.namespace_id());
+    let ns_gid = ContextGroupId::from(ctx.namespace_id().to_bytes());
     let meta_repo = MetaRepository::new(ctx.store());
     let mut meta = meta_repo
         .load(&ns_gid)?

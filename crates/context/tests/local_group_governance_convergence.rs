@@ -299,7 +299,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
 
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
@@ -349,7 +349,7 @@ fn member_joined_at_rejects_expired_invitation() {
 
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoinedAt {
@@ -400,7 +400,7 @@ fn member_joined_rejects_when_expiration_set_and_joined_at_absent() {
     let signed_invitation = sign_invitation(&admin_sk, gid, 9_999_999_999, 1);
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
@@ -453,7 +453,7 @@ fn member_joined_at_accepts_in_window_invitation() {
     let signed_invitation = sign_invitation(&admin_sk, gid, 1_000_000, 1);
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoinedAt {
@@ -505,7 +505,7 @@ fn member_joined_at_backdated_joined_at_bypasses_apply_gate_documented_residual(
     let signed_invitation = sign_invitation(&admin_sk, gid, 1_000_000, 1);
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoinedAt {
@@ -556,7 +556,7 @@ fn member_joined_at_in_window_converges_when_expiration_already_past_wallclock()
     let signed_invitation = sign_invitation(&admin_sk, gid, 1_000_000, 1);
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoinedAt {
@@ -601,7 +601,7 @@ fn member_joined_at_ignores_zero_expiration() {
     let signed_invitation = sign_invitation(&admin_sk, gid, 0, 1);
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoinedAt {
@@ -678,7 +678,7 @@ fn recursive_invite_joins_all_descendant_groups() {
     for (i, (_gid, signed_inv)) in invitations.iter().enumerate() {
         let ns_op = SignedNamespaceOp::sign(
             &joiner_sk,
-            ns_id.to_bytes(),
+            ns_id.to_bytes().into(),
             vec![],
             (i + 1) as u64,
             NamespaceOp::Root(RootOp::MemberJoinedAt {
@@ -1825,7 +1825,7 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
 
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
-        ns_id,
+        ns_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
@@ -1843,7 +1843,7 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
     // replay (e.g. a counter-based dedup that tolerates one duplicate) is
     // still caught, not just the final state.
     let read_state = |label: &str| {
-        let (heads, _next_nonce) = NamespaceDagService::new(&store, ns_id)
+        let (heads, _next_nonce) = NamespaceDagService::new(&store, ns_id.into())
             .read_head()
             .expect("read namespace dag head");
         assert_eq!(

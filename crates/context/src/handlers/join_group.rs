@@ -314,7 +314,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     &datastore,
                     &node_client,
                     &ack_router,
-                    namespace_id,
+                    namespace_id.into(),
                     &sk,
                     member_joined_op,
                     None,

@@ -90,7 +90,7 @@ pub async fn handler(
         &state.store,
         &state.node_client,
         state.ctx_client.ack_router(),
-        namespace_id.to_bytes(),
+        namespace_id.to_bytes().into(),
         &signer_sk,
         op,
     )
