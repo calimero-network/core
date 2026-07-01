@@ -47,6 +47,10 @@ const _: () = {
 
     /// Read a borsh `String` (u32 length prefix + UTF-8 bytes) but reject a
     /// length above [`MAX_VERSION_STRING_LEN`] before allocating.
+    ///
+    /// Contract: the length check MUST run before the `vec![0u8; len]`
+    /// allocation below — that ordering is the entire point of this helper (a
+    /// hostile length prefix must never drive an allocation). Do not reorder.
     fn read_capped_string<R: Read>(reader: &mut R) -> borsh::io::Result<String> {
         let len = u32::deserialize_reader(reader)? as usize;
         if len > MAX_VERSION_STRING_LEN {
@@ -55,6 +59,7 @@ const _: () = {
                 "Version string exceeds maximum length",
             ));
         }
+        // Length validated above; safe to allocate exactly `len` bytes.
         let mut buf = vec![0u8; len];
         reader.read_exact(&mut buf)?;
         String::from_utf8(buf)

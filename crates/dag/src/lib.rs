@@ -88,6 +88,20 @@ pub struct CausalDelta<T> {
 }
 
 impl<T: BorshDeserialize> BorshDeserialize for CausalDelta<T> {
+    /// # Framing requirement
+    ///
+    /// The trailing-`kind` detection depends on the reader ending exactly at the
+    /// delta's last byte: end-of-input means "no `kind` present" (legacy delta →
+    /// `Regular`). So this impl is only correct when the reader is bounded to
+    /// exactly one delta — i.e. `borsh::from_slice` / `try_from_slice` over one
+    /// delta's bytes, or a length-delimited frame. Do **not** decode a
+    /// `CausalDelta` embedded mid-stream in a larger borsh aggregate (a field of
+    /// another struct, or an element of a `Vec<CausalDelta<_>>` with more
+    /// elements after it): there, the bytes that follow would be misread as the
+    /// `kind` discriminant. Today this holds — production never whole-borsh's a
+    /// `CausalDelta<T>` (the payload is serialized on its own and the other
+    /// fields live in separate store columns); if that changes, length-frame the
+    /// delta or promote `kind` to a non-trailing field.
     fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
         // Field order must match the derived `BorshSerialize` (declaration
         // order). `kind` is a backward-compatible trailing field: a pre-`kind`
