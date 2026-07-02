@@ -229,11 +229,22 @@ fn build_cors_layer(cors: &crate::config::CorsConfig) -> CorsLayer {
                 .filter_map(|o| match axum::http::HeaderValue::from_str(o) {
                     Ok(v) => Some(v),
                     Err(err) => {
-                        tracing::warn!(origin = %o, %err, "ignoring invalid CORS origin");
+                        // A dropped origin silently weakens a security-sensitive
+                        // allowlist, so surface it loudly (error, not warn).
+                        tracing::error!(origin = %o, %err, "invalid CORS origin dropped from allowlist");
                         None
                     }
                 })
                 .collect();
+            // A configured-but-all-invalid allowlist refuses every origin —
+            // safe, but almost certainly a misconfiguration. Flag it clearly.
+            if list.is_empty() && !origins.is_empty() {
+                tracing::error!(
+                    configured = origins.len(),
+                    "CORS allowed_origins is set but no entry parsed as a valid origin; \
+                     all cross-origin requests will be refused"
+                );
+            }
             layer.allow_origin(AllowOrigin::list(list))
         }
         None => layer.allow_origin(Any),
