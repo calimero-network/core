@@ -874,10 +874,11 @@ impl VMHostFunctions<'_> {
                 }
                 .into());
             }
-            match self.read_guest_memory_str(&handler_buffer) {
-                Ok(handler_str) => Some(handler_str.to_owned()),
-                Err(_) => None, // If we can't read the handler, just set to None
-            }
+            // Propagate a read/UTF-8 failure rather than silently dropping the
+            // handler — a malformed handler descriptor is a guest bug, and this
+            // matches how `emit` reads the event `kind`.
+            let handler_str = self.read_guest_memory_str(&handler_buffer)?;
+            Some(handler_str.to_owned())
         };
 
         self.with_logic_mut(|logic| {

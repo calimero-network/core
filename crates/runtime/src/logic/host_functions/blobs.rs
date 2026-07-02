@@ -184,11 +184,6 @@ impl VMHostFunctions<'_> {
             }));
         }
 
-        // Charge the per-execution total-blob-write budget before buffering the
-        // chunk, so an unbounded stream of writes is trapped rather than
-        // silently accumulated across handles.
-        self.with_logic_mut(|logic| logic.charge_blob_write(data_len))?;
-
         let data = self.read_guest_memory_slice(&data)?.to_vec();
 
         // Clone the sender (validating the fd is a write handle) so the chunk
@@ -206,9 +201,17 @@ impl VMHostFunctions<'_> {
             }
         })?;
 
+        // Charge the per-execution total-blob-write budget only once the write
+        // is about to proceed — the memory descriptor has been read and the fd
+        // is confirmed to be a write handle — so a guest can't drain the budget
+        // by hammering an invalid fd or an unreadable descriptor.
+        self.with_logic_mut(|logic| logic.charge_blob_write(data_len))?;
+
         // `block_in_place` hands the blocking wait off the async worker so the
         // writer task can drain the channel on another worker; a bare
-        // `Handle::block_on` would panic on a runtime thread.
+        // `Handle::block_on` would panic on a runtime thread. This requires a
+        // multi-threaded Tokio runtime (as do `blob_read`/`blob_close`); it
+        // would panic on a `current_thread` runtime.
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(sender.send(data))
         })
