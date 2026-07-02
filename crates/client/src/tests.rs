@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use eyre::Result;
 use url::Url;
-use wiremock::matchers::{body_json, method, path};
+use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::client::Client;
@@ -1273,17 +1273,9 @@ async fn token_refresh_preserves_base_path() {
 // `/auth/refresh`. These drive the real `ConnectionInfo` — `ensure_auth_header`
 // → `refresh_or_reauth` (single-flight) → request — against a mock server.
 
-use wiremock::matchers::header;
+use std::time::Duration;
 
-/// Build a minimal JWT (`header.payload.sig`) whose payload carries the given
-/// `exp` (seconds since the Unix epoch). Only the `exp` claim is read by the
-/// client, so the header/signature segments are placeholders.
-fn jwt_with_exp(exp_unix: i64) -> String {
-    use base64::Engine as _;
-    let payload =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("{{\"exp\":{exp_unix}}}"));
-    format!("aGVhZGVy.{payload}.c2ln")
-}
+use crate::test_support::jwt_with_exp;
 
 /// Mount a `/auth/refresh` mock that returns `new_access` (+ a rotated refresh
 /// token) and, separately, a protected GET that only matches when the request
@@ -1293,17 +1285,25 @@ fn jwt_with_exp(exp_unix: i64) -> String {
 ///
 /// Both mocks assert their exact hit counts on server drop: `refresh_hits`
 /// `/auth/refresh` POSTs and `get_hits` successful GETs carrying the fresh bearer.
+/// `refresh_delay` holds the refresh response open, which (for the concurrent
+/// test) keeps the single-flight lock held long enough that the other tasks are
+/// guaranteed to queue behind it rather than each racing an instant refresh.
 async fn mount_refresh_and_guarded_get(
     server: &MockServer,
     new_access: &str,
     refresh_hits: u64,
     get_hits: u64,
+    refresh_delay: Duration,
 ) {
     Mock::given(method("POST"))
         .and(path("/auth/refresh"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "data": { "access_token": new_access, "refresh_token": "rotated-refresh" }
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(refresh_delay)
+                .set_body_json(serde_json::json!({
+                    "data": { "access_token": new_access, "refresh_token": "rotated-refresh" }
+                })),
+        )
         .expect(refresh_hits)
         .mount(server)
         .await;
@@ -1348,7 +1348,7 @@ async fn expired_token_is_refreshed_before_request() {
     let server = MockServer::start().await;
     // No 401 is mocked: a proactive refresh must happen *before* the GET, so the
     // only GET carries the fresh bearer. Exactly one `/auth/refresh`, one GET.
-    mount_refresh_and_guarded_get(&server, &fresh, 1, 1).await;
+    mount_refresh_and_guarded_get(&server, &fresh, 1, 1, Duration::ZERO).await;
 
     let (client, auth_calls) = auth_client_with_token(
         &Url::parse(&server.uri()).unwrap(),
@@ -1371,7 +1371,7 @@ async fn token_expiring_soon_is_refreshed_proactively() {
     let fresh = jwt_with_exp(now + 3600);
 
     let server = MockServer::start().await;
-    mount_refresh_and_guarded_get(&server, &fresh, 1, 1).await;
+    mount_refresh_and_guarded_get(&server, &fresh, 1, 1, Duration::ZERO).await;
 
     let (client, auth_calls) = auth_client_with_token(
         &Url::parse(&server.uri()).unwrap(),
@@ -1392,8 +1392,10 @@ async fn concurrent_expired_requests_refresh_once() {
     let server = MockServer::start().await;
     // Single-flight: 8 concurrent expired requests must produce exactly ONE
     // `/auth/refresh` (a rotating refresh token would be spent 8 times
-    // otherwise) and 8 successful GETs carrying the fresh bearer.
-    mount_refresh_and_guarded_get(&server, &fresh, 1, 8).await;
+    // otherwise) and 8 successful GETs carrying the fresh bearer. The 50 ms
+    // refresh delay holds the lock long enough that all 8 tasks are guaranteed
+    // to contend for it rather than each racing an instant refresh.
+    mount_refresh_and_guarded_get(&server, &fresh, 1, 8, Duration::from_millis(50)).await;
 
     let (client, auth_calls) = auth_client_with_token(
         &Url::parse(&server.uri()).unwrap(),
@@ -1414,7 +1416,10 @@ async fn concurrent_expired_requests_refresh_once() {
     let mut successes = 0;
     while let Some(joined) = set.join_next().await {
         let result = joined.expect("task should not panic");
-        assert_eq!(result.unwrap()["ok"], serde_json::Value::Bool(true));
+        // A stale bearer (broken single-flight) would miss the header-filtered
+        // GET mock → 404 → Err; surface which task that was clearly.
+        let body = result.expect("request should succeed with the fresh bearer");
+        assert_eq!(body["ok"], serde_json::Value::Bool(true));
         successes += 1;
     }
     assert_eq!(successes, 8);
