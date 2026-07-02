@@ -1003,6 +1003,10 @@ impl<S: StorageAdaptor> Index<S> {
     /// single-level concurrent add/update-vs-delete semantics applied
     /// transitively.
     ///
+    /// `Frozen` descendants are the one exception: they are immutable and never
+    /// deleted, so the walk skips a `Frozen` node and its whole subtree, leaving
+    /// the frozen data as a surviving orphan rather than tombstoning it.
+    ///
     /// Internal subtree parent-lists and hashes are intentionally NOT
     /// recomputed: the whole subtree is detached at the root, so none of it
     /// feeds a live hash. Only the root's removal from its parent (done by the
@@ -1029,6 +1033,19 @@ impl<S: StorageAdaptor> Index<S> {
             let Some(index) = Self::get_index(id)? else {
                 continue;
             };
+            // Frozen data is immutable and never deleted: skip it AND its subtree
+            // (don't recurse) so a non-frozen parent's delete leaves the frozen
+            // descendant as a surviving orphan. Mirrors the `RemoveMode::Delete`
+            // Frozen guard in `Interface`. The root is never Frozen here (both
+            // delete paths reject that upstream).
+            if id != root_id
+                && matches!(
+                    index.metadata.storage_type,
+                    crate::entities::StorageType::Frozen
+                )
+            {
+                continue;
+            }
             if let Some(children) = &index.children {
                 for child in children {
                     stack.push(child.id());

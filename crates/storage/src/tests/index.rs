@@ -793,6 +793,51 @@ mod subtree_tombstoning {
         }
         assert!(!<Index<TestStorage>>::is_deleted(root).unwrap());
     }
+
+    /// A non-frozen parent may contain a `Frozen` descendant (e.g. a
+    /// `FrozenStorage` field). Frozen data is immutable and never deleted, so
+    /// deleting the parent must SKIP the frozen node AND its subtree (no
+    /// recursion) while still tombstoning the non-frozen rows. Regression for
+    /// the #286 cascade, which tombstoned frozen leaves too.
+    #[test]
+    fn subtree_delete_skips_frozen_descendant_and_its_subtree() {
+        use crate::entities::StorageType;
+        type S = MockedStorage<2104>;
+
+        let mut frozen_md = Metadata::default();
+        frozen_md.storage_type = StorageType::Frozen;
+
+        let root = Id::random();
+        let a = Id::random(); // non-frozen parent being deleted
+        let b = Id::random(); // non-frozen descendant -> tombstoned
+        let f = Id::random(); // Frozen descendant -> survives
+        let fc = Id::random(); // element under the frozen node -> survives (no recursion)
+
+        <Index<S>>::add_root(ChildInfo::new(root, [1; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(root, ChildInfo::new(a, [2; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(b, [3; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(f, [4; 32], frozen_md.clone())).unwrap();
+        <Index<S>>::add_child_to(f, ChildInfo::new(fc, [5; 32], frozen_md)).unwrap();
+
+        <Index<S>>::remove_child_from(root, a, time_now()).unwrap();
+
+        assert!(
+            <Index<S>>::is_deleted(a).unwrap(),
+            "deleted parent tombstoned"
+        );
+        assert!(
+            <Index<S>>::is_deleted(b).unwrap(),
+            "non-frozen descendant tombstoned"
+        );
+        assert!(
+            !<Index<S>>::is_deleted(f).unwrap(),
+            "Frozen descendant must survive the subtree delete"
+        );
+        assert!(
+            !<Index<S>>::is_deleted(fc).unwrap(),
+            "walk must not recurse into a Frozen node: its subtree survives too"
+        );
+    }
 }
 
 #[cfg(test)]
