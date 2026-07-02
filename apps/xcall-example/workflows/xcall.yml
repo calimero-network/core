@@ -17,7 +17,7 @@ description: >
   Denials are observable: the target counter never moves, and the node logs the
   same "xcall denied: ..." line that drives the `XCall` Denied event.
 
-  Two regression scenarios also run at the end:
+  Three regression scenarios also run at the end:
     * Self-xcall (C1 -> C1) must COMPLETE, not hang. xcalls are dispatched
       out-of-band; awaiting them inline re-entered the actor and deadlocked on
       the source context's execution lock. A reintroduced inline dispatch hangs
@@ -26,6 +26,10 @@ description: >
       DENIED. This is the owning-group boundary in its own right: same
       namespace, different owning group — the old namespace-root gate allowed
       it, the owning-group gate denies it.
+    * Depth cap: `relay` xcalls itself on the same context every hop, so an
+      uncapped node would recurse forever. The node bounds the local cascade at
+      MAX_XCALL_DEPTH, so the counter settles at MAX_XCALL_DEPTH + 1 and a
+      depth-limit denial is logged instead of the run spinning to wait_timeout.
 
   Single node: all contexts are created by node-1, which owns a member of each,
   so every xcall dispatches locally — the gates are node-local, so one node
@@ -393,6 +397,65 @@ steps:
       - xcall-authz-1
     patterns:
       - "xcall denied: owning group boundary"
+    min_matches: 1
+
+  # ============================================================================
+  # DEPTH CAP — `relay` xcalls `relay` on its OWN context every hop, so a single
+  # direct call would recurse without bound if the node let it. It doesn't: the
+  # node caps the local xcall cascade at MAX_XCALL_DEPTH (3). The direct call
+  # runs at depth 0, its xcall at depth 1, … and the depth-3 execution's onward
+  # xcall is denied — so executions run at depths 0..=3 (four hops) and the
+  # counter settles at MAX_XCALL_DEPTH + 1 = 4, with one depth-limit denial
+  # logged. Without the cap this step would spin until wait_timeout.
+  # ============================================================================
+  - name: C1 relay counter starts at 0
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c1}}"
+    method: get_relay_counter
+    outputs:
+      c1_relay_before: result.output
+  - name: Assert C1 relay counter is 0
+    type: json_assert
+    statements:
+      - "equal({{c1_relay_before}}, 0)"
+
+  - name: Kick off the self-recursive relay cascade on C1 (direct call, depth 0)
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c1}}"
+    method: relay
+
+  # Generous margin for a 3-hop sequential cascade — each hop is dispatched
+  # out-of-band and re-enters the actor. Single-hop waits above use 8s.
+  - name: Wait for the depth-capped cascade to fully drain
+    type: wait
+    seconds: 25
+
+  - name: C1 relay counter after the cascade
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c1}}"
+    method: get_relay_counter
+    outputs:
+      c1_relay_after: result.output
+  # Exactly MAX_XCALL_DEPTH + 1 = 4. `== 4` (not `>= 1`) catches BOTH failure
+  # modes: the cap not firing (the counter would keep climbing / never settle)
+  # and the cascade dying early (counter < 4).
+  - name: Assert the cascade ran exactly depth+1 hops then stopped
+    type: json_assert
+    statements:
+      - "equal({{c1_relay_after}}, 4)"
+
+  # Secondary confirmation that the stop was the depth cap specifically — the
+  # deepest hop's onward xcall is denied with this reason. min_matches: 1: the
+  # log is cumulative and other denials (group/namespace) also appear above.
+  - name: Assert a depth-limit denial was logged
+    type: assert_log_present
+    nodes:
+      - xcall-authz-1
+    patterns:
+      - "xcall denied: depth limit reached"
     min_matches: 1
 
 stop_all_nodes: true
