@@ -137,7 +137,10 @@ impl XCallExample {
         let me = ContextId::from(calimero_sdk::env::context_id());
         app::log!("relay hop {} on {}; queueing xcall to self", counter, me);
 
-        // Empty params: `relay` takes no arguments.
+        // Fire-and-forget: `env::xcall` returns `()` and only *queues* the call
+        // (empty params — `relay` takes no arguments). Whether the node then
+        // dispatches or denies it is invisible here; the depth cap denies it at
+        // its limit, which surfaces in the node log and the settled counter.
         calimero_sdk::env::xcall(me.as_ref(), "relay", &[]);
 
         Ok(())

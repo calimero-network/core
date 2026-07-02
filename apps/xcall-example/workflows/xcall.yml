@@ -426,11 +426,13 @@ steps:
     context_id: "{{c1}}"
     method: relay
 
-  # Generous margin for a 3-hop sequential cascade — each hop is dispatched
-  # out-of-band and re-enters the actor. Single-hop waits above use 8s.
+  # The cascade is (MAX_XCALL_DEPTH + 1) = 4 sequential hops, each dispatched
+  # out-of-band and re-entering the actor. Single-hop waits above use 8s, so
+  # budget ~8s/hop → 40s to keep real headroom under CI load. Scale this with
+  # the depth cap if it is ever raised.
   - name: Wait for the depth-capped cascade to fully drain
     type: wait
-    seconds: 25
+    seconds: 40
 
   - name: C1 relay counter after the cascade
     type: call
@@ -439,9 +441,10 @@ steps:
     method: get_relay_counter
     outputs:
       c1_relay_after: result.output
-  # Exactly MAX_XCALL_DEPTH + 1 = 4. `== 4` (not `>= 1`) catches BOTH failure
-  # modes: the cap not firing (the counter would keep climbing / never settle)
-  # and the cascade dying early (counter < 4).
+  # Exactly MAX_XCALL_DEPTH + 1 = 4. The `4` tracks MAX_XCALL_DEPTH (defined in
+  # crates/context/src/handlers/execute/mod.rs) — change both together. `== 4`
+  # (not `>= 1`) catches BOTH failure modes: the cap not firing (the counter
+  # would keep climbing / never settle) and the cascade dying early (< 4).
   - name: Assert the cascade ran exactly depth+1 hops then stopped
     type: json_assert
     statements:
