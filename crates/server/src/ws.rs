@@ -37,6 +37,8 @@ mod execute;
 mod subscribe;
 mod unsubscribe;
 
+pub(crate) use subscribe::may_observe_context;
+
 /// Globally unique identifier of a WebSocket client connection. Internal to the
 /// server (log correlation + connection-map key); never serialized to clients,
 /// so it lives here rather than in `calimero-server-primitives`.

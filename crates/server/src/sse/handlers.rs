@@ -193,13 +193,54 @@ pub async fn handle_subscription(
                 // `inner`. Lock order is persist-guard → `inner`.
                 let _persist = session.persist_guard().await;
 
-                let persisted = {
-                    let mut inner = session.inner.write().await;
+                // Enforce session ownership FIRST, before any per-context work or
+                // logging. Otherwise a caller who guesses a session id they don't
+                // own could still trigger membership-probe lookups and log lines
+                // for arbitrary context ids. Ownership is immutable for a session,
+                // so a short read lock here is sufficient.
+                {
+                    let inner = session.inner.read().await;
                     if !owner_allows_access(&inner.owner, &caller) {
                         warn!(%session_id, "SSE subscribe denied: caller is not the session owner");
                         return forbidden();
                     }
-                    for ctx in &ctxs.context_ids {
+                }
+
+                // Only subscribe to contexts this caller may observe. Context
+                // events carry state roots and application execution-event
+                // payloads, so a session must not receive events for a context
+                // its caller isn't a member of. The node owner (and a no-auth dev
+                // server) may observe everything; any other caller must prove
+                // membership via its authenticated key. Unauthorized ids are
+                // dropped and the response reflects only what was subscribed.
+                let node_owner = auth_node_owner.is_some();
+                let subscribed: Vec<_> = ctxs
+                    .context_ids
+                    .iter()
+                    .copied()
+                    .filter(|ctx| {
+                        let caller_is_member =
+                            auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| {
+                                state.ctx_client.has_member(ctx, pk).unwrap_or_else(|err| {
+                                    warn!(%session_id, context_id=%ctx, %err, "has_member lookup failed; denying subscription");
+                                    false
+                                })
+                            });
+                        let authorized = crate::ws::may_observe_context(
+                            state.auth_enabled,
+                            node_owner,
+                            caller_is_member,
+                        );
+                        if !authorized {
+                            warn!(%session_id, context_id=%ctx, "SSE subscribe denied: caller is not a member of the context");
+                        }
+                        authorized
+                    })
+                    .collect();
+
+                let persisted = {
+                    let mut inner = session.inner.write().await;
+                    for ctx in &subscribed {
                         let _ = inner.subscriptions.insert(*ctx);
                     }
                     inner.touch();
@@ -217,7 +258,7 @@ pub async fn handle_subscription(
                     Json(SseResponse {
                         body: ResponseBody::Result(serde_json::json!({
                             "status": "subscribed",
-                            "contexts": ctxs.context_ids,
+                            "contexts": subscribed,
                         })),
                     }),
                 )
