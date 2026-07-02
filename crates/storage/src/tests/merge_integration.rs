@@ -3,6 +3,9 @@
 //!
 //! These tests prove that the Mergeable trait + registry system works end-to-end
 //! without requiring Clone implementations.
+//!
+//! Each test's local `impl Mergeable` carries a sibling `impl RekeyTarget`
+//! (the supertrait): re-key each nested collection field, leaf fields no-op.
 
 use crate::collections::{
     Counter, LwwRegister, Mergeable, ReplicatedGrowableArray, Root, UnorderedMap, UnorderedSet,
@@ -25,6 +28,19 @@ impl Mergeable for TestApp {
         self.counter.merge(&other.counter)?;
         self.metadata.merge(&other.metadata)?;
         Ok(())
+    }
+}
+
+impl crate::collections::rekey::RekeyTarget for TestApp {
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        crate::rekey_field_if_supported!(
+            &mut self.counter,
+            crate::collections::rekey::field_child_id(parent_id, "counter")
+        );
+        crate::rekey_field_if_supported!(
+            &mut self.metadata,
+            crate::collections::rekey::field_child_id(parent_id, "metadata")
+        );
     }
 }
 
@@ -200,6 +216,15 @@ fn test_merge_with_nested_map() {
         }
     }
 
+    impl crate::collections::rekey::RekeyTarget for AppWithNestedMap {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.documents,
+                crate::collections::rekey::field_child_id(parent_id, "documents")
+            );
+        }
+    }
+
     register_crdt_merge::<AppWithNestedMap>();
 
     // Create initial state
@@ -317,6 +342,15 @@ fn test_root_cold_join_with_registered_merger_accepts_remote_contents() {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.kv.merge(&other.kv)?;
             Ok(())
+        }
+    }
+
+    impl crate::collections::rekey::RekeyTarget for App {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.kv,
+                crate::collections::rekey::field_child_id(parent_id, "kv")
+            );
         }
     }
 
@@ -440,6 +474,15 @@ fn test_root_cold_join_bootstrap_signal_with_registered_merger_uses_merger() {
         }
     }
 
+    impl crate::collections::rekey::RekeyTarget for App {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.kv,
+                crate::collections::rekey::field_child_id(parent_id, "kv")
+            );
+        }
+    }
+
     register_crdt_merge::<App>();
 
     // Remote: populated with a single key.
@@ -517,6 +560,15 @@ fn test_root_cold_join_bootstrap_signal_with_merger_preserves_local_fields() {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.kv.merge(&other.kv)?;
             Ok(())
+        }
+    }
+
+    impl crate::collections::rekey::RekeyTarget for App {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.kv,
+                crate::collections::rekey::field_child_id(parent_id, "kv")
+            );
         }
     }
 
@@ -648,6 +700,15 @@ fn test_merge_map_of_counters() {
         }
     }
 
+    impl crate::collections::rekey::RekeyTarget for AppWithCounters {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.scores,
+                crate::collections::rekey::field_child_id(parent_id, "scores")
+            );
+        }
+    }
+
     register_crdt_merge::<AppWithCounters>();
 
     // Node 1: Create counter and increment twice
@@ -726,6 +787,15 @@ fn test_merge_map_of_lww_registers() {
         }
     }
 
+    impl crate::collections::rekey::RekeyTarget for AppWithRegisters {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.settings,
+                crate::collections::rekey::field_child_id(parent_id, "settings")
+            );
+        }
+    }
+
     register_crdt_merge::<AppWithRegisters>();
 
     // Node 1: Set theme
@@ -793,6 +863,15 @@ fn test_merge_vector_of_counters() {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.metrics.merge(&other.metrics)?;
             Ok(())
+        }
+    }
+
+    impl crate::collections::rekey::RekeyTarget for AppWithVectorCounters {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.metrics,
+                crate::collections::rekey::field_child_id(parent_id, "metrics")
+            );
         }
     }
 
@@ -870,6 +949,15 @@ fn test_merge_map_of_sets() {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.user_tags.merge(&other.user_tags)?;
             Ok(())
+        }
+    }
+
+    impl crate::collections::rekey::RekeyTarget for AppWithSetTags {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.user_tags,
+                crate::collections::rekey::field_child_id(parent_id, "user_tags")
+            );
         }
     }
 
@@ -967,6 +1055,23 @@ fn test_merge_nested_document_with_rga() {
         }
     }
 
+    impl crate::collections::rekey::RekeyTarget for Document {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.content,
+                crate::collections::rekey::field_child_id(parent_id, "content")
+            );
+            crate::rekey_field_if_supported!(
+                &mut self.edit_count,
+                crate::collections::rekey::field_child_id(parent_id, "edit_count")
+            );
+            crate::rekey_field_if_supported!(
+                &mut self.metadata,
+                crate::collections::rekey::field_child_id(parent_id, "metadata")
+            );
+        }
+    }
+
     #[derive(BorshSerialize, BorshDeserialize, Debug)]
     struct CollabEditor {
         documents: UnorderedMap<String, Document>,
@@ -976,6 +1081,15 @@ fn test_merge_nested_document_with_rga() {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.documents.merge(&other.documents)?;
             Ok(())
+        }
+    }
+
+    impl crate::collections::rekey::RekeyTarget for CollabEditor {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.documents,
+                crate::collections::rekey::field_child_id(parent_id, "documents")
+            );
         }
     }
 
@@ -1126,6 +1240,27 @@ fn test_merge_determinism_reproduces_e2e_issue() {
             self.handler_counter.merge(&other.handler_counter)?;
             self.items.merge(&other.items)?;
             Ok(())
+        }
+    }
+
+    impl crate::collections::rekey::RekeyTarget for E2eKvStoreSimulation {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.file_counter,
+                crate::collections::rekey::field_child_id(parent_id, "file_counter")
+            );
+            crate::rekey_field_if_supported!(
+                &mut self.file_owner,
+                crate::collections::rekey::field_child_id(parent_id, "file_owner")
+            );
+            crate::rekey_field_if_supported!(
+                &mut self.handler_counter,
+                crate::collections::rekey::field_child_id(parent_id, "handler_counter")
+            );
+            crate::rekey_field_if_supported!(
+                &mut self.items,
+                crate::collections::rekey::field_child_id(parent_id, "items")
+            );
         }
     }
 
@@ -1298,6 +1433,15 @@ fn test_counter_serialization_architecture() {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.handler_counter.merge(&other.handler_counter)?;
             Ok(())
+        }
+    }
+
+    impl crate::collections::rekey::RekeyTarget for HandlerApp {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.handler_counter,
+                crate::collections::rekey::field_child_id(parent_id, "handler_counter")
+            );
         }
     }
 
@@ -2142,6 +2286,15 @@ fn test_nested_counter_in_map_concurrent_increments_converge() {
         }
     }
 
+    impl crate::collections::rekey::RekeyTarget for NestedCounters {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.counters,
+                crate::collections::rekey::field_child_id(parent_id, "counters")
+            );
+        }
+    }
+
     type S = MainStorage;
     let root_hash = || {
         Index::<S>::get_hashes_for(Id::root())
@@ -2287,6 +2440,15 @@ fn test_nested_counter_first_touch_concurrent_converges() {
         }
     }
 
+    impl crate::collections::rekey::RekeyTarget for NestedCounters {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.counters,
+                crate::collections::rekey::field_child_id(parent_id, "counters")
+            );
+        }
+    }
+
     type S = MainStorage;
     let root_hash = || {
         Index::<S>::get_hashes_for(Id::root())
@@ -2428,6 +2590,15 @@ fn test_nested_counter_first_touch_via_entry_api_converges() {
         }
     }
 
+    impl crate::collections::rekey::RekeyTarget for NestedCounters {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.counters,
+                crate::collections::rekey::field_child_id(parent_id, "counters")
+            );
+        }
+    }
+
     type S = MainStorage;
     let root_hash = || {
         Index::<S>::get_hashes_for(Id::root())
@@ -2559,6 +2730,15 @@ fn test_nested_map_first_touch_via_or_default_converges() {
     impl Mergeable for NestedMaps {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.outer.merge(&other.outer)
+        }
+    }
+
+    impl crate::collections::rekey::RekeyTarget for NestedMaps {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.outer,
+                crate::collections::rekey::field_child_id(parent_id, "outer")
+            );
         }
     }
 
@@ -2701,6 +2881,15 @@ fn test_nested_counter_first_touch_via_or_default_converges() {
         }
     }
 
+    impl crate::collections::rekey::RekeyTarget for NestedCounters {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.counters,
+                crate::collections::rekey::field_child_id(parent_id, "counters")
+            );
+        }
+    }
+
     type S = MainStorage;
     let root_hash = || {
         Index::<S>::get_hashes_for(Id::root())
@@ -2832,6 +3021,15 @@ fn test_nested_counter_first_touch_via_extend_converges() {
         }
     }
 
+    impl crate::collections::rekey::RekeyTarget for NestedCounters {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.counters,
+                crate::collections::rekey::field_child_id(parent_id, "counters")
+            );
+        }
+    }
+
     type S = MainStorage;
     let root_hash = || {
         Index::<S>::get_hashes_for(Id::root())
@@ -2956,6 +3154,15 @@ fn test_nested_set_first_touch_concurrent_converges() {
     impl Mergeable for Tags {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.tags.merge(&other.tags)
+        }
+    }
+
+    impl crate::collections::rekey::RekeyTarget for Tags {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.tags,
+                crate::collections::rekey::field_child_id(parent_id, "tags")
+            );
         }
     }
 
@@ -3104,6 +3311,15 @@ fn test_nested_pncounter_single_writer_converges() {
         }
     }
 
+    impl crate::collections::rekey::RekeyTarget for PnDoc {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.counters,
+                crate::collections::rekey::field_child_id(parent_id, "counters")
+            );
+        }
+    }
+
     type S = MainStorage;
     let root_hash = || {
         Index::<S>::get_hashes_for(Id::root())
@@ -3223,6 +3439,15 @@ fn test_nested_pncounter_concurrent_writers_converge() {
     impl Mergeable for PnDoc {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.counters.merge(&other.counters)
+        }
+    }
+
+    impl crate::collections::rekey::RekeyTarget for PnDoc {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.counters,
+                crate::collections::rekey::field_child_id(parent_id, "counters")
+            );
         }
     }
 
@@ -3386,6 +3611,15 @@ fn test_kv_map_bidirectional_distinct_key_inserts_converge() {
         }
     }
 
+    impl crate::collections::rekey::RekeyTarget for KvApp {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.kv,
+                crate::collections::rekey::field_child_id(parent_id, "kv")
+            );
+        }
+    }
+
     type S = MainStorage;
     let root_hash = || {
         Index::<S>::get_hashes_for(Id::root())
@@ -3512,6 +3746,15 @@ fn test_kv_map_same_key_concurrent_writes_converge() {
     impl Mergeable for KvApp {
         fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.kv.merge(&other.kv)
+        }
+    }
+
+    impl crate::collections::rekey::RekeyTarget for KvApp {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.kv,
+                crate::collections::rekey::field_child_id(parent_id, "kv")
+            );
         }
     }
 

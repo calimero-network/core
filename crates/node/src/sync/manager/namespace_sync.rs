@@ -468,7 +468,7 @@ impl SyncManager {
         // point-to-point, not folded governance state, so responders
         // disagreeing cannot diverge membership.
         let now_secs = calimero_context::group_store::now_secs();
-        if let Err(err) = NamespaceMembershipService::new(&store, namespace_id)
+        if let Err(err) = NamespaceMembershipService::new(&store, namespace_id.into())
             .validate_open_invitation(&invitation, now_secs)
         {
             let msg = StreamMessage::Message {
@@ -493,6 +493,7 @@ impl SyncManager {
                         match GroupKeyring::wrap_for_member(
                             &sender_sk,
                             &joiner_public_key,
+                            &group_id.to_bytes(),
                             &group_key,
                         ) {
                             Ok(envelope) => borsh::to_vec(&envelope).unwrap_or_default(),
@@ -678,6 +679,7 @@ impl SyncManager {
                         match GroupKeyring::wrap_for_member(
                             &sender_sk,
                             &joiner_public_key,
+                            &subgroup_gid.to_bytes(),
                             &group_key,
                         ) {
                             Ok(envelope) => borsh::to_vec(&envelope).unwrap_or_default(),
@@ -968,6 +970,7 @@ impl SyncManager {
                 std::time::Duration::from_millis(
                     crate::sync::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
                 ),
+                self.sync_config.namespace_discovery_wait,
                 &rejected_peers,
             )
             .await
@@ -1221,6 +1224,8 @@ impl SyncManager {
                                         calimero_context_client::local_governance::NamespaceOp::Group { .. } => {
                                             "Group".to_owned()
                                         }
+                                        // `NamespaceOp` is `#[non_exhaustive]`.
+                                        _ => "Unknown".to_owned(),
                                     };
                                     warn!(
                                         namespace_id = %hex::encode(namespace_id),
@@ -1345,13 +1350,16 @@ impl SyncManager {
             }
         };
 
-        let awaiting = match calimero_context::group_store::namespace_groups_awaiting_key(
+        // `(group_id, key_id)` pairs we're stranded on — we ask each peer for
+        // the EXACT key epoch a buffered op needs, so a rotated-out key can be
+        // recovered (a current-key-only request could not deliver it).
+        let awaiting = match calimero_context::group_store::namespace_group_keys_awaiting(
             &store,
-            namespace_id,
+            namespace_id.into(),
         ) {
-            Ok(groups) => groups,
+            Ok(pairs) => pairs,
             Err(err) => {
-                debug!(%err, "failed to enumerate groups awaiting key");
+                debug!(%err, "failed to enumerate group keys awaiting");
                 return;
             }
         };
@@ -1378,7 +1386,7 @@ impl SyncManager {
             return;
         }
 
-        for group_id in awaiting {
+        for (group_id, key_id) in awaiting {
             for peer in &candidates {
                 let Some((envelope_bytes, responder_identity)) = self
                     .request_group_key_from_peer(
@@ -1386,6 +1394,7 @@ impl SyncManager {
                         namespace_id,
                         group_id,
                         requester_public_key,
+                        Some(key_id),
                     )
                     .await
                 else {
@@ -1398,7 +1407,7 @@ impl SyncManager {
                 let store = self.context_client.datastore_handle().into_inner();
                 let outcome = calimero_context::group_store::apply_received_group_key(
                     &store,
-                    namespace_id,
+                    namespace_id.into(),
                     group_id,
                     &envelope_bytes,
                     responder_identity,
@@ -1476,6 +1485,7 @@ impl SyncManager {
         namespace_id: [u8; 32],
         group_id: [u8; 32],
         requester_public_key: PublicKey,
+        key_id: Option<[u8; 32]>,
     ) -> Option<(Vec<u8>, PublicKey)> {
         use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 
@@ -1494,6 +1504,7 @@ impl SyncManager {
                 namespace_id,
                 group_id,
                 requester_public_key,
+                key_id,
             },
             next_nonce: {
                 use rand::Rng;
@@ -1540,6 +1551,7 @@ impl SyncManager {
         namespace_id: [u8; 32],
         group_id: [u8; 32],
         requester_public_key: PublicKey,
+        requested_key_id: Option<[u8; 32]>,
         stream: &mut Stream,
         nonce: Nonce,
     ) -> eyre::Result<()> {
@@ -1549,9 +1561,10 @@ impl SyncManager {
         let (key_envelope_bytes, responder_identity) =
             match calimero_context::group_store::build_group_key_delivery(
                 &store,
-                namespace_id,
+                namespace_id.into(),
                 group_id,
                 requester_public_key,
+                requested_key_id,
             ) {
                 Ok(pair) => pair,
                 Err(err) => {

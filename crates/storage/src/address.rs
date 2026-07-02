@@ -137,7 +137,11 @@ impl Path {
         Ok(Self { offsets, path: str })
     }
 
-    /// Returns the depth (number of segments).
+    /// Returns the depth of the path: the zero-based index of the deepest
+    /// segment, i.e. the number of segments minus one. A single-segment root
+    /// path (`::root`) has depth `0`; `::a::b::c` has depth `2`. The segment
+    /// count is `depth() + 1`, which is why the segment accessors iterate
+    /// `0..=depth()`.
     #[must_use]
     pub fn depth(&self) -> usize {
         self.offsets.len()

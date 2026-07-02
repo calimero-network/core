@@ -132,7 +132,6 @@ impl<'a> AbsorbRepository<'a> {
 
 #[cfg(test)]
 mod tests {
-    use calimero_primitives::hash::Hash;
     use calimero_primitives::identity::PublicKey;
     use calimero_storage::logical_clock::HybridTimestamp;
 
@@ -147,8 +146,6 @@ mod tests {
             payload: vec![1, 2, 3],
             nonce: [0; 12],
             author_id: PublicKey::from([0; 32]),
-            root_hash: Hash::from([0; 32]),
-            events: None,
             source_peer: libp2p::PeerId::random().to_bytes(),
             key_id: [0; 32],
             governance_position: None,

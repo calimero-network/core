@@ -236,6 +236,12 @@ pub enum NamespaceError {
     #[error("new parent group {0} not found in this namespace")]
     ReparentTargetMissing(String),
 
+    /// Reparent target exists but resolves to a DIFFERENT namespace than the
+    /// child. Reparenting across namespaces would splice the child's
+    /// crypto/access boundary into a foreign namespace.
+    #[error("reparent across namespaces: child {child} and new parent {new_parent} resolve to different namespaces")]
+    ReparentCrossNamespace { child: String, new_parent: String },
+
     /// Namespace root group not found at all.
     #[error("namespace root group not found")]
     RootMissing,
@@ -327,6 +333,12 @@ pub enum KeyringError {
     /// schema-mismatch between sender and receiver.
     #[error("borsh decode inner GroupOp: {0}")]
     InnerOpDecodeFailed(String),
+
+    /// A key envelope's authenticating signature did not verify against its
+    /// stated `sender`, or the sender is not the identity the caller required.
+    /// The envelope is forged, tampered, or replayed and MUST be rejected.
+    #[error("key envelope sender authentication failed: {0}")]
+    EnvelopeAuthFailed(String),
 }
 
 /// Errors raised by `MetaRepository` and the meta-row-touching
@@ -376,6 +388,20 @@ pub enum GroupCreatedRejection {
          holding CAN_CREATE_SUBGROUP at the namespace root"
     )]
     Unauthorized { signer: String, namespace: String },
+
+    /// The named parent group exists but resolves to a DIFFERENT namespace.
+    /// Meta rows are keyed by group id alone, so mere existence of the parent
+    /// does not prove same-namespace membership — grafting a subgroup under a
+    /// foreign namespace's group would splice this namespace's crypto/access
+    /// boundary into it.
+    #[error(
+        "parent {parent} belongs to namespace {parent_namespace}, not this namespace {namespace}"
+    )]
+    ParentCrossNamespace {
+        parent: String,
+        parent_namespace: String,
+        namespace: String,
+    },
 }
 
 /// Reasons `RootOp::NamespaceCreated` (the namespace GENESIS op, #2474) apply

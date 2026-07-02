@@ -194,13 +194,15 @@ impl BorshDeserialize for HybridTimestamp {
         let time_u64 = u64::deserialize_reader(reader)?;
         let id_u128 = u128::deserialize_reader(reader)?;
         let time = NTP64(time_u64);
-        let id = if id_u128 == 0 {
-            ID::from(DEFAULT_ID)
-        } else {
-            NonZeroU128::new(id_u128).map(ID::from).ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "ID cannot be zero")
-            })?
-        };
+        // A serialized HLC id is always a NonZeroU128 (see `BorshSerialize`), so
+        // an on-wire `id == 0` can only come from corruption or a crafted frame.
+        // Reject it rather than coercing to `DEFAULT_ID`: coercion is
+        // non-injective — two distinct byte strings (`id == 0` and `id == 1`)
+        // would decode to the same timestamp, breaking the globally-unique-id
+        // invariant that HLC ordering and CRDT tiebreaks depend on.
+        let id = NonZeroU128::new(id_u128).map(ID::from).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "HLC id cannot be zero")
+        })?;
         Ok(Self(Timestamp::new(time, id)))
     }
 }
@@ -236,6 +238,22 @@ pub fn physical_time_secs(ts: &HybridTimestamp) -> u32 {
 #[must_use]
 pub fn logical_counter(ts: &HybridTimestamp) -> u32 {
     (ts.0.get_time().as_u64() & COUNTER_MASK) as u32
+}
+
+/// Derive a 16-byte HLC instance seed from a 32-byte executor id.
+///
+/// Must be collision-resistant: distinct executors need distinct seeds, or two
+/// concurrently-minted `CharId`s collide and a character is silently lost during
+/// RGA sync. Takes the first 16 bytes of `SHA-256(executor_id)` (`sha2` is
+/// already a dep). The replaced code copied only the first 16 bytes, so keys
+/// sharing a 16-byte prefix collided.
+#[must_use]
+pub fn hlc_seed_from_executor_id(executor_id: &[u8; 32]) -> [u8; 16] {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(executor_id);
+    let mut seed = [0u8; 16];
+    seed.copy_from_slice(&digest[..16]);
+    seed
 }
 
 /// Why [`LogicalClock::update`] rejected a remote timestamp.
@@ -451,6 +469,56 @@ mod tests {
     }
 
     #[test]
+    fn test_hlc_monotonic_across_backward_wall_clock_jump() {
+        // Crash-recovery / NTP-correction scenario: after a reading is taken the
+        // wall clock jumps BACKWARD (e.g. the machine's clock is corrected on
+        // restart). The HLC must never emit a timestamp that sorts at or before
+        // one it already emitted — even a delta_id derived from a later reading
+        // must be strictly greater — or two distinct events collide and one is
+        // silently lost. Monotonicity is preserved by holding physical time at
+        // the last observed value and advancing the logical counter instead.
+        let time = AtomicU64::new(2_000_000_000_000_000_000);
+        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+
+        let before = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+
+        // Move the wall clock a full second into the past.
+        let jumped_back = time.load(Ordering::Relaxed) - 1_000_000_000;
+        time.store(jumped_back, Ordering::Relaxed);
+
+        let after = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+
+        // Strictly monotonic despite the backward jump: no collision, no
+        // regression. This is the invariant a delta_id derived from the HLC
+        // relies on for uniqueness across a clock correction.
+        assert!(
+            after.get_time().as_u64() > before.get_time().as_u64(),
+            "HLC regressed across a backward wall-clock jump: {after} !> {before}",
+        );
+        assert_ne!(
+            after.get_time().as_u64(),
+            before.get_time().as_u64(),
+            "backward jump produced a colliding timestamp",
+        );
+
+        // Physical time was pinned to the pre-jump value (the clock did not
+        // follow the wall clock backward); progress came from the counter.
+        assert_eq!(
+            physical_time_secs(&after),
+            physical_time_secs(&before),
+            "physical time must hold at the last observed value, not regress",
+        );
+        assert!(
+            logical_counter(&after) > logical_counter(&before),
+            "the logical counter must advance to preserve ordering",
+        );
+
+        // And a third reading, still on the rewound clock, keeps advancing.
+        let third = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+        assert!(third.get_time().as_u64() > after.get_time().as_u64());
+    }
+
+    #[test]
     fn test_hybrid_timestamp_borsh() {
         let time = AtomicU64::new(1_000_000_000_000_000_000);
         let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
@@ -463,6 +531,28 @@ mod tests {
         let deserialized: HybridTimestamp = borsh::from_slice(&serialized).unwrap();
 
         assert_eq!(ts, deserialized);
+    }
+
+    #[test]
+    fn test_hybrid_timestamp_borsh_rejects_zero_id() {
+        // A crafted/corrupt frame with `id == 0` must be rejected, not coerced
+        // to id 1 — coercion would let two distinct byte strings decode to the
+        // same timestamp and collide otherwise-unique HLC ids.
+        let mut bytes = Vec::new();
+        0u64.serialize(&mut bytes).unwrap(); // time
+        0u128.serialize(&mut bytes).unwrap(); // id == 0 (invalid)
+
+        let result: Result<HybridTimestamp, _> = borsh::from_slice(&bytes);
+        assert!(
+            result.is_err(),
+            "id == 0 must fail to decode, got {result:?}"
+        );
+
+        // A valid non-zero id still decodes.
+        let mut ok = Vec::new();
+        0u64.serialize(&mut ok).unwrap();
+        1u128.serialize(&mut ok).unwrap();
+        assert!(borsh::from_slice::<HybridTimestamp>(&ok).is_ok());
     }
 
     #[test]
@@ -623,6 +713,106 @@ mod tests {
                 "timestamps must be strictly monotonic across counter overflow",
             );
             prev = next;
+        }
+    }
+
+    /// A naive XOR-fold (`seed[i % 16] ^= key[i]`) collapses any `[k; 32]` key to
+    /// an all-zero seed, colliding every such executor's HLC id — which is why the
+    /// seed uses a SHA-256 prefix, not a fold.
+    #[test]
+    fn test_naive_xor_fold_collapses_repeated_key_to_zero() {
+        // The rejected XOR-fold alternative, reproduced verbatim.
+        fn xor_fold_seed(executor_id: &[u8; 32]) -> [u8; 16] {
+            let mut seed = [0u8; 16];
+            for (i, byte) in executor_id.iter().enumerate() {
+                seed[i % 16] ^= *byte;
+            }
+            seed
+        }
+
+        // `[k; 32]` collapses to all-zero for ANY byte k.
+        for k in [1u8, 7, 42, 255] {
+            assert_eq!(
+                xor_fold_seed(&[k; 32]),
+                [0u8; 16],
+                "XOR-fold collapses [{k}; 32] to an all-zero seed (this is the bug)"
+            );
+        }
+
+        // Two DISTINCT repeated keys therefore collide on the same seed.
+        assert_eq!(
+            xor_fold_seed(&[1u8; 32]),
+            xor_fold_seed(&[2u8; 32]),
+            "distinct repeated keys collide under the XOR-fold (this is the bug)"
+        );
+    }
+
+    /// The SHA-256 seeding is collision-resistant: distinct executor ids — even
+    /// the adversarial `[k; 32]` family that XOR-fold collapsed — yield DISTINCT
+    /// seeds and DISTINCT HLC ids, so no `CharId` collision and no silent
+    /// character loss during RGA sync.
+    #[test]
+    fn test_sha256_seeding_distinct_for_distinct_keys() {
+        // Adversarial set: the repeated-byte keys the XOR-fold mapped to one
+        // all-zero seed, plus shared-prefix keys, plus a structured key.
+        let keys: [[u8; 32]; 6] = [
+            [1u8; 32],
+            [2u8; 32],
+            [255u8; 32],
+            {
+                let mut k = [7u8; 32];
+                k[16] = 1; // shares the low 16 bytes with the next
+                k
+            },
+            {
+                let mut k = [7u8; 32];
+                k[16] = 2;
+                k
+            },
+            [0u8; 32], // genuine all-zero input (zero→1 guard territory)
+        ];
+
+        // Every pair of distinct keys must map to distinct seeds.
+        let seeds: Vec<[u8; 16]> = keys.iter().map(hlc_seed_from_executor_id).collect();
+        for i in 0..seeds.len() {
+            for j in (i + 1)..seeds.len() {
+                assert_ne!(
+                    seeds[i], seeds[j],
+                    "distinct keys {:?} / {:?} must seed distinctly (collision-resistance)",
+                    keys[i], keys[j]
+                );
+            }
+        }
+
+        // And the production seeding path mints distinct HLC ids for the
+        // previously-colliding [1;32] vs [2;32] pair.
+        let mut hlc_a =
+            LogicalClock::new(|buf| buf.copy_from_slice(&hlc_seed_from_executor_id(&[1u8; 32])));
+        let mut hlc_b =
+            LogicalClock::new(|buf| buf.copy_from_slice(&hlc_seed_from_executor_id(&[2u8; 32])));
+        let time = AtomicU64::new(1_000_000_000_000_000_000);
+        let ts_a = hlc_a.new_timestamp(|| time.load(Ordering::Relaxed));
+        let ts_b = hlc_b.new_timestamp(|| time.load(Ordering::Relaxed));
+        assert_ne!(
+            ts_a.get_id(),
+            ts_b.get_id(),
+            "[1;32] and [2;32] executors must mint distinct HLC ids (XOR-fold collapsed both)"
+        );
+    }
+
+    /// The SHA-256 prefix never collapses a non-zero key to the all-zero seed
+    /// (producing an all-zero 16-byte prefix would need an infeasible preimage),
+    /// so the constructor's zero→1 guard only ever fires for genuine input that
+    /// happens to hash to a zero prefix — which no real key does.
+    #[test]
+    fn test_sha256_seeding_repeated_key_is_non_zero() {
+        // The exact inputs the XOR-fold zeroed must now seed to a non-zero id.
+        for k in [1u8, 7, 42, 255] {
+            assert_ne!(
+                hlc_seed_from_executor_id(&[k; 32]),
+                [0u8; 16],
+                "SHA-256 seeding of [{k}; 32] must not be all-zero (XOR-fold's bug)"
+            );
         }
     }
 

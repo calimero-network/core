@@ -6,6 +6,8 @@
 
 use calimero_context::group_store::{GroupKeyring, NamespaceRepository};
 use calimero_crypto::Nonce;
+use calimero_node_primitives::sync::{SealedDeltaPayload, MAX_STATE_DELTA_PLAINTEXT_BYTES};
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PrivateKey;
 use calimero_storage::action::Action;
 use eyre::{bail, OptionExt, Result};
@@ -105,21 +107,60 @@ pub(super) async fn lookup_group_key_with_wait(
     }
 }
 
+/// A decrypted state delta: the storage actions to apply, plus the expected
+/// post-apply `root_hash` and the execution `events` that were sealed
+/// alongside them.
+#[derive(Debug)]
+pub(super) struct DecryptedDelta {
+    /// Expected state root after applying `actions`. Sealed inside the
+    /// ciphertext (never on the wire in cleartext) and recovered here.
+    pub(super) root_hash: Hash,
+    /// The storage mutations carried by the delta.
+    pub(super) actions: Vec<Action>,
+    /// Serialized execution events for handler replay, sealed inside the
+    /// ciphertext. `None` when the delta emitted no events.
+    pub(super) events: Option<Vec<u8>>,
+}
+
+/// Decrypt a state delta's encrypted payload, returning the sealed
+/// `root_hash` and the storage actions. The plaintext is a borsh-encoded
+/// [`SealedDeltaPayload`] wrapping the root hash and the borsh-encoded
+/// `StorageDelta` bytes.
 pub(super) fn decrypt_delta_actions(
     artifact: Vec<u8>,
     nonce: Nonce,
     sender_key: PrivateKey,
-) -> Result<Vec<Action>> {
+) -> Result<DecryptedDelta> {
     let shared_key = calimero_crypto::SharedKey::from_sk(&sender_key);
-    let decrypted_artifact = shared_key
+    let decrypted = shared_key
         .decrypt(artifact, nonce)
-        .ok_or_eyre("failed to decrypt artifact")?;
+        .ok_or_eyre("failed to decrypt delta payload")?;
 
-    let storage_delta: calimero_storage::delta::StorageDelta =
-        borsh::from_slice(&decrypted_artifact)?;
+    // AEAD proves the payload came from a group-key holder, but a *malicious
+    // member* still holds the key and can seal an arbitrarily large artifact.
+    // Bound the inner artifact via the type's own `is_valid()` contract before
+    // deserializing the storage delta, so a crafted payload can't drive
+    // unbounded borsh allocation. (Deserializing the outer `SealedDeltaPayload`
+    // is itself bounded: `decrypted` came from an inbound gossip message capped
+    // at gossipsub's transmit size, or from a previously network-bounded delta
+    // on the buffered-replay path.)
+    let sealed: SealedDeltaPayload = borsh::from_slice(&decrypted)?;
+    if !sealed.is_valid() {
+        bail!(
+            "state-delta artifact too large: {} bytes (max {})",
+            sealed.artifact.len(),
+            MAX_STATE_DELTA_PLAINTEXT_BYTES
+        );
+    }
+
+    let storage_delta: calimero_storage::delta::StorageDelta = borsh::from_slice(&sealed.artifact)?;
 
     match storage_delta {
-        calimero_storage::delta::StorageDelta::Actions(actions) => Ok(actions),
+        calimero_storage::delta::StorageDelta::Actions(actions) => Ok(DecryptedDelta {
+            root_hash: sealed.root_hash,
+            actions,
+            events: sealed.events,
+        }),
         _ => bail!("Expected Actions variant in state delta"),
     }
 }
@@ -139,14 +180,24 @@ mod tests {
         let nonce = [7u8; NONCE_LEN];
 
         let storage_delta = StorageDelta::Actions(Vec::new());
-        let plaintext = borsh::to_vec(&storage_delta)?;
+        let sealed = SealedDeltaPayload {
+            root_hash: Hash::from([9u8; 32]),
+            artifact: borsh::to_vec(&storage_delta)?,
+            events: Some(b"events-blob".to_vec()),
+        };
+        let plaintext = borsh::to_vec(&sealed)?;
         let cipher = shared_key
             .encrypt(plaintext, nonce)
             .ok_or_eyre("encryption failed")?;
 
-        // Encrypted storage delta should decrypt back to empty actions
+        // Encrypted payload should decrypt back to empty actions AND the
+        // sealed root hash AND the sealed events — proving all three survive
+        // the round-trip inside the ciphertext rather than on the cleartext
+        // wire.
         let decrypted = decrypt_delta_actions(cipher, nonce, sender_key)?;
-        assert!(decrypted.is_empty());
+        assert!(decrypted.actions.is_empty());
+        assert_eq!(decrypted.root_hash, Hash::from([9u8; 32]));
+        assert_eq!(decrypted.events.as_deref(), Some(b"events-blob".as_ref()));
 
         Ok(())
     }
@@ -160,5 +211,33 @@ mod tests {
         // Garbage ciphertext should fail to decrypt/deserialize
         let result = decrypt_delta_actions(vec![1, 2, 3, 4], nonce, sender_key);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn decrypt_delta_actions_rejects_oversized_payload() {
+        let mut rng = thread_rng();
+        let sender_key = PrivateKey::random(&mut rng);
+        let shared_key = SharedKey::from_sk(&sender_key);
+        let nonce = [3u8; NONCE_LEN];
+
+        // A group-key holder seals a well-formed SealedDeltaPayload whose inner
+        // artifact is just past the cap. The `is_valid()` guard must reject it
+        // before the inner storage-delta deserialization is attempted.
+        let sealed = SealedDeltaPayload {
+            root_hash: Hash::from([0u8; 32]),
+            artifact: vec![0u8; MAX_STATE_DELTA_PLAINTEXT_BYTES + 1],
+            events: None,
+        };
+        let plaintext = borsh::to_vec(&sealed).expect("serialize");
+        let cipher = shared_key
+            .encrypt(plaintext, nonce)
+            .expect("encryption failed");
+
+        let err = decrypt_delta_actions(cipher, nonce, sender_key)
+            .expect_err("oversized payload must be rejected");
+        assert!(
+            err.to_string().contains("too large"),
+            "unexpected error: {err}"
+        );
     }
 }

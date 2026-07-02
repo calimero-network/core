@@ -3,11 +3,13 @@ use std::time::Duration;
 
 use actix::{AsyncContext, WrapFuture};
 use calimero_context_client::group::ListAllGroupsRequest;
+use calimero_primitives::context::ContextId;
 use futures_util::StreamExt;
 use tracing::{debug, error, warn};
 
 use super::NodeManager;
 use crate::constants;
+use crate::delta_store::DeltaStore;
 
 impl NodeManager {
     pub(super) fn setup_startup_subscriptions(&self, ctx: &mut actix::Context<Self>) {
@@ -113,12 +115,22 @@ impl NodeManager {
                 let max_age = Duration::from_secs(constants::PENDING_DELTA_MAX_AGE_S);
                 let delta_stores = act.state.delta_stores_handle();
 
+                // Snapshot (context_id, DeltaStore) pairs and drop the DashMap
+                // iterator BEFORE any `.await`. Iterating a `DashMap` holds a
+                // shard read-guard for the lifetime of each `RefMulti`; awaiting
+                // `cleanup_stale`/`pending_stats` (which take DAG locks) while
+                // holding that guard would block new-context registration landing
+                // on the same shard for the whole cleanup. `DeltaStore` is a cheap
+                // `Arc`-backed clone, so the snapshot is a shallow copy of handles.
+                let snapshot: Vec<(ContextId, DeltaStore)> = delta_stores
+                    .iter()
+                    .map(|entry| (*entry.key(), entry.value().clone()))
+                    .collect();
+                drop(delta_stores);
+
                 let _ignored = ctx.spawn(
                     async move {
-                        for entry in delta_stores.iter() {
-                            let context_id = *entry.key();
-                            let delta_store = entry.value();
-
+                        for (context_id, delta_store) in snapshot {
                             let evicted = delta_store.cleanup_stale(max_age).await;
                             if evicted > 0 {
                                 warn!(

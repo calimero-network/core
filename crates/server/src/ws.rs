@@ -28,7 +28,7 @@ use serde_json::{
     to_value as to_json_value, Value,
 };
 use tokio::spawn;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, oneshot, RwLock, Semaphore};
 use tokio::time::interval;
 use tracing::{debug, error, field, info, info_span, warn, Instrument};
 use uuid::Uuid;
@@ -36,6 +36,8 @@ use uuid::Uuid;
 mod execute;
 mod subscribe;
 mod unsubscribe;
+
+pub(crate) use subscribe::may_observe_context;
 
 /// Globally unique identifier of a WebSocket client connection. Internal to the
 /// server (log correlation + connection-map key); never serialized to clients,
@@ -238,7 +240,11 @@ async fn ws_handler(
             (None, true)
         }
     };
-    ws.on_upgrade(move |socket| handle_socket(socket, state, caller, node_owner))
+    // Cap inbound message/frame size so a single oversized frame cannot exhaust
+    // memory during JSON parsing (the connection is closed instead).
+    ws.max_message_size(WS_MAX_MESSAGE_BYTES)
+        .max_frame_size(WS_MAX_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle_socket(socket, state, caller, node_owner))
         .into_response()
 }
 
@@ -249,6 +255,10 @@ async fn handle_socket(
     node_owner: bool,
 ) {
     let (commands_sender, commands_receiver) = mpsc::channel(WS_COMMAND_CHANNEL_BUFFER_SIZE);
+
+    // Bounds the number of concurrently-processed text frames for this
+    // connection (see WS_MAX_CONCURRENT_MESSAGES).
+    let message_limiter = Arc::new(Semaphore::new(WS_MAX_CONCURRENT_MESSAGES));
 
     // Generate a globally unique connection ID. A UUID (vs a per-process
     // counter) stays unique across node restarts and when logs from multiple
@@ -266,10 +276,20 @@ async fn handle_socket(
 
     debug!(%connection_id, "Client connection established");
 
+    // Cancellation signal for the node-event task. The sender lives on this
+    // stack frame; when the read loop below ends and `handle_socket` returns,
+    // dropping it resolves the receiver and stops the task. Without it, on a
+    // quiet node the task would park in `events.next()` indefinitely, holding a
+    // broadcast-receiver subscription and a `command_sender` clone long after
+    // the client disconnected — a per-disconnect leak that also delays shutdown.
+    let (events_shutdown_tx, events_shutdown_rx) = oneshot::channel::<()>();
+
     drop(spawn(handle_node_events(
         connection_id,
         Arc::clone(&state),
+        connection_state.clone(),
         commands_sender.clone(),
+        events_shutdown_rx,
     )));
 
     let (socket_sender, mut socket_receiver) = socket.split();
@@ -300,11 +320,19 @@ async fn handle_socket(
 
         match message {
             Message::Text(message) => {
-                drop(spawn(handle_text_message(
-                    connection_id,
-                    Arc::clone(&state),
-                    message,
-                )));
+                // Acquire a permit before spawning. When all permits are in use
+                // this awaits — applying backpressure to the read loop instead
+                // of spawning unbounded handler tasks under a message flood.
+                let permit = match Arc::clone(&message_limiter).acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => break, // semaphore closed — connection shutting down
+                };
+                let state = Arc::clone(&state);
+                drop(spawn(async move {
+                    // Held for the lifetime of the handler; released on completion.
+                    let _permit = permit;
+                    handle_text_message(connection_id, state, message).await;
+                }));
             }
             Message::Binary(_) => {
                 debug!("Received binary message");
@@ -344,6 +372,11 @@ async fn handle_socket(
 
     debug!(%connection_id, "Client connection terminated");
 
+    // Stop the node-event task now rather than at the end of scope, so it
+    // releases its broadcast subscription promptly even if the client went quiet
+    // long before disconnecting.
+    drop(events_shutdown_tx);
+
     let mut state = state.connections.write().await;
     drop(state.remove(&connection_id));
 }
@@ -351,17 +384,34 @@ async fn handle_socket(
 async fn handle_node_events(
     connection_id: ConnectionId,
     state: Arc<ServiceState>,
+    connection_state: ConnectionState,
     command_sender: mpsc::Sender<Command>,
+    mut shutdown: oneshot::Receiver<()>,
 ) {
     let events = state.node_client.receive_events();
 
     let mut events = pin!(events);
 
-    while let Some(event) = events.next().await {
-        let Some(connection_state) = state.connections.read().await.get(&connection_id).cloned()
-        else {
-            error!(%connection_id, "Unexpected state, client_id not found in client state map");
-            return;
+    loop {
+        let event = tokio::select! {
+            // Poll cancellation first so a disconnected connection stops this
+            // task promptly even under a steady event stream.
+            biased;
+            // Resolves as soon as `handle_socket` drops the shutdown sender at
+            // connection teardown (whether the client sent frames recently or
+            // not). This is what lets a quiet-node connection stop parking in
+            // `events.next()` and release its broadcast subscription.
+            _ = &mut shutdown => {
+                debug!(%connection_id, "WS connection closed, stopping event handler");
+                break;
+            }
+            maybe_event = events.next() => match maybe_event {
+                Some(event) => event,
+                None => {
+                    debug!(%connection_id, "Node event stream ended, stopping event handler");
+                    break;
+                }
+            },
         };
 
         debug!(
@@ -400,11 +450,15 @@ async fn handle_node_events(
         let response = Response { id: None, body };
 
         if let Err(err) = command_sender.send(Command::Send(response)).await {
-            error!(
+            // The command receiver is gone (connection tearing down), so stop
+            // instead of logging an error for every subsequent event until the
+            // shutdown signal arrives.
+            debug!(
                 %connection_id,
                 %err,
-                "Failed to send WsCommand::Send",
+                "Failed to send WsCommand::Send (connection closed), stopping event handler",
             );
+            break;
         };
     }
 }
@@ -697,6 +751,19 @@ use crate::config::ServerConfig;
 /// This controls how many WebSocket commands can be queued in the channel before
 /// the sender blocks. Should match SSE's COMMAND_CHANNEL_BUFFER_SIZE for consistency.
 const WS_COMMAND_CHANNEL_BUFFER_SIZE: usize = 32;
+
+/// Maximum number of text messages from a single connection being processed
+/// concurrently. Each text frame was previously `spawn`ed unconditionally, so a
+/// client flooding messages could spawn unbounded tasks (memory/CPU exhaustion).
+/// A per-connection permit pool bounds in-flight handlers and applies
+/// backpressure (the read loop awaits a permit before accepting the next frame).
+const WS_MAX_CONCURRENT_MESSAGES: usize = 32;
+
+/// Maximum size of a single inbound WebSocket message. Frames are JSON-parsed in
+/// full, so without a cap a single huge frame could exhaust memory. Oversized
+/// messages cause the connection to be closed by the WebSocket layer rather than
+/// buffered. 16 MiB comfortably covers legitimate execute payloads.
+const WS_MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
 #[cfg(test)]
 mod tests {

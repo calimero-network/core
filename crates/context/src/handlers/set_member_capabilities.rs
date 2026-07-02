@@ -53,7 +53,10 @@ impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
                     &sk,
                     GroupOp::MemberCapabilitySet {
                         member,
-                        capabilities,
+                        capabilities:
+                            calimero_context_config::MemberCapabilities::from_bits_truncate(
+                                capabilities,
+                            ),
                     },
                 )
                 .await?;

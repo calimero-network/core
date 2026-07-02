@@ -177,20 +177,38 @@ pub enum StorageDelta {
 
 impl BorshDeserialize for StorageDelta {
     fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
-        let Ok(tag) = u8::deserialize_reader(reader) else {
-            return Ok(StorageDelta::Comparisons(vec![]));
-        };
-
-        match tag {
-            0 => Ok(StorageDelta::Actions(Vec::deserialize_reader(reader)?)),
-            1 => Ok(StorageDelta::Comparisons(Vec::deserialize_reader(reader)?)),
-            2 => Ok(StorageDelta::CausalActions {
+        // A genuinely-empty artifact (zero bytes) is the legacy "no-op" sentinel
+        // that `commit_root` emits when there are neither actions nor comparisons.
+        // Distinguish it explicitly from a *truncated* artifact: only a clean EOF
+        // on the very first byte maps to the no-op. Once a tag byte is present the
+        // remaining fields must decode in full — a short read there is an error,
+        // never a silently-accepted no-op.
+        let mut tag = [0u8; 1];
+        match read_tag_or_eof(reader, &mut tag)? {
+            None => Ok(StorageDelta::Comparisons(vec![])), // empty artifact: no-op
+            Some(0) => Ok(StorageDelta::Actions(Vec::deserialize_reader(reader)?)),
+            Some(1) => Ok(StorageDelta::Comparisons(Vec::deserialize_reader(reader)?)),
+            Some(2) => Ok(StorageDelta::CausalActions {
                 actions: Vec::deserialize_reader(reader)?,
                 delta_id: <[u8; 32]>::deserialize_reader(reader)?,
                 delta_hlc: HybridTimestamp::deserialize_reader(reader)?,
                 effective_writers: BTreeMap::deserialize_reader(reader)?,
             }),
-            _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid tag")),
+            Some(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid tag")),
+        }
+    }
+}
+
+/// Read the leading tag byte, distinguishing a truly-empty stream (`Ok(None)`)
+/// from a present tag (`Ok(Some(byte))`). Retries on `Interrupted`. Any other
+/// I/O error propagates, so a partial/short read is never swallowed.
+fn read_tag_or_eof<R: io::Read>(reader: &mut R, buf: &mut [u8; 1]) -> io::Result<Option<u8>> {
+    loop {
+        match reader.read(buf) {
+            Ok(0) => return Ok(None),
+            Ok(_) => return Ok(Some(buf[0])),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
         }
     }
 }
@@ -575,6 +593,30 @@ mod borsh_roundtrip_tests {
             ),
             "expected CausalActions with empty effective_writers, got {decoded:?}"
         );
+    }
+
+    #[test]
+    fn truncated_actions_artifact_errors_not_noop() {
+        // Tag 0 (Actions) present but the following Vec<Action> is missing: a
+        // truncated artifact must surface as an error, not be silently accepted
+        // as an empty no-op. Only a zero-byte stream is the no-op sentinel.
+        for truncated in [
+            vec![0_u8],          // Actions tag, no length prefix
+            vec![0_u8, 5, 0, 0], // Actions tag, partial (3/4-byte) length prefix
+            vec![2_u8],          // CausalActions tag, no body
+        ] {
+            let result: Result<StorageDelta, _> = from_slice(&truncated);
+            assert!(
+                result.is_err(),
+                "truncated artifact {truncated:?} must error, got {result:?}"
+            );
+        }
+
+        // The zero-byte no-op sentinel still decodes.
+        assert!(matches!(
+            from_slice::<StorageDelta>(&[]).unwrap(),
+            StorageDelta::Comparisons(v) if v.is_empty()
+        ));
     }
 
     #[test]

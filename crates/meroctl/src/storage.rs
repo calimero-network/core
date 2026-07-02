@@ -86,10 +86,9 @@ impl ClientStorage for FileTokenStorage {
         config.save().await
     }
 
-    async fn update_tokens(&self, node_name: &str, new_tokens: &ClientJwtToken) -> Result<()> {
-        // For now, just call save_tokens since it does the same thing
-        self.save_tokens(node_name, new_tokens).await
-    }
+    // `update_tokens` intentionally uses the trait default, which loads the
+    // existing entry and merges the new tokens on top so a refresh doesn't drop
+    // a still-valid refresh token when the response omits one.
 
     async fn remove_tokens(&self, node_name: &str) -> Result<()> {
         // Load existing config

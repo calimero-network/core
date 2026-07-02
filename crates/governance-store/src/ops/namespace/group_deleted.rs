@@ -21,7 +21,7 @@ pub(crate) fn apply(
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
     let root_gid = ContextGroupId::from(root_group_id);
-    if root_group_id == namespace_id {
+    if root_group_id == namespace_id.to_bytes() {
         eyre::bail!(NamespaceError::CannotDeleteRoot(format!("{root_gid:?}")));
     }
 
@@ -48,7 +48,7 @@ pub(crate) fn apply(
     // finds the root meta already gone — the op was authorized on the
     // first pass, so we skip the auth check here and let the (idempotent)
     // cascade finish any remaining cleanup.
-    let ns_gid = ContextGroupId::from(namespace_id);
+    let ns_gid = ContextGroupId::from(namespace_id.to_bytes());
     if let Some(root_meta) = MetaRepository::new(store).load(&root_gid)? {
         if root_meta.owner_identity != op.signer {
             if let Err(e) =

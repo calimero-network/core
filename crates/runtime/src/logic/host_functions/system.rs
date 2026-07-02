@@ -34,57 +34,61 @@ pub(super) fn build_runtime_env(
     context_id: [u8; DIGEST_SIZE],
     executor_id: [u8; DIGEST_SIZE],
 ) -> RuntimeEnv {
+    // Erase the borrow lifetime of the storage trait object so the callbacks
+    // can satisfy `RuntimeEnv`'s `'static` closure bound. Crucially we keep the
+    // trait-object pointer *intact* as a single fat pointer rather than
+    // splitting it into its (data, vtable) halves: that split relied on the
+    // unspecified internal layout of Rust trait-object pointers. `*mut dyn _`
+    // is `Copy`, so the fat pointer lives happily inside a `Cell`.
+    //
+    // SAFETY: the transmute only extends the lifetime of the trait object;
+    //         source and target are both `*mut dyn RuntimeStorage` fat pointers
+    //         with identical layout. The extended lifetime never actually
+    //         outlives `storage`: the pointer is only ever dereferenced while
+    //         this `RuntimeEnv` is installed via `with_runtime_env`, which
+    //         happens strictly within the host call that created it (see the
+    //         per-closure safety notes below).
     let raw_ptr: *mut dyn RuntimeStorage = storage;
-    let (data_ptr, vtable_ptr): (*mut (), *mut ()) = unsafe { mem::transmute(raw_ptr) };
-    let storage_cell = Rc::new(Cell::new((data_ptr as usize, vtable_ptr as usize)));
+    let raw_static: *mut (dyn RuntimeStorage + 'static) = unsafe { mem::transmute(raw_ptr) };
+    let storage_cell = Rc::new(Cell::new(raw_static));
 
     let reader_cell = Rc::clone(&storage_cell);
     let reader = Rc::new(move |key: &calimero_storage::store::Key| {
-        let (data_addr, vtable_addr) = reader_cell.get();
-        if data_addr == 0 {
-            return None;
-        }
-
+        let ptr = reader_cell.get();
         let key_vec = key.to_bytes().to_vec();
-        let raw = (data_addr as *mut (), vtable_addr as *mut ());
-        let ptr: *mut dyn RuntimeStorage = unsafe { mem::transmute(raw) };
+        // SAFETY: see `build_runtime_env`. While the host function is executing
+        //         the VM guarantees exclusivity over `logic.storage`, so it is
+        //         sound to dereference `ptr` here — the only place this closure
+        //         runs.
         unsafe { (&*ptr).get(&key_vec) }
     });
 
     let writer_cell = Rc::clone(&storage_cell);
     let writer = Rc::new(move |key: calimero_storage::store::Key, value: &[u8]| {
-        let (data_addr, vtable_addr) = writer_cell.get();
-        if data_addr == 0 {
-            return false;
-        }
-
+        let ptr = writer_cell.get();
         let key_vec = key.to_bytes().to_vec();
-        let raw = (data_addr as *mut (), vtable_addr as *mut ());
-        let ptr: *mut dyn RuntimeStorage = unsafe { mem::transmute(raw) };
+        // SAFETY: as above; exclusive access to `logic.storage` is guaranteed
+        //         for the duration of the host call.
         unsafe { (&mut *ptr).set(key_vec, value.to_vec()).is_some() }
     });
 
     let remover_cell = Rc::clone(&storage_cell);
     let remover = Rc::new(move |key: &calimero_storage::store::Key| {
-        let (data_addr, vtable_addr) = remover_cell.get();
-        if data_addr == 0 {
-            return false;
-        }
-
+        let ptr = remover_cell.get();
         let key_vec = key.to_bytes().to_vec();
-        let raw = (data_addr as *mut (), vtable_addr as *mut ());
-        let ptr: *mut dyn RuntimeStorage = unsafe { mem::transmute(raw) };
+        // SAFETY: as above; exclusive access to `logic.storage` is guaranteed
+        //         for the duration of the host call.
         unsafe { (&mut *ptr).remove(&key_vec).is_some() }
     });
 
     // Safety notes:
     //
-    // * The closures below capture the data and vtable pointers of `storage`
-    //   at the time `build_runtime_env` is called.  While the host function is
-    //   executing the VM guarantees exclusivity over `logic.storage`, so it is
-    //   safe to dereference those pointers inside the closures.
-    // * The pointers are stored in a `Cell` to keep the closures `Fn` (instead
-    //   of `FnMut`) which matches the storage crate’s expectations.
+    // * The closures above capture the (lifetime-erased) fat pointer to
+    //   `storage`. While the host function is executing the VM guarantees
+    //   exclusivity over `logic.storage`, so it is safe to dereference that
+    //   pointer inside the closures.
+    // * The pointer is stored in a `Cell` to keep the closures `Fn` (instead of
+    //   `FnMut`), which matches the storage crate’s expectations.
     // * When the host function returns the `RuntimeEnv` drops out of scope and
     //   the storage crate falls back to its default environment, so subsequent
     //   calls that do not install an override will continue to use the mock /
@@ -184,10 +188,14 @@ impl VMHostFunctions<'_> {
     /// * `HostError::Panic` if the panic action was successfully executed.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn panic(&mut self, src_location_ptr: u64) -> VMLogicResult<()> {
+        // SAFETY: `sys::Location<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let location =
             unsafe { self.read_guest_memory_typed::<sys::Location<'_>>(src_location_ptr)? };
 
-        let file = self.read_guest_memory_str(&location.file())?.to_owned();
+        let file = self.read_guest_memory_str(location.file())?.to_owned();
         let line = location.line();
         let column = location.column();
 
@@ -234,13 +242,21 @@ impl VMHostFunctions<'_> {
             src_location_ptr,
             "panic_utf8 invoked"
         );
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let panic_message_buf =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_panic_msg_ptr)? };
+        // SAFETY: `sys::Location<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let location =
             unsafe { self.read_guest_memory_typed::<sys::Location<'_>>(src_location_ptr)? };
 
         let panic_message = self.read_guest_memory_str(&panic_message_buf)?.to_owned();
-        let file = self.read_guest_memory_str(&location.file())?.to_owned();
+        let file = self.read_guest_memory_str(location.file())?.to_owned();
         let line = location.line();
         let column = location.column();
 
@@ -306,6 +322,10 @@ impl VMHostFunctions<'_> {
     /// * `HostError::InvalidRegisterId` if the register does not exist.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn read_register(&self, register_id: u64, dest_data_ptr: u64) -> VMLogicResult<u32> {
+        // SAFETY: `sys::BufferMut<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let dest_data =
             unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_data_ptr)? };
 
@@ -379,12 +399,28 @@ impl VMHostFunctions<'_> {
 
         let len = usize::try_from(message_len).map_err(|_| HostError::IntegerOverflow)?;
 
-        let mut bytes = vec![0u8; len];
-        if len > 0 {
-            self.borrow_memory()
-                .read(message_ptr, &mut bytes)
+        // Bound the guest-provided length against actual guest memory *before*
+        // allocating. Sizing `vec![0u8; len]` directly from an unchecked guest
+        // length lets the guest force an enormous host allocation (OOM); the
+        // read below would reject an out-of-bounds region, but only after the
+        // allocation had already happened.
+        let bytes = if len == 0 {
+            Vec::new()
+        } else {
+            let ptr = usize::try_from(message_ptr).map_err(|_| HostError::IntegerOverflow)?;
+            let memory = self.borrow_memory();
+            let memory_size = memory.data_size() as usize;
+            let end = ptr.checked_add(len).ok_or(HostError::InvalidMemoryAccess)?;
+            if end > memory_size {
+                return Err(HostError::InvalidMemoryAccess.into());
+            }
+
+            let mut buf = vec![0u8; len];
+            memory
+                .read(message_ptr, &mut buf)
                 .map_err(|_| HostError::InvalidMemoryAccess)?;
-        }
+            buf
+        };
 
         let message = String::from_utf8_lossy(&bytes).to_string();
         let max_len = {
@@ -508,12 +544,54 @@ impl VMHostFunctions<'_> {
     ///
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn value_return(&mut self, src_value_ptr: u64) -> VMLogicResult<()> {
-        let result =
-            unsafe { self.read_guest_memory_typed::<sys::ValueReturn<'_>>(src_value_ptr)? };
+        // `sys::ValueReturn` is a `#[repr(C, u64)]` enum: an 8-byte discriminant
+        // followed by a `Buffer` payload. The discriminant comes straight from
+        // guest memory, so reinterpreting the whole enum with `assume_init`
+        // would be undefined behaviour if the guest supplied an out-of-range
+        // tag. Read and validate the discriminant as a plain `u64` first, then
+        // read the `Buffer` payload separately — this never materializes a
+        // `ValueReturn` with an invalid discriminant.
+        let mut discriminant_bytes = [0u8; mem::size_of::<u64>()];
+        self.borrow_memory()
+            .read(src_value_ptr, &mut discriminant_bytes)?;
+        let discriminant = u64::from_le_bytes(discriminant_bytes);
 
-        let result = match result {
-            sys::ValueReturn::Ok(value) => Ok(self.read_guest_memory_slice(&value)?.to_vec()),
-            sys::ValueReturn::Err(value) => Err(self.read_guest_memory_slice(&value)?.to_vec()),
+        // The `Buffer` payload follows the 8-byte discriminant.
+        let payload_ptr = src_value_ptr
+            .checked_add(mem::size_of::<u64>() as u64)
+            .ok_or(HostError::InvalidMemoryAccess)?;
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the read is bounds-checked. See `read_guest_memory_typed`.
+        let value = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(payload_ptr)? };
+
+        // Bound the return value before copying it out of guest memory: it lands
+        // on the host `Outcome` (and is broadcast in receipts), so without this
+        // cap the only limit is guest memory itself (~64 MiB).
+        let value_len = value.len();
+        let max_return_value_size = self.borrow_logic().limits.max_return_value_size;
+        if value_len > max_return_value_size {
+            return Err(HostError::ReturnValueSizeOverflow {
+                size: value_len,
+                max: max_return_value_size,
+            }
+            .into());
+        }
+
+        let bytes = self.read_guest_memory_slice(&value)?.to_vec();
+
+        // Discriminant layout matches `sys::ValueReturn`: 0 = Ok, 1 = Err.
+        let result = match discriminant {
+            0 => Ok(bytes),
+            1 => Err(bytes),
+            other => {
+                warn!(
+                    target: "runtime::host::system",
+                    discriminant = other,
+                    "value_return got an out-of-range ValueReturn discriminant"
+                );
+                return Err(HostError::DeserializationError.into());
+            }
         };
 
         let result_len = match &result {
@@ -548,6 +626,10 @@ impl VMHostFunctions<'_> {
     /// * `HostError::ValueLengthOverflow` if the witness exceeds the value-size limit.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for the buffer descriptor.
     pub fn emit_migration_witness(&mut self, src_ptr: u64) -> VMLogicResult<()> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let src_buf = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_ptr)? };
         let bytes = self.read_guest_memory_slice(&src_buf)?.to_vec();
 
@@ -588,6 +670,10 @@ impl VMHostFunctions<'_> {
             "log_utf8 invoked"
         );
 
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let src_log_buf =
             match unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_log_ptr) } {
                 Ok(buf) => buf,
@@ -660,6 +746,10 @@ impl VMHostFunctions<'_> {
     /// * `HostError::EventsOverflow` if the maximum number of events has been reached.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn emit(&mut self, src_event_ptr: u64) -> VMLogicResult<()> {
+        // SAFETY: `sys::Event<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let event = unsafe { self.read_guest_memory_typed::<sys::Event<'_>>(src_event_ptr)? };
 
         let kind_len = event.kind().len();
@@ -732,6 +822,10 @@ impl VMHostFunctions<'_> {
         src_event_ptr: u64,
         src_handler_ptr: u64,
     ) -> VMLogicResult<()> {
+        // SAFETY: `sys::Event<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let event = unsafe { self.read_guest_memory_typed::<sys::Event<'_>>(src_event_ptr)? };
 
         let kind_len = event.kind().len();
@@ -761,12 +855,30 @@ impl VMHostFunctions<'_> {
             None
         } else {
             // Read the handler buffer from guest memory
+            // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+            //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+            //         it is sound; the guest SDK wrote a well-formed instance at this
+            //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
             let handler_buffer =
                 unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_handler_ptr)? };
-            match self.read_guest_memory_str(&handler_buffer) {
-                Ok(handler_str) => Some(handler_str.to_owned()),
-                Err(_) => None, // If we can't read the handler, just set to None
+            // A handler is a callback method name; bound it before copying it out
+            // of guest memory so a guest can't stash arbitrarily large strings on
+            // the `Outcome` (one per event, up to `max_events`). Reuse the
+            // method-name limit — that's exactly what a handler is.
+            let handler_len = handler_buffer.len();
+            let max_handler_size = self.borrow_logic().limits.max_method_name_length;
+            if handler_len > max_handler_size {
+                return Err(HostError::EventHandlerSizeOverflow {
+                    size: handler_len,
+                    max: max_handler_size,
+                }
+                .into());
             }
+            // Propagate a read/UTF-8 failure rather than silently dropping the
+            // handler — a malformed handler descriptor is a guest bug, and this
+            // matches how `emit` reads the event `kind`.
+            let handler_str = self.read_guest_memory_str(&handler_buffer)?;
+            Some(handler_str.to_owned())
         };
 
         self.with_logic_mut(|logic| {
@@ -800,6 +912,10 @@ impl VMHostFunctions<'_> {
     /// * `HostError::XCallsOverflow` if the maximum number of xcalls has been reached.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
     pub fn xcall(&mut self, src_xcall_ptr: u64) -> VMLogicResult<()> {
+        // SAFETY: `sys::XCall<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let xcall = unsafe { self.read_guest_memory_typed::<sys::XCall<'_>>(src_xcall_ptr)? };
 
         let function_len = xcall.function().len();
@@ -859,8 +975,16 @@ impl VMHostFunctions<'_> {
     ///   access fails for descriptor buffers.
     /// * `HostError::ArtifactSizeOverflow` if the artifact exceeds `max_artifact_size`.
     pub fn commit(&mut self, src_root_hash_ptr: u64, src_artifact_ptr: u64) -> VMLogicResult<()> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let root_hash =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_root_hash_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let artifact =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_artifact_ptr)? };
 
@@ -908,6 +1032,10 @@ impl VMHostFunctions<'_> {
         created_at: u64,
         updated_at: u64,
     ) -> VMLogicResult<()> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_doc_ptr)? };
         let payload = self.read_guest_memory_slice(&buffer)?.to_vec();
 
@@ -1021,6 +1149,10 @@ impl VMHostFunctions<'_> {
     /// will deserialize the actions and feed them into the storage interface so that
     /// CRDT entities and the root document are updated atomically.
     pub fn apply_storage_delta(&mut self, src_delta_ptr: u64) -> VMLogicResult<()> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_delta_ptr)? };
         let payload = self.read_guest_memory_slice(&buffer)?.to_vec();
         let delta_len = payload.len();
@@ -1438,6 +1570,48 @@ mod tests {
         assert_eq!(returned_err_value_str, err_value);
     }
 
+    /// A guest that supplies an out-of-range `ValueReturn` discriminant is
+    /// rejected with a clean `DeserializationError` rather than being
+    /// reinterpreted. The discriminant is read and validated as a plain `u64`
+    /// before the enum payload is ever materialized, so an invalid tag can never
+    /// drive an `assume_init` on an uninitialized variant (run under Miri to
+    /// confirm the absence of UB).
+    #[test]
+    fn test_value_return_rejects_invalid_discriminant() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // A fully valid payload buffer — the rejection must come from the
+        // discriminant alone, not from a malformed buffer descriptor.
+        let value = "payload for an invalid discriminant";
+        let value_ptr = 200u64;
+        write_str(&host, value_ptr, value);
+
+        // Neither 0 (Ok) nor 1 (Err): the only two legal discriminants.
+        for bad_discriminant in [2u8, 42u8, 255u8] {
+            let return_ptr = 32u64;
+            // Clear the 8 discriminant bytes, then write the bad tag.
+            host.borrow_memory().write(return_ptr, &[0u8; 8]).unwrap();
+            host.borrow_memory()
+                .write(return_ptr, &[bad_discriminant])
+                .unwrap();
+            prepare_guest_buf_descriptor(&host, return_ptr + 8, value_ptr, value.len() as u64);
+
+            let err = host.value_return(return_ptr).unwrap_err();
+            assert!(
+                matches!(err, VMLogicError::HostError(HostError::DeserializationError)),
+                "discriminant {bad_discriminant} must be rejected with DeserializationError, got {err:?}"
+            );
+            // Nothing must have been captured as the execution's return value.
+            assert!(
+                host.borrow_logic().returns.is_none(),
+                "an invalid discriminant must not capture a return value"
+            );
+        }
+    }
+
     /// `emit_migration_witness` captures the guest blob into the transient
     /// migrate→check channel on VMLogic (never via storage).
     #[test]
@@ -1609,6 +1783,45 @@ mod tests {
             err,
             VMLogicError::HostError(HostError::LogLengthOverflow)
         ));
+    }
+
+    /// A guest that hands `js_std_d_print` an enormous `message_len` must be
+    /// rejected by the memory-bounds check *before* any host allocation. Sizing
+    /// `vec![0u8; len]` straight from an unchecked guest length would let the
+    /// guest force a multi-gigabyte allocation (OOM) purely by lying about the
+    /// length; the `ptr + len` overflow / out-of-bounds guard catches it first,
+    /// returning `InvalidMemoryAccess` with no large allocation and no panic.
+    #[test]
+    fn test_js_std_d_print_huge_length_does_not_allocate() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let msg_ptr = 512u64;
+
+        // u64::MAX length: `ptr + len` overflows the address space, so the
+        // bounds check fails before `vec![0u8; len]` can run.
+        let err = host.js_std_d_print(0, msg_ptr, u64::MAX).unwrap_err();
+        assert!(
+            matches!(err, VMLogicError::HostError(HostError::InvalidMemoryAccess)),
+            "u64::MAX length must be rejected with InvalidMemoryAccess, got {err:?}"
+        );
+
+        // A length that does not overflow arithmetically but still runs past the
+        // end of guest memory must also be rejected pre-allocation.
+        let past_end = host.borrow_memory().data_size() + 1;
+        let err = host.js_std_d_print(0, msg_ptr, past_end).unwrap_err();
+        assert!(
+            matches!(err, VMLogicError::HostError(HostError::InvalidMemoryAccess)),
+            "a length past the end of memory must be rejected with InvalidMemoryAccess, got {err:?}"
+        );
+
+        // No log was recorded on either rejection.
+        assert!(
+            host.borrow_logic().logs.is_empty(),
+            "a rejected oversized print must not record a log"
+        );
     }
 
     /// Tests the `panic()` host function (without a custom message).
@@ -1869,5 +2082,71 @@ mod tests {
         assert!(host.borrow_logic().artifact.is_empty());
         assert_eq!(host.borrow_logic().root_hash, None);
         assert!(!host.borrow_logic().commit_called);
+    }
+
+    /// A return value larger than `max_return_value_size` traps before being
+    /// copied onto the `Outcome`.
+    #[test]
+    fn test_value_return_size_cap() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_return_value_size: 4,
+            ..Default::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Payload of 5 bytes, one over the cap.
+        let data = b"hello";
+        let data_ptr = 400u64;
+        host.borrow_memory().write(data_ptr, data).unwrap();
+
+        // `ValueReturn` is `{ discriminant: u64, payload: Buffer }`: write the
+        // `Ok` discriminant (0) then the payload `Buffer` descriptor 8 bytes on.
+        let vr_ptr = 100u64;
+        host.borrow_memory()
+            .write(vr_ptr, &0u64.to_le_bytes())
+            .unwrap();
+        prepare_guest_buf_descriptor(&host, vr_ptr + 8, data_ptr, data.len() as u64);
+
+        let err = host.value_return(vr_ptr).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::ReturnValueSizeOverflow { size: 5, max: 4 })
+        ));
+        // Nothing captured onto the outcome.
+        assert!(host.borrow_logic().returns.is_none());
+    }
+
+    /// A handler name longer than `max_method_name_length` traps rather than
+    /// stashing an arbitrarily large string on the event.
+    #[test]
+    fn test_emit_with_handler_size_cap() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Minimal valid `Event { kind: Buffer, data: Buffer }` (each 16 bytes).
+        let kind = b"k";
+        let kind_ptr = 400u64;
+        host.borrow_memory().write(kind_ptr, kind).unwrap();
+        let event_ptr = 100u64;
+        prepare_guest_buf_descriptor(&host, event_ptr, kind_ptr, kind.len() as u64);
+        prepare_guest_buf_descriptor(&host, event_ptr + 16, 500u64, 0);
+
+        // Handler descriptor claiming a length past `max_method_name_length`.
+        // The length check trips before the (unread) payload slice is touched.
+        let handler_ptr = 200u64;
+        let oversized = limits.max_method_name_length + 1;
+        prepare_guest_buf_descriptor(&host, handler_ptr, 600u64, oversized);
+
+        let err = host.emit_with_handler(event_ptr, handler_ptr).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::EventHandlerSizeOverflow { .. })
+        ));
+        // The event must not have been recorded.
+        assert!(host.borrow_logic().events.is_empty());
     }
 }

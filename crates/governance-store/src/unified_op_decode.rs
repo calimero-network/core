@@ -9,7 +9,6 @@
 //! existing projection callers keep compiling unchanged.
 
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
-use calimero_context_config::types::ContextGroupId;
 use calimero_dag::CausalDelta;
 use calimero_op::{Op, OpPayload, ScopeId};
 use calimero_op_adapter::{payload_from_group_op, payload_from_root_op};
@@ -34,16 +33,16 @@ fn build_op(
     parents: &[[u8; 32]],
     payload: OpPayload,
 ) -> Op {
-    Op {
+    Op::from_parts(
         id,
         scope,
-        parents: parents.to_vec(),
+        parents.to_vec(),
         author,
         hlc,
         payload,
-        expected_scope_root: [0u8; 32],
-        signature: [0u8; 64],
-    }
+        [0u8; 32],
+        [0u8; 64],
+    )
 }
 
 /// Convert a namespace governance op into the unified [`Op`] graph node it
@@ -91,12 +90,16 @@ pub fn op_from_namespace_op(
             payload_from_root_op(root, signed.signer).unwrap_or(OpPayload::Noop)
         }
         NamespaceOp::Group { group_id, .. } => decrypted_group_op
-            .and_then(|g| payload_from_group_op(ContextGroupId::from(*group_id), g))
+            .and_then(|g| payload_from_group_op(*group_id, g))
             .unwrap_or(OpPayload::Noop),
+        // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op folds as a
+        // `Noop` graph node (same as an undecryptable/unfoldable op above),
+        // preserving causal structure without inventing a payload.
+        _ => OpPayload::Noop,
     };
     build_op(
         id,
-        ScopeId::from(signed.namespace_id),
+        ScopeId::from(signed.namespace_id.to_bytes()),
         signed.signer,
         hlc,
         parents,

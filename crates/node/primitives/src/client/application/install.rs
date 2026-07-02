@@ -25,6 +25,83 @@ use crate::client::NodeClient;
 
 const MAX_ERROR_BODY_LEN: usize = 256;
 
+/// Maximum redirects to follow when downloading an application.
+const MAX_INSTALL_REDIRECTS: usize = 10;
+
+/// Whether a URL's host must be refused as an SSRF target: a literal
+/// loopback / private / link-local / unspecified IP, or `localhost`. Applied
+/// here at fetch time so it also covers redirect hops, which the
+/// request-validation layer cannot see.
+///
+/// SYNC(#3053): mirrors `calimero-server-primitives::validation::url_host_is_blocked`
+/// (the two crates do not share a dependency). Keep the blocked ranges in step
+/// with that copy until both are deduplicated into a shared crate (#3053).
+///
+/// Uses the typed `Url::host()` rather than string parsing so IPv6 literals
+/// (including bracketed forms) are classified by the URL parser, not by manual
+/// bracket stripping.
+fn host_is_blocked(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip_is_blocked(std::net::IpAddr::V4(ip)),
+        Some(url::Host::Ipv6(ip)) => ip_is_blocked(std::net::IpAddr::V6(ip)),
+        Some(url::Host::Domain(domain)) => {
+            let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+            domain == "localhost" || domain.ends_with(".localhost")
+        }
+        None => true, // no host → refuse
+    }
+}
+
+fn ip_is_blocked(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            // 100.64.0.0/10 (RFC 6598, CGNAT). SYNC(#3053).
+            let is_cgnat = o[0] == 100 && (o[1] & 0xc0) == 0x40;
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || is_cgnat
+        }
+        std::net::IpAddr::V6(v6) => {
+            if v6.is_loopback() || v6.is_unspecified() {
+                return true;
+            }
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return ip_is_blocked(std::net::IpAddr::V4(v4));
+            }
+            let first = v6.segments()[0];
+            // fc00::/7 (unique-local) or fe80::/10 (link-local).
+            (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// Build an HTTP client that refuses to connect to non-public addresses, on the
+/// initial request and on every redirect hop (closes redirect-to-private SSRF).
+///
+/// Note: a public hostname whose DNS resolves to a private address (DNS
+/// rebinding) is not caught here — that needs a custom resolver and is tracked
+/// as a follow-up. The literal-IP and `localhost` cases, including via
+/// redirect, are covered.
+fn ssrf_guarded_client() -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if !matches!(attempt.url().scheme(), "http" | "https") {
+                attempt.error("redirect to a non-http(s) scheme is blocked")
+            } else if host_is_blocked(attempt.url()) {
+                attempt.error("redirect to a non-public address is blocked")
+            } else if attempt.previous().len() >= MAX_INSTALL_REDIRECTS {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
+        .build()
+}
+
 impl NodeClient {
     pub fn install_raw_wasm(
         &self,
@@ -310,7 +387,19 @@ impl NodeClient {
     ) -> eyre::Result<ApplicationId> {
         let uri = url.as_str().parse()?;
 
-        let response = reqwest::Client::new().get(url.clone()).send().await?;
+        // SSRF guard: refuse non-http(s) schemes and literal non-public hosts
+        // before connecting; the client also re-checks every redirect hop.
+        if !matches!(url.scheme(), "http" | "https") {
+            bail!(
+                "unsupported URL scheme '{}'; only http and https are allowed",
+                url.scheme()
+            );
+        }
+        if host_is_blocked(&url) {
+            bail!("refusing to fetch from a non-public address: {}", url);
+        }
+
+        let response = ssrf_guarded_client()?.get(url.clone()).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -921,5 +1010,41 @@ impl NodeClient {
         // In a real implementation, you might want to resolve the package/version to a URL
         let url = source.to_string().parse()?;
         self.install_application_from_url(url, metadata, None).await
+    }
+}
+
+#[cfg(test)]
+mod ssrf_tests {
+    use reqwest::Url;
+
+    use super::host_is_blocked;
+
+    #[test]
+    fn blocks_non_public_hosts() {
+        for bad in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1/",
+            "http://localhost/",
+            "http://10.0.0.1/",
+            "http://192.168.0.1/",
+            "http://[::1]/",
+            "http://[fc00::1]/",
+            "http://[::ffff:127.0.0.1]/",
+        ] {
+            assert!(
+                host_is_blocked(&Url::parse(bad).unwrap()),
+                "{bad} must be blocked",
+            );
+        }
+    }
+
+    #[test]
+    fn allows_public_hosts() {
+        for ok in ["https://registry.example.com/", "http://93.184.216.34/"] {
+            assert!(
+                !host_is_blocked(&Url::parse(ok).unwrap()),
+                "{ok} must be allowed",
+            );
+        }
     }
 }

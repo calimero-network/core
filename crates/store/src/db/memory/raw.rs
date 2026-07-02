@@ -169,11 +169,20 @@ impl<K: Ord, V> Drop for InMemoryIterInner<'_, K, V> {
             return;
         };
 
+        // Hold the arena write lock across the whole drain so each
+        // `strong_count == 1` check and its matching `remove` are one atomic
+        // step against other arena mutations. The previous per-entry
+        // lock/unlock left a window where a concurrent operation could observe
+        // or resurrect an index between the count check and the removal.
+        let Ok(mut arena) = self.arena.write() else {
+            return;
+        };
         while let Some((_, idx)) = column.pop_first() {
+            // This iterator's clone is the sole remaining holder of the index —
+            // the live column already dropped its copy — so the arena slot is
+            // now unreachable and safe to reclaim.
             if Arc::strong_count(&idx) == 1 {
-                if let Ok(mut value) = self.arena.write() {
-                    drop(value.remove(*idx));
-                }
+                drop(arena.remove(*idx));
             }
         }
     }

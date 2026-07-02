@@ -1,4 +1,5 @@
 use super::*;
+use crate::env::time_now;
 use crate::store::MainStorage;
 
 mod index__public_methods {
@@ -248,6 +249,67 @@ mod index__public_methods {
         assert_eq!(child_index.own_hash, child_own_hash);
         assert_eq!(child_index.parent_id, Some(root_id));
         assert!(child_index.children.is_none());
+    }
+
+    #[test]
+    fn readd_clears_child_tombstone() {
+        // A winning upsert on a tombstoned id re-adds it via `add_child_to`. The
+        // child's own tombstone must clear, or `find_by_id` keeps hiding an
+        // entity whose hash the parent now counts — resurrection hash divergence.
+        type S = MockedStorage<970>;
+        let root_id = Id::random();
+        assert!(
+            <Index<S>>::add_root(ChildInfo::new(root_id, [1; 32], Metadata::default())).is_ok()
+        );
+
+        let child_id = Id::random();
+        assert!(<Index<S>>::add_child_to(
+            root_id,
+            ChildInfo::new(child_id, [2; 32], Metadata::default())
+        )
+        .is_ok());
+
+        // Tombstone the child.
+        assert!(<Index<S>>::remove_child_from(root_id, child_id, 100).is_ok());
+        assert!(<Index<S>>::is_deleted(child_id).unwrap());
+        assert!(<Index<S>>::get_index(root_id)
+            .unwrap()
+            .unwrap()
+            .deleted_children()
+            .contains(&child_id));
+        let tombstoned_hash = <Index<S>>::get_index(root_id).unwrap().unwrap().full_hash();
+
+        // Re-add (resurrect) the child via a winning upsert.
+        assert!(<Index<S>>::add_child_to(
+            root_id,
+            ChildInfo::new(child_id, [3; 32], Metadata::default())
+        )
+        .is_ok());
+
+        // The child must no longer be tombstoned, nor advertised as deleted.
+        assert!(
+            !<Index<S>>::is_deleted(child_id).unwrap(),
+            "re-add left the child tombstoned"
+        );
+        let parent = <Index<S>>::get_index(root_id).unwrap().unwrap();
+        assert!(
+            !parent.deleted_children().contains(&child_id),
+            "re-add left the child in the parent's deleted-children advert"
+        );
+        assert!(
+            parent
+                .children()
+                .map(|c| c.iter().any(|ci| ci.id() == child_id))
+                .unwrap_or(false),
+            "re-add did not relink the child as a live child"
+        );
+        // The resurrected child is re-folded into the parent hash — the other
+        // symptom of the bug, and the value a peer that never deleted it carries.
+        assert_ne!(
+            parent.full_hash(),
+            tombstoned_hash,
+            "re-add did not re-fold the child into the parent hash"
+        );
     }
 
     #[test]
@@ -590,7 +652,7 @@ mod index__public_methods {
             ChildInfo::new(child_id, child_own_hash, Metadata::default()),
         )
         .is_ok());
-        assert!(<Index<MainStorage>>::remove_child_from(root_id, child_id).is_ok());
+        assert!(<Index<MainStorage>>::remove_child_from(root_id, child_id, time_now()).is_ok());
 
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         // After removal, children should be None
@@ -649,82 +711,115 @@ mod index__private_methods {
         <Index<MainStorage>>::remove_index(id);
         assert!(<Index<MainStorage>>::get_index(id).unwrap().is_none());
     }
+}
 
+#[cfg(test)]
+mod subtree_tombstoning {
+    use super::*;
+    use crate::env::time_now;
+    use crate::store::MockedStorage;
+
+    /// Builds a linear chain root -> a -> b -> c under a fresh root and
+    /// returns the four ids. Each level is a child of the previous, so the
+    /// subtree under `a` is {b, c}.
+    fn build_chain<S: crate::store::StorageAdaptor>() -> (Id, Id, Id, Id) {
+        let root = Id::random();
+        let a = Id::random();
+        let b = Id::random();
+        let c = Id::random();
+        <Index<S>>::add_root(ChildInfo::new(root, [1; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(root, ChildInfo::new(a, [2; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(b, [3; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(b, ChildInfo::new(c, [4; 32], Metadata::default())).unwrap();
+        (root, a, b, c)
+    }
+
+    /// Deleting a node tombstones its WHOLE subtree, not just the node. The
+    /// pre-fix behaviour tombstoned only `a`, leaving `b` and `c` live as
+    /// orphans under a tombstoned ancestor (and so unreclaimable by GC).
     #[test]
-    fn garbage_collect_tombstones() {
-        use crate::env::time_now;
-        use crate::store::MockedStorage;
+    fn remove_child_from_tombstones_whole_subtree() {
+        // Isolated per-test store (not the shared `MainStorage`) so a panic in
+        // one test can't leak tombstones into another.
+        type S = MockedStorage<2101>;
+        let (root, a, b, c) = build_chain::<S>();
 
-        // Use MockedStorage which has working storage_iter_keys()
-        type TestStorage = MockedStorage<2000>;
+        <Index<S>>::remove_child_from(root, a, time_now()).unwrap();
 
-        // Create some entities
-        let root_id = Id::random();
-        let child1_id = Id::random();
-        let child2_id = Id::random();
-        let child3_id = Id::random();
+        assert!(<Index<S>>::is_deleted(a).unwrap(), "root child");
+        assert!(<Index<S>>::is_deleted(b).unwrap(), "grandchild");
+        assert!(<Index<S>>::is_deleted(c).unwrap(), "great-grandchild");
+    }
 
-        <Index<TestStorage>>::add_root(ChildInfo::new(root_id, [1; 32], Metadata::default()))
-            .unwrap();
+    /// `tombstone_descendants_of` tombstones every descendant but leaves the
+    /// root itself untouched (the caller tombstones the root).
+    #[test]
+    fn tombstone_descendants_of_skips_root_tombstones_rest() {
+        type S = MockedStorage<2102>;
+        let (_root, a, b, c) = build_chain::<S>();
 
-        let _collection = "children";
+        <Index<S>>::tombstone_descendants_of(a, time_now()).unwrap();
 
-        // Add children
-        <Index<TestStorage>>::add_child_to(
-            root_id,
-            ChildInfo::new(child1_id, [2; 32], Metadata::default()),
-        )
-        .unwrap();
+        assert!(!<Index<S>>::is_deleted(a).unwrap(), "root untouched");
+        assert!(<Index<S>>::is_deleted(b).unwrap());
+        assert!(<Index<S>>::is_deleted(c).unwrap());
+    }
 
-        <Index<TestStorage>>::add_child_to(
-            root_id,
-            ChildInfo::new(child2_id, [3; 32], Metadata::default()),
-        )
-        .unwrap();
+    /// A descendant whose own `updated_at` is strictly newer than the delete
+    /// nonce survives as a "zombie" (live entity under a tombstoned ancestor),
+    /// matching the canonical delete-vs-update tiebreak `apply_delete_ref_action`
+    /// uses. This is what keeps concurrent update-into-a-deleted-subtree
+    /// convergent rather than letting an unconditional tombstone clobber a
+    /// causally-newer update.
+    #[test]
+    fn newer_update_on_descendant_wins_tiebreak() {
+        type S = MockedStorage<2103>;
+        let (root, a, b, c) = build_chain::<S>();
+        let deleted_at = time_now();
 
-        <Index<TestStorage>>::add_child_to(
-            root_id,
-            ChildInfo::new(child3_id, [4; 32], Metadata::default()),
-        )
-        .unwrap();
+        // `c` received an update that causally follows the delete.
+        let mut c_index = <Index<S>>::get_index(c).unwrap().unwrap();
+        *c_index.metadata.updated_at = deleted_at + 1_000;
+        <Index<S>>::save_index(&c_index).unwrap();
 
-        // Mark children as deleted at different times
-        let now = time_now();
-        let old_time = now - 2 * 86_400_000_000_000; // 2 days ago
-        let recent_time = now - 12 * 3_600_000_000_000; // 12 hours ago
+        <Index<S>>::remove_child_from(root, a, deleted_at).unwrap();
 
-        <Index<TestStorage>>::mark_deleted(child1_id, old_time).unwrap(); // Old tombstone
-        <Index<TestStorage>>::mark_deleted(child2_id, recent_time).unwrap(); // Recent tombstone
-                                                                             // child3 not deleted
+        assert!(<Index<S>>::is_deleted(a).unwrap());
+        assert!(<Index<S>>::is_deleted(b).unwrap());
+        assert!(
+            !<Index<S>>::is_deleted(c).unwrap(),
+            "strictly-newer update on a descendant must survive the subtree delete"
+        );
+    }
 
-        // Verify all exist before GC
-        assert!(<Index<TestStorage>>::get_index(child1_id)
-            .unwrap()
-            .is_some());
-        assert!(<Index<TestStorage>>::get_index(child2_id)
-            .unwrap()
-            .is_some());
-        assert!(<Index<TestStorage>>::get_index(child3_id)
-            .unwrap()
-            .is_some());
+    /// The point of the fix: every subtree row is tombstoned with the SAME
+    /// `deleted_at` as the delete, so the node's tombstone GC (which reclaims by
+    /// `deleted_at` age) later reclaims the WHOLE subtree in one pass — not just
+    /// the directly-deleted node. Reclamation itself is exercised against the
+    /// real store in `calimero_node::gc`; here we assert the subtree is left
+    /// uniformly reclaim-ready.
+    #[test]
+    fn subtree_delete_stamps_uniform_reclaim_ready_tombstones() {
+        type TestStorage = MockedStorage<2100>;
 
-        // Run GC with 1-day retention
-        let one_day = 86_400_000_000_000;
-        let collected = <Index<TestStorage>>::garbage_collect_tombstones(one_day).unwrap();
+        let (root, a, b, c) = build_chain::<TestStorage>();
 
-        // Should have collected 1 tombstone (child1, which is 2 days old)
-        assert_eq!(collected, 1);
+        let deleted_at = time_now();
+        <Index<TestStorage>>::remove_child_from(root, a, deleted_at).unwrap();
 
-        // Verify results
-        assert!(<Index<TestStorage>>::get_index(child1_id)
-            .unwrap()
-            .is_none()); // GC'd
-        assert!(<Index<TestStorage>>::get_index(child2_id)
-            .unwrap()
-            .is_some()); // Too recent
-        assert!(<Index<TestStorage>>::get_index(child3_id)
-            .unwrap()
-            .is_some()); // Not deleted
+        // All three subtree rows are tombstoned at exactly `deleted_at`, so a
+        // single retention cutoff reclaims them together. The (live) root stays.
+        for id in [a, b, c] {
+            let index = <Index<TestStorage>>::get_index(id)
+                .unwrap()
+                .expect("tombstone index row retained for CRDT sync");
+            assert_eq!(
+                index.deleted_at,
+                Some(deleted_at),
+                "subtree row must carry the delete's nonce so GC reclaims it with the rest"
+            );
+        }
+        assert!(!<Index<TestStorage>>::is_deleted(root).unwrap());
     }
 }
 

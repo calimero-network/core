@@ -196,7 +196,10 @@ impl PeerAddrCache {
         out
     }
 
-    /// All currently-cached, still-fresh peers — the dial-on-startup set.
+    /// All currently-cached, still-fresh peers, sorted by `peer_id`. A
+    /// test-only inspection helper for the cache contents; production dials the
+    /// recency-capped [`startup_dial_set`](Self::startup_dial_set) instead.
+    #[cfg(test)]
     pub(crate) fn dial_candidates(&self, now_secs: u64, ttl_secs: u64) -> Vec<CachedPeer> {
         let mut out: Vec<CachedPeer> = self
             .peers
@@ -205,6 +208,42 @@ impl PeerAddrCache {
             .cloned()
             .collect();
         out.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
+        out
+    }
+
+    /// Count of currently-cached, still-fresh peers (the full reconnect set
+    /// before the startup dial cap is applied). Used only for logging how many
+    /// of the fresh candidates were dropped by the cap.
+    pub(crate) fn fresh_count(&self, now_secs: u64, ttl_secs: u64) -> usize {
+        self.peers
+            .values()
+            .filter(|p| is_fresh(p.last_seen_secs, now_secs, ttl_secs))
+            .count()
+    }
+
+    /// The startup reconnect dial set: at most `max` fresh peers, ordered
+    /// most-recently-seen first (ties broken by `peer_id` for determinism).
+    ///
+    /// Bounds the startup dial burst so a full or poisoned cache can't trigger
+    /// a dial storm; the dropped peers are simply rediscovered via rendezvous.
+    pub(crate) fn startup_dial_set(
+        &self,
+        now_secs: u64,
+        ttl_secs: u64,
+        max: usize,
+    ) -> Vec<CachedPeer> {
+        let mut out: Vec<CachedPeer> = self
+            .peers
+            .values()
+            .filter(|p| is_fresh(p.last_seen_secs, now_secs, ttl_secs))
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| {
+            b.last_seen_secs
+                .cmp(&a.last_seen_secs)
+                .then_with(|| a.peer_id.cmp(&b.peer_id))
+        });
+        out.truncate(max);
         out
     }
 
@@ -338,6 +377,43 @@ mod tests {
     }
 
     #[test]
+    fn startup_dial_set_caps_to_most_recent_and_excludes_stale() {
+        let mut c = PeerAddrCache::default();
+        // Five fresh peers (last_seen 910..=950) and one stale (800).
+        c.record(peer(1), addr("/ip4/1.0.0.1/tcp/1"), 910);
+        c.record(peer(2), addr("/ip4/1.0.0.2/tcp/1"), 920);
+        c.record(peer(3), addr("/ip4/1.0.0.3/tcp/1"), 930);
+        c.record(peer(4), addr("/ip4/1.0.0.4/tcp/1"), 940);
+        c.record(peer(5), addr("/ip4/1.0.0.5/tcp/1"), 950);
+        c.record(peer(6), addr("/ip4/1.0.0.6/tcp/1"), 800);
+
+        // now=1000, ttl=100 → fresh iff last_seen >= 900, so peer(6) is stale.
+        let now = 1000;
+        let ttl = 100;
+        assert_eq!(c.fresh_count(now, ttl), 5, "stale peer excluded from count");
+
+        // Cap of 3 → the three most-recently-seen, most-recent-first.
+        let set = c.startup_dial_set(now, ttl, 3);
+        let ids: Vec<PeerId> = set.iter().map(|p| p.peer_id).collect();
+        assert_eq!(
+            ids,
+            vec![peer(5), peer(4), peer(3)],
+            "most-recently-seen three, newest first"
+        );
+        // Ordering is strictly descending by last_seen.
+        assert!(set
+            .windows(2)
+            .all(|w| w[0].last_seen_secs >= w[1].last_seen_secs));
+        // The stale peer is never dialed regardless of the cap.
+        assert!(
+            !c.startup_dial_set(now, ttl, 100)
+                .iter()
+                .any(|p| p.peer_id == peer(6)),
+            "stale peer must not be in the dial set even when the cap is not reached"
+        );
+    }
+
+    #[test]
     fn load_fresh_keeps_only_unexpired() {
         let entries = vec![
             CachedPeer {
@@ -458,5 +534,149 @@ mod tests {
         c.record(peer(1), addr("/ip4/1.1.1.1/tcp/1"), 100);
         c.prune(100, 1000, MAX_PEER_CACHE_ENTRIES);
         assert_eq!(c.len(), 1);
+    }
+
+    /// Distinct, deterministic `PeerId` from a `u64` — the `u8`-seeded
+    /// `peer()` helper only spans 256 ids, too few for a churn-scale test.
+    /// The `0x5A ^ index-salt` fill guarantees a non-zero, per-`n`-distinct
+    /// 32-byte seed.
+    fn peer_u64(n: u64) -> PeerId {
+        let mut seed = [0u8; 32];
+        for (i, b) in seed.iter_mut().enumerate() {
+            *b = ((n >> ((i % 8) * 8)) as u8) ^ (i as u8).wrapping_mul(31) ^ 0x5A;
+        }
+        let kp = libp2p::identity::Keypair::ed25519_from_bytes(seed).expect("valid ed25519 seed");
+        PeerId::from_public_key(&kp.public())
+    }
+
+    /// `record()` itself is deliberately unbounded in entry count (only the
+    /// per-peer address list is capped) — the map cap is enforced by the
+    /// periodic `prune()` (production calls it on the rendezvous tick). This
+    /// pins that contract at the exact cap boundary so a future change that
+    /// silently adds capping to `record` (or drops it from `prune`) is caught.
+    #[test]
+    fn record_is_unbounded_but_prune_enforces_the_entry_cap() {
+        let mut c = PeerAddrCache::default();
+        let over = MAX_PEER_CACHE_ENTRIES + 10;
+        for i in 0..over as u64 {
+            c.record(
+                peer_u64(i),
+                addr(&format!("/ip4/10.0.0.1/tcp/{}", i % 60000)),
+                1000 + i,
+            );
+        }
+        // record() never caps entry count.
+        assert_eq!(
+            c.len(),
+            over,
+            "record must not cap the entry count; that's prune's job"
+        );
+        // A single prune brings the resident map back to the hard cap.
+        c.prune(1000 + over as u64, 86_400, MAX_PEER_CACHE_ENTRIES);
+        assert_eq!(
+            c.len(),
+            MAX_PEER_CACHE_ENTRIES,
+            "prune must bring the map down to exactly the cap"
+        );
+
+        // And it evicts by recency: peers were recorded with monotonically
+        // increasing `last_seen_secs` (1000 + i), so the 10 oldest (i in
+        // 0..10) must be gone and everything from the boundary up retained.
+        // Collect the survivors once, prove the set size equals the cap, then
+        // spot-check only the eviction boundary — iterating every survivor with
+        // `.contains` would be an O(cap) scan of the whole set for no extra
+        // coverage.
+        let survivors: std::collections::BTreeSet<PeerId> = c
+            .dial_candidates(1000 + over as u64, 86_400)
+            .into_iter()
+            .map(|p| p.peer_id)
+            .collect();
+        assert_eq!(
+            survivors.len(),
+            MAX_PEER_CACHE_ENTRIES,
+            "survivor set size must equal the cap"
+        );
+        // The 10 oldest were evicted.
+        for i in 0..10u64 {
+            assert!(
+                !survivors.contains(&peer_u64(i)),
+                "oldest peer {i} must be evicted by the recency cap"
+            );
+        }
+        // The just-above-boundary entries and the newest one survived.
+        for i in [10u64, 11, over as u64 - 1] {
+            assert!(
+                survivors.contains(&peer_u64(i)),
+                "most-recently-seen peer {i} must survive the prune"
+            );
+        }
+    }
+
+    /// Churn ~50k distinct peers through the cache the way a node on the
+    /// global rendezvous namespace would, pruning on the (simulated)
+    /// rendezvous tick. The resident map must stay `<= MAX_PEER_CACHE_ENTRIES`
+    /// throughout, and a real co-member — refreshed on every "tick", so always
+    /// the most-recently-seen entry — must never be evicted, while stale
+    /// transients churn out under the LRU cap.
+    #[test]
+    fn churn_50k_stays_within_cap_and_keeps_refreshed_co_member() {
+        let ttl = 86_400u64; // 24h — nothing ages out by TTL within this test.
+        let now_base = 1_000_000u64;
+        let mut c = PeerAddrCache::default();
+
+        // A genuine collaborator we keep touching, plus an early transient we
+        // expect to be evicted by the churn.
+        let co_member = peer_u64(u64::MAX);
+        let co_member_addr = addr("/ip4/192.168.1.1/tcp/4242");
+        let early_transient = peer_u64(0);
+
+        let total = 50_000u64;
+        for i in 0..total {
+            // A fresh, one-shot churning peer.
+            c.record(
+                peer_u64(i),
+                addr(&format!("/ip4/10.0.0.1/tcp/{}", i % 60000)),
+                now_base + i,
+            );
+            // The co-member is seen again this tick → always the newest entry.
+            c.record(co_member, co_member_addr.clone(), now_base + i);
+
+            // Prune on the (simulated) rendezvous tick; the cap must always hold.
+            if i % 1000 == 0 {
+                c.prune(now_base + i, ttl, MAX_PEER_CACHE_ENTRIES);
+                assert!(
+                    c.len() <= MAX_PEER_CACHE_ENTRIES,
+                    "resident map exceeded the cap mid-churn at i={i}: {}",
+                    c.len()
+                );
+            }
+        }
+
+        let final_now = now_base + total;
+        c.prune(final_now, ttl, MAX_PEER_CACHE_ENTRIES);
+
+        // Bound holds after the final prune.
+        assert!(
+            c.len() <= MAX_PEER_CACHE_ENTRIES,
+            "resident map exceeded the cap after churn: {}",
+            c.len()
+        );
+
+        // The continuously-refreshed co-member survived the churn...
+        let resident: std::collections::BTreeSet<PeerId> = c
+            .dial_candidates(final_now, ttl)
+            .into_iter()
+            .map(|p| p.peer_id)
+            .collect();
+        assert!(
+            resident.contains(&co_member),
+            "a co-member refreshed every tick must never be evicted by churn"
+        );
+        // ...while an early, since-untouched transient did not (proving the
+        // cap actually evicted, i.e. the survival above is non-vacuous).
+        assert!(
+            !resident.contains(&early_transient),
+            "a long-untouched transient must be evicted under the LRU cap"
+        );
     }
 }

@@ -1375,6 +1375,10 @@ impl VMHostFunctions<'_> {
     }
 
     fn read_map_id(&mut self, map_id_ptr: u64) -> VMLogicResult<Result<Id, String>> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(map_id_ptr)? };
         let data = self.read_guest_memory_slice(&buffer)?;
 
@@ -1392,6 +1396,10 @@ impl VMHostFunctions<'_> {
     }
 
     fn read_buffer(&mut self, ptr: u64) -> VMLogicResult<Vec<u8>> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let buffer = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(ptr)? };
         Ok(self.read_guest_memory_slice(&buffer)?.to_vec())
     }

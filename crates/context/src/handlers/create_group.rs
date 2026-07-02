@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix::{ActorResponse, Handler, Message, WrapFuture};
+use actix::{ActorFutureExt, ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{CreateGroupRequest, CreateGroupResponse};
 use calimero_context_client::local_governance::{NamespaceOp, RootOp};
 use calimero_context_config::types::AppKey;
@@ -133,6 +133,49 @@ impl Handler<CreateGroupRequest> for ContextManager {
             );
         }
 
+        // Reserve the group id SYNCHRONOUSLY, before spawning the async body.
+        // The existence guard at the top of `handle` and this save both run in
+        // the synchronous portion of the handler, which the actor runs to
+        // completion before dequeuing the next message. Without a synchronous
+        // reservation, two same-id CreateGroupRequests could both pass the
+        // guard (the meta was only written later, inside the async body) and
+        // each run the full create, emitting duplicate governance ops. The
+        // async body overwrites this reservation with the final meta once the
+        // app_key is resolved/verified; the cleanup map on the returned future
+        // deletes it if that async work fails, so a failed create frees the id
+        // for a clean retry rather than wedging it behind the guard forever.
+        let reservation_now = match std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+        {
+            Ok(d) => d.as_secs(),
+            Err(err) => {
+                warn!(
+                    %err,
+                    ?group_id,
+                    "system clock is before UNIX_EPOCH; stamping created_at=0 on the group reservation"
+                );
+                0
+            }
+        };
+        let reservation_meta = GroupMetaValue {
+            // The reservation only holds the id slot; use the verified
+            // application-row blob (never the caller's still-unverified
+            // `requested_app_key`) so a concurrent reader can't observe an
+            // unverified `app_key`. The async body overwrites this with the
+            // final, verified `app_key` on success.
+            app_key: row_blob,
+            target_application_id: effective_application_id,
+            upgrade_policy: upgrade_policy.clone(),
+            created_at: reservation_now,
+            admin_identity,
+            owner_identity: admin_identity,
+            migration: None,
+            auto_join: true,
+        };
+        if let Err(err) = MetaRepository::new(&self.datastore).save(&group_id, &reservation_meta) {
+            return ActorResponse::reply(Err(err));
+        }
+
         ActorResponse::r#async(
             async move {
                 let app_key = match requested_app_key {
@@ -174,7 +217,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // into Open subgroups beneath this group.
                 CapabilitiesRepository::new(&datastore).set_default_capabilities(
                     &group_id,
-                    calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+                    calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
                 )?;
 
                 // Generate and store the group encryption key.
@@ -202,9 +245,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             &group_id,
                             &calimero_primitives::metadata::MetadataRecord {
                                 name: name.clone(),
+                                data: std::collections::BTreeMap::new(),
                                 updated_at: calimero_governance_store::now_millis(),
                                 updated_by: admin_identity,
-                                ..Default::default()
                             },
                         )?,
                         Err(e) => {
@@ -251,15 +294,15 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // GroupMeta, which is exactly the gap #2474 closes.
                 if let Some(parent_id) = parent_group_id {
                     let create_op = NamespaceOp::Root(RootOp::GroupCreated {
-                        group_id: group_id.to_bytes(),
-                        parent_id: parent_id.to_bytes(),
+                        group_id: group_id.to_bytes().into(),
+                        parent_id: parent_id.to_bytes().into(),
                         restricted,
                     });
                     match calimero_governance_store::sign_apply_and_publish_namespace_op(
                         &datastore,
                         &node_client,
                         &ack_router,
-                        namespace_id.to_bytes(),
+                        namespace_id.to_bytes().into(),
                         &signer_sk,
                         create_op,
                     )
@@ -285,7 +328,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         &datastore,
                         &node_client,
                         &ack_router,
-                        namespace_id.to_bytes(),
+                        namespace_id.to_bytes().into(),
                         &signer_sk,
                         genesis_op,
                     )
@@ -473,7 +516,25 @@ impl Handler<CreateGroupRequest> for ContextManager {
 
                 Ok(CreateGroupResponse { group_id })
             }
-            .into_actor(self),
+            .into_actor(self)
+            .map(move |res, act, _ctx| {
+                // Free the synchronously-reserved id on any failure that the
+                // inner rollback didn't already unwind, so the existence guard
+                // doesn't wedge the id against a clean retry. Delete is
+                // idempotent, so double-deleting after the genesis rollback is
+                // harmless; success has replaced the reservation with the final
+                // meta, so we leave it in place.
+                if res.is_err() {
+                    if let Err(err) = MetaRepository::new(&act.datastore).delete(&group_id) {
+                        warn!(
+                            ?group_id,
+                            ?err,
+                            "failed to free reserved group id after create error"
+                        );
+                    }
+                }
+                res
+            }),
         )
     }
 }

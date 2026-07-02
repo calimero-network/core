@@ -203,7 +203,7 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
     let signer_sk = PrivateKey::random(&mut rng);
     let policy_op = SignedGroupOp::sign(
         &signer_sk,
-        gid.to_bytes(),
+        gid.to_bytes().into(),
         vec![],
         1,
         GroupOp::TeeAdmissionPolicySet {
@@ -396,7 +396,11 @@ fn check_membership_open_subgroup_inherits_parent_with_default_cap() {
         .add_member(&parent, &alice, GroupMemberRole::Member)
         .unwrap();
     CapabilitiesRepository::new(&store)
-        .set_member_capability(&parent, &alice, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .set_member_capability(
+            &parent,
+            &alice,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
         .unwrap();
 
     // Child is `Open`. Alice should be inherited as a member.
@@ -426,7 +430,7 @@ fn check_membership_path_inherited_when_member_added_after_default_caps() {
     // added — `add_group_member` copies the default into bob's
     // per-member capability row.
     CapabilitiesRepository::new(&store)
-        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
         .unwrap();
     MembershipRepository::new(&store)
         .add_member(&ns, &bob, GroupMemberRole::Member)
@@ -463,7 +467,7 @@ fn check_membership_path_none_when_member_added_before_default_caps() {
         .add_member(&ns, &bob, GroupMemberRole::Member)
         .unwrap();
     CapabilitiesRepository::new(&store)
-        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
         .unwrap();
 
     // The later `set_default_capabilities` does NOT retroactively
@@ -495,7 +499,11 @@ fn check_membership_restricted_subgroup_does_not_inherit() {
         .add_member(&parent, &alice, GroupMemberRole::Member)
         .unwrap();
     CapabilitiesRepository::new(&store)
-        .set_member_capability(&parent, &alice, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .set_member_capability(
+            &parent,
+            &alice,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
         .unwrap();
 
     // Restricted child blocks inheritance even when the cap is set.
@@ -528,7 +536,7 @@ fn check_membership_restricted_wall_blocks_grandparent_inheritance() {
         .set_member_capability(
             &namespace,
             &alice,
-            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         )
         .unwrap();
 
@@ -567,7 +575,7 @@ fn check_membership_open_chain_walks_to_root() {
         .set_member_capability(
             &namespace,
             &alice,
-            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         )
         .unwrap();
 
@@ -598,7 +606,7 @@ fn check_membership_unset_visibility_treated_as_restricted() {
         .set_member_capability(
             &parent,
             &alice,
-            calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         )
         .unwrap();
 
@@ -684,7 +692,7 @@ fn check_membership_anchor_cap_check_uses_deepest_direct_membership() {
         .set_member_capability(
             &namespace,
             &alice,
-            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         )
         .unwrap();
 
@@ -730,7 +738,7 @@ fn enumerate_inherited_members_includes_open_subgroup_joiner() {
         .set_member_capability(
             &namespace,
             &bob,
-            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         )
         .unwrap();
 
@@ -799,7 +807,7 @@ fn enumerate_inherited_members_preserves_read_only_tee_role() {
         .set_member_capability(
             &namespace,
             &tee,
-            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         )
         .unwrap();
     CapabilitiesRepository::new(&store)
@@ -859,7 +867,7 @@ fn enumerate_inherited_members_excludes_deny_listed_member() {
         .set_member_capability(
             &namespace,
             &bob,
-            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         )
         .unwrap();
     CapabilitiesRepository::new(&store)
@@ -952,7 +960,7 @@ fn enumerate_inherited_members_empty_for_restricted_subgroup() {
         .set_member_capability(
             &namespace,
             &bob,
-            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         )
         .unwrap();
     CapabilitiesRepository::new(&store)
@@ -1035,7 +1043,11 @@ fn enumerate_inherited_members_resolves_at_max_namespace_depth_boundary() {
         .add_member(&ns, &alice, GroupMemberRole::Member)
         .unwrap();
     CapabilitiesRepository::new(&store)
-        .set_member_capability(&ns, &alice, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .set_member_capability(
+            &ns,
+            &alice,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
         .unwrap();
 
     assert!(
@@ -1173,7 +1185,11 @@ fn membership_path_inherited_admin_overrides_anchor_cap_denial() {
         .add_member(&ns, &bob, GroupMemberRole::Member)
         .unwrap();
     CapabilitiesRepository::new(&store)
-        .set_member_capability(&ns, &bob, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .set_member_capability(
+            &ns,
+            &bob,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
         .unwrap();
     MembershipRepository::new(&store)
         .add_member(&mid, &bob, GroupMemberRole::Member)
@@ -1235,7 +1251,11 @@ fn auth_and_crypto_walks_agree_at_max_namespace_depth_boundary() {
         .add_member(&ns, &alice, GroupMemberRole::Member)
         .unwrap();
     CapabilitiesRepository::new(&store)
-        .set_member_capability(&ns, &alice, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .set_member_capability(
+            &ns,
+            &alice,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
         .unwrap();
 
     // is_inherited_admin: alice is not admin anywhere → should
@@ -1378,7 +1398,7 @@ fn namespace_member_pubkeys_includes_meta_admin_without_member_row() {
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
 
     let pks = MembershipRepository::new(&store)
-        .namespace_pubkeys(namespace_id)
+        .namespace_pubkeys(namespace_id.into())
         .unwrap();
     assert!(
         pks.contains(&admin),
@@ -1413,7 +1433,7 @@ fn namespace_member_pubkeys_dedups_admin_with_member_row() {
         .unwrap();
 
     let pks = MembershipRepository::new(&store)
-        .namespace_pubkeys(namespace_id)
+        .namespace_pubkeys(namespace_id.into())
         .unwrap();
     assert_eq!(pks.iter().filter(|p| **p == admin).count(), 1);
     assert!(pks.contains(&other));
@@ -1435,7 +1455,7 @@ fn namespace_member_pubkeys_includes_member_rows() {
         .unwrap();
 
     let pks = MembershipRepository::new(&store)
-        .namespace_pubkeys(namespace_id)
+        .namespace_pubkeys(namespace_id.into())
         .unwrap();
     assert!(pks.contains(&m1));
     assert!(pks.contains(&m2));
@@ -1460,7 +1480,9 @@ fn remove_group_member_clears_member_metadata() {
             &member,
             &MetadataRecord {
                 name: Some("departing".to_owned()),
-                ..Default::default()
+                data: Default::default(),
+                updated_at: 0,
+                updated_by: [1_u8; 32].into(),
             },
         )
         .unwrap();
@@ -1704,7 +1726,7 @@ fn get_effective_member_capabilities_includes_inherited_open_subgroup_joiner() {
         .set_member_capability(
             &namespace,
             &bob,
-            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         )
         .unwrap();
     CapabilitiesRepository::new(&store)
@@ -1783,14 +1805,18 @@ fn get_effective_member_capabilities_returns_stored_bits_for_direct_member() {
         .add_member(&group, &carol, GroupMemberRole::Member)
         .unwrap();
     CapabilitiesRepository::new(&store)
-        .set_member_capability(&group, &carol, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .set_member_capability(
+            &group,
+            &carol,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
         .unwrap();
 
     assert_eq!(
         MembershipRepository::new(&store)
             .effective_capabilities(&group, &carol)
             .unwrap(),
-        Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS),
+        Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits()),
         "direct member's stored capability bitmask must be returned verbatim"
     );
 }
@@ -1860,7 +1886,7 @@ fn get_effective_member_capabilities_none_for_restricted_wall() {
         .set_member_capability(
             &namespace,
             &bob,
-            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         )
         .unwrap();
     CapabilitiesRepository::new(&store)
@@ -1903,7 +1929,7 @@ fn get_effective_member_capabilities_none_for_denied_inherited_member() {
         .set_member_capability(
             &namespace,
             &bob,
-            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         )
         .unwrap();
     CapabilitiesRepository::new(&store)
@@ -2088,7 +2114,7 @@ fn is_authoritative_namespace_identity_recognizes_owner_admin_tee() {
     let signer_sk = PrivateKey::random(&mut rng);
     let tee_op = SignedGroupOp::sign(
         &signer_sk,
-        gid.to_bytes(),
+        gid.to_bytes().into(),
         vec![],
         1,
         GroupOp::MemberJoinedViaTeeAttestation {
@@ -2107,18 +2133,18 @@ fn is_authoritative_namespace_identity_recognizes_owner_admin_tee() {
     append_op_log_entry(&store, &gid, 1, &borsh::to_vec(&tee_op).unwrap()).unwrap();
 
     assert!(MembershipRepository::new(&store)
-        .is_authoritative_namespace_identity(namespace_id, &owner)
+        .is_authoritative_namespace_identity(namespace_id.into(), &owner)
         .unwrap());
     assert!(MembershipRepository::new(&store)
-        .is_authoritative_namespace_identity(namespace_id, &admin_member)
+        .is_authoritative_namespace_identity(namespace_id.into(), &admin_member)
         .unwrap());
     assert!(MembershipRepository::new(&store)
-        .is_authoritative_namespace_identity(namespace_id, &tee_node)
+        .is_authoritative_namespace_identity(namespace_id.into(), &tee_node)
         .unwrap());
     assert!(!MembershipRepository::new(&store)
-        .is_authoritative_namespace_identity(namespace_id, &ordinary)
+        .is_authoritative_namespace_identity(namespace_id.into(), &ordinary)
         .unwrap());
     assert!(!MembershipRepository::new(&store)
-        .is_authoritative_namespace_identity(namespace_id, &stranger)
+        .is_authoritative_namespace_identity(namespace_id.into(), &stranger)
         .unwrap());
 }

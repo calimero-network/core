@@ -3312,3 +3312,64 @@ mod owner_driven_convert {
         );
     }
 }
+
+/// Subtree tombstoning must converge: the node that performs a local delete
+/// and a replica that replays the resulting `DeleteRef` must end with the same
+/// tombstone state across the whole subtree — not just the directly-deleted
+/// node. The replica only ever receives ONE `DeleteRef` (for the subtree root);
+/// it reconstructs the descendant tombstones by replaying the same recursion
+/// with the same `deleted_at`.
+#[cfg(test)]
+mod subtree_tombstone_convergence {
+    use super::*;
+    use crate::entities::ChildInfo;
+
+    fn build_chain<S: crate::store::StorageAdaptor>(root: Id, a: Id, b: Id, c: Id) {
+        <Index<S>>::add_root(ChildInfo::new(root, [1; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(root, ChildInfo::new(a, [2; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(b, [3; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(b, ChildInfo::new(c, [4; 32], Metadata::default())).unwrap();
+    }
+
+    #[test]
+    fn local_delete_and_remote_delete_ref_converge_on_whole_subtree() {
+        // Two independent stores with an identical root -> a -> b -> c chain.
+        type Local = MockedStorage<2200>;
+        type Remote = MockedStorage<2201>;
+
+        // Same ids on both stores so the chains are identical.
+        let root = Id::random();
+        let a = Id::random();
+        let b = Id::random();
+        let c = Id::random();
+        build_chain::<Local>(root, a, b, c);
+        build_chain::<Remote>(root, a, b, c);
+
+        // One shared delete nonce — exactly what the originator stamps locally
+        // and carries on the `DeleteRef` wire.
+        let deleted_at = time_now();
+
+        // Originator: local delete of `a`.
+        <Index<Local>>::remove_child_from(root, a, deleted_at).unwrap();
+
+        // Replica: replay the single `DeleteRef` for the subtree root `a`.
+        let action = Action::DeleteRef {
+            id: a,
+            deleted_at,
+            metadata: Metadata::default(),
+        };
+        Interface::<Remote>::apply_action(action, &ApplyContext::empty()).unwrap();
+
+        // Both stores converged to the same tombstone state across the subtree.
+        for id in [a, b, c] {
+            assert!(
+                <Index<Local>>::is_deleted(id).unwrap(),
+                "originator must tombstone {id:?}"
+            );
+            assert!(
+                <Index<Remote>>::is_deleted(id).unwrap(),
+                "replica must tombstone {id:?} after replaying the root DeleteRef"
+            );
+        }
+    }
+}

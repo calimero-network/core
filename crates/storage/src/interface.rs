@@ -200,6 +200,17 @@ const fn nonce_check_disabled_for_testing() -> bool {
     false
 }
 
+/// Why a child is being removed from its collection, selecting whether the
+/// Frozen-deletion guard applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoveMode {
+    /// A genuine semantic deletion: reject `Frozen` children.
+    Delete,
+    /// A deterministic re-key relocation: the child is immediately re-inserted
+    /// under a new id, so `Frozen` children are relocated rather than rejected.
+    Relocate,
+}
+
 /// The primary interface for the storage system.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
@@ -2298,6 +2309,14 @@ impl<S: StorageAdaptor> Interface<S> {
         // Get parent ID BEFORE deleting - we need it to update the Merkle tree
         let parent_id = <Index<S>>::get_parent_id(id)?;
 
+        // Tombstone the subtree BEFORE removing this entity, while its
+        // `children` are still readable. The originating node tombstoned the
+        // whole subtree under `id`; replay the same recursion here, with the
+        // same `deleted_at`, so this replica reclaims the descendant rows too
+        // and converges (otherwise they would leak as un-tombstoned orphans
+        // under a tombstoned ancestor).
+        <Index<S>>::tombstone_descendants_of(id, deleted_at)?;
+
         // Deletion wins - apply it
         let _ignored = S::storage_remove(Key::Entry(id));
         let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
@@ -2548,8 +2567,14 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `IndexNotFound` if entity exists but has no index
     ///
     pub fn find_by_id<D: Data>(id: Id) -> Result<Option<D>, StorageError> {
+        // Single `EntityIndex` read serves the tombstone check AND supplies the
+        // merkle_hash and metadata below. Loading it once here avoids the
+        // earlier `is_deleted()` + `get_index()` pair, which read and
+        // deserialized the index twice for every child of every collection scan.
+        let index = <Index<S>>::get_index(id)?;
+
         // Check if entity is deleted (tombstone)
-        if <Index<S>>::is_deleted(id)? {
+        if index.as_ref().and_then(|index| index.deleted_at).is_some() {
             return Ok(None); // Entity is deleted
         }
 
@@ -2561,8 +2586,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let mut item = from_slice::<D>(&slice).map_err(StorageError::DeserializationError)?;
 
-        // Single `EntityIndex` read for both merkle_hash and metadata.
-        let index = <Index<S>>::get_index(id)?.ok_or(StorageError::IndexNotFound(id))?;
+        let index = index.ok_or(StorageError::IndexNotFound(id))?;
         item.element_mut().merkle_hash = index.full_hash();
         item.element_mut().metadata = index.metadata;
 
@@ -2659,7 +2683,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// `Frozen`.
     ///
     pub fn remove_child_from(parent_id: Id, child_id: Id) -> Result<bool, StorageError> {
-        Self::remove_child_from_inner(parent_id, child_id, true)
+        Self::remove_child_from_inner(parent_id, child_id, RemoveMode::Delete)
     }
 
     /// Removes a child from a collection as part of a deterministic re-key
@@ -2675,18 +2699,18 @@ impl<S: StorageAdaptor> Interface<S> {
     /// Returns error if parent or child doesn't exist.
     ///
     pub(crate) fn relocate_child_from(parent_id: Id, child_id: Id) -> Result<bool, StorageError> {
-        Self::remove_child_from_inner(parent_id, child_id, false)
+        Self::remove_child_from_inner(parent_id, child_id, RemoveMode::Relocate)
     }
 
     /// Shared implementation behind [`remove_child_from`](Self::remove_child_from)
     /// and [`relocate_child_from`](Self::relocate_child_from).
     ///
-    /// `reject_frozen` gates the Frozen-deletion guard: `true` for genuine
-    /// deletes, `false` for re-key relocations.
+    /// `mode` selects whether the Frozen-deletion guard applies: it does for
+    /// [`RemoveMode::Delete`], but not for [`RemoveMode::Relocate`] re-keys.
     fn remove_child_from_inner(
         parent_id: Id,
         child_id: Id,
-        reject_frozen: bool,
+        mode: RemoveMode,
     ) -> Result<bool, StorageError> {
         let child_exists = <Index<S>>::get_children_of(parent_id)?
             .iter()
@@ -2712,9 +2736,9 @@ impl<S: StorageAdaptor> Interface<S> {
         // Refusing here keeps the deleter consistent with its peers.
         //
         // The re-key relocation path (`relocate_child_from`) passes
-        // `reject_frozen == false`: it removes the entry only to re-insert it
+        // `RemoveMode::Relocate`: it removes the entry only to re-insert it
         // under a new deterministic id, so the frozen data is preserved.
-        if reject_frozen && matches!(metadata.storage_type, StorageType::Frozen) {
+        if mode == RemoveMode::Delete && matches!(metadata.storage_type, StorageType::Frozen) {
             return Err(StorageError::ActionNotAllowed(
                 "Frozen data cannot be deleted".to_owned(),
             ));
@@ -2792,7 +2816,7 @@ impl<S: StorageAdaptor> Interface<S> {
             };
         }
 
-        <Index<S>>::remove_child_from(parent_id, child_id)?;
+        <Index<S>>::remove_child_from(parent_id, child_id, deleted_at)?;
 
         // Use DeleteRef for efficient tombstone-based deletion.
         // More efficient than Delete: only sends ID + timestamp + metadata vs full ancestor tree.
@@ -2936,8 +2960,9 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let incoming_updated_at = metadata.updated_at();
 
-        // Compute incoming data hash for tracing
-        let incoming_hash: [u8; 32] = Sha256::digest(data).into();
+        // `incoming_hash` (Sha256 of `data`) is only consumed by the
+        // root-merge trace logs below, so it's computed lazily inside those
+        // branches rather than on every (hot, non-root) write.
 
         let last_metadata = <Index<S>>::get_metadata(id)?;
         let final_data = if let Some(last_metadata) = &last_metadata {
@@ -2987,6 +3012,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 // and silently dropped one side's writes on bootstrap
                 // and on concurrent root writes. See the doc comment on
                 // `is_app_root_entry` for the regression timeline.
+                let incoming_hash: [u8; 32] = Sha256::digest(data).into();
                 if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
                     let existing_hash: [u8; 32] = Sha256::digest(&existing_data).into();
                     info!(
@@ -3062,6 +3088,7 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         } else {
             if id.is_root() {
+                let incoming_hash: [u8; 32] = Sha256::digest(data).into();
                 info!(
                     target: "storage::root_merge",
                     %id,
@@ -3141,6 +3168,22 @@ impl<S: StorageAdaptor> Interface<S> {
         // production caller, so a "hash exists, bytes don't"
         // inconsistency surfaces immediately as a wrong-content read.
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
+
+        // A value write that causally follows an existing tombstone must lift it,
+        // or `find_by_id` would keep hiding the bytes we just wrote (the entity's
+        // `updated_at` already outran the tombstone in the LWW guard above, so
+        // the write won — but the stale `deleted_at` would silently suppress it,
+        // diverging replicas on delete-then-update vs update-only delivery). This
+        // is a no-op unless the entity is tombstoned; `save_internal` is never on
+        // the delete path (deletes go through `apply_delete_ref_action`), and the
+        // `> deleted_at` guard inside `clear_deleted` keeps ties and older writes
+        // from resurrecting.
+        //
+        // Ordering: `update_hash_for` above already persisted the new
+        // `updated_at`, and both calls run inside the same reentrant
+        // `index_mutation_guard`, so no concurrent writer interleaves between
+        // them (`clear_deleted` also re-advances the nonce defensively).
+        <Index<S>>::clear_deleted(id, *metadata.updated_at)?;
 
         if id.is_root() {
             info!(

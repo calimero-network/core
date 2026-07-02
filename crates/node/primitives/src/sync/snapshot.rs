@@ -643,6 +643,72 @@ pub fn check_snapshot_safety(has_local_state: bool) -> Result<(), SnapshotError>
 /// Maximum byte length for governance op payloads in [`BroadcastMessage::NamespaceGovernanceDelta`].
 pub const MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES: usize = 64 * 1024;
 
+/// Upper bound on a decrypted [`SealedDeltaPayload`]'s `artifact` (the
+/// borsh-encoded storage delta).
+///
+/// This is a defense-in-depth backstop, NOT the primary limit: an inbound
+/// gossip message is already capped at gossipsub's default
+/// `max_transmit_size` (64 KiB), so a network-delivered delta's plaintext is
+/// bounded well below this before it reaches decryption. The cap matters for
+/// the buffered-replay path (which decrypts payloads loaded from local
+/// storage) and as a hard ceiling against a malicious group-key holder, who
+/// can seal an arbitrarily large payload that still passes AEAD.
+///
+/// Deliberately distinct from [`MAX_COMPRESSED_PAYLOAD_SIZE`], which bounds
+/// *compressed* snapshot pages and is intentionally looser to absorb
+/// compression expansion. A state-delta plaintext is uncompressed, so it gets
+/// its own, tighter, named bound. Sized generously above any legitimate delta
+/// (16× the gossip transmit cap) but far below a memory-exhaustion payload.
+pub const MAX_STATE_DELTA_PLAINTEXT_BYTES: usize = 1024 * 1024;
+
+/// Plaintext that gets encrypted into the `artifact` field of a
+/// [`BroadcastMessage::StateDelta`].
+///
+/// Bundling the expected post-apply `root_hash` and the execution `events`
+/// together with the storage-delta bytes means all three are sealed under the
+/// group key instead of riding on the wire in cleartext. Only key holders
+/// (members) can read them, which is the point: the root hash is a state
+/// fingerprint and the events are the application's emitted activity —
+/// broadcasting either openly would leak how a context's state evolves to
+/// non-members subscribed to the gossip topic.
+///
+/// All three share the delta's single nonce because they are sealed together
+/// in one AEAD operation; encrypting `events` as a separate field would have
+/// required a second nonce to avoid GCM nonce reuse.
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+pub struct SealedDeltaPayload {
+    /// Expected state root after the receiver applies `artifact`. Becomes the
+    /// `expected_root_hash` of the reconstructed causal delta and is verified
+    /// against the locally recomputed root once the delta is applied.
+    pub root_hash: Hash,
+
+    /// Borsh-encoded `calimero_storage::delta::StorageDelta` — the actual
+    /// state mutation. Kept as opaque bytes here so this type doesn't need a
+    /// dependency on the storage-delta layout; the receiver deserializes it
+    /// after decryption.
+    pub artifact: Vec<u8>,
+
+    /// Execution events emitted during the state change, as the serialized
+    /// `Vec<ExecutionEvent>` the receiver replays handlers from. `None` when
+    /// the delta emitted no events. Sealed alongside `artifact` rather than
+    /// sent in cleartext.
+    pub events: Option<Vec<u8>>,
+}
+
+impl SealedDeltaPayload {
+    /// Size guard for the wrapped `artifact` plus `events`, mirroring the
+    /// `is_valid()` convention the other wire types in this module follow.
+    /// Callers that deserialize a `SealedDeltaPayload` from untrusted
+    /// (post-decryption) bytes should reject it when this returns `false`
+    /// before deserializing the inner storage delta or replaying events.
+    /// See [`MAX_STATE_DELTA_PLAINTEXT_BYTES`].
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        let events_len = self.events.as_ref().map_or(0, Vec::len);
+        self.artifact.len().saturating_add(events_len) <= MAX_STATE_DELTA_PLAINTEXT_BYTES
+    }
+}
+
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
 #[expect(clippy::large_enum_variant, reason = "Of no consequence here")]
@@ -660,13 +726,16 @@ pub enum BroadcastMessage<'a> {
         /// Hybrid Logical Clock timestamp for causal ordering
         hlc: calimero_storage::logical_clock::HybridTimestamp,
 
-        root_hash: Hash, // todo! shouldn't be cleartext
+        /// Encrypted delta payload — a borsh-encoded [`SealedDeltaPayload`]
+        /// holding the storage-delta actions, the expected post-apply
+        /// `root_hash`, AND the execution `events`. All three travel inside
+        /// the ciphertext (not as cleartext fields) so they cannot be read
+        /// off the gossip topic by non-members: the root hash is a state
+        /// fingerprint and the events are application activity, both of which
+        /// would otherwise leak how state evolves to peers who hold no group
+        /// key.
         artifact: Cow<'a, [u8]>,
         nonce: Nonce,
-
-        /// Execution events that were emitted during the state change.
-        /// This field is encrypted along with the artifact.
-        events: Option<Cow<'a, [u8]>>,
 
         /// Cross-DAG reference: names the exact governance DAG cut the
         /// author relied on when producing this delta. Receivers use it

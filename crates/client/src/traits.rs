@@ -33,19 +33,42 @@ pub trait ClientStorage: Send + Sync {
 
     /// Update tokens for a specific node (load, modify, save)
     ///
-    /// This is a convenience method that loads existing tokens, applies
-    /// modifications, and saves the result. Implementations can optimize
-    /// this operation if needed.
+    /// Loads any existing tokens and merges the new ones on top, preserving
+    /// fields the new token doesn't carry (expiry, metadata, refresh token).
+    /// A token refresh usually returns only a fresh access/refresh pair with no
+    /// expiry or metadata, so a blind overwrite would discard previously-known
+    /// values — see [`JwtToken::merged_with`].
+    ///
+    /// The default load-merge-save is **not atomic**: a concurrent writer
+    /// between the load and the save can be clobbered by a stale merge, which
+    /// could drop a refresh token. The connection layer serializes its own
+    /// refresh/update through an internal lock; any caller driving updates from
+    /// *outside* that path — or from multiple tasks — must serialize the calls
+    /// itself. A storage backend that can update atomically (e.g. a
+    /// compare-and-swap or transactional store) **should override** this method
+    /// to do the merge under its own lock/transaction.
     async fn update_tokens(&self, node_name: &str, new_tokens: &JwtToken) -> Result<()> {
-        self.save_tokens(node_name, new_tokens).await
+        let merged = match self.load_tokens(node_name).await? {
+            Some(existing) => existing.merged_with(new_tokens),
+            None => new_tokens.clone(),
+        };
+        self.save_tokens(node_name, &merged).await
     }
 
     /// Remove tokens for a specific node
     ///
     /// Removes any stored tokens for the specified node. This is useful
     /// for logout operations or clearing invalid tokens.
+    ///
+    /// Implementations **should** delete the stored entry outright. The default
+    /// below can only fall back to persisting an empty [`JwtToken::default`]
+    /// (no delete primitive is available on this trait); consumers therefore
+    /// treat an empty access token as "no credentials" (see
+    /// [`JwtToken::is_usable`]) so a logged-out record is never sent as a
+    /// bearer header. Prefer overriding this to truly remove the entry.
     async fn remove_tokens(&self, node_name: &str) -> Result<()> {
-        // Default implementation: just save None
+        // Default fallback: persist an empty token, which callers treat as
+        // "no credentials". Real backends should override to delete the entry.
         self.save_tokens(node_name, &JwtToken::default()).await
     }
 
