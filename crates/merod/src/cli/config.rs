@@ -58,17 +58,33 @@ impl ConfigCommand {
 
         let mut doc = toml_str.parse::<toml_edit::DocumentMut>()?;
 
-        // Update the TOML document
+        // Update the TOML document. Navigate the dotted key path via table-like
+        // lookups instead of `Index`/`IndexMut`, which panic when a path segment
+        // resolves to a non-table (e.g. `foo.bar=1` where `foo` is a string).
         for kv in self.args.iter() {
             let key_parts: Vec<&str> = kv.key.split('.').collect();
+            let (last, parents) = key_parts
+                .split_last()
+                .expect("split('.') always yields at least one segment");
 
             let mut current = doc.as_item_mut();
-
-            for key in &key_parts[..key_parts.len() - 1] {
-                current = &mut current[key];
+            for key in parents {
+                let table = current
+                    .as_table_like_mut()
+                    .ok_or_else(|| eyre!("cannot set '{}': '{key}' is not a table", kv.key))?;
+                // `entry` inserts an empty table only when the segment is
+                // absent, and returns the existing value otherwise. A pre-
+                // existing non-table value is preserved (not overwritten) and
+                // surfaces as an error on the next `as_table_like_mut` call.
+                current = table
+                    .entry(key)
+                    .or_insert_with(|| Item::Table(toml_edit::Table::new()));
             }
 
-            current[key_parts[key_parts.len() - 1]] = Item::Value(kv.value.clone());
+            let table = current.as_table_like_mut().ok_or_else(|| {
+                eyre!("cannot set '{}': parent of '{last}' is not a table", kv.key)
+            })?;
+            table.insert(last, Item::Value(kv.value.clone()));
         }
 
         self.validate_toml(&doc).await?;

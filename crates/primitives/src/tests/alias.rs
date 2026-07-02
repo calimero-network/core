@@ -59,6 +59,26 @@ fn test_unicode_characters_are_rejected() {
 }
 
 #[test]
+fn test_reject_interior_nul() {
+    // An interior NUL would be truncated by the store's fixed-width decode,
+    // letting "a\0b" collide with "a" on round-trip. Reject it up front.
+    let result = "a\0b".parse::<Alias<()>>();
+    assert!(result.is_err());
+    let result = "\0".parse::<Alias<()>>();
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_reject_control_characters() {
+    for bad in ["line\nbreak", "tab\there", "bell\u{7}"] {
+        assert!(
+            bad.parse::<Alias<()>>().is_err(),
+            "expected {bad:?} to be rejected"
+        );
+    }
+}
+
+#[test]
 fn test_deserialize_valid_alias() {
     let json = json!("valid-alias");
     let alias: Alias<()> = serde_json::from_value(json).unwrap();
