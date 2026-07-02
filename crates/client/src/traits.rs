@@ -38,6 +38,13 @@ pub trait ClientStorage: Send + Sync {
     /// A token refresh usually returns only a fresh access/refresh pair with no
     /// expiry or metadata, so a blind overwrite would discard previously-known
     /// values — see [`JwtToken::merged_with`].
+    ///
+    /// The default load-merge-save is **not atomic**: a concurrent writer
+    /// between the load and the save can be clobbered by a stale merge. The
+    /// connection layer serializes its own refresh/update through an internal
+    /// lock, so callers driving updates from *outside* that path (or from
+    /// multiple tasks) must serialize externally if they need last-write
+    /// correctness.
     async fn update_tokens(&self, node_name: &str, new_tokens: &JwtToken) -> Result<()> {
         let merged = match self.load_tokens(node_name).await? {
             Some(existing) => existing.merged_with(new_tokens),

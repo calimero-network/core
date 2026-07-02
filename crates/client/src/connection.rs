@@ -321,13 +321,12 @@ where
             if tokens.expires_soon(TOKEN_REFRESH_SKEW_SECS) {
                 // Still valid but lapsing soon — refresh proactively to avoid a
                 // wasted 401, but don't fail the request if the refresh can't
-                // complete; fall back to the still-valid current token.
-                if self
-                    .refresh_or_reauth(Some(&tokens.access_token))
-                    .await
-                    .is_ok()
-                {
-                    return self.current_auth_header(node_name).await;
+                // complete. Prefer the freshly-stored token (another task may
+                // have refreshed concurrently); fall back to the still-valid
+                // local token only if storage no longer yields a usable one.
+                let _ = self.refresh_or_reauth(Some(&tokens.access_token)).await;
+                if let Some(header) = self.current_auth_header(node_name).await? {
+                    return Ok(Some(header));
                 }
             }
             return Ok(Some(tokens.auth_header()));
@@ -637,12 +636,15 @@ pub(crate) fn resolve_path(base: &Url, path: &str) -> Result<Url> {
     Ok(url)
 }
 
-/// Read a response body into memory with a hard byte cap.
+/// Read a response body into memory with a hard byte cap (inclusive: a body of
+/// exactly `max_bytes` is accepted; anything larger is rejected).
 ///
 /// Protects against OOM from a hostile or buggy node returning (or slowly
-/// streaming) a huge body. Both an oversized `Content-Length` and a lying or
-/// endless stream are caught, because bytes are tallied as they arrive rather
-/// than trusting the advertised length.
+/// streaming) a huge body. When a `Content-Length` header is present and over
+/// the cap it is rejected up front; a missing header (e.g. chunked transfer) or
+/// a header that lies about a smaller size is still caught by the per-chunk
+/// tally, so bytes are never accumulated past the cap regardless of what the
+/// node advertises.
 pub(crate) async fn read_body_capped(response: Response, max_bytes: usize) -> Result<Vec<u8>> {
     if let Some(len) = response.content_length() {
         if len > max_bytes as u64 {
@@ -650,10 +652,18 @@ pub(crate) async fn read_body_capped(response: Response, max_bytes: usize) -> Re
         }
     }
 
+    // Reserve up to the advertised length, but never more than the cap, so an
+    // inflated `Content-Length` can't trigger a huge up-front allocation.
+    let hint = response
+        .content_length()
+        .map_or(0, |len| len.min(max_bytes as u64) as usize);
+
     let mut response = response;
-    let mut buf = Vec::new();
+    let mut buf = Vec::with_capacity(hint);
     while let Some(chunk) = response.chunk().await? {
-        if buf.len() + chunk.len() > max_bytes {
+        // `saturating_add` guards the (only theoretical) usize overflow on
+        // 32-bit targets when both operands are near the max.
+        if buf.len().saturating_add(chunk.len()) > max_bytes {
             bail!("response body exceeds the {max_bytes}-byte limit");
         }
         buf.extend_from_slice(&chunk);
