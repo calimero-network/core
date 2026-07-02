@@ -5,10 +5,9 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_server_primitives::admin::{AliasKind, CreateAliasRequest, CreateAliasResponse};
 use calimero_store::key::{Aliasable, StoreScopeCompat};
-use reqwest::StatusCode;
 use tracing::{error, info};
 
-use crate::admin::service::ApiResponse;
+use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler<T>(
@@ -28,7 +27,7 @@ where
         .create_alias(alias, scope, T::from_value(value))
     {
         error!(alias=%alias, error=?err, "Failed to create alias");
-        return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+        return parse_api_error(err).into_response();
     }
 
     info!(alias=%alias, "Alias created successfully");
