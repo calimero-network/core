@@ -160,16 +160,33 @@ pub enum StreamMessage<'a> {
 /// - the claimed `party_id`,
 /// - the **initiator's own** libp2p `PeerId` bytes.
 ///
-/// # Why it resists replay
+/// # Why it resists replay (and why there is deliberately no freshness nonce)
 ///
 /// The bound `PeerId` is the dialer's. The responder recomputes the message
 /// with the `PeerId` it observes on the transport — which libp2p's noise
 /// handshake authenticates — so a proof captured from one member cannot be
 /// presented by a different peer (the observed `PeerId` would differ), and a
-/// caller cannot forge a proof for an identity whose key it lacks. The proof is
-/// independent of the payload and nonce, so one signature is reusable for every
-/// request a node issues for a given (context, identity) — it is a capability
-/// to *speak as* that identity from that peer, not a per-message token.
+/// caller cannot forge a proof for an identity whose key it lacks.
+///
+/// The proof is intentionally payload/nonce/time-independent — one signature is
+/// reusable for every request a node issues for a given (context, identity). It
+/// is a capability to *speak as* that identity **from that peer**, not a
+/// per-message token, and it needs no responder-issued challenge (which would
+/// add a round-trip to every sync) because a captured proof is not usable on its
+/// own:
+///
+/// - The stream is carried over libp2p's noise-encrypted transport, so the proof
+///   is not observable by a passive on-path attacker — only by the responder it
+///   is sent to (which already gets served) or a party that has compromised the
+///   host.
+/// - Even given the proof bytes, replaying them requires speaking as the bound
+///   `PeerId`, which the transport only lets the holder of that peer's network
+///   private key do. An attacker with that key already *is* the node.
+/// - Key rotation changes the network key and therefore the `PeerId`, so proofs
+///   bound to the old `PeerId` do not carry over to a rotated identity.
+///
+/// Bump [`InitProof::DOMAIN`] if a future change needs to invalidate all
+/// outstanding proofs.
 #[derive(Clone, Copy, Debug, BorshSerialize, BorshDeserialize)]
 pub struct InitProof {
     /// Ed25519 signature over [`InitProof::message`] by `party_id`'s key.
@@ -189,7 +206,11 @@ impl InitProof {
     /// the initiator side, the transport-observed peer on the responder side.
     #[must_use]
     pub fn message(context_id: &ContextId, party_id: &PublicKey, dialer_peer_id: &[u8]) -> Vec<u8> {
-        let mut msg = Vec::with_capacity(Self::DOMAIN.len() + 32 + 32 + dialer_peer_id.len());
+        use calimero_primitives::common::DIGEST_SIZE;
+        // context_id.digest() + party_id.digest() are each DIGEST_SIZE bytes.
+        let mut msg = Vec::with_capacity(
+            Self::DOMAIN.len() + DIGEST_SIZE + DIGEST_SIZE + dialer_peer_id.len(),
+        );
         msg.extend_from_slice(Self::DOMAIN);
         msg.extend_from_slice(context_id.digest());
         msg.extend_from_slice(party_id.digest());

@@ -3394,6 +3394,14 @@ impl SyncManager {
         // identity by other means (blob / group-key ECDH shares) or that serve
         // only self-verifying data (already-signed backfill deltas) are exempt.
         // See [`InitProof`].
+        //
+        // This gate runs before the per-payload dispatch below, so the exempt
+        // set in `payload_requires_init_pop` is the single source of truth for
+        // what bypasses it — e.g. `NamespaceBackfillRequest` must stay exempt or
+        // its own early-return handler further down would never be reached. The
+        // `init_pop_gate_tests` module pins that classification so a future edit
+        // that accidentally moves a variant in or out fails a unit test rather
+        // than silently changing behaviour.
         if payload_requires_init_pop(&payload) {
             let pop_ok = pop.is_some_and(|proof| {
                 proof.verify(&context_id, &their_identity, &peer_id.to_bytes())
