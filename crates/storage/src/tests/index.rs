@@ -840,6 +840,51 @@ mod subtree_tombstoning {
             "walk must not recurse into a Frozen node: its subtree survives too"
         );
     }
+
+    /// The skip is by-subtree, not by-node-type: a Frozen node is skipped
+    /// together with EVERYTHING under it, including a *non-frozen* child. Also
+    /// covers a Frozen leaf (no children of its own). Complements
+    /// `subtree_delete_skips_frozen_descendant_and_its_subtree`.
+    #[test]
+    fn subtree_delete_skips_whole_frozen_subtree_and_frozen_leaf() {
+        use crate::entities::StorageType;
+        type S = MockedStorage<2105>;
+
+        let frozen_md = Metadata {
+            storage_type: StorageType::Frozen,
+            ..Metadata::default()
+        };
+
+        let root = Id::random();
+        let a = Id::random(); // non-frozen parent being deleted
+        let f = Id::random(); // Frozen node with a non-frozen child below it
+        let nf_under_f = Id::random(); // NON-frozen, under Frozen -> still survives (no recursion)
+        let fleaf = Id::random(); // Frozen leaf (no children) -> survives
+
+        <Index<S>>::add_root(ChildInfo::new(root, [1; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(root, ChildInfo::new(a, [2; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(f, [3; 32], frozen_md.clone())).unwrap();
+        <Index<S>>::add_child_to(f, ChildInfo::new(nf_under_f, [4; 32], Metadata::default()))
+            .unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(fleaf, [5; 32], frozen_md)).unwrap();
+
+        <Index<S>>::remove_child_from(root, a, time_now()).unwrap();
+
+        assert!(
+            <Index<S>>::is_deleted(a).unwrap(),
+            "deleted parent tombstoned"
+        );
+        assert!(!<Index<S>>::is_deleted(f).unwrap(), "Frozen node survives");
+        assert!(
+            !<Index<S>>::is_deleted(nf_under_f).unwrap(),
+            "non-frozen child under a Frozen node survives: the walk skips the \
+             whole frozen subtree, not just frozen nodes"
+        );
+        assert!(
+            !<Index<S>>::is_deleted(fleaf).unwrap(),
+            "Frozen leaf (no children) survives"
+        );
+    }
 }
 
 #[cfg(test)]
