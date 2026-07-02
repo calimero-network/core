@@ -9,6 +9,7 @@ use calimero_server_primitives::admin::{
 };
 use tracing::{error, info};
 
+use super::{DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT};
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
@@ -17,7 +18,10 @@ pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     let offset = query.offset.unwrap_or(0);
-    let limit = query.limit.unwrap_or(100);
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_LIST_LIMIT)
+        .min(MAX_LIST_LIMIT);
 
     info!(%offset, %limit, "Listing all groups");
 
