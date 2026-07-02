@@ -22,20 +22,29 @@ const DEV_INSTALL_ROOT_ENV: &str = "MEROD_DEV_INSTALL_ROOT";
 
 /// When `MEROD_DEV_INSTALL_ROOT` is set, require `path` to resolve within it.
 /// Returns `Ok(())` when unset (historical behavior) or when confined.
+///
+/// The `Err` string is deliberately generic — detailed reasons (including the
+/// operator-configured root and OS errno) are logged server-side only, so the
+/// endpoint never discloses server filesystem layout to the caller.
 fn check_dev_install_confinement(path: &str) -> Result<(), String> {
     let Ok(root) = std::env::var(DEV_INSTALL_ROOT_ENV) else {
         return Ok(());
     };
-    let canon_root = std::fs::canonicalize(&root)
-        .map_err(|e| format!("invalid {DEV_INSTALL_ROOT_ENV} ('{root}'): {e}"))?;
-    let canon_path =
-        std::fs::canonicalize(path).map_err(|e| format!("cannot resolve install path: {e}"))?;
+    let canon_root = std::fs::canonicalize(&root).map_err(|e| {
+        error!(root = %root, error = %e, "invalid MEROD_DEV_INSTALL_ROOT");
+        "server misconfiguration: dev-install root is unavailable".to_owned()
+    })?;
+    let canon_path = std::fs::canonicalize(path).map_err(|e| {
+        warn!(path = %path, error = %e, "dev-install path could not be resolved");
+        "install path could not be resolved".to_owned()
+    })?;
+    // `Path::starts_with` is component-aware, so a root of "/srv/app" does NOT
+    // match "/srv/application/x" — no string-prefix false positives.
     if canon_path.starts_with(&canon_root) {
         Ok(())
     } else {
-        Err(format!(
-            "install path is outside the configured {DEV_INSTALL_ROOT_ENV}"
-        ))
+        warn!(path = %path, "dev-install path is outside the configured root");
+        Err("install path is not permitted".to_owned())
     }
 }
 
@@ -45,8 +54,9 @@ pub async fn handler(
 ) -> impl IntoResponse {
     info!(path=%req.path, "Installing dev application");
 
+    // Detailed reason is logged inside the check; `msg` is a generic,
+    // caller-safe string.
     if let Err(msg) = check_dev_install_confinement(req.path.as_str()) {
-        warn!(path=%req.path, "{msg}");
         return ApiError {
             status_code: StatusCode::FORBIDDEN,
             message: msg,
