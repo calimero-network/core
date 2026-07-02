@@ -122,6 +122,9 @@ fn ssrf_guarded_client() -> reqwest::Result<reqwest::Client> {
 async fn read_body_capped(mut response: reqwest::Response, max: u64) -> eyre::Result<Vec<u8>> {
     let mut buf = Vec::new();
     while let Some(chunk) = response.chunk().await? {
+        // `> max` means a body of exactly `max` bytes is accepted (`max` is an
+        // inclusive limit) while anything larger is rejected before it is
+        // buffered — the running total never exceeds `max`.
         if buf.len() as u64 + chunk.len() as u64 > max {
             bail!("application artifact exceeded size limit of {max} bytes");
         }
