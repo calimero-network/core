@@ -1033,11 +1033,12 @@ impl<S: StorageAdaptor> Index<S> {
             let Some(index) = Self::get_index(id)? else {
                 continue;
             };
-            // Frozen data is immutable and never deleted: skip it AND its subtree
-            // (don't recurse) so a non-frozen parent's delete leaves the frozen
-            // descendant as a surviving orphan. Mirrors the `RemoveMode::Delete`
-            // Frozen guard in `Interface`. The root is never Frozen here (both
-            // delete paths reject that upstream).
+            // Frozen data is immutable and never deleted: skip a Frozen node AND
+            // its subtree (don't recurse) so deleting a non-frozen parent leaves
+            // the frozen descendant as a surviving orphan. Mirrors the
+            // `RemoveMode::Delete` Frozen guard in `Interface`. Scoped to
+            // descendants (`id != root_id`): a Frozen root is processed normally,
+            // since the reassign/re-key callers legitimately pass one.
             if id != root_id
                 && matches!(
                     index.metadata.storage_type,
