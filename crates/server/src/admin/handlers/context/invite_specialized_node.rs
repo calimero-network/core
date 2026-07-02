@@ -86,10 +86,9 @@ pub async fn handler(
 
     // Throttle broadcasts per context to bound global-topic traffic.
     {
-        let now = Instant::now();
-        let mut last = last_broadcasts().lock().unwrap_or_else(|e| e.into_inner());
+        let last = last_broadcasts().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(prev) = last.get(&req.context_id) {
-            if now.duration_since(*prev) < INVITE_MIN_INTERVAL {
+            if prev.elapsed() < INVITE_MIN_INTERVAL {
                 warn!(context_id=%req.context_id, "throttling specialized invite broadcast");
                 return ApiError {
                     status_code: StatusCode::TOO_MANY_REQUESTS,
@@ -99,7 +98,6 @@ pub async fn handler(
                 .into_response();
             }
         }
-        let _ = last.insert(req.context_id, now);
     }
 
     // Broadcast specialized node invite and register pending invite
@@ -110,6 +108,16 @@ pub async fn handler(
 
     match result {
         Ok(nonce) => {
+            // Commit the throttle timestamp only now that the broadcast
+            // succeeded, and prune entries older than the interval so the map
+            // can't grow without bound over the process lifetime.
+            {
+                let now = Instant::now();
+                let mut last = last_broadcasts().lock().unwrap_or_else(|e| e.into_inner());
+                last.retain(|_, t| now.duration_since(*t) < INVITE_MIN_INTERVAL);
+                last.insert(req.context_id, now);
+            }
+
             let nonce_hex = hex::encode(nonce);
             info!(
                 context_id=%req.context_id,
