@@ -564,6 +564,20 @@ impl VMHostFunctions<'_> {
         //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
         //         it is sound; the read is bounds-checked. See `read_guest_memory_typed`.
         let value = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(payload_ptr)? };
+
+        // Bound the return value before copying it out of guest memory: it lands
+        // on the host `Outcome` (and is broadcast in receipts), so without this
+        // cap the only limit is guest memory itself (~64 MiB).
+        let value_len = value.len();
+        let max_return_value_size = self.borrow_logic().limits.max_return_value_size;
+        if value_len > max_return_value_size {
+            return Err(HostError::ReturnValueSizeOverflow {
+                size: value_len,
+                max: max_return_value_size,
+            }
+            .into());
+        }
+
         let bytes = self.read_guest_memory_slice(&value)?.to_vec();
 
         // Discriminant layout matches `sys::ValueReturn`: 0 = Ok, 1 = Err.
@@ -847,6 +861,19 @@ impl VMHostFunctions<'_> {
             //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
             let handler_buffer =
                 unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_handler_ptr)? };
+            // A handler is a callback method name; bound it before copying it out
+            // of guest memory so a guest can't stash arbitrarily large strings on
+            // the `Outcome` (one per event, up to `max_events`). Reuse the
+            // method-name limit — that's exactly what a handler is.
+            let handler_len = handler_buffer.len();
+            let max_handler_size = self.borrow_logic().limits.max_method_name_length;
+            if handler_len > max_handler_size {
+                return Err(HostError::EventHandlerSizeOverflow {
+                    size: handler_len,
+                    max: max_handler_size,
+                }
+                .into());
+            }
             match self.read_guest_memory_str(&handler_buffer) {
                 Ok(handler_str) => Some(handler_str.to_owned()),
                 Err(_) => None, // If we can't read the handler, just set to None
@@ -2054,5 +2081,71 @@ mod tests {
         assert!(host.borrow_logic().artifact.is_empty());
         assert_eq!(host.borrow_logic().root_hash, None);
         assert!(!host.borrow_logic().commit_called);
+    }
+
+    /// A return value larger than `max_return_value_size` traps before being
+    /// copied onto the `Outcome`.
+    #[test]
+    fn test_value_return_size_cap() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_return_value_size: 4,
+            ..Default::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Payload of 5 bytes, one over the cap.
+        let data = b"hello";
+        let data_ptr = 400u64;
+        host.borrow_memory().write(data_ptr, data).unwrap();
+
+        // `ValueReturn` is `{ discriminant: u64, payload: Buffer }`: write the
+        // `Ok` discriminant (0) then the payload `Buffer` descriptor 8 bytes on.
+        let vr_ptr = 100u64;
+        host.borrow_memory()
+            .write(vr_ptr, &0u64.to_le_bytes())
+            .unwrap();
+        prepare_guest_buf_descriptor(&host, vr_ptr + 8, data_ptr, data.len() as u64);
+
+        let err = host.value_return(vr_ptr).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::ReturnValueSizeOverflow { size: 5, max: 4 })
+        ));
+        // Nothing captured onto the outcome.
+        assert!(host.borrow_logic().returns.is_none());
+    }
+
+    /// A handler name longer than `max_method_name_length` traps rather than
+    /// stashing an arbitrarily large string on the event.
+    #[test]
+    fn test_emit_with_handler_size_cap() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // Minimal valid `Event { kind: Buffer, data: Buffer }` (each 16 bytes).
+        let kind = b"k";
+        let kind_ptr = 400u64;
+        host.borrow_memory().write(kind_ptr, kind).unwrap();
+        let event_ptr = 100u64;
+        prepare_guest_buf_descriptor(&host, event_ptr, kind_ptr, kind.len() as u64);
+        prepare_guest_buf_descriptor(&host, event_ptr + 16, 500u64, 0);
+
+        // Handler descriptor claiming a length past `max_method_name_length`.
+        // The length check trips before the (unread) payload slice is touched.
+        let handler_ptr = 200u64;
+        let oversized = limits.max_method_name_length + 1;
+        prepare_guest_buf_descriptor(&host, handler_ptr, 600u64, oversized);
+
+        let err = host.emit_with_handler(event_ptr, handler_ptr).unwrap_err();
+        assert!(matches!(
+            err,
+            VMLogicError::HostError(HostError::EventHandlerSizeOverflow { .. })
+        ));
+        // The event must not have been recorded.
+        assert!(host.borrow_logic().events.is_empty());
     }
 }

@@ -217,7 +217,12 @@ impl VMHostFunctions<'_> {
             "storage_write"
         );
 
-        let evicted = self.with_logic_mut(|logic| logic.storage.set(key, value));
+        // Charge the shared per-execution write budget before touching the
+        // backend so a rejected write never lands in the store.
+        let evicted = self.with_logic_mut(|logic| -> VMLogicResult<Option<Vec<u8>>> {
+            logic.charge_storage_write(key_len as u64 + value_len as u64)?;
+            Ok(logic.storage.set(key, value))
+        })?;
 
         if let Some(evicted) = evicted {
             let evicted_len = evicted.len();
@@ -455,13 +460,20 @@ impl VMHostFunctions<'_> {
             "private_storage_write"
         );
 
-        let written = self.with_logic_mut(|logic| {
-            let Some(ref mut private_storage) = logic.private_storage else {
-                return false;
-            };
-            let _evicted = private_storage.set(key, value);
-            true
-        });
+        // Private storage draws from the same per-execution write budget as the
+        // main store, so a guest can't double its write allowance by splitting
+        // work across the two backends. Only charge when there is a backing
+        // store to write to.
+        let written = self.with_logic_mut(|logic| -> VMLogicResult<bool> {
+            if logic.private_storage.is_none() {
+                return Ok(false);
+            }
+            logic.charge_storage_write(key_len as u64 + value_len as u64)?;
+            if let Some(private_storage) = logic.private_storage.as_mut() {
+                let _evicted = private_storage.set(key, value);
+            }
+            Ok(true)
+        })?;
 
         if written {
             debug!(
@@ -515,7 +527,12 @@ impl VMHostFunctions<'_> {
         let key = self.read_guest_memory_slice(&key)?.to_vec();
         let value = self.read_guest_memory_slice(&value)?.to_vec();
         trace!(target: "runtime::host::storage", op = "index_set", key_len = key.len(), "storage_index_set");
-        let ok = self.with_logic_mut(|logic| logic.storage.index_set(&key, &value));
+        // Ordered-index writes share the same per-execution budget as the
+        // key-value stores, charged before the backend write.
+        let ok = self.with_logic_mut(|logic| -> VMLogicResult<bool> {
+            logic.charge_storage_write(key.len() as u64 + value.len() as u64)?;
+            Ok(logic.storage.index_set(&key, &value))
+        })?;
         Ok(ok.into())
     }
 
@@ -584,10 +601,18 @@ impl VMHostFunctions<'_> {
         let lo = self.read_guest_memory_slice(&lo)?.to_vec();
         let hi = self.read_guest_memory_slice(&hi)?.to_vec();
 
-        // `n + 1`-encoded: 0 = unbounded, else `limit - 1`. Saturate rather than
-        // silently truncate `u64 -> usize` (usize is 32-bit on a wasm32 host
-        // build); a clamp to usize::MAX just caps at the largest possible bound.
-        let limit = (limit != 0).then(|| usize::try_from(limit - 1).unwrap_or(usize::MAX));
+        // `n + 1`-encoded: 0 = unbounded, else `limit - 1`. Both the unbounded
+        // sentinel and any explicit request are capped at
+        // `max_storage_index_scan_limit` so a scan never reads the whole range
+        // into an owned `Vec` and re-encodes it — two transient allocations
+        // sized by the range — before the register-size cap can apply. A guest
+        // needing more paginates via `offset`.
+        let scan_cap = self.borrow_logic().limits.max_storage_index_scan_limit;
+        let requested = (limit != 0).then(|| limit - 1);
+        let effective = requested.unwrap_or(scan_cap).min(scan_cap);
+        // Saturate rather than silently truncate `u64 -> usize` (usize is 32-bit
+        // on a wasm32 host build).
+        let limit = Some(usize::try_from(effective).unwrap_or(usize::MAX));
         // Saturate rather than silently truncate `u64 -> usize` (usize is 32-bit
         // on a wasm32 host build); a clamp to usize::MAX just means "skip all".
         let offset = usize::try_from(offset).unwrap_or(usize::MAX);
@@ -1192,5 +1217,79 @@ mod tests {
                 expected_value.as_bytes()
             );
         }
+    }
+
+    /// A write past `max_storage_writes` traps with `StorageWriteCountExceeded`,
+    /// bounding the *count* of direct guest writes per execution.
+    #[test]
+    fn test_storage_write_count_budget() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_storage_writes: 1,
+            ..Default::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let key = "k";
+        let key_ptr = 200u64;
+        write_str(&host, key_ptr, key);
+        let key_buf_ptr = 10u64;
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+        let value = "v";
+        let value_ptr = 300u64;
+        write_str(&host, value_ptr, value);
+        let value_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(&host, value_buf_ptr, value_ptr, value.len() as u64);
+
+        // First write is within budget.
+        host.storage_write(key_buf_ptr, value_buf_ptr, 1).unwrap();
+        // Second write exceeds `max_storage_writes = 1`.
+        let err = host
+            .storage_write(key_buf_ptr, value_buf_ptr, 1)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::logic::VMLogicError::HostError(
+                crate::errors::HostError::StorageWriteCountExceeded { .. }
+            )
+        ));
+    }
+
+    /// A write whose `key + value` bytes exceed the remaining byte budget traps
+    /// with `StorageWriteBytesExceeded`.
+    #[test]
+    fn test_storage_write_bytes_budget() {
+        let mut storage = SimpleMockStorage::new();
+        // Budget of 2 bytes: a 1-byte key + 3-byte value (4 total) trips it.
+        let limits = VMLimits {
+            max_storage_write_bytes: 2,
+            ..Default::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let key = "k";
+        let key_ptr = 200u64;
+        write_str(&host, key_ptr, key);
+        let key_buf_ptr = 10u64;
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+        let value = "vvv";
+        let value_ptr = 300u64;
+        write_str(&host, value_ptr, value);
+        let value_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(&host, value_buf_ptr, value_ptr, value.len() as u64);
+
+        let err = host
+            .storage_write(key_buf_ptr, value_buf_ptr, 1)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::logic::VMLogicError::HostError(
+                crate::errors::HostError::StorageWriteBytesExceeded { .. }
+            )
+        ));
     }
 }
