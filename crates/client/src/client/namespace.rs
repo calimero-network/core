@@ -29,6 +29,7 @@ where
         &self,
         namespace_id: &str,
     ) -> Result<NamespaceIdentityApiResponse> {
+        let namespace_id = crate::connection::path_segment(namespace_id);
         let response = self
             .connection
             .get(&format!("admin-api/namespaces/{namespace_id}/identity"))
@@ -40,6 +41,7 @@ where
         &self,
         application_id: &str,
     ) -> Result<ListNamespacesApiResponse> {
+        let application_id = crate::connection::path_segment(application_id);
         let response = self
             .connection
             .get(&format!(
@@ -61,6 +63,7 @@ where
     }
 
     pub async fn get_namespace(&self, namespace_id: &str) -> Result<NamespaceApiResponse> {
+        let namespace_id = crate::connection::path_segment(namespace_id);
         let response = self
             .connection
             .get(&format!("admin-api/namespaces/{namespace_id}"))
@@ -74,6 +77,7 @@ where
         namespace_id: &str,
         request: DeleteNamespaceApiRequest,
     ) -> Result<DeleteNamespaceApiResponse> {
+        let namespace_id = crate::connection::path_segment(namespace_id);
         let response = self
             .connection
             .delete_with_body(&format!("admin-api/namespaces/{namespace_id}"), request)
@@ -86,6 +90,7 @@ where
         namespace_id: &str,
         request: CreateGroupInvitationApiRequest,
     ) -> Result<serde_json::Value> {
+        let namespace_id = crate::connection::path_segment(namespace_id);
         let response = self
             .connection
             .post(
@@ -101,6 +106,7 @@ where
         namespace_id: &str,
         request: JoinGroupApiRequest,
     ) -> Result<JoinGroupApiResponse> {
+        let namespace_id = crate::connection::path_segment(namespace_id);
         let response = self
             .connection
             .post(
@@ -115,6 +121,7 @@ where
         &self,
         namespace_id: &str,
     ) -> Result<ListNamespaceGroupsApiResponse> {
+        let namespace_id = crate::connection::path_segment(namespace_id);
         let response = self
             .connection
             .get(&format!("admin-api/namespaces/{namespace_id}/groups"))
@@ -127,6 +134,7 @@ where
         namespace_id: &str,
         group_name: Option<String>,
     ) -> Result<serde_json::Value> {
+        let namespace_id = crate::connection::path_segment(namespace_id);
         let response = self
             .connection
             .post(

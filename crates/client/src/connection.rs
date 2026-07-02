@@ -490,6 +490,33 @@ where
     }
 }
 
+/// Percent-encode a single dynamic value for safe interpolation into a URL
+/// path.
+///
+/// Callers build request paths with `format!("admin-api/groups/{group_id}/…")`
+/// and hand the result to `Url::set_path`, which treats `/` as a segment
+/// separator. A dynamic value that contains `/` (or other reserved characters)
+/// would therefore break out of its intended segment and address a different
+/// endpoint. Encoding everything outside the unreserved set (`A-Za-z0-9-._~`,
+/// per RFC 3986) keeps ordinary ids/aliases untouched while neutralizing any
+/// separator or reserved character in hostile input.
+#[must_use]
+pub(crate) fn path_segment(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            other => {
+                out.push('%');
+                out.push_str(&format!("{other:02X}"));
+            }
+        }
+    }
+    out
+}
+
 /// Extract a human-readable error message from an HTTP error response body.
 ///
 /// Only extracts from known-safe structured fields (`error.message`, `error`, `message`).
@@ -540,6 +567,22 @@ fn extract_error_message(body: &str, status: reqwest::StatusCode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_segment_leaves_ordinary_ids_untouched() {
+        // hex ids, base58 ids, and dotted package/version strings are unreserved.
+        assert_eq!(path_segment("deadBEEF0123"), "deadBEEF0123");
+        assert_eq!(path_segment("com.calimero.app"), "com.calimero.app");
+        assert_eq!(path_segment("1.2.3-rc.4"), "1.2.3-rc.4");
+    }
+
+    #[test]
+    fn path_segment_encodes_separators_and_reserved() {
+        assert_eq!(path_segment("a/b"), "a%2Fb");
+        assert_eq!(path_segment("../admin"), "..%2Fadmin");
+        assert_eq!(path_segment("a b"), "a%20b");
+        assert_eq!(path_segment("x?y#z"), "x%3Fy%23z");
+    }
 
     #[test]
     fn test_empty_body() {

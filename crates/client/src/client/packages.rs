@@ -19,6 +19,7 @@ where
     }
 
     pub async fn list_versions(&self, package: &str) -> Result<ListVersionsResponse> {
+        let package = crate::connection::path_segment(package);
         let response = self
             .connection
             .get(&format!("admin-api/packages/{package}/versions"))
@@ -27,6 +28,7 @@ where
     }
 
     pub async fn get_latest_version(&self, package: &str) -> Result<GetLatestVersionResponse> {
+        let package = crate::connection::path_segment(package);
         let response = self
             .connection
             .get(&format!("admin-api/packages/{package}/latest"))

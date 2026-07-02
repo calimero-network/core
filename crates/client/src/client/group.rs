@@ -63,6 +63,7 @@ where
     S: ClientStorage + Clone + Send + Sync,
 {
     pub async fn get_group_info(&self, group_id: &str) -> Result<GroupInfoApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .get(&format!("admin-api/groups/{group_id}"))
@@ -75,6 +76,7 @@ where
         group_id: &str,
         request: DeleteGroupApiRequest,
     ) -> Result<DeleteGroupApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .delete_with_body(&format!("admin-api/groups/{group_id}"), request)
@@ -87,6 +89,7 @@ where
         group_id: &str,
         request: UpdateGroupSettingsApiRequest,
     ) -> Result<UpdateGroupSettingsApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .patch(&format!("admin-api/groups/{group_id}"), request)
@@ -95,6 +98,7 @@ where
     }
 
     pub async fn list_group_members(&self, group_id: &str) -> Result<ListGroupMembersApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .get(&format!("admin-api/groups/{group_id}/members"))
@@ -107,6 +111,7 @@ where
         group_id: &str,
         request: AddGroupMembersApiRequest,
     ) -> Result<AddGroupMembersApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .post(&format!("admin-api/groups/{group_id}/members"), request)
@@ -119,6 +124,7 @@ where
         group_id: &str,
         request: RemoveGroupMembersApiRequest,
     ) -> Result<RemoveGroupMembersApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .post(
@@ -135,6 +141,8 @@ where
         identity_hex: &str,
         request: UpdateMemberRoleApiRequest,
     ) -> Result<UpdateMemberRoleApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
+        let identity_hex = crate::connection::path_segment(identity_hex);
         let response = self
             .connection
             .put_json(
@@ -149,6 +157,7 @@ where
         &self,
         group_id: &str,
     ) -> Result<ListGroupContextsApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .get(&format!("admin-api/groups/{group_id}/contexts"))
@@ -162,6 +171,8 @@ where
         context_id: &str,
         request: DetachContextFromGroupApiRequest,
     ) -> Result<DetachContextFromGroupApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
+        let context_id = crate::connection::path_segment(context_id);
         let response = self
             .connection
             .post(
@@ -179,6 +190,7 @@ where
         group_id: &str,
         request: ReparentGroupApiRequest,
     ) -> Result<ReparentGroupApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .post(&format!("admin-api/groups/{group_id}/reparent"), request)
@@ -187,6 +199,7 @@ where
     }
 
     pub async fn list_subgroups(&self, group_id: &str) -> Result<ListSubgroupsApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .get(&format!("admin-api/groups/{group_id}/subgroups"))
@@ -210,6 +223,7 @@ where
         group_id: &str,
         request: RegisterGroupSigningKeyApiRequest,
     ) -> Result<RegisterGroupSigningKeyApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .post(&format!("admin-api/groups/{group_id}/signing-key"), request)
@@ -222,6 +236,7 @@ where
         group_id: &str,
         request: UpgradeGroupApiRequest,
     ) -> Result<UpgradeGroupApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .post(&format!("admin-api/groups/{group_id}/upgrade"), request)
@@ -233,6 +248,7 @@ where
         &self,
         group_id: &str,
     ) -> Result<GetGroupUpgradeStatusApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .get(&format!("admin-api/groups/{group_id}/upgrade/status"))
@@ -245,6 +261,7 @@ where
         &self,
         namespace_id: &str,
     ) -> Result<GetCascadeStatusApiResponse> {
+        let namespace_id = crate::connection::path_segment(namespace_id);
         let response = self
             .connection
             .get(&format!("admin-api/groups/{namespace_id}/cascade-status"))
@@ -259,6 +276,7 @@ where
         &self,
         namespace_id: &str,
     ) -> Result<GetMigrationStatusApiResponse> {
+        let namespace_id = crate::connection::path_segment(namespace_id);
         let response = self
             .connection
             .get(&format!("admin-api/groups/{namespace_id}/migration-status"))
@@ -270,6 +288,7 @@ where
     /// target back so not-yet-applied lazy contexts stop migrating. Idempotent.
     /// Does not recall an already-committed v2 context.
     pub async fn abort_migration(&self, namespace_id: &str) -> Result<AbortMigrationApiResponse> {
+        let namespace_id = crate::connection::path_segment(namespace_id);
         let response = self
             .connection
             .post_no_body(&format!("admin-api/groups/{namespace_id}/migration/abort"))
@@ -282,6 +301,7 @@ where
         group_id: &str,
         request: RetryGroupUpgradeApiRequest,
     ) -> Result<UpgradeGroupApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .post(
@@ -297,6 +317,7 @@ where
         group_id: &str,
         request: SyncGroupApiRequest,
     ) -> Result<SyncGroupApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .post(&format!("admin-api/groups/{group_id}/sync"), request)
@@ -305,6 +326,7 @@ where
     }
 
     pub async fn join_context(&self, context_id: &str) -> Result<JoinContextApiResponse> {
+        let context_id = crate::connection::path_segment(context_id);
         let response = self
             .connection
             .post_no_body(&format!("admin-api/contexts/{context_id}/join"))
@@ -319,6 +341,7 @@ where
         &self,
         group_id: &str,
     ) -> Result<JoinSubgroupInheritanceApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .post_no_body(&format!("admin-api/groups/{group_id}/join-via-inheritance"))
@@ -331,6 +354,7 @@ where
     /// Reversal: call [`Self::join_context`] which clears the marker.
     /// See `architecture/membership-and-leave.html` § 4 for semantics.
     pub async fn leave_context(&self, context_id: &str) -> Result<LeaveContextApiResponse> {
+        let context_id = crate::connection::path_segment(context_id);
         let response = self
             .connection
             .post_no_body(&format!("admin-api/contexts/{context_id}/leave"))
@@ -345,6 +369,7 @@ where
     /// not be the only admin (`LastAdmin` rejection). See
     /// `architecture/membership-and-leave.html` § 5.
     pub async fn leave_group(&self, group_id: &str) -> Result<LeaveGroupApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .post_no_body(&format!("admin-api/groups/{group_id}/leave"))
@@ -358,6 +383,7 @@ where
     /// `MustTransferOwnership` if the leaver owns any group in the
     /// subtree. See `architecture/membership-and-leave.html` § 6.
     pub async fn leave_namespace(&self, namespace_id: &str) -> Result<LeaveNamespaceApiResponse> {
+        let namespace_id = crate::connection::path_segment(namespace_id);
         let response = self
             .connection
             .post_no_body(&format!("admin-api/namespaces/{namespace_id}/leave"))
@@ -373,6 +399,8 @@ where
         identity_hex: &str,
         request: SetMemberCapabilitiesApiRequest,
     ) -> Result<SetMemberCapabilitiesApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
+        let identity_hex = crate::connection::path_segment(identity_hex);
         let response = self
             .connection
             .put_json(
@@ -388,6 +416,8 @@ where
         group_id: &str,
         identity_hex: &str,
     ) -> Result<GetMemberCapabilitiesApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
+        let identity_hex = crate::connection::path_segment(identity_hex);
         let response = self
             .connection
             .get(&format!(
@@ -409,6 +439,8 @@ where
         identity_hex: &str,
         request: SetMemberAutoFollowApiRequest,
     ) -> Result<SetMemberAutoFollowApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
+        let identity_hex = crate::connection::path_segment(identity_hex);
         let response = self
             .connection
             .put_json(
@@ -424,6 +456,7 @@ where
         group_id: &str,
         request: SetDefaultCapabilitiesApiRequest,
     ) -> Result<SetDefaultCapabilitiesApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .put_json(
@@ -439,6 +472,7 @@ where
         group_id: &str,
         request: SetSubgroupVisibilityApiRequest,
     ) -> Result<SetSubgroupVisibilityApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .put_json(
@@ -453,6 +487,7 @@ where
         &self,
         group_id: &str,
     ) -> Result<GetTeeAdmissionPolicyApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .get(&format!(
@@ -467,6 +502,7 @@ where
         group_id: &str,
         request: SetTeeAdmissionPolicyApiRequest,
     ) -> Result<SetTeeAdmissionPolicyApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .put_json(
@@ -480,6 +516,7 @@ where
     // ---- Metadata records ----
 
     pub async fn get_group_metadata(&self, group_id: &str) -> Result<GetMetadataApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .get(&format!("admin-api/groups/{group_id}/metadata"))
@@ -492,6 +529,7 @@ where
         group_id: &str,
         request: SetMetadataApiRequest,
     ) -> Result<SetMetadataApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
         let response = self
             .connection
             .put_json(&format!("admin-api/groups/{group_id}/metadata"), request)
@@ -504,6 +542,8 @@ where
         group_id: &str,
         identity_hex: &str,
     ) -> Result<GetMetadataApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
+        let identity_hex = crate::connection::path_segment(identity_hex);
         let response = self
             .connection
             .get(&format!(
@@ -519,6 +559,8 @@ where
         identity_hex: &str,
         request: SetMetadataApiRequest,
     ) -> Result<SetMetadataApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
+        let identity_hex = crate::connection::path_segment(identity_hex);
         let response = self
             .connection
             .put_json(
@@ -534,6 +576,8 @@ where
         group_id: &str,
         context_id: &str,
     ) -> Result<GetMetadataApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
+        let context_id = crate::connection::path_segment(context_id);
         let response = self
             .connection
             .get(&format!(
@@ -549,6 +593,8 @@ where
         context_id: &str,
         request: SetMetadataApiRequest,
     ) -> Result<SetMetadataApiResponse> {
+        let group_id = crate::connection::path_segment(group_id);
+        let context_id = crate::connection::path_segment(context_id);
         let response = self
             .connection
             .put_json(
