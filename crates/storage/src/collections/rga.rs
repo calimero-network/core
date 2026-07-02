@@ -411,7 +411,15 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
 
         // Insert each character
         for (seq, content) in s.chars().enumerate() {
-            let char_id = CharId::new(timestamp, seq as u32);
+            // `CharId.seq` is u32; widening it would change the borsh wire
+            // format and break RGA sync. Reject a >4 Gi-char insert instead of
+            // wrapping `seq` and overwriting an earlier char.
+            let seq = u32::try_from(seq).map_err(|_| {
+                StoreError::StorageError(crate::interface::StorageError::InvalidData(
+                    "insert too large: character offset exceeds u32::MAX".into(),
+                ))
+            })?;
+            let char_id = CharId::new(timestamp, seq);
             let new_char = RgaChar::new(content, left);
 
             let _ = self.chars.insert(CharKey::new(char_id), new_char)?;
