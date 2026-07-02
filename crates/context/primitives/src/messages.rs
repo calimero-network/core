@@ -82,6 +82,12 @@ pub struct ExecuteRequest {
     /// Source context when this execution is dispatched via `xcall`; `None`
     /// for direct/RPC calls. Surfaced to the guest via `env::xcall_origin()`.
     pub xcall_origin: Option<ContextId>,
+    /// Depth of this execution in a local xcall cascade: `0` for a direct/RPC
+    /// call, `parent + 1` for an execution dispatched via `xcall`. The handler
+    /// denies further xcalls once this would exceed the depth cap, bounding the
+    /// otherwise-unbounded local recursion (a cycle A→B→A would never
+    /// terminate) and the `B^depth` fan-out.
+    pub xcall_depth: u32,
 }
 
 #[derive(Debug)]
