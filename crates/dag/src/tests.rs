@@ -491,14 +491,18 @@ async fn test_dag_cleanup_stale() {
     // Add pending delta
     let delta = CausalDelta::new_test([99; 32], vec![[88; 32]], TestPayload { value: 99 });
 
+    // Reference instant captured before the delta arrives (its received_at is
+    // strictly later).
+    let reference_start = Instant::now();
     dag.add_delta(delta, &applier).await.unwrap();
     assert_eq!(dag.pending_stats().count, 1);
 
-    // Wait a bit
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Cleanup with very short timeout
-    let evicted = dag.cleanup_stale(Duration::from_millis(50));
+    // Evaluate staleness relative to a synthetic reference 1s after we started
+    // instead of sleeping: deterministic, instant, past the 50ms threshold.
+    let evicted = dag.cleanup_stale_since(
+        reference_start + Duration::from_secs(1),
+        Duration::from_millis(50),
+    );
     assert_eq!(evicted, 1);
     assert_eq!(dag.pending_stats().count, 0);
 }

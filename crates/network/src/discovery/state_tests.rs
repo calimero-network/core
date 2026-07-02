@@ -1509,3 +1509,121 @@ fn test_rendezvous_key_group_and_context_produce_distinct_keys() {
     assert!(grp_key.to_string().contains("/calimero/grp/"));
     assert!(ctx_key.to_string().contains("/calimero/ctx/"));
 }
+
+// ---------------------------------------------------------------------------
+// Reachability FSM — on_address_confirmed / on_address_removed / check_transition
+//
+// The state machine has three states (Unknown/Reachable/Unreachable) and
+// emits a `ReachabilityActions` set only on an ACTUAL transition. These tests
+// pin both the state edges and the exact action-set each edge produces, and
+// the "no action on a non-transition" invariant the dispatcher relies on.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reachability_unknown_to_reachable_on_confirmed_address() {
+    let mut state = DiscoveryState::default();
+    assert_eq!(state.reachability_state, ReachabilityState::Unknown);
+    let rendezvous = PeerId::random();
+    state.update_peer_protocols(&rendezvous, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    let addr: Multiaddr = "/ip4/203.0.113.1/tcp/4001".parse().unwrap();
+    let actions = state.on_address_confirmed(&addr);
+
+    assert_eq!(
+        state.reachability_state,
+        ReachabilityState::Reachable,
+        "a confirmed external address makes the node publicly reachable"
+    );
+    // became_reachable turns ON the AutoNAT server and (re-)registers with
+    // every known rendezvous peer so inbound peers can find us.
+    assert!(actions.enable_autonat_server);
+    assert!(!actions.disable_autonat_server);
+    assert_eq!(actions.rendezvous_register, vec![rendezvous]);
+    assert!(actions.rendezvous_unregister.is_empty());
+    assert!(actions.relay_reservations.is_empty());
+    assert!(actions.has_actions());
+}
+
+#[test]
+fn reachability_unknown_to_unreachable_on_removed_address() {
+    // From Unknown, the first signal that we have NO confirmed external
+    // address transitions straight to Unreachable (behind-NAT).
+    let mut state = DiscoveryState::default();
+    let rendezvous = PeerId::random();
+    let relay = PeerId::random();
+    state.update_peer_protocols(&rendezvous, &[RENDEZVOUS_PROTOCOL_NAME]);
+    state.update_peer_protocols(&relay, &[HOP_PROTOCOL_NAME]);
+
+    let addr: Multiaddr = "/ip4/203.0.113.1/tcp/4001".parse().unwrap();
+    let actions = state.on_address_removed(&addr);
+
+    assert_eq!(state.reachability_state, ReachabilityState::Unreachable);
+    // became_unreachable turns the AutoNAT server OFF, and drives relay
+    // reservations + rendezvous (re-)registration and discovery so a
+    // NAT'd node can still be reached and can still find peers.
+    assert!(!actions.enable_autonat_server);
+    assert!(actions.disable_autonat_server);
+    assert_eq!(actions.relay_reservations, vec![relay]);
+    assert_eq!(actions.rendezvous_register, vec![rendezvous]);
+    assert_eq!(actions.rendezvous_unregister, vec![rendezvous]);
+    assert_eq!(actions.rendezvous_discover, vec![rendezvous]);
+    assert!(actions.has_actions());
+}
+
+#[test]
+fn reachability_no_action_when_state_unchanged() {
+    // Confirming a second address while already Reachable is NOT a
+    // transition — the dispatcher must see an empty action set so it
+    // short-circuits instead of re-registering on every address event.
+    let mut state = DiscoveryState::default();
+    let addr1: Multiaddr = "/ip4/203.0.113.1/tcp/4001".parse().unwrap();
+    let addr2: Multiaddr = "/ip4/203.0.113.2/tcp/4001".parse().unwrap();
+
+    let first = state.on_address_confirmed(&addr1);
+    assert_eq!(state.reachability_state, ReachabilityState::Reachable);
+    assert!(
+        first.has_actions(),
+        "the first confirmation is a transition"
+    );
+
+    let second = state.on_address_confirmed(&addr2);
+    assert_eq!(
+        state.reachability_state,
+        ReachabilityState::Reachable,
+        "state is unchanged"
+    );
+    assert!(
+        !second.has_actions(),
+        "a non-transition must emit no actions"
+    );
+}
+
+#[test]
+fn reachability_reachable_to_unreachable_when_last_address_removed() {
+    // Reachable → Unreachable fires only when the LAST confirmed address is
+    // removed (the set becomes empty).
+    let mut state = DiscoveryState::default();
+    let rendezvous = PeerId::random();
+    state.update_peer_protocols(&rendezvous, &[RENDEZVOUS_PROTOCOL_NAME]);
+    let addr1: Multiaddr = "/ip4/203.0.113.1/tcp/4001".parse().unwrap();
+    let addr2: Multiaddr = "/ip4/203.0.113.2/tcp/4001".parse().unwrap();
+
+    let _ = state.on_address_confirmed(&addr1);
+    let _ = state.on_address_confirmed(&addr2);
+    assert_eq!(state.reachability_state, ReachabilityState::Reachable);
+
+    // Removing one of two addresses leaves a confirmed address → still
+    // Reachable → no transition.
+    let still = state.on_address_removed(&addr1);
+    assert_eq!(state.reachability_state, ReachabilityState::Reachable);
+    assert!(
+        !still.has_actions(),
+        "one address remains, so this is not a transition"
+    );
+
+    // Removing the last address empties the set → transition to Unreachable.
+    let gone = state.on_address_removed(&addr2);
+    assert_eq!(state.reachability_state, ReachabilityState::Unreachable);
+    assert!(gone.disable_autonat_server);
+    assert!(gone.has_actions());
+}

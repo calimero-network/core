@@ -136,8 +136,15 @@ const DEFAULT_MAX_EVENTS: u64 = 100;
 const DEFAULT_MAX_EVENT_KIND_SIZE: u64 = 100;
 /// Default maximum event data size in KiB (16 KiB).
 const DEFAULT_MAX_EVENT_DATA_SIZE_KIB: u64 = 16;
-/// Default maximum number of cross-context calls.
-const DEFAULT_MAX_XCALLS: u64 = 100;
+/// Default maximum number of cross-context calls a single execution may queue.
+///
+/// This is the per-execution *breadth* of the xcall fan-out. Kept small because
+/// xcalls are dispatched locally and each spawned execution can itself queue up
+/// to this many more: with a node-side depth cap of `D`, one root call can
+/// trigger at most `B + B² + … + B^D` local executions (`B` = this value). At
+/// `B = 8`, `D = 3` that worst case is 584 — bounded and reasoned — whereas the
+/// former `B = 100` made every extra level of depth a 100× amplifier.
+const DEFAULT_MAX_XCALLS: u64 = 8;
 /// Default maximum cross-context call function name size in bytes.
 const DEFAULT_MAX_XCALL_FUNCTION_SIZE: u64 = 100;
 /// Default maximum cross-context call parameters size in KiB (16 KiB).
@@ -1198,7 +1205,7 @@ mod tests {
         assert_eq!(limits.max_events, 100);
         assert_eq!(limits.max_event_kind_size, 100);
         assert_eq!(limits.max_event_data_size, 16 << 10); // 16 KiB
-        assert_eq!(limits.max_xcalls, 100);
+        assert_eq!(limits.max_xcalls, 8);
         assert_eq!(limits.max_xcall_function_size, 100);
         assert_eq!(limits.max_xcall_params_size, 16 << 10); // 16 KiB
         assert_eq!(limits.max_storage_key_size.get(), 1 << 20); // 1 MiB

@@ -28,7 +28,8 @@ rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-std", "macros"] }
+tokio = { workspace = true, features = ["io-std", "macros", "signal"] }
+tokio-util.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
 
