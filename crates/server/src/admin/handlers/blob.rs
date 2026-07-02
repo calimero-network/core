@@ -124,18 +124,33 @@ pub async fn upload_handler(
                 "Blob upload details"
             );
 
-            // Announce blob to network if context_id is provided
+            // Announce blob to network if context_id is provided.
+            //
+            // Announcing writes a discovery record advertising that this node
+            // holds the blob for the given context. Only announce for a context
+            // this node actually participates in: without this check a caller
+            // could inject blob-availability records into arbitrary contexts'
+            // discovery. Membership is proven by the node owning an identity in
+            // the context (the same signal the signed serving path relies on).
             if let Some(ctx_id) = context_id {
-                match state
-                    .node_client
-                    .announce_blob_to_network(&blob_id, &ctx_id, size)
-                    .await
-                {
-                    Ok(_) => {
-                        info!(blob_id=%blob_id, context_id=%ctx_id, "Blob announced to network");
+                match state.node_client.find_owned_identity(&ctx_id) {
+                    Ok(Some(_)) => match state
+                        .node_client
+                        .announce_blob_to_network(&blob_id, &ctx_id, size)
+                        .await
+                    {
+                        Ok(_) => {
+                            info!(blob_id=%blob_id, context_id=%ctx_id, "Blob announced to network");
+                        }
+                        Err(err) => {
+                            error!(blob_id=%blob_id, context_id=%ctx_id, error=?err, "Failed to announce blob to network");
+                        }
+                    },
+                    Ok(None) => {
+                        error!(blob_id=%blob_id, context_id=%ctx_id, "Skipping announce: node is not a member of the requested context");
                     }
                     Err(err) => {
-                        error!(blob_id=%blob_id, context_id=%ctx_id, error=?err, "Failed to announce blob to network");
+                        error!(blob_id=%blob_id, context_id=%ctx_id, error=?err, "Skipping announce: failed to verify context membership");
                     }
                 }
             }
