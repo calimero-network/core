@@ -703,6 +703,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             collection: CollectionMut::new(self),
             entry,
             removed: false,
+            dirty: false,
         }))
     }
 
@@ -815,6 +816,9 @@ struct EntryMut<'a, T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> {
     /// When `remove()` is called, this is set to true to prevent the Drop impl
     /// from generating an Update action for the deleted entity.
     removed: bool,
+    /// Set by `deref_mut`. A `get_mut` used only for reading never writes back,
+    /// so its Drop must not emit a spurious Update (F167).
+    dirty: bool,
 }
 
 impl<T, S> EntryMut<'_, T, S>
@@ -869,6 +873,9 @@ where
     T: BorshSerialize + BorshDeserialize,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // Any real mutation goes through here, so this is the one place that can
+        // authoritatively mark the entry as needing a write-back (F167).
+        self.dirty = true;
         &mut self.entry.item
     }
 }
@@ -880,8 +887,11 @@ where
 {
     fn drop(&mut self) {
         // Don't save if the entry was removed - the DeleteRef action has
-        // already been created, and saving would create a conflicting Update action
-        if self.removed {
+        // already been created, and saving would create a conflicting Update action.
+        // Don't save a read-only `get_mut` either: with no mutation there is
+        // nothing to persist, and a spurious Update bumps `updated_at`,
+        // recomputes hashes, and can win an LWW race it should have lost (F167).
+        if self.removed || !self.dirty {
             return;
         }
         self.entry.element_mut().update();
