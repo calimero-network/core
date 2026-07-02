@@ -839,15 +839,22 @@ impl<T: Clone> DagStore<T> {
     /// `cleanup_stale` observes it as stale without a real wall-clock sleep.
     /// `cleanup_stale` ages entries against `std::time::Instant`, which
     /// `tokio::time::pause` cannot control — this seam replaces the sleep with
-    /// deterministic, instant time travel. The monotonic clock is boot-relative,
-    /// so subtracting a modest duration never underflows in practice.
+    /// deterministic, instant time travel.
+    ///
+    /// `Instant` has no `saturating_sub`, so we use `checked_sub` and fall back
+    /// to leaving `received_at` untouched if the subtraction would underflow.
+    /// That underflow can only happen when the monotonic clock has been running
+    /// for less than `by`; since it is boot-relative and every realistic host
+    /// (including CI containers, which inherit host uptime) is up far longer
+    /// than the sub-second `by` used here, the subtraction always applies in
+    /// practice. Crucially, the fallback means this never panics.
     #[cfg(test)]
     fn backdate_pending_for_test(&mut self, by: Duration) {
         for pending in self.pending.values_mut() {
             pending.received_at = pending
                 .received_at
                 .checked_sub(by)
-                .expect("monotonic clock is boot-relative; backdating must not underflow");
+                .unwrap_or(pending.received_at);
         }
     }
 

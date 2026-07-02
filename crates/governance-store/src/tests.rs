@@ -1731,6 +1731,20 @@ fn cross_node_state_hash_is_order_independent() {
         apply_local_signed_group_op(&store_b, op).unwrap();
     }
 
+    // Every op actually landed on both nodes: assert the concrete member set
+    // rather than trusting hash equality alone, so a hash that ignored some
+    // members (or an op that silently no-op'd) can't make the test pass
+    // vacuously.
+    for store in [&store_a, &store_b] {
+        let members = MembershipRepository::new(store);
+        for member in [member_x, member_y, member_z] {
+            assert!(
+                members.is_member(&gid, &member).unwrap(),
+                "each added member must be present on both nodes after convergence"
+            );
+        }
+    }
+
     let hash_a = MetaRepository::new(&store_a)
         .compute_state_hash(&gid)
         .unwrap();

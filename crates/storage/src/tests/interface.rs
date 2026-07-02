@@ -155,7 +155,13 @@ mod interface__public_methods {
         page.title = "Changed".to_string();
         page.element_mut().update();
         page.element_mut().set_updated_at(base + ONE_SEC_NANOS);
-        assert!(MainInterface::save(&mut page).unwrap());
+        // The newer-timestamp write must be accepted (save -> true); otherwise
+        // the hash comparison below would read back the OLD hash and could fail
+        // for the wrong reason (a rejected LWW update rather than a hashing bug).
+        assert!(
+            MainInterface::save(&mut page).unwrap(),
+            "the newer-timestamp update must be accepted as a fresh write"
+        );
 
         let hash_after = MainInterface::find_by_id::<Page>(page.id())
             .unwrap()
@@ -165,6 +171,14 @@ mod interface__public_methods {
         assert_ne!(
             hash_before, hash_after,
             "changing an entity's own data must move its Merkle hash"
+        );
+        // Cross-check the new hash against an independent recompute, matching
+        // the with-children / with-parents siblings: catches a hash that
+        // changed but to an incorrect value.
+        assert_eq!(
+            hash_after,
+            recompute_full_hash(page.id()),
+            "stored full hash must match recompute after an own-data change"
         );
     }
 
