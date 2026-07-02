@@ -468,10 +468,17 @@ impl VMHostFunctions<'_> {
             if logic.private_storage.is_none() {
                 return Ok(false);
             }
+            // Charge before writing. `charge_storage_write` borrows all of
+            // `logic`, so it must run before re-borrowing `private_storage`; the
+            // `is_none` check above guarantees the re-borrow is `Some`. Surface
+            // a broken invariant as an error rather than silently consuming the
+            // budget without writing.
             logic.charge_storage_write(key_len as u64 + value_len as u64)?;
-            if let Some(private_storage) = logic.private_storage.as_mut() {
-                let _evicted = private_storage.set(key, value);
-            }
+            let private_storage = logic
+                .private_storage
+                .as_mut()
+                .ok_or(HostError::InvalidMemoryAccess)?;
+            let _evicted = private_storage.set(key, value);
             Ok(true)
         })?;
 
