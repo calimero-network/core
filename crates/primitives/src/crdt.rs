@@ -370,6 +370,7 @@ mod tests {
             CrdtType::FrozenStorage,
             CrdtType::SharedStorage,
             CrdtType::Custom("my_type".to_string()),
+            CrdtType::RotationLog,
         ];
 
         for crdt_type in &types {
@@ -397,6 +398,7 @@ mod tests {
             CrdtType::FrozenStorage,
             CrdtType::SharedStorage,
             CrdtType::Custom("my_type".to_string()),
+            CrdtType::RotationLog,
         ];
 
         for crdt_type in &types {
