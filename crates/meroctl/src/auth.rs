@@ -10,7 +10,7 @@ use axum::extract::Query;
 use axum::response::Html;
 use axum::routing::get;
 use axum::Router;
-use calimero_client::{auth, AuthMode, JwtToken};
+use calimero_client::{auth, AuthMode, ClientStorage, JwtToken};
 use eyre::{bail, eyre, OptionExt, Result};
 use rand::RngCore;
 use serde::Deserialize;
@@ -466,6 +466,13 @@ pub async fn check_authentication(
 /// config, and return a `ConnectionInfo` bound to `node_name`. When the server
 /// requires no auth, returns an unauthenticated connection.
 ///
+/// If `FileTokenStorage` already holds usable, non-expired tokens for
+/// `node_name`, the browser auth flow is skipped and they are reused — so this
+/// is idempotent and safe to call repeatedly without popping a browser tab on
+/// every invocation. A stored token that has since been revoked (but not yet
+/// expired) is still handled: the connection's own request path refreshes or
+/// re-authenticates on the resulting 401.
+///
 /// `local_node_path` should be `Some(path)` when the node is a local node found via the
 /// filesystem (so it is persisted as `NodeConnection::Local`).  Pass `None` for remote/URL nodes.
 pub async fn authenticate_and_connect(
@@ -492,17 +499,23 @@ pub async fn authenticate_and_connect(
         ));
     }
 
-    // Run the browser auth flow, then persist the node in config so
-    // `FileTokenStorage` can load the tokens on this and later invocations
-    // (the connection's own auth path re-uses them and only re-prompts when
-    // they're missing). `persist_node_in_config` reloads config immediately
-    // before writing to shrink the TOCTOU window and never overwrites an
-    // explicit `node add` entry.
-    let jwt_tokens = authenticate(url, output)
-        .await
-        .map_err(|e| eyre!("Authentication failed for {}: {}", node_name, e))?;
+    // Reuse already-stored credentials when they're still usable, so a repeat
+    // invocation doesn't pop a browser tab needlessly. Only when none are found
+    // do we run the browser auth flow and persist the fresh tokens.
+    // `persist_node_in_config` reloads config immediately before writing to
+    // shrink the TOCTOU window and never overwrites an explicit `node add` entry.
+    let has_usable_tokens = FileTokenStorage::new()
+        .load_tokens(node_name)
+        .await?
+        .is_some_and(|tokens| tokens.is_usable() && !tokens.is_expired());
 
-    persist_node_in_config(node_name, url, local_node_path, &jwt_tokens).await?;
+    if !has_usable_tokens {
+        let jwt_tokens = authenticate(url, output)
+            .await
+            .map_err(|e| eyre!("Authentication failed for {}: {}", node_name, e))?;
+
+        persist_node_in_config(node_name, url, local_node_path, &jwt_tokens).await?;
+    }
 
     Ok(ConnectionInfo::new(
         url.clone(),
