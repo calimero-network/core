@@ -3,9 +3,9 @@ use std::sync::Arc;
 use actix::{ActorFutureExt, ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{CreateGroupRequest, CreateGroupResponse};
 use calimero_context_client::local_governance::{NamespaceOp, RootOp};
-use calimero_context_config::types::AppKey;
+use calimero_context_config::types::{AppKey, ContextGroupId};
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PrivateKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::GroupMetaValue;
 use calimero_store::types::ApplicationMeta as ApplicationMetaValue;
 use calimero_store::Store;
@@ -187,17 +187,15 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     None => AppKey::from(row_blob),
                 };
 
-                // Local cache write
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-
+                // Reuse the timestamp resolved (and warned-on-error) for the
+                // synchronous reservation rather than recomputing it here with a
+                // second silent `unwrap_or(0)`. The final meta and the
+                // reservation it replaces then carry the same `created_at`.
                 let meta = GroupMetaValue {
                     app_key: app_key.to_bytes(),
                     target_application_id: effective_application_id,
                     upgrade_policy,
-                    created_at: now,
+                    created_at: reservation_now,
                     admin_identity,
                     // Creator is the initial Owner. Transferable via
                     // `GroupOp::TransferOwnership`.
@@ -206,55 +204,79 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     auto_join: true,
                 };
 
-                MetaRepository::new(&datastore).save(&group_id, &meta)?;
-                MembershipRepository::new(&datastore).add_member(
-                    &group_id,
-                    &admin_identity,
-                    GroupMemberRole::Admin,
-                )?;
+                // Write the group's local rows. If any write fails partway,
+                // unwind the rows already written before returning so a retry
+                // with the same id starts from a clean slate rather than a
+                // half-created group (mirrors the genesis-failure rollback
+                // below). `group_key_id` is threaded out so both the rollback
+                // here and the genesis rollback later can drop the encryption
+                // key by the id that was actually stored.
+                let mut group_key_id: Option<[u8; 32]> = None;
+                let write_local_rows = (|| -> eyre::Result<()> {
+                    MetaRepository::new(&datastore).save(&group_id, &meta)?;
+                    MembershipRepository::new(&datastore).add_member(
+                        &group_id,
+                        &admin_identity,
+                        GroupMemberRole::Admin,
+                    )?;
 
-                // Set default capabilities so new members can be inherited
-                // into Open subgroups beneath this group.
-                CapabilitiesRepository::new(&datastore).set_default_capabilities(
-                    &group_id,
-                    calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
-                )?;
+                    // Set default capabilities so new members can be inherited
+                    // into Open subgroups beneath this group.
+                    CapabilitiesRepository::new(&datastore).set_default_capabilities(
+                        &group_id,
+                        calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+                    )?;
 
-                // Generate and store the group encryption key.
-                let group_key: [u8; 32] = rand::thread_rng().gen();
-                let key_id = GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
-                tracing::debug!(
-                    ?group_id,
-                    key_id = %hex::encode(key_id),
-                    "stored initial group key"
-                );
+                    // Generate and store the group encryption key.
+                    let group_key: [u8; 32] = rand::thread_rng().gen();
+                    let key_id = GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
+                    group_key_id = Some(key_id);
+                    tracing::debug!(
+                        ?group_id,
+                        key_id = %hex::encode(key_id),
+                        "stored initial group key"
+                    );
 
-                if let Some(ref n) = name {
-                    // Seed the group's initial metadata record locally, stamped
-                    // with the creator's identity / wall-clock — not the
-                    // zero-value `Default` (which would surface through the API
-                    // as misleading provenance). Like under the former alias,
-                    // this is a local seed; later `GroupOp::GroupMetadataSet`
-                    // ops replicate and supersede it. The name is validated
-                    // here too — the seed bypasses the op-apply validator.
-                    match calimero_primitives::metadata::validate_metadata_payload(
-                        Some(n),
-                        &std::collections::BTreeMap::new(),
-                    ) {
-                        Ok(()) => MetadataRepository::new(&datastore).set_group(
-                            &group_id,
-                            &calimero_primitives::metadata::MetadataRecord {
-                                name: name.clone(),
-                                data: std::collections::BTreeMap::new(),
-                                updated_at: calimero_governance_store::now_millis(),
-                                updated_by: admin_identity,
-                            },
-                        )?,
-                        Err(e) => {
-                            warn!(?group_id, reason = %e, "ignoring invalid group name on create")
+                    if let Some(ref n) = name {
+                        // Seed the group's initial metadata record locally, stamped
+                        // with the creator's identity / wall-clock — not the
+                        // zero-value `Default` (which would surface through the API
+                        // as misleading provenance). Like under the former alias,
+                        // this is a local seed; later `GroupOp::GroupMetadataSet`
+                        // ops replicate and supersede it. The name is validated
+                        // here too — the seed bypasses the op-apply validator.
+                        match calimero_primitives::metadata::validate_metadata_payload(
+                            Some(n),
+                            &std::collections::BTreeMap::new(),
+                        ) {
+                            Ok(()) => MetadataRepository::new(&datastore).set_group(
+                                &group_id,
+                                &calimero_primitives::metadata::MetadataRecord {
+                                    name: name.clone(),
+                                    data: std::collections::BTreeMap::new(),
+                                    updated_at: calimero_governance_store::now_millis(),
+                                    updated_by: admin_identity,
+                                },
+                            )?,
+                            Err(e) => {
+                                warn!(?group_id, reason = %e, "ignoring invalid group name on create")
+                            }
                         }
                     }
+                    Ok(())
+                })();
+                if let Err(err) = write_local_rows {
+                    rollback_local_group_rows(
+                        &datastore,
+                        &group_id,
+                        &admin_identity,
+                        group_key_id,
+                        name.is_some(),
+                    );
+                    return Err(err);
                 }
+                let key_id = group_key_id
+                    .expect("group key id is set once the local rows write succeeds");
 
                 // In the namespace model, group hierarchy is tracked in the
                 // namespace DAG (RootOp::GroupCreated), not via parent refs.
@@ -457,51 +479,20 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             // There is therefore nothing to undo. (See the
                             // `genesis_apply_failure_leaves_namespace_head_unadvanced`
                             // test in governance-store for the pinned assertion.)
-                            if let Err(re) = MetaRepository::new(&datastore).delete(&group_id) {
-                                warn!(?re, ?group_id, "rollback: failed to delete root meta");
-                            }
-                            if let Err(re) = MembershipRepository::new(&datastore)
-                                .remove_member(&group_id, &admin_identity)
-                            {
-                                warn!(
-                                    ?re,
-                                    ?group_id,
-                                    "rollback: failed to delete founder member row"
-                                );
-                            }
-                            if let Err(re) =
-                                CapabilitiesRepository::new(&datastore).delete_default(&group_id)
-                            {
-                                warn!(?re, ?group_id, "rollback: failed to delete default caps");
-                            }
-                            if let Err(re) =
-                                GroupKeyring::new(&datastore, group_id).delete_key_by_id(&key_id)
-                            {
-                                warn!(?re, ?group_id, "rollback: failed to delete group key");
-                            }
-                            // Delete the signing key stored PRE-ASYNC in `handle()`
-                            // via `SigningKeysRepository::store_key(&group_id,
-                            // &admin_identity, sk)`. Both store and delete key the
-                            // row by `GroupSigningKey::new(group_id, public_key)`, so
-                            // `delete_key(&group_id, &admin_identity)` here targets the
-                            // EXACT same row that was stored for this namespace root —
-                            // it removes the right key, not a different identity's.
-                            if let Err(re) = SigningKeysRepository::new(&datastore)
-                                .delete_key(&group_id, &admin_identity)
-                            {
-                                warn!(?re, ?group_id, "rollback: failed to delete signing key");
-                            }
-                            if name.is_some() {
-                                if let Err(re) =
-                                    MetadataRepository::new(&datastore).delete_group(&group_id)
-                                {
-                                    warn!(
-                                        ?re,
-                                        ?group_id,
-                                        "rollback: failed to delete group name metadata"
-                                    );
-                                }
-                            }
+                            //
+                            // The signing key deleted by the helper is the one
+                            // stored PRE-ASYNC in `handle()` via
+                            // `SigningKeysRepository::store_key(&group_id,
+                            // &admin_identity, sk)`; both store and delete key the
+                            // row by `GroupSigningKey::new(group_id, public_key)`,
+                            // so it targets the exact same row.
+                            rollback_local_group_rows(
+                                &datastore,
+                                &group_id,
+                                &admin_identity,
+                                Some(key_id),
+                                name.is_some(),
+                            );
                             return Err(eyre::eyre!(
                                 "failed to apply NamespaceCreated genesis on namespace DAG; \
                                  aborting namespace-root creation and rolling back local \
@@ -536,6 +527,59 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 res
             }),
         )
+    }
+}
+
+/// Undo the local rows a group-create wrote before it failed, so a retry with
+/// the same id starts clean instead of tripping over half-created state.
+///
+/// Every delete is idempotent (a no-op on an absent row), so this is safe
+/// whether the create failed after the first write or the last, and safe to
+/// call more than once (e.g. the outer cleanup map may also drop the meta).
+/// `group_key_id` is `None` when the create failed before the encryption key
+/// was stored. Errors are logged, not propagated — a partial rollback must not
+/// mask the original create failure.
+///
+/// The namespace identity minted by `get_or_create_namespace_identity` is
+/// DELIBERATELY not deleted (see the genesis-failure comment above): it is
+/// derived idempotently from the stable group id, so reusing it on retry keeps
+/// the founder deterministic (#2474).
+fn rollback_local_group_rows(
+    datastore: &Store,
+    group_id: &ContextGroupId,
+    admin_identity: &PublicKey,
+    group_key_id: Option<[u8; 32]>,
+    has_name: bool,
+) {
+    if let Err(re) = MetaRepository::new(datastore).delete(group_id) {
+        warn!(?re, ?group_id, "rollback: failed to delete root meta");
+    }
+    if let Err(re) = MembershipRepository::new(datastore).remove_member(group_id, admin_identity) {
+        warn!(
+            ?re,
+            ?group_id,
+            "rollback: failed to delete founder member row"
+        );
+    }
+    if let Err(re) = CapabilitiesRepository::new(datastore).delete_default(group_id) {
+        warn!(?re, ?group_id, "rollback: failed to delete default caps");
+    }
+    if let Some(key_id) = group_key_id {
+        if let Err(re) = GroupKeyring::new(datastore, *group_id).delete_key_by_id(&key_id) {
+            warn!(?re, ?group_id, "rollback: failed to delete group key");
+        }
+    }
+    if let Err(re) = SigningKeysRepository::new(datastore).delete_key(group_id, admin_identity) {
+        warn!(?re, ?group_id, "rollback: failed to delete signing key");
+    }
+    if has_name {
+        if let Err(re) = MetadataRepository::new(datastore).delete_group(group_id) {
+            warn!(
+                ?re,
+                ?group_id,
+                "rollback: failed to delete group name metadata"
+            );
+        }
     }
 }
 
@@ -580,4 +624,202 @@ async fn verify_requested_app_key(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::MemberCapabilities;
+    use calimero_governance_store::{
+        now_millis, CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
+        MetadataRepository, SigningKeysRepository,
+    };
+    use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+    use calimero_primitives::identity::PublicKey;
+    use calimero_primitives::metadata::MetadataRecord;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::key::GroupMetaValue;
+    use calimero_store::Store;
+
+    use super::rollback_local_group_rows;
+
+    fn store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    /// Seed every local row a group create writes, returning the group key id.
+    fn seed_group(
+        store: &Store,
+        group: &ContextGroupId,
+        admin: &PublicKey,
+        with_name: bool,
+    ) -> [u8; 32] {
+        MetaRepository::new(store)
+            .save(
+                group,
+                &GroupMetaValue {
+                    app_key: [0x11; 32],
+                    target_application_id: ApplicationId::from([0xCC; 32]),
+                    upgrade_policy: UpgradePolicy::Automatic,
+                    created_at: 1_700_000_000,
+                    admin_identity: *admin,
+                    owner_identity: *admin,
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("save meta");
+        MembershipRepository::new(store)
+            .add_member(group, admin, GroupMemberRole::Admin)
+            .expect("add admin");
+        CapabilitiesRepository::new(store)
+            .set_default_capabilities(group, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
+            .expect("set default caps");
+        SigningKeysRepository::new(store)
+            .store_key(group, admin, &[0x55; 32])
+            .expect("store signing key");
+        let key_id = GroupKeyring::new(store, *group)
+            .store_key(&[0x66; 32])
+            .expect("store group key");
+        if with_name {
+            MetadataRepository::new(store)
+                .set_group(
+                    group,
+                    &MetadataRecord {
+                        name: Some("g".to_owned()),
+                        data: std::collections::BTreeMap::new(),
+                        updated_at: now_millis(),
+                        updated_by: *admin,
+                    },
+                )
+                .expect("set name metadata");
+        }
+        key_id
+    }
+
+    #[test]
+    fn rollback_removes_every_local_group_row() {
+        let store = store();
+        let group = ContextGroupId::from([0xA0; 32]);
+        let admin = PublicKey::from([0x01; 32]);
+        let key_id = seed_group(&store, &group, &admin, true);
+
+        // Sanity: everything is present before the rollback.
+        assert!(MetaRepository::new(&store).load(&group).unwrap().is_some());
+        assert!(MembershipRepository::new(&store)
+            .is_member(&group, &admin)
+            .unwrap());
+        assert!(CapabilitiesRepository::new(&store)
+            .default_capabilities(&group)
+            .unwrap()
+            .is_some());
+        assert!(GroupKeyring::new(&store, group).holds_any_key().unwrap());
+        assert!(SigningKeysRepository::new(&store)
+            .get_key(&group, &admin)
+            .unwrap()
+            .is_some());
+        assert!(MetadataRepository::new(&store)
+            .group_metadata(&group)
+            .unwrap()
+            .is_some());
+
+        rollback_local_group_rows(&store, &group, &admin, Some(key_id), true);
+
+        // Every row the create wrote is gone; a retry with the same id is clean.
+        assert!(
+            MetaRepository::new(&store).load(&group).unwrap().is_none(),
+            "meta"
+        );
+        assert!(
+            !MembershipRepository::new(&store)
+                .is_member(&group, &admin)
+                .unwrap(),
+            "member"
+        );
+        assert!(
+            CapabilitiesRepository::new(&store)
+                .default_capabilities(&group)
+                .unwrap()
+                .is_none(),
+            "caps"
+        );
+        assert!(
+            !GroupKeyring::new(&store, group).holds_any_key().unwrap(),
+            "group key"
+        );
+        assert!(
+            SigningKeysRepository::new(&store)
+                .get_key(&group, &admin)
+                .unwrap()
+                .is_none(),
+            "signing key"
+        );
+        assert!(
+            MetadataRepository::new(&store)
+                .group_metadata(&group)
+                .unwrap()
+                .is_none(),
+            "name metadata"
+        );
+    }
+
+    #[test]
+    fn rollback_is_scoped_to_the_target_group() {
+        let store = store();
+        let victim = ContextGroupId::from([0xA0; 32]);
+        let bystander = ContextGroupId::from([0xB0; 32]);
+        let admin = PublicKey::from([0x01; 32]);
+        let key_id = seed_group(&store, &victim, &admin, true);
+        let _ = seed_group(&store, &bystander, &admin, true);
+
+        rollback_local_group_rows(&store, &victim, &admin, Some(key_id), true);
+
+        // The bystander group is untouched.
+        assert!(MetaRepository::new(&store)
+            .load(&bystander)
+            .unwrap()
+            .is_some());
+        assert!(MembershipRepository::new(&store)
+            .is_member(&bystander, &admin)
+            .unwrap());
+        assert!(GroupKeyring::new(&store, bystander)
+            .holds_any_key()
+            .unwrap());
+        assert!(SigningKeysRepository::new(&store)
+            .get_key(&bystander, &admin)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn rollback_without_key_id_or_name_is_a_partial_no_op() {
+        // Simulates a create that failed BEFORE storing the group key / name:
+        // the guards for `None` key id and `has_name = false` must not panic,
+        // and the rows that DO exist are still removed.
+        let store = store();
+        let group = ContextGroupId::from([0xA0; 32]);
+        let admin = PublicKey::from([0x01; 32]);
+        MetaRepository::new(&store)
+            .save(
+                &group,
+                &GroupMetaValue {
+                    app_key: [0x11; 32],
+                    target_application_id: ApplicationId::from([0xCC; 32]),
+                    upgrade_policy: UpgradePolicy::Automatic,
+                    created_at: 1,
+                    admin_identity: admin,
+                    owner_identity: admin,
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("save meta");
+
+        rollback_local_group_rows(&store, &group, &admin, None, false);
+
+        assert!(MetaRepository::new(&store).load(&group).unwrap().is_none());
+    }
 }
