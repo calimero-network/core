@@ -135,8 +135,8 @@ impl NodeCommand {
                         NodeConnection::Local {
                             path,
                             jwt_tokens: jwt_tokens.map(|tokens| crate::storage::JwtToken {
-                                access_token: tokens.access_token,
-                                refresh_token: tokens.refresh_token,
+                                access_token: tokens.access_token.clone(),
+                                refresh_token: tokens.refresh_token.clone(),
                             }),
                         }
                     }
@@ -152,8 +152,8 @@ impl NodeCommand {
                         NodeConnection::Remote {
                             url,
                             jwt_tokens: jwt_tokens.map(|tokens| crate::storage::JwtToken {
-                                access_token: tokens.access_token,
-                                refresh_token: tokens.refresh_token,
+                                access_token: tokens.access_token.clone(),
+                                refresh_token: tokens.refresh_token.clone(),
                             }),
                         }
                     }

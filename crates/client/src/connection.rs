@@ -3,17 +3,41 @@
 //! This module provides the core connection functionality for making
 //! authenticated API requests to Calimero services.
 
+// Standard library
+use std::sync::Arc;
+
 // External crates
 use eyre::{bail, eyre, Result};
-use reqwest::Client;
+use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use tokio::sync::Mutex;
 use url::Url;
 
 // Local crate
 use crate::errors::ClientError;
 use crate::storage::JwtToken;
 use crate::traits::{ClientAuthenticator, ClientStorage};
+
+/// Refresh a token this many seconds *before* its stated expiry, so a request
+/// isn't sent with a token that lapses in flight (which would waste a 401
+/// round-trip). Also the window within which a still-valid token is refreshed
+/// proactively rather than reactively.
+const TOKEN_REFRESH_SKEW_SECS: i64 = 30;
+
+/// Maximum size of a control-plane JSON response body we will buffer. Admin-API
+/// responses are small; a multi-gigabyte body from a hostile or buggy node must
+/// not be read into memory unbounded.
+pub(crate) const MAX_JSON_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Maximum size of an error response body we will buffer before extracting a
+/// message. Error bodies should be tiny; cap them hard.
+const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+
+/// Maximum size of a binary (blob) response body. Larger than the JSON cap
+/// because blobs are the data plane, but still bounded so a lying
+/// `Content-Length` or an endless stream can't exhaust memory.
+const MAX_BINARY_BODY_BYTES: usize = 512 * 1024 * 1024;
 
 /// Authentication mode for a connection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +59,22 @@ enum RequestType {
     DeleteWithBody,
 }
 
+impl RequestType {
+    /// Whether re-sending this request after a 401 is safe.
+    ///
+    /// Idempotent verbs (GET/HEAD/PUT/DELETE) can be replayed with no
+    /// additional side effect. POST and PATCH are **not** replayed: a 401 from
+    /// an intermediary that already forwarded the write to the origin is
+    /// indistinguishable from one where the write never landed, so replaying a
+    /// `create_context`/governance POST risks duplicating it.
+    const fn is_idempotent(self) -> bool {
+        match self {
+            Self::Get | Self::Put | Self::Delete | Self::DeleteWithBody => true,
+            Self::Post | Self::Patch => false,
+        }
+    }
+}
+
 /// Generic connection information that can work with any authenticator and storage implementation
 #[derive(Clone, Debug)]
 pub struct ConnectionInfo<A, S>
@@ -52,6 +92,11 @@ where
     node_name: Option<String>,
     authenticator: A,
     client_storage: S,
+    // Serializes token refresh / interactive re-authentication so N concurrent
+    // 401s (or N token-less requests) collapse into a single refresh instead of
+    // each firing its own `/auth/refresh` (which would burn a one-time refresh
+    // token) or opening its own browser prompt.
+    auth_lock: Arc<Mutex<()>>,
 }
 
 impl<A, S> ConnectionInfo<A, S>
@@ -71,6 +116,7 @@ where
             node_name,
             authenticator,
             client_storage,
+            auth_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -138,18 +184,12 @@ where
     }
 
     pub async fn put_binary(&self, path: &str, data: Vec<u8>) -> Result<reqwest::Response> {
-        let mut url = self.api_url.clone();
-
-        if let Some((path_part, query_part)) = path.split_once('?') {
-            url.set_path(path_part);
-            url.set_query(Some(query_part));
-        } else {
-            url.set_path(path);
-        }
+        let url = resolve_path(&self.api_url, path)?;
 
         let requires_auth = self.path_requires_auth(path);
 
-        self.execute_request_with_auth_retry(requires_auth, |auth_header| {
+        // PUT is idempotent — safe to replay after a 401.
+        self.execute_request_with_auth_retry(requires_auth, true, |auth_header| {
             let mut builder = self.client.put(url.clone()).body(data.clone());
             if let Some(h) = auth_header {
                 builder = builder.header("Authorization", h);
@@ -160,19 +200,12 @@ where
     }
 
     pub async fn get_binary(&self, path: &str) -> Result<Vec<u8>> {
-        let mut url = self.api_url.clone();
-
-        if let Some((path_part, query_part)) = path.split_once('?') {
-            url.set_path(path_part);
-            url.set_query(Some(query_part));
-        } else {
-            url.set_path(path);
-        }
+        let url = resolve_path(&self.api_url, path)?;
 
         let requires_auth = self.path_requires_auth(path);
 
         let response = self
-            .execute_request_with_auth_retry(requires_auth, |auth_header| {
+            .execute_request_with_auth_retry(requires_auth, true, |auth_header| {
                 let mut builder = self.client.get(url.clone());
                 if let Some(h) = auth_header {
                     builder = builder.header("Authorization", h);
@@ -181,21 +214,16 @@ where
             })
             .await?;
 
-        response
-            .bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(Into::into)
+        read_body_capped(response, MAX_BINARY_BODY_BYTES).await
     }
 
     pub async fn head(&self, path: &str) -> Result<reqwest::header::HeaderMap> {
-        let mut url = self.api_url.clone();
-        url.set_path(path);
+        let url = resolve_path(&self.api_url, path)?;
 
         let requires_auth = self.path_requires_auth(path);
 
         let response = self
-            .execute_request_with_auth_retry(requires_auth, |auth_header| {
+            .execute_request_with_auth_retry(requires_auth, true, |auth_header| {
                 let mut builder = self.client.head(url.clone());
                 if let Some(h) = auth_header {
                     builder = builder.header("Authorization", h);
@@ -212,29 +240,33 @@ where
         I: Serialize,
         O: DeserializeOwned,
     {
-        let mut url = self.api_url.clone();
-        url.set_path(path);
+        let url = resolve_path(&self.api_url, path)?;
 
         let requires_auth = self.path_requires_auth(path);
 
         let response = self
-            .execute_request_with_auth_retry(requires_auth, |auth_header| {
-                let mut builder = match req_type {
-                    RequestType::Get => self.client.get(url.clone()),
-                    RequestType::Post => self.client.post(url.clone()).json(&body),
-                    RequestType::Delete => self.client.delete(url.clone()),
-                    RequestType::Patch => self.client.patch(url.clone()).json(&body),
-                    RequestType::Put => self.client.put(url.clone()).json(&body),
-                    RequestType::DeleteWithBody => self.client.delete(url.clone()).json(&body),
-                };
-                if let Some(h) = auth_header {
-                    builder = builder.header("Authorization", h);
-                }
-                builder.send()
-            })
+            .execute_request_with_auth_retry(
+                requires_auth,
+                req_type.is_idempotent(),
+                |auth_header| {
+                    let mut builder = match req_type {
+                        RequestType::Get => self.client.get(url.clone()),
+                        RequestType::Post => self.client.post(url.clone()).json(&body),
+                        RequestType::Delete => self.client.delete(url.clone()),
+                        RequestType::Patch => self.client.patch(url.clone()).json(&body),
+                        RequestType::Put => self.client.put(url.clone()).json(&body),
+                        RequestType::DeleteWithBody => self.client.delete(url.clone()).json(&body),
+                    };
+                    if let Some(h) = auth_header {
+                        builder = builder.header("Authorization", h);
+                    }
+                    builder.send()
+                },
+            )
             .await?;
 
-        response.json::<O>().await.map_err(Into::into)
+        let body = read_body_capped(response, MAX_JSON_BODY_BYTES).await?;
+        serde_json::from_slice::<O>(&body).map_err(Into::into)
     }
 
     /// Resolve the bearer auth header for this connection (always treating auth
@@ -243,17 +275,22 @@ where
     /// Public counterpart to [`Self::ensure_auth_header`] for callers outside
     /// the HTTP request helpers — e.g. attaching auth to a WebSocket upgrade
     /// handshake, where auth is validated once at connect rather than per call.
-    /// May trigger a browser-based authentication flow when no token is stored.
+    /// May trigger a browser-based authentication flow when no token is stored;
+    /// concurrent callers coalesce behind a single flow rather than each opening
+    /// their own browser prompt.
     pub async fn auth_header(&self) -> Result<Option<String>> {
         self.ensure_auth_header(true).await
     }
 
     /// Ensure a valid auth header is available and return it.
     ///
-    /// Returns `None` immediately if `requires_auth` is false or `node_name` is unset.
-    /// If stored tokens exist they are returned directly.  If no tokens are found,
-    /// **this method triggers a full browser-based authentication flow** to obtain fresh
-    /// tokens — callers should be aware of this side effect (it may open a browser window).
+    /// Returns `None` immediately if `requires_auth` is false or `node_name` is
+    /// unset. A stored token is checked against its expiry: if it is expired it
+    /// is refreshed before use; if it lapses within [`TOKEN_REFRESH_SKEW_SECS`]
+    /// it is refreshed proactively (best-effort). An empty stored token is
+    /// treated as "no credentials". When no usable token exists, this triggers a
+    /// full (possibly browser-based) authentication flow — but concurrent
+    /// callers share one flow via [`Self::refresh_or_reauth`].
     async fn ensure_auth_header(&self, requires_auth: bool) -> Result<Option<String>> {
         if !requires_auth {
             return Ok(None);
@@ -262,28 +299,97 @@ where
             return Ok(None);
         };
 
-        match self.client_storage.load_tokens(node_name).await {
-            Ok(Some(tokens)) => return Ok(Some(format!("Bearer {}", tokens.access_token))),
-            Ok(None) => {} // No stored tokens — fall through to proactive auth
+        // An empty access token (e.g. a logged-out record persisted by the
+        // default `remove_tokens`) counts as "no credentials", not a valid
+        // bearer value.
+        let stored = match self.client_storage.load_tokens(node_name).await {
+            Ok(Some(tokens)) if tokens.is_usable() => Some(tokens),
+            Ok(_) => None,
             Err(e) => {
                 // Surface storage failures so the user can diagnose disk/permission issues
                 // rather than silently falling through to a re-authentication prompt.
                 bail!("Failed to load stored tokens for '{}': {}", node_name, e);
             }
+        };
+
+        if let Some(tokens) = stored {
+            if tokens.is_expired() {
+                // Hard-expired — must obtain a fresh token before proceeding.
+                self.refresh_or_reauth(Some(&tokens.access_token)).await?;
+                return self.current_auth_header(node_name).await;
+            }
+            if tokens.expires_soon(TOKEN_REFRESH_SKEW_SECS) {
+                // Still valid but lapsing soon — refresh proactively to avoid a
+                // wasted 401, but don't fail the request if the refresh can't
+                // complete. Prefer the freshly-stored token (another task may
+                // have refreshed concurrently); fall back to the local token
+                // only if storage no longer yields a usable one. That fallback
+                // is safe: control flow above guarantees `tokens` is not yet
+                // expired here, only near expiry.
+                if let Err(e) = self.refresh_or_reauth(Some(&tokens.access_token)).await {
+                    tracing::debug!("proactive token refresh failed, using current token: {e}");
+                }
+                if let Some(header) = self.current_auth_header(node_name).await? {
+                    return Ok(Some(header));
+                }
+            }
+            return Ok(Some(tokens.auth_header()));
         }
 
-        // No tokens — authenticate proactively
-        match self.authenticator.authenticate(&self.api_url).await {
-            Ok(new_tokens) => {
-                self.client_storage
-                    .update_tokens(node_name, &new_tokens)
-                    .await?;
-                Ok(Some(format!("Bearer {}", new_tokens.access_token)))
-            }
-            Err(auth_err) => {
-                bail!("Authentication failed: {}", auth_err);
+        // No usable token — acquire one (single-flight).
+        self.refresh_or_reauth(None).await?;
+        self.current_auth_header(node_name).await
+    }
+
+    /// Read the currently-stored token as a bearer header, if usable.
+    async fn current_auth_header(&self, node_name: &str) -> Result<Option<String>> {
+        match self.client_storage.load_tokens(node_name).await {
+            Ok(Some(tokens)) if tokens.is_usable() => Ok(Some(tokens.auth_header())),
+            Ok(_) => Ok(None),
+            Err(e) => bail!("Failed to load stored tokens for '{}': {}", node_name, e),
+        }
+    }
+
+    /// Obtain a fresh token, coalescing concurrent callers behind `auth_lock`.
+    ///
+    /// `stale_access` is the access token that just failed (or is about to
+    /// lapse). After taking the lock we re-check the stored token: if it already
+    /// differs from `stale_access`, another task refreshed while we waited, so
+    /// we return without issuing a second `/auth/refresh`. This is what stops N
+    /// concurrent 401s from each spending the one-time refresh token (and each
+    /// opening a browser prompt on fallback).
+    async fn refresh_or_reauth(&self, stale_access: Option<&str>) -> Result<()> {
+        let Some(node_name) = &self.node_name else {
+            bail!(
+                "Authentication required but no node name is available to load or persist tokens"
+            );
+        };
+
+        let _guard = self.auth_lock.lock().await;
+
+        // Someone else may have refreshed while we waited for the lock.
+        if let Some(stale) = stale_access {
+            if let Ok(Some(current)) = self.client_storage.load_tokens(node_name).await {
+                if current.is_usable() && current.access_token != stale {
+                    return Ok(());
+                }
             }
         }
+
+        // Try a token refresh first; fall back to full (possibly interactive)
+        // re-authentication on any failure, including a missing refresh token.
+        let new_tokens = match self.refresh_token().await {
+            Ok(tokens) => tokens,
+            Err(_) => self
+                .authenticator
+                .authenticate(&self.api_url)
+                .await
+                .map_err(|auth_err| eyre!("Authentication failed: {}", auth_err))?,
+        };
+
+        self.client_storage
+            .update_tokens(node_name, &new_tokens)
+            .await
     }
 
     /// Execute a request with automatic token refresh / re-authentication on 401.
@@ -291,9 +397,16 @@ where
     /// The closure receives a fresh `Option<String>` auth header on **every** call,
     /// including retries after token refresh. This ensures stale tokens are never
     /// reused across retry attempts.
+    ///
+    /// On a 401 the session is always re-authenticated so subsequent calls work,
+    /// but the failed request is only *replayed* when `idempotent` is true.
+    /// Non-idempotent requests (POST/PATCH) are not replayed, to avoid
+    /// duplicating a create/governance operation the origin may already have
+    /// applied before the 401 was returned.
     async fn execute_request_with_auth_retry<F, Fut>(
         &self,
         requires_auth: bool,
+        idempotent: bool,
         request_builder: F,
     ) -> Result<reqwest::Response>
     where
@@ -310,39 +423,35 @@ where
             let response = request_builder(auth_header).await?;
 
             if response.status() == 401 && retry_count < MAX_RETRIES {
-                if self.node_name.is_none() {
+                let Some(node_name) = &self.node_name else {
                     bail!(
                         "Authentication required but no node name is available to load or persist tokens"
+                    );
+                };
+
+                // Re-authenticate so the session is healed regardless of verb.
+                // Pass the currently-stored access token as the "stale" marker
+                // for single-flight dedup.
+                let stale = self
+                    .client_storage
+                    .load_tokens(node_name)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|tokens| tokens.access_token.clone());
+                self.refresh_or_reauth(stale.as_deref()).await?;
+
+                if !idempotent {
+                    // Non-idempotent verb: do not replay the body. The session
+                    // is now re-authenticated; surface the 401 so the caller can
+                    // retry the write deliberately rather than risk a duplicate.
+                    bail!(
+                        "Request rejected with 401 and was not replayed to avoid duplicating a \
+                         non-idempotent operation; the session has been re-authenticated — please retry."
                     );
                 }
 
                 retry_count += 1;
-
-                // Try to refresh first; fall back to full re-auth on any failure
-                // (including missing refresh token). Previously, missing refresh token
-                // caused an immediate bail; now any refresh failure triggers full
-                // re-authentication so the user gets a working session regardless.
-                match self.refresh_token().await {
-                    Ok(new_token) => {
-                        if let Some(ref node_name) = self.node_name {
-                            self.client_storage
-                                .update_tokens(node_name, &new_token)
-                                .await?;
-                        }
-                    }
-                    Err(_) => match self.authenticator.authenticate(&self.api_url).await {
-                        Ok(new_tokens) => {
-                            if let Some(ref node_name) = self.node_name {
-                                self.client_storage
-                                    .update_tokens(node_name, &new_tokens)
-                                    .await?;
-                            }
-                        }
-                        Err(auth_err) => {
-                            bail!("Authentication failed: {}", auth_err);
-                        }
-                    },
-                }
                 // Loop back — next iteration loads fresh tokens.
                 continue;
             }
@@ -353,7 +462,15 @@ where
 
             if !response.status().is_success() {
                 let status = response.status();
-                let body = response.text().await.unwrap_or_default();
+                // Cap the error body read so a hostile node can't OOM us on the
+                // error path, then extract only known-safe message fields.
+                let body = read_body_capped(response, MAX_ERROR_BODY_BYTES)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::debug!("failed to read HTTP error response body: {e}");
+                        Vec::new()
+                    });
+                let body = String::from_utf8_lossy(&body);
                 // Return a typed error carrying the numeric status so callers can
                 // classify the failure (e.g. 404 → not-found) by matching the
                 // variant rather than parsing the message string. The rendered
@@ -422,14 +539,21 @@ where
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = read_body_capped(response, MAX_ERROR_BODY_BYTES)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::debug!("failed to read token-refresh error response body: {e}");
+                    Vec::new()
+                });
+            let body = String::from_utf8_lossy(&body);
             return Err(eyre!(
                 "Token refresh failed: {}",
                 extract_error_message(&body, status)
             ));
         }
 
-        let wrapped_response: WrappedResponse = response.json().await?;
+        let body = read_body_capped(response, MAX_JSON_BODY_BYTES).await?;
+        let wrapped_response: WrappedResponse = serde_json::from_slice(&body)?;
 
         Ok(JwtToken::with_refresh(
             wrapped_response.data.access_token,
@@ -490,6 +614,96 @@ where
     }
 }
 
+/// Build the target URL for `path` against `base`, splitting off any query
+/// string and rejecting path traversal.
+///
+/// `Url::set_path` neither percent-encodes `/` within a segment nor collapses
+/// `.`/`..` dot-segments, so an interpolated identifier such as
+/// `../packages/evil` would let a request escape its intended
+/// `admin-api/groups/...` prefix and reach a *different* admin endpoint after a
+/// proxy normalizes the path. Each segment is rejected if it decodes to a `.`
+/// or `..` dot-segment (so a percent-encoded `%2e%2e` can't slip past the guard
+/// and be normalized to `..` at the origin) or contains a control character.
+///
+/// Segments are **appended** to the base URL's existing path via
+/// `path_segments_mut`, so a reverse-proxy base path (e.g.
+/// `https://host/calimero/node1/`) is preserved — consistent with
+/// [`Client::ws_url`] — rather than being discarded by an absolute `set_path`.
+pub(crate) fn resolve_path(base: &Url, path: &str) -> Result<Url> {
+    use percent_encoding::percent_decode_str;
+
+    let (path_part, query_part) = match path.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (path, None),
+    };
+
+    let mut url = base.clone();
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|()| eyre!("api_url cannot be a base URL"))?;
+        // Drop a trailing empty segment from the base (e.g. the one a trailing
+        // `/` produces) so appending doesn't create a `//` in the path.
+        segments.pop_if_empty();
+
+        for segment in path_part.split('/') {
+            if segment.is_empty() {
+                continue;
+            }
+            let decoded = percent_decode_str(segment).decode_utf8_lossy();
+            if decoded == "." || decoded == ".." {
+                bail!("refusing request path with traversal segment: {path_part:?}");
+            }
+            if decoded.chars().any(char::is_control) {
+                bail!("refusing request path with control character: {path_part:?}");
+            }
+            let _ = segments.push(segment);
+        }
+    }
+
+    if let Some(query) = query_part {
+        url.set_query(Some(query));
+    }
+    Ok(url)
+}
+
+/// Read a response body into memory with a hard byte cap (inclusive: a body of
+/// exactly `max_bytes` is accepted; anything larger is rejected).
+///
+/// Protects against OOM from a hostile or buggy node returning (or slowly
+/// streaming) a huge body. When a `Content-Length` header is present and over
+/// the cap it is rejected up front; a missing header (e.g. chunked transfer) or
+/// a header that lies about a smaller size is still caught by the per-chunk
+/// tally, so bytes are never accumulated past the cap regardless of what the
+/// node advertises.
+pub(crate) async fn read_body_capped(response: Response, max_bytes: usize) -> Result<Vec<u8>> {
+    if let Some(len) = response.content_length() {
+        if len > max_bytes as u64 {
+            bail!("response body of {len} bytes exceeds the {max_bytes}-byte limit");
+        }
+    }
+
+    // Reserve up to the advertised length, but never more than the cap, so an
+    // inflated `Content-Length` can't trigger a huge up-front allocation. The
+    // early return above already bounds `len` to the cap; the `min` keeps this
+    // safe independently of that check (defensive against future refactoring).
+    let hint = response
+        .content_length()
+        .map_or(0, |len| len.min(max_bytes as u64) as usize);
+
+    let mut response = response;
+    let mut buf = Vec::with_capacity(hint);
+    while let Some(chunk) = response.chunk().await? {
+        // `saturating_add` guards the (only theoretical) usize overflow on
+        // 32-bit targets when both operands are near the max.
+        if buf.len().saturating_add(chunk.len()) > max_bytes {
+            bail!("response body exceeds the {max_bytes}-byte limit");
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
 /// Extract a human-readable error message from an HTTP error response body.
 ///
 /// Only extracts from known-safe structured fields (`error.message`, `error`, `message`).
@@ -540,6 +754,72 @@ fn extract_error_message(body: &str, status: reqwest::StatusCode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_path_builds_normal_path() {
+        let base = Url::parse("https://node.example/").unwrap();
+        let url = resolve_path(&base, "admin-api/groups/abc/members").unwrap();
+        assert_eq!(url.path(), "/admin-api/groups/abc/members");
+        assert_eq!(url.query(), None);
+    }
+
+    #[test]
+    fn resolve_path_splits_query() {
+        let base = Url::parse("https://node.example/").unwrap();
+        let url = resolve_path(&base, "admin-api/blobs?context_id=xyz").unwrap();
+        assert_eq!(url.path(), "/admin-api/blobs");
+        assert_eq!(url.query(), Some("context_id=xyz"));
+    }
+
+    #[test]
+    fn resolve_path_rejects_dotdot_traversal() {
+        let base = Url::parse("https://node.example/").unwrap();
+        // An interpolated group id of `..` must not be able to climb out of the
+        // `admin-api/groups` prefix into a different admin endpoint.
+        assert!(resolve_path(&base, "admin-api/groups/../packages/evil").is_err());
+    }
+
+    #[test]
+    fn resolve_path_rejects_percent_encoded_traversal() {
+        let base = Url::parse("https://node.example/").unwrap();
+        // `%2e%2e` decodes to `..` — a proxy may normalize it before routing, so
+        // it must be rejected just like a literal `..`.
+        assert!(resolve_path(&base, "admin-api/groups/%2e%2e/evil").is_err());
+        assert!(resolve_path(&base, "admin-api/groups/%2E%2E/evil").is_err());
+    }
+
+    #[test]
+    fn resolve_path_preserves_reverse_proxy_base_path() {
+        // A base URL with a mount path (behind a reverse proxy) must be kept:
+        // the request lands under the base, not at the host root.
+        let base = Url::parse("https://host/calimero/node1/").unwrap();
+        let url = resolve_path(&base, "admin-api/contexts?foo=bar").unwrap();
+        assert_eq!(url.path(), "/calimero/node1/admin-api/contexts");
+        assert_eq!(url.query(), Some("foo=bar"));
+
+        // A base without a trailing slash still appends rather than replacing
+        // its last segment.
+        let base = Url::parse("https://host/calimero/node1").unwrap();
+        let url = resolve_path(&base, "admin-api/contexts").unwrap();
+        assert_eq!(url.path(), "/calimero/node1/admin-api/contexts");
+    }
+
+    #[test]
+    fn resolve_path_rejects_single_dot_and_control_chars() {
+        let base = Url::parse("https://node.example/").unwrap();
+        assert!(resolve_path(&base, "admin-api/./groups").is_err());
+        assert!(resolve_path(&base, "admin-api/groups/a\nb").is_err());
+    }
+
+    #[test]
+    fn request_type_idempotency_classification() {
+        assert!(RequestType::Get.is_idempotent());
+        assert!(RequestType::Put.is_idempotent());
+        assert!(RequestType::Delete.is_idempotent());
+        assert!(RequestType::DeleteWithBody.is_idempotent());
+        assert!(!RequestType::Post.is_idempotent());
+        assert!(!RequestType::Patch.is_idempotent());
+    }
 
     #[test]
     fn test_empty_body() {
