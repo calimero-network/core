@@ -1315,7 +1315,22 @@ async fn mount_refresh_and_guarded_get(
             format!("Bearer {new_access}").as_str(),
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+        .with_priority(1)
         .expect(get_hits)
+        .mount(server)
+        .await;
+
+    // Any GET to the endpoint NOT carrying the fresh bearer means a stale token
+    // was sent — exactly the regression these tests guard against. Match it with
+    // a lower priority and `expect(0)` so it fails loudly with a descriptive body
+    // instead of a bare unmatched-route 404.
+    Mock::given(method("GET"))
+        .and(path("/admin-api/contexts"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": "stale bearer sent — proactive refresh / single-flight regressed"
+        })))
+        .with_priority(2)
+        .expect(0)
         .mount(server)
         .await;
 }
@@ -1394,11 +1409,14 @@ async fn concurrent_expired_requests_refresh_once() {
     // `/auth/refresh` (a rotating refresh token would be spent 8 times
     // otherwise) and 8 successful GETs carrying the fresh bearer.
     //
-    // Contention is made deterministic rather than timing-dependent: a `Barrier`
-    // releases all 8 tasks into the request path simultaneously, and the 50 ms
-    // refresh delay keeps the first task holding the single-flight lock across a
-    // real await while the other 7 are guaranteed (already past the barrier) to
-    // queue on it. Without contention the coalescing path wouldn't be exercised.
+    // Contention is exercised, not assumed. The test runs on tokio's default
+    // current-thread runtime: a `Barrier` releases all 8 tasks together, then the
+    // first to run acquires `auth_lock` and parks on the refresh's network await
+    // (held open 50 ms) while still holding the lock. Cooperative scheduling then
+    // polls the other 7, which all block on `lock().await` before the refresh can
+    // complete — so they hit the single-flight path rather than an already-done
+    // early-exit. Structural backstops make a regression fail loudly regardless:
+    // `expect(1)` on `/auth/refresh`, `expect(0)` on the stale-bearer GET.
     mount_refresh_and_guarded_get(&server, &fresh, 1, 8, Duration::from_millis(50)).await;
 
     let (client, auth_calls) = auth_client_with_token(
@@ -1408,31 +1426,34 @@ async fn concurrent_expired_requests_refresh_once() {
 
     let barrier = Arc::new(tokio::sync::Barrier::new(8));
     let mut set = tokio::task::JoinSet::new();
-    for _ in 0..8 {
+    for i in 0..8 {
         let client = client.clone();
         let barrier = Arc::clone(&barrier);
         set.spawn(async move {
             // Rendezvous so all 8 enter `ensure_auth_header` together.
             barrier.wait().await;
-            client
+            let result = client
                 .connection()
                 .get::<serde_json::Value>("admin-api/contexts")
-                .await
+                .await;
+            (i, result)
         });
     }
 
     let mut successes = 0;
     while let Some(joined) = set.join_next().await {
-        let result = joined.expect("task should not panic");
-        // A stale bearer (broken single-flight) would miss the header-filtered
-        // GET mock → 404 → Err; surface which task that was clearly.
-        let body = result.expect("request should succeed with the fresh bearer");
+        let (i, result) = joined.expect("task should not panic");
+        // A stale bearer (broken single-flight) hits the `expect(0)` catch-all →
+        // 400 → Err; name the offending task in the failure.
+        let body = result.unwrap_or_else(|e| {
+            panic!("task {i} sent a stale bearer (single-flight regressed): {e}")
+        });
         assert_eq!(body["ok"], serde_json::Value::Bool(true));
         successes += 1;
     }
     assert_eq!(successes, 8);
     assert_eq!(*auth_calls.lock().unwrap(), 0);
-    // The refresh mock's `.expect(1)` and the GET mock's `.expect(8)` are
+    // The refresh mock's `.expect(1)` and the fresh-bearer GET's `.expect(8)` are
     // verified on server drop, proving the eight concurrent 401-avoiding
     // refreshes collapsed into one while all eight requests succeeded.
 }
