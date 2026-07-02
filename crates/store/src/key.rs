@@ -54,12 +54,18 @@ pub use group::{
     NAMESPACE_GOV_OP_PREFIX, NAMESPACE_IDENTITY_PREFIX, PENDING_SELF_PURGE_PREFIX,
 };
 
-// `repr(transparent)` guarantees `Key<T>` shares the layout of its sole field,
-// `GenericArray<u8, T::LEN>`. The `&Key<T> <-> &Key<(T,)>` reference casts below
-// rely on this: both are transparent wrappers over the same array type (the
-// `(T,): KeyComponents<LEN = T::LEN>` bound forces equal lengths), so the two
-// have identical layout and the pointer cast is sound. Without this attribute
-// the layout of a `repr(Rust)` struct is unspecified and the casts would be UB.
+/// A fixed-width storage key: a `GenericArray<u8, T::LEN>` tagged with its
+/// component layout `T`.
+///
+/// # Layout
+///
+/// This struct is `#[repr(transparent)]` over its sole field, and that
+/// attribute is load-bearing: the `&Key<T> <-> &Key<(T,)>` reference casts in
+/// this module rely on `Key<T>` and `Key<(T,)>` having identical layout. Both
+/// are transparent wrappers over the same `GenericArray<u8, T::LEN>` (the
+/// `(T,): KeyComponents<LEN = T::LEN>` bound forces equal lengths), so the casts
+/// are sound. Without `repr(transparent)` a `repr(Rust)` struct's layout is
+/// unspecified and those casts would be undefined behavior.
 #[repr(transparent)]
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
 

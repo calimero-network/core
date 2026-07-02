@@ -104,6 +104,13 @@ impl CompositeKey {
     /// let key = CompositeKey::new_multi(&[b"a", b"b", b"c"]);
     /// assert_eq!(CompositeKey::parse_multi(key.as_bytes()).unwrap(), vec![b"a", b"b", b"c"]);
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if any single part is `u32::MAX` bytes or longer, since the length
+    /// prefix is a `u32`. Parts are serialized map keys or indices, which are
+    /// orders of magnitude smaller than this in every real workload, so this is
+    /// a hard invariant rather than a recoverable condition.
     pub fn new_multi(parts: &[&[u8]]) -> Self {
         let total_len: usize = parts.iter().map(|p| LEN_PREFIX_SIZE + p.len()).sum();
 

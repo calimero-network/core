@@ -157,10 +157,20 @@ impl MigrationStatusCache {
         // when the wall clock is readable: an unreadable clock (system time
         // before the epoch) must fail *open* here, otherwise treating `now` as 0
         // would reject every heartbeat and stall migration liveness entirely.
-        if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-            let now_ms = now.as_millis() as u64;
-            if hb.ts_millis > now_ms.saturating_add(MAX_HEARTBEAT_CLOCK_DRIFT_MS) {
-                return;
+        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(now) => {
+                let now_ms = now.as_millis() as u64;
+                if hb.ts_millis > now_ms.saturating_add(MAX_HEARTBEAT_CLOCK_DRIFT_MS) {
+                    return;
+                }
+            }
+            Err(err) => {
+                // Surface the degraded state: the drift guard is disabled while
+                // the clock is unreadable, so far-future heartbeats are accepted.
+                tracing::warn!(
+                    ?err,
+                    "system clock unreadable; migration heartbeat drift guard disabled"
+                );
             }
         }
 
