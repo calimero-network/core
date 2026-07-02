@@ -178,6 +178,8 @@ pub enum HostError {
     TotalBlobMemoryExceeded { current: u64, max: u64 },
     #[error("blob write too large (size: {size}, max: {max})")]
     BlobWriteTooLarge { size: u64, max: u64 },
+    #[error("blob write failed (writer task unavailable)")]
+    BlobWriteFailed,
     #[error("context does not have permission to access this blob handle")]
     BlobContextMismatch,
     #[error("too many blob handles open")]
