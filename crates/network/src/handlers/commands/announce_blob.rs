@@ -39,8 +39,11 @@ impl Handler<AnnounceBlob> for NetworkManager {
         ) {
             Ok(value) => value,
             Err(err) => {
+                // Log the underlying signing error server-side only; return a
+                // generic error so key/crypto detail can't leak into a caller
+                // response or downstream log.
                 warn!("Failed to sign blob provider record: {:?}", err);
-                return Response::reply(Err(eyre!("Failed to sign record: {:?}", err)));
+                return Response::reply(Err(eyre!("failed to sign blob provider record")));
             }
         };
 

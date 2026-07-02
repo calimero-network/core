@@ -32,27 +32,39 @@ const DOMAIN: &[u8] = b"calimero:dht:blob-provider:v1";
 ///
 /// Borsh-encoded into `Record::value`. This is a wire-format change from the
 /// previous bare `peer_id ‖ size` layout — see the module docs.
+///
+/// Fields are private: the only ways to obtain one are [`Self::signed_value`]
+/// (which produces a correctly signed record) and borsh-deserializing a value
+/// through [`Self::verify`] (which authenticates it). This prevents callers
+/// elsewhere in the crate from hand-constructing an unauthenticated record.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct BlobProviderRecord {
     /// Provider `PeerId::to_bytes()`.
-    pub peer_id: Vec<u8>,
+    peer_id: Vec<u8>,
     /// Blob size in bytes.
-    pub size: u64,
+    size: u64,
     /// Provider's network public key, protobuf-encoded. Must hash to `peer_id`.
-    pub public_key: Vec<u8>,
+    public_key: Vec<u8>,
     /// Ed25519 signature by the provider's network key over [`Self::signed_message`].
-    pub signature: Vec<u8>,
+    signature: Vec<u8>,
 }
 
 impl BlobProviderRecord {
-    /// Canonical bytes the signature covers: `DOMAIN ‖ record_key ‖ peer_id ‖ size`.
+    /// Canonical bytes the signature covers:
+    /// `DOMAIN ‖ len(record_key) ‖ record_key ‖ len(peer_id) ‖ peer_id ‖ size`.
     ///
     /// `record_key` is the full DHT key (`context_id ‖ blob_id`), so a record
-    /// signed for one (context, blob) can't be lifted onto another key.
+    /// signed for one (context, blob) can't be lifted onto another key. The
+    /// variable-length fields are length-prefixed (`u32` LE) so no crafted
+    /// `record_key` / `peer_id` pair can shift the field boundary and collide
+    /// with a different `(record_key, peer_id)` under the same signed message.
     fn signed_message(record_key: &[u8], peer_id: &[u8], size: u64) -> Vec<u8> {
-        let mut message = Vec::with_capacity(DOMAIN.len() + record_key.len() + peer_id.len() + 8);
+        let mut message =
+            Vec::with_capacity(DOMAIN.len() + 4 + record_key.len() + 4 + peer_id.len() + 8);
         message.extend_from_slice(DOMAIN);
+        message.extend_from_slice(&(record_key.len() as u32).to_le_bytes());
         message.extend_from_slice(record_key);
+        message.extend_from_slice(&(peer_id.len() as u32).to_le_bytes());
         message.extend_from_slice(peer_id);
         message.extend_from_slice(&size.to_le_bytes());
         message
