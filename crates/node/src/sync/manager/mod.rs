@@ -2304,7 +2304,10 @@ impl SyncManager {
                             // gate `apply_authorized_state_delta` uses.
                             if NamespaceRepository::new(&datastore_for_heads)
                                 .is_read_only_for_context(&context_id, &author)
-                                .unwrap_or(false)
+                                .unwrap_or_else(|err| {
+                                    warn!(%context_id, %author, %err, "ReadOnly lookup failed; failing closed");
+                                    true
+                                })
                             {
                                 warn!(
                                     %context_id,
