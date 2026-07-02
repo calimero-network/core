@@ -60,6 +60,18 @@ mod signing;
 pub mod storage;
 mod upgrade_gate;
 
+/// Maximum depth of a local xcall cascade: a direct/RPC call runs at depth 0,
+/// and each `xcall` it (transitively) triggers runs one level deeper. Once an
+/// execution reaches this depth its own xcalls are denied, so a chain can be at
+/// most this many hops long.
+///
+/// xcalls dispatch locally and each spawned execution can queue up to
+/// `max_xcalls` more (breadth `B`, default 8), so without a depth bound one
+/// root call could recurse forever (a cycle A→B→A) or fan out `B^depth`. This
+/// cap bounds one root call to at most `B + B² + … + B^DEPTH` local executions
+/// — 584 at `B = 8`, `DEPTH = 3`.
+const MAX_XCALL_DEPTH: u32 = 3;
+
 use governance_position::compute_governance_position_for_context;
 pub(crate) use signing::{persist_signed_signatures, sign_authorized_actions};
 use storage::{ContextPrivateStorage, ContextStorage, ReadOnlyContextStorage};
@@ -81,6 +93,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             aliases,
             atomic,
             xcall_origin,
+            xcall_depth,
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -1127,6 +1140,28 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     ));
                                 };
 
+                                // Depth cap: an execution already at the maximum
+                                // cascade depth may not spawn further xcalls. This
+                                // is what bounds the otherwise-unbounded local
+                                // recursion — a cycle A→B→A would never terminate,
+                                // and each level multiplies the fan-out by up to
+                                // `max_xcalls`. `xcall_depth` is this execution's
+                                // depth; a child would run one deeper.
+                                if xcall_depth >= MAX_XCALL_DEPTH {
+                                    warn!(
+                                        %context_id,
+                                        target_context = ?target_context_id,
+                                        function = %function,
+                                        xcall_depth,
+                                        max = MAX_XCALL_DEPTH,
+                                        "xcall denied: depth limit reached"
+                                    );
+                                    emit(XCallOutcome::Denied {
+                                        reason: "xcall depth limit".to_owned(),
+                                    });
+                                    continue;
+                                }
+
                                 // A context may only xcall a target in its OWN
                                 // owning group. Gating on the shared namespace
                                 // root instead let any sibling context anywhere
@@ -1198,6 +1233,10 @@ impl Handler<ExecuteRequest> for ContextManager {
                                         vec![],
                                         None,
                                         Some(context_id),
+                                        // Child runs one level deeper; the depth
+                                        // check above guarantees this stays within
+                                        // `MAX_XCALL_DEPTH`.
+                                        xcall_depth + 1,
                                     )
                                     .await;
 
