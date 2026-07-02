@@ -2,7 +2,6 @@ use std::pin::pin;
 use std::sync::Arc;
 
 use axum::extract::Query;
-use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::GetGroupForContextRequest;
@@ -11,7 +10,7 @@ use futures_util::TryStreamExt;
 use serde::Deserialize;
 use tracing::{error, info, warn};
 
-use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
+use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 /// Hard cap on the number of contexts returned in a single response, regardless
@@ -29,7 +28,7 @@ const MAX_OFFSET: usize = 100_000;
 
 #[derive(Debug, Deserialize)]
 pub struct GetContextsQuery {
-    /// Number of context ids to skip from the stream before collecting the page.
+    /// Number of context ids to skip from the stream (clamped to `MAX_OFFSET`).
     offset: Option<usize>,
     /// Maximum number of contexts to return (clamped to `MAX_PAGE`).
     limit: Option<usize>,
@@ -39,14 +38,9 @@ pub async fn handler(
     Query(query): Query<GetContextsQuery>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let offset = query.offset.unwrap_or(0);
-    if offset > MAX_OFFSET {
-        return ApiError {
-            status_code: StatusCode::BAD_REQUEST,
-            message: format!("offset exceeds maximum of {MAX_OFFSET}"),
-        }
-        .into_response();
-    }
+    // Both bounds are silently clamped (rather than one clamped and one
+    // rejected) so the endpoint treats over-large paging params consistently.
+    let offset = query.offset.unwrap_or(0).min(MAX_OFFSET);
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_PAGE);
 
     info!(offset, limit, "Listing contexts");
