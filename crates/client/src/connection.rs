@@ -34,6 +34,11 @@ pub(crate) const MAX_JSON_BODY_BYTES: usize = 16 * 1024 * 1024;
 /// message. Error bodies should be tiny; cap them hard.
 const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 
+/// Maximum size of a token endpoint response body. A refresh response is just a
+/// pair of JWT strings, so cap it far below the general JSON limit — the auth
+/// path shouldn't let a hostile/misconfigured proxy buffer megabytes.
+const MAX_TOKEN_BODY_BYTES: usize = 64 * 1024;
+
 /// Maximum size of a binary (blob) response body. Larger than the JSON cap
 /// because blobs are the data plane, but still bounded so a lying
 /// `Content-Length` or an endless stream can't exhaust memory.
@@ -556,7 +561,7 @@ where
             ));
         }
 
-        let body = read_body_capped(response, MAX_JSON_BODY_BYTES).await?;
+        let body = read_body_capped(response, MAX_TOKEN_BODY_BYTES).await?;
         let wrapped_response: WrappedResponse = serde_json::from_slice(&body)?;
 
         Ok(JwtToken::with_refresh(

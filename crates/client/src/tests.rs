@@ -1190,8 +1190,10 @@ async fn traversal_path_is_rejected_before_send() {
 async fn detect_auth_mode_preserves_base_path() {
     let server = MockServer::start().await;
     // Only the base-path-prefixed probe is mocked → 200 = AuthMode::None. If the
-    // base path were dropped the probe would hit `/admin-api/contexts` (unmocked
-    // → 404 → AuthMode::Required), so asserting `None` proves it was preserved.
+    // base path were dropped the probe would hit `/admin-api/contexts`, which is
+    // unmocked — wiremock answers unmatched routes with 404, and `detect_auth_mode`
+    // maps a non-401 non-2xx status to AuthMode::Required. So asserting `None`
+    // (not `Required`) proves the prefixed path was hit and returned 200.
     Mock::given(method("GET"))
         .and(path("/proxy/base/admin-api/contexts"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
