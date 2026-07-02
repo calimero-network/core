@@ -150,7 +150,16 @@ mod interface__public_methods {
         let mut page = Page::new_from_element("Original", Element::root());
         page.element_mut().set_updated_at(base);
         assert!(MainInterface::save(&mut page).unwrap());
-        let hash_before = page.element().merkle_hash;
+        // Capture the pre-change hash from the PERSISTED entity, not the
+        // in-memory element, so the assertion doesn't depend on `save`'s
+        // side-effect of refreshing `element().merkle_hash` — a broken save
+        // that left the in-memory hash zeroed would otherwise make the
+        // `assert_ne!` below trivially pass.
+        let hash_before = MainInterface::find_by_id::<Page>(page.id())
+            .unwrap()
+            .unwrap()
+            .element()
+            .merkle_hash;
 
         page.title = "Changed".to_string();
         page.element_mut().update();
