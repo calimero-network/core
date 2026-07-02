@@ -30,15 +30,17 @@ const DEV_INSTALL_ROOT_ENV: &str = "MEROD_DEV_INSTALL_ROOT";
 /// The `Err` string is deliberately generic — detailed reasons (including the
 /// operator-configured root and OS errno) are logged server-side only, so the
 /// endpoint never discloses server filesystem layout to the caller.
-fn check_dev_install_confinement(path: &str) -> Result<(), String> {
+async fn check_dev_install_confinement(path: &str) -> Result<(), String> {
     let Ok(root) = std::env::var(DEV_INSTALL_ROOT_ENV) else {
         return Ok(());
     };
-    let canon_root = std::fs::canonicalize(&root).map_err(|e| {
+    // Use the async filesystem API so the stat/readlink syscalls don't block the
+    // executor thread.
+    let canon_root = tokio::fs::canonicalize(&root).await.map_err(|e| {
         error!(root = %root, error = %e, "invalid MEROD_DEV_INSTALL_ROOT");
         "server misconfiguration: dev-install root is unavailable".to_owned()
     })?;
-    let canon_path = std::fs::canonicalize(path).map_err(|e| {
+    let canon_path = tokio::fs::canonicalize(path).await.map_err(|e| {
         warn!(path = %path, error = %e, "dev-install path could not be resolved");
         "install path could not be resolved".to_owned()
     })?;
@@ -60,7 +62,7 @@ pub async fn handler(
 
     // Detailed reason is logged inside the check; `msg` is a generic,
     // caller-safe string.
-    if let Err(msg) = check_dev_install_confinement(req.path.as_str()) {
+    if let Err(msg) = check_dev_install_confinement(req.path.as_str()).await {
         return ApiError {
             status_code: StatusCode::FORBIDDEN,
             message: msg,
