@@ -258,6 +258,16 @@ impl Database<'_> for RocksDB {
         Ok(())
     }
 
+    fn flush(&self) -> EyreResult<()> {
+        // Flush the WAL first (fsync it), then flush memtables to SST. Ordering
+        // WAL-before-memtable means that if the second step is interrupted the
+        // durable WAL still covers every write. Called on controlled shutdown;
+        // `Drop` runs the same sequence for the abrupt path.
+        self.db.flush_wal(true)?;
+        self.db.flush()?;
+        Ok(())
+    }
+
     fn iter_snapshot(&self, col: Column) -> EyreResult<Iter<'_>> {
         let cf_handle = self.try_cf_handle(col)?;
         let snapshot = self.db.snapshot();
@@ -275,6 +285,21 @@ impl Database<'_> for RocksDB {
             iter,
             _snapshot: snapshot,
         }))
+    }
+}
+
+impl Drop for RocksDB {
+    fn drop(&mut self) {
+        // Persist the memtable + WAL when the last handle to the database goes
+        // away. Without this, an abrupt process stop (kill, container
+        // termination) between the last write and RocksDB's background flush
+        // loses whatever was still buffered in memory. Errors are swallowed —
+        // `drop` cannot propagate and there is nothing to recover to at this
+        // point. The controlled-shutdown path calls `flush()` explicitly
+        // *before* drop so this is a backstop, not the primary durability
+        // barrier. Mirrors the auth backend's RocksDB `Drop`.
+        let _ = self.db.flush_wal(true);
+        let _ = self.db.flush();
     }
 }
 
