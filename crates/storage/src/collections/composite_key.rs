@@ -64,6 +64,9 @@ fn decode_part(bytes: &[u8], offset: usize) -> Result<(Vec<u8>, usize), ParseErr
 
     let mut len_bytes = [0u8; LEN_PREFIX_SIZE];
     len_bytes.copy_from_slice(&bytes[offset..len_end]);
+    // `u32 as usize` is lossless on all supported (32/64-bit) targets. The
+    // `checked_add` + `filter` below bound `part_end` to the buffer regardless,
+    // so an attacker-controlled length can never trigger an out-of-bounds read.
     let part_len = u32::from_be_bytes(len_bytes) as usize;
 
     let part_end = len_end
