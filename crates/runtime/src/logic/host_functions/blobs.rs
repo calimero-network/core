@@ -206,16 +206,11 @@ impl VMHostFunctions<'_> {
         // is confirmed to be a write handle — so a guest can't drain the budget
         // by hammering an invalid fd or an unreadable descriptor.
         //
-        // The charge is optimistic and not refunded, so the budget is a
-        // pessimistic upper bound rather than an exact byte count. It lands
-        // before the `send` below so the budget is enforced strictly (a chunk
-        // that would exceed it is rejected before being buffered). The only way
-        // a charged chunk isn't written is a `send` failure, which returns `Err`
-        // and traps the whole execution — the `VMLogic` and this counter are
-        // discarded, so the charge has no observable effect and there is nothing
-        // to refund. (This "discarded on trap" assumption is load-bearing: were
-        // this error ever caught without dropping the `VMLogic`, the budget
-        // would be over-charged by one chunk.)
+        // Charge the budget before `send` so it is enforced strictly: a chunk
+        // that would exceed it is rejected before being buffered. If the chunk
+        // then fails to reach the writer task, the charge is refunded below, so
+        // the counter reflects only bytes actually handed off — no reliance on
+        // the execution being discarded.
         self.with_logic_mut(|logic| logic.charge_blob_write(data_len))?;
 
         // `block_in_place` hands the blocking wait off the async worker so the
@@ -223,14 +218,17 @@ impl VMHostFunctions<'_> {
         // `Handle::block_on` would panic on a runtime thread. This requires a
         // multi-threaded Tokio runtime (as do `blob_read`/`blob_close`); it
         // would panic on a `current_thread` runtime.
-        //
-        // A `send` failure means the writer task's receiver is gone (task
-        // panicked/aborted) — distinct from an invalid fd, so surface it as
-        // `BlobWriteFailed` rather than the misleading `InvalidBlobHandle`.
-        tokio::task::block_in_place(|| {
+        let send_result = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(sender.send(data))
-        })
-        .map_err(|_| VMLogicError::HostError(HostError::BlobWriteFailed))?;
+        });
+        if send_result.is_err() {
+            // The writer task's receiver is gone (task panicked/aborted) — the
+            // chunk was never handed off, so refund the charge. This is distinct
+            // from an invalid fd, so surface it as `BlobWriteFailed` rather than
+            // the misleading `InvalidBlobHandle`.
+            self.with_logic_mut(|logic| logic.refund_blob_write(data_len));
+            return Err(VMLogicError::HostError(HostError::BlobWriteFailed));
+        }
 
         Ok(data_len)
     }

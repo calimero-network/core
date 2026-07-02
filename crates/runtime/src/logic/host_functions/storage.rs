@@ -465,19 +465,26 @@ impl VMHostFunctions<'_> {
         // work across the two backends. Only charge when there is a backing
         // store to write to.
         let written = self.with_logic_mut(|logic| -> VMLogicResult<bool> {
-            if logic.private_storage.is_none() {
+            // No private store → nothing to write and nothing to charge.
+            // Charge and write in a single arm on the live borrow. The budget
+            // counters and limits are disjoint fields from `private_storage`, so
+            // `charge_write_counters` can update them while `private_storage` is
+            // borrowed — a `charge_storage_write` method call would borrow all of
+            // `logic` and conflict. Read the limits out first (a `Copy` of two
+            // `u64`s) so nothing borrows `logic.limits` across the write.
+            let write_bytes = key_len as u64 + value_len as u64;
+            let max_writes = logic.limits.max_storage_writes;
+            let max_bytes = logic.limits.max_storage_write_bytes;
+            let Some(private_storage) = logic.private_storage.as_mut() else {
                 return Ok(false);
-            }
-            // Charge before writing. `charge_storage_write` borrows all of
-            // `logic`, so it must run before re-borrowing `private_storage`; the
-            // `is_none` check above guarantees the re-borrow is `Some`. Surface
-            // a broken invariant as an error rather than silently consuming the
-            // budget without writing.
-            logic.charge_storage_write(key_len as u64 + value_len as u64)?;
-            let private_storage = logic
-                .private_storage
-                .as_mut()
-                .ok_or(HostError::InvalidMemoryAccess)?;
+            };
+            crate::logic::charge_write_counters(
+                &mut logic.storage_writes,
+                &mut logic.storage_write_bytes,
+                max_writes,
+                max_bytes,
+                write_bytes,
+            )?;
             let _evicted = private_storage.set(key, value);
             Ok(true)
         })?;

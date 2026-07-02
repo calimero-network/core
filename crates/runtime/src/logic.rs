@@ -459,6 +459,47 @@ pub struct VMLogic<'a> {
     blob_bytes_written: u64,
 }
 
+/// Charges one storage write of `add` bytes against the shared per-execution
+/// write counters, committing both only if both the count and byte checks pass.
+///
+/// A free function (rather than a `&mut self` method) so callers holding a live
+/// `&mut` borrow of another `VMLogic` field — notably `private_storage` — can
+/// still charge the budget: the borrow checker splits the two disjoint counter
+/// borrows from that field borrow, which a whole-`self` method call could not.
+///
+/// # Errors
+///
+/// * [`HostError::StorageWriteCountExceeded`] if the write count would exceed
+///   `max_writes`.
+/// * [`HostError::StorageWriteBytesExceeded`] if the cumulative bytes would
+///   exceed `max_bytes`.
+fn charge_write_counters(
+    writes: &mut u64,
+    bytes_total: &mut u64,
+    max_writes: u64,
+    max_bytes: u64,
+    add: u64,
+) -> VMLogicResult<()> {
+    let next_writes = writes.checked_add(1).ok_or(HostError::IntegerOverflow)?;
+    if next_writes > max_writes {
+        return Err(HostError::StorageWriteCountExceeded { max: max_writes }.into());
+    }
+    let next_bytes = bytes_total
+        .checked_add(add)
+        .ok_or(HostError::IntegerOverflow)?;
+    if next_bytes > max_bytes {
+        return Err(HostError::StorageWriteBytesExceeded {
+            attempted: next_bytes,
+            max: max_bytes,
+        }
+        .into());
+    }
+    // Commit both counters only after both checks pass — no partial state.
+    *writes = next_writes;
+    *bytes_total = next_bytes;
+    Ok(())
+}
+
 impl<'a> VMLogic<'a> {
     /// Creates a new `VMLogic` instance.
     ///
@@ -526,30 +567,17 @@ impl<'a> VMLogic<'a> {
     /// * [`HostError::StorageWriteBytesExceeded`] once the cumulative byte total
     ///   would exceed [`VMLimits::max_storage_write_bytes`].
     fn charge_storage_write(&mut self, bytes: u64) -> VMLogicResult<()> {
-        let next_writes = self
-            .storage_writes
-            .checked_add(1)
-            .ok_or(HostError::IntegerOverflow)?;
-        if next_writes > self.limits.max_storage_writes {
-            return Err(HostError::StorageWriteCountExceeded {
-                max: self.limits.max_storage_writes,
-            }
-            .into());
-        }
-        let next_bytes = self
-            .storage_write_bytes
-            .checked_add(bytes)
-            .ok_or(HostError::IntegerOverflow)?;
-        if next_bytes > self.limits.max_storage_write_bytes {
-            return Err(HostError::StorageWriteBytesExceeded {
-                attempted: next_bytes,
-                max: self.limits.max_storage_write_bytes,
-            }
-            .into());
-        }
-        self.storage_writes = next_writes;
-        self.storage_write_bytes = next_bytes;
-        Ok(())
+        // Delegate to the free function so `private_storage_write` can charge on
+        // the same budget inline (see there): a method borrows all of `self`,
+        // which would conflict with a live `&mut self.private_storage`, whereas
+        // the free function takes only the two counters and the limits by value.
+        charge_write_counters(
+            &mut self.storage_writes,
+            &mut self.storage_write_bytes,
+            self.limits.max_storage_writes,
+            self.limits.max_storage_write_bytes,
+            bytes,
+        )
     }
 
     /// Charges `bytes` of blob write payload against the per-execution total
@@ -573,6 +601,16 @@ impl<'a> VMLogic<'a> {
         }
         self.blob_bytes_written = next;
         Ok(())
+    }
+
+    /// Refunds a previously-charged blob write of `bytes`.
+    ///
+    /// Used when a charged chunk fails to reach the writer task (`blob_write`'s
+    /// `send` fails), so the optimistic charge is not left on the counter. The
+    /// subtraction saturates: it can never underflow because every refund
+    /// pairs with a prior successful [`charge_blob_write`].
+    fn refund_blob_write(&mut self, bytes: u64) {
+        self.blob_bytes_written = self.blob_bytes_written.saturating_sub(bytes);
     }
 
     /// Associates a Wasmer memory instance with this `VMLogic`.
