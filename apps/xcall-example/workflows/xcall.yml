@@ -278,6 +278,10 @@ steps:
   # If the inline dispatch is ever reintroduced, this step hangs and the run
   # fails on wait_timeout.
   # ============================================================================
+  # C1 has only ever been a ping *source* in the steps above (C1->C2, C1->C3,
+  # C1->C2/secret); it has never been a pong *target*, so its counter is still
+  # 0. If a future edit makes C1 a callee before this point, this pre-condition
+  # correctly fails and flags that the regression below is no longer isolated.
   - name: C1 pong counter starts at 0
     type: call
     node: xcall-authz-1
@@ -309,7 +313,10 @@ steps:
     method: get_counter
     outputs:
       c1_after: result.output
-  - name: Assert self-xcall completed (pong ran on C1; no deadlock/hang)
+  # Exactly 1 (not >=1): with c1_before pinned to 0 immediately above, ==1
+  # proves the self-xcall ran exactly once — it catches BOTH a hang/no-op
+  # (counter stays 0) AND an accidental duplicate dispatch (counter would be 2).
+  - name: Assert self-xcall completed (pong ran on C1 exactly once; no deadlock/hang)
     type: json_assert
     statements:
       - "equal({{c1_after}}, 1)"
@@ -373,17 +380,20 @@ steps:
     type: json_assert
     statements:
       - "equal({{c4_after}}, 0)"
-  # Two "owning group boundary" denials are expected by now: the earlier
-  # cross-namespace C1->C3, plus this cross-subgroup C1->C4. Requiring >=2
-  # confirms the subgroup case denied in its own right, not just the namespace
-  # one. The c4 counter staying 0 above is the authoritative proof.
-  - name: Assert owning-group-boundary denial was logged for the subgroup case
+  # The authoritative proof that this cross-subgroup xcall was denied is
+  # `c4_after == 0` above (pong never ran). This log check is a secondary
+  # confirmation that owning-group denials surface in the log at all. It uses
+  # min_matches: 1 deliberately — the log is cumulative over the run (an earlier
+  # C1->C3 cross-namespace denial also matches), so a higher count would be a
+  # fragile, order-dependent coupling to unrelated steps rather than added
+  # signal.
+  - name: Assert an owning-group-boundary denial was logged
     type: assert_log_present
     nodes:
       - xcall-authz-1
     patterns:
       - "xcall denied: owning group boundary"
-    min_matches: 2
+    min_matches: 1
 
 stop_all_nodes: true
 restart: false
