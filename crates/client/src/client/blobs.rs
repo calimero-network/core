@@ -96,7 +96,12 @@ where
             data: BlobInfo,
         }
 
-        let upload_response: BlobUploadResponse = response.json().await?;
+        // Cap the (small, control-plane) JSON response so a hostile node can't
+        // OOM us via an unbounded upload-response body.
+        let body =
+            crate::connection::read_body_capped(response, crate::connection::MAX_JSON_BODY_BYTES)
+                .await?;
+        let upload_response: BlobUploadResponse = serde_json::from_slice(&body)?;
         Ok(upload_response.data)
     }
 

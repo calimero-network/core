@@ -1017,3 +1017,165 @@ async fn create_namespace_returns_err_on_server_error() {
 
     assert!(result.is_err());
 }
+
+// ---- Auth retry & query handling ----
+//
+// These exercise the connection's 401 handling with a real (in-memory) storage
+// and authenticator, using `node_name = Some(..)` so the auth path runs.
+
+use std::sync::{Arc, Mutex as StdMutex};
+
+use wiremock::matchers::query_param;
+
+use crate::connection::ConnectionInfo as Conn;
+
+/// In-memory token storage seeded with an initial token.
+#[derive(Clone)]
+struct MemStorage {
+    token: Arc<StdMutex<Option<JwtToken>>>,
+}
+
+#[async_trait]
+impl ClientStorage for MemStorage {
+    async fn load_tokens(&self, _: &str) -> Result<Option<JwtToken>> {
+        Ok(self.token.lock().unwrap().clone())
+    }
+
+    async fn save_tokens(&self, _: &str, tokens: &JwtToken) -> Result<()> {
+        *self.token.lock().unwrap() = Some(tokens.clone());
+        Ok(())
+    }
+}
+
+/// Authenticator that mints a fresh opaque token on demand. `authenticate` is
+/// the fallback the connection uses when no refresh token is available.
+#[derive(Clone)]
+struct MemAuth {
+    calls: Arc<StdMutex<u32>>,
+}
+
+#[async_trait]
+impl ClientAuthenticator for MemAuth {
+    async fn authenticate(&self, _: &Url) -> Result<JwtToken> {
+        *self.calls.lock().unwrap() += 1;
+        Ok(JwtToken::new("reauth-token".to_owned()))
+    }
+
+    async fn refresh_tokens(&self, _: &str) -> Result<JwtToken> {
+        unimplemented!("not exercised")
+    }
+
+    async fn handle_auth_failure(&self, _: &Url) -> Result<JwtToken> {
+        unimplemented!("not exercised")
+    }
+
+    async fn check_auth_required(&self, _: &Url) -> Result<bool> {
+        Ok(true)
+    }
+
+    fn get_auth_method(&self) -> &'static str {
+        "mem"
+    }
+}
+
+fn make_auth_client(base_url: &Url) -> (Client<MemAuth, MemStorage>, Arc<StdMutex<u32>>) {
+    // Seed an opaque (non-JWT, no refresh) token so a 401 forces the fallback
+    // re-authentication path via `MemAuth::authenticate`.
+    let storage = MemStorage {
+        token: Arc::new(StdMutex::new(Some(JwtToken::new(
+            "initial-token".to_owned(),
+        )))),
+    };
+    let calls = Arc::new(StdMutex::new(0));
+    let auth = MemAuth {
+        calls: Arc::clone(&calls),
+    };
+    let conn = Conn::new(base_url.clone(), Some("node".to_owned()), auth, storage);
+    (Client::new(conn).unwrap(), calls)
+}
+
+#[tokio::test]
+async fn get_retries_on_401_and_reauthenticates() {
+    let server = MockServer::start().await;
+
+    // First GET → 401 (highest priority, only once), then 200.
+    Mock::given(method("GET"))
+        .and(path("/admin-api/contexts"))
+        .respond_with(ResponseTemplate::new(401))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/admin-api/contexts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+        .with_priority(2)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (client, auth_calls) = make_auth_client(&Url::parse(&server.uri()).unwrap());
+    let resp: serde_json::Value = client.connection().get("admin-api/contexts").await.unwrap();
+
+    assert_eq!(resp["ok"], serde_json::Value::Bool(true));
+    // Idempotent GET was retried after re-authenticating exactly once.
+    assert_eq!(*auth_calls.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn post_is_not_replayed_on_401() {
+    let server = MockServer::start().await;
+
+    // The POST endpoint always 401s. It must be hit exactly once — the client
+    // must NOT replay a non-idempotent body after re-authenticating.
+    Mock::given(method("POST"))
+        .and(path("/admin-api/contexts"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (client, auth_calls) = make_auth_client(&Url::parse(&server.uri()).unwrap());
+    let result: Result<serde_json::Value> = client
+        .connection()
+        .post("admin-api/contexts", serde_json::json!({"name": "x"}))
+        .await;
+
+    assert!(
+        result.is_err(),
+        "non-idempotent 401 should surface an error"
+    );
+    // The session was still re-authenticated so a manual retry would work.
+    assert_eq!(*auth_calls.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn request_forwards_query_string() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/admin-api/blobs"))
+        .and(query_param("context_id", "ctx-123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // node_name=None keeps auth out of the picture; this isolates the
+    // path/query split in `request()`.
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let _resp: serde_json::Value = client
+        .connection()
+        .get("admin-api/blobs?context_id=ctx-123")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn traversal_path_is_rejected_before_send() {
+    // No server needed: the path guard rejects `..` before any request is built.
+    let client = make_client(&Url::parse("https://unused.example/").unwrap());
+    let result: Result<serde_json::Value> =
+        client.connection().get("admin-api/groups/../evil").await;
+    assert!(result.is_err());
+}

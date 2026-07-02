@@ -1166,6 +1166,7 @@ name = "calimero-client"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "calimero-context-config",
  "calimero-primitives",
  "calimero-server-primitives",
@@ -1182,6 +1183,7 @@ dependencies = [
  "url",
  "webbrowser",
  "wiremock",
+ "zeroize",
 ]
 
 [[package]]
