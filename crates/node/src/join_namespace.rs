@@ -451,6 +451,37 @@ const ATTEMPT_DEADLINE: Duration = Duration::from_secs(10);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const INITIAL_BACKOFF: Duration = Duration::from_secs(3);
 
+/// Next backoff delay: double the current delay, capped at [`MAX_BACKOFF`].
+fn next_backoff(delay: Duration) -> Duration {
+    std::cmp::min(delay * 2, MAX_BACKOFF)
+}
+
+/// Upper bound (exclusive, in milliseconds) for the retry jitter draw: a
+/// quarter of the current delay. Returns 0 when the delay is too small to
+/// jitter, in which case the caller must skip jittering (a `gen_range(0..0)`
+/// would panic).
+fn jitter_bound_millis(delay: Duration) -> u64 {
+    delay.as_millis() as u64 / 4
+}
+
+/// Per-attempt deadline: the fixed [`ATTEMPT_DEADLINE`] cap, clamped by the
+/// remaining total budget so a small `max_total` never blocks on a single
+/// full-length attempt.
+fn attempt_deadline(remaining: Duration) -> Duration {
+    std::cmp::min(ATTEMPT_DEADLINE, remaining)
+}
+
+/// Whether sleeping for `delay + jitter` right now would overshoot the total
+/// budget. The jitter is included so the loop never sleeps past `max_total`.
+fn would_exceed_budget(
+    elapsed: Duration,
+    delay: Duration,
+    jitter: Duration,
+    max_total: Duration,
+) -> bool {
+    elapsed + delay + jitter > max_total
+}
+
 /// Retry [`join_namespace`] with exponential backoff + jitter.
 ///
 /// Each attempt's deadline is clamped by the remaining total budget,
@@ -477,7 +508,7 @@ pub async fn join_namespace_with_retry(
                 waited_ms: start.elapsed().as_millis() as u64,
             });
         }
-        let attempt_deadline = std::cmp::min(ATTEMPT_DEADLINE, remaining);
+        let deadline = attempt_deadline(remaining);
         match join_namespace(
             store,
             node_client,
@@ -485,7 +516,7 @@ pub async fn join_namespace_with_retry(
             readiness_notify,
             config,
             invitation.clone(),
-            attempt_deadline,
+            deadline,
         )
         .await
         {
@@ -498,22 +529,97 @@ pub async fn join_namespace_with_retry(
                 // up to that much per iteration, violating the documented
                 // "clamped by remaining total budget" contract.
                 let jitter = {
-                    let bound = delay.as_millis() as u64 / 4;
+                    let bound = jitter_bound_millis(delay);
                     if bound == 0 {
                         Duration::ZERO
                     } else {
                         Duration::from_millis(rand::thread_rng().gen_range(0..bound))
                     }
                 };
-                if start.elapsed() + delay + jitter > max_total {
+                if would_exceed_budget(start.elapsed(), delay, jitter, max_total) {
                     return Err(JoinError::NoReadyPeers {
                         waited_ms: start.elapsed().as_millis() as u64,
                     });
                 }
                 tokio::time::sleep(delay + jitter).await;
-                delay = std::cmp::min(delay * 2, MAX_BACKOFF);
+                delay = next_backoff(delay);
             }
             Err(other) => return Err(other),
         }
+    }
+}
+
+#[cfg(test)]
+mod retry_backoff_tests {
+    use super::*;
+
+    #[test]
+    fn next_backoff_doubles_then_saturates_at_cap() {
+        assert_eq!(next_backoff(INITIAL_BACKOFF), INITIAL_BACKOFF * 2);
+        // At and beyond the cap, doubling never exceeds MAX_BACKOFF.
+        assert_eq!(next_backoff(MAX_BACKOFF), MAX_BACKOFF);
+        assert_eq!(next_backoff(Duration::from_secs(20)), MAX_BACKOFF);
+
+        // A full doubling sequence from the initial delay is monotonic and
+        // converges to exactly MAX_BACKOFF (never above).
+        let mut delay = INITIAL_BACKOFF;
+        for _ in 0..10 {
+            let next = next_backoff(delay);
+            assert!(next >= delay, "backoff must be non-decreasing");
+            assert!(next <= MAX_BACKOFF, "backoff must never exceed the cap");
+            delay = next;
+        }
+        assert_eq!(delay, MAX_BACKOFF);
+    }
+
+    #[test]
+    fn jitter_bound_is_a_quarter_of_delay_and_zero_when_tiny() {
+        assert_eq!(jitter_bound_millis(Duration::from_millis(4000)), 1000);
+        assert_eq!(jitter_bound_millis(INITIAL_BACKOFF), 750); // 3000ms / 4
+        assert_eq!(jitter_bound_millis(MAX_BACKOFF), 7500); // 30000ms / 4
+
+        // Below 4ms the bound collapses to 0, signalling "no jitter" so the
+        // loop avoids a `gen_range(0..0)` panic.
+        assert_eq!(jitter_bound_millis(Duration::from_millis(3)), 0);
+        assert_eq!(jitter_bound_millis(Duration::ZERO), 0);
+    }
+
+    #[test]
+    fn attempt_deadline_clamps_to_remaining_budget() {
+        // Ample budget → the full per-attempt cap.
+        assert_eq!(attempt_deadline(Duration::from_secs(60)), ATTEMPT_DEADLINE);
+        // A budget smaller than the cap → the remaining time, so a tight
+        // `max_total` never blocks on a single full-length attempt.
+        assert_eq!(
+            attempt_deadline(Duration::from_secs(2)),
+            Duration::from_secs(2)
+        );
+        assert_eq!(attempt_deadline(Duration::ZERO), Duration::ZERO);
+    }
+
+    #[test]
+    fn would_exceed_budget_includes_jitter_and_is_strict() {
+        let max = Duration::from_secs(10);
+        // delay alone fits within budget.
+        assert!(!would_exceed_budget(
+            Duration::from_secs(6),
+            Duration::from_secs(3),
+            Duration::ZERO,
+            max
+        ));
+        // delay + jitter pushes past budget → must report exceed.
+        assert!(would_exceed_budget(
+            Duration::from_secs(6),
+            Duration::from_secs(3),
+            Duration::from_secs(2),
+            max
+        ));
+        // Landing exactly on the budget is NOT an overshoot (strict `>`).
+        assert!(!would_exceed_budget(
+            Duration::from_secs(5),
+            Duration::from_secs(3),
+            Duration::from_secs(2),
+            max
+        ));
     }
 }

@@ -835,6 +835,22 @@ impl<T: Clone> DagStore<T> {
         to_evict.len()
     }
 
+    /// Test-only: backdate every pending delta's arrival time by `by`, so
+    /// `cleanup_stale` observes it as stale without a real wall-clock sleep.
+    /// `cleanup_stale` ages entries against `std::time::Instant`, which
+    /// `tokio::time::pause` cannot control — this seam replaces the sleep with
+    /// deterministic, instant time travel. The monotonic clock is boot-relative,
+    /// so subtracting a modest duration never underflows in practice.
+    #[cfg(test)]
+    fn backdate_pending_for_test(&mut self, by: Duration) {
+        for pending in self.pending.values_mut() {
+            pending.received_at = pending
+                .received_at
+                .checked_sub(by)
+                .expect("monotonic clock is boot-relative; backdating must not underflow");
+        }
+    }
+
     /// Get statistics for pending deltas
     pub fn pending_stats(&self) -> PendingStats {
         if self.pending.is_empty() {
@@ -1328,10 +1344,11 @@ mod basic_tests {
         dag.add_delta(delta_pending, &applier).await.unwrap();
         assert_eq!(dag.pending_stats().count, 1);
 
-        // Wait a bit
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Age the pending entry deterministically instead of sleeping: back it
+        // up 1s so it is unambiguously older than the 50ms cleanup threshold.
+        dag.backdate_pending_for_test(Duration::from_secs(1));
 
-        // Cleanup with very short timeout
+        // Cleanup with a short timeout evicts the now-stale delta.
         let evicted = dag.cleanup_stale(Duration::from_millis(50));
         assert_eq!(evicted, 1, "Should evict the stale delta");
         assert_eq!(dag.pending_stats().count, 0);

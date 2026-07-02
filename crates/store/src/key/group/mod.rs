@@ -2127,6 +2127,37 @@ mod tests {
     }
 
     #[test]
+    fn group_context_member_cap_roundtrip() {
+        // 97-byte 4-component key with a field order (group, context, member)
+        // distinct from `GroupMemberContext`'s (group, member, context).
+        // Distinct byte patterns per component prove each accessor reads its
+        // own [1..33]/[33..65]/[65..97] slice, so the two shapes can't alias.
+        let gid = [0x10; 32];
+        let context_id = PrimitiveContextId::from([0x20; 32]);
+        let member = PrimitivePublicKey::from([0x30; 32]);
+        let key = GroupContextMemberCap::new(gid, context_id, member);
+
+        assert_eq!(key.group_id(), gid);
+        assert_eq!(key.context_id(), context_id);
+        assert_eq!(key.member(), member);
+        assert_eq!(key.as_key().as_bytes()[0], GROUP_CONTEXT_MEMBER_CAP_PREFIX);
+        assert_eq!(key.as_key().as_bytes().len(), 97);
+
+        // Full decode round-trip through the exact-length slice.
+        let bytes = key.as_key().as_bytes();
+        let parts = Key::<<GroupContextMemberCap as AsKeyParts>::Components>::try_from_slice(bytes)
+            .expect("exact-length slice must decode");
+        let restored = GroupContextMemberCap::try_from_parts(parts).unwrap();
+        assert_eq!(restored.as_key().as_bytes(), bytes);
+
+        // A mis-sized slice must be rejected (no length framing on the key).
+        assert!(
+            Key::<<GroupContextMemberCap as AsKeyParts>::Components>::try_from_slice(&bytes[..96])
+                .is_none()
+        );
+    }
+
+    #[test]
     fn pending_self_purge_roundtrip() {
         let ns = [0x77; 32];
         let key = PendingSelfPurge::new(ns);

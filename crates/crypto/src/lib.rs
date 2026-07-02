@@ -172,6 +172,95 @@ mod tests {
     }
 
     #[test]
+    fn test_decrypt_with_tampered_tag() -> eyre::Result<()> {
+        // AES-GCM appends a 16-byte authentication tag after the ciphertext.
+        // Flipping a bit in that tag must make `open_in_place` reject the
+        // message, so `decrypt` returns `None` rather than garbage plaintext.
+        let mut csprng = thread_rng();
+        let signer = PrivateKey::random(&mut csprng);
+        let verifier = PrivateKey::random(&mut csprng);
+        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
+        let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
+
+        let payload = b"privacy is important";
+        let nonce = [0u8; NONCE_LEN];
+        let mut encrypted = signer_shared_key
+            .encrypt(payload.to_vec(), nonce)
+            .ok_or_eyre("encryption failed")?;
+
+        // The tag is the trailing bytes of the sealed buffer.
+        let last = encrypted.len() - 1;
+        encrypted[last] ^= 0x01;
+
+        assert!(
+            verifier_shared_key.decrypt(encrypted, nonce).is_none(),
+            "decrypt must reject a tampered authentication tag"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_decrypt_with_tampered_ciphertext() -> eyre::Result<()> {
+        // Mutating the ciphertext body (not the tag) must also fail
+        // authentication — the tag covers the whole ciphertext.
+        let mut csprng = thread_rng();
+        let signer = PrivateKey::random(&mut csprng);
+        let verifier = PrivateKey::random(&mut csprng);
+        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
+        let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
+
+        let payload = b"privacy is important";
+        let nonce = [0u8; NONCE_LEN];
+        let mut encrypted = signer_shared_key
+            .encrypt(payload.to_vec(), nonce)
+            .ok_or_eyre("encryption failed")?;
+
+        // Flip the first ciphertext byte (well before the appended tag).
+        encrypted[0] ^= 0x01;
+
+        assert!(
+            verifier_shared_key.decrypt(encrypted, nonce).is_none(),
+            "decrypt must reject tampered ciphertext"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_decrypt_with_mismatched_nonce() -> eyre::Result<()> {
+        // AES-GCM binds the nonce into tag verification. A ciphertext sealed
+        // under nonce A must not open under nonce B, even with the right key.
+        let mut csprng = thread_rng();
+        let signer = PrivateKey::random(&mut csprng);
+        let verifier = PrivateKey::random(&mut csprng);
+        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
+        let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
+
+        let payload = b"privacy is important";
+        let seal_nonce = [7u8; NONCE_LEN];
+        let mut open_nonce = seal_nonce;
+        open_nonce[0] ^= 0x01;
+
+        let encrypted = signer_shared_key
+            .encrypt(payload.to_vec(), seal_nonce)
+            .ok_or_eyre("encryption failed")?;
+
+        assert!(
+            verifier_shared_key
+                .decrypt(encrypted.clone(), open_nonce)
+                .is_none(),
+            "decrypt must fail when the nonce differs from the one used to seal"
+        );
+        // Sanity: the untampered ciphertext still opens under the correct nonce.
+        assert_eq!(
+            verifier_shared_key
+                .decrypt(encrypted, seal_nonce)
+                .ok_or_eyre("decrypt with correct nonce failed")?,
+            payload
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_new_with_invalid_public_key() {
         let mut csprng = thread_rng();
         let signer = PrivateKey::random(&mut csprng);

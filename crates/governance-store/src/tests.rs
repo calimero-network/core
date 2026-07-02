@@ -1457,6 +1457,296 @@ fn context_capability_revoked_rejects_unauthorized_signer() {
     );
 }
 
+/// `ContextCapabilityGranted` must refuse to write a per-context capability
+/// row for a context that is not registered in this group. An authorized
+/// signer (admin) clears the `require_manage_members` gate but still hits the
+/// context↔group guard — the same orphan-row hazard the grant handler guards
+/// against. Nothing may be written.
+#[test]
+fn context_capability_granted_rejects_context_not_in_group() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    // Grantee is a member, so the op fails on the context guard rather than
+    // the grantee-membership guard.
+    let target_sk = PrivateKey::random(&mut rng);
+    let target_pk = target_sk.public_key();
+    // Never registered in `gid` (nor any group).
+    let context_id = ContextId::from([0x66; 32]);
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &target_pk, GroupMemberRole::Member)
+        .unwrap();
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes.into(),
+        vec![],
+        1,
+        GroupOp::ContextCapabilityGranted {
+            context_id,
+            member: target_pk,
+            capability: calimero_governance_types::ContextCapabilityBits::new(0b1)
+                .expect("capability bitmask is non-zero"),
+        },
+    )
+    .unwrap();
+    let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<ContextRegistrationError>(),
+            Some(ContextRegistrationError::NotInGroup { .. })
+        ),
+        "expected NotInGroup, got: {err}"
+    );
+    // No per-context row was written.
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .context_member_capability(&gid, &context_id, &target_pk)
+            .unwrap(),
+        None
+    );
+}
+
+/// `ContextCapabilityGranted` requires the grantee to be a DIRECT member of
+/// the group. An authorized signer granting to a non-member (even for a
+/// context correctly registered in the group) is rejected — without this a
+/// `manage_members` signer could write an orphan capability row for an
+/// arbitrary identity the enumeration/authorization paths never reconcile.
+#[test]
+fn context_capability_granted_rejects_non_member_grantee() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    // Never added as a member of `gid`.
+    let outsider_pk = PrivateKey::random(&mut rng).public_key();
+    let context_id = ContextId::from([0x77; 32]);
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    // Context is properly registered in this group, so the op reaches the
+    // grantee-membership guard.
+    register_context_in_group(&store, &gid, &context_id).unwrap();
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes.into(),
+        vec![],
+        1,
+        GroupOp::ContextCapabilityGranted {
+            context_id,
+            member: outsider_pk,
+            capability: calimero_governance_types::ContextCapabilityBits::new(0b1)
+                .expect("capability bitmask is non-zero"),
+        },
+    )
+    .unwrap();
+    let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::NotMember { .. })
+        ),
+        "expected NotMember, got: {err}"
+    );
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .context_member_capability(&gid, &context_id, &outsider_pk)
+            .unwrap(),
+        None
+    );
+}
+
+/// `ContextCapabilityRevoked` mirrors the grant path's context↔group guard:
+/// an authorized signer cannot touch a per-context row for a context that is
+/// not registered in this group, even though revoke is otherwise lenient
+/// about grantee membership.
+#[test]
+fn context_capability_revoked_rejects_context_not_in_group() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let target_pk = PrivateKey::random(&mut rng).public_key();
+    // Never registered in `gid`.
+    let context_id = ContextId::from([0x88; 32]);
+
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes.into(),
+        vec![],
+        1,
+        GroupOp::ContextCapabilityRevoked {
+            context_id,
+            member: target_pk,
+            capability: calimero_governance_types::ContextCapabilityBits::new(0b1)
+                .expect("capability bitmask is non-zero"),
+        },
+    )
+    .unwrap();
+    let err = apply_local_signed_group_op(&store, &op).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<ContextRegistrationError>(),
+            Some(ContextRegistrationError::NotInGroup { .. })
+        ),
+        "expected NotInGroup, got: {err}"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Cross-node determinism: same ops applied in different orders on two
+// independent stores must converge to the same group state hash. The
+// existing `compute_state_hash_is_deterministic` (meta.rs) only proves a
+// single store's hash is stable across repeated calls; this proves the
+// applied STATE is order-independent, which is the property two nodes
+// replaying the same governance DAG in different topological orders rely
+// on for convergence.
+// -----------------------------------------------------------------------
+
+/// Apply a commuting set of `MemberAdded` ops — each from a distinct admin
+/// signer, so they carry no cross-signer nonce ordering constraint — in one
+/// order on store A and the reverse order on store B. Both nodes must end at
+/// the identical group state hash, and that hash must differ from the
+/// pre-apply baseline (guards against a vacuously-equal assertion where no
+/// op mutated state).
+#[test]
+fn cross_node_state_hash_is_order_independent() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    // Three admins, each authorized to add members. Distinct signers means
+    // each op is nonce 1 for its own signer, so reordering them across nodes
+    // never trips the per-signer nonce window.
+    let admin0_sk = PrivateKey::random(&mut rng);
+    let admin0_pk = admin0_sk.public_key();
+    let admin1_sk = PrivateKey::random(&mut rng);
+    let admin1_pk = admin1_sk.public_key();
+    let admin2_sk = PrivateKey::random(&mut rng);
+    let admin2_pk = admin2_sk.public_key();
+
+    // Three members each op will add. Distinct identities → the ops commute
+    // (the member set is the same regardless of insertion order).
+    let member_x = PrivateKey::random(&mut rng).public_key();
+    let member_y = PrivateKey::random(&mut rng).public_key();
+    let member_z = PrivateKey::random(&mut rng).public_key();
+
+    // Identical genesis for both nodes: admin0 is owner/admin, all three
+    // admins hold Admin member rows.
+    let bootstrap = |store: &Store| {
+        MetaRepository::new(store)
+            .save(&gid, &sample_meta_with_admin(admin0_pk))
+            .unwrap();
+        for admin in [&admin0_pk, &admin1_pk, &admin2_pk] {
+            MembershipRepository::new(store)
+                .add_member(&gid, admin, GroupMemberRole::Admin)
+                .unwrap();
+        }
+    };
+    let store_a = test_store();
+    let store_b = test_store();
+    bootstrap(&store_a);
+    bootstrap(&store_b);
+
+    // Baseline (admins only) — both nodes agree before any op is applied.
+    let baseline = MetaRepository::new(&store_a)
+        .compute_state_hash(&gid)
+        .unwrap();
+    assert_eq!(
+        baseline,
+        MetaRepository::new(&store_b)
+            .compute_state_hash(&gid)
+            .unwrap(),
+        "identical genesis must yield identical baseline hashes"
+    );
+
+    let sign_add = |sk: &PrivateKey, member| {
+        SignedGroupOp::sign(
+            sk,
+            gid_bytes.into(),
+            vec![],
+            1,
+            GroupOp::MemberAdded {
+                member,
+                role: GroupMemberRole::Member,
+            },
+        )
+        .unwrap()
+    };
+    let op0 = sign_add(&admin0_sk, member_x);
+    let op1 = sign_add(&admin1_sk, member_y);
+    let op2 = sign_add(&admin2_sk, member_z);
+
+    // Node A applies in one order...
+    for op in [&op0, &op1, &op2] {
+        apply_local_signed_group_op(&store_a, op).unwrap();
+    }
+    // ...node B in the reverse order.
+    for op in [&op2, &op1, &op0] {
+        apply_local_signed_group_op(&store_b, op).unwrap();
+    }
+
+    let hash_a = MetaRepository::new(&store_a)
+        .compute_state_hash(&gid)
+        .unwrap();
+    let hash_b = MetaRepository::new(&store_b)
+        .compute_state_hash(&gid)
+        .unwrap();
+    assert_eq!(
+        hash_a, hash_b,
+        "same ops in different orders must converge to the same state hash"
+    );
+    assert_ne!(
+        hash_a, baseline,
+        "applying MemberAdded ops must actually change the state hash"
+    );
+}
+
 // -----------------------------------------------------------------------
 // Signing key tests
 // -----------------------------------------------------------------------

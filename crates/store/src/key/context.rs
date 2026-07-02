@@ -737,3 +737,141 @@ impl Debug for ContextDagDelta {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Encode → decode round-trip plus exact-length enforcement for a key type.
+    // These fixed-width keys carry no length framing, so `try_from_slice` must
+    // accept only a slice of exactly `Key::<Components>::len()` bytes; any
+    // other length must be rejected rather than silently mis-decoded.
+    macro_rules! assert_key_roundtrip {
+        ($ctor:expr, $ty:ty, $len:expr) => {{
+            let key = $ctor;
+            let bytes = key.as_key().as_bytes();
+            assert_eq!(bytes.len(), $len, "unexpected encoded key length");
+            assert_eq!(Key::<<$ty as AsKeyParts>::Components>::len(), $len);
+
+            // An exact-length slice decodes and reconstructs identical bytes.
+            let parts = Key::<<$ty as AsKeyParts>::Components>::try_from_slice(bytes)
+                .expect("exact-length slice must decode");
+            let restored = <$ty as FromKeyParts>::try_from_parts(parts).unwrap();
+            assert_eq!(
+                restored.as_key().as_bytes(),
+                bytes,
+                "decode(encode(k)) must reproduce the key bytes"
+            );
+
+            // A one-byte-short, one-byte-long, and empty slice must all fail.
+            assert!(
+                Key::<<$ty as AsKeyParts>::Components>::try_from_slice(&bytes[..$len - 1])
+                    .is_none(),
+                "a one-byte-short slice must be rejected"
+            );
+            let mut too_long = bytes.to_vec();
+            too_long.push(0u8);
+            assert!(
+                Key::<<$ty as AsKeyParts>::Components>::try_from_slice(&too_long).is_none(),
+                "a one-byte-long slice must be rejected"
+            );
+            assert!(
+                Key::<<$ty as AsKeyParts>::Components>::try_from_slice(&[]).is_none(),
+                "an empty slice must be rejected"
+            );
+        }};
+    }
+
+    #[test]
+    fn context_meta_roundtrip() {
+        let cid = PrimitiveContextId::from([0x11; 32]);
+        let key = ContextMeta::new(cid);
+        assert_eq!(key.context_id(), cid);
+        assert_key_roundtrip!(ContextMeta::new(cid), ContextMeta, 32);
+    }
+
+    #[test]
+    fn context_config_roundtrip() {
+        let cid = PrimitiveContextId::from([0x22; 32]);
+        let key = ContextConfig::new(cid);
+        assert_eq!(key.context_id(), cid);
+        assert_key_roundtrip!(ContextConfig::new(cid), ContextConfig, 32);
+    }
+
+    #[test]
+    fn context_identity_roundtrip() {
+        // Distinct byte patterns per component so the accessors prove the
+        // context_id [0..32] / public_key [32..64] offsets are decoded from
+        // the right halves, not accidentally swapped or overlapping.
+        let cid = PrimitiveContextId::from([0x33; 32]);
+        let pk = PrimitivePublicKey::from([0x44; 32]);
+        let key = ContextIdentity::new(cid, pk);
+        assert_eq!(key.context_id(), cid);
+        assert_eq!(key.public_key(), pk);
+        assert_key_roundtrip!(ContextIdentity::new(cid, pk), ContextIdentity, 64);
+    }
+
+    #[test]
+    fn context_state_roundtrip() {
+        let cid = PrimitiveContextId::from([0x55; 32]);
+        let state_key = [0x66u8; 32];
+        let key = ContextState::new(cid, state_key);
+        assert_eq!(key.context_id(), cid);
+        assert_eq!(key.state_key(), state_key);
+        assert_key_roundtrip!(ContextState::new(cid, state_key), ContextState, 64);
+    }
+
+    #[test]
+    fn context_private_state_roundtrip() {
+        let cid = PrimitiveContextId::from([0x77; 32]);
+        let state_key = [0x88u8; 32];
+        let key = ContextPrivateState::new(cid, state_key);
+        assert_eq!(key.context_id(), cid);
+        assert_eq!(key.state_key(), state_key);
+        assert_key_roundtrip!(
+            ContextPrivateState::new(cid, state_key),
+            ContextPrivateState,
+            64
+        );
+    }
+
+    #[test]
+    fn context_dag_delta_roundtrip() {
+        let cid = PrimitiveContextId::from([0x99; 32]);
+        let delta_id = [0xAAu8; 32];
+        let key = ContextDagDelta::new(cid, delta_id);
+        assert_eq!(key.context_id(), cid);
+        assert_eq!(key.delta_id(), delta_id);
+        assert_key_roundtrip!(ContextDagDelta::new(cid, delta_id), ContextDagDelta, 64);
+    }
+
+    #[test]
+    fn scope_unified_op_roundtrip() {
+        let scope = [0xBBu8; 32];
+        let op_id = [0xCCu8; 32];
+        let key = ScopeUnifiedOp::new(scope, op_id);
+        assert_eq!(key.scope(), scope);
+        assert_eq!(key.op_id(), op_id);
+        assert_key_roundtrip!(ScopeUnifiedOp::new(scope, op_id), ScopeUnifiedOp, 64);
+    }
+
+    #[test]
+    fn distinct_components_do_not_alias() {
+        // A two-component key built with swapped halves must not compare equal
+        // to the original — a regression guard against an offset bug that
+        // reads both fields from the same half.
+        let a = PrimitiveContextId::from([0x01; 32]);
+        let b = PrimitiveContextId::from([0x02; 32]);
+        let pk_a = PrimitivePublicKey::from([0x03; 32]);
+        let pk_b = PrimitivePublicKey::from([0x04; 32]);
+        let k1 = ContextIdentity::new(a, pk_a);
+        let k2 = ContextIdentity::new(b, pk_b);
+        assert_ne!(k1.as_key().as_bytes(), k2.as_key().as_bytes());
+        assert_eq!(k1.context_id(), a);
+        assert_eq!(k1.public_key(), pk_a);
+        // Same context, different member → keys differ only in the [32..64] half.
+        let k3 = ContextIdentity::new(a, pk_b);
+        assert_eq!(&k1.as_key().as_bytes()[..32], &k3.as_key().as_bytes()[..32]);
+        assert_ne!(&k1.as_key().as_bytes()[32..], &k3.as_key().as_bytes()[32..]);
+    }
+}

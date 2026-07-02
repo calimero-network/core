@@ -9,8 +9,26 @@ use sha2::{Digest, Sha256};
 use super::*;
 use crate::constants::DRIFT_TOLERANCE_NANOS;
 use crate::entities::{Data, Element, SignatureData, StorageType};
+use crate::env::time_now;
 use crate::store::MockedStorage;
 use crate::tests::common::{Page, Paragraph};
+
+const ONE_SEC_NANOS: u64 = 1_000_000_000;
+
+/// Independently recompute an entity's `full_hash` from its stored `own_hash`
+/// + children, without reading the stored `full_hash` field (mirrors the
+/// helper in the `merkle` test module). If a save site forgot to refresh
+/// `full_hash`, the stored value and this recompute diverge.
+fn recompute_full_hash(id: crate::address::Id) -> [u8; 32] {
+    use crate::index::Index;
+    use crate::store::MainStorage;
+    let index = Index::<MainStorage>::get_index(id).unwrap().unwrap();
+    Index::<MainStorage>::calculate_full_hash_for_children(
+        index.own_hash(),
+        &index.children().map(<[_]>::to_vec),
+    )
+    .unwrap()
+}
 
 #[cfg(test)]
 mod interface__public_methods {
@@ -123,24 +141,101 @@ mod interface__public_methods {
     }
 
     #[test]
-    #[ignore]
+    #[serial]
     fn save__update_merkle_hash() {
-        // TODO: This is best done when there's data
-        todo!()
+        // A leaf entity with no children: mutating its own data must move its
+        // Merkle hash (own_hash feeds full_hash).
+        crate::tests::common::register_test_merge_functions();
+        let base = time_now();
+        let mut page = Page::new_from_element("Original", Element::root());
+        page.element_mut().set_updated_at(base);
+        assert!(MainInterface::save(&mut page).unwrap());
+        let hash_before = page.element().merkle_hash;
+
+        page.title = "Changed".to_string();
+        page.element_mut().update();
+        page.element_mut().set_updated_at(base + ONE_SEC_NANOS);
+        assert!(MainInterface::save(&mut page).unwrap());
+
+        let hash_after = MainInterface::find_by_id::<Page>(page.id())
+            .unwrap()
+            .unwrap()
+            .element()
+            .merkle_hash;
+        assert_ne!(
+            hash_before, hash_after,
+            "changing an entity's own data must move its Merkle hash"
+        );
     }
 
     #[test]
-    #[ignore]
+    #[serial]
     fn save__update_merkle_hash_with_children() {
-        // TODO: This is best done when there's data
-        todo!()
+        // Adding a child must fold into the parent's full hash, and the stored
+        // full hash must equal an independent recompute over own_hash+children.
+        crate::tests::common::register_test_merge_functions();
+        let mut page = Page::new_from_element("Parent", Element::root());
+        assert!(MainInterface::save(&mut page).unwrap());
+        let hash_no_children = page.element().merkle_hash;
+
+        let mut para = Paragraph::new_from_element("Child", Element::new(None));
+        assert!(MainInterface::add_child_to(page.id(), &mut para).unwrap());
+
+        let parent = MainInterface::find_by_id::<Page>(page.id())
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            hash_no_children,
+            parent.element().merkle_hash,
+            "parent Merkle hash must incorporate its children"
+        );
+        assert_eq!(
+            parent.element().merkle_hash,
+            recompute_full_hash(page.id()),
+            "stored full hash must match recompute over own_hash + children"
+        );
     }
 
     #[test]
-    #[ignore]
+    #[serial]
     fn save__update_merkle_hash_with_parents() {
-        // TODO: This is best done when there's data
-        todo!()
+        // The inverse direction: updating a CHILD must propagate up into every
+        // parent's full hash, and the propagated value must stay internally
+        // consistent with a fresh recompute.
+        crate::tests::common::register_test_merge_functions();
+        let base = time_now();
+        let mut page = Page::new_from_element("Parent", Element::root());
+        assert!(MainInterface::save(&mut page).unwrap());
+
+        let mut para = Paragraph::new_from_element("Original", Element::new(None));
+        assert!(MainInterface::add_child_to(page.id(), &mut para).unwrap());
+
+        let parent_hash_before = MainInterface::find_by_id::<Page>(page.id())
+            .unwrap()
+            .unwrap()
+            .element()
+            .merkle_hash;
+
+        // Update the child with a strictly-newer timestamp so the LWW save
+        // takes it, then confirm the change reached the parent.
+        para.text = "Updated".to_string();
+        para.element_mut().update();
+        para.element_mut().set_updated_at(base + ONE_SEC_NANOS);
+        assert!(MainInterface::save(&mut para).unwrap());
+
+        let parent_after = MainInterface::find_by_id::<Page>(page.id())
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            parent_hash_before,
+            parent_after.element().merkle_hash,
+            "a child update must propagate into the parent's Merkle hash"
+        );
+        assert_eq!(
+            parent_after.element().merkle_hash,
+            recompute_full_hash(page.id()),
+            "parent full hash must match recompute after a child update"
+        );
     }
 }
 
