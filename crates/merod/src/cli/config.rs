@@ -58,17 +58,32 @@ impl ConfigCommand {
 
         let mut doc = toml_str.parse::<toml_edit::DocumentMut>()?;
 
-        // Update the TOML document
+        // Update the TOML document. Navigate the dotted key path via table-like
+        // lookups instead of `Index`/`IndexMut`, which panic when a path segment
+        // resolves to a non-table (e.g. `foo.bar=1` where `foo` is a string).
         for kv in self.args.iter() {
             let key_parts: Vec<&str> = kv.key.split('.').collect();
+            let (last, parents) = key_parts
+                .split_last()
+                .expect("split('.') always yields at least one segment");
 
             let mut current = doc.as_item_mut();
-
-            for key in &key_parts[..key_parts.len() - 1] {
-                current = &mut current[key];
+            for key in parents {
+                let table = current
+                    .as_table_like_mut()
+                    .ok_or_else(|| eyre!("cannot set '{}': '{key}' is not a table", kv.key))?;
+                if table.get(key).is_none() {
+                    table.insert(key, Item::Table(toml_edit::Table::new()));
+                }
+                current = table
+                    .get_mut(key)
+                    .expect("entry inserted above must be present");
             }
 
-            current[key_parts[key_parts.len() - 1]] = Item::Value(kv.value.clone());
+            let table = current.as_table_like_mut().ok_or_else(|| {
+                eyre!("cannot set '{}': parent of '{last}' is not a table", kv.key)
+            })?;
+            table.insert(last, Item::Value(kv.value.clone()));
         }
 
         self.validate_toml(&doc).await?;

@@ -153,13 +153,15 @@ impl MigrationStatusCache {
     /// Stale-but-within-eviction-window entries are still filtered out of
     /// `fresh_peers` by the per-call `ttl` check.
     pub fn insert(&self, hb: &SignedMigrationHeartbeat) {
-        // Wall-clock sanity bound — reject far-future ts_millis.
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        if hb.ts_millis > now_ms.saturating_add(MAX_HEARTBEAT_CLOCK_DRIFT_MS) {
-            return;
+        // Wall-clock sanity bound — reject far-future ts_millis. Only applied
+        // when the wall clock is readable: an unreadable clock (system time
+        // before the epoch) must fail *open* here, otherwise treating `now` as 0
+        // would reject every heartbeat and stall migration liveness entirely.
+        if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            let now_ms = now.as_millis() as u64;
+            if hb.ts_millis > now_ms.saturating_add(MAX_HEARTBEAT_CLOCK_DRIFT_MS) {
+                return;
+            }
         }
 
         let now = Instant::now();

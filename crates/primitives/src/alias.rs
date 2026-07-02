@@ -70,19 +70,10 @@ pub enum InvalidAlias {
 impl<T> Alias<T> {
     /// Creates a new Alias from a string slice.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the string exceeds `MAX_ALIAS_LEN`.
-    #[must_use]
-    #[deprecated(
-        note = "panics on aliases longer than MAX_ALIAS_LEN; use `Alias::try_from_str` \
-                (or `str::parse`) and handle `InvalidAlias` instead"
-    )]
-    pub fn new(s: &str) -> Self {
-        s.parse().expect("alias too long")
-    }
-
-    /// Creates a new Alias from a string slice.
+    /// Returns [`InvalidAlias`] if the string is empty, exceeds
+    /// `MAX_ALIAS_LEN`, or contains a character outside `[A-Za-z0-9._-]`.
     pub fn try_from_str(s: &str) -> Result<Self, InvalidAlias> {
         s.parse()
     }
@@ -114,7 +105,9 @@ impl<T> FromStr for Alias<T> {
 
         // Aliases are interpolated into store keys and URL paths, so restrict
         // them to an unambiguous character set. This excludes path separators
-        // and whitespace that could otherwise change how an alias is routed.
+        // and whitespace that could otherwise change how an alias is routed,
+        // and also rejects NUL/control bytes that the store's fixed-width,
+        // NUL-terminated decode would truncate (letting two aliases collide).
         if !s
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))

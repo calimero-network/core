@@ -54,6 +54,13 @@ pub use group::{
     NAMESPACE_GOV_OP_PREFIX, NAMESPACE_IDENTITY_PREFIX, PENDING_SELF_PURGE_PREFIX,
 };
 
+// `repr(transparent)` guarantees `Key<T>` shares the layout of its sole field,
+// `GenericArray<u8, T::LEN>`. The `&Key<T> <-> &Key<(T,)>` reference casts below
+// rely on this: both are transparent wrappers over the same array type (the
+// `(T,): KeyComponents<LEN = T::LEN>` bound forces equal lengths), so the two
+// have identical layout and the pointer cast is sound. Without this attribute
+// the layout of a `repr(Rust)` struct is unspecified and the casts would be UB.
+#[repr(transparent)]
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
 
 impl<T: KeyComponents> Copy for Key<T> where GenericArray<u8, T::LEN>: Copy {}
@@ -142,6 +149,9 @@ where
     (T,): KeyComponents<LEN = T::LEN>,
 {
     fn from(key: &Key<T>) -> Self {
+        // SAFETY: `Key<T>` and `Key<(T,)>` are both `#[repr(transparent)]` over
+        // `GenericArray<u8, T::LEN>` (the `LEN = T::LEN` bound makes the arrays
+        // identical), so they share layout and this reference cast is sound.
         unsafe { &*ptr::from_ref(key).cast() }
     }
 }
@@ -152,6 +162,8 @@ where
     (T,): KeyComponents<LEN = T::LEN>,
 {
     fn from(key: &Key<(T,)>) -> Self {
+        // SAFETY: see the inverse impl above — identical `repr(transparent)`
+        // layout over `GenericArray<u8, T::LEN>` makes this cast sound.
         unsafe { &*ptr::from_ref(key).cast() }
     }
 }
