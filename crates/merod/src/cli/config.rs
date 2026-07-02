@@ -72,12 +72,13 @@ impl ConfigCommand {
                 let table = current
                     .as_table_like_mut()
                     .ok_or_else(|| eyre!("cannot set '{}': '{key}' is not a table", kv.key))?;
-                if table.get(key).is_none() {
-                    table.insert(key, Item::Table(toml_edit::Table::new()));
-                }
+                // `entry` inserts an empty table only when the segment is
+                // absent, and returns the existing value otherwise. A pre-
+                // existing non-table value is preserved (not overwritten) and
+                // surfaces as an error on the next `as_table_like_mut` call.
                 current = table
-                    .get_mut(key)
-                    .expect("entry inserted above must be present");
+                    .entry(key)
+                    .or_insert_with(|| Item::Table(toml_edit::Table::new()));
             }
 
             let table = current.as_table_like_mut().ok_or_else(|| {

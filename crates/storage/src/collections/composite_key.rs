@@ -46,13 +46,10 @@ pub struct CompositeKey {
 
 /// Append a single length-prefixed part to `bytes`.
 fn encode_part(bytes: &mut Vec<u8>, part: &[u8]) {
-    debug_assert!(
-        u32::try_from(part.len()).is_ok(),
-        "composite key part exceeds u32::MAX bytes"
-    );
-    // Truncation here is impossible for any realistic storage key (parts are a
-    // handful of bytes); the debug_assert guards the theoretical case.
-    let len = part.len() as u32;
+    // A storage key part never approaches u32::MAX in practice; the checked
+    // conversion enforces that in every build profile so a truncated length
+    // can't silently corrupt the key and defeat the injective encoding.
+    let len = u32::try_from(part.len()).expect("composite key part exceeds u32::MAX bytes");
     bytes.extend_from_slice(&len.to_be_bytes());
     bytes.extend_from_slice(part);
 }
@@ -135,15 +132,10 @@ impl CompositeKey {
     /// Returns [`ParseError::Truncated`] if the buffer is malformed, or
     /// [`ParseError::InvalidFormat`] if it does not decode to exactly two parts.
     pub fn parse(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ParseError> {
-        let mut parts = Self::parse_multi(bytes)?;
-        if parts.len() != 2 {
-            return Err(ParseError::InvalidFormat(format!(
-                "expected 2 parts, found {}",
-                parts.len()
-            )));
-        }
-        let inner = parts.pop().expect("len checked == 2");
-        let outer = parts.pop().expect("len checked == 2");
+        let parts = Self::parse_multi(bytes)?;
+        let [outer, inner]: [Vec<u8>; 2] = parts.try_into().map_err(|parts: Vec<_>| {
+            ParseError::InvalidFormat(format!("expected 2 parts, found {}", parts.len()))
+        })?;
         Ok((outer, inner))
     }
 

@@ -1235,9 +1235,11 @@ impl ContextClient {
             return Ok(None);
         };
 
+        // Fail loudly on an unreadable clock rather than defaulting to the
+        // epoch, which would silently mint an already-expired invitation.
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .map_err(|_| eyre::eyre!("system clock is before the Unix epoch"))?
             .as_secs();
         // Saturate so a large `valid_for_seconds` can't overflow into a past
         // (or wrapped) expiration timestamp.
