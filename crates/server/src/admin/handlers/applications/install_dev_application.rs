@@ -4,17 +4,55 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_server_primitives::admin::{InstallApplicationResponse, InstallDevApplicationRequest};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::admin::handlers::validation::ValidatedJson;
-use crate::admin::service::ApiResponse;
+use crate::admin::service::{ApiError, ApiResponse};
 use crate::AdminState;
+
+/// Env var that, when set, confines `install-dev-application` to a directory.
+///
+/// This endpoint reads an arbitrary node-local filesystem path and exposes its
+/// bytes as a blob. It is admin-auth gated and rejects `..` traversal, and
+/// reading the node owner's own files is not a privilege boundary — so absolute
+/// paths are allowed by default. Operators who want to lock the endpoint down
+/// (e.g. a shared/managed node) can set `MEROD_DEV_INSTALL_ROOT` to a directory;
+/// dev installs then only succeed for paths that resolve within it.
+const DEV_INSTALL_ROOT_ENV: &str = "MEROD_DEV_INSTALL_ROOT";
+
+/// When `MEROD_DEV_INSTALL_ROOT` is set, require `path` to resolve within it.
+/// Returns `Ok(())` when unset (historical behavior) or when confined.
+fn check_dev_install_confinement(path: &str) -> Result<(), String> {
+    let Ok(root) = std::env::var(DEV_INSTALL_ROOT_ENV) else {
+        return Ok(());
+    };
+    let canon_root = std::fs::canonicalize(&root)
+        .map_err(|e| format!("invalid {DEV_INSTALL_ROOT_ENV} ('{root}'): {e}"))?;
+    let canon_path =
+        std::fs::canonicalize(path).map_err(|e| format!("cannot resolve install path: {e}"))?;
+    if canon_path.starts_with(&canon_root) {
+        Ok(())
+    } else {
+        Err(format!(
+            "install path is outside the configured {DEV_INSTALL_ROOT_ENV}"
+        ))
+    }
+}
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     ValidatedJson(req): ValidatedJson<InstallDevApplicationRequest>,
 ) -> impl IntoResponse {
     info!(path=%req.path, "Installing dev application");
+
+    if let Err(msg) = check_dev_install_confinement(req.path.as_str()) {
+        warn!(path=%req.path, "{msg}");
+        return ApiError {
+            status_code: StatusCode::FORBIDDEN,
+            message: msg,
+        }
+        .into_response();
+    }
     let metadata_len = req.metadata.len();
     debug!(
         path=%req.path,
