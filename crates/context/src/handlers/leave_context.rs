@@ -145,8 +145,14 @@ impl Handler<LeaveContextRequest> for ContextManager {
                 }
 
                 // The response reports the primary (first) identity; every
-                // identity above has been tombstoned regardless.
-                let member_public_key = member_public_keys[0];
+                // identity above has been tombstoned regardless. The vec is
+                // non-empty here by construction (the scan found keys, or the
+                // fallback pushed one, or we already bailed) — make that
+                // invariant explicit rather than indexing blindly.
+                let member_public_key = member_public_keys
+                    .first()
+                    .copied()
+                    .expect("member_public_keys is non-empty: scan found keys or fallback pushed one");
 
                 // Stop receiving gossipsub traffic for this context. The
                 // inverse of `node_client.subscribe(context_id)` that

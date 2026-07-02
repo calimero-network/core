@@ -1100,7 +1100,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         let xcall_node_client = node_client.clone();
                         let xcall_context_client = context_client.clone();
                         let xcall_store = xcall_datastore.clone();
-                        drop(global_runtime().spawn(async move {
+                        let xcall_task = global_runtime().spawn(async move {
                             use futures_util::TryStreamExt;
                             for (target_context_id, function, params) in xcall_jobs {
                                 info!(
@@ -1254,6 +1254,20 @@ impl Handler<ExecuteRequest> for ContextManager {
                                         });
                                     }
                                 }
+                            }
+                        });
+                        // Supervise the detached batch so a panic inside it is
+                        // logged rather than silently swallowed (a dropped
+                        // JoinHandle discards the panic). The source execute
+                        // still does not wait on the xcalls — this supervisor
+                        // task is what keeps it fire-and-forget yet observable.
+                        drop(global_runtime().spawn(async move {
+                            if let Err(err) = xcall_task.await {
+                                error!(
+                                    %context_id,
+                                    %err,
+                                    "cross-context call dispatch task terminated abnormally (panic or cancellation)"
+                                );
                             }
                         }));
                     }

@@ -149,10 +149,12 @@ impl Handler<CreateGroupRequest> for ContextManager {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let reservation_meta = GroupMetaValue {
-            app_key: requested_app_key
-                .as_ref()
-                .map(AppKey::to_bytes)
-                .unwrap_or(row_blob),
+            // The reservation only holds the id slot; use the verified
+            // application-row blob (never the caller's still-unverified
+            // `requested_app_key`) so a concurrent reader can't observe an
+            // unverified `app_key`. The async body overwrites this with the
+            // final, verified `app_key` on success.
+            app_key: row_blob,
             target_application_id: effective_application_id,
             upgrade_policy: upgrade_policy.clone(),
             created_at: reservation_now,
