@@ -68,19 +68,47 @@ impl Default for CorsConfig {
 
 impl CorsConfig {
     /// Fail fast on a misconfigured allowlist: every entry in `allowed_origins`
-    /// must parse as a valid origin header value. Called at startup so a typo in
-    /// a security-sensitive origin list is an immediate, actionable error rather
-    /// than a silently-narrowed (or empty) allowlist discovered at runtime.
+    /// must be a concrete origin (`scheme://host[:port]`). Called at startup so a
+    /// typo in a security-sensitive origin list is an immediate, actionable error
+    /// rather than a silently-narrowed (or empty) allowlist discovered at runtime.
     pub fn validate(&self) -> Result<(), String> {
         if let Some(origins) = &self.allowed_origins {
             for origin in origins {
                 if axum::http::HeaderValue::from_str(origin).is_err() {
-                    return Err(format!("invalid entry in cors.allowed_origins: {origin:?}"));
+                    return Err(format!(
+                        "invalid entry in cors.allowed_origins (not a valid header value): \
+                         {origin:?}"
+                    ));
+                }
+                // tower-http compares allowlist entries against the browser's
+                // `Origin` header by exact string, so entries must be concrete
+                // origins. Reject `*`, `null`, path-bearing, or scheme-less
+                // values — these are almost always operator mistakes and would
+                // silently match nothing.
+                if !is_valid_origin(origin) {
+                    return Err(format!(
+                        "invalid entry in cors.allowed_origins (expected scheme://host[:port]): \
+                         {origin:?}"
+                    ));
                 }
             }
         }
         Ok(())
     }
+}
+
+/// Whether `s` is a concrete CORS origin: `http`/`https` scheme, a non-empty
+/// host[:port], and no path/query/fragment (browsers send `Origin` without a
+/// trailing slash). Rejects `*`, `null`, and malformed values.
+fn is_valid_origin(s: &str) -> bool {
+    let Some((scheme, rest)) = s.split_once("://") else {
+        return false;
+    };
+    matches!(scheme, "http" | "https")
+        && !rest.is_empty()
+        && !rest.contains('/')
+        && !rest.contains('?')
+        && !rest.contains('#')
 }
 
 #[derive(Debug, Clone)]
