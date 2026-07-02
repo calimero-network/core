@@ -261,7 +261,10 @@ pub(crate) async fn apply_authorized_state_delta(
     // `Member(role)` with a wildcard role that the drain matches against.
     if NamespaceRepository::new(node_clients.context.datastore())
         .is_read_only_for_context(&context_id, &author_id)
-        .unwrap_or(false)
+        .unwrap_or_else(|err| {
+            warn!(%context_id, %author_id, %err, "ReadOnly lookup failed; failing closed");
+            true
+        })
     {
         warn!(
             %context_id,
@@ -925,7 +928,10 @@ pub async fn handle_state_delta(
     // cross-DAG membership lookup on a delta we'll reject anyway.
     if NamespaceRepository::new(node_clients.context.datastore())
         .is_read_only_for_context(&context_id, &author_id)
-        .unwrap_or(false)
+        .unwrap_or_else(|err| {
+            warn!(%context_id, %author_id, %err, "ReadOnly lookup failed; failing closed");
+            true
+        })
     {
         warn!(
             %context_id,
@@ -1420,7 +1426,10 @@ async fn request_missing_deltas(
                     // though gossip rejects the same envelope.
                     if NamespaceRepository::new(&datastore)
                         .is_read_only_for_context(&context_id, &response_author)
-                        .unwrap_or(false)
+                        .unwrap_or_else(|err| {
+                            warn!(%context_id, %response_author, %err, "ReadOnly lookup failed; failing closed");
+                            true
+                        })
                     {
                         warn!(
                             %context_id,
@@ -1778,7 +1787,10 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // between authoring and replay slips a write through.
     if NamespaceRepository::new(context_client.datastore())
         .is_read_only_for_context(&context_id, &buffered.author_id)
-        .unwrap_or(false)
+        .unwrap_or_else(|err| {
+            warn!(%context_id, author = %buffered.author_id, %err, "ReadOnly lookup failed; failing closed");
+            true
+        })
     {
         warn!(
             %context_id,
