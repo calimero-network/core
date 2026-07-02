@@ -72,6 +72,15 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     _ => GroupMemberRole::Member,
                 };
 
+                // Verify the invitation's inviter signature before it seeds any
+                // local trust. `admin_identity` written in Phase 1 becomes the
+                // local root of trust for this namespace's beacon / ack /
+                // heartbeat verification and `is_admin`, so a forged invitation
+                // must not reach the seed below.
+                calimero_governance_store::NamespaceMembershipService::verify_open_invitation_signature(
+                    &invitation,
+                )?;
+
                 // -------------------------------------------------------
                 // Phase 1: Set up local state.
                 // -------------------------------------------------------
