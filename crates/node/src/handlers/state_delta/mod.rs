@@ -1215,8 +1215,14 @@ async fn request_missing_deltas(
         let key = calimero_store::key::ContextIdentity::new(context_id, our_identity);
         match datastore.handle().get(&key) {
             Ok(Some(identity)) => match identity.private_key {
-                Some(sk_bytes) => {
+                Some(mut sk_bytes) => {
+                    use zeroize::Zeroize;
                     let private_key = calimero_primitives::identity::PrivateKey::from(sk_bytes);
+                    // `PrivateKey::from` copies into its own zeroizing wrapper,
+                    // but the bare `[u8; 32]` read out of the store value is a
+                    // `Copy` that lingers on the stack — wipe it now (mirrors the
+                    // discipline in `join_namespace` / `emit_namespace_ack`).
+                    sk_bytes.zeroize();
                     let peer_id = network_client.network_status().await.local_peer_id;
                     let message =
                         InitProof::message(&context_id, &our_identity, &peer_id.to_bytes());
