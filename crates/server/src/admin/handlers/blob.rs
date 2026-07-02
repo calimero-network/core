@@ -195,10 +195,11 @@ fn build_blob_response_headers(blob_metadata: &BlobMetadata, blob_id: BlobId) ->
         .header("Content-Length", blob_metadata.size.to_string())
         .header("Content-Type", &blob_metadata.mime_type)
         .header("ETag", &etag)
-        // Blobs may be private context data served through this admin API. Never
-        // allow shared proxies/CDNs to cache them. Content is hash-addressed and
-        // immutable per blob id, so private caching with revalidation is safe.
-        .header("Cache-Control", "private, no-cache")
+        // Blobs may be private context data served through this admin API, so
+        // never allow shared proxies/CDNs to cache them (`private`). Content is
+        // hash-addressed and immutable per blob id, so a client's own cache can
+        // keep it indefinitely without revalidation (`immutable`, long max-age).
+        .header("Cache-Control", "private, max-age=31536000, immutable")
         .header("X-Blob-ID", blob_id.to_string())
         .header("X-Blob-Hash", hex::encode(blob_metadata.hash))
         .header("X-Blob-MIME-Type", &blob_metadata.mime_type)
