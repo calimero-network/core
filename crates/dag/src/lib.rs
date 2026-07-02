@@ -258,13 +258,6 @@ struct PendingDelta<T> {
     /// without a wall-clock comparison. Mirrors the key under which this entry
     /// is registered in `DagStore::pending_order`.
     seq: u64,
-    /// Test-only explicit age. When set, [`PendingDelta::age`] returns this
-    /// instead of `received_at.elapsed()`, letting staleness tests drive
-    /// `cleanup_stale` deterministically without a real sleep and without any
-    /// `Instant` arithmetic (which can't represent an age larger than the
-    /// host's monotonic-clock uptime). Only exists in test builds.
-    #[cfg(test)]
-    age_override: Option<Duration>,
 }
 
 impl<T> PendingDelta<T> {
@@ -273,16 +266,10 @@ impl<T> PendingDelta<T> {
             delta,
             received_at: Instant::now(),
             seq,
-            #[cfg(test)]
-            age_override: None,
         }
     }
 
     fn age(&self) -> Duration {
-        #[cfg(test)]
-        if let Some(age) = self.age_override {
-            return age;
-        }
         self.received_at.elapsed()
     }
 }
@@ -831,11 +818,26 @@ impl<T: Clone> DagStore<T> {
     /// This allows them to be re-fetched in future syncs instead of being stuck as
     /// zombie deltas (in deltas but not in pending or applied).
     pub fn cleanup_stale(&mut self, max_age: Duration) -> usize {
+        self.cleanup_stale_since(Instant::now(), max_age)
+    }
+
+    /// Core of [`cleanup_stale`]: evict every pending delta whose age measured
+    /// from `reference` (`reference - received_at`) exceeds `max_age`, removing
+    /// it from both the pending and deltas maps.
+    ///
+    /// Split out from [`cleanup_stale`] (which passes `Instant::now()`) so
+    /// staleness tests can supply a synthetic `reference` and drive eviction
+    /// deterministically — no real sleep, and no reliance on the host's
+    /// monotonic-clock uptime. `saturating_duration_since` keeps a `reference`
+    /// earlier than `received_at` from panicking.
+    fn cleanup_stale_since(&mut self, reference: Instant, max_age: Duration) -> usize {
         // Collect IDs to evict
         let to_evict: Vec<[u8; 32]> = self
             .pending
             .iter()
-            .filter(|(_id, pending)| pending.age() > max_age)
+            .filter(|(_id, pending)| {
+                reference.saturating_duration_since(pending.received_at) > max_age
+            })
             .map(|(id, _)| *id)
             .collect();
 
@@ -846,20 +848,6 @@ impl<T: Clone> DagStore<T> {
         }
 
         to_evict.len()
-    }
-
-    /// Test-only: force every pending delta's reported age to `age`, so
-    /// `cleanup_stale` observes it as stale without a real wall-clock sleep.
-    /// `cleanup_stale` ages entries against `std::time::Instant`, which
-    /// `tokio::time::pause` cannot control — this seam sets an explicit age
-    /// override that `PendingDelta::age` returns directly. It is unconditional
-    /// (no `Instant` subtraction, so no dependence on host uptime) and cannot
-    /// panic.
-    #[cfg(test)]
-    fn set_pending_age_for_test(&mut self, age: Duration) {
-        for pending in self.pending.values_mut() {
-            pending.age_override = Some(age);
-        }
     }
 
     /// Get statistics for pending deltas
@@ -1352,15 +1340,19 @@ mod basic_tests {
             TestPayload { value: 99 },
         );
 
+        // Capture a reference instant before the delta arrives; its
+        // received_at is strictly later than this.
+        let reference_start = Instant::now();
         dag.add_delta(delta_pending, &applier).await.unwrap();
         assert_eq!(dag.pending_stats().count, 1);
 
-        // Age the pending entry deterministically instead of sleeping: force
-        // its reported age to 1s, unambiguously past the 50ms cleanup threshold.
-        dag.set_pending_age_for_test(Duration::from_secs(1));
-
-        // Cleanup with a short timeout evicts the now-stale delta.
-        let evicted = dag.cleanup_stale(Duration::from_millis(50));
+        // Evaluate staleness relative to a synthetic reference 1s after we
+        // started — deterministically past the 50ms threshold, with no real
+        // sleep and no dependence on host uptime.
+        let evicted = dag.cleanup_stale_since(
+            reference_start + Duration::from_secs(1),
+            Duration::from_millis(50),
+        );
         assert_eq!(evicted, 1, "Should evict the stale delta");
         assert_eq!(dag.pending_stats().count, 0);
     }

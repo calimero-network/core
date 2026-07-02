@@ -1676,8 +1676,13 @@ fn cross_node_state_hash_is_order_independent() {
     let member_y = PrivateKey::random(&mut rng).public_key();
     let member_z = PrivateKey::random(&mut rng).public_key();
 
-    // Identical genesis for both nodes: admin0 is owner/admin, all three
-    // admins hold Admin member rows.
+    // Identical genesis for both nodes: admin0 is the meta owner/admin, and all
+    // three admins hold `Admin` member rows. `MemberAdded` is gated by
+    // `require_manage_members`, whose admin check (`is_admin`) passes for
+    // anyone with an `Admin` member row — NOT only `meta.admin_identity`. So
+    // admin1 and admin2 can each sign a `MemberAdded` op even though only
+    // admin0 is the meta admin; the membership assertions after apply confirm
+    // all three ops were actually accepted (not silently rejected).
     let bootstrap = |store: &Store| {
         MetaRepository::new(store)
             .save(&gid, &sample_meta_with_admin(admin0_pk))

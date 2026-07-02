@@ -16,7 +16,7 @@ use crate::tests::common::{Page, Paragraph};
 const ONE_SEC_NANOS: u64 = 1_000_000_000;
 
 /// Independently recompute an entity's `full_hash` from its stored `own_hash`
-/// + children, without reading the stored `full_hash` field (mirrors the
+/// and children, without reading the stored `full_hash` field (mirrors the
 /// helper in the `merkle` test module). If a save site forgot to refresh
 /// `full_hash`, the stored value and this recompute diverge.
 fn recompute_full_hash(id: crate::address::Id) -> [u8; 32] {
