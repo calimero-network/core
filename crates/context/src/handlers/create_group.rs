@@ -789,7 +789,9 @@ mod tests {
 
         rollback_local_group_rows(&store, &victim, &admin, Some(key_id), true);
 
-        // The bystander group is untouched.
+        // The bystander group is untouched — every row type the helper deletes
+        // is checked here, so a rollback that used the wrong group id for any
+        // one of them is caught.
         assert!(MetaRepository::new(&store)
             .load(&bystander)
             .unwrap()
@@ -797,11 +799,19 @@ mod tests {
         assert!(MembershipRepository::new(&store)
             .is_member(&bystander, &admin)
             .unwrap());
+        assert!(CapabilitiesRepository::new(&store)
+            .default_capabilities(&bystander)
+            .unwrap()
+            .is_some());
         assert!(GroupKeyring::new(&store, bystander)
             .holds_any_key()
             .unwrap());
         assert!(SigningKeysRepository::new(&store)
             .get_key(&bystander, &admin)
+            .unwrap()
+            .is_some());
+        assert!(MetadataRepository::new(&store)
+            .group_metadata(&bystander)
             .unwrap()
             .is_some());
     }
