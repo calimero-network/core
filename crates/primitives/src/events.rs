@@ -155,7 +155,7 @@ mod tests {
                 target_context_id: ContextId::from([0x03; 32]),
                 function: "on_match_finished".to_owned(),
                 outcome: XCallOutcome::Denied {
-                    reason: "namespace boundary".to_owned(),
+                    reason: "owning group boundary".to_owned(),
                 },
             }),
         };
@@ -165,7 +165,7 @@ mod tests {
         assert_eq!(v["data"]["outcome"]["status"], "denied");
         assert_eq!(
             v["data"]["outcome"]["detail"]["reason"],
-            "namespace boundary"
+            "owning group boundary"
         );
         assert!(
             v.get("contextId").is_some(),

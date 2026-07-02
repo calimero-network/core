@@ -128,4 +128,37 @@ impl<'a> ContextTreeService<'a> {
 
         Ok(None)
     }
+
+    /// Scans ContextIdentity rows for this context and returns EVERY identity
+    /// for which the node holds a local private key. Unlike
+    /// [`find_local_signing_identity`](Self::find_local_signing_identity),
+    /// which stops at the first match, this returns them all — a node can hold
+    /// several per-context identities (e.g. one minted at create time via
+    /// `CreateContextRequest.identity_secret` plus an inherited namespace
+    /// identity), and callers such as `leave_context` must act on all of them.
+    pub fn find_local_signing_identities(
+        &self,
+        context_id: &ContextId,
+    ) -> EyreResult<Vec<PublicKey>> {
+        let handle = self.store.handle();
+        let start_key = ContextIdentity::new(*context_id, [0u8; 32].into());
+        let mut iter = handle.iter::<ContextIdentity>()?;
+        let first = iter.seek(start_key).transpose();
+
+        let mut identities = Vec::new();
+        for key_result in first.into_iter().chain(iter.keys()) {
+            let key = key_result?;
+            if key.context_id() != *context_id {
+                break;
+            }
+            let Some(value) = handle.get(&key)? else {
+                continue;
+            };
+            if value.private_key.is_some() {
+                identities.push(key.public_key());
+            }
+        }
+
+        Ok(identities)
+    }
 }

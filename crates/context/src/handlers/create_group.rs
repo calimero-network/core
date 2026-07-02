@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix::{ActorResponse, Handler, Message, WrapFuture};
+use actix::{ActorFutureExt, ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{CreateGroupRequest, CreateGroupResponse};
 use calimero_context_client::local_governance::{NamespaceOp, RootOp};
 use calimero_context_config::types::AppKey;
@@ -131,6 +131,38 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 &admin_identity,
                 sk,
             );
+        }
+
+        // Reserve the group id SYNCHRONOUSLY, before spawning the async body.
+        // The existence guard at the top of `handle` and this save both run in
+        // the synchronous portion of the handler, which the actor runs to
+        // completion before dequeuing the next message. Without a synchronous
+        // reservation, two same-id CreateGroupRequests could both pass the
+        // guard (the meta was only written later, inside the async body) and
+        // each run the full create, emitting duplicate governance ops. The
+        // async body overwrites this reservation with the final meta once the
+        // app_key is resolved/verified; the cleanup map on the returned future
+        // deletes it if that async work fails, so a failed create frees the id
+        // for a clean retry rather than wedging it behind the guard forever.
+        let reservation_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let reservation_meta = GroupMetaValue {
+            app_key: requested_app_key
+                .as_ref()
+                .map(AppKey::to_bytes)
+                .unwrap_or(row_blob),
+            target_application_id: effective_application_id,
+            upgrade_policy: upgrade_policy.clone(),
+            created_at: reservation_now,
+            admin_identity,
+            owner_identity: admin_identity,
+            migration: None,
+            auto_join: true,
+        };
+        if let Err(err) = MetaRepository::new(&self.datastore).save(&group_id, &reservation_meta) {
+            return ActorResponse::reply(Err(err));
         }
 
         ActorResponse::r#async(
@@ -473,7 +505,25 @@ impl Handler<CreateGroupRequest> for ContextManager {
 
                 Ok(CreateGroupResponse { group_id })
             }
-            .into_actor(self),
+            .into_actor(self)
+            .map(move |res, act, _ctx| {
+                // Free the synchronously-reserved id on any failure that the
+                // inner rollback didn't already unwind, so the existence guard
+                // doesn't wedge the id against a clean retry. Delete is
+                // idempotent, so double-deleting after the genesis rollback is
+                // harmless; success has replaced the reservation with the final
+                // meta, so we leave it in place.
+                if res.is_err() {
+                    if let Err(err) = MetaRepository::new(&act.datastore).delete(&group_id) {
+                        warn!(
+                            ?group_id,
+                            ?err,
+                            "failed to free reserved group id after create error"
+                        );
+                    }
+                }
+                res
+            }),
         )
     }
 }

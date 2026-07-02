@@ -137,15 +137,40 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         // Launching a propagator would race with the lazy mechanism and could
         // invoke migration functions twice on the same context.
         //
-        // Save the upgrade record as Completed immediately — InProgress serves
-        // no purpose for lazy upgrades (no propagator runs) and would
-        // permanently block future upgrades since nothing transitions it out.
+        // Persist a short-lived InProgress record SYNCHRONOUSLY before the async
+        // work, exactly as the canary path below does. Without it two concurrent
+        // LazyOnAccess requests both clear `validate_upgrade` (which rejects only
+        // when an InProgress record already exists) and each emit its own racing
+        // TargetApplicationSet/GroupMigrationSet op pair. The async block below
+        // overwrites it with a Completed record on success, and the cleanup map
+        // on the future deletes it on failure so a failed attempt never leaves
+        // the group permanently blocked.
         if matches!(upgrade_policy, UpgradePolicy::LazyOnAccess) {
             let datastore = self.datastore.clone();
             let ack_router_for_lazy = Arc::clone(&ack_router);
             let target_blob_bytes: Option<[u8; 32]> = app_meta_for_contract
                 .as_ref()
                 .map(|m| *m.bytecode.blob_id().as_ref());
+
+            let inprogress = GroupUpgradeValue {
+                from_version: from_version.clone(),
+                to_version: to_version.clone(),
+                migration: None,
+                initiated_at: now,
+                initiated_by: requester,
+                status: GroupUpgradeStatus::InProgress {
+                    total: total_contexts as u32,
+                    completed: 0,
+                    failed: 0,
+                },
+                cascade_hlc: None,
+                cascade_seq: None,
+            };
+            if let Err(err) = UpgradesRepository::new(&self.datastore).save(&group_id, &inprogress)
+            {
+                return ActorResponse::reply(Err(err));
+            }
+
             return ActorResponse::r#async(
                 async move {
                     // Resolve the emission ladder from the apps' embedded
@@ -297,7 +322,24 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         status: completed_status,
                     })
                 }
-                .into_actor(self),
+                .into_actor(self)
+                .map(move |res, act, _ctx| {
+                    // On failure, drop the synchronously-persisted InProgress
+                    // record so the group isn't permanently wedged (nothing
+                    // else transitions it out on the lazy path). Success has
+                    // already overwritten it with a Completed record.
+                    if res.is_err() {
+                        if let Err(err) = UpgradesRepository::new(&act.datastore).delete(&group_id)
+                        {
+                            warn!(
+                                ?group_id,
+                                ?err,
+                                "failed to clear InProgress upgrade record after lazy upgrade error"
+                            );
+                        }
+                    }
+                    res
+                }),
             );
         }
 
@@ -2074,5 +2116,79 @@ mod tests {
         ];
         let rungs = select_intermediate_rungs(1, 3, &candidates).unwrap();
         assert_eq!(rungs, vec![([0x02; 32], 2)]);
+    }
+
+    #[test]
+    fn validate_upgrade_rejects_when_an_inprogress_record_exists() {
+        // The LazyOnAccess handler persists a short-lived InProgress record
+        // synchronously before its async work so a second concurrent request
+        // is refused rather than emitting a second racing op pair. This pins
+        // the guard that makes that work: with an InProgress record present,
+        // `validate_upgrade` bails.
+        use std::sync::Arc;
+
+        use calimero_primitives::application::ApplicationId;
+        use calimero_primitives::context::GroupMemberRole;
+        use calimero_primitives::identity::PublicKey;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
+        use calimero_store::Store;
+
+        use calimero_governance_store::{MembershipRepository, MetaRepository, UpgradesRepository};
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let group_id = gid(0xA0);
+        let requester = PublicKey::from([0x33; 32]);
+        let current_app = ApplicationId::from([0x01; 32]);
+        let target_app = ApplicationId::from([0x02; 32]);
+
+        MetaRepository::new(&store)
+            .save(
+                &group_id,
+                &GroupMetaValue {
+                    app_key: [0x11; 32],
+                    target_application_id: current_app,
+                    upgrade_policy: UpgradePolicy::LazyOnAccess,
+                    created_at: 1_700_000_000,
+                    admin_identity: requester,
+                    owner_identity: requester,
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("save meta");
+        MembershipRepository::new(&store)
+            .add_member(&group_id, &requester, GroupMemberRole::Admin)
+            .expect("add admin");
+        UpgradesRepository::new(&store)
+            .save(
+                &group_id,
+                &GroupUpgradeValue {
+                    from_version: "0.1.0".to_owned(),
+                    to_version: "0.2.0".to_owned(),
+                    migration: None,
+                    initiated_at: 1_700_000_000,
+                    initiated_by: requester,
+                    status: GroupUpgradeStatus::InProgress {
+                        total: 1,
+                        completed: 0,
+                        failed: 0,
+                    },
+                    cascade_hlc: None,
+                    cascade_seq: None,
+                },
+            )
+            .expect("save in-progress record");
+
+        // `has_raw_signing_key = true` skips the signing-key requirement; the
+        // InProgress guard fires before the target-differs / has-contexts checks.
+        // (`UpgradePreamble` is not `Debug`, so match rather than `expect_err`.)
+        match super::validate_upgrade(&store, &group_id, &target_app, &requester, true) {
+            Ok(_) => panic!("a pending upgrade must block a second one"),
+            Err(err) => assert!(
+                err.to_string().contains("already in progress"),
+                "unexpected error: {err}"
+            ),
+        }
     }
 }

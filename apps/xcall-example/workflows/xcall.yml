@@ -1,10 +1,13 @@
-name: XCall Authorization (L1 namespace · L3 entry-point · L2a provenance)
+name: XCall Authorization (L1 owning-group · L3 entry-point · L2a provenance)
 description: >
   End-to-end validation of cross-context-call authorization (closes #2130 / #2137).
 
   A node-local xcall is gated by three independent layers, all exercised here:
-    * L1 — namespace boundary: a context may only xcall a target in its OWN
-      namespace. Cross-namespace calls are denied (fail-closed).
+    * L1 — owning-group boundary: a context may only xcall a target in its OWN
+      owning group. Calls to a target in a different group — a different
+      namespace, or a different subgroup of the same namespace — are denied
+      (fail-closed). Gating on the shared namespace root instead would let any
+      sibling context anywhere in the namespace reach into another subgroup.
     * L3 — entry points: only methods declared `#[app::xcall]` are reachable
       via xcall. The non-entry-point `secret` method is denied.
     * L2a — provenance: `env::xcall_origin()` is set by the node from the
@@ -81,9 +84,11 @@ steps:
       c3_key: memberPublicKey
 
   # ============================================================================
-  # POSITIVE — same-namespace xcall to a declared entry point is ALLOWED.
-  # Exercises L1 (C1 and C2 share namespace N), L3 (pong is `#[app::xcall]`),
-  # and L2a (the node-set origin equals C1, which pong verifies before running).
+  # POSITIVE — same-group xcall to a declared entry point is ALLOWED.
+  # C1 and C2 are both created directly in namespace N's root group, so they
+  # share an owning group. Exercises L1 (same owning group), L3 (pong is
+  # `#[app::xcall]`), and L2a (the node-set origin equals C1, which pong
+  # verifies before running).
   # ============================================================================
   - name: C2 pong counter starts at 0
     type: call
@@ -129,9 +134,10 @@ steps:
       - "xcall denied"
 
   # ============================================================================
-  # NEGATIVE L1 — cross-namespace xcall is DENIED (fail-closed).
-  # C1 (namespace N) -> C3 (namespace M): pong must NOT run; the node logs the
-  # namespace-boundary denial.
+  # NEGATIVE L1 — an xcall to a target in a different owning group is DENIED
+  # (fail-closed). C1 (namespace N's root group) -> C3 (namespace M's root
+  # group) do not share an owning group: pong must NOT run and the node logs
+  # the owning-group-boundary denial.
   # ============================================================================
   - name: C3 pong counter starts at 0
     type: call
@@ -164,20 +170,20 @@ steps:
     method: get_counter
     outputs:
       c3_after: result.output
-  - name: Assert pong did NOT run across namespaces (L1 denied)
+  - name: Assert pong did NOT run across owning groups (L1 denied)
     type: json_assert
     statements:
       - "equal({{c3_after}}, 0)"
-  - name: Assert L1 namespace-boundary denial was logged
+  - name: Assert L1 owning-group-boundary denial was logged
     type: assert_log_present
     nodes:
       - xcall-authz-1
     patterns:
-      - "xcall denied: namespace boundary"
+      - "xcall denied: owning group boundary"
     min_matches: 1
 
   # ============================================================================
-  # NEGATIVE L3 — same-namespace xcall to a NON-entry-point method is DENIED.
+  # NEGATIVE L3 — same-group xcall to a NON-entry-point method is DENIED.
   # C1 -> C2 targeting `secret` (not `#[app::xcall]`): secret must NOT run.
   # ============================================================================
   - name: C2 secret counter starts at 0

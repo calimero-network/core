@@ -1066,156 +1066,196 @@ impl Handler<ExecuteRequest> for ContextManager {
                     // The handler field is preserved in the broadcast so receivers can
                     // pick it up via execute_event_handlers_parsed().
 
-                    // Process cross-context calls
-                    // NOTE: XCalls are executed locally on the current node after the main execution completes.
-                    // This allows contexts to communicate by calling functions on other contexts.
-                    for xcall in &outcome.xcalls {
-                        let target_context_id = ContextId::from(xcall.context_id);
+                    // Process cross-context calls.
+                    //
+                    // Each xcall runs the target's method by sending a fresh
+                    // ExecuteRequest back to THIS ContextManager actor via
+                    // `execute_with_origin`. Awaiting that inline — while this
+                    // future is still the actor's in-flight response — is the
+                    // same self-mailbox re-entrancy the lazy-upgrade path
+                    // deliberately avoids: it hangs the actor, and for a
+                    // self-targeted xcall it also deadlocks on the source
+                    // context's execution lock (still held here via `guard`).
+                    // So we snapshot each call's fields and dispatch the whole
+                    // batch out-of-band on a detached task. The source execute
+                    // returns and drops its guard without waiting; the detached
+                    // task then re-enters the actor cleanly. xcalls are already
+                    // best-effort (their only product is an observability event),
+                    // so fire-and-forget matches their contract.
+                    if !outcome.xcalls.is_empty() {
+                        // `XCall` is neither `Clone` nor constructible outside
+                        // its crate (`#[non_exhaustive]`), so lift the owned
+                        // fields into a plain tuple the task can take by value.
+                        let xcall_jobs: Vec<(ContextId, String, Vec<u8>)> = outcome
+                            .xcalls
+                            .iter()
+                            .map(|xcall| {
+                                (
+                                    ContextId::from(xcall.context_id),
+                                    xcall.function.clone(),
+                                    xcall.params.clone(),
+                                )
+                            })
+                            .collect();
+                        let xcall_node_client = node_client.clone();
+                        let xcall_context_client = context_client.clone();
+                        let xcall_store = xcall_datastore.clone();
+                        drop(global_runtime().spawn(async move {
+                            use futures_util::TryStreamExt;
+                            for (target_context_id, function, params) in xcall_jobs {
+                                info!(
+                                    %context_id,
+                                    target_context = ?target_context_id,
+                                    function = %function,
+                                    params_len = params.len(),
+                                    "Processing cross-context call"
+                                );
 
-                        info!(
-                            %context_id,
-                            target_context = ?target_context_id,
-                            function = %xcall.function,
-                            params_len = xcall.params.len(),
-                            "Processing cross-context call"
-                        );
+                                // Best-effort observability event for this xcall.
+                                // Source rides on the wrapper `context_id`;
+                                // emission failure must never abort the batch.
+                                let emit = |outcome: XCallOutcome| {
+                                    let _ = xcall_node_client.send_event(NodeEvent::Context(
+                                        ContextEvent {
+                                            context_id,
+                                            payload: ContextEventPayload::XCall(XCallPayload {
+                                                target_context_id,
+                                                function: function.clone(),
+                                                outcome,
+                                            }),
+                                        },
+                                    ));
+                                };
 
-                        // Best-effort observability event for this xcall (#2137).
-                        // Source rides on the wrapper `context_id`; emission
-                        // failure must never abort the loop or the source exec.
-                        let emit = |outcome: XCallOutcome| {
-                            let _ = node_client.send_event(NodeEvent::Context(ContextEvent {
-                                context_id,
-                                payload: ContextEventPayload::XCall(XCallPayload {
-                                    target_context_id,
-                                    function: xcall.function.clone(),
-                                    outcome,
-                                }),
-                            }));
-                        };
-
-                        // A context may only xcall a target in its own namespace.
-                        // A resolution error or unresolved namespace denies.
-                        let same_namespace = (|| -> eyre::Result<bool> {
-                            let src = resolve_namespace_for_context(&xcall_datastore, &context_id)?;
-                            let tgt =
-                                resolve_namespace_for_context(&xcall_datastore, &target_context_id)?;
-                            Ok(matches!((src, tgt), (Some(a), Some(b)) if a == b))
-                        })();
-                        if !matches!(same_namespace, Ok(true)) {
-                            warn!(
-                                %context_id,
-                                target_context = ?target_context_id,
-                                function = %xcall.function,
-                                resolved = ?same_namespace,
-                                "xcall denied: namespace boundary"
-                            );
-                            emit(XCallOutcome::Denied {
-                                reason: "namespace boundary".to_owned(),
-                            });
-                            continue;
-                        }
-
-                        // Find an owned member of the target context to execute as
-                        // We need to use a member that has permissions on the target context
-                        use futures_util::TryStreamExt;
-                        let members: Vec<_> = context_client
-                            .get_context_members(&target_context_id, Some(true))
-                            .try_collect()
-                            .await
-                            .unwrap_or_default();
-
-                        let Some((target_executor, _is_owned)) = members.first() else {
-                            warn!(
-                                %context_id,
-                                target_context = ?target_context_id,
-                                function = %xcall.function,
-                                "xcall denied: no owned member of target context"
-                            );
-                            emit(XCallOutcome::Denied {
-                                reason: "no owned member".to_owned(),
-                            });
-                            continue;
-                        };
-
-                        let target_executor = *target_executor;
-
-                        info!(
-                            %context_id,
-                            target_context = ?target_context_id,
-                            target_executor = ?target_executor,
-                            "Found owned member for target context"
-                        );
-
-                        // Execute as the target's member, tagging the call with
-                        // the source context so the target can read it via
-                        // `env::xcall_origin()`. The node sets the origin here —
-                        // never from guest memory. The target's handler rejects
-                        // non-`#[app::xcall]` methods with XCallNotPermitted.
-                        let xcall_result = context_client
-                            .execute_with_origin(
-                                &target_context_id,
-                                &target_executor,
-                                xcall.function.clone(),
-                                xcall.params.clone(),
-                                vec![],
-                                None,
-                                Some(context_id),
-                            )
-                            .await;
-
-                        match xcall_result {
-                            // A normally-finished run returns `Ok(ExecuteResponse)`
-                            // even when the target *method* errored — that failure
-                            // lives in `returns`, so inspect it before reporting Ok.
-                            Ok(response) => match &response.returns {
-                                Ok(_) => {
-                                    info!(
-                                        %context_id,
-                                        target_context = ?target_context_id,
-                                        function = %xcall.function,
-                                        "Cross-context call executed successfully"
-                                    );
-                                    emit(XCallOutcome::Ok);
-                                }
-                                Err(err) => {
+                                // A context may only xcall a target in its OWN
+                                // owning group. Gating on the shared namespace
+                                // root instead let any sibling context anywhere
+                                // in the namespace — including a different, even
+                                // Restricted, subgroup — call in and execute as a
+                                // member of the target. A resolution error or an
+                                // unregistered context denies.
+                                let same_group = xcall_same_owning_group(
+                                    &xcall_store,
+                                    &context_id,
+                                    &target_context_id,
+                                );
+                                if !matches!(same_group, Ok(true)) {
                                     warn!(
                                         %context_id,
                                         target_context = ?target_context_id,
-                                        function = %xcall.function,
-                                        %err,
-                                        "Cross-context call target method returned an error"
+                                        function = %function,
+                                        resolved = ?same_group,
+                                        "xcall denied: owning group boundary"
                                     );
-                                    emit(XCallOutcome::ExecError {
-                                        message: err.to_string(),
+                                    emit(XCallOutcome::Denied {
+                                        reason: "owning group boundary".to_owned(),
                                     });
+                                    continue;
                                 }
-                            },
-                            // A rejected entry point is a denial, not an exec error.
-                            Err(ExecuteError::XCallNotPermitted { .. }) => {
-                                warn!(
+
+                                // Find an owned member of the target context to
+                                // execute as — one that has permissions there.
+                                let members: Vec<_> = xcall_context_client
+                                    .get_context_members(&target_context_id, Some(true))
+                                    .try_collect()
+                                    .await
+                                    .unwrap_or_default();
+
+                                let Some((target_executor, _is_owned)) = members.first() else {
+                                    warn!(
+                                        %context_id,
+                                        target_context = ?target_context_id,
+                                        function = %function,
+                                        "xcall denied: no owned member of target context"
+                                    );
+                                    emit(XCallOutcome::Denied {
+                                        reason: "no owned member".to_owned(),
+                                    });
+                                    continue;
+                                };
+
+                                let target_executor = *target_executor;
+
+                                info!(
                                     %context_id,
                                     target_context = ?target_context_id,
-                                    function = %xcall.function,
-                                    "xcall denied: not an #[app::xcall] entry point"
+                                    target_executor = ?target_executor,
+                                    "Found owned member for target context"
                                 );
-                                emit(XCallOutcome::Denied {
-                                    reason: "not an xcall entry point".to_owned(),
-                                });
+
+                                // Execute as the target's member, tagging the
+                                // call with the source context so the target can
+                                // read it via `env::xcall_origin()`. The node sets
+                                // the origin here — never from guest memory. The
+                                // target's handler rejects non-`#[app::xcall]`
+                                // methods with XCallNotPermitted.
+                                let xcall_result = xcall_context_client
+                                    .execute_with_origin(
+                                        &target_context_id,
+                                        &target_executor,
+                                        function.clone(),
+                                        params.clone(),
+                                        vec![],
+                                        None,
+                                        Some(context_id),
+                                    )
+                                    .await;
+
+                                match xcall_result {
+                                    // A normally-finished run returns `Ok` even
+                                    // when the target *method* errored — that
+                                    // failure lives in `returns`, so inspect it
+                                    // before reporting Ok.
+                                    Ok(response) => match &response.returns {
+                                        Ok(_) => {
+                                            info!(
+                                                %context_id,
+                                                target_context = ?target_context_id,
+                                                function = %function,
+                                                "Cross-context call executed successfully"
+                                            );
+                                            emit(XCallOutcome::Ok);
+                                        }
+                                        Err(err) => {
+                                            warn!(
+                                                %context_id,
+                                                target_context = ?target_context_id,
+                                                function = %function,
+                                                %err,
+                                                "Cross-context call target method returned an error"
+                                            );
+                                            emit(XCallOutcome::ExecError {
+                                                message: err.to_string(),
+                                            });
+                                        }
+                                    },
+                                    // A rejected entry point is a denial, not an exec error.
+                                    Err(ExecuteError::XCallNotPermitted { .. }) => {
+                                        warn!(
+                                            %context_id,
+                                            target_context = ?target_context_id,
+                                            function = %function,
+                                            "xcall denied: not an #[app::xcall] entry point"
+                                        );
+                                        emit(XCallOutcome::Denied {
+                                            reason: "not an xcall entry point".to_owned(),
+                                        });
+                                    }
+                                    Err(err) => {
+                                        error!(
+                                            %context_id,
+                                            target_context = ?target_context_id,
+                                            function = %function,
+                                            ?err,
+                                            "Cross-context call failed"
+                                        );
+                                        emit(XCallOutcome::ExecError {
+                                            message: err.to_string(),
+                                        });
+                                    }
+                                }
                             }
-                            Err(err) => {
-                                error!(
-                                    %context_id,
-                                    target_context = ?target_context_id,
-                                    function = %xcall.function,
-                                    ?err,
-                                    "Cross-context call failed"
-                                );
-                                emit(XCallOutcome::ExecError {
-                                    message: err.to_string(),
-                                });
-                            }
-                        }
+                        }));
                     }
 
                     // Broadcast state deltas to other nodes when:
@@ -2437,20 +2477,26 @@ fn extract_xcall_policies(bytecode: &[u8]) -> Option<Arc<crate::XCallPolicyMap>>
     }
 }
 
-/// Resolve a context to its namespace root group, or `None` if it is not
-/// registered in any group. An xcall is allowed only when source and target
-/// resolve to the same namespace; callers treat `Err`/`None` as deny.
-fn resolve_namespace_for_context(
+/// Whether `source` and `target` share the SAME directly-owning group, and are
+/// therefore permitted to cross-call each other. Callers treat `Err` or an
+/// unregistered (`None`) resolution as a denial.
+///
+/// The xcall boundary used to be the shared *namespace root*, but that let any
+/// sibling context anywhere in the namespace — including a different, even
+/// `Restricted`, subgroup — call in and execute as a member of the target
+/// (possibly its admin). Requiring the same owning group keeps a cross-call
+/// inside the one group whose membership both contexts already belong to, so it
+/// can never punch through a subgroup boundary. There is no cross-subgroup
+/// xcall grant mechanism; contexts that must call across subgroups have to
+/// share an owning group.
+fn xcall_same_owning_group(
     store: &calimero_store::Store,
-    context_id: &ContextId,
-) -> eyre::Result<Option<ContextGroupId>> {
-    let Some(group_id) = calimero_governance_store::get_group_for_context(store, context_id)?
-    else {
-        return Ok(None);
-    };
-    let namespace =
-        calimero_governance_store::NamespaceRepository::new(store).resolve(&group_id)?;
-    Ok(Some(namespace))
+    source: &ContextId,
+    target: &ContextId,
+) -> eyre::Result<bool> {
+    let src = calimero_governance_store::get_group_for_context(store, source)?;
+    let tgt = calimero_governance_store::get_group_for_context(store, target)?;
+    Ok(matches!((src, tgt), (Some(a), Some(b)) if a == b))
 }
 
 fn substitute_aliases_in_payload(
@@ -2521,8 +2567,8 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        extract_xcall_policies, resolve_namespace_for_context, resolve_producing_app_key,
-        should_block, upgrade_blocks_write, upgrade_rejects_committed_write, xcall_caller_denied,
+        extract_xcall_policies, resolve_producing_app_key, should_block, upgrade_blocks_write,
+        upgrade_rejects_committed_write, xcall_caller_denied, xcall_same_owning_group,
         XCallCallers,
     };
     use calimero_store::key::GroupUpgradeStatus;
@@ -2547,29 +2593,50 @@ mod tests {
     }
 
     #[test]
-    fn resolve_namespace_for_context_returns_root_namespace() {
+    fn xcall_same_owning_group_allows_same_group() {
         let store = fresh_store();
-        // namespace N (root) ⊃ subgroup ⊃ context
-        let ns = ContextGroupId::from([0xAA; 32]);
-        let sub = ContextGroupId::from([0xBB; 32]);
-        let ctx = ContextId::from([0xCC; 32]);
+        let group = ContextGroupId::from([0xAA; 32]);
+        let a = ContextId::from([0x01; 32]);
+        let b = ContextId::from([0x02; 32]);
 
-        NamespaceRepository::new(&store)
-            .nest(&ns, &sub)
-            .expect("nest subgroup under namespace");
-        register_context_in_group(&store, &sub, &ctx).expect("register context in subgroup");
+        register_context_in_group(&store, &group, &a).expect("register a");
+        register_context_in_group(&store, &group, &b).expect("register b");
 
-        // resolve walks sub → ns (the root group is the namespace)
-        let got = resolve_namespace_for_context(&store, &ctx).expect("resolve ok");
-        assert_eq!(got, Some(ns));
+        assert!(xcall_same_owning_group(&store, &a, &b).expect("resolve ok"));
     }
 
     #[test]
-    fn resolve_namespace_for_context_unregistered_is_none() {
+    fn xcall_same_owning_group_denies_across_subgroups_of_one_namespace() {
         let store = fresh_store();
-        let ctx = ContextId::from([0xDD; 32]);
-        let got = resolve_namespace_for_context(&store, &ctx).expect("resolve ok");
-        assert_eq!(got, None);
+        // namespace N (root) ⊃ { sub_a ⊃ ctx_a, sub_b ⊃ ctx_b }.
+        // Both contexts share the namespace root but live in DIFFERENT
+        // owning subgroups, so the cross-call must be denied even though the
+        // old namespace-root check would have allowed it.
+        let ns = ContextGroupId::from([0xAA; 32]);
+        let sub_a = ContextGroupId::from([0xB1; 32]);
+        let sub_b = ContextGroupId::from([0xB2; 32]);
+        let ctx_a = ContextId::from([0x0A; 32]);
+        let ctx_b = ContextId::from([0x0B; 32]);
+
+        let ns_repo = NamespaceRepository::new(&store);
+        ns_repo.nest(&ns, &sub_a).expect("nest sub_a");
+        ns_repo.nest(&ns, &sub_b).expect("nest sub_b");
+        register_context_in_group(&store, &sub_a, &ctx_a).expect("register ctx_a");
+        register_context_in_group(&store, &sub_b, &ctx_b).expect("register ctx_b");
+
+        assert!(!xcall_same_owning_group(&store, &ctx_a, &ctx_b).expect("resolve ok"));
+    }
+
+    #[test]
+    fn xcall_same_owning_group_denies_unregistered() {
+        let store = fresh_store();
+        let group = ContextGroupId::from([0xAA; 32]);
+        let a = ContextId::from([0x01; 32]);
+        let b = ContextId::from([0x02; 32]);
+        register_context_in_group(&store, &group, &a).expect("register a");
+
+        // `b` is registered in no group at all → deny.
+        assert!(!xcall_same_owning_group(&store, &a, &b).expect("resolve ok"));
     }
 
     #[test]
