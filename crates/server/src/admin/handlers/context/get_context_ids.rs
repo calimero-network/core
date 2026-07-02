@@ -75,11 +75,6 @@ pub async fn handler(
             continue;
         }
 
-        // Stop once the page is full — no need to drain the rest of the stream.
-        if contexts.len() >= limit {
-            break;
-        }
-
         match state.ctx_client.get_context(&context_id) {
             Ok(None) => {}
             Ok(Some(mut context)) => {
@@ -104,6 +99,13 @@ pub async fn handler(
                     }
                 };
                 contexts.push(ContextWithGroup { context, group_id });
+
+                // Stop once the page holds `limit` *collected* contexts (counts
+                // pushes, not attempts, so ids that resolve to None never
+                // under-fill the page).
+                if contexts.len() >= limit {
+                    break;
+                }
             }
             Err(err) => {
                 error!(context_id=%context_id, error=?err, "Failed to get context");
