@@ -17,9 +17,19 @@ description: >
   Denials are observable: the target counter never moves, and the node logs the
   same "xcall denied: ..." line that drives the `XCall` Denied event.
 
-  Single node: all three contexts are created by node-1, which owns a member of
-  each, so every xcall dispatches locally — the gates are node-local, so one
-  node exercises them fully.
+  Two regression scenarios also run at the end:
+    * Self-xcall (C1 -> C1) must COMPLETE, not hang. xcalls are dispatched
+      out-of-band; awaiting them inline re-entered the actor and deadlocked on
+      the source context's execution lock. A reintroduced inline dispatch hangs
+      this step until wait_timeout.
+    * Cross-subgroup xcall (C1 in N's root group -> C4 in subgroup S under N) is
+      DENIED. This is the owning-group boundary in its own right: same
+      namespace, different owning group — the old namespace-root gate allowed
+      it, the owning-group gate denies it.
+
+  Single node: all contexts are created by node-1, which owns a member of each,
+  so every xcall dispatches locally — the gates are node-local, so one node
+  exercises them fully.
 
 # Built from this branch; CI overrides with `--image merod:local`. The app
 # imports the `xcall_origin` host function added by this change, so it requires
@@ -258,6 +268,122 @@ steps:
     type: json_assert
     statements:
       - "equal({{c2_final}}, 1)"
+
+  # ============================================================================
+  # DEADLOCK REGRESSION — a self-targeted xcall (C1 -> C1) must COMPLETE, not
+  # hang. Before xcalls were dispatched out-of-band, awaiting execute_with_origin
+  # inline re-entered the actor and deadlocked on C1's own execution lock (still
+  # held by the in-flight source execute), hanging until wait_timeout. C1 and C1
+  # trivially share an owning group, so the call is allowed and pong runs as C1.
+  # If the inline dispatch is ever reintroduced, this step hangs and the run
+  # fails on wait_timeout.
+  # ============================================================================
+  - name: C1 pong counter starts at 0
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c1}}"
+    method: get_counter
+    outputs:
+      c1_before: result.output
+  - name: Assert C1 counter is 0
+    type: json_assert
+    statements:
+      - "equal({{c1_before}}, 0)"
+
+  - name: Ping C1 -> C1 (self-xcall; pre-fix this deadlocked the actor)
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c1}}"
+    method: ping
+    args:
+      target_context: "{{c1}}"
+
+  - name: Wait for self-xcall dispatch + target execute
+    type: wait
+    seconds: 8
+
+  - name: C1 pong counter after self-xcall
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c1}}"
+    method: get_counter
+    outputs:
+      c1_after: result.output
+  - name: Assert self-xcall completed (pong ran on C1; no deadlock/hang)
+    type: json_assert
+    statements:
+      - "equal({{c1_after}}, 1)"
+
+  # ============================================================================
+  # SUBGROUP BOUNDARY — an xcall to a target in a DIFFERENT owning group of the
+  # SAME namespace is DENIED. Gating on the namespace root (the old behavior)
+  # would have ALLOWED this, letting a sibling context reach into another
+  # subgroup; gating on the owning group denies it. C1 lives in N's root group;
+  # C4 lives in subgroup S nested under N.
+  # ============================================================================
+  - name: Create subgroup S under namespace N
+    type: create_group_in_namespace
+    node: xcall-authz-1
+    namespace_id: "{{ns_n}}"
+    group_alias: subgroup-s
+    outputs:
+      sub_s: groupId
+
+  - name: Create Context C4 in subgroup S
+    type: create_context
+    node: xcall-authz-1
+    application_id: "{{app_id}}"
+    group_id: "{{sub_s}}"
+    outputs:
+      c4: contextId
+      c4_key: memberPublicKey
+
+  - name: C4 pong counter starts at 0
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c4}}"
+    method: get_counter
+    outputs:
+      c4_before: result.output
+  - name: Assert C4 counter is 0
+    type: json_assert
+    statements:
+      - "equal({{c4_before}}, 0)"
+
+  - name: Ping C1 -> C4 (same namespace, different subgroup — must be denied)
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c1}}"
+    method: ping
+    args:
+      target_context: "{{c4}}"
+
+  - name: Wait for xcall dispatch + log flush
+    type: wait
+    seconds: 8
+
+  - name: C4 pong counter after cross-subgroup xcall
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c4}}"
+    method: get_counter
+    outputs:
+      c4_after: result.output
+  - name: Assert pong did NOT run across subgroups (owning-group denied)
+    type: json_assert
+    statements:
+      - "equal({{c4_after}}, 0)"
+  # Two "owning group boundary" denials are expected by now: the earlier
+  # cross-namespace C1->C3, plus this cross-subgroup C1->C4. Requiring >=2
+  # confirms the subgroup case denied in its own right, not just the namespace
+  # one. The c4 counter staying 0 above is the authoritative proof.
+  - name: Assert owning-group-boundary denial was logged for the subgroup case
+    type: assert_log_present
+    nodes:
+      - xcall-authz-1
+    patterns:
+      - "xcall denied: owning group boundary"
+    min_matches: 2
 
 stop_all_nodes: true
 restart: false
