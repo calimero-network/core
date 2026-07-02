@@ -12,7 +12,7 @@ use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::{NamespaceJoinParams, NodeClient, OpenSubgroupJoinParams};
 use calimero_node_primitives::join_bundle::JoinBundle;
-use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
@@ -216,6 +216,14 @@ pub struct SyncManager {
     /// Called from `handle_dag_sync` after `select_protocol` has
     /// chosen the protocol to run. See `sync::protocol_selector`.
     pub(super) protocol_selector: super::protocol_selector::ProtocolSelector,
+
+    /// This node's own libp2p `PeerId`, memoized on first use. Read via
+    /// [`SyncManager::local_peer_id`] to sign the transport-binding
+    /// [`InitProof`] on outbound `Init`s. Constant for the process lifetime,
+    /// so one `network_status` round-trip fills it forever; shared across
+    /// clones. `OnceCell` (async) rather than `OnceLock` because the fill
+    /// awaits the network actor.
+    pub(super) local_peer_id: Arc<tokio::sync::OnceCell<PeerId>>,
 }
 
 impl std::fmt::Debug for SyncManager {
@@ -260,6 +268,9 @@ impl Clone for SyncManager {
             // `ContextClient`; cloning is cheap and shares the same
             // surfaces as the parent.
             protocol_selector: self.protocol_selector.clone(),
+            // Shared across clones: the local PeerId is a process constant, so
+            // whichever handle fills the cell first serves the rest.
+            local_peer_id: Arc::clone(&self.local_peer_id),
         }
     }
 }
@@ -268,6 +279,37 @@ impl Clone for SyncManager {
 // as Phase 3 of #2313. The free-fn predicates that used to live here
 // (`dispatch_recently_attempted`, `session_dispatch_wedged`) and the
 // nested `apply_session_result` helper now live alongside that struct.
+
+/// Whether an inbound `Init` of this payload must carry a valid
+/// [`InitProof`] before the responder acts on it.
+///
+/// `true` for payloads that serve context state to the caller (deltas, DAG
+/// heads, snapshots, HashComparison tree nodes, LevelWise level nodes) or that
+/// pre-register the caller's identity (namespace / open-subgroup joins) — these
+/// are exactly the paths where an unauthenticated `party_id` would let a peer
+/// be served as, or registered as, an identity it does not control.
+///
+/// `false` for:
+/// - `BlobShare` / `GroupKeyRequest`: the response is ECDH-encrypted/wrapped to
+///   the named identity, so only its key-holder can use it — possession is
+///   proven implicitly.
+/// - `NamespaceBackfillRequest`: serves only already-signed deltas the
+///   requester re-verifies; its `party_id` is a sentinel with no key to prove.
+/// - `EntityPush` / `EntityDeletePush`: writes authorized per-action on apply,
+///   not by the sender's `party_id`.
+const fn payload_requires_init_pop(payload: &InitPayload) -> bool {
+    matches!(
+        payload,
+        InitPayload::DeltaRequest { .. }
+            | InitPayload::DagHeadsRequest { .. }
+            | InitPayload::SnapshotBoundaryRequest { .. }
+            | InitPayload::SnapshotStreamRequest { .. }
+            | InitPayload::TreeNodeRequest { .. }
+            | InitPayload::LevelWiseRequest { .. }
+            | InitPayload::NamespaceJoinRequest { .. }
+            | InitPayload::OpenSubgroupJoinRequest { .. }
+    )
+}
 
 /// One probe of the inbound materialisation poll loop.
 ///
@@ -403,6 +445,7 @@ impl SyncManager {
             stale_blob_attempts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             reconciler,
             protocol_selector,
+            local_peer_id: Arc::new(tokio::sync::OnceCell::new()),
         }
     }
 
@@ -1023,6 +1066,7 @@ impl SyncManager {
                         party_id: our_identity,
                         payload: InitPayload::DagHeadsRequest { context_id },
                         next_nonce: rand::thread_rng().gen(),
+                        pop: self.build_init_pop(context_id, our_identity).await,
                     };
 
                     self.send(&mut stream, &request_msg, None).await?;
@@ -1153,6 +1197,68 @@ impl SyncManager {
         );
 
         Ok((peer_id, protocol))
+    }
+
+    /// This node's own libp2p `PeerId`, fetched once and memoized.
+    ///
+    /// Used to sign the transport-binding [`InitProof`] on outbound `Init`s.
+    /// The value is a process constant, so the first call pays a single
+    /// `network_status` round-trip and every later call (and every clone)
+    /// reads the cached value.
+    pub(super) async fn local_peer_id(&self) -> PeerId {
+        *self
+            .local_peer_id
+            .get_or_init(|| async { self.network_client.network_status().await.local_peer_id })
+            .await
+    }
+
+    /// Sign a transport-bound [`InitProof`] for `party_id` in `context_id`
+    /// using an explicitly supplied private key.
+    ///
+    /// Use this when the signing key lives outside the per-context identity
+    /// store — e.g. the namespace-scoped joiner key held by
+    /// `NamespaceRepository` on the join paths. The signed message binds the
+    /// claimed identity to this node's own transport `PeerId`; see [`InitProof`].
+    pub(super) async fn sign_init_pop(
+        &self,
+        context_id: ContextId,
+        party_id: PublicKey,
+        private_key: &calimero_primitives::identity::PrivateKey,
+    ) -> Option<InitProof> {
+        let peer_id = self.local_peer_id().await;
+        let message = InitProof::message(&context_id, &party_id, &peer_id.to_bytes());
+        match private_key.sign(&message) {
+            Ok(signature) => Some(InitProof {
+                signature: signature.to_bytes(),
+            }),
+            Err(err) => {
+                warn!(%context_id, %party_id, %err, "failed to sign sync init proof of possession");
+                None
+            }
+        }
+    }
+
+    /// Build a transport-bound proof of possession for `party_id` in
+    /// `context_id`, to attach to an outbound state-read `Init`.
+    ///
+    /// Returns `None` when this node holds no private key for `party_id` in the
+    /// context (e.g. sentinel/genesis party ids or identities owned by another
+    /// node) — such `Init`s are only accepted by responders on paths that don't
+    /// require a proof. See [`InitProof`] for what the signature binds and why
+    /// it can't be replayed from another peer.
+    pub(super) async fn build_init_pop(
+        &self,
+        context_id: ContextId,
+        party_id: PublicKey,
+    ) -> Option<InitProof> {
+        let private_key = self
+            .context_client
+            .get_identity(&context_id, &party_id)
+            .ok()
+            .flatten()
+            .and_then(|identity| identity.private_key)?;
+
+        self.sign_init_pop(context_id, party_id, &private_key).await
     }
 
     /// Sends a message over the stream (delegates to stream module).
@@ -1653,6 +1759,7 @@ impl SyncManager {
             party_id: our_identity,
             payload: InitPayload::DagHeadsRequest { context_id },
             next_nonce: rand::thread_rng().gen(),
+            pop: self.build_init_pop(context_id, our_identity).await,
         };
 
         self.send(stream, &request_msg, None).await?;
@@ -1979,6 +2086,7 @@ impl SyncManager {
                 use rand::Rng;
                 rand::thread_rng().gen()
             },
+            pop: self.build_init_pop(context_id, our_identity).await,
         };
 
         self.send(stream, &request_msg, None).await?;
@@ -2085,6 +2193,10 @@ impl SyncManager {
                 // borrowed read-only by the membership check and the
                 // group-id parity check; both can share.
                 let datastore_for_heads = self.context_client.datastore_handle().into_inner();
+                // Sign the transport-binding proof once — it's independent of
+                // the per-head payload/nonce (see `InitProof`), so every head
+                // in this loop reuses the same signature.
+                let delta_pop = self.build_init_pop(context_id, our_identity).await;
                 for head_id in &dag_heads {
                     info!(
                         %context_id,
@@ -2099,6 +2211,7 @@ impl SyncManager {
                             context_id,
                             delta_id: *head_id,
                         },
+                        pop: delta_pop,
                         next_nonce: {
                             use rand::Rng;
                             rand::thread_rng().gen()
@@ -2917,6 +3030,7 @@ impl SyncManager {
             party_id: our_identity,
             payload: InitPayload::DagHeadsRequest { context_id },
             next_nonce: rand::random(),
+            pop: self.build_init_pop(context_id, our_identity).await,
         };
         self.send(stream, &request_msg, None).await?;
 
@@ -3253,20 +3367,63 @@ impl SyncManager {
             return Ok(None);
         };
 
-        let (context_id, their_identity, payload, nonce) = match message {
+        let (context_id, their_identity, payload, nonce, pop) = match message {
             StreamMessage::Init {
                 context_id,
                 party_id,
                 payload,
                 next_nonce,
-                ..
-            } => (context_id, party_id, payload, next_nonce),
+                pop,
+            } => (context_id, party_id, payload, next_nonce, pop),
             unexpected @ (StreamMessage::Message { .. }
             | StreamMessage::OpaqueError
             | StreamMessage::NotMaterialized) => {
                 bail!("expected initialization handshake, got {:?}", unexpected)
             }
         };
+
+        // Transport-binding proof-of-possession gate.
+        //
+        // For payloads that serve context state (deltas, DAG heads, snapshots,
+        // tree/level nodes) or pre-register an identity (namespace/subgroup
+        // joins), require a valid `pop` binding `party_id` to *this* dialer's
+        // transport PeerId. Without it, a caller that merely learns a member's
+        // public key could be served as — or registered as — an identity it
+        // does not control (the inbound handshake was never bound to the
+        // transport). Paths whose payload is already bound to the named
+        // identity by other means (blob / group-key ECDH shares) or that serve
+        // only self-verifying data (already-signed backfill deltas) are exempt.
+        // See [`InitProof`].
+        if payload_requires_init_pop(&payload) {
+            let pop_ok = pop.is_some_and(|proof| {
+                proof.verify(&context_id, &their_identity, &peer_id.to_bytes())
+            });
+            // For joins, the identity that gets pre-registered is
+            // `joiner_public_key`; require it to equal the proven `party_id` so
+            // a caller can't prove possession of one key and register another.
+            let join_binding_ok = match &payload {
+                InitPayload::NamespaceJoinRequest {
+                    joiner_public_key, ..
+                }
+                | InitPayload::OpenSubgroupJoinRequest {
+                    joiner_public_key, ..
+                } => *joiner_public_key == their_identity,
+                _ => true,
+            };
+            if !pop_ok || !join_binding_ok {
+                warn!(
+                    %context_id,
+                    %their_identity,
+                    %peer_id,
+                    pop_present = pop.is_some(),
+                    "rejecting sync init: missing or invalid transport-bound proof of possession"
+                );
+                if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
+                    debug!(%err, "failed to send OpaqueError after rejecting unproven sync init");
+                }
+                return Ok(Some(()));
+            }
+        }
 
         if let InitPayload::NamespaceBackfillRequest {
             namespace_id,
@@ -3606,6 +3763,14 @@ impl super::protocol_selector::ProtocolDispatch for SyncManager {
     ) -> eyre::Result<SyncProtocol> {
         SyncManager::fallback_to_snapshot_sync(self, context_id, our_identity, chosen_peer).await
     }
+
+    async fn build_init_pop(
+        &self,
+        context_id: ContextId,
+        party_id: PublicKey,
+    ) -> Option<InitProof> {
+        SyncManager::build_init_pop(self, context_id, party_id).await
+    }
 }
 
 // Driver-dispatch back into `SyncManager` for the cross-actor message
@@ -3839,6 +4004,98 @@ pub(crate) fn pending_upgrade_info(
     let applied =
         calimero_context::activation::activated_blob(store, context_id) == Some(meta.app_key);
     (!applied).then(|| (target, stage_blob_for(store, &meta)))
+}
+
+#[cfg(test)]
+mod init_pop_gate_tests {
+    use calimero_node_primitives::sync::InitPayload;
+    use calimero_primitives::blobs::BlobId;
+    use calimero_primitives::context::ContextId;
+
+    use super::payload_requires_init_pop;
+
+    #[test]
+    fn state_read_and_join_payloads_require_a_proof() {
+        let ctx = ContextId::from([1u8; 32]);
+        let requires = [
+            InitPayload::DeltaRequest {
+                context_id: ctx,
+                delta_id: [0; 32],
+            },
+            InitPayload::DagHeadsRequest { context_id: ctx },
+            InitPayload::SnapshotBoundaryRequest {
+                context_id: ctx,
+                requested_cutoff_timestamp: None,
+            },
+            InitPayload::SnapshotStreamRequest {
+                context_id: ctx,
+                boundary_root_hash: [0; 32].into(),
+                page_limit: 1,
+                byte_limit: 1,
+                resume_cursor: None,
+            },
+            InitPayload::TreeNodeRequest {
+                context_id: ctx,
+                node_id: [0; 32],
+                max_depth: None,
+            },
+            InitPayload::LevelWiseRequest {
+                context_id: ctx,
+                level: 0,
+                parent_ids: None,
+            },
+            InitPayload::NamespaceJoinRequest {
+                namespace_id: [0; 32],
+                invitation_bytes: vec![],
+                joiner_public_key: [0; 32].into(),
+            },
+            InitPayload::OpenSubgroupJoinRequest {
+                namespace_id: [0; 32],
+                subgroup_id: [0; 32],
+                joiner_public_key: [0; 32].into(),
+            },
+        ];
+        for p in &requires {
+            assert!(
+                payload_requires_init_pop(p),
+                "expected {p:?} to require a proof of possession"
+            );
+        }
+    }
+
+    #[test]
+    fn implicitly_bound_or_self_verifying_payloads_are_exempt() {
+        let ctx = ContextId::from([1u8; 32]);
+        let exempt = [
+            InitPayload::BlobShare {
+                blob_id: BlobId::from([0; 32]),
+            },
+            InitPayload::GroupKeyRequest {
+                namespace_id: [0; 32],
+                group_id: [0; 32],
+                requester_public_key: [0; 32].into(),
+                key_id: None,
+            },
+            InitPayload::NamespaceBackfillRequest {
+                namespace_id: [0; 32],
+                delta_ids: vec![],
+            },
+            InitPayload::EntityPush {
+                context_id: ctx,
+                entities: vec![],
+            },
+            InitPayload::EntityDeletePush {
+                context_id: ctx,
+                deletions: vec![],
+            },
+        ];
+        for p in &exempt {
+            assert!(
+                !payload_requires_init_pop(p),
+                "expected {p:?} to be exempt from the proof gate"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

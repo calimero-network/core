@@ -1202,7 +1202,33 @@ async fn request_missing_deltas(
     // inline so the borrow outlives every projection read.
     node_state: &crate::NodeState,
 ) -> Result<Vec<([u8; 32], Vec<u8>)>> {
-    use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+    use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
+
+    // Transport-binding proof of possession for `our_identity`, attached to
+    // every DeltaRequest below so the responder can reject a caller that
+    // doesn't control the claimed identity (see `InitProof`). Signed once —
+    // it's independent of the per-delta payload/nonce — from the identity's
+    // private key in the local store and this node's own PeerId. `None` (no
+    // owned key / lookup failure) leaves the requests unproven, which a
+    // proof-requiring responder rejects.
+    let delta_pop: Option<InitProof> = {
+        let key = calimero_store::key::ContextIdentity::new(context_id, our_identity);
+        match datastore.handle().get(&key) {
+            Ok(Some(identity)) => match identity.private_key {
+                Some(sk_bytes) => {
+                    let private_key = calimero_primitives::identity::PrivateKey::from(sk_bytes);
+                    let peer_id = network_client.network_status().await.local_peer_id;
+                    let message =
+                        InitProof::message(&context_id, &our_identity, &peer_id.to_bytes());
+                    private_key.sign(&message).ok().map(|signature| InitProof {
+                        signature: signature.to_bytes(),
+                    })
+                }
+                None => None,
+            },
+            _ => None,
+        }
+    };
 
     // Metric: number of missing-parent IDs the caller is about to fetch.
     // Recorded *before* the stream open so a peer-stream failure doesn't
@@ -1266,6 +1292,7 @@ async fn request_missing_deltas(
                     use rand::Rng;
                     rand::thread_rng().gen()
                 },
+                pop: delta_pop,
             };
 
             crate::sync::stream::send(&mut stream, &request_msg, None).await?;

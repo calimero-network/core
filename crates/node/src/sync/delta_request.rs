@@ -496,6 +496,7 @@ impl SyncManager {
                 delta_id,
             },
             next_nonce: super::helpers::generate_nonce(),
+            pop: self.build_init_pop(*context_id, our_identity).await,
         };
 
         super::stream::send(stream, &msg, None).await?;

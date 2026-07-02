@@ -12,7 +12,7 @@ use calimero_crypto::Nonce;
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::{NamespaceJoinParams, OpenSubgroupJoinParams};
 use calimero_node_primitives::join_bundle::JoinBundle;
-use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use libp2p::PeerId;
@@ -102,6 +102,9 @@ impl SyncManager {
                 delta_ids: Vec::new(),
             },
             next_nonce: rand::thread_rng().gen(),
+            // Sentinel party id (no owned key to prove); backfill serves only
+            // already-signed deltas, which the requester re-verifies on receipt.
+            pop: None,
         };
 
         if let Err(err) = crate::sync::stream::send(&mut stream, &msg, None).await {
@@ -726,10 +729,38 @@ impl SyncManager {
     /// on the namespace topic, opens a stream, sends the request, and
     /// returns the wrapped key envelope. Same peer-discovery retry loop
     /// as `initiate_namespace_join`.
+    /// Sign the transport-binding proof for a namespace/subgroup join `Init`.
+    ///
+    /// The joiner's key lives in the namespace identity store (keyed by the
+    /// namespace group id), not the per-context identity store, so this loads
+    /// it directly rather than via [`SyncManager::build_init_pop`]. The proof
+    /// binds the zero context id — matching the sentinel the join `Init`
+    /// carries — plus `joiner_public_key` and this node's transport `PeerId`,
+    /// so the responder can confirm the caller controls the identity it is
+    /// about to pre-register. See [`InitProof`].
+    async fn build_join_init_pop(
+        &self,
+        namespace_id: [u8; 32],
+        joiner_public_key: PublicKey,
+    ) -> Option<InitProof> {
+        let store = self.context_client.datastore_handle().into_inner();
+        let group_id = calimero_context_config::types::ContextGroupId::from(namespace_id);
+        let record = NamespaceRepository::new(&store)
+            .resolve_identity_record(&group_id)
+            .ok()
+            .flatten()?;
+        let private_key = calimero_primitives::identity::PrivateKey::from(record.private_key);
+        self.sign_init_pop(ContextId::from([0u8; 32]), joiner_public_key, &private_key)
+            .await
+    }
+
     pub(super) async fn initiate_open_subgroup_join(
         &self,
         params: OpenSubgroupJoinParams,
     ) -> eyre::Result<Vec<u8>> {
+        let join_pop = self
+            .build_join_init_pop(params.namespace_id, params.joiner_public_key)
+            .await;
         let topic = libp2p::gossipsub::TopicHash::from_raw(format!(
             "ns/{}",
             hex::encode(params.namespace_id)
@@ -802,6 +833,7 @@ impl SyncManager {
                     joiner_public_key: params.joiner_public_key,
                 },
                 next_nonce: rand::thread_rng().gen(),
+                pop: join_pop,
             };
 
             if let Err(e) = crate::sync::stream::send(&mut stream, &msg, None).await {
@@ -929,6 +961,9 @@ impl SyncManager {
         &self,
         params: NamespaceJoinParams,
     ) -> eyre::Result<JoinBundle> {
+        let join_pop = self
+            .build_join_init_pop(params.namespace_id, params.joiner_public_key)
+            .await;
         // Connect-loop logic (shuffled-peer retry, per-peer timeout,
         // outer deadline) lives in `super::namespace_join::open_namespace_join_stream`
         // so it can be unit-tested against `MockSyncNetwork` without
@@ -1008,6 +1043,7 @@ impl SyncManager {
             let msg = StreamMessage::Init {
                 context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
                 party_id: params.joiner_public_key,
+                pop: join_pop,
                 payload: InitPayload::NamespaceJoinRequest {
                     namespace_id: params.namespace_id,
                     invitation_bytes: params.invitation_bytes.clone(),
@@ -1165,6 +1201,8 @@ impl SyncManager {
                 use rand::Rng;
                 rand::thread_rng().gen()
             },
+            // Sentinel party id; see the catch-up backfill site above.
+            pop: None,
         };
 
         if let Err(err) = crate::sync::stream::send(&mut stream, &msg, None).await {
@@ -1510,6 +1548,11 @@ impl SyncManager {
                 use rand::Rng;
                 rand::thread_rng().gen()
             },
+            // The response is an ECDH key envelope wrapped to
+            // `requester_public_key`; only the holder of its private key can
+            // unwrap it, so possession is proven implicitly and no signed proof
+            // is required on this path.
+            pop: None,
         };
 
         if let Err(err) = crate::sync::stream::send(&mut stream, &msg, None).await {

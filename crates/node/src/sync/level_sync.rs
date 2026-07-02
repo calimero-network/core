@@ -60,7 +60,7 @@ use std::collections::{HashMap, HashSet};
 use async_trait::async_trait;
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::sync::{
-    compare_level_nodes, create_runtime_env, EntityDeletion, InitPayload, LevelNode,
+    compare_level_nodes, create_runtime_env, EntityDeletion, InitPayload, InitProof, LevelNode,
     MessagePayload, StreamMessage, SyncProtocolExecutor, SyncTransport, TreeLeafData,
     MAX_LEVELWISE_DEPTH, MAX_NODES_PER_LEVEL, MAX_PARENTS_PER_REQUEST, MAX_REQUESTS_PER_SESSION,
 };
@@ -99,6 +99,10 @@ pub struct LevelWiseConfig {
     /// Remote peer's attributable member identity — gates authorless leaves on
     /// the peer's current membership. See `HashComparisonConfig::session_peer`.
     pub session_peer: Option<PublicKey>,
+    /// Transport-binding proof of possession for `identity`, attached to every
+    /// state-read `Init` this initiator sends. See `HashComparisonConfig::init_pop`
+    /// and [`InitProof`].
+    pub init_pop: Option<InitProof>,
 }
 
 /// Data from the first `LevelWiseRequest` for responder dispatch.
@@ -189,6 +193,7 @@ impl SyncProtocolExecutor for LevelWiseProtocol {
             config.max_depth,
             config.context_client.as_ref(),
             config.session_peer,
+            config.init_pop,
         )
         .await
     }
@@ -227,6 +232,7 @@ async fn run_initiator_impl<T: SyncTransport>(
     max_depth: u32,
     context_client: Option<&ContextClient>,
     session_peer: Option<PublicKey>,
+    init_pop: Option<InitProof>,
 ) -> Result<LevelWiseStats> {
     info!(
         %context_id,
@@ -257,6 +263,7 @@ async fn run_initiator_impl<T: SyncTransport>(
         let request_msg = StreamMessage::Init {
             context_id,
             party_id: identity,
+            pop: init_pop,
             payload: InitPayload::LevelWiseRequest {
                 context_id,
                 level,
@@ -548,6 +555,9 @@ async fn run_initiator_impl<T: SyncTransport>(
                     deletions: chunk.to_vec(),
                 },
                 next_nonce: generate_nonce(),
+                // Write (tombstone) — authorized per-action on apply, not by the
+                // sender's `party_id`; no read-gating proof needed.
+                pop: None,
             };
             transport.send(&msg).await?;
 
@@ -574,7 +584,7 @@ async fn run_initiator_impl<T: SyncTransport>(
     // peer).
     let (peer_current_root, peer_scope_root) =
         match super::hash_comparison_protocol::query_peer_current_root(
-            transport, context_id, identity,
+            transport, context_id, identity, init_pop,
         )
         .await
         {
@@ -1182,6 +1192,7 @@ mod tests {
             max_depth: 2,
             context_client: None,
             session_peer: None,
+            init_pop: None,
         };
         assert_eq!(config.remote_root_hash, [1u8; 32]);
         assert_eq!(config.max_depth, 2);

@@ -437,6 +437,7 @@ impl SyncManager {
                 requested_cutoff_timestamp: None,
             },
             next_nonce: super::helpers::generate_nonce(),
+            pop: self.build_init_pop(context_id, our_identity).await,
         };
         super::stream::send(stream, &msg, None).await?;
 
@@ -591,6 +592,11 @@ impl SyncManager {
         // target instead of the schema the synced entities actually carry).
         let mut deferred_members: DeferredMembers = Vec::new();
 
+        // Sign the transport-binding proof once — it's independent of the
+        // per-page cursor/nonce (see `InitProof`), so every page request in the
+        // burst loop reuses the same signature.
+        let pop = self.build_init_pop(context_id, our_identity).await;
+
         loop {
             let msg = StreamMessage::Init {
                 context_id,
@@ -603,6 +609,7 @@ impl SyncManager {
                     resume_cursor: resume_cursor.clone(),
                 },
                 next_nonce: super::helpers::generate_nonce(),
+                pop,
             };
             super::stream::send(stream, &msg, None).await?;
 
