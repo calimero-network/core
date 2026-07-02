@@ -43,6 +43,7 @@ mod storage;
 use axum::routing::{get, post};
 use axum::Extension;
 use axum::Router;
+use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
 use std::sync::Arc;
@@ -66,6 +67,7 @@ use state::ServiceState;
 pub fn service(
     config: &ServerConfig,
     node_client: NodeClient,
+    ctx_client: ContextClient,
     store: Store,
     auth_enabled: bool,
 ) -> Option<(&'static str, Router)> {
@@ -83,7 +85,12 @@ pub fn service(
         info!("SSE server listening on {}/http{{{}}}", listen, path);
     }
 
-    let state = Arc::new(ServiceState::new(node_client, store, auth_enabled));
+    let state = Arc::new(ServiceState::new(
+        node_client,
+        ctx_client,
+        store,
+        auth_enabled,
+    ));
 
     let router = Router::new()
         .route("/", get(sse_handler))
