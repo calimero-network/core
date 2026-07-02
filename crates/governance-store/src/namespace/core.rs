@@ -288,7 +288,9 @@ impl<'a> NamespaceRepository<'a> {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let expiration = now_secs + expiration_secs;
+        // Saturate to avoid overflowing into a past/wrapped expiration when a
+        // caller passes a very large `expiration_secs`.
+        let expiration = now_secs.saturating_add(expiration_secs);
 
         let mut result = Vec::with_capacity(groups.len());
         for gid in groups {

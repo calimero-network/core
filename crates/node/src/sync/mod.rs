@@ -60,7 +60,8 @@ mod tracking;
 // Cross-node integration tests for the four motivating partition scenarios
 // of #2197 / ADR 0001. Migrated from `calimero_storage::tests` per #2266
 // step 5 — they exercise the production sync-layer flow: load rotation log,
-// resolve `effective_writers` via `rotation_log_reader::writers_at`, apply.
+// resolve `effective_writers` via `rotation_log_reader::writers_at_authenticated`,
+// apply.
 #[cfg(test)]
 mod p3_dag_causal_tests;
 #[cfg(test)]

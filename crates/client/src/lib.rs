@@ -27,7 +27,7 @@ pub use client::{Client, ResolveResponse, ResolveResponseValue};
 pub use connection::{AuthMode, ConnectionInfo};
 pub use errors::ClientError;
 pub use eyre::Result;
-pub use storage::{get_session_cache, JwtToken};
+pub use storage::JwtToken;
 pub use traits::{ClientAuthenticator, ClientConfig, ClientStorage};
 // Re-export common types
 pub use url::Url;

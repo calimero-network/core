@@ -43,7 +43,7 @@ use node::NodeCommand;
 use peers::PeersCommand;
 use tee::TeeCommand;
 
-use crate::auth::{authenticate_with_session_cache, check_authentication, TokenScope};
+use crate::auth::{authenticate_and_connect, check_authentication, TokenScope};
 
 /// Dispatch a subcommand enum whose every variant wraps a command type that
 /// exposes `async fn run(self, &mut Environment) -> Result<...>`. Replaces the
@@ -281,12 +281,12 @@ impl RootCommand {
             // load_config(path, node) which does path.join(node) — passing home/node here
             // would double-join to home/node/node and break every subsequent invocation.
             let connection =
-                authenticate_with_session_cache(&url, node, Some(&self.args.home), output).await?;
+                authenticate_and_connect(&url, node, Some(&self.args.home), output).await?;
             Ok(connection)
         } else if let Some(api_url) = &self.args.api {
-            // Use specific API URL - check session cache first, then authenticate if needed
+            // Use specific API URL - authenticate if the server requires it.
             let connection =
-                authenticate_with_session_cache(api_url, api_url.as_ref(), None, output).await?;
+                authenticate_and_connect(api_url, api_url.as_ref(), None, output).await?;
             Ok(connection)
         } else {
             // Try to use active node
@@ -306,7 +306,7 @@ impl RootCommand {
             // No active node set - fall back to default localhost server
             let default_url = "http://127.0.0.1:2528".parse()?;
             let connection =
-                authenticate_with_session_cache(&default_url, "default", None, output).await?;
+                authenticate_and_connect(&default_url, "default", None, output).await?;
             Ok(connection)
         }
     }

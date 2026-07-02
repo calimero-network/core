@@ -176,7 +176,10 @@ fn verify_fetched_parent(
     // Mirror the gate `apply_authorized_state_delta` uses.
     if NamespaceRepository::new(datastore)
         .is_read_only_for_context(context_id, &fetched.author_id)
-        .unwrap_or(false)
+        .unwrap_or_else(|err| {
+            warn!(%context_id, author = %fetched.author_id, %err, "ReadOnly lookup failed; failing closed");
+            true
+        })
     {
         warn!(
             %context_id,

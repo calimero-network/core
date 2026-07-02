@@ -33,15 +33,21 @@ const ONE_SEC_NANOS: u64 = 1_000_000_000;
 #[serial]
 fn lww_newer_update_wins() {
     super::common::register_test_merge_functions();
+    // Inject explicit, strictly-increasing timestamps rather than sleeping to
+    // manufacture wall-clock separation: deterministic and instant, with no
+    // dependence on scheduler timing. Both stamps sit at/near `now` and well
+    // within the future-drift tolerance.
+    let base = time_now();
     let mut page = Page::new_from_element("Version 1", Element::root());
+    page.element_mut().set_updated_at(base);
 
     // Save initial version
     assert!(TestInterface::save(&mut page).unwrap());
 
-    // Save newer version
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    // Save newer version with a strictly-greater timestamp
     page.title = "Version 2".to_string();
     page.element_mut().update();
+    page.element_mut().set_updated_at(base + ONE_SEC_NANOS);
     assert!(TestInterface::save(&mut page).unwrap());
 
     // Should have newer version
@@ -55,13 +61,15 @@ fn lww_newer_update_wins() {
 #[serial]
 fn lww_newer_overwrites_older() {
     super::common::register_test_merge_functions();
+    let base = time_now();
     let mut page = Page::new_from_element("Version 1", Element::root());
+    page.element_mut().set_updated_at(base);
     assert!(TestInterface::save(&mut page).unwrap());
 
-    // Wait and create newer version
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    // Create newer version with a strictly-greater timestamp
     page.title = "Version 2".to_string();
     page.element_mut().update();
+    page.element_mut().set_updated_at(base + ONE_SEC_NANOS);
 
     assert!(TestInterface::save(&mut page).unwrap());
 
@@ -76,22 +84,24 @@ fn lww_newer_overwrites_older() {
 #[serial]
 fn lww_concurrent_updates_deterministic() {
     super::common::register_test_merge_functions();
+    let base = time_now();
     let mut page = Page::new_from_element("Initial", Element::root());
     let id = page.id();
+    page.element_mut().set_updated_at(base);
 
     // Save initial version
     TestInterface::save(&mut page).unwrap();
 
-    // Create update with slightly newer timestamp
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    // Update with a strictly newer timestamp
     page.title = "Update 1".to_string();
     page.element_mut().update();
+    page.element_mut().set_updated_at(base + ONE_SEC_NANOS);
     TestInterface::save(&mut page).unwrap();
 
-    // Create another update with even newer timestamp
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    // Update again with an even newer timestamp
     page.title = "Update 2".to_string();
     page.element_mut().update();
+    page.element_mut().set_updated_at(base + 2 * ONE_SEC_NANOS);
     TestInterface::save(&mut page).unwrap();
 
     // Later metadata should win

@@ -261,7 +261,10 @@ pub(crate) async fn apply_authorized_state_delta(
     // `Member(role)` with a wildcard role that the drain matches against.
     if NamespaceRepository::new(node_clients.context.datastore())
         .is_read_only_for_context(&context_id, &author_id)
-        .unwrap_or(false)
+        .unwrap_or_else(|err| {
+            warn!(%context_id, %author_id, %err, "ReadOnly lookup failed; failing closed");
+            true
+        })
     {
         warn!(
             %context_id,
@@ -925,7 +928,10 @@ pub async fn handle_state_delta(
     // cross-DAG membership lookup on a delta we'll reject anyway.
     if NamespaceRepository::new(node_clients.context.datastore())
         .is_read_only_for_context(&context_id, &author_id)
-        .unwrap_or(false)
+        .unwrap_or_else(|err| {
+            warn!(%context_id, %author_id, %err, "ReadOnly lookup failed; failing closed");
+            true
+        })
     {
         warn!(
             %context_id,
@@ -1420,7 +1426,10 @@ async fn request_missing_deltas(
                     // though gossip rejects the same envelope.
                     if NamespaceRepository::new(&datastore)
                         .is_read_only_for_context(&context_id, &response_author)
-                        .unwrap_or(false)
+                        .unwrap_or_else(|err| {
+                            warn!(%context_id, %response_author, %err, "ReadOnly lookup failed; failing closed");
+                            true
+                        })
                     {
                         warn!(
                             %context_id,
@@ -1776,16 +1785,31 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // `apply_authorized_state_delta`. Snapshot-sync replay must enforce the
     // same per-context role gate; otherwise a peer that became ReadOnly
     // between authoring and replay slips a write through.
-    if NamespaceRepository::new(context_client.datastore())
+    match NamespaceRepository::new(context_client.datastore())
         .is_read_only_for_context(&context_id, &buffered.author_id)
-        .unwrap_or(false)
     {
-        warn!(
-            %context_id,
-            author = %buffered.author_id,
-            "Rejecting buffered state delta from ReadOnly member"
-        );
-        return Ok(false);
+        Ok(true) => {
+            warn!(
+                %context_id,
+                author = %buffered.author_id,
+                "Rejecting buffered state delta from ReadOnly member"
+            );
+            return Ok(false);
+        }
+        Ok(false) => {}
+        // Unlike the gossip/catchup sites, a buffered delta is consumed from the
+        // buffer and does NOT re-arrive via gossip, so silently dropping it on a
+        // transient store error would lose a possibly-legitimate delta. Propagate
+        // the error so the caller surfaces/retries instead of dropping.
+        Err(err) => {
+            warn!(
+                %context_id,
+                author = %buffered.author_id,
+                %err,
+                "ReadOnly lookup failed during buffered replay; propagating error"
+            );
+            return Err(err);
+        }
     }
 
     // Apply-time cross-DAG membership check, parallel to `handle_state_delta`.

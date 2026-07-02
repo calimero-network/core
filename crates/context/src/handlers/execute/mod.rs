@@ -60,6 +60,19 @@ mod signing;
 pub mod storage;
 mod upgrade_gate;
 
+/// Maximum depth of a local xcall cascade. A direct/RPC call runs at depth 0,
+/// and each `xcall` it (transitively) triggers runs one level deeper. An
+/// execution *at* this depth still runs, but its own xcalls are denied — so
+/// executions span depths `0..=MAX_XCALL_DEPTH` and a cascade makes at most
+/// `MAX_XCALL_DEPTH` xcall hops beyond the root.
+///
+/// xcalls dispatch locally and each spawned execution can queue up to
+/// `max_xcalls` more (breadth `B`, default 8), so without a depth bound one
+/// root call could recurse forever (a cycle A→B→A) or fan out `B^depth`. This
+/// cap bounds the executions one root call spawns to `B + B² + … + B^DEPTH`
+/// (children at depths 1..=`DEPTH`) — 584 at `B = 8`, `DEPTH = 3`.
+const MAX_XCALL_DEPTH: u32 = 3;
+
 use governance_position::compute_governance_position_for_context;
 pub(crate) use signing::{persist_signed_signatures, sign_authorized_actions};
 use storage::{ContextPrivateStorage, ContextStorage, ReadOnlyContextStorage};
@@ -81,9 +94,22 @@ impl Handler<ExecuteRequest> for ContextManager {
             aliases,
             atomic,
             xcall_origin,
+            xcall_depth,
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        // A direct/RPC call always starts a fresh cascade at depth 0; only an
+        // execution dispatched via `xcall` (`xcall_origin` = `Some`) carries a
+        // depth, and that depth was set by our own dispatch loop below. Ignore
+        // any depth supplied on a non-xcall request so the cap can't be
+        // sidestepped by handing the actor an `ExecuteRequest` with a high
+        // `xcall_depth`. Invariant: `xcall_origin.is_none()` ⟺ depth 0.
+        let xcall_depth = if xcall_origin.is_some() {
+            xcall_depth
+        } else {
+            0
+        };
+
         info!(
             %context_id,
             method,
@@ -1127,6 +1153,28 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     ));
                                 };
 
+                                // Depth cap: an execution already at the maximum
+                                // cascade depth may not spawn further xcalls. This
+                                // is what bounds the otherwise-unbounded local
+                                // recursion — a cycle A→B→A would never terminate,
+                                // and each level multiplies the fan-out by up to
+                                // `max_xcalls`. `xcall_depth` is this execution's
+                                // depth; a child would run one deeper.
+                                if xcall_depth >= MAX_XCALL_DEPTH {
+                                    warn!(
+                                        %context_id,
+                                        target_context = ?target_context_id,
+                                        function = %function,
+                                        xcall_depth,
+                                        max = MAX_XCALL_DEPTH,
+                                        "xcall denied: depth limit reached"
+                                    );
+                                    emit(XCallOutcome::Denied {
+                                        reason: "xcall depth limit".to_owned(),
+                                    });
+                                    continue;
+                                }
+
                                 // A context may only xcall a target in its OWN
                                 // owning group. Gating on the shared namespace
                                 // root instead let any sibling context anywhere
@@ -1198,6 +1246,11 @@ impl Handler<ExecuteRequest> for ContextManager {
                                         vec![],
                                         None,
                                         Some(context_id),
+                                        // Child runs one level deeper. The depth
+                                        // check above already caps this within
+                                        // `MAX_XCALL_DEPTH`; `saturating_add`
+                                        // keeps the arithmetic sound regardless.
+                                        xcall_depth.saturating_add(1),
                                     )
                                     .await;
 

@@ -5,12 +5,10 @@
 
 // Standard library
 use std::collections::HashMap;
-use std::sync::Arc;
 
 // External crates
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
 use zeroize::Zeroize;
 
 /// Decode the `exp` (expiry) claim from a JWT access token without verifying
@@ -190,72 +188,6 @@ impl std::hash::Hash for JwtToken {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.access_token.hash(state);
     }
-}
-
-/// In-memory token cache for session management
-#[derive(Debug, Clone)]
-pub struct SessionTokenCache {
-    tokens: Arc<RwLock<HashMap<String, JwtToken>>>,
-}
-
-impl SessionTokenCache {
-    /// Create a new session token cache
-    pub fn new() -> Self {
-        Self {
-            tokens: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
-    /// Store tokens for a specific URL
-    pub async fn store_tokens(&self, url: &str, tokens: &JwtToken) {
-        let mut cache = self.tokens.write().await;
-        drop(cache.insert(url.to_owned(), tokens.clone()));
-    }
-
-    /// Get tokens for a specific URL
-    pub async fn get_tokens(&self, url: &str) -> Option<JwtToken> {
-        let cache = self.tokens.read().await;
-        cache.get(url).cloned()
-    }
-
-    /// Remove tokens for a specific URL
-    pub async fn remove_tokens(&self, url: &str) {
-        let mut cache = self.tokens.write().await;
-        drop(cache.remove(url));
-    }
-
-    /// Clear all cached tokens
-    pub async fn clear_all(&self) {
-        let mut cache = self.tokens.write().await;
-        cache.clear();
-    }
-
-    /// Check if tokens exist for a URL
-    pub async fn has_tokens(&self, url: &str) -> bool {
-        let cache = self.tokens.read().await;
-        cache.contains_key(url)
-    }
-
-    /// Get all cached URLs
-    pub async fn get_cached_urls(&self) -> Vec<String> {
-        let cache = self.tokens.read().await;
-        cache.keys().cloned().collect()
-    }
-}
-
-impl Default for SessionTokenCache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Global session cache instance
-static SESSION_CACHE: once_cell::sync::Lazy<SessionTokenCache> =
-    once_cell::sync::Lazy::new(SessionTokenCache::new);
-
-/// Get the global session cache instance
-pub fn get_session_cache() -> SessionTokenCache {
-    SESSION_CACHE.clone()
 }
 
 /// Token validation result

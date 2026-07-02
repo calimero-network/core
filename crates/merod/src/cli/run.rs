@@ -190,7 +190,10 @@ impl RunCommand {
         let datastore_config = match encryption_key {
             Some(key) => {
                 info!("Storage encryption enabled");
-                StoreConfig::with_encryption(datastore_path, key)
+                // Move the fetched key into a `Zeroizing` wrapper so the KEK is
+                // wiped from the heap when the config drops rather than
+                // lingering for the whole process lifetime.
+                StoreConfig::with_encryption(datastore_path, zeroize::Zeroizing::new(key))
             }
             None => StoreConfig::new(datastore_path),
         };
