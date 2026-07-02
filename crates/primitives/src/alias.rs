@@ -61,6 +61,10 @@ impl<T> Clone for Alias<T> {
 pub enum InvalidAlias {
     #[error("exceeds maximum length of {} characters", MAX_ALIAS_LEN)]
     TooLong,
+    #[error("must not be empty")]
+    Empty,
+    #[error("contains an invalid character; allowed characters are [A-Za-z0-9._-]")]
+    InvalidCharacter,
 }
 
 impl<T> Alias<T> {
@@ -102,6 +106,20 @@ impl<T> FromStr for Alias<T> {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.len() > MAX_ALIAS_LEN {
             return Err(InvalidAlias::TooLong);
+        }
+
+        if s.is_empty() {
+            return Err(InvalidAlias::Empty);
+        }
+
+        // Aliases are interpolated into store keys and URL paths, so restrict
+        // them to an unambiguous character set. This excludes path separators
+        // and whitespace that could otherwise change how an alias is routed.
+        if !s
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        {
+            return Err(InvalidAlias::InvalidCharacter);
         }
 
         let mut str = [0; MAX_ALIAS_LEN];
