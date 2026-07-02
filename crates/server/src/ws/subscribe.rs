@@ -14,8 +14,14 @@ async fn handle(
     state: Arc<ServiceState>,
     connection_state: ConnectionState,
 ) -> EyreResult<SubscribeResponse> {
-    let mut inner = connection_state.inner.write().await;
-    let (caller, node_owner) = (inner.caller, inner.node_owner);
+    // Snapshot the connection's identity under a short read lock. The membership
+    // lookups below can touch the store, so we must not hold a lock across them:
+    // holding the write lock across `has_member` would stall the node-event task
+    // that reads `subscriptions` on every broadcast.
+    let (caller, node_owner) = {
+        let inner = connection_state.inner.read().await;
+        (inner.caller, inner.node_owner)
+    };
 
     // Only subscribe to contexts this connection is authorized to observe.
     // Context events carry state roots and application execution-event payloads,
@@ -23,17 +29,30 @@ async fn handle(
     // owner (and a no-auth dev server) may observe everything; any other
     // connection must prove membership via its authenticated caller identity.
     // Unauthorized ids are dropped rather than subscribed, and the response
-    // reflects only the contexts that were actually subscribed.
+    // reflects only the contexts that were actually subscribed. This runs
+    // without holding any lock.
     let mut subscribed = Vec::with_capacity(request.context_ids.len());
     for id in request.context_ids {
         let caller_is_member =
-            caller.map(|key| state.ctx_client.has_member(&id, &key).unwrap_or(false));
+            caller.map(|key| {
+                state.ctx_client.has_member(&id, &key).unwrap_or_else(|err| {
+                warn!(context_id=%id, %err, "has_member lookup failed; denying subscription");
+                false
+            })
+            });
 
         if may_observe_context(state.auth_enabled, node_owner, caller_is_member) {
-            let _ = inner.subscriptions.insert(id);
             subscribed.push(id);
         } else {
             warn!(context_id=%id, "denying WS subscription: caller is not a member of the context");
+        }
+    }
+
+    // Acquire the write lock only to record the approved subscriptions.
+    {
+        let mut inner = connection_state.inner.write().await;
+        for id in &subscribed {
+            let _ = inner.subscriptions.insert(*id);
         }
     }
 
