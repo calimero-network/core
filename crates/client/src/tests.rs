@@ -1392,9 +1392,13 @@ async fn concurrent_expired_requests_refresh_once() {
     let server = MockServer::start().await;
     // Single-flight: 8 concurrent expired requests must produce exactly ONE
     // `/auth/refresh` (a rotating refresh token would be spent 8 times
-    // otherwise) and 8 successful GETs carrying the fresh bearer. The 50 ms
-    // refresh delay holds the lock long enough that all 8 tasks are guaranteed
-    // to contend for it rather than each racing an instant refresh.
+    // otherwise) and 8 successful GETs carrying the fresh bearer.
+    //
+    // Contention is made deterministic rather than timing-dependent: a `Barrier`
+    // releases all 8 tasks into the request path simultaneously, and the 50 ms
+    // refresh delay keeps the first task holding the single-flight lock across a
+    // real await while the other 7 are guaranteed (already past the barrier) to
+    // queue on it. Without contention the coalescing path wouldn't be exercised.
     mount_refresh_and_guarded_get(&server, &fresh, 1, 8, Duration::from_millis(50)).await;
 
     let (client, auth_calls) = auth_client_with_token(
@@ -1402,10 +1406,14 @@ async fn concurrent_expired_requests_refresh_once() {
         JwtToken::with_refresh(expired, "refresh-tok".to_owned()),
     );
 
+    let barrier = Arc::new(tokio::sync::Barrier::new(8));
     let mut set = tokio::task::JoinSet::new();
     for _ in 0..8 {
         let client = client.clone();
+        let barrier = Arc::clone(&barrier);
         set.spawn(async move {
+            // Rendezvous so all 8 enter `ensure_auth_header` together.
+            barrier.wait().await;
             client
                 .connection()
                 .get::<serde_json::Value>("admin-api/contexts")
