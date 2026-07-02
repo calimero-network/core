@@ -322,9 +322,13 @@ where
                 // Still valid but lapsing soon — refresh proactively to avoid a
                 // wasted 401, but don't fail the request if the refresh can't
                 // complete. Prefer the freshly-stored token (another task may
-                // have refreshed concurrently); fall back to the still-valid
-                // local token only if storage no longer yields a usable one.
-                let _ = self.refresh_or_reauth(Some(&tokens.access_token)).await;
+                // have refreshed concurrently); fall back to the local token
+                // only if storage no longer yields a usable one. That fallback
+                // is safe: control flow above guarantees `tokens` is not yet
+                // expired here, only near expiry.
+                if let Err(e) = self.refresh_or_reauth(Some(&tokens.access_token)).await {
+                    tracing::debug!("proactive token refresh failed, using current token: {e}");
+                }
                 if let Some(header) = self.current_auth_header(node_name).await? {
                     return Ok(Some(header));
                 }
@@ -680,7 +684,9 @@ pub(crate) async fn read_body_capped(response: Response, max_bytes: usize) -> Re
     }
 
     // Reserve up to the advertised length, but never more than the cap, so an
-    // inflated `Content-Length` can't trigger a huge up-front allocation.
+    // inflated `Content-Length` can't trigger a huge up-front allocation. The
+    // early return above already bounds `len` to the cap; the `min` keeps this
+    // safe independently of that check (defensive against future refactoring).
     let hint = response
         .content_length()
         .map_or(0, |len| len.min(max_bytes as u64) as usize);

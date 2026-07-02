@@ -40,11 +40,13 @@ pub trait ClientStorage: Send + Sync {
     /// values — see [`JwtToken::merged_with`].
     ///
     /// The default load-merge-save is **not atomic**: a concurrent writer
-    /// between the load and the save can be clobbered by a stale merge. The
-    /// connection layer serializes its own refresh/update through an internal
-    /// lock, so callers driving updates from *outside* that path (or from
-    /// multiple tasks) must serialize externally if they need last-write
-    /// correctness.
+    /// between the load and the save can be clobbered by a stale merge, which
+    /// could drop a refresh token. The connection layer serializes its own
+    /// refresh/update through an internal lock; any caller driving updates from
+    /// *outside* that path — or from multiple tasks — must serialize the calls
+    /// itself. A storage backend that can update atomically (e.g. a
+    /// compare-and-swap or transactional store) **should override** this method
+    /// to do the merge under its own lock/transaction.
     async fn update_tokens(&self, node_name: &str, new_tokens: &JwtToken) -> Result<()> {
         let merged = match self.load_tokens(node_name).await? {
             Some(existing) => existing.merged_with(new_tokens),
