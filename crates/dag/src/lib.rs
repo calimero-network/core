@@ -258,6 +258,13 @@ struct PendingDelta<T> {
     /// without a wall-clock comparison. Mirrors the key under which this entry
     /// is registered in `DagStore::pending_order`.
     seq: u64,
+    /// Test-only explicit age. When set, [`PendingDelta::age`] returns this
+    /// instead of `received_at.elapsed()`, letting staleness tests drive
+    /// `cleanup_stale` deterministically without a real sleep and without any
+    /// `Instant` arithmetic (which can't represent an age larger than the
+    /// host's monotonic-clock uptime). Only exists in test builds.
+    #[cfg(test)]
+    age_override: Option<Duration>,
 }
 
 impl<T> PendingDelta<T> {
@@ -266,10 +273,16 @@ impl<T> PendingDelta<T> {
             delta,
             received_at: Instant::now(),
             seq,
+            #[cfg(test)]
+            age_override: None,
         }
     }
 
     fn age(&self) -> Duration {
+        #[cfg(test)]
+        if let Some(age) = self.age_override {
+            return age;
+        }
         self.received_at.elapsed()
     }
 }
@@ -835,26 +848,17 @@ impl<T: Clone> DagStore<T> {
         to_evict.len()
     }
 
-    /// Test-only: backdate every pending delta's arrival time by `by`, so
+    /// Test-only: force every pending delta's reported age to `age`, so
     /// `cleanup_stale` observes it as stale without a real wall-clock sleep.
     /// `cleanup_stale` ages entries against `std::time::Instant`, which
-    /// `tokio::time::pause` cannot control — this seam replaces the sleep with
-    /// deterministic, instant time travel.
-    ///
-    /// `Instant` has no `saturating_sub`, so we use `checked_sub` and fall back
-    /// to leaving `received_at` untouched if the subtraction would underflow.
-    /// That underflow can only happen when the monotonic clock has been running
-    /// for less than `by`; since it is boot-relative and every realistic host
-    /// (including CI containers, which inherit host uptime) is up far longer
-    /// than the sub-second `by` used here, the subtraction always applies in
-    /// practice. Crucially, the fallback means this never panics.
+    /// `tokio::time::pause` cannot control — this seam sets an explicit age
+    /// override that `PendingDelta::age` returns directly. It is unconditional
+    /// (no `Instant` subtraction, so no dependence on host uptime) and cannot
+    /// panic.
     #[cfg(test)]
-    fn backdate_pending_for_test(&mut self, by: Duration) {
+    fn set_pending_age_for_test(&mut self, age: Duration) {
         for pending in self.pending.values_mut() {
-            pending.received_at = pending
-                .received_at
-                .checked_sub(by)
-                .unwrap_or(pending.received_at);
+            pending.age_override = Some(age);
         }
     }
 
@@ -1351,9 +1355,9 @@ mod basic_tests {
         dag.add_delta(delta_pending, &applier).await.unwrap();
         assert_eq!(dag.pending_stats().count, 1);
 
-        // Age the pending entry deterministically instead of sleeping: back it
-        // up 1s so it is unambiguously older than the 50ms cleanup threshold.
-        dag.backdate_pending_for_test(Duration::from_secs(1));
+        // Age the pending entry deterministically instead of sleeping: force
+        // its reported age to 1s, unambiguously past the 50ms cleanup threshold.
+        dag.set_pending_age_for_test(Duration::from_secs(1));
 
         // Cleanup with a short timeout evicts the now-stale delta.
         let evicted = dag.cleanup_stale(Duration::from_millis(50));
