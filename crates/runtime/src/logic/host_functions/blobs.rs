@@ -205,6 +205,13 @@ impl VMHostFunctions<'_> {
         // is about to proceed — the memory descriptor has been read and the fd
         // is confirmed to be a write handle — so a guest can't drain the budget
         // by hammering an invalid fd or an unreadable descriptor.
+        //
+        // The charge is optimistic and not refunded: it lands before the `send`
+        // below so the budget is enforced strictly (a chunk that would exceed it
+        // is rejected before being buffered). The only way a charged chunk isn't
+        // written is a `send` failure, which returns `Err` and traps the whole
+        // execution — the `VMLogic` and this counter are discarded, so the
+        // charge has no observable effect and there is nothing to refund.
         self.with_logic_mut(|logic| logic.charge_blob_write(data_len))?;
 
         // `block_in_place` hands the blocking wait off the async worker so the
