@@ -4,10 +4,13 @@
 //! authenticated API requests to Calimero services.
 
 // External crates
+use std::sync::Arc;
+
 use eyre::{bail, eyre, Result};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use tokio::sync::Mutex;
 use url::Url;
 
 // Local crate
@@ -52,6 +55,12 @@ where
     node_name: Option<String>,
     authenticator: A,
     client_storage: S,
+    // Single-flight guard shared across clones: serializes token
+    // refresh/re-authentication so N concurrent 401s (or N concurrent
+    // token-less requests) coalesce into one refresh / one interactive login
+    // instead of each firing its own — which would race the one-time refresh
+    // token and, for interactive auth, spawn N browser prompts.
+    refresh_lock: Arc<Mutex<()>>,
 }
 
 impl<A, S> ConnectionInfo<A, S>
@@ -71,6 +80,7 @@ where
             node_name,
             authenticator,
             client_storage,
+            refresh_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -272,7 +282,16 @@ where
             }
         }
 
-        // No tokens — authenticate proactively
+        // No tokens — authenticate proactively, single-flight so concurrent
+        // token-less requests don't each spawn an interactive login.
+        let _guard = self.refresh_lock.lock().await;
+
+        // Another task may have authenticated while we waited for the lock;
+        // reuse its result instead of authenticating again.
+        if let Ok(Some(tokens)) = self.client_storage.load_tokens(node_name).await {
+            return Ok(Some(format!("Bearer {}", tokens.access_token)));
+        }
+
         match self.authenticator.authenticate(&self.api_url).await {
             Ok(new_tokens) => {
                 self.client_storage
@@ -307,7 +326,7 @@ where
             // Load a fresh auth header on EVERY iteration so retries use up-to-date tokens.
             let auth_header = self.ensure_auth_header(requires_auth).await?;
 
-            let response = request_builder(auth_header).await?;
+            let response = request_builder(auth_header.clone()).await?;
 
             if response.status() == 401 && retry_count < MAX_RETRIES {
                 if self.node_name.is_none() {
@@ -318,31 +337,11 @@ where
 
                 retry_count += 1;
 
-                // Try to refresh first; fall back to full re-auth on any failure
-                // (including missing refresh token). Previously, missing refresh token
-                // caused an immediate bail; now any refresh failure triggers full
-                // re-authentication so the user gets a working session regardless.
-                match self.refresh_token().await {
-                    Ok(new_token) => {
-                        if let Some(ref node_name) = self.node_name {
-                            self.client_storage
-                                .update_tokens(node_name, &new_token)
-                                .await?;
-                        }
-                    }
-                    Err(_) => match self.authenticator.authenticate(&self.api_url).await {
-                        Ok(new_tokens) => {
-                            if let Some(ref node_name) = self.node_name {
-                                self.client_storage
-                                    .update_tokens(node_name, &new_tokens)
-                                    .await?;
-                            }
-                        }
-                        Err(auth_err) => {
-                            bail!("Authentication failed: {}", auth_err);
-                        }
-                    },
-                }
+                // Refresh (or fall back to full re-auth) under the single-flight
+                // lock so concurrent 401s don't each hit /auth/refresh with the
+                // same one-time refresh token.
+                self.refresh_or_reauth(auth_header.as_deref()).await?;
+
                 // Loop back — next iteration loads fresh tokens.
                 continue;
             }
@@ -367,6 +366,57 @@ where
             }
 
             return Ok(response);
+        }
+    }
+
+    /// Refresh the stored token, or fall back to full re-authentication, under
+    /// the single-flight lock.
+    ///
+    /// `used_auth_header` is the `Authorization` value the request that just got
+    /// a 401 was sent with. After acquiring the lock we compare it against the
+    /// currently-stored token: if another task already refreshed while we
+    /// waited, the stored token differs, so we skip and let the caller retry
+    /// with the now-current token instead of burning the (already-rotated)
+    /// refresh token a second time.
+    async fn refresh_or_reauth(&self, used_auth_header: Option<&str>) -> Result<()> {
+        let Some(node_name) = self.node_name.clone() else {
+            bail!(
+                "Authentication required but no node name is available to load or persist tokens"
+            );
+        };
+
+        let _guard = self.refresh_lock.lock().await;
+
+        // Did someone else already refresh while we waited for the lock?
+        if let Some(used) = used_auth_header {
+            if let Ok(Some(tokens)) = self.client_storage.load_tokens(&node_name).await {
+                if format!("Bearer {}", tokens.access_token) != used {
+                    return Ok(());
+                }
+            }
+        }
+
+        // Try to refresh first; fall back to full re-auth on any failure
+        // (including a missing refresh token) so the user gets a working session
+        // regardless.
+        match self.refresh_token().await {
+            Ok(new_token) => {
+                self.client_storage
+                    .update_tokens(&node_name, &new_token)
+                    .await?;
+                Ok(())
+            }
+            Err(_) => match self.authenticator.authenticate(&self.api_url).await {
+                Ok(new_tokens) => {
+                    self.client_storage
+                        .update_tokens(&node_name, &new_tokens)
+                        .await?;
+                    Ok(())
+                }
+                Err(auth_err) => {
+                    bail!("Authentication failed: {}", auth_err);
+                }
+            },
         }
     }
 
