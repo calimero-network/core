@@ -251,6 +251,7 @@ ouroboros = "0.18.5"
 owo-colors = "3.5.0"
 parking_lot = "0.12.3"
 pastey = "0.2.3" # maintained drop-in for the unmaintained `paste`
+percent-encoding = "2.3"
 prettyplease = "0.2.17"
 proc-macro2 = "1.0"
 prometheus-client = "0.23"

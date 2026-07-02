@@ -462,7 +462,10 @@ where
                 // error path, then extract only known-safe message fields.
                 let body = read_body_capped(response, MAX_ERROR_BODY_BYTES)
                     .await
-                    .unwrap_or_default();
+                    .unwrap_or_else(|e| {
+                        tracing::debug!("failed to read HTTP error response body: {e}");
+                        Vec::new()
+                    });
                 let body = String::from_utf8_lossy(&body);
                 // Return a typed error carrying the numeric status so callers can
                 // classify the failure (e.g. 404 → not-found) by matching the
@@ -534,7 +537,10 @@ where
             let status = response.status();
             let body = read_body_capped(response, MAX_ERROR_BODY_BYTES)
                 .await
-                .unwrap_or_default();
+                .unwrap_or_else(|e| {
+                    tracing::debug!("failed to read token-refresh error response body: {e}");
+                    Vec::new()
+                });
             let body = String::from_utf8_lossy(&body);
             return Err(eyre!(
                 "Token refresh failed: {}",
@@ -611,25 +617,46 @@ where
 /// `.`/`..` dot-segments, so an interpolated identifier such as
 /// `../packages/evil` would let a request escape its intended
 /// `admin-api/groups/...` prefix and reach a *different* admin endpoint after a
-/// proxy normalizes the path. Any `.`/`..` segment (or control character) is
-/// rejected outright.
+/// proxy normalizes the path. Each segment is rejected if it decodes to a `.`
+/// or `..` dot-segment (so a percent-encoded `%2e%2e` can't slip past the guard
+/// and be normalized to `..` at the origin) or contains a control character.
+///
+/// Segments are **appended** to the base URL's existing path via
+/// `path_segments_mut`, so a reverse-proxy base path (e.g.
+/// `https://host/calimero/node1/`) is preserved — consistent with
+/// [`Client::ws_url`] — rather than being discarded by an absolute `set_path`.
 pub(crate) fn resolve_path(base: &Url, path: &str) -> Result<Url> {
+    use percent_encoding::percent_decode_str;
+
     let (path_part, query_part) = match path.split_once('?') {
         Some((p, q)) => (p, Some(q)),
         None => (path, None),
     };
 
-    for segment in path_part.split('/') {
-        if segment == "." || segment == ".." {
-            bail!("refusing request path with traversal segment: {path_part:?}");
-        }
-        if segment.chars().any(char::is_control) {
-            bail!("refusing request path with control character: {path_part:?}");
+    let mut url = base.clone();
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|()| eyre!("api_url cannot be a base URL"))?;
+        // Drop a trailing empty segment from the base (e.g. the one a trailing
+        // `/` produces) so appending doesn't create a `//` in the path.
+        segments.pop_if_empty();
+
+        for segment in path_part.split('/') {
+            if segment.is_empty() {
+                continue;
+            }
+            let decoded = percent_decode_str(segment).decode_utf8_lossy();
+            if decoded == "." || decoded == ".." {
+                bail!("refusing request path with traversal segment: {path_part:?}");
+            }
+            if decoded.chars().any(char::is_control) {
+                bail!("refusing request path with control character: {path_part:?}");
+            }
+            let _ = segments.push(segment);
         }
     }
 
-    let mut url = base.clone();
-    url.set_path(path_part);
     if let Some(query) = query_part {
         url.set_query(Some(query));
     }
@@ -744,6 +771,31 @@ mod tests {
         // An interpolated group id of `..` must not be able to climb out of the
         // `admin-api/groups` prefix into a different admin endpoint.
         assert!(resolve_path(&base, "admin-api/groups/../packages/evil").is_err());
+    }
+
+    #[test]
+    fn resolve_path_rejects_percent_encoded_traversal() {
+        let base = Url::parse("https://node.example/").unwrap();
+        // `%2e%2e` decodes to `..` — a proxy may normalize it before routing, so
+        // it must be rejected just like a literal `..`.
+        assert!(resolve_path(&base, "admin-api/groups/%2e%2e/evil").is_err());
+        assert!(resolve_path(&base, "admin-api/groups/%2E%2E/evil").is_err());
+    }
+
+    #[test]
+    fn resolve_path_preserves_reverse_proxy_base_path() {
+        // A base URL with a mount path (behind a reverse proxy) must be kept:
+        // the request lands under the base, not at the host root.
+        let base = Url::parse("https://host/calimero/node1/").unwrap();
+        let url = resolve_path(&base, "admin-api/contexts?foo=bar").unwrap();
+        assert_eq!(url.path(), "/calimero/node1/admin-api/contexts");
+        assert_eq!(url.query(), Some("foo=bar"));
+
+        // A base without a trailing slash still appends rather than replacing
+        // its last segment.
+        let base = Url::parse("https://host/calimero/node1").unwrap();
+        let url = resolve_path(&base, "admin-api/contexts").unwrap();
+        assert_eq!(url.path(), "/calimero/node1/admin-api/contexts");
     }
 
     #[test]
