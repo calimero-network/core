@@ -161,7 +161,7 @@ pub async fn start(
         .layer(axum::middleware::from_fn(crate::metrics::track_request))
         .layer(Extension(http_metrics));
 
-    app = app.layer(build_cors_layer());
+    app = app.layer(build_cors_layer(&config.cors));
 
     let mut set = JoinSet::new();
 
@@ -190,12 +190,19 @@ pub async fn start(
 ///
 /// **`allow_credentials` is intentionally not set.** It is incompatible with
 /// `allow_origin(Any)` per the CORS spec, so adding it here would be a no-op
-/// for browsers in the current configuration. If credentialed requests
-/// (cookies, TLS client certs) ever become required, `allow_origin(Any)`
-/// must first be replaced with an explicit allow-list of trusted origins.
-fn build_cors_layer() -> CorsLayer {
-    CorsLayer::new()
-        .allow_origin(Any)
+/// for browsers in the current configuration.
+///
+/// Origins and private-network access are driven by [`crate::config::CorsConfig`].
+/// The default (`allowed_origins: None`) preserves the historical permissive
+/// `Any` + private-network behavior so existing browser apps / Tauri webviews /
+/// deployed apps that reach a user's local node keep working. Production
+/// deployments should set an explicit `allowed_origins` list (and
+/// `allow_private_network = false`) to remove the wildcard-origin +
+/// private-network combination.
+fn build_cors_layer(cors: &crate::config::CorsConfig) -> CorsLayer {
+    use tower_http::cors::AllowOrigin;
+
+    let layer = CorsLayer::new()
         .allow_headers(Any)
         .allow_methods([
             Method::POST,
@@ -213,7 +220,24 @@ fn build_cors_layer() -> CorsLayer {
             axum::http::HeaderName::from_static("x-auth-user"),
             axum::http::HeaderName::from_static("x-auth-permissions"),
         ])
-        .allow_private_network(true)
+        .allow_private_network(cors.allow_private_network);
+
+    match &cors.allowed_origins {
+        Some(origins) => {
+            let list: Vec<axum::http::HeaderValue> = origins
+                .iter()
+                .filter_map(|o| match axum::http::HeaderValue::from_str(o) {
+                    Ok(v) => Some(v),
+                    Err(err) => {
+                        tracing::warn!(origin = %o, %err, "ignoring invalid CORS origin");
+                        None
+                    }
+                })
+                .collect();
+            layer.allow_origin(AllowOrigin::list(list))
+        }
+        None => layer.allow_origin(Any),
+    }
 }
 
 #[cfg(test)]
@@ -266,7 +290,7 @@ mod cors_tests {
     {
         Router::new()
             .route("/x", get(handler))
-            .layer(build_cors_layer())
+            .layer(build_cors_layer(&crate::config::CorsConfig::default()))
     }
 
     /// Browser preflight for the PATCH-backed admin routes (e.g.
@@ -391,6 +415,59 @@ mod cors_tests {
         assert!(
             exposed.contains("x-auth-error"),
             "X-Auth-Error must be exposed to JS even on error responses; got: {exposed}"
+        );
+    }
+
+    /// With a configured allowlist, only listed origins get an
+    /// `Access-Control-Allow-Origin` echo; others are refused.
+    #[tokio::test]
+    async fn cors_allowlist_admits_only_listed_origins() {
+        let cors = crate::config::CorsConfig {
+            allowed_origins: Some(vec!["http://localhost:5173".to_owned()]),
+            allow_private_network: false,
+        };
+        let app = Router::new()
+            .route("/x", get(ok_handler))
+            .layer(build_cors_layer(&cors));
+
+        // Allowlisted origin → echoed back.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/x")
+                    .header(header::ORIGIN, "http://localhost:5173")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|v| v.to_str().ok()),
+            Some("http://localhost:5173"),
+            "allowlisted origin must be admitted"
+        );
+
+        // Non-allowlisted origin → no allow-origin header.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/x")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            resp.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none(),
+            "a non-allowlisted origin must not receive Access-Control-Allow-Origin"
         );
     }
 }
