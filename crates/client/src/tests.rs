@@ -1370,7 +1370,11 @@ async fn expired_token_is_refreshed_before_request() {
         JwtToken::with_refresh(expired, "refresh-tok".to_owned()),
     );
 
-    let resp: serde_json::Value = client.connection().get("admin-api/contexts").await.unwrap();
+    let resp: serde_json::Value = client
+        .connection()
+        .get("admin-api/contexts")
+        .await
+        .unwrap_or_else(|e| panic!("stale bearer sent (proactive refresh regressed): {e}"));
     assert_eq!(resp["ok"], serde_json::Value::Bool(true));
     // Refresh path succeeded — no interactive-auth fallback.
     assert_eq!(*auth_calls.lock().unwrap(), 0);
@@ -1393,12 +1397,20 @@ async fn token_expiring_soon_is_refreshed_proactively() {
         JwtToken::with_refresh(expiring, "refresh-tok".to_owned()),
     );
 
-    let resp: serde_json::Value = client.connection().get("admin-api/contexts").await.unwrap();
+    let resp: serde_json::Value = client
+        .connection()
+        .get("admin-api/contexts")
+        .await
+        .unwrap_or_else(|e| panic!("stale bearer sent (proactive refresh regressed): {e}"));
     assert_eq!(resp["ok"], serde_json::Value::Bool(true));
     assert_eq!(*auth_calls.lock().unwrap(), 0);
 }
 
-#[tokio::test]
+// Pinned to the current-thread runtime so the cooperative-scheduling guarantee
+// the body relies on is structural, not a default: on one thread the first task
+// cannot complete its refresh without yielding at the network await (while
+// holding `auth_lock`), which forces the other seven to block on the lock.
+#[tokio::test(flavor = "current_thread")]
 async fn concurrent_expired_requests_refresh_once() {
     let now = chrono::Utc::now().timestamp();
     let expired = jwt_with_exp(now - 3600);
@@ -1409,8 +1421,8 @@ async fn concurrent_expired_requests_refresh_once() {
     // `/auth/refresh` (a rotating refresh token would be spent 8 times
     // otherwise) and 8 successful GETs carrying the fresh bearer.
     //
-    // Contention is exercised, not assumed. The test runs on tokio's default
-    // current-thread runtime: a `Barrier` releases all 8 tasks together, then the
+    // Contention is exercised, not assumed. On the pinned current-thread runtime
+    // (see the attribute above): a `Barrier` releases all 8 tasks together, then the
     // first to run acquires `auth_lock` and parks on the refresh's network await
     // (held open 50 ms) while still holding the lock. Cooperative scheduling then
     // polls the other 7, which all block on `lock().await` before the refresh can
