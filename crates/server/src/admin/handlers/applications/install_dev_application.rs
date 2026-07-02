@@ -18,6 +18,10 @@ use crate::AdminState;
 /// paths are allowed by default. Operators who want to lock the endpoint down
 /// (e.g. a shared/managed node) can set `MEROD_DEV_INSTALL_ROOT` to a directory;
 /// dev installs then only succeed for paths that resolve within it.
+///
+/// Note: when confinement is enabled the target must exist at request time —
+/// confinement resolves the path with `canonicalize`, which fails (request
+/// refused) for a missing file or a dangling symlink.
 const DEV_INSTALL_ROOT_ENV: &str = "MEROD_DEV_INSTALL_ROOT";
 
 /// When `MEROD_DEV_INSTALL_ROOT` is set, require `path` to resolve within it.
