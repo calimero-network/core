@@ -164,8 +164,12 @@ pub async fn join_namespace(
     // — `await_first_fresh_beacon` then always times out, defeating the
     // J6 fast path (#2269 review issue #1).
     //
-    // The invitation is admin-signed, so `inviter_identity` is by
-    // definition an authorized namespace member. Writing a minimal
+    // The invitation's inviter signature is verified above (step 1b), which
+    // proves the sender controls `inviter_identity`'s key. Whether that identity
+    // is actually a namespace admin needs DAG state a fresh joiner doesn't have
+    // yet, so that check is deferred to `validate_open_invitation` on the
+    // responder and re-enforced at apply time; seeding it here is a bounded local
+    // trust bootstrap that genesis later reconciles. Writing a minimal
     // `GroupMeta { admin_identity: inviter, ... }` makes
     // `namespace_member_pubkeys` include the inviter (the meta-admin
     // is added by `namespace_member_pubkeys` even without a member row),
@@ -360,6 +364,15 @@ pub async fn await_namespace_ready(
     sender_key.zeroize();
     let signing_key = PrivateKey::from(my_sk_bytes);
     my_sk_bytes.zeroize();
+
+    // Defense-in-depth: verify the invitation signature here too, so this entry
+    // point is self-contained regardless of call order. The `join_namespace`
+    // fast path already verifies before seeding, but a direct/refactored caller
+    // of `await_namespace_ready` must not be able to bypass the check.
+    calimero_context::group_store::NamespaceMembershipService::verify_open_invitation_signature(
+        &invitation,
+    )
+    .map_err(|e| ReadyError::InvalidInvitation(format!("invalid invitation signature: {e}")))?;
 
     // step 3: publish MemberJoined via three-phase contract.
     // Local fast-fail on an already-expired invitation; the
