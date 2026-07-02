@@ -208,11 +208,19 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // unwind the rows already written before returning so a retry
                 // with the same id starts from a clean slate rather than a
                 // half-created group (mirrors the genesis-failure rollback
-                // below). `group_key_id` is threaded out so both the rollback
-                // here and the genesis rollback later can drop the encryption
-                // key by the id that was actually stored.
+                // below).
+                //
+                // `group_key_id` and `name_written` are threaded out through
+                // outer mutation (not the closure's return) BECAUSE the rollback
+                // runs on the ERROR path: it needs to know exactly which rows
+                // the closure managed to write before it failed, so it drops the
+                // encryption key by the id actually stored (or skips it if the
+                // failure preceded the key write) and only deletes the name row
+                // if it was actually written. The success path takes `key_id`
+                // straight from the closure's `Ok`.
                 let mut group_key_id: Option<[u8; 32]> = None;
-                let write_local_rows = (|| -> eyre::Result<()> {
+                let mut name_written = false;
+                let write_local_rows = (|| -> eyre::Result<[u8; 32]> {
                     MetaRepository::new(&datastore).save(&group_id, &meta)?;
                     MembershipRepository::new(&datastore).add_member(
                         &group_id,
@@ -249,34 +257,38 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             Some(n),
                             &std::collections::BTreeMap::new(),
                         ) {
-                            Ok(()) => MetadataRepository::new(&datastore).set_group(
-                                &group_id,
-                                &calimero_primitives::metadata::MetadataRecord {
-                                    name: name.clone(),
-                                    data: std::collections::BTreeMap::new(),
-                                    updated_at: calimero_governance_store::now_millis(),
-                                    updated_by: admin_identity,
-                                },
-                            )?,
+                            Ok(()) => {
+                                MetadataRepository::new(&datastore).set_group(
+                                    &group_id,
+                                    &calimero_primitives::metadata::MetadataRecord {
+                                        name: name.clone(),
+                                        data: std::collections::BTreeMap::new(),
+                                        updated_at: calimero_governance_store::now_millis(),
+                                        updated_by: admin_identity,
+                                    },
+                                )?;
+                                name_written = true;
+                            }
                             Err(e) => {
                                 warn!(?group_id, reason = %e, "ignoring invalid group name on create")
                             }
                         }
                     }
-                    Ok(())
+                    Ok(key_id)
                 })();
-                if let Err(err) = write_local_rows {
-                    rollback_local_group_rows(
-                        &datastore,
-                        &group_id,
-                        &admin_identity,
-                        group_key_id,
-                        name.is_some(),
-                    );
-                    return Err(err);
-                }
-                let key_id = group_key_id
-                    .expect("group key id is set once the local rows write succeeds");
+                let key_id = match write_local_rows {
+                    Ok(key_id) => key_id,
+                    Err(err) => {
+                        rollback_local_group_rows(
+                            &datastore,
+                            &group_id,
+                            &admin_identity,
+                            group_key_id,
+                            name_written,
+                        );
+                        return Err(err);
+                    }
+                };
 
                 // In the namespace model, group hierarchy is tracked in the
                 // namespace DAG (RootOp::GroupCreated), not via parent refs.
@@ -491,7 +503,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                                 &group_id,
                                 &admin_identity,
                                 Some(key_id),
-                                name.is_some(),
+                                name_written,
                             );
                             return Err(eyre::eyre!(
                                 "failed to apply NamespaceCreated genesis on namespace DAG; \
