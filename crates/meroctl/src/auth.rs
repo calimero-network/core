@@ -10,7 +10,7 @@ use axum::extract::Query;
 use axum::response::Html;
 use axum::routing::get;
 use axum::Router;
-use calimero_client::{auth, get_session_cache, AuthMode, JwtToken};
+use calimero_client::{auth, AuthMode, JwtToken};
 use eyre::{bail, eyre, OptionExt, Result};
 use rand::RngCore;
 use serde::Deserialize;
@@ -462,12 +462,13 @@ pub async fn check_authentication(
     }
 }
 
-/// Helper function for session-based authentication with caching for external connections
-/// Returns a ConnectionInfo with appropriate authentication tokens.
+/// Authenticate against `url` if it requires auth, persist the node + tokens in
+/// config, and return a `ConnectionInfo` bound to `node_name`. When the server
+/// requires no auth, returns an unauthenticated connection.
 ///
 /// `local_node_path` should be `Some(path)` when the node is a local node found via the
 /// filesystem (so it is persisted as `NodeConnection::Local`).  Pass `None` for remote/URL nodes.
-pub async fn authenticate_with_session_cache(
+pub async fn authenticate_and_connect(
     url: &Url,
     node_name: &str,
     local_node_path: Option<&Utf8PathBuf>,
@@ -481,52 +482,34 @@ pub async fn authenticate_with_session_cache(
     );
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
-    if auth_mode != AuthMode::None {
-        // Check if we have tokens in session cache for this URL
-        let session_cache = get_session_cache();
-
-        if let Some(_cached_tokens) = session_cache.get_tokens(url.as_str()).await {
-            // We have existing tokens for this URL in session cache
-            Ok(ConnectionInfo::new(
-                url.clone(),
-                Some(node_name.to_owned()),
-                create_cli_authenticator(output),
-                FileTokenStorage::new(),
-            ))
-        } else {
-            // Need to authenticate and store in session cache
-            match authenticate(url, output).await {
-                Ok(jwt_tokens) => {
-                    // Store in session cache for future use during this session
-                    session_cache.store_tokens(url.as_str(), &jwt_tokens).await;
-
-                    // Persist the node in config so FileTokenStorage can use tokens across
-                    // sessions. Reload config immediately before writing to reduce (but not
-                    // eliminate) the TOCTOU window; only insert when the key is absent so an
-                    // explicit `node add` entry is never overwritten.
-                    persist_node_in_config(node_name, url, local_node_path, &jwt_tokens).await?;
-
-                    Ok(ConnectionInfo::new(
-                        url.clone(),
-                        Some(node_name.to_owned()),
-                        create_cli_authenticator(output),
-                        FileTokenStorage::new(),
-                    ))
-                }
-                Err(e) => {
-                    bail!("Authentication failed for {}: {}", node_name, e);
-                }
-            }
-        }
-    } else {
-        // No authentication required
-        Ok(ConnectionInfo::new(
+    if auth_mode == AuthMode::None {
+        // No authentication required.
+        return Ok(ConnectionInfo::new(
             url.clone(),
             None,
             create_cli_authenticator(output),
             FileTokenStorage::new(),
-        ))
+        ));
     }
+
+    // Run the browser auth flow, then persist the node in config so
+    // `FileTokenStorage` can load the tokens on this and later invocations
+    // (the connection's own auth path re-uses them and only re-prompts when
+    // they're missing). `persist_node_in_config` reloads config immediately
+    // before writing to shrink the TOCTOU window and never overwrites an
+    // explicit `node add` entry.
+    let jwt_tokens = authenticate(url, output)
+        .await
+        .map_err(|e| eyre!("Authentication failed for {}: {}", node_name, e))?;
+
+    persist_node_in_config(node_name, url, local_node_path, &jwt_tokens).await?;
+
+    Ok(ConnectionInfo::new(
+        url.clone(),
+        Some(node_name.to_owned()),
+        create_cli_authenticator(output),
+        FileTokenStorage::new(),
+    ))
 }
 
 /// Persist a node entry and its fresh tokens in the meroctl config file.
