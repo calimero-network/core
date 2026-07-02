@@ -39,6 +39,29 @@ impl NodeClient {
         Ok(applications)
     }
 
+    /// Returns `true` if `blob_id` is referenced as the bytecode or compiled
+    /// artifact of any installed application (including its named services).
+    ///
+    /// Application artifacts are shared, content-addressed blobs that installed
+    /// apps depend on to execute. Because blob deletion is a global,
+    /// reference-counted operation with no per-caller ownership, an unrelated
+    /// admin-api caller could otherwise release the last reference to an app's
+    /// bytecode and brick every context running it. The blob-delete endpoint
+    /// consults this guard and refuses such deletes.
+    pub fn is_blob_application_artifact(&self, blob_id: &BlobId) -> eyre::Result<bool> {
+        for app in self.list_applications()? {
+            if app.blob.bytecode == *blob_id || app.blob.compiled == *blob_id {
+                return Ok(true);
+            }
+            for svc in app.services.values() {
+                if svc.bytecode == *blob_id || svc.compiled == *blob_id {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
     /// Update the compiled blob for an application (or a named service within it).
     pub fn update_compiled_app(
         &self,

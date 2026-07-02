@@ -336,6 +336,34 @@ pub async fn delete_handler(
 
     tracing::info!("Attempting to delete blob {}", blob_id);
 
+    // Blob deletion is a global, reference-counted operation with no per-caller
+    // ownership: any authenticated caller can release a reference to any blob by
+    // its global id. That is acceptable for ordinary content, but application
+    // bytecode/compiled artifacts are shared blobs that installed apps depend on
+    // to execute. Releasing the last reference to one would brick every context
+    // running that app. Refuse to delete blobs that are referenced as an
+    // application artifact.
+    match state.node_client.is_blob_application_artifact(&blob_id) {
+        Ok(true) => {
+            tracing::warn!(%blob_id, "refusing to delete blob referenced by an installed application");
+            return ApiError {
+                status_code: StatusCode::FORBIDDEN,
+                message: "Blob is referenced by an installed application and cannot be deleted"
+                    .to_owned(),
+            }
+            .into_response();
+        }
+        Ok(false) => {}
+        Err(err) => {
+            tracing::error!(%blob_id, ?err, "failed to check application references before delete");
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to verify blob is safe to delete".to_owned(),
+            }
+            .into_response();
+        }
+    }
+
     match state.node_client.delete_blob(blob_id).await {
         Ok(true) => {
             tracing::info!("Successfully deleted blob {}", blob_id);
