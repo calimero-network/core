@@ -129,6 +129,16 @@ pub async fn join_namespace(
         return Err(JoinError::InvalidInvitation("invitation expired".into()));
     }
 
+    // step 1b: verify the invitation's inviter signature before it seeds any
+    // local trust. The `admin_identity` written in step 2b becomes the local
+    // root of trust for readiness-beacon / ack / heartbeat verification and
+    // `is_admin`, and genesis won't overwrite a seeded non-placeholder admin —
+    // so a forged invitation must never reach the seed.
+    calimero_context::group_store::NamespaceMembershipService::verify_open_invitation_signature(
+        &invitation,
+    )
+    .map_err(|e| JoinError::InvalidInvitation(format!("invalid invitation signature: {e}")))?;
+
     // step 2: provision identity (mark_membership_pending equivalent —
     // the namespace identity row IS the local pending marker until
     // MemberJoined ack arrives).

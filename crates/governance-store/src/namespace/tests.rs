@@ -151,6 +151,27 @@ fn validate_open_invitation_rejects_forged_inviter_signature() {
 }
 
 #[test]
+fn verify_open_invitation_signature_accepts_valid_rejects_forged() {
+    // Store-free crypto gate used by the join trust-seed paths.
+    let mut rng = rand::rngs::OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let gid = test_group_id();
+
+    let signed = test_signed_invitation(&admin_sk, gid, 9_999_999_999);
+    assert!(
+        NamespaceMembershipService::verify_open_invitation_signature(&signed).is_ok(),
+        "a correctly-signed invitation must verify"
+    );
+
+    let mut forged = signed;
+    forged.inviter_signature = hex::encode([0u8; 64]);
+    assert!(
+        NamespaceMembershipService::verify_open_invitation_signature(&forged).is_err(),
+        "a forged inviter signature must be rejected (store-free path)"
+    );
+}
+
+#[test]
 fn validate_open_invitation_rejects_unauthorized_inviter() {
     let mut rng = rand::rngs::OsRng;
     let store = test_store();

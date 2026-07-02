@@ -147,6 +147,22 @@ impl<'a> NamespaceMembershipService<'a> {
         &self,
         signed_invitation: &SignedGroupOpenInvitation,
     ) -> EyreResult<()> {
+        Self::verify_open_invitation_signature(signed_invitation)
+    }
+
+    /// Store-free verification of an open invitation's inviter signature:
+    /// `sha256(borsh(invitation))` checked against `inviter_identity`.
+    ///
+    /// Exposed so trust-seeding paths that run before governance state is
+    /// available (e.g. a fresh joiner writing its local `admin_identity` in
+    /// `join_namespace` / the `join_group` handler) can reject a forged
+    /// invitation up front. This is only the cryptographic check — namespace
+    /// ownership, inviter permission, and expiry still require DAG state and are
+    /// enforced by [`Self::validate_open_invitation`] on the responder and by
+    /// the deterministic apply-time check.
+    pub fn verify_open_invitation_signature(
+        signed_invitation: &SignedGroupOpenInvitation,
+    ) -> EyreResult<()> {
         let inv = &signed_invitation.invitation;
         let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
         let invitation_bytes = borsh::to_vec(inv).map_err(|e| eyre::eyre!("borsh: {e}"))?;
