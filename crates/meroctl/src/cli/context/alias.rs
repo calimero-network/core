@@ -1,3 +1,4 @@
+use calimero_client::ClientError;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use clap::Parser;
@@ -183,10 +184,64 @@ impl UseCommand {
 }
 
 async fn context_exists(client: &crate::client::Client, target_id: &ContextId) -> Result<bool> {
-    let result = client.get_context(target_id).await;
-
-    match result {
+    match client.get_context(target_id).await {
         Ok(_) => Ok(true),
-        Err(_) => Ok(false),
+        // Only a definitive "not found" means the context genuinely doesn't
+        // exist. Any other failure (network, auth, 5xx) must propagate — mapping
+        // every error to `false` would silently misreport an unreachable or
+        // unauthorized node as "context does not exist".
+        Err(err) if is_not_found(&err) => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+/// Whether a `get_context` error represents a genuine 404 / not-found.
+///
+/// The client surfaces non-success HTTP responses as a typed
+/// [`ClientError::Http`] carrying the numeric status code. We walk the error
+/// chain and match on `status == 404`, so the check is compiler-checked and
+/// independent of how the message string is formatted: a later change to the
+/// rendered text (or a `.wrap_err(…)` context layer) can't silently break
+/// not-found detection. An untyped error (e.g. a plain `eyre!` string that
+/// merely mentions "404") is correctly *not* treated as not-found.
+fn is_not_found(err: &eyre::Report) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<ClientError>()
+            .is_some_and(ClientError::is_not_found)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_client::ClientError;
+    use eyre::{eyre, Report};
+
+    use super::is_not_found;
+
+    fn http(status: u16, message: &str) -> Report {
+        ClientError::Http {
+            status,
+            message: message.to_owned(),
+        }
+        .into()
+    }
+
+    #[test]
+    fn only_http_404_is_not_found() {
+        assert!(is_not_found(&http(404, "HTTP 404: context not found")));
+        assert!(is_not_found(&http(404, "HTTP 404")));
+        // Non-404 statuses must NOT be treated as "does not exist".
+        assert!(!is_not_found(&http(500, "HTTP 500: internal error")));
+        assert!(!is_not_found(&http(403, "HTTP 403: access denied")));
+        // Untyped errors are never not-found, even if the text mentions 404.
+        assert!(!is_not_found(&eyre!("HTTP 500: upstream said HTTP 404")));
+        assert!(!is_not_found(&eyre!(
+            "Connection failed: connection refused"
+        )));
+        // A 404 wrapped with extra context is still detected (chain walk).
+        assert!(is_not_found(
+            &http(404, "HTTP 404: not found").wrap_err("failed to fetch context")
+        ));
     }
 }

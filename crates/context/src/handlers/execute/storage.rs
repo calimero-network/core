@@ -114,9 +114,16 @@ impl ContextStorage {
     fn state_key(&self, key: &[u8]) -> Option<&'static key::ContextState> {
         let mut state_key = [0; 32];
 
-        (key.len() <= state_key.len()).then_some(())?;
+        // Context-state keys are exactly 32 bytes (the runtime hands us
+        // fixed-width `calimero_storage::store::Key::to_bytes()` values).
+        // Anything else is rejected outright: zero-padding a shorter key
+        // collided distinct keys onto the same slot (e.g. `b"a"` and
+        // `b"a\0"`), and silently truncating/dropping a longer one turned
+        // get/set/remove/has into no-ops — both are data loss. Refusing the
+        // key surfaces the mismatch as a clean miss instead.
+        (key.len() == state_key.len()).then_some(())?;
 
-        state_key[..key.len()].copy_from_slice(key);
+        state_key.copy_from_slice(key);
 
         let mut keys = self.borrow_keys().borrow_mut();
 
@@ -309,9 +316,12 @@ impl ContextPrivateStorage {
     fn state_key(&self, key: &[u8]) -> Option<&'static key::ContextPrivateState> {
         let mut state_key = [0; 32];
 
-        (key.len() <= state_key.len()).then_some(())?;
+        // Exactly 32 bytes required — see `ContextStorage::state_key` for why
+        // zero-padding short keys (collision) and dropping long keys (silent
+        // no-op) are both unacceptable.
+        (key.len() == state_key.len()).then_some(())?;
 
-        state_key[..key.len()].copy_from_slice(key);
+        state_key.copy_from_slice(key);
 
         let mut keys = self.borrow_keys().borrow_mut();
 
@@ -462,5 +472,65 @@ impl<S: Storage> Storage for ReadOnlyContextStorage<'_, S> {
     fn index_del_prefix(&mut self, _prefix: &[u8]) -> bool {
         tracing::debug!("ReadOnlyContextStorage: write suppressed (index_del_prefix)");
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_primitives::context::ContextId;
+    use calimero_runtime::store::Storage;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
+    use super::ContextStorage;
+
+    fn storage() -> ContextStorage {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        ContextStorage::from(store, ContextId::from([0x11; 32]))
+    }
+
+    #[test]
+    fn exact_32_byte_key_roundtrips() {
+        let mut s = storage();
+        let key = vec![0x42u8; 32];
+        assert!(s.set(key.clone(), b"value".to_vec()).is_none());
+        assert_eq!(s.get(&key), Some(b"value".to_vec()));
+        assert!(s.has(&key));
+    }
+
+    #[test]
+    fn keys_not_exactly_32_bytes_are_rejected() {
+        let mut s = storage();
+        for len in [0usize, 1, 31, 33, 64] {
+            let key = vec![0x42u8; len];
+            // Attempt the write. Its `None` return is NOT proof of rejection —
+            // `set` also returns `None` on an accepted insert with no prior
+            // value — so the reads below are what prove the key was refused
+            // (not truncated/padded and stored).
+            s.set(key.clone(), b"value".to_vec());
+            assert_eq!(s.get(&key), None, "get must miss for a {len}-byte key");
+            assert!(!s.has(&key), "has must be false for a {len}-byte key");
+        }
+    }
+
+    #[test]
+    fn short_key_does_not_collide_with_zero_padded_32_byte_key() {
+        // Before the fix a 31-byte key was zero-padded to 32 bytes, colliding
+        // with the genuine 32-byte key that ends in a zero. Now the short key
+        // is refused outright, so the padded key is the only real entry.
+        let mut s = storage();
+        let mut padded = vec![0x42u8; 31];
+        padded.push(0x00); // 32 bytes — the OLD zero-padding of `short`
+        let short = vec![0x42u8; 31];
+
+        s.set(padded.clone(), b"real".to_vec());
+        assert_eq!(
+            s.get(&short),
+            None,
+            "short key must not alias the padded key"
+        );
+        assert_eq!(s.get(&padded), Some(b"real".to_vec()));
     }
 }

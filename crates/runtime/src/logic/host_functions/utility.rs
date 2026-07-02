@@ -1,5 +1,6 @@
 use borsh::from_slice as from_borsh_slice;
 use rand::RngCore;
+use std::io::Read;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
@@ -114,10 +115,21 @@ impl VMHostFunctions<'_> {
             request.send_bytes(body)
         };
 
+        // Bound the response body before buffering it. It ultimately lands in a
+        // register (capped at `max_register_size`), but `read_to_end` runs first
+        // and would otherwise read an unbounded response into host memory;
+        // `Read::take` caps the read at that same ceiling. (`fetch` is disabled
+        // today — this keeps the read bounded for whenever it is re-enabled.)
+        let max_response_size = *self.borrow_logic().limits.max_register_size;
+
         let (status, data) = match response {
             Ok(response) => {
                 let mut buffer = vec![];
-                match response.into_reader().read_to_end(&mut buffer) {
+                match response
+                    .into_reader()
+                    .take(max_response_size)
+                    .read_to_end(&mut buffer)
+                {
                     Ok(_) => (0, buffer),
                     Err(_) => (1, "Failed to read the response body.".into()),
                 }

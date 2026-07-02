@@ -9,7 +9,7 @@ use calimero_store::key::{Aliasable, StoreScopeCompat};
 use reqwest::StatusCode;
 use tracing::{error, info};
 
-use crate::admin::service::ApiResponse;
+use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler<T>(
@@ -32,7 +32,7 @@ where
 
     if let Err(err) = state.node_client.delete_alias(alias, scope) {
         error!(alias=%alias, error=?err, "Failed to delete alias");
-        return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+        return parse_api_error(err).into_response();
     }
 
     info!(alias=%alias, "Alias deleted successfully");

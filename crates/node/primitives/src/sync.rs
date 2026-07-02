@@ -70,13 +70,14 @@ pub use delta::{
 // Hash comparison types
 pub use hash_comparison::{
     compare_tree_nodes, CrdtType, EntityDeletion, LeafMetadata, TreeCompareResult, TreeLeafData,
-    TreeNode, TreeNodeRequest, TreeNodeResponse, MAX_CHILDREN_PER_NODE, MAX_LEAF_VALUE_SIZE,
-    MAX_NODES_PER_RESPONSE, MAX_TREE_DEPTH,
+    TreeNode, TreeNodeRequest, TreeNodeResponse, MAX_ANCESTORS, MAX_CHILDREN_PER_NODE,
+    MAX_LEAF_VALUE_SIZE, MAX_NODES_PER_RESPONSE, MAX_TREE_DEPTH,
 };
 
 // Bloom filter types
 pub use bloom_filter::{
     BloomFilterRequest, BloomFilterResponse, DeltaIdBloomFilter, DEFAULT_BLOOM_FP_RATE,
+    MAX_MISSING_ENTITIES,
 };
 
 // Wire protocol types (used by all sync protocols)

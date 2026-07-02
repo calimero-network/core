@@ -5,6 +5,8 @@ use clap::Parser;
 use eyre::{OptionExt, Result};
 
 use crate::cli::Environment;
+use crate::confirm::confirm;
+use crate::output::InfoLine;
 
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Delete a context")]
@@ -17,10 +19,21 @@ pub struct DeleteCommand {
         help = "Identity (public key) of the requester. Required when deleting a group context; must be a group admin."
     )]
     pub requester: Option<PublicKey>,
+
+    #[clap(long, short = 'y', help = "Skip the confirmation prompt")]
+    pub yes: bool,
 }
 
 impl DeleteCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        if !confirm(
+            &format!("Delete context '{}'? This cannot be undone.", self.context),
+            self.yes,
+        )? {
+            environment.output.write(&InfoLine("Aborted."));
+            return Ok(());
+        }
+
         let client = environment.client()?;
 
         let context_id = client

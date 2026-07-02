@@ -2023,13 +2023,20 @@ impl Debug for GroupDeniedMember {
     }
 }
 
-/// Value for [`GroupKeyEntry`]. The raw 32-byte AES-256 group key plus a
-/// creation timestamp used to determine "current" (latest) key for encryption.
+/// Value for [`GroupKeyEntry`]. The raw 32-byte AES-256 group key plus its
+/// ordering metadata.
+///
+/// `epoch` is the deterministic, DAG-derived sequence of the governance op that
+/// introduced this key (or `0` for a genesis / bootstrap key). It — not the
+/// wall-clock `created_at` — is what selects the "current" (latest) key for
+/// encryption, so all nodes agree even under clock skew or two rotations within
+/// the same second. `created_at` is retained for diagnostics only.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupKeyValue {
     pub group_key: [u8; 32],
     pub created_at: u64,
+    pub epoch: u64,
 }
 
 /// Durable pending-self-purge marker, keyed by `namespace_id` (the root

@@ -45,6 +45,14 @@ use reqwest::StatusCode;
 
 use crate::admin::service::ApiError;
 
+/// Hard cap on the page size accepted by the group/context list endpoints,
+/// regardless of the caller-supplied `limit`. Keeps a single request's work
+/// (and response size) bounded.
+pub(crate) const MAX_LIST_LIMIT: usize = 1000;
+
+/// Default page size when the caller omits `limit`.
+pub(crate) const DEFAULT_LIST_LIMIT: usize = 100;
+
 fn upgrade_info_to_api_data(info: &GroupUpgradeInfo) -> GroupUpgradeStatusApiData {
     let (status, total, completed, failed, completed_at) = match &info.status {
         GroupUpgradeStatus::InProgress {

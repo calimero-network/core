@@ -105,6 +105,17 @@ impl Default for Engine {
 impl Engine {
     #[must_use]
     pub fn new(mut engine: wasmer::Engine, limits: VMLimits) -> Self {
+        // A self-contradictory limits config (e.g. a total register budget
+        // smaller than a single register's cap) is a construction-time
+        // programming error: it is never reachable from guest input nor from
+        // operator config (which does not expose these fields), only from a code
+        // change. A debug assertion catches it in dev/CI/tests without a
+        // process-fatal panic in release library code.
+        debug_assert!(
+            limits.validate_invariants().is_ok(),
+            "invalid VMLimits passed to Engine::new: max_registers_capacity must be >= max_register_size"
+        );
+
         // Set tunables if this is a sys engine (native engine)
         if engine.is_sys() {
             use wasmer::sys::NativeEngineExt;
@@ -193,23 +204,83 @@ impl Engine {
             });
         }
 
-        // todo! apply a prepare step
-        // todo! - parse the wasm blob, validate and apply transformations
-        // todo!   - validations:
-        // todo!     - there is no memory import
-        // todo!     - there is no _start function
-        // todo!   - transformations:
-        // todo!     - remove memory export
-        // todo!     - remove memory section
-        // todo! cache the compiled module in storage for later
-
         let module = wasmer::Module::new(&self.engine, bytes)?;
+
+        Self::validate_guest_module(&module)?;
 
         Ok(Module {
             limits: self.limits,
             engine: self.engine.clone(),
             module,
         })
+    }
+
+    /// Reject untrusted guest modules whose shape would let them escape the
+    /// sandbox contract the runtime relies on. Runs once per compile, after
+    /// wasmer has validated the bytes are well-formed WASM.
+    ///
+    /// Three checks:
+    ///
+    /// * **No imported memory.** A module that *imports* its linear memory
+    ///   expects the host to hand it one, which the runtime never provides; such
+    ///   a module could only be attempting to alias host-supplied memory, so it
+    ///   is rejected outright rather than failing deeper in instantiation.
+    /// * **Exports a memory named `memory`.** The host reads guest state through
+    ///   `instance.exports.get_memory("memory")`, so a guest that exports no such
+    ///   memory cannot be run. Requiring it here turns what would otherwise be a
+    ///   confusing export-not-found failure at instantiation into a clear
+    ///   validation error at compile time.
+    /// * **No `_start` export.** `_start` is the entry point a WASI *command*
+    ///   build emits (`wasm32-wasip1`/`wasm32-wasi` toolchains) — the WASI ABI's
+    ///   equivalent of `main`, meant to run once on start. It is a property of
+    ///   how the guest was *compiled*, independent of wasmer (the engine we run
+    ///   it with). Calimero guests are libraries built for
+    ///   `wasm32-unknown-unknown` and invoked by explicit method name, so a
+    ///   `_start` export means the module was built against the wrong target
+    ///   (and likely expects WASI syscall imports the host does not provide). It
+    ///   is refused up front rather than instantiated in a half-supported shape.
+    #[allow(
+        clippy::result_large_err,
+        reason = "pervasive #[from] error enum; boxing breaks the derive"
+    )]
+    fn validate_guest_module(module: &wasmer::Module) -> Result<(), FunctionCallError> {
+        use wasmer::ExternType;
+
+        for import in module.imports() {
+            if matches!(import.ty(), ExternType::Memory(_)) {
+                return Err(FunctionCallError::ModuleValidationError {
+                    reason: format!(
+                        "guest imports memory `{}::{}`; guests must define and export \
+                         their own memory, not import it from the host",
+                        import.module(),
+                        import.name()
+                    ),
+                });
+            }
+        }
+
+        if module.exports().any(|export| {
+            export.name() == "_start" && matches!(export.ty(), ExternType::Function(_))
+        }) {
+            return Err(FunctionCallError::ModuleValidationError {
+                reason: "guest exports a `_start` function; WASI command entry points are \
+                         not supported (guests are invoked by explicit method name)"
+                    .to_owned(),
+            });
+        }
+
+        let exports_memory = module.exports().any(|export| {
+            export.name() == "memory" && matches!(export.ty(), ExternType::Memory(_))
+        });
+        if !exports_memory {
+            return Err(FunctionCallError::ModuleValidationError {
+                reason: "guest does not export a linear memory named `memory`; the host \
+                         reads guest state through that export"
+                    .to_owned(),
+            });
+        }
+
+        Ok(())
     }
 
     /// Deserialize a precompiled (serialized) module produced by
@@ -1218,6 +1289,113 @@ mod wasm_integration_tests {
             result.is_ok(),
             "Expected successful compilation, got: {result:?}"
         );
+    }
+
+    /// A guest that imports its linear memory from the host is rejected: guests
+    /// must define and export their own memory, never alias a host-supplied one.
+    #[test]
+    fn guest_importing_memory_is_rejected() {
+        let wat = r#"
+            (module
+                (import "env" "memory" (memory 1))
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::new(wasmer::Engine::default(), VMLimits::default());
+
+        match engine.compile(&wasm) {
+            Err(FunctionCallError::ModuleValidationError { reason }) => {
+                assert!(reason.contains("memory"), "unexpected reason: {reason}");
+            }
+            other => panic!("expected ModuleValidationError for imported memory, got: {other:?}"),
+        }
+    }
+
+    /// A guest exporting a WASI-style `_start` entry point is rejected: Calimero
+    /// guests are libraries invoked by explicit method name, not WASI commands.
+    #[test]
+    fn guest_exporting_start_is_rejected() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "_start"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::new(wasmer::Engine::default(), VMLimits::default());
+
+        match engine.compile(&wasm) {
+            Err(FunctionCallError::ModuleValidationError { reason }) => {
+                assert!(reason.contains("_start"), "unexpected reason: {reason}");
+            }
+            other => panic!("expected ModuleValidationError for `_start`, got: {other:?}"),
+        }
+    }
+
+    /// A guest that exports no linear memory named `memory` is rejected with a
+    /// clear validation error rather than failing later at instantiation.
+    #[test]
+    fn guest_without_memory_export_is_rejected() {
+        let wat = r#"
+            (module
+                (func (export "app_method"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::new(wasmer::Engine::default(), VMLimits::default());
+
+        match engine.compile(&wasm) {
+            Err(FunctionCallError::ModuleValidationError { reason }) => {
+                assert!(reason.contains("memory"), "unexpected reason: {reason}");
+            }
+            other => panic!("expected ModuleValidationError for missing memory, got: {other:?}"),
+        }
+    }
+
+    /// A conforming guest — exports its own memory, no `_start`, no imported
+    /// memory — passes validation and compiles.
+    #[test]
+    fn conforming_guest_passes_validation() {
+        let wat = r#"
+            (module
+                (import "env" "some_host_fn" (func))
+                (memory (export "memory") 1)
+                (func (export "app_method"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::new(wasmer::Engine::default(), VMLimits::default());
+
+        assert!(
+            engine.compile(&wasm).is_ok(),
+            "a conforming guest module must pass validation"
+        );
+    }
+
+    /// The default limits satisfy the registers invariant, and violating it is
+    /// caught loudly at engine construction rather than at execution time.
+    #[test]
+    fn vmlimits_default_satisfies_registers_invariant() {
+        VMLimits::default()
+            .validate_invariants()
+            .expect("default limits must be valid");
+    }
+
+    #[test]
+    #[should_panic(expected = "max_registers_capacity")]
+    fn engine_rejects_registers_capacity_below_register_size() {
+        // A total register budget smaller than a single register's cap is
+        // self-contradictory; Engine::new must refuse it up front.
+        let limits = VMLimits {
+            max_registers_capacity: 1,
+            ..Default::default()
+        };
+        let _ = Engine::new(wasmer::Engine::default(), limits);
     }
 
     /// Test that modules exactly at the size limit compile successfully (boundary condition)

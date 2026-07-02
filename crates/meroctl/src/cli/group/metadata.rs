@@ -68,20 +68,28 @@ impl SetOpts {
     /// pairs become the whole map and `--unset` is rejected at the CLI layer).
     fn into_request(
         self,
-        current: calimero_primitives::metadata::MetadataRecord,
+        current: Option<calimero_primitives::metadata::MetadataRecord>,
     ) -> SetMetadataApiRequest {
+        // Only the existing name/data seed the request; the signer
+        // (`updated_by`) is set server-side on apply, so `MetadataRecord`
+        // intentionally has no `Default` to fabricate one here.
+        let (current_name, current_data) = match current {
+            Some(record) => (record.name, record.data),
+            None => (None, std::collections::BTreeMap::new()),
+        };
+
         let name = if self.clear_name {
             None
         } else if self.name.is_some() {
             self.name
         } else {
-            current.name
+            current_name
         };
 
         let mut data = if self.replace_data {
             std::collections::BTreeMap::new()
         } else {
-            current.data
+            current_data
         };
         for (k, v) in self.set {
             let _ = data.insert(k, v);
@@ -111,12 +119,20 @@ pub struct MetadataCommand {
 pub enum MetadataSubCommands {
     #[command(about = "Show the group's metadata record")]
     Get {
-        #[clap(name = "GROUP_ID", help = "Hex-encoded group ID")]
+        #[clap(
+            name = "GROUP_ID",
+            value_parser = crate::cli::validation::group_id,
+            help = "Hex-encoded group ID"
+        )]
         group_id: String,
     },
     #[command(about = "Update the group's metadata record (read-modify-write)")]
     Set {
-        #[clap(name = "GROUP_ID", help = "Hex-encoded group ID")]
+        #[clap(
+            name = "GROUP_ID",
+            value_parser = crate::cli::validation::group_id,
+            help = "Hex-encoded group ID"
+        )]
         group_id: String,
         #[command(flatten)]
         opts: SetOpts,
@@ -132,11 +148,7 @@ impl MetadataCommand {
                 environment.output.write(&response);
             }
             MetadataSubCommands::Set { group_id, opts } => {
-                let current = client
-                    .get_group_metadata(&group_id)
-                    .await?
-                    .data
-                    .unwrap_or_default();
+                let current = client.get_group_metadata(&group_id).await?.data;
                 let response = client
                     .set_group_metadata(&group_id, opts.into_request(current))
                     .await?;
@@ -158,14 +170,22 @@ pub struct MemberMetadataCommand {
 pub enum MemberMetadataSubCommands {
     #[command(about = "Show a member's metadata record")]
     Get {
-        #[clap(name = "GROUP_ID", help = "Hex-encoded group ID")]
+        #[clap(
+            name = "GROUP_ID",
+            value_parser = crate::cli::validation::group_id,
+            help = "Hex-encoded group ID"
+        )]
         group_id: String,
         #[clap(name = "MEMBER", help = "Member public key")]
         member: PublicKey,
     },
     #[command(about = "Update a member's metadata record (read-modify-write)")]
     Set {
-        #[clap(name = "GROUP_ID", help = "Hex-encoded group ID")]
+        #[clap(
+            name = "GROUP_ID",
+            value_parser = crate::cli::validation::group_id,
+            help = "Hex-encoded group ID"
+        )]
         group_id: String,
         #[clap(name = "MEMBER", help = "Member public key")]
         member: PublicKey,
@@ -192,8 +212,7 @@ impl MemberMetadataCommand {
                 let current = client
                     .get_member_metadata(&group_id, &identity_hex)
                     .await?
-                    .data
-                    .unwrap_or_default();
+                    .data;
                 let response = client
                     .set_member_metadata(&group_id, &identity_hex, opts.into_request(current))
                     .await?;
@@ -215,14 +234,22 @@ pub struct ContextMetadataCommand {
 pub enum ContextMetadataSubCommands {
     #[command(about = "Show a context's metadata record")]
     Get {
-        #[clap(name = "GROUP_ID", help = "Hex-encoded group ID")]
+        #[clap(
+            name = "GROUP_ID",
+            value_parser = crate::cli::validation::group_id,
+            help = "Hex-encoded group ID"
+        )]
         group_id: String,
         #[clap(name = "CONTEXT_ID", help = "Context ID")]
         context_id: ContextId,
     },
     #[command(about = "Update a context's metadata record (read-modify-write)")]
     Set {
-        #[clap(name = "GROUP_ID", help = "Hex-encoded group ID")]
+        #[clap(
+            name = "GROUP_ID",
+            value_parser = crate::cli::validation::group_id,
+            help = "Hex-encoded group ID"
+        )]
         group_id: String,
         #[clap(name = "CONTEXT_ID", help = "Context ID")]
         context_id: ContextId,
@@ -250,11 +277,7 @@ impl ContextMetadataCommand {
                 opts,
             } => {
                 let cid = context_id.to_string();
-                let current = client
-                    .get_context_metadata(&group_id, &cid)
-                    .await?
-                    .data
-                    .unwrap_or_default();
+                let current = client.get_context_metadata(&group_id, &cid).await?.data;
                 let response = client
                     .set_context_metadata(&group_id, &cid, opts.into_request(current))
                     .await?;

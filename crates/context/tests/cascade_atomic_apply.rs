@@ -93,12 +93,12 @@ fn cascade_upgrade_atomic_op_sets_target_app_key_and_migration_and_records_casca
     let fence = calimero_storage::logical_clock::HybridTimestamp::zero();
     let op = SignedGroupOp::sign(
         &admin_sk,
-        r.to_bytes(),
+        r.to_bytes().into(),
         vec![],
         1,
         GroupOp::CascadeUpgrade {
-            from_app_key: APP_KEY_1,
-            app_key: APP_KEY_2,
+            from_app_key: APP_KEY_1.into(),
+            app_key: APP_KEY_2.into(),
             target_application_id: app_id_2(),
             migration: Some(b"migrate_v2".to_vec()),
             cascade_hlc: fence,
@@ -172,7 +172,7 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
     // Op P: benign predecessor (genesis-parented). Causally first.
     let op_p = SignedGroupOp::sign(
         &admin_sk,
-        root.to_bytes(),
+        root.to_bytes().into(),
         vec![[0u8; 32]],
         1,
         GroupOp::GroupMetadataSet {
@@ -186,12 +186,12 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
     // Op C: the atomic CascadeUpgrade, causally AFTER op_p.
     let op_c = SignedGroupOp::sign(
         &admin_sk,
-        root.to_bytes(),
+        root.to_bytes().into(),
         vec![op_p_hash],
         2,
         GroupOp::CascadeUpgrade {
-            from_app_key: APP_KEY_1,
-            app_key: APP_KEY_2,
+            from_app_key: APP_KEY_1.into(),
+            app_key: APP_KEY_2.into(),
             target_application_id: app_id_2(),
             migration: Some(b"migrate_v2".to_vec()),
             cascade_hlc: fence,
@@ -292,12 +292,12 @@ fn two_op_reverse_delivery_drops_migration_characterization() {
         &store,
         &SignedGroupOp::sign(
             &admin_sk,
-            r.to_bytes(),
+            r.to_bytes().into(),
             vec![],
             1,
             GroupOp::CascadeTargetApplicationSet {
-                from_app_key: APP_KEY_1,
-                app_key: APP_KEY_2,
+                from_app_key: APP_KEY_1.into(),
+                app_key: APP_KEY_2.into(),
                 target_application_id: app_id_2(),
             },
         )
@@ -308,11 +308,11 @@ fn two_op_reverse_delivery_drops_migration_characterization() {
         &store,
         &SignedGroupOp::sign(
             &admin_sk,
-            r.to_bytes(),
+            r.to_bytes().into(),
             vec![],
             2,
             GroupOp::CascadeGroupMigrationSet {
-                from_app_key: APP_KEY_1,
+                from_app_key: APP_KEY_1.into(),
                 migration: Some(b"migrate_v2".to_vec()),
             },
         )

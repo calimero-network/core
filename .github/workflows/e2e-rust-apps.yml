@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -69,7 +69,7 @@ jobs:
         run: docker save merod:local | zstd -T0 -3 -o /tmp/merod-local.tar.zst
 
       - name: Upload Docker image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: merod-image
           path: /tmp/merod-local.tar.zst
@@ -82,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -120,7 +120,7 @@ jobs:
           ./build.sh
 
       - name: Upload app artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-apps
           path: |
@@ -373,12 +373,12 @@ jobs:
           # `tc: executable file not found`.
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Download Docker image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: merod-image
           path: /tmp
@@ -387,7 +387,7 @@ jobs:
         run: zstd -d /tmp/merod-local.tar.zst --stdout | docker load
 
       - name: Download app artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: e2e-apps
           path: apps
@@ -538,7 +538,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: logs-${{ matrix.workflow }}-${{ github.sha }}
           # `docker-logs/` (with a trailing slash) uploads the
@@ -598,7 +598,7 @@ jobs:
 
       - name: Upload Comment
         if: steps.check_status.outputs.job_failed == 'true' && steps.check_status.outputs.was_cancelled == 'false'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pr-comment-payload-rust-apps
           path: payload.json

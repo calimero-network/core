@@ -44,16 +44,23 @@ pub(crate) fn mount_runtime_services(
         service_count += 1;
     }
 
-    if let Some((path, handler)) =
-        ws::service(config, node_client.clone(), ctx_client, auth_enabled)
-    {
+    if let Some((path, handler)) = ws::service(
+        config,
+        node_client.clone(),
+        ctx_client.clone(),
+        auth_enabled,
+    ) {
         app = app.route(&path, with_optional_auth(handler, auth_service.clone()));
         service_count += 1;
     }
 
-    if let Some((path, router)) =
-        sse::service(config, node_client.clone(), datastore.clone(), auth_enabled)
-    {
+    if let Some((path, router)) = sse::service(
+        config,
+        node_client.clone(),
+        ctx_client,
+        datastore.clone(),
+        auth_enabled,
+    ) {
         app = app.nest(path, with_optional_auth(router, auth_service.clone()));
         service_count += 1;
     }

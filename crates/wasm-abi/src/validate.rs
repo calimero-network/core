@@ -346,6 +346,7 @@ mod tests {
             errors: vec![],
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
+            xcall_callers: Default::default(),
         });
 
         assert!(validate_manifest(&manifest).is_ok());
@@ -407,6 +408,7 @@ mod tests {
             errors: vec![],
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
+            xcall_callers: Default::default(),
         });
 
         assert!(validate_manifest(&manifest).is_err());

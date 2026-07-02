@@ -1,7 +1,7 @@
 //! Persistence for the unified causal-log op-store (cutover plan C2.1).
 //!
 //! Writes each unified [`Op`] to its own keyspace — one borsh row per op, keyed
-//! `[op.scope ‖ op.id]` in [`Column::UnifiedOp`](calimero_store::db::Column) — so
+//! `[op.scope ‖ op.id()]` in [`Column::UnifiedOp`](calimero_store::db::Column) — so
 //! the op-stream that backs the projection is durable. During the dual-write
 //! transition this lives **alongside** the legacy stores and is **observe-only**:
 //! nothing reads it for a sync/auth decision yet. The per-plane flips (C2.2+)
@@ -21,7 +21,7 @@ use calimero_store::types::ScopeUnifiedOp as ScopeUnifiedOpValue;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
-/// Persist one unified [`Op`] under `[op.scope ‖ op.id]` — keyed by the op's
+/// Persist one unified [`Op`] under `[op.scope ‖ op.id()]` — keyed by the op's
 /// **scope**, so a scope's whole op-log is one contiguous key range (governance
 /// ops are namespace-scoped and shared across that namespace's contexts, so a
 /// single context id is the wrong partition). Idempotent — re-persisting the same
@@ -30,7 +30,7 @@ pub fn persist_op(store: &Store, op: &Op) -> EyreResult<()> {
     let bytes = borsh::to_vec(op)?;
     let mut handle = store.handle();
     handle.put(
-        &ScopeUnifiedOpKey::new(scope_bytes(&op.scope), op.id),
+        &ScopeUnifiedOpKey::new(scope_bytes(&op.scope), op.id()),
         &ScopeUnifiedOpValue::from(calimero_store::slice::Slice::from(bytes)),
     )?;
     Ok(())
@@ -117,26 +117,16 @@ mod tests {
     fn op(scope: ScopeId, ns: u64, parents: Vec<[u8; 32]>, payload: OpPayload) -> Op {
         let author = PublicKey::from([7u8; 32]);
         let h = hlc(ns);
-        let id = Op::compute_id(scope, &parents, &author, &h, &payload);
         // `expected_scope_root` and `signature` are zeroed: this is a
         // persistence/replay round-trip test, and neither the op-store nor the
         // projection fold verifies them (the projection folds already-verified ops
         // on content alone). If a signature or root check is ever added to that
         // path, this helper must produce valid values rather than zeros.
-        Op {
-            id,
-            scope,
-            parents,
-            author,
-            hlc: h,
-            payload,
-            expected_scope_root: [0u8; 32],
-            signature: [0u8; 64],
-        }
+        Op::new(scope, parents, author, h, payload, [0u8; 32], [0u8; 64])
     }
 
     fn delta(op: &Op) -> calimero_dag::CausalDelta<Op> {
-        calimero_dag::CausalDelta::new(op.id, op.parents.clone(), op.clone(), op.hlc, [0u8; 32])
+        calimero_dag::CausalDelta::new(op.id(), op.parents.clone(), op.clone(), op.hlc, [0u8; 32])
     }
 
     /// Persist a causal chain of mixed-plane ops, reload it from a fresh handle,
@@ -161,7 +151,7 @@ mod tests {
         let op_member = op(
             scope,
             20,
-            vec![op_admin.id],
+            vec![op_admin.id()],
             OpPayload::MemberAdded {
                 group,
                 member,
@@ -171,7 +161,7 @@ mod tests {
         let op_writers = op(
             scope,
             30,
-            vec![op_member.id],
+            vec![op_member.id()],
             OpPayload::SetWriters {
                 object: Id::new([9u8; 32]),
                 writers: [(member, OpMask::FULL)].into_iter().collect(),
@@ -222,7 +212,7 @@ mod tests {
             dag.add_delta(delta(op), &applier).await.expect("add_delta");
         }
         for op in ops {
-            assert!(dag.is_applied(&op.id), "reloaded op left unapplied");
+            assert!(dag.is_applied(&op.id()), "reloaded op left unapplied");
         }
 
         let got = applier

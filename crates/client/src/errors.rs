@@ -21,9 +21,26 @@ pub enum ClientError {
     #[error("Storage error: {message}")]
     Storage { message: String },
 
+    /// A non-success HTTP status returned by the node's API.
+    ///
+    /// Carries the numeric `status` so callers can classify the failure
+    /// (e.g. 404 → not-found) by matching this variant instead of parsing the
+    /// rendered `message` string. `message` is already status-prefixed
+    /// (`"HTTP {code}[: detail]"`) so the `Display` output is unchanged.
+    #[error("{message}")]
+    Http { status: u16, message: String },
+
     /// Internal errors
     #[error("Internal error: {message}")]
     Internal { message: String },
+}
+
+impl ClientError {
+    /// Whether this error represents an HTTP 404 (resource not found).
+    #[must_use]
+    pub const fn is_not_found(&self) -> bool {
+        matches!(self, ClientError::Http { status: 404, .. })
+    }
 }
 
 // Implement From for common error types

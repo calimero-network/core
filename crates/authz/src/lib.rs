@@ -26,7 +26,7 @@ use calimero_storage::entities::OpMask;
 
 /// `CAN_JOIN_OPEN_SUBGROUPS` capability bit — gates inherited membership into an
 /// open subgroup (mirrors the live `MemberCapabilities` constant).
-const CAN_JOIN_OPEN_SUBGROUPS: u32 = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS;
+const CAN_JOIN_OPEN_SUBGROUPS: u32 = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits();
 /// Max subgroup-tree depth the inheritance walk traverses (mirrors the live
 /// `MAX_NAMESPACE_DEPTH`).
 const MAX_NAMESPACE_DEPTH: usize = 16;
@@ -515,16 +515,15 @@ mod tests {
     }
 
     fn op_with(author: PublicKey, payload: OpPayload) -> Op {
-        Op {
-            id: [0u8; 32],
-            scope: ScopeId::from([0u8; 32]),
-            parents: vec![],
+        Op::new(
+            ScopeId::from([0u8; 32]),
+            vec![],
             author,
-            hlc: hlc0(),
+            hlc0(),
             payload,
-            expected_scope_root: [0u8; 32],
-            signature: [0u8; 64],
-        }
+            [0u8; 32],
+            [0u8; 64],
+        )
     }
 
     fn view_with_writer(entity: Id, who: PublicKey, mask: OpMask) -> AclView {

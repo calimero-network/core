@@ -1,10 +1,12 @@
+use calimero_governance_types::NamespaceId;
+
 use crate::{
     CapabilitiesRepository, DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository,
-    NamespaceRepository,
+    NamespaceRepository, PermissionChecker,
 };
 use calimero_context_client::local_governance::{
-    hash_scoped_namespace, AckRouter, EncryptedGroupOp, GroupOp, KeyEnvelope, NamespaceOp, RootOp,
-    SignedGroupOp, SignedNamespaceOp,
+    hash_scoped_namespace, AckRouter, EncryptedGroupOp, GroupOp, KeyEnvelope, KeyRotation,
+    NamespaceOp, RootOp, SignedGroupOp, SignedNamespaceOp,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
@@ -66,7 +68,7 @@ pub(crate) fn min_acks_after_local_mutation(
 /// `GroupGovernancePublisher` (a sibling module — hence `pub(crate)`).
 pub(crate) fn classify_report_readiness(
     store: &Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     report: &DeliveryReport,
     known_subscribers: usize,
 ) -> PublishReadiness {
@@ -81,7 +83,7 @@ pub(crate) fn classify_report_readiness(
 /// Domain API for namespace DAG and governance operation lifecycle.
 pub struct NamespaceGovernance<'a> {
     store: &'a Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     /// The op's causal cut (its parent op hashes), threaded to the apply gates so
     /// they can authorize against the projection AS OF the op's parents. Empty for
     /// constructions outside the live apply path (sign/read/tests), which keep the
@@ -95,7 +97,7 @@ pub struct NamespaceGovernance<'a> {
 }
 
 impl<'a> NamespaceGovernance<'a> {
-    pub fn new(store: &'a Store, namespace_id: [u8; 32]) -> Self {
+    pub fn new(store: &'a Store, namespace_id: NamespaceId) -> Self {
         Self {
             store,
             namespace_id,
@@ -173,8 +175,8 @@ impl<'a> NamespaceGovernance<'a> {
         if op.namespace_id != self.namespace_id {
             return Err(eyre::eyre!(
                 "namespace mismatch in apply_signed_op: handle={}, op={}",
-                hex::encode(self.namespace_id),
-                hex::encode(op.namespace_id)
+                hex::encode(self.namespace_id.as_bytes()),
+                hex::encode(op.namespace_id.as_bytes())
             ));
         }
 
@@ -206,7 +208,7 @@ impl<'a> NamespaceGovernance<'a> {
         // `apply_signed_op`, and is bounded by the per-signer nonce check there.
         if NamespaceOpLogService::new(self.store, self.namespace_id).contains_op(delta_id)? {
             tracing::debug!(
-                namespace_id = %hex::encode(self.namespace_id),
+                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                 delta_id = %hex::encode(delta_id),
                 "namespace governance op already applied; skipping re-apply (#2327)"
             );
@@ -217,6 +219,17 @@ impl<'a> NamespaceGovernance<'a> {
             // canonical dedup-tradeoff note in `apply_local_signed_group_op`.
             return Ok(ApplyNamespaceOpResult::default());
         }
+
+        // Deterministic epoch for any key this op introduces (a rotation): the
+        // DAG sequence this op will occupy. Read here — before the side-effect
+        // match — so the rotation arm can stamp the new key with it; the head is
+        // not mutated until `advance_dag_head` below, so this equals the value
+        // used there. Causally-ordered rotations (the normal case: an admin
+        // removes member A, later removes member B) get strictly increasing
+        // epochs on every node, since a descendant op is always applied after
+        // its ancestor — so all nodes deterministically agree which rotated key
+        // is "current", unlike the old wall-clock ordering.
+        let op_sequence = self.read_head_record()?.next_nonce;
 
         let mut result = ApplyNamespaceOpResult::default();
         let mut root_events: Vec<crate::op_events::OpEvent> = Vec::new();
@@ -241,8 +254,11 @@ impl<'a> NamespaceGovernance<'a> {
                         // a failure here must not block the DAG (every later
                         // op would orphan), so errors are logged, not
                         // propagated.
-                        match self.apply_received_group_key_envelope(*group_id, envelope, op.signer)
-                        {
+                        match self.apply_received_group_key_envelope(
+                            group_id.to_bytes(),
+                            envelope,
+                            op.signer,
+                        ) {
                             Ok(retry_divergence) => {
                                 if retry_divergence.is_some() {
                                     result.divergence = retry_divergence;
@@ -250,12 +266,12 @@ impl<'a> NamespaceGovernance<'a> {
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    group_id = %hex::encode(group_id),
+                                    group_id = %hex::encode(group_id.to_bytes()),
                                     error = %e,
                                     "KeyDelivery side-effect failed; DAG apply continues"
                                 );
                                 result.key_unwrap_failures.push(KeyUnwrapFailure {
-                                    group_id: *group_id,
+                                    group_id: group_id.to_bytes(),
                                     reason: format!("KeyDelivery side-effect failed: {e}"),
                                 });
                             }
@@ -300,7 +316,7 @@ impl<'a> NamespaceGovernance<'a> {
                         // (we ran it via `apply_root_op` above before this
                         // match), so by the time we get here the path is
                         // confirmed Inherited.
-                        let group_id_typed = ContextGroupId::from(*group_id);
+                        let group_id_typed = *group_id;
                         // Clear deny-list on EVERY peer, not just the
                         // local rejoiner. A prior `MemberLeft` (or
                         // `MemberRemoved` followed by inheritance rejoin)
@@ -378,8 +394,8 @@ impl<'a> NamespaceGovernance<'a> {
                         // touching the op-log. Best-effort: log, never
                         // propagate.
                         let gid = *group_id;
-                        let gid_typed = ContextGroupId::from(gid);
-                        let ns_typed = ContextGroupId::from(self.namespace_id);
+                        let gid_typed = gid;
+                        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
                         let holds_key = GroupKeyring::new(self.store, gid_typed)
                             .holds_any_key()
                             .unwrap_or(false)
@@ -387,7 +403,7 @@ impl<'a> NamespaceGovernance<'a> {
                                 .holds_any_key()
                                 .unwrap_or(false);
                         if holds_key {
-                            match self.retry_encrypted_ops_for_group(*group_id) {
+                            match self.retry_encrypted_ops_for_group(group_id.to_bytes()) {
                                 Ok(retry_divergence) => {
                                     if retry_divergence.is_some() {
                                         result.divergence = retry_divergence;
@@ -395,7 +411,7 @@ impl<'a> NamespaceGovernance<'a> {
                                 }
                                 Err(e) => tracing::warn!(
                                     ?e,
-                                    group_id = %hex::encode(group_id),
+                                    group_id = %hex::encode(group_id.to_bytes()),
                                     "retry after GroupCreated failed (#2848)"
                                 ),
                             }
@@ -410,7 +426,7 @@ impl<'a> NamespaceGovernance<'a> {
                 encrypted,
                 key_rotation,
             } => {
-                let group_id_typed = ContextGroupId::from(*group_id);
+                let group_id_typed = *group_id;
 
                 // Issue #2256: an `Open` subgroup is encrypted with the
                 // parent namespace's key (see `GroupGovernancePublisher`).
@@ -422,15 +438,22 @@ impl<'a> NamespaceGovernance<'a> {
                 // saw `Open` but the receiver has already applied a flip
                 // to `Restricted`, the fallback still resolves the key
                 // because both keyrings persist their entries.
-                let resolved_key =
-                    match GroupKeyring::new(self.store, group_id_typed).load_key_by_id(key_id)? {
-                        Some(k) => Some(k),
-                        None => {
-                            let ns_id_typed = ContextGroupId::from(self.namespace_id);
-                            GroupKeyring::new(self.store, ns_id_typed).load_key_by_id(key_id)?
-                        }
-                    };
+                let resolved_key = match GroupKeyring::new(self.store, group_id_typed)
+                    .load_key_by_id(key_id.as_bytes())?
+                {
+                    Some(k) => Some(k),
+                    None => {
+                        let ns_id_typed = ContextGroupId::from(self.namespace_id.to_bytes());
+                        GroupKeyring::new(self.store, ns_id_typed)
+                            .load_key_by_id(key_id.as_bytes())?
+                    }
+                };
 
+                // Whether we hold the current key and could decrypt+apply the
+                // inner op. This doubles as the "am I a member of this group"
+                // signal for the rotation gate below: a node with no key for the
+                // group is not a member and must never process a rotation for it.
+                let inner_decrypted = resolved_key.is_some();
                 if let Some(group_key) = resolved_key {
                     // Surface any post-apply hash divergence reported by
                     // `MemberRemoved` / `MemberLeft` apply so the node
@@ -453,39 +476,20 @@ impl<'a> NamespaceGovernance<'a> {
                 }
 
                 if let Some(rotation) = key_rotation {
-                    let ns_id = ContextGroupId::from(op.namespace_id);
-                    if let Some(identity) =
-                        NamespaceRepository::new(self.store).identity_record(&ns_id)?
-                    {
-                        let recipient_sk = PrivateKey::from(identity.private_key);
-                        for envelope in &rotation.envelopes {
-                            if envelope.recipient == recipient_sk.public_key() {
-                                match GroupKeyring::unwrap_for_recipient(&recipient_sk, envelope) {
-                                    Ok(new_key) => {
-                                        let _ = GroupKeyring::new(self.store, group_id_typed)
-                                            .store_key(&new_key)?;
-                                        tracing::info!(
-                                            group_id = %hex::encode(group_id),
-                                            "stored rotated group key"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            ?e,
-                                            "failed to unwrap key rotation envelope"
-                                        );
-                                        result.key_unwrap_failures.push(KeyUnwrapFailure {
-                                            group_id: *group_id,
-                                            reason: format!("key rotation unwrap failed: {e}"),
-                                        });
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                    }
+                    self.apply_key_rotation(
+                        &group_id_typed,
+                        op,
+                        rotation,
+                        inner_decrypted,
+                        op_sequence,
+                        &mut result,
+                    )?;
                 }
             }
+            // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op type
+            // contributes nothing to apply (it folds as a `Noop` in decode),
+            // so there is no state to mutate here.
+            _ => {}
         }
 
         // Ordering: advance the head first, then write the op to the log —
@@ -561,10 +565,10 @@ impl<'a> NamespaceGovernance<'a> {
         // *publishes* an op never observes its own monotonic advance and
         // the FSM stays at `Bootstrapping` forever. See
         // `notify_namespace_op_applied` for the cross-crate plumbing.
-        node_client.notify_namespace_op_applied(self.namespace_id);
+        node_client.notify_namespace_op_applied(self.namespace_id.to_bytes());
 
         let mesh = node_client
-            .mesh_peer_count_for_namespace(self.namespace_id)
+            .mesh_peer_count_for_namespace(self.namespace_id.to_bytes())
             .await;
         let known = node_client.known_subscribers(&topic);
         if observe_mesh {
@@ -592,7 +596,7 @@ impl<'a> NamespaceGovernance<'a> {
             Err(e) => {
                 tracing::debug!(
                     op_kind,
-                    namespace_id = %hex::encode(self.namespace_id),
+                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                     error = %e,
                     "namespace governance op applied locally; publish did not \
                      confirm (best-effort) — will propagate via sync"
@@ -609,7 +613,7 @@ impl<'a> NamespaceGovernance<'a> {
         report.readiness = classify_report_readiness(self.store, self.namespace_id, &report, known);
         tracing::debug!(
             op_kind,
-            namespace_id = %hex::encode(self.namespace_id),
+            namespace_id = %hex::encode(self.namespace_id.as_bytes()),
             acks = report.acked_by.len(),
             readiness = report.readiness.label(),
             elapsed_ms = report.elapsed_ms,
@@ -629,7 +633,7 @@ impl<'a> NamespaceGovernance<'a> {
     ) -> EyreResult<DeliveryReport> {
         let topic = ns_topic(self.namespace_id);
         let mesh = node_client
-            .mesh_peer_count_for_namespace(self.namespace_id)
+            .mesh_peer_count_for_namespace(self.namespace_id.to_bytes())
             .await;
         let known = node_client.known_subscribers(&topic);
         assert_transport_ready(mesh, known, node_client.gossipsub_mesh_n_low())
@@ -750,7 +754,7 @@ impl<'a> NamespaceGovernance<'a> {
         // just advanced on the publisher path, so the readiness FSM needs
         // to be told. Both paths converge at `Handler<NamespaceOpApplied>`
         // on `ReadinessManager`, mirroring the gossipsub-receive route.
-        node_client.notify_namespace_op_applied(self.namespace_id);
+        node_client.notify_namespace_op_applied(self.namespace_id.to_bytes());
 
         if observe_mesh {
             record_governance_publish_mesh_peers(op_kind, mesh);
@@ -795,7 +799,7 @@ impl<'a> NamespaceGovernance<'a> {
             Err(e) if best_effort => {
                 tracing::debug!(
                     op_kind,
-                    namespace_id = %hex::encode(self.namespace_id),
+                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                     error = %e,
                     "namespace governance op applied locally; publish did not \
                      confirm (best-effort) — will propagate via sync"
@@ -817,7 +821,7 @@ impl<'a> NamespaceGovernance<'a> {
         // the message accurate for both.
         tracing::debug!(
             op_kind,
-            namespace_id = %hex::encode(self.namespace_id),
+            namespace_id = %hex::encode(self.namespace_id.as_bytes()),
             acks = report.acked_by.len(),
             elapsed_ms = report.elapsed_ms,
             op_hash = %hex::encode(report.op_hash),
@@ -878,7 +882,7 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: [u8; 32],
         founder: &PublicKey,
     ) -> EyreResult<()> {
-        if group_id != self.namespace_id {
+        if group_id != self.namespace_id.to_bytes() {
             return Ok(());
         }
         let gid = ContextGroupId::from(group_id);
@@ -970,8 +974,10 @@ impl<'a> NamespaceGovernance<'a> {
             .default_capabilities(&gid)?
             .is_some();
         if !default_caps_existed {
-            CapabilitiesRepository::new(self.store)
-                .set_default_capabilities(&gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)?;
+            CapabilitiesRepository::new(self.store).set_default_capabilities(
+                &gid,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )?;
         }
 
         // Nothing to do (and nothing to log) if all halves were already
@@ -1008,9 +1014,10 @@ impl<'a> NamespaceGovernance<'a> {
         &self,
         group_id: [u8; 32],
         requester: PublicKey,
+        requested_key_id: Option<[u8; 32]>,
     ) -> EyreResult<(Vec<u8>, PublicKey)> {
         let group_gid = ContextGroupId::from(group_id);
-        let ns_gid = ContextGroupId::from(self.namespace_id);
+        let ns_gid = ContextGroupId::from(self.namespace_id.to_bytes());
 
         // Cross-namespace pin: the requested group must belong to the
         // namespace the requester named, otherwise an attacker on namespace
@@ -1018,7 +1025,7 @@ impl<'a> NamespaceGovernance<'a> {
         // membership check, this is the full authorisation gate.
         let group_in_namespace = matches!(
             NamespaceRepository::new(self.store).resolve(&group_gid),
-            Ok(ns) if ns.to_bytes() == self.namespace_id
+            Ok(ns) if ns.to_bytes() == self.namespace_id.to_bytes()
         );
         if !group_in_namespace
             || !MembershipRepository::new(self.store).is_member(&group_gid, &requester)?
@@ -1026,29 +1033,49 @@ impl<'a> NamespaceGovernance<'a> {
             return Ok((Vec::new(), requester));
         }
 
-        let Some((_key_id, group_key)) =
-            GroupKeyring::new(self.store, group_gid).load_current_key()?
-        else {
-            return Ok((Vec::new(), requester));
+        // Serve the EXACT key the requester named when it named one (a buffered
+        // op stranded on a specific — possibly rotated-out — epoch), else the
+        // current key (a keyless joiner bootstrapping). Scoping to a key_id also
+        // tightens the removed-member case: a removed member is not a `member`
+        // (rejected above on an up-to-date responder), and even against a
+        // lagging responder they can only name key_ids of ops they already
+        // saw — never the fresh post-removal key, which no op they hold cites.
+        let group_key = match requested_key_id {
+            Some(key_id) => {
+                let Some(group_key) =
+                    GroupKeyring::new(self.store, group_gid).load_key_by_id(&key_id)?
+                else {
+                    return Ok((Vec::new(), requester));
+                };
+                group_key
+            }
+            None => {
+                let Some((_key_id, group_key)) =
+                    GroupKeyring::new(self.store, group_gid).load_current_key()?
+                else {
+                    return Ok((Vec::new(), requester));
+                };
+                group_key
+            }
         };
         let Some(record) = NamespaceRepository::new(self.store).resolve_identity_record(&ns_gid)?
         else {
             tracing::warn!(
-                namespace_id = %hex::encode(self.namespace_id),
+                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                 "no namespace identity, cannot wrap group key"
             );
             return Ok((Vec::new(), requester));
         };
         let sender_sk = PrivateKey::from(record.private_key);
         let responder_identity = sender_sk.public_key();
-        match GroupKeyring::wrap_for_member(&sender_sk, &requester, &group_key) {
+        match GroupKeyring::wrap_for_member(&sender_sk, &requester, &group_id, &group_key) {
             Ok(envelope) => Ok((
                 borsh::to_vec(&envelope).unwrap_or_default(),
                 responder_identity,
             )),
             Err(err) => {
                 tracing::warn!(
-                    namespace_id = %hex::encode(self.namespace_id),
+                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                     group_id = %hex::encode(group_id),
                     %err,
                     "failed to wrap group key for requester"
@@ -1102,7 +1129,33 @@ impl<'a> NamespaceGovernance<'a> {
         envelope: &KeyEnvelope,
         responder_identity: PublicKey,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
-        let ns_id = ContextGroupId::from(self.namespace_id);
+        let ns_id = ContextGroupId::from(self.namespace_id.to_bytes());
+        let gid = ContextGroupId::from(group_id);
+
+        // Cross-namespace pin: reject a key for a group that is KNOWN to belong
+        // to a different namespace, so an attacker-served envelope can't store a
+        // chosen key under another namespace's group id (keyring pollution).
+        //
+        // "Known to belong elsewhere" means the group resolves UP a parent
+        // chain to a root that isn't this namespace. A group that resolves to
+        // itself (no parent edge yet) is NOT rejected: that is the legitimate
+        // stranded-delivery race where a subgroup's key arrives before its
+        // `GroupCreated` (which writes the parent edge) has been applied — the
+        // authenticated-sender gate below still bounds who may deliver it, and
+        // the key is keyed by (group_id, key_id) so a mismatched delivery is
+        // inert until a real op references it.
+        if let Ok(root) = NamespaceRepository::new(self.store).resolve(&gid) {
+            let root = root.to_bytes();
+            if root != self.namespace_id.to_bytes() && root != group_id {
+                tracing::warn!(
+                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                    group_id = %hex::encode(group_id),
+                    resolved_root = %hex::encode(root),
+                    "rejecting received group key: group belongs to a different namespace"
+                );
+                return Ok(None);
+            }
+        }
 
         let Some(identity) = NamespaceRepository::new(self.store).identity_record(&ns_id)? else {
             return Ok(None);
@@ -1116,7 +1169,15 @@ impl<'a> NamespaceGovernance<'a> {
             return Ok(None);
         }
 
-        let group_key = match GroupKeyring::unwrap_for_recipient(&recipient_sk, envelope) {
+        // Authenticate the envelope against the peer that served it: only a
+        // key-holding member of this namespace can mint a valid wrap, so the
+        // `sender` must be the `responder_identity` we transacted with.
+        let group_key = match GroupKeyring::unwrap_for_recipient(
+            &recipient_sk,
+            &group_id,
+            Some(&responder_identity),
+            envelope,
+        ) {
             Ok(k) => k,
             Err(e) => {
                 tracing::warn!(?e, "failed to unwrap received group key envelope");
@@ -1124,7 +1185,6 @@ impl<'a> NamespaceGovernance<'a> {
             }
         };
 
-        let gid = ContextGroupId::from(group_id);
         let key_id = GroupKeyring::new(self.store, gid)
             .store_key(&group_key)
             .map_err(|e| eyre::eyre!("store_group_key: {e}"))?;
@@ -1329,6 +1389,123 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(applied)
     }
 
+    /// Process the plaintext `key_rotation` bundle attached to a group op.
+    ///
+    /// The bundle is NOT encrypted, so without gating any namespace participant
+    /// could attach a chosen key to any op and poison a group's keyring. Every
+    /// check below must pass before the rotated key is stored:
+    ///
+    /// 1. `inner_decrypted` — we hold the current key (i.e. are a member); a
+    ///    rotation for a group we don't belong to is ignored so it can't poison
+    ///    an arbitrary group's keyring.
+    /// 2. `op.signer` is an admin of the group **at the op's causal cut** — only
+    ///    an admin may remove a member and rotate the key. This is the missing
+    ///    "authorized rotator" check.
+    /// 3. the envelope is authenticated as coming from that same admin
+    ///    (`expected_sender = op.signer`), so an admin can't be impersonated.
+    /// 4. the unwrapped key hashes to the advertised `new_key_id` — that field
+    ///    is plaintext and trusted by every non-recipient peer, so binding it to
+    ///    the actual key stops a tampered id from splitting the keyring.
+    ///
+    /// The new key is stamped with this op's deterministic DAG `epoch` so all
+    /// nodes agree it supersedes the pre-rotation key.
+    fn apply_key_rotation(
+        &self,
+        group_id: &ContextGroupId,
+        op: &SignedNamespaceOp,
+        rotation: &KeyRotation,
+        inner_decrypted: bool,
+        epoch: u64,
+        result: &mut ApplyNamespaceOpResult,
+    ) -> EyreResult<()> {
+        if !inner_decrypted {
+            tracing::warn!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                "ignoring key rotation: node holds no current key for this group \
+                 (not a member / could not decrypt the inner op)"
+            );
+            return Ok(());
+        }
+
+        // Authorized-rotator gate: only an admin at the op's cut may rotate.
+        // `is_admin` returns `Ok(false)` for a genuine non-admin (and for an
+        // incomplete fold / missing apply-auth context, via the live fallback),
+        // which we treat as "not authorized" and skip. A store *error* (e.g. I/O
+        // failure), by contrast, is propagated with `?` rather than swallowed as
+        // "not admin": swallowing it would silently drop a legitimate rotation
+        // and leave the node unable to decrypt subsequent ops. Propagating lets
+        // the apply fail and be retried; the inner op re-applies idempotently
+        // (per-signer nonce window) and the rotation is re-attempted.
+        let signer_is_admin = PermissionChecker::new(self.store, *group_id)
+            .with_apply_auth(&op.parent_op_hashes, self.authorizer)
+            .is_admin(&op.signer)?;
+        if !signer_is_admin {
+            tracing::warn!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                signer = %op.signer,
+                "ignoring key rotation: op signer is not an admin at the op's cut"
+            );
+            return Ok(());
+        }
+
+        let ns_id = ContextGroupId::from(op.namespace_id.to_bytes());
+        let Some(identity) = NamespaceRepository::new(self.store).identity_record(&ns_id)? else {
+            return Ok(());
+        };
+        let recipient_sk = PrivateKey::from(identity.private_key);
+        let recipient_pk = recipient_sk.public_key();
+
+        for envelope in &rotation.envelopes {
+            if envelope.recipient != recipient_pk {
+                continue;
+            }
+            // Invariant: `op.signer` MUST be the same identity that wrapped the
+            // rotation envelopes. The publisher guarantees this by signing the
+            // outer namespace op and wrapping every envelope with the SAME
+            // namespace identity key (see `build_rotation` call in
+            // `group_governance_publisher`). If a future refactor ever signs the
+            // outer op with a different key than it wraps with, this
+            // `expected_sender` check will reject the rotation rather than
+            // silently accept a mismatched wrapper — fail-closed by design.
+            match GroupKeyring::unwrap_for_recipient(
+                &recipient_sk,
+                &group_id.to_bytes(),
+                Some(&op.signer),
+                envelope,
+            ) {
+                Ok(new_key) => {
+                    if GroupKeyring::key_id_for(&new_key) != rotation.new_key_id.to_bytes() {
+                        tracing::warn!(
+                            group_id = %hex::encode(group_id.to_bytes()),
+                            "ignoring key rotation: unwrapped key does not match advertised new_key_id"
+                        );
+                        result.key_unwrap_failures.push(KeyUnwrapFailure {
+                            group_id: group_id.to_bytes(),
+                            reason: "new_key_id does not match unwrapped key".to_owned(),
+                        });
+                        return Ok(());
+                    }
+                    let _ = GroupKeyring::new(self.store, *group_id)
+                        .store_key_with_epoch(&new_key, epoch)?;
+                    tracing::info!(
+                        group_id = %hex::encode(group_id.to_bytes()),
+                        epoch,
+                        "stored rotated group key"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(?e, "failed to unwrap key rotation envelope");
+                    result.key_unwrap_failures.push(KeyUnwrapFailure {
+                        group_id: group_id.to_bytes(),
+                        reason: format!("key rotation unwrap failed: {e}"),
+                    });
+                }
+            }
+            break;
+        }
+        Ok(())
+    }
+
     /// Decrypt an encrypted group op and apply it via
     /// [`apply_group_op_inner`](Self::apply_group_op_inner).
     fn decrypt_and_apply_group_op(
@@ -1342,7 +1519,7 @@ impl<'a> NamespaceGovernance<'a> {
 
         let signed_group_op = SignedGroupOp {
             version: calimero_context_client::local_governance::SIGNED_GROUP_OP_SCHEMA_VERSION,
-            group_id: group_id.to_bytes(),
+            group_id: *group_id,
             parent_op_hashes: ns_op.parent_op_hashes.clone(),
             signer: ns_op.signer,
             nonce: ns_op.nonce,
@@ -1646,16 +1823,15 @@ pub fn apply_signed_namespace_op_at_cut(
 /// there is nothing to fold.
 pub fn decrypt_group_op(
     store: &Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     group_id: ContextGroupId,
     key_id: &[u8; 32],
     encrypted: &EncryptedGroupOp,
 ) -> EyreResult<Option<GroupOp>> {
     let resolved = match GroupKeyring::new(store, group_id).load_key_by_id(key_id)? {
         Some(k) => Some(k),
-        None => {
-            GroupKeyring::new(store, ContextGroupId::from(namespace_id)).load_key_by_id(key_id)?
-        }
+        None => GroupKeyring::new(store, ContextGroupId::from(namespace_id.to_bytes()))
+            .load_key_by_id(key_id)?,
     };
     match resolved {
         Some(group_key) => Ok(Some(GroupKeyring::decrypt_op(&group_key, encrypted)?)),
@@ -1668,11 +1844,26 @@ pub fn decrypt_group_op(
 /// [`NamespaceGovernance::build_group_key_delivery`].
 pub fn build_group_key_delivery(
     store: &Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     group_id: [u8; 32],
     requester: PublicKey,
+    requested_key_id: Option<[u8; 32]>,
 ) -> EyreResult<(Vec<u8>, PublicKey)> {
-    NamespaceGovernance::new(store, namespace_id).build_group_key_delivery(group_id, requester)
+    NamespaceGovernance::new(store, namespace_id).build_group_key_delivery(
+        group_id,
+        requester,
+        requested_key_id,
+    )
+}
+
+/// Distinct `(group_id, key_id)` pairs the node is buffering an undecryptable
+/// group op for — the direct-pull requester asks a peer for each specific key
+/// epoch. See [`NamespaceRetryService::awaited_group_keys`].
+pub fn namespace_group_keys_awaiting(
+    store: &Store,
+    namespace_id: NamespaceId,
+) -> EyreResult<Vec<([u8; 32], [u8; 32])>> {
+    NamespaceRetryService::new(store, namespace_id).awaited_group_keys()
 }
 
 /// Apply a group key delivered out-of-band via the direct
@@ -1680,7 +1871,7 @@ pub fn build_group_key_delivery(
 /// [`NamespaceGovernance::apply_received_group_key`].
 pub fn apply_received_group_key(
     store: &Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     group_id: [u8; 32],
     envelope_bytes: &[u8],
     responder_identity: PublicKey,
@@ -1701,7 +1892,7 @@ pub fn apply_received_group_key(
 /// in-tree caller and lands in a follow-up task.
 pub fn retry_encrypted_ops_for_group(
     store: &Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     group_id: [u8; 32],
 ) -> EyreResult<Option<super::super::DivergenceReport>> {
     NamespaceGovernance::new(store, namespace_id).retry_encrypted_ops_for_group(group_id)
@@ -1715,7 +1906,7 @@ pub fn retry_encrypted_ops_for_group(
 /// the keys to exactly these groups.
 pub fn namespace_groups_awaiting_key(
     store: &Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
 ) -> EyreResult<Vec<[u8; 32]>> {
     NamespaceRetryService::new(store, namespace_id).groups_awaiting_key()
 }
@@ -1727,7 +1918,7 @@ pub fn namespace_groups_awaiting_key(
 /// the live re-drive landed holds the key but has no future trigger.
 pub fn namespace_groups_with_held_key_buffered_ops(
     store: &Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
 ) -> EyreResult<Vec<[u8; 32]>> {
     NamespaceRetryService::new(store, namespace_id).groups_with_held_key_buffered_ops()
 }
@@ -1757,7 +1948,7 @@ pub fn known_namespace_identities(store: &Store) -> EyreResult<Vec<[u8; 32]>> {
 /// rather than ops actually recovered.
 pub fn redrive_buffered_ops_for_group(
     store: &Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     group_id: [u8; 32],
 ) -> EyreResult<usize> {
     NamespaceGovernance::new(store, namespace_id).redrive_encrypted_ops_for_group_counted(group_id)
@@ -1767,7 +1958,7 @@ pub async fn sign_apply_and_publish_namespace_op(
     store: &Store,
     node_client: &calimero_node_primitives::client::NodeClient,
     ack_router: &AckRouter,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     signer_sk: &PrivateKey,
     op: NamespaceOp,
 ) -> EyreResult<DeliveryReport> {
@@ -1780,7 +1971,7 @@ pub async fn sign_and_publish_namespace_op(
     store: &Store,
     node_client: &calimero_node_primitives::client::NodeClient,
     ack_router: &AckRouter,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     signer_sk: &PrivateKey,
     op: NamespaceOp,
     required_signers: Option<Vec<PublicKey>>,
@@ -1792,7 +1983,7 @@ pub async fn sign_and_publish_namespace_op(
 
 pub fn collect_skeleton_delta_ids_for_group(
     store: &Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     group_id: [u8; 32],
 ) -> EyreResult<Vec<[u8; 32]>> {
     NamespaceGovernance::new(store, namespace_id).collect_skeleton_delta_ids_for_group(group_id)

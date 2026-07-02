@@ -1,3 +1,4 @@
+use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_server_primitives::sse::ConnectionId;
 use calimero_store::Store;
@@ -9,6 +10,9 @@ use super::session::SessionState;
 /// Global SSE service state
 pub struct ServiceState {
     pub node_client: NodeClient,
+    /// Used to verify context membership before allowing a session to subscribe
+    /// to a context's event stream.
+    pub ctx_client: ContextClient,
     pub store: Store,
     /// Session state persists across reconnections (in-memory cache)
     pub sessions: RwLock<HashMap<ConnectionId, SessionState>>,
@@ -22,9 +26,15 @@ pub struct ServiceState {
 impl ServiceState {
     /// Create new service state
     #[must_use]
-    pub fn new(node_client: NodeClient, store: Store, auth_enabled: bool) -> Self {
+    pub fn new(
+        node_client: NodeClient,
+        ctx_client: ContextClient,
+        store: Store,
+        auth_enabled: bool,
+    ) -> Self {
         Self {
             node_client,
+            ctx_client,
             store,
             sessions: RwLock::default(),
             auth_enabled,

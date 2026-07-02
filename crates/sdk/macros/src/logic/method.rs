@@ -449,6 +449,25 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                     }
                     "xcall" => {
                         modifiers.push(Modifer::XCall);
+                        // Validate the optional caller-policy arg so a typo is a
+                        // compile error rather than silently falling back to the
+                        // open `AnyInNamespace` default in the ABI emitter — a
+                        // fail-open on a security policy. A bare `#[app::xcall]`
+                        // is a path attribute (no list), so only inspect args
+                        // when they're present.
+                        if matches!(attr.meta, syn::Meta::List(_)) {
+                            if let Err(err) = attr.parse_nested_meta(|meta| {
+                                if meta.path.is_ident("from_same_app") {
+                                    Ok(())
+                                } else {
+                                    Err(meta.error(
+                                        "unknown `#[app::xcall]` argument; expected `from_same_app`",
+                                    ))
+                                }
+                            }) {
+                                errors.subsume(err);
+                            }
+                        }
                     }
                     _ => {}
                 }

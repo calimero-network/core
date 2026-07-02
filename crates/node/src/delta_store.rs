@@ -1303,6 +1303,18 @@ impl DeltaStore {
         let first_key = iter.seek(start_key)?;
 
         let mut all_deltas: HashMap<[u8; 32], CausalDelta<Vec<Action>>> = HashMap::new();
+        // Persisted rows written in Phase 0 (`applied: false`) whose atomic heads
+        // commit never landed — either interrupted by a crash, or a gossip delta
+        // buffered before its parents arrived. Their actions were NEVER committed,
+        // so they must be re-driven through the full `add_delta_internal` path
+        // (which executes actions, persists `applied: true`, and commits the new
+        // heads) rather than restored as already-applied via `restore_applied_delta`
+        // (topology only). Loading them as applied would insert them as DAG heads
+        // without ever running their effects — advertising committed state that was
+        // never written. Re-driving carries the stored author / governance edge /
+        // signature so the receive-time verification the row already passed is
+        // reproduced (never re-applied unverified on a governance-gated context).
+        let mut unapplied_deltas: Vec<BatchDeltaInput> = Vec::new();
         let mut pending_handler_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
         // Process the seek result's (key, value) manually — entries()
@@ -1396,17 +1408,33 @@ impl DeltaStore {
             // as the computed hash (they should be the same for non-merge deltas).
             // For merge deltas, the actual computed hash may have differed, but we don't
             // persist that - this is a minor approximation that works for most cases.
-            {
-                let mut head_hashes = self.head_root_hashes.write().await;
-                let _ = head_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
-            }
-            {
-                let mut parent_hashes = self.applier.parent_hashes.write().await;
-                let _ =
-                    parent_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
-            }
+            // Only rows that were actually committed (`applied: true`) seed the
+            // root-hash maps and the topology restore. An `applied: false` row's
+            // `expected_root_hash` is a prediction that never committed, so it
+            // must not pre-seed these maps; it is re-driven below, where the
+            // apply path records the real post-apply hash.
+            if stored_delta.applied {
+                {
+                    let mut head_hashes = self.head_root_hashes.write().await;
+                    let _ =
+                        head_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
+                }
+                {
+                    let mut parent_hashes = self.applier.parent_hashes.write().await;
+                    let _ = parent_hashes
+                        .insert(stored_delta.delta_id, stored_delta.expected_root_hash);
+                }
 
-            drop(all_deltas.insert(stored_delta.delta_id, dag_delta));
+                drop(all_deltas.insert(stored_delta.delta_id, dag_delta));
+            } else {
+                unapplied_deltas.push(BatchDeltaInput {
+                    delta: dag_delta,
+                    events: stored_delta.events.clone(),
+                    author_id: stored_delta.author_id,
+                    governance_position_blob: stored_delta.governance_position_blob.clone(),
+                    delta_signature: stored_delta.delta_signature,
+                });
+            }
         }
 
         // Historically this function bailed early when `all_deltas`
@@ -1507,6 +1535,54 @@ impl DeltaStore {
                 context_id = %self.applier.context_id,
                 loaded_count,
                 "Loaded persisted deltas into DAG from database"
+            );
+        }
+
+        // Re-drive rows that were persisted but never committed (`applied: false`)
+        // AFTER the applied topology is restored, so their parents are present.
+        // Each goes through the FULL single-delta path (`add_delta_internal`), the
+        // same one a gossip-received delta takes: it executes the actions (or pends
+        // the delta if a parent is still missing), re-verifies with the stored
+        // author/governance/signature, seeds `head_root_hashes`, buffers orphan
+        // `SharedMember` deltas whose anchor hasn't synced, retains the per-context
+        // apply lock across the heads commit, and — on success — atomically flips
+        // the row to `applied: true` and advances `dag_heads`. That last step is
+        // why a re-driven delta is not re-driven again on the next restart, and why
+        // its head/root-hash is visible to concurrent readers.
+        //
+        // Crucially we do NOT hold the `dag` write lock across this loop: each WASM
+        // apply can run for up to the apply timeout, and `add_delta_internal` takes
+        // (and releases) its own locks per delta, so concurrent gossip application
+        // and head lookups are not starved.
+        if !unapplied_deltas.is_empty() {
+            let total = unapplied_deltas.len();
+            let mut redriven = 0;
+            for input in unapplied_deltas {
+                let delta_id = input.delta.id;
+                match self
+                    .add_delta_internal(
+                        input.delta,
+                        input.events,
+                        input.author_id,
+                        input.governance_position_blob,
+                        input.delta_signature,
+                    )
+                    .await
+                {
+                    Ok(_) => redriven += 1,
+                    Err(e) => warn!(
+                        ?e,
+                        context_id = %self.applier.context_id,
+                        delta_id = %Hash::from(delta_id).to_base58(),
+                        "Failed to re-drive a persisted-but-unapplied delta on load"
+                    ),
+                }
+            }
+            debug!(
+                context_id = %self.applier.context_id,
+                redriven,
+                total,
+                "Re-drove persisted-but-unapplied deltas through the apply path"
             );
         }
 
@@ -3827,5 +3903,58 @@ mod seed_topology_tests {
         }
         cap_topology(&mut topology);
         assert_eq!(topology.len(), 100);
+    }
+}
+
+#[cfg(test)]
+mod apply_lock_poison_recovery_tests {
+    //! Crash recovery for the per-context apply-lock relay slot.
+    //!
+    //! If an apply panics while holding `apply_lock_slot`, the mutex is poisoned.
+    //! `lock_apply_slot` recovers it via `PoisonError::into_inner` so a single
+    //! transient panic can't turn every later apply on the context into a crash.
+    //! This drives that path: poison the real slot from a panicking thread, then
+    //! assert the recovery accessor still acquires it (and observes an untorn
+    //! `Option`, since every access takes/replaces the value wholesale).
+
+    use std::sync::Arc;
+    use std::thread;
+
+    use crate::test_support::build_delta_store;
+
+    #[tokio::test]
+    async fn lock_apply_slot_recovers_poisoned_relay_mutex() {
+        let (ds, _tmp, _rx) = build_delta_store().await;
+        let applier = Arc::clone(&ds.applier);
+
+        // A thread panics while holding the relay slot — exactly the shape of an
+        // apply unwinding mid-relay — which poisons the mutex.
+        let poisoner = Arc::clone(&applier);
+        let handle = thread::spawn(move || {
+            let _guard = poisoner
+                .apply_lock_slot
+                .lock()
+                .expect("first lock is clean");
+            panic!("simulated apply panic while holding the relay slot");
+        });
+        assert!(
+            handle.join().is_err(),
+            "poisoner thread must have unwound to poison the mutex"
+        );
+
+        // Sanity: a naive `.lock()` now fails — the mutex really is poisoned, so
+        // the recovery below is exercising the poisoned path, not a clean one.
+        assert!(
+            applier.apply_lock_slot.lock().is_err(),
+            "mutex must report poisoned after the holder panicked"
+        );
+
+        // The recovery accessor acquires the slot without panicking and observes
+        // a consistent value (no retained key was stashed before the panic).
+        let guard = applier.lock_apply_slot();
+        assert!(
+            guard.is_none(),
+            "recovered relay slot must hold no retained apply-lock key"
+        );
     }
 }

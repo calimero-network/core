@@ -169,7 +169,12 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         borsh::from_slice(&join_result.key_envelope_bytes)
                             .map_err(|e| eyre::eyre!("failed to deserialize key envelope: {e}"))?;
 
-                    let group_key = GroupKeyring::unwrap_for_recipient(&sk, &envelope)?;
+                    let group_key = GroupKeyring::unwrap_for_recipient(
+                        &sk,
+                        &group_id.to_bytes(),
+                        None,
+                        &envelope,
+                    )?;
                     GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
                     info!("received group key via direct join response");
                 }
@@ -314,7 +319,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     &datastore,
                     &node_client,
                     &ack_router,
-                    namespace_id,
+                    namespace_id.into(),
                     &sk,
                     member_joined_op,
                     None,
@@ -447,7 +452,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     && MetadataRepository::new(&datastore).group_metadata(&group_id)?.is_none()
                 {
                     MetadataRepository::new(&datastore).set_group(&group_id, &calimero_primitives::metadata::MetadataRecord {
-                            name: group_name.clone(), updated_at: calimero_governance_store::now_millis(), updated_by: joiner_identity, ..Default::default()
+                            name: group_name.clone(), data: std::collections::BTreeMap::new(), updated_at: calimero_governance_store::now_millis(), updated_by: joiner_identity,
                         }, )?;
                 }
 

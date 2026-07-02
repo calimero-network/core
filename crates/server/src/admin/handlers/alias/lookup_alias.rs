@@ -10,7 +10,7 @@ use reqwest::StatusCode;
 use serde::Serialize;
 use tracing::{error, info};
 
-use crate::admin::service::ApiResponse;
+use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler<T>(
@@ -43,7 +43,7 @@ where
         }
         Err(err) => {
             error!(alias=%alias, error=?err, "Failed to lookup alias");
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+            parse_api_error(err).into_response()
         }
     }
 }

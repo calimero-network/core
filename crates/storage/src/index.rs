@@ -15,7 +15,6 @@ use tracing::info;
 
 use crate::address::Id;
 use crate::entities::{ChildInfo, Metadata, UpdatedAt};
-use crate::env::time_now;
 use crate::interface::StorageError;
 use crate::store::{IterableStorage, Key, StorageAdaptor};
 
@@ -312,6 +311,13 @@ impl<S: StorageAdaptor> Drop for DeferredAncestorScope<S> {
 }
 
 /// Index entry for an entity.
+///
+/// New fields must use borsh-CANONICAL types (no `HashMap`/`HashSet` or other
+/// nondeterministically-ordered containers): the node's tombstone GC tells an
+/// index row apart from opaque entity data by re-serializing a decoded value and
+/// requiring byte-identical output. A non-canonical field would silently break
+/// that guard. `calimero_node::gc`'s `entity_index_borsh_roundtrips` test locks
+/// the invariant and must stay green.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct EntityIndex {
     /// Entity ID.
@@ -454,6 +460,10 @@ impl<S: StorageAdaptor> Index<S> {
         child_index.own_hash = child.merkle_hash();
         child_index.full_hash =
             Self::calculate_full_hash_for_children(child_index.own_hash, &child_index.children)?;
+        // Adding a child means it is live: clear any tombstone, else find_by_id
+        // hides an entity the parent hash now counts (upsert-on-tombstone
+        // divergence). Pairs with the deleted_children.retain below.
+        child_index.deleted_at = None;
         Self::save_index(&child_index)?;
 
         // Insert into parent's children list, keeping it sorted by `ChildInfo`'s
@@ -740,6 +750,45 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(())
     }
 
+    /// Lifts a tombstone when a strictly-newer write outlives it.
+    ///
+    /// This is the counterpart to [`mark_deleted`](Self::mark_deleted). Once an
+    /// entity is tombstoned, [`find_by_id`](crate::Interface::find_by_id) hides
+    /// it regardless of any later value write. A concurrent update that
+    /// causally follows the delete (`at > deleted_at`) must win under LWW, so
+    /// the value write has to clear the tombstone or the freshly-written bytes
+    /// stay invisible — an over-suppression that diverges replicas (the replica
+    /// that saw `delete` before the newer `update` keeps hiding the value while
+    /// the replica that only saw the newer `update` shows it).
+    ///
+    /// The `at > deleted_at` guard is strict and monotonic, mirroring
+    /// `mark_deleted`: an equal-HLC write does NOT resurrect (delete wins ties),
+    /// and an older write never lifts a newer tombstone.
+    ///
+    /// When it clears the tombstone it also advances the `updated_at` replay
+    /// nonce to at least `at` (monotonically, mirroring `mark_deleted`). This
+    /// keeps `clear_deleted` self-defensive regardless of call ordering: after
+    /// a resurrection the nonce is at least `at`, so a replayed older
+    /// `DeleteRef` carrying the original `deleted_at` still loses the
+    /// `apply_delete_ref_action` comparison even if this ever runs before the
+    /// caller's `update_hash_for` has persisted the new `updated_at`.
+    pub(crate) fn clear_deleted(id: Id, at: u64) -> Result<(), StorageError> {
+        let _mutation_guard = index_mutation_guard();
+        if let Some(mut index) = Self::get_index(id)? {
+            if index.deleted_at.is_some_and(|deleted_at| at > deleted_at) {
+                index.deleted_at = None;
+                // Advance the `updated_at` replay nonce alongside the
+                // resurrection, mirroring `mark_deleted`. Monotonic: an older
+                // write never lowers it. Without this, a `clear_deleted` that
+                // ran before `update_hash_for` would leave the nonce below
+                // `at`, reopening a replay window for the original delete.
+                *index.metadata.updated_at = (*index.metadata.updated_at).max(at);
+                Self::save_index(&index)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Returns children from a specific collection.
     ///
     /// Collection param is ignored - entity only has one collection.
@@ -937,11 +986,12 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     /// Step 1 of deletion: Remove actual data, keep index for CRDT sync.
     fn delete_entity_and_create_tombstone(id: Id, deleted_at: u64) -> Result<(), StorageError> {
-        // Delete the actual entity data immediately (save storage space)
+        // Tombstone first, then drop the data: if mark_deleted fails the entry
+        // is left intact and the delete can be retried, instead of leaving the
+        // data gone with no tombstone while the parent still lists it live.
+        Self::mark_deleted(id, deleted_at)?;
         let _ignored = S::storage_remove(Key::Entry(id));
-
-        // Mark child index as deleted (tombstone for CRDT sync)
-        Self::mark_deleted(id, deleted_at)
+        Ok(())
     }
 
     /// Tombstones every descendant of `root_id` at `deleted_at`.
@@ -1129,72 +1179,6 @@ impl<S: StorageAdaptor> Index<S> {
         Self::save_index(&index)?;
         <Index<S>>::recalculate_ancestor_hashes_for(id)?;
         Ok(index.full_hash)
-    }
-
-    /// Garbage collects tombstones older than the retention period.
-    ///
-    /// Only available for storage backends that implement `IterableStorage`.
-    /// Removes index entries marked as deleted that are older than the specified
-    /// retention period. This reclaims storage space while maintaining CRDT semantics
-    /// for recent deletions.
-    ///
-    /// # Parameters
-    ///
-    /// * `retention_nanos` - Retention period in nanoseconds (e.g., 86_400_000_000_000 for 1 day)
-    ///
-    /// # Returns
-    ///
-    /// Number of tombstones garbage collected
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // GC tombstones older than 1 day (requires IterableStorage)
-    /// type MyStorage = MockedStorage<1>;
-    /// const ONE_DAY_NANOS: u64 = 86_400_000_000_000;
-    /// let collected = Index::<MyStorage>::garbage_collect_tombstones(ONE_DAY_NANOS)?;
-    /// println!("Garbage collected {} tombstones", collected);
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] if an index entry cannot be loaded while
-    /// scanning. Failure to remove an individual tombstone key is ignored so a
-    /// single bad key does not abort the whole sweep.
-    ///
-    /// # Scheduling
-    ///
-    /// This is a manually-invoked maintenance operation: it performs one full
-    /// pass over the index keys and returns. It is intentionally not
-    /// auto-scheduled — when and how often to reclaim tombstones (and any
-    /// batching or rate-limiting) is a policy decision left to the caller.
-    pub fn garbage_collect_tombstones(retention_nanos: u64) -> Result<usize, StorageError>
-    where
-        S: IterableStorage,
-    {
-        let cutoff_time = time_now().saturating_sub(retention_nanos);
-        let mut collected = 0;
-
-        // Iterate over all keys in storage
-        let all_keys = S::storage_iter_keys();
-
-        for key in all_keys {
-            // Only process Index keys (not Entry keys)
-            if let Key::Index(id) = key {
-                // Check if this index is a tombstone older than cutoff
-                if let Some(index) = Self::get_index(id)? {
-                    if let Some(deleted_at) = index.deleted_at {
-                        if deleted_at < cutoff_time {
-                            // Tombstone is old enough - remove it
-                            let _ignored = S::storage_remove(Key::Index(id));
-                            collected += 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(collected)
     }
 
     /// Residue: a LOCAL DERIVED count of identity-gated entries that still
