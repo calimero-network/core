@@ -505,12 +505,11 @@ mod tests {
         let mut s = storage();
         for len in [0usize, 1, 31, 33, 64] {
             let key = vec![0x42u8; len];
-            // The write is a no-op (the key is refused, not truncated/padded)...
-            assert!(
-                s.set(key.clone(), b"value".to_vec()).is_none(),
-                "set must no-op for a {len}-byte key"
-            );
-            // ...and the key reads back as absent rather than colliding.
+            // Attempt the write. Its `None` return is NOT proof of rejection —
+            // `set` also returns `None` on an accepted insert with no prior
+            // value — so the reads below are what prove the key was refused
+            // (not truncated/padded and stored).
+            s.set(key.clone(), b"value".to_vec());
             assert_eq!(s.get(&key), None, "get must miss for a {len}-byte key");
             assert!(!s.has(&key), "has must be false for a {len}-byte key");
         }

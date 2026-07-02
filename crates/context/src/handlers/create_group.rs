@@ -144,10 +144,19 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // app_key is resolved/verified; the cleanup map on the returned future
         // deletes it if that async work fails, so a failed create frees the id
         // for a clean retry rather than wedging it behind the guard forever.
-        let reservation_now = std::time::SystemTime::now()
+        let reservation_now = match std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        {
+            Ok(d) => d.as_secs(),
+            Err(err) => {
+                warn!(
+                    %err,
+                    ?group_id,
+                    "system clock is before UNIX_EPOCH; stamping created_at=0 on the group reservation"
+                );
+                0
+            }
+        };
         let reservation_meta = GroupMetaValue {
             // The reservation only holds the id slot; use the verified
             // application-row blob (never the caller's still-unverified
