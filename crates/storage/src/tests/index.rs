@@ -804,8 +804,10 @@ mod subtree_tombstoning {
         use crate::entities::StorageType;
         type S = MockedStorage<2104>;
 
-        let mut frozen_md = Metadata::default();
-        frozen_md.storage_type = StorageType::Frozen;
+        let frozen_md = Metadata {
+            storage_type: StorageType::Frozen,
+            ..Metadata::default()
+        };
 
         let root = Id::random();
         let a = Id::random(); // non-frozen parent being deleted
