@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{JoinContextRequest, JoinContextResponse};
-use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextConfigParams;
 use eyre::bail;
 use tokio::sync::broadcast::error::RecvError;
@@ -24,6 +23,13 @@ const GROUP_LOOKUP_TIMEOUT: Duration = Duration::from_secs(30);
 /// re-reading the datastore; this bounds how long a lagged receiver
 /// waits before that recheck.
 const FALLBACK_POLL: Duration = Duration::from_millis(200);
+
+/// Ceiling for the exponential backoff on fallback namespace re-syncs. The
+/// datastore is still rechecked every [`FALLBACK_POLL`] (cheap, local), but the
+/// network re-sync kicked from a poll tick backs off from [`FALLBACK_POLL`] up
+/// to this cap so a single unresolved join doesn't fire a full namespace sync
+/// every 200ms for its whole 30s budget.
+const MAX_RESYNC_BACKOFF: Duration = Duration::from_secs(5);
 
 impl Handler<JoinContextRequest> for ContextManager {
     type Result = ActorResponse<Self, <JoinContextRequest as Message>::Result>;
@@ -59,6 +65,10 @@ impl Handler<JoinContextRequest> for ContextManager {
                     if group_id.is_none() {
                         let deadline = tokio::time::Instant::now() + GROUP_LOOKUP_TIMEOUT;
                         let started = tokio::time::Instant::now();
+                        // Exponential backoff for the fallback re-sync. Seeded
+                        // from the initial `sync_known_namespaces` above.
+                        let mut resync_backoff = FALLBACK_POLL;
+                        let mut last_resync = tokio::time::Instant::now();
                         loop {
                             // Race the notifier against a short poll interval: if
                             // the channel lagged (bursty traffic), we still catch
@@ -102,15 +112,24 @@ impl Handler<JoinContextRequest> for ContextManager {
                                     break;
                                 }
                                 Err(_elapsed) => {
-                                    // Poll tick — recheck the datastore and kick another
-                                    // namespace sync to cover the "peer arrived late" case.
+                                    // Poll tick — recheck the datastore (cheap,
+                                    // local) every interval, but throttle the
+                                    // network namespace re-sync with exponential
+                                    // backoff so an unresolved join doesn't
+                                    // re-sync every 200ms for its whole budget.
                                     group_id = calimero_governance_store::get_group_for_context(
                                         &datastore, &context_id,
                                     )?;
                                     if group_id.is_some() {
                                         break;
                                     }
-                                    sync_known_namespaces(&datastore, &node_client).await;
+                                    let now = tokio::time::Instant::now();
+                                    if now.duration_since(last_resync) >= resync_backoff {
+                                        sync_known_namespaces(&datastore, &node_client).await;
+                                        last_resync = tokio::time::Instant::now();
+                                        resync_backoff =
+                                            (resync_backoff * 2).min(MAX_RESYNC_BACKOFF);
+                                    }
                                 }
                             }
                             if tokio::time::Instant::now() >= deadline {
@@ -293,30 +312,29 @@ async fn sync_known_namespaces(
     datastore: &calimero_store::Store,
     node_client: &calimero_node_primitives::client::NodeClient,
 ) {
-    let groups = match MetaRepository::new(datastore).enumerate_all(0, usize::MAX) {
-        Ok(groups) => groups,
+    // Sync only namespaces the node actually holds an identity in — those are
+    // the only ones where this join can ultimately succeed (the join later
+    // requires `NamespaceRepository::resolve_identity` for the context's owning
+    // group). `iter_identities` returns distinct namespace roots, so this both
+    // narrows the fan-out to plausibly-owning namespaces AND removes the old
+    // duplication where a namespace with N subgroups was enumerated and synced
+    // N times (`enumerate_all` over every group, resolving each back to its
+    // root) on every single pass.
+    let namespaces = match NamespaceRepository::new(datastore).iter_identities() {
+        Ok(namespaces) => namespaces,
         Err(err) => {
-            warn!(error = ?err, "failed to enumerate groups for namespace sync");
+            warn!(error = ?err, "failed to enumerate namespace identities for sync");
             return;
         }
     };
 
-    for (group_id_bytes, _) in groups {
-        let group_id = ContextGroupId::from(group_id_bytes);
-        let namespace = match NamespaceRepository::new(datastore).resolve(&group_id) {
-            Ok(namespace) => namespace,
-            Err(err) => {
-                warn!(?group_id, error = ?err, "failed to resolve namespace while syncing");
-                continue;
-            }
-        };
-
+    for namespace in namespaces {
         let namespace_id = namespace.to_bytes();
         if let Err(err) = node_client.subscribe_namespace(namespace_id).await {
-            warn!(?group_id, error = ?err, "failed to subscribe namespace during join_context");
+            warn!(?namespace, error = ?err, "failed to subscribe namespace during join_context");
         }
         if let Err(err) = node_client.sync_namespace(namespace_id).await {
-            warn!(?group_id, error = ?err, "failed to sync namespace during join_context");
+            warn!(?namespace, error = ?err, "failed to sync namespace during join_context");
         }
     }
 }

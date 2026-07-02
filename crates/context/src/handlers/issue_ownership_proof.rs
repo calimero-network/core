@@ -26,6 +26,69 @@ pub const OWNERSHIP_PROOF_DOMAIN: &[u8] = b"calimero.ownership-claim.v1\x00";
 /// `min(expires_at_ms, issued_at_ms + MAX_PROOF_LIFETIME_MS)`.
 pub const MAX_PROOF_LIFETIME_MS: u64 = 5 * 60 * 1000;
 
+/// Maximum byte length accepted for each free-form proof field (`audience`,
+/// `subject`, `nonce`). These strings are signed verbatim and embedded in the
+/// canonical JSON payload, so an unbounded value would let a caller inflate
+/// the signed blob without limit. 256 bytes comfortably fits a URL, DID, or
+/// public-key string while keeping the signed payload small.
+pub const MAX_PROOF_FIELD_LEN: usize = 256;
+
+/// Minimum byte length required of the `nonce`. A one-byte nonce offers no
+/// meaningful uniqueness; requiring some width makes accidental collisions far
+/// less likely. This is a defence-in-depth floor only — single-use enforcement
+/// remains the verifier's responsibility (see the verifier-obligations note
+/// below).
+pub const MIN_NONCE_LEN: usize = 8;
+
+/// Validate a free-form proof field. Rejects empty, over-long, and values
+/// carrying ASCII control characters (which have no legitimate place in an
+/// audience/subject/nonce and would render ambiguously across verifiers).
+fn validate_proof_field(name: &str, value: &str) -> eyre::Result<()> {
+    if value.is_empty() {
+        bail!("ownership-proof `{name}` must not be empty");
+    }
+    if value.len() > MAX_PROOF_FIELD_LEN {
+        bail!(
+            "ownership-proof `{name}` is {} bytes; maximum is {MAX_PROOF_FIELD_LEN}",
+            value.len()
+        );
+    }
+    if value.chars().any(|c| c.is_control()) {
+        bail!("ownership-proof `{name}` must not contain control characters");
+    }
+    Ok(())
+}
+
+/// Validate the `audience`/`subject`/`nonce` triple shared by both proof
+/// variants.
+///
+/// # Verifier obligations (MANDATORY — enforced by the relying party, NOT here)
+///
+/// An issued proof is only an admin's *signed assertion*. Issuance bounds the
+/// fields and clamps the lifetime, but it does NOT and CANNOT establish
+/// freshness or that the `subject` is entitled to anything. A verifier MUST:
+///
+///   * reconstruct the signed bytes as `OWNERSHIP_PROOF_DOMAIN || signed_payload`
+///     and check the signature against `signer_public_key`;
+///   * confirm `payload.issuer_identity == signer_public_key` and that the
+///     signer is a current admin of `group_id`;
+///   * reject the proof unless `now` is within `[issued_at_ms, expires_at_ms)`;
+///   * match `audience` against its own identifier (reject proofs minted for a
+///     different relying party);
+///   * enforce `nonce` single-use within the proof's validity window (the node
+///     keeps no issued-nonce record — replay defence lives entirely here);
+///   * treat `subject` as an admin-vouched claim and independently authorize
+///     what that subject is allowed to do (an admin can assert any subject).
+fn validate_proof_fields(audience: &str, subject: &str, nonce: &str) -> eyre::Result<()> {
+    validate_proof_field("audience", audience)?;
+    validate_proof_field("subject", subject)?;
+    validate_proof_field("nonce", nonce)?;
+    if nonce.len() < MIN_NONCE_LEN {
+        bail!("ownership-proof `nonce` must be at least {MIN_NONCE_LEN} bytes");
+    }
+    Ok(())
+}
+
 /// Canonical ownership-claim payload.
 ///
 /// Field order is locked by the struct definition order (serde_json preserves
@@ -70,6 +133,8 @@ pub(crate) fn build_ownership_proof(
     requested_expires_at_ms: u64,
     now_ms: u64,
 ) -> eyre::Result<OwnershipProofBuildOutput> {
+    validate_proof_fields(audience, subject, nonce)?;
+
     if !MembershipRepository::new(store).is_direct_admin(&group_id, &node_identity)? {
         bail!("node is not a direct admin of this group");
     }
@@ -166,6 +231,8 @@ pub(crate) fn build_namespace_ownership_proof(
     requested_expires_at_ms: u64,
     now_ms: u64,
 ) -> eyre::Result<OwnershipProofBuildOutput> {
+    validate_proof_fields(audience, subject, nonce)?;
+
     if !MembershipRepository::new(store).is_direct_admin(&group_id, &node_identity)? {
         bail!("node is not a direct admin of this group");
     }
@@ -746,5 +813,86 @@ mod tests {
             err.to_string().contains("root"),
             "error must mention namespace root, got: {err}"
         );
+    }
+
+    #[test]
+    fn rejects_empty_and_oversized_and_control_and_short_nonce_fields() {
+        let (store, group_id, context_id, signing_pub, _sk) = setup_admin_with_signing_key();
+        let valid_nonce = "deadbeefcafebabe1122334455667788";
+        let over = "x".repeat(super::MAX_PROOF_FIELD_LEN + 1);
+
+        let call = |audience: &str, subject: &str, nonce: &str| {
+            build_ownership_proof(
+                &store,
+                signing_pub,
+                group_id,
+                context_id,
+                audience,
+                subject,
+                nonce,
+                NOW_MS + 1_000,
+                NOW_MS,
+            )
+        };
+
+        // Empty fields.
+        assert!(call("", "sub", valid_nonce)
+            .expect_err("empty audience")
+            .to_string()
+            .contains("audience"));
+        assert!(call("aud", "", valid_nonce)
+            .expect_err("empty subject")
+            .to_string()
+            .contains("subject"));
+        assert!(call("aud", "sub", "")
+            .expect_err("empty nonce")
+            .to_string()
+            .contains("nonce"));
+
+        // Oversized field.
+        assert!(call(&over, "sub", valid_nonce)
+            .expect_err("oversized audience")
+            .to_string()
+            .contains("maximum"));
+
+        // Control characters.
+        assert!(call("aud\n", "sub", valid_nonce)
+            .expect_err("control char in audience")
+            .to_string()
+            .contains("control"));
+
+        // Nonce below the minimum width.
+        assert!(call("aud", "sub", "short")
+            .expect_err("short nonce")
+            .to_string()
+            .contains("nonce"));
+
+        // The exact-max boundary and a valid nonce are accepted (fields are
+        // validated before the admin/signing-key checks, so this reaches the
+        // happy path).
+        let at_max = "x".repeat(super::MAX_PROOF_FIELD_LEN);
+        call(&at_max, "sub", valid_nonce).expect("field at max length is accepted");
+    }
+
+    #[test]
+    fn namespace_proof_validates_fields_too() {
+        let store = test_store();
+        let group_id = ContextGroupId::from([0xAA; 32]);
+        let identity = PublicKey::from([0x44; 32]);
+
+        // A bad field is rejected before the admin check, so we don't need a
+        // fully-set-up admin to observe the field validation firing.
+        let err = build_namespace_ownership_proof(
+            &store,
+            identity,
+            group_id,
+            "aud",
+            "sub",
+            "short",
+            NOW_MS + 1_000,
+            NOW_MS,
+        )
+        .expect_err("short nonce must be rejected");
+        assert!(err.to_string().contains("nonce"));
     }
 }
