@@ -34,6 +34,20 @@ impl NodeClient {
         Ok(())
     }
 
+    /// Whether an alias currently resolves in the given scope.
+    ///
+    /// Lets callers distinguish "already exists" / "not found" so they can
+    /// return the right status code, without needing the target value type
+    /// (unlike [`Self::lookup_alias`]).
+    pub fn alias_exists<T>(&self, alias: Alias<T>, scope: Option<T::Scope>) -> eyre::Result<bool>
+    where
+        T: Aliasable<Scope: StoreScopeCompat>,
+    {
+        let handle = self.datastore.handle();
+        let key = key::Alias::new(scope, alias).ok_or_eyre("alias requires scope to be present")?;
+        Ok(handle.has(&key)?)
+    }
+
     pub fn delete_alias<T>(&self, alias: Alias<T>, scope: Option<T::Scope>) -> eyre::Result<()>
     where
         T: Aliasable<Scope: StoreScopeCompat>,

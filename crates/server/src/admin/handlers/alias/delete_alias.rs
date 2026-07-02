@@ -18,7 +18,7 @@ pub async fn handler<T>(
     scoped_alias: Option<Path<(T::Scope, Alias<T>)>>,
 ) -> impl IntoResponse
 where
-    T: Aliasable<Scope: StoreScopeCompat>,
+    T: Aliasable<Scope: StoreScopeCompat + Copy>,
 {
     let Some((alias, scope)) = plain_alias
         .map(|Path(alias)| (alias, None))
@@ -29,6 +29,20 @@ where
     };
 
     info!(alias=%alias, "Deleting alias");
+
+    // Deleting an alias that doesn't exist is a 404 rather than a silent 200
+    // (the underlying store delete is idempotent and wouldn't surface it).
+    match state.node_client.alias_exists(alias, scope) {
+        Ok(true) => {}
+        Ok(false) => {
+            info!(alias=%alias, "Alias not found");
+            return (StatusCode::NOT_FOUND, "alias not found").into_response();
+        }
+        Err(err) => {
+            error!(alias=%alias, error=?err, "Failed to check alias existence");
+            return parse_api_error(err).into_response();
+        }
+    }
 
     if let Err(err) = state.node_client.delete_alias(alias, scope) {
         error!(alias=%alias, error=?err, "Failed to delete alias");

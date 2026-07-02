@@ -32,14 +32,19 @@ where
     info!(alias=%alias, "Looking up alias");
 
     match state.node_client.lookup_alias(alias, scope) {
-        Ok(value) => {
+        Ok(Some(value)) => {
             info!(alias=%alias, "Alias looked up successfully");
             ApiResponse {
                 payload: LookupAliasResponse {
-                    data: LookupAliasResponseData::new(value),
+                    data: LookupAliasResponseData::new(Some(value)),
                 },
             }
             .into_response()
+        }
+        // A missing alias is 404, not a 200 with a null payload.
+        Ok(None) => {
+            info!(alias=%alias, "Alias not found");
+            (StatusCode::NOT_FOUND, "alias not found").into_response()
         }
         Err(err) => {
             error!(alias=%alias, error=?err, "Failed to lookup alias");
