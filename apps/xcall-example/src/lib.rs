@@ -131,6 +131,10 @@ impl XCallExample {
     /// directly, which is how the cascade is kicked off at depth 0.
     #[app::xcall(from_same_app)]
     pub fn relay(&mut self) -> app::Result<()> {
+        // No `env::xcall_origin()` check here (unlike `pong`): `relay` is
+        // intentionally callable both directly — to kick the cascade off at
+        // depth 0 — and via xcall. Adding an origin check would break the
+        // depth-cap test's direct kick-off.
         self.relay_counter.increment()?;
         let counter = self.relay_counter.value()?;
 
