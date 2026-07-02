@@ -234,7 +234,11 @@ where
             })
             .await?;
 
-        response.json::<O>().await.map_err(Into::into)
+        // Cap the JSON body so a hostile/compromised node can't OOM the client
+        // with an unbounded response. Admin-API JSON payloads are small; blob
+        // bytes go through `get_binary`, not here.
+        let bytes = read_capped_body(response, MAX_JSON_BODY).await?;
+        serde_json::from_slice::<O>(&bytes).map_err(Into::into)
     }
 
     /// Resolve the bearer auth header for this connection (always treating auth
@@ -353,7 +357,7 @@ where
 
             if !response.status().is_success() {
                 let status = response.status();
-                let body = response.text().await.unwrap_or_default();
+                let body = read_error_body(response, MAX_ERROR_BODY).await;
                 // Return a typed error carrying the numeric status so callers can
                 // classify the failure (e.g. 404 → not-found) by matching the
                 // variant rather than parsing the message string. The rendered
@@ -422,14 +426,15 @@ where
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = read_error_body(response, MAX_ERROR_BODY).await;
             return Err(eyre!(
                 "Token refresh failed: {}",
                 extract_error_message(&body, status)
             ));
         }
 
-        let wrapped_response: WrappedResponse = response.json().await?;
+        let bytes = read_capped_body(response, MAX_JSON_BODY).await?;
+        let wrapped_response: WrappedResponse = serde_json::from_slice(&bytes)?;
 
         Ok(JwtToken::with_refresh(
             wrapped_response.data.access_token,
@@ -488,6 +493,57 @@ where
             }
         }
     }
+}
+
+/// Maximum size of a buffered JSON response body. Admin-API JSON payloads are
+/// small; this bounds memory use so a hostile/compromised node can't OOM the
+/// client with an unbounded (or Content-Length-lying) response. Large binary
+/// payloads (blobs) are read via `get_binary`, not through this path.
+const MAX_JSON_BODY: usize = 16 * 1024 * 1024;
+
+/// Maximum bytes read from an error response body before truncating. Error
+/// bodies are only used to render a short message, so they never need to be
+/// fully buffered.
+const MAX_ERROR_BODY: usize = 64 * 1024;
+
+/// Read a response body into memory, enforcing a hard byte cap.
+///
+/// Rejects up front if the declared `Content-Length` exceeds `max`, and also
+/// enforces the cap while streaming chunks so a response that omits or lies
+/// about `Content-Length` still can't grow the buffer without bound.
+async fn read_capped_body(mut response: reqwest::Response, max: usize) -> Result<Vec<u8>> {
+    if let Some(len) = response.content_length() {
+        if len > max as u64 {
+            bail!("response body too large: {len} bytes (max {max})");
+        }
+    }
+
+    let mut buf = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if buf.len() + chunk.len() > max {
+            bail!("response body exceeded {max} bytes");
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
+/// Read up to `max` bytes of an error body for message rendering, truncating
+/// (never failing) beyond the cap.
+async fn read_error_body(mut response: reqwest::Response, max: usize) -> String {
+    let mut buf = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        let remaining = max.saturating_sub(buf.len());
+        if remaining == 0 {
+            break;
+        }
+        let take = remaining.min(chunk.len());
+        buf.extend_from_slice(&chunk[..take]);
+        if buf.len() >= max {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 /// Extract a human-readable error message from an HTTP error response body.
