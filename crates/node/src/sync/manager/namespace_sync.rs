@@ -743,13 +743,18 @@ impl SyncManager {
         namespace_id: [u8; 32],
         joiner_public_key: PublicKey,
     ) -> Option<InitProof> {
+        use zeroize::Zeroize;
         let store = self.context_client.datastore_handle().into_inner();
         let group_id = calimero_context_config::types::ContextGroupId::from(namespace_id);
-        let record = NamespaceRepository::new(&store)
+        let mut record = NamespaceRepository::new(&store)
             .resolve_identity_record(&group_id)
             .ok()
             .flatten()?;
         let private_key = calimero_primitives::identity::PrivateKey::from(record.private_key);
+        // `PrivateKey::from` copies into its own zeroizing wrapper; wipe the
+        // plain `[u8; 32]` copy left in the record struct on the stack (mirrors
+        // the discipline in join_namespace / request_missing_deltas).
+        record.private_key.zeroize();
         self.sign_init_pop(ContextId::from([0u8; 32]), joiner_public_key, &private_key)
             .await
     }
