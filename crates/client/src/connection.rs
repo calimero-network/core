@@ -612,9 +612,13 @@ where
                     Ok(AuthMode::Required)
                 }
             }
-            Err(_) => {
-                // If we can't reach the endpoint, assume no authentication required
-                // This is common for local nodes that don't have the admin API enabled
+            Err(e) => {
+                // If we can't reach the endpoint, assume no authentication
+                // required — common for local nodes without the admin API. This
+                // also fires when a reverse-proxy base path is misconfigured or
+                // the proxy is down, so log the cause at debug to make that
+                // diagnosable rather than silently skipping auth.
+                tracing::debug!("detect_auth_mode: probe request failed, assuming no auth: {e}");
                 Ok(AuthMode::None)
             }
         }
