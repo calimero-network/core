@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{JoinContextRequest, JoinContextResponse};
+use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextConfigParams;
 use eyre::bail;
 use tokio::sync::broadcast::error::RecvError;
@@ -308,19 +309,25 @@ impl Handler<JoinContextRequest> for ContextManager {
     }
 }
 
+/// The namespaces this node should sync when resolving a context->group
+/// mapping: exactly the distinct namespace roots it holds an identity in.
+///
+/// A join can only ultimately succeed in a namespace the node has an identity
+/// in (the join later requires `NamespaceRepository::resolve_identity` for the
+/// context's owning group), so this is the tightest plausibly-owning set. It
+/// deliberately does NOT enumerate every known group and resolve each to its
+/// root — that re-synced a namespace once per subgroup and wasted fan-out and
+/// network syncs on namespaces the node can never join into. `iter_identities`
+/// is keyed by namespace id, so the result is already distinct.
+fn namespaces_to_sync(datastore: &calimero_store::Store) -> eyre::Result<Vec<ContextGroupId>> {
+    NamespaceRepository::new(datastore).iter_identities()
+}
+
 async fn sync_known_namespaces(
     datastore: &calimero_store::Store,
     node_client: &calimero_node_primitives::client::NodeClient,
 ) {
-    // Sync only namespaces the node actually holds an identity in — those are
-    // the only ones where this join can ultimately succeed (the join later
-    // requires `NamespaceRepository::resolve_identity` for the context's owning
-    // group). `iter_identities` returns distinct namespace roots, so this both
-    // narrows the fan-out to plausibly-owning namespaces AND removes the old
-    // duplication where a namespace with N subgroups was enumerated and synced
-    // N times (`enumerate_all` over every group, resolving each back to its
-    // root) on every single pass.
-    let namespaces = match NamespaceRepository::new(datastore).iter_identities() {
+    let namespaces = match namespaces_to_sync(datastore) {
         Ok(namespaces) => namespaces,
         Err(err) => {
             warn!(error = ?err, "failed to enumerate namespace identities for sync");
@@ -336,5 +343,100 @@ async fn sync_known_namespaces(
         if let Err(err) = node_client.sync_namespace(namespace_id).await {
             warn!(?namespace, error = ?err, "failed to sync namespace during join_context");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::{MetaRepository, NamespaceRepository};
+    use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::context::UpgradePolicy;
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::key::GroupMetaValue;
+    use calimero_store::Store;
+
+    use super::namespaces_to_sync;
+
+    fn store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    fn store_identity(store: &Store, namespace: &ContextGroupId) {
+        let sk = PrivateKey::from([0x33; 32]);
+        NamespaceRepository::new(store)
+            .store_identity(namespace, &sk.public_key(), sk.as_bytes(), &[0x44; 32])
+            .expect("store identity");
+    }
+
+    fn save_meta(store: &Store, group: &ContextGroupId) {
+        let pk = PublicKey::from([0xAB; 32]);
+        MetaRepository::new(store)
+            .save(
+                group,
+                &GroupMetaValue {
+                    app_key: [0x11; 32],
+                    target_application_id: ApplicationId::from([0xCC; 32]),
+                    upgrade_policy: UpgradePolicy::Automatic,
+                    created_at: 1_700_000_000,
+                    admin_identity: pk,
+                    owner_identity: pk,
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("save meta");
+    }
+
+    #[test]
+    fn syncs_only_identity_holding_namespaces_not_every_group() {
+        let store = store();
+
+        // Two namespace roots the node holds an identity in.
+        let ns_a = ContextGroupId::from([0xA0; 32]);
+        let ns_b = ContextGroupId::from([0xB0; 32]);
+        store_identity(&store, &ns_a);
+        store_identity(&store, &ns_b);
+
+        // A subgroup under A. The OLD code enumerated every group and resolved
+        // each back to its root, so A would have been synced once per subgroup;
+        // the identity-keyed set has no such duplication.
+        let sub_a = ContextGroupId::from([0xA1; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ns_a, &sub_a)
+            .expect("nest subgroup under A");
+        save_meta(&store, &sub_a);
+
+        // A root group the node has META for but NO identity in. The OLD
+        // `enumerate_all` would have synced it; the join can never succeed there
+        // (no identity), so the narrowed set must EXCLUDE it.
+        let group_c = ContextGroupId::from([0xC0; 32]);
+        save_meta(&store, &group_c);
+
+        let mut got = namespaces_to_sync(&store).expect("namespaces_to_sync");
+        got.sort();
+        let mut want = vec![ns_a, ns_b];
+        want.sort();
+
+        assert_eq!(
+            got, want,
+            "must sync exactly the identity-holding namespace roots (A, B), \
+             excluding the no-identity group C and without duplicating A per subgroup"
+        );
+    }
+
+    #[test]
+    fn no_identities_yields_empty() {
+        let store = store();
+        save_meta(&store, &ContextGroupId::from([0xC0; 32]));
+        assert!(
+            namespaces_to_sync(&store)
+                .expect("namespaces_to_sync")
+                .is_empty(),
+            "a node with meta but no identities syncs nothing"
+        );
     }
 }
