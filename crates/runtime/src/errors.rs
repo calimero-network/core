@@ -140,6 +140,14 @@ pub enum HostError {
     KeyLengthOverflow,
     #[error("value length overflow")]
     ValueLengthOverflow,
+    #[error("storage write count budget exceeded (max: {max})")]
+    StorageWriteCountExceeded { max: u64 },
+    #[error("storage write byte budget exceeded (attempted: {attempted}, max: {max})")]
+    StorageWriteBytesExceeded { attempted: u64, max: u64 },
+    #[error("return value too large (size: {size}, max: {max})")]
+    ReturnValueSizeOverflow { size: u64, max: u64 },
+    #[error("event handler name too large (size: {size}, max: {max})")]
+    EventHandlerSizeOverflow { size: u64, max: u64 },
     #[error("log size overflow")]
     LogLengthOverflow,
     #[error("logs overflow")]
@@ -170,6 +178,8 @@ pub enum HostError {
     TotalBlobMemoryExceeded { current: u64, max: u64 },
     #[error("blob write too large (size: {size}, max: {max})")]
     BlobWriteTooLarge { size: u64, max: u64 },
+    #[error("blob write failed (writer task unavailable)")]
+    BlobWriteFailed,
     #[error("context does not have permission to access this blob handle")]
     BlobContextMismatch,
     #[error("too many blob handles open")]

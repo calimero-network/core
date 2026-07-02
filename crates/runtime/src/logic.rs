@@ -170,6 +170,58 @@ const DEFAULT_MAX_ARTIFACT_SIZE_MIB: u64 = 16;
 /// the source WASM it was compiled from. This is a defense-in-depth ceiling on
 /// deserialization input, not a tight functional limit.
 const DEFAULT_MAX_PRECOMPILED_MODULE_SIZE_MIB: u64 = 256;
+/// Default maximum number of storage writes a single execution may perform.
+///
+/// Bounds the *count* of direct guest key-value writes — `storage_write`,
+/// `private_storage_write`, and `storage_index_set` all draw from this one
+/// budget — so a guest loop cannot issue an unbounded stream of writes into the
+/// host store (each write carries fixed per-entry overhead independent of its
+/// size). CRDT/root writes performed by the storage interface
+/// (`persist_root_state`, `apply_storage_delta`) go through a separate writer
+/// closure and are NOT charged here.
+const DEFAULT_MAX_STORAGE_WRITES: u64 = 100_000;
+/// Default maximum cumulative bytes a single execution may write to storage, in
+/// MiB (128 MiB).
+///
+/// The companion to [`DEFAULT_MAX_STORAGE_WRITES`]: bounds the total `key + value`
+/// bytes across all direct guest writes in one execution. Without it a guest
+/// loop writing max-size (10 MiB) values could grow the host store without
+/// bound. Comfortably above the single-value cap so a handful of large values
+/// still fit, while turning an unbounded write loop into a bounded, trappable
+/// one.
+const DEFAULT_MAX_STORAGE_WRITE_BYTES_MIB: u64 = 128;
+/// Default maximum total bytes a single execution may stream into blobs, in MiB
+/// (512 MiB).
+///
+/// Bounds the sum of all `blob_write` payloads in one execution across every
+/// open write handle. Live memory is already bounded by the blob write
+/// channel's fixed capacity (backpressure); this is the additional quota that
+/// stops a guest from streaming an unbounded total through that channel.
+const DEFAULT_MAX_BLOB_TOTAL_SIZE_MIB: u64 = 512;
+/// Default cap on the number of entries an *unbounded* ordered-index scan
+/// (`storage_index_scan` with `limit = 0`) may materialize.
+///
+/// An unbounded scan otherwise reads the whole range into an owned `Vec` and
+/// then re-encodes it — two transient host allocations sized by the range, both
+/// before the register-size cap applies. Substituting this ceiling for the
+/// "unbounded" sentinel bounds both allocations up front. A guest that needs
+/// more must paginate via `offset`.
+const DEFAULT_MAX_STORAGE_INDEX_SCAN_LIMIT: u64 = 100_000;
+/// Default maximum size, in MiB, of the value a guest may hand to
+/// `env::value_return` (16 MiB).
+///
+/// The return value is copied out of guest memory onto the `Outcome` (and
+/// broadcast in receipts), so without a cap the only bound is guest memory
+/// itself (~64 MiB). Matches [`DEFAULT_MAX_ARTIFACT_SIZE_MIB`]: both are
+/// copied onto the `Outcome` and share the same reasoning.
+const DEFAULT_MAX_RETURN_VALUE_SIZE_MIB: u64 = 16;
+/// Fixed capacity, in chunks, of the channel feeding each blob writer task.
+///
+/// A blob is streamed chunk-by-chunk to the writer task over this channel; a
+/// bounded (rather than unbounded) channel applies backpressure so at most
+/// `BLOB_WRITE_CHANNEL_CAPACITY * max_blob_chunk_size` bytes are ever buffered
+/// in memory per handle, regardless of how fast the guest produces data.
+pub(crate) const BLOB_WRITE_CHANNEL_CAPACITY: usize = 4;
 
 /// Defines the resource limits for a VM instance.
 ///
@@ -214,10 +266,33 @@ pub struct VMLimits {
     pub max_storage_key_size: NonZeroU64,
     /// The maximum size of a storage value in bytes.
     pub max_storage_value_size: NonZeroU64,
+    /// The maximum number of direct guest storage writes per execution.
+    ///
+    /// Shared budget across `storage_write`, `private_storage_write`, and
+    /// `storage_index_set`: a per-execution *count* ceiling that turns an
+    /// unbounded write loop into a trappable one. CRDT/root writes made through
+    /// the storage interface are not charged against it.
+    pub max_storage_writes: u64,
+    /// The maximum cumulative `key + value` bytes written to storage per
+    /// execution.
+    ///
+    /// The byte-sized companion to [`max_storage_writes`](Self::max_storage_writes),
+    /// sharing the same budget across the three write host functions.
+    pub max_storage_write_bytes: u64,
     /// The maximum number of blob handles that can exist.
     pub max_blob_handles: u64,
     /// The maximum size of a single chunk when writing to or reading from a blob.
     pub max_blob_chunk_size: u64,
+    /// The maximum total bytes a single execution may stream into blobs across
+    /// all open write handles.
+    pub max_blob_total_size: u64,
+    /// The maximum number of entries an unbounded `storage_index_scan`
+    /// (`limit = 0`) may materialize before the register-size cap applies.
+    pub max_storage_index_scan_limit: u64,
+    /// The maximum size, in bytes, of a value returned via `env::value_return`.
+    /// The value is copied onto the `Outcome`; without this cap the only bound
+    /// is guest memory itself.
+    pub max_return_value_size: u64,
     /// The maximum length of a method name in bytes.
     pub max_method_name_length: u64,
     /// The maximum size of a WASM module in bytes before compilation.
@@ -307,8 +382,13 @@ impl Default for VMLimits {
             max_storage_value_size: is_valid(
                 (DEFAULT_MAX_STORAGE_VALUE_SIZE_MIB * u64::from(ONE_MIB)).try_into(),
             ),
+            max_storage_writes: DEFAULT_MAX_STORAGE_WRITES,
+            max_storage_write_bytes: DEFAULT_MAX_STORAGE_WRITE_BYTES_MIB * u64::from(ONE_MIB),
             max_blob_handles: DEFAULT_MAX_BLOB_HANDLES,
             max_blob_chunk_size: DEFAULT_MAX_BLOB_CHUNK_SIZE_MIB * u64::from(ONE_MIB),
+            max_blob_total_size: DEFAULT_MAX_BLOB_TOTAL_SIZE_MIB * u64::from(ONE_MIB),
+            max_storage_index_scan_limit: DEFAULT_MAX_STORAGE_INDEX_SCAN_LIMIT,
+            max_return_value_size: DEFAULT_MAX_RETURN_VALUE_SIZE_MIB * u64::from(ONE_MIB),
             max_method_name_length: DEFAULT_MAX_METHOD_NAME_LENGTH,
             max_module_size: DEFAULT_MAX_MODULE_SIZE_MIB * u64::from(ONE_MIB),
             max_artifact_size: DEFAULT_MAX_ARTIFACT_SIZE_MIB * u64::from(ONE_MIB),
@@ -366,6 +446,58 @@ pub struct VMLogic<'a> {
     blob_handles: HashMap<u64, BlobHandle>,
     /// The next available file descriptor for a new blob handle.
     next_blob_fd: u64,
+
+    // Per-execution resource budgets. Counters start at zero in `new` and are
+    // therefore scoped to a single execution.
+    /// Number of direct guest storage writes performed so far (shared across
+    /// `storage_write`, `private_storage_write`, and `storage_index_set`).
+    storage_writes: u64,
+    /// Cumulative `key + value` bytes written to storage so far (same shared
+    /// budget as `storage_writes`).
+    storage_write_bytes: u64,
+    /// Cumulative bytes streamed into blobs so far across all write handles.
+    blob_bytes_written: u64,
+}
+
+/// Charges one storage write of `add` bytes against the shared per-execution
+/// write counters, committing both only if both the count and byte checks pass.
+///
+/// A free function (rather than a `&mut self` method) so callers holding a live
+/// `&mut` borrow of another `VMLogic` field — notably `private_storage` — can
+/// still charge the budget: the borrow checker splits the two disjoint counter
+/// borrows from that field borrow, which a whole-`self` method call could not.
+///
+/// # Errors
+///
+/// * [`HostError::StorageWriteCountExceeded`] if the write count would exceed
+///   `max_writes`.
+/// * [`HostError::StorageWriteBytesExceeded`] if the cumulative bytes would
+///   exceed `max_bytes`.
+fn charge_write_counters(
+    writes: &mut u64,
+    bytes_total: &mut u64,
+    max_writes: u64,
+    max_bytes: u64,
+    add: u64,
+) -> VMLogicResult<()> {
+    let next_writes = writes.checked_add(1).ok_or(HostError::IntegerOverflow)?;
+    if next_writes > max_writes {
+        return Err(HostError::StorageWriteCountExceeded { max: max_writes }.into());
+    }
+    let next_bytes = bytes_total
+        .checked_add(add)
+        .ok_or(HostError::IntegerOverflow)?;
+    if next_bytes > max_bytes {
+        return Err(HostError::StorageWriteBytesExceeded {
+            attempted: next_bytes,
+            max: max_bytes,
+        }
+        .into());
+    }
+    // Commit both counters only after both checks pass — no partial state.
+    *writes = next_writes;
+    *bytes_total = next_bytes;
+    Ok(())
 }
 
 impl<'a> VMLogic<'a> {
@@ -412,7 +544,73 @@ impl<'a> VMLogic<'a> {
             node_client,
             blob_handles: HashMap::new(),
             next_blob_fd: 1,
+
+            storage_writes: 0,
+            storage_write_bytes: 0,
+            blob_bytes_written: 0,
         }
+    }
+
+    /// Charges one storage write of `bytes` (`key.len() + value.len()`) against
+    /// the shared per-execution storage-write budget.
+    ///
+    /// Shared by `storage_write`, `private_storage_write`, and
+    /// `storage_index_set` so a guest cannot sidestep the ceiling by spreading
+    /// writes across the main store, the private store, and the ordered index.
+    /// Charged *before* the backend write so a rejected write never touches the
+    /// store.
+    ///
+    /// # Errors
+    ///
+    /// * [`HostError::StorageWriteCountExceeded`] once the write count would
+    ///   exceed [`VMLimits::max_storage_writes`].
+    /// * [`HostError::StorageWriteBytesExceeded`] once the cumulative byte total
+    ///   would exceed [`VMLimits::max_storage_write_bytes`].
+    fn charge_storage_write(&mut self, bytes: u64) -> VMLogicResult<()> {
+        // Delegate to the free function so `private_storage_write` can charge on
+        // the same budget inline (see there): a method borrows all of `self`,
+        // which would conflict with a live `&mut self.private_storage`, whereas
+        // the free function takes only the two counters and the limits by value.
+        charge_write_counters(
+            &mut self.storage_writes,
+            &mut self.storage_write_bytes,
+            self.limits.max_storage_writes,
+            self.limits.max_storage_write_bytes,
+            bytes,
+        )
+    }
+
+    /// Charges `bytes` of blob write payload against the per-execution total
+    /// blob-write budget ([`VMLimits::max_blob_total_size`]).
+    ///
+    /// # Errors
+    ///
+    /// * [`HostError::TotalBlobMemoryExceeded`] once the cumulative total would
+    ///   exceed the limit.
+    fn charge_blob_write(&mut self, bytes: u64) -> VMLogicResult<()> {
+        let next = self
+            .blob_bytes_written
+            .checked_add(bytes)
+            .ok_or(HostError::IntegerOverflow)?;
+        if next > self.limits.max_blob_total_size {
+            return Err(HostError::TotalBlobMemoryExceeded {
+                current: next,
+                max: self.limits.max_blob_total_size,
+            }
+            .into());
+        }
+        self.blob_bytes_written = next;
+        Ok(())
+    }
+
+    /// Refunds a previously-charged blob write of `bytes`.
+    ///
+    /// Used when a charged chunk fails to reach the writer task (`blob_write`'s
+    /// `send` fails), so the optimistic charge is not left on the counter. The
+    /// subtraction saturates: it can never underflow because every refund
+    /// pairs with a prior successful [`charge_blob_write`].
+    fn refund_blob_write(&mut self, bytes: u64) {
+        self.blob_bytes_written = self.blob_bytes_written.saturating_sub(bytes);
     }
 
     /// Associates a Wasmer memory instance with this `VMLogic`.
@@ -553,6 +751,13 @@ impl VMLogic<'_> {
         if !self.blob_handles.is_empty() {
             let handle_count = self.blob_handles.len();
             let blob_handles = std::mem::take(&mut self.blob_handles);
+            // Abort any still-running writer task before dropping its handle.
+            // Dropping alone only closes the channel, which lets the task drain
+            // what was buffered and persist a partial, never-closed blob; abort
+            // discards that abandoned write instead.
+            for handle in blob_handles.values() {
+                handle.abort_pending_task();
+            }
             drop(blob_handles);
             trace!(
                 target: "runtime::logic",
@@ -998,8 +1203,13 @@ mod tests {
         assert_eq!(limits.max_xcall_params_size, 16 << 10); // 16 KiB
         assert_eq!(limits.max_storage_key_size.get(), 1 << 20); // 1 MiB
         assert_eq!(limits.max_storage_value_size.get(), 10 << 20); // 10 MiB
+        assert_eq!(limits.max_storage_writes, 100_000);
+        assert_eq!(limits.max_storage_write_bytes, 128 << 20); // 128 MiB
         assert_eq!(limits.max_blob_handles, 100);
         assert_eq!(limits.max_blob_chunk_size, 10 << 20); // 10 MiB
+        assert_eq!(limits.max_blob_total_size, 512 << 20); // 512 MiB
+        assert_eq!(limits.max_storage_index_scan_limit, 100_000);
+        assert_eq!(limits.max_return_value_size, 16 << 20); // 16 MiB
         assert_eq!(limits.max_method_name_length, 256);
         assert_eq!(limits.max_artifact_size, 16 << 20); // 16 MiB
     }

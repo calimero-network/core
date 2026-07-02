@@ -4,11 +4,11 @@ use calimero_primitives::{blobs::BlobId, context::ContextId};
 
 use futures_util::{StreamExt, TryStreamExt};
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::{
     errors::HostError,
-    logic::{sys, VMHostFunctions, VMLogicError, VMLogicResult},
+    logic::{sys, VMHostFunctions, VMLogicError, VMLogicResult, BLOB_WRITE_CHANNEL_CAPACITY},
 };
 use calimero_primitives::common::DIGEST_SIZE;
 
@@ -24,11 +24,30 @@ pub enum BlobHandle {
 /// A handle for managing an asynchronous blob write operation.
 #[derive(Debug)]
 pub struct BlobWriteHandle {
-    /// The sender part of a channel to stream data chunks to the writer task.
-    sender: mpsc::UnboundedSender<Vec<u8>>,
+    /// The sender part of a *bounded* channel that streams data chunks to the
+    /// writer task. A bounded channel (see [`BLOB_WRITE_CHANNEL_CAPACITY`])
+    /// applies backpressure to `blob_write`, so at most a fixed number of
+    /// chunks are ever buffered in memory regardless of how fast the guest
+    /// produces data.
+    sender: mpsc::Sender<Vec<u8>>,
     /// A handle to the spawned task that performs the blob writing,
     /// which will eventually yield the `BlobId` and total size of the data written.
     completion_handle: tokio::task::JoinHandle<eyre::Result<(BlobId, u64)>>,
+}
+
+impl BlobHandle {
+    /// Abort the background writer task if this is a write handle.
+    ///
+    /// Called by [`VMLogic::finish`](crate::logic::VMLogic) when cleaning up
+    /// handles the guest never closed. Aborting (rather than just dropping the
+    /// handle) matters: dropping only closes the channel, which lets the writer
+    /// task drain what was buffered and *persist a partial, abandoned blob*.
+    /// Aborting discards that never-committed write instead.
+    pub(crate) fn abort_pending_task(&self) {
+        if let BlobHandle::Write(w) = self {
+            w.completion_handle.abort();
+        }
+    }
 }
 
 /// A handle for managing a blob read operation.
@@ -102,10 +121,10 @@ impl VMHostFunctions<'_> {
                 .checked_add(1)
                 .ok_or(VMLogicError::HostError(HostError::IntegerOverflow))?;
 
-            let (data_sender, data_receiver) = mpsc::unbounded_channel();
+            let (data_sender, data_receiver) = mpsc::channel(BLOB_WRITE_CHANNEL_CAPACITY);
 
             let completion_handle = tokio::spawn(async move {
-                let stream = UnboundedReceiverStream::new(data_receiver);
+                let stream = ReceiverStream::new(data_receiver);
 
                 let byte_stream =
                     stream.map(|data: Vec<u8>| Ok::<bytes::Bytes, Error>(data.into()));
@@ -167,35 +186,49 @@ impl VMHostFunctions<'_> {
 
         let data = self.read_guest_memory_slice(&data)?.to_vec();
 
-        self.with_logic_mut(|logic| {
+        // Clone the sender (validating the fd is a write handle) so the chunk
+        // can be streamed outside the logic borrow. The channel is bounded, so
+        // `send` awaits when the buffer is full — this backpressure keeps
+        // buffered memory bounded no matter how fast the guest writes.
+        let sender = self.with_logic_mut(|logic| {
             let handle = logic
                 .blob_handles
                 .get(&fd)
                 .ok_or(VMLogicError::HostError(HostError::InvalidBlobHandle))?;
-
             match handle {
-                BlobHandle::Write(_) => Ok(()),
+                BlobHandle::Write(w) => Ok(w.sender.clone()),
                 BlobHandle::Read(_) => Err(VMLogicError::HostError(HostError::InvalidBlobHandle)),
             }
         })?;
 
-        self.with_logic_mut(|logic| {
-            let handle = logic
-                .blob_handles
-                .get_mut(&fd)
-                .ok_or(VMLogicError::HostError(HostError::InvalidBlobHandle))?;
-            match handle {
-                BlobHandle::Write(w) => {
-                    w.sender
-                        .send(data.clone())
-                        .map_err(|_| VMLogicError::HostError(HostError::InvalidBlobHandle))?;
-                }
-                BlobHandle::Read(_) => {
-                    return Err(VMLogicError::HostError(HostError::InvalidBlobHandle))
-                }
-            }
-            Ok::<(), VMLogicError>(())
-        })?;
+        // Charge the per-execution total-blob-write budget only once the write
+        // is about to proceed — the memory descriptor has been read and the fd
+        // is confirmed to be a write handle — so a guest can't drain the budget
+        // by hammering an invalid fd or an unreadable descriptor.
+        //
+        // Charge the budget before `send` so it is enforced strictly: a chunk
+        // that would exceed it is rejected before being buffered. If the chunk
+        // then fails to reach the writer task, the charge is refunded below, so
+        // the counter reflects only bytes actually handed off — no reliance on
+        // the execution being discarded.
+        self.with_logic_mut(|logic| logic.charge_blob_write(data_len))?;
+
+        // `block_in_place` hands the blocking wait off the async worker so the
+        // writer task can drain the channel on another worker; a bare
+        // `Handle::block_on` would panic on a runtime thread. This requires a
+        // multi-threaded Tokio runtime (as do `blob_read`/`blob_close`); it
+        // would panic on a `current_thread` runtime.
+        let send_result = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(sender.send(data))
+        });
+        if send_result.is_err() {
+            // The writer task's receiver is gone (task panicked/aborted) — the
+            // chunk was never handed off, so refund the charge. This is distinct
+            // from an invalid fd, so surface it as `BlobWriteFailed` rather than
+            // the misleading `InvalidBlobHandle`.
+            self.with_logic_mut(|logic| logic.refund_blob_write(data_len));
+            return Err(VMLogicError::HostError(HostError::BlobWriteFailed));
+        }
 
         Ok(data_len)
     }
