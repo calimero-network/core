@@ -35,6 +35,7 @@ use serde::ser::SerializeSeq;
 use serde::Serialize;
 
 use super::{compute_id, Collection, CrdtType, StorageKey};
+use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::Data;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -233,6 +234,17 @@ where
         let _ignored = self.inner.insert(Some(id), value)?;
 
         Ok(true)
+    }
+
+    /// The deterministic storage entity id this `value` maps to. Lets the
+    /// add-wins merge consult `Index::is_deleted` without re-deriving
+    /// `compute_id` and drifting from the set's own keying.
+    pub(crate) fn entry_id<Q>(&self, value: &Q) -> Id
+    where
+        V: Borrow<Q>,
+        Q: AsRef<[u8]> + ?Sized,
+    {
+        compute_id(self.inner.id(), value.as_ref())
     }
 
     /// Get an iterator over the items in the set.
