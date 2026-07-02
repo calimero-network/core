@@ -829,8 +829,11 @@ impl ContextStorageApplier {
     ///
     /// Iterates the action payload, picks out Shared `Add`/`Update`/
     /// `DeleteRef`s, dedups by entity, and resolves each via
-    /// [`rotation_log_reader::writers_at`] against this applier's
-    /// `topology` view of the DAG.
+    /// [`rotation_log_reader::writers_at_authenticated`] against this applier's
+    /// `topology` view of the DAG. The authenticated resolver is mandatory here
+    /// because the rotation log rides ordinary (untrusted) sync — it verifies
+    /// each rotation entry's signature + prior-set ADMIN authority before
+    /// admitting it to the resolved writer set.
     ///
     /// Returns a map keyed by entity id; non-Shared entities are absent.
     /// An empty result is normal — a delta with only User/Frozen/Public
