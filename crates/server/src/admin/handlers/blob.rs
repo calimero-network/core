@@ -195,7 +195,13 @@ fn build_blob_response_headers(blob_metadata: &BlobMetadata, blob_id: BlobId) ->
         .header("Content-Length", blob_metadata.size.to_string())
         .header("Content-Type", &blob_metadata.mime_type)
         .header("ETag", &etag)
-        .header("Cache-Control", "public, max-age=3600") // 1 hour cache
+        // Blobs may be private context data served through this admin API, so
+        // never allow shared proxies/CDNs to cache them (`private`). We use
+        // `no-cache` (revalidate before reuse) rather than `immutable`: a blob
+        // id can be deleted via this same API, and `immutable` would let a
+        // client keep serving a since-deleted blob for the max-age window.
+        // Revalidation is cheap for an admin API, so correctness wins.
+        .header("Cache-Control", "private, no-cache")
         .header("X-Blob-ID", blob_id.to_string())
         .header("X-Blob-Hash", hex::encode(blob_metadata.hash))
         .header("X-Blob-MIME-Type", &blob_metadata.mime_type)
@@ -257,28 +263,32 @@ pub async fn download_handler(
 
     match blob_result {
         Ok(Some(blob)) => {
-            // Now get metadata for headers (blob should be local after discovery)
+            // Now get metadata for headers (blob should be local after discovery).
+            //
+            // The metadata drives the Content-Length and ETag response headers. If
+            // it is missing or unreadable we must NOT fabricate zero metadata: that
+            // would emit `Content-Length: 0` and an all-zero ETag while streaming a
+            // non-empty body, causing clients to truncate the response and caches to
+            // collide distinct blobs under the same `"00..00"` ETag. A blob whose
+            // bytes exist but whose metadata is gone is an inconsistent store state,
+            // so surface it as a 500 rather than serving a corrupt response.
             let blob_metadata = match state.node_client.get_blob_info(blob_id).await {
                 Ok(Some(metadata)) => metadata,
                 Ok(None) => {
-                    tracing::warn!("Blob found but metadata missing: {}", blob_id);
-                    // Create default metadata
-                    BlobMetadata {
-                        blob_id,
-                        size: 0,       // Will be updated by streaming response
-                        hash: [0; 32], // Default hash
-                        mime_type: "application/octet-stream".to_owned(),
+                    error!(%blob_id, "Blob bytes found but metadata missing; refusing to serve");
+                    return ApiError {
+                        status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                        message: "Blob metadata is unavailable".to_owned(),
                     }
+                    .into_response();
                 }
                 Err(err) => {
-                    tracing::warn!("Failed to get blob metadata {}: {:?}", blob_id, err);
-                    // Create default metadata
-                    BlobMetadata {
-                        blob_id,
-                        size: 0,
-                        hash: [0; 32], // Default hash
-                        mime_type: "application/octet-stream".to_owned(),
+                    error!(%blob_id, ?err, "Failed to read blob metadata; refusing to serve");
+                    return ApiError {
+                        status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                        message: "Failed to read blob metadata".to_owned(),
                     }
+                    .into_response();
                 }
             };
 
