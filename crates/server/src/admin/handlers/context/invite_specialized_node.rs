@@ -4,14 +4,11 @@
 //! allowing specialized nodes (e.g., read-only TEE nodes) to respond with verification
 //! and receive invitations.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{
     InviteSpecializedNodeRequest, InviteSpecializedNodeResponse,
 };
@@ -21,18 +18,6 @@ use tracing::{error, info, warn};
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
-
-/// Minimum interval between specialized-node invite broadcasts for the same
-/// context. Each broadcast publishes to the *global* invite topic, so without a
-/// throttle an authenticated caller could flood the network. Rate-limiting is
-/// keyed by context (only real contexts with owned identities reach this point,
-/// so the map cannot be grown with arbitrary ids).
-const INVITE_MIN_INTERVAL: Duration = Duration::from_secs(5);
-
-fn last_broadcasts() -> &'static Mutex<HashMap<ContextId, Instant>> {
-    static LAST: OnceLock<Mutex<HashMap<ContextId, Instant>>> = OnceLock::new();
-    LAST.get_or_init(|| Mutex::new(HashMap::new()))
-}
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
@@ -84,22 +69,6 @@ pub async fn handler(
         },
     };
 
-    // Throttle broadcasts per context to bound global-topic traffic.
-    {
-        let last = last_broadcasts().lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(prev) = last.get(&req.context_id) {
-            if prev.elapsed() < INVITE_MIN_INTERVAL {
-                warn!(context_id=%req.context_id, "throttling specialized invite broadcast");
-                return ApiError {
-                    status_code: StatusCode::TOO_MANY_REQUESTS,
-                    message: "Specialized node invites for this context are rate limited"
-                        .to_owned(),
-                }
-                .into_response();
-            }
-        }
-    }
-
     // Broadcast specialized node invite and register pending invite
     let result = state
         .node_client
@@ -108,16 +77,6 @@ pub async fn handler(
 
     match result {
         Ok(nonce) => {
-            // Commit the throttle timestamp only now that the broadcast
-            // succeeded, and prune entries older than the interval so the map
-            // can't grow without bound over the process lifetime.
-            {
-                let now = Instant::now();
-                let mut last = last_broadcasts().lock().unwrap_or_else(|e| e.into_inner());
-                last.retain(|_, t| now.duration_since(*t) < INVITE_MIN_INTERVAL);
-                last.insert(req.context_id, now);
-            }
-
             let nonce_hex = hex::encode(nonce);
             info!(
                 context_id=%req.context_id,
