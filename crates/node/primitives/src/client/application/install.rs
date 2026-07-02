@@ -28,6 +28,19 @@ const MAX_ERROR_BODY_LEN: usize = 256;
 /// Maximum redirects to follow when downloading an application.
 const MAX_INSTALL_REDIRECTS: usize = 10;
 
+/// Total request timeout (connect + transfer) for a URL install. Generous so
+/// large `.mpk` bundles over slow links still succeed, but bounded so a
+/// malicious/slow host can't hold the install open indefinitely (slowloris).
+const INSTALL_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Connect timeout for a URL install.
+const INSTALL_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Maximum size of an application artifact fetched from a URL. Bounds memory so
+/// a hostile host can't OOM the node with an unbounded (or Content-Length-lying)
+/// body. Generous headroom for real bundles.
+const MAX_INSTALL_BYTES: u64 = 512 * 1024 * 1024;
+
 /// Whether a URL's host must be refused as an SSRF target: a literal
 /// loopback / private / link-local / unspecified IP, or `localhost`. Applied
 /// here at fetch time so it also covers redirect hops, which the
@@ -88,6 +101,8 @@ fn ip_is_blocked(ip: std::net::IpAddr) -> bool {
 /// redirect, are covered.
 fn ssrf_guarded_client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
+        .connect_timeout(INSTALL_CONNECT_TIMEOUT)
+        .timeout(INSTALL_TOTAL_TIMEOUT)
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if !matches!(attempt.url().scheme(), "http" | "https") {
                 attempt.error("redirect to a non-http(s) scheme is blocked")
@@ -100,6 +115,19 @@ fn ssrf_guarded_client() -> reqwest::Result<reqwest::Client> {
             }
         }))
         .build()
+}
+
+/// Read an HTTP response body into memory, enforcing a hard byte cap so a
+/// missing or lying `Content-Length` can't grow the buffer without bound.
+async fn read_body_capped(mut response: reqwest::Response, max: u64) -> eyre::Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if buf.len() as u64 + chunk.len() as u64 > max {
+            bail!("application artifact exceeded size limit of {max} bytes");
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
 }
 
 impl NodeClient {
@@ -419,11 +447,22 @@ impl NodeClient {
 
         let expected_size = response.content_length();
 
+        // Reject up front when the server declares a body larger than we allow.
+        if let Some(len) = expected_size {
+            if len > MAX_INSTALL_BYTES {
+                bail!(
+                    "application artifact too large: {len} bytes exceeds limit of {MAX_INSTALL_BYTES}"
+                );
+            }
+        }
+
         // Check if URL indicates a bundle archive (.mpk - Mero Package Kit)
         let is_bundle = url.path().ends_with(".mpk");
 
         if is_bundle {
-            let bundle_data = Arc::new(response.bytes().await?.to_vec());
+            // Read with a hard cap so a missing/lying Content-Length can't grow
+            // the buffer without bound.
+            let bundle_data = Arc::new(read_body_capped(response, MAX_INSTALL_BYTES).await?);
 
             let cursor = Cursor::new(bundle_data.as_slice());
             let (bundle_blob_id, stored_size) = self
