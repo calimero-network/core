@@ -1264,3 +1264,137 @@ async fn token_refresh_preserves_base_path() {
     // Refresh succeeded via the base-path URL, so interactive auth was not used.
     assert_eq!(*auth_calls.lock().unwrap(), 0);
 }
+
+// ---- Proactive-expiry refresh & single-flight ----
+//
+// End-to-end exercises of the auth state machine's expiry handling: a stored
+// token whose JWT `exp` is in the past (or imminent) is refreshed *before* the
+// request is sent, and concurrent expired requests collapse into a single
+// `/auth/refresh`. These drive the real `ConnectionInfo` — `ensure_auth_header`
+// → `refresh_or_reauth` (single-flight) → request — against a mock server.
+
+use wiremock::matchers::header;
+
+/// Build a minimal JWT (`header.payload.sig`) whose payload carries the given
+/// `exp` (seconds since the Unix epoch). Only the `exp` claim is read by the
+/// client, so the header/signature segments are placeholders.
+fn jwt_with_exp(exp_unix: i64) -> String {
+    use base64::Engine as _;
+    let payload =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("{{\"exp\":{exp_unix}}}"));
+    format!("aGVhZGVy.{payload}.c2ln")
+}
+
+/// Mount a `/auth/refresh` mock that returns `new_access` (+ a rotated refresh
+/// token) and, separately, a protected GET that only matches when the request
+/// carries `new_access` as its bearer. Together they prove the client refreshed
+/// *before* issuing the GET: if it had sent the stale token, the GET would miss
+/// the header-filtered mock and 404.
+async fn mount_refresh_and_guarded_get(server: &MockServer, new_access: &str, refresh_hits: u64) {
+    Mock::given(method("POST"))
+        .and(path("/auth/refresh"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": { "access_token": new_access, "refresh_token": "rotated-refresh" }
+        })))
+        .expect(refresh_hits)
+        .mount(server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/admin-api/contexts"))
+        .and(header(
+            "authorization",
+            format!("Bearer {new_access}").as_str(),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+        .mount(server)
+        .await;
+}
+
+fn auth_client_with_token(base_url: &Url, token: JwtToken) -> Client<MemAuth, MemStorage> {
+    let storage = MemStorage {
+        token: Arc::new(StdMutex::new(Some(token))),
+    };
+    let auth = MemAuth {
+        calls: Arc::new(StdMutex::new(0)),
+    };
+    let conn = Conn::new(base_url.clone(), Some("node".to_owned()), auth, storage);
+    Client::new(conn).unwrap()
+}
+
+#[tokio::test]
+async fn expired_token_is_refreshed_before_request() {
+    let now = chrono::Utc::now().timestamp();
+    let expired = jwt_with_exp(now - 3600);
+    let fresh = jwt_with_exp(now + 3600);
+
+    let server = MockServer::start().await;
+    // No 401 is mocked: a proactive refresh must happen *before* the GET, so the
+    // only GET carries the fresh bearer. Exactly one `/auth/refresh`.
+    mount_refresh_and_guarded_get(&server, &fresh, 1).await;
+
+    let client = auth_client_with_token(
+        &Url::parse(&server.uri()).unwrap(),
+        JwtToken::with_refresh(expired, "refresh-tok".to_owned()),
+    );
+
+    let resp: serde_json::Value = client.connection().get("admin-api/contexts").await.unwrap();
+    assert_eq!(resp["ok"], serde_json::Value::Bool(true));
+}
+
+#[tokio::test]
+async fn token_expiring_soon_is_refreshed_proactively() {
+    let now = chrono::Utc::now().timestamp();
+    // Not yet expired, but within the proactive-refresh skew window.
+    let expiring = jwt_with_exp(now + 10);
+    let fresh = jwt_with_exp(now + 3600);
+
+    let server = MockServer::start().await;
+    mount_refresh_and_guarded_get(&server, &fresh, 1).await;
+
+    let client = auth_client_with_token(
+        &Url::parse(&server.uri()).unwrap(),
+        JwtToken::with_refresh(expiring, "refresh-tok".to_owned()),
+    );
+
+    let resp: serde_json::Value = client.connection().get("admin-api/contexts").await.unwrap();
+    assert_eq!(resp["ok"], serde_json::Value::Bool(true));
+}
+
+#[tokio::test]
+async fn concurrent_expired_requests_refresh_once() {
+    let now = chrono::Utc::now().timestamp();
+    let expired = jwt_with_exp(now - 3600);
+    let fresh = jwt_with_exp(now + 3600);
+
+    let server = MockServer::start().await;
+    // Single-flight: N concurrent expired requests must produce exactly ONE
+    // `/auth/refresh` (a rotating refresh token would be spent N times otherwise).
+    mount_refresh_and_guarded_get(&server, &fresh, 1).await;
+
+    let client = auth_client_with_token(
+        &Url::parse(&server.uri()).unwrap(),
+        JwtToken::with_refresh(expired, "refresh-tok".to_owned()),
+    );
+
+    let mut set = tokio::task::JoinSet::new();
+    for _ in 0..8 {
+        let client = client.clone();
+        set.spawn(async move {
+            client
+                .connection()
+                .get::<serde_json::Value>("admin-api/contexts")
+                .await
+        });
+    }
+
+    let mut successes = 0;
+    while let Some(joined) = set.join_next().await {
+        let result = joined.expect("task should not panic");
+        assert_eq!(result.unwrap()["ok"], serde_json::Value::Bool(true));
+        successes += 1;
+    }
+    assert_eq!(successes, 8);
+    // The refresh mock's `.expect(1)` is verified on server drop, proving the
+    // eight concurrent 401-avoiding refreshes collapsed into one.
+}
