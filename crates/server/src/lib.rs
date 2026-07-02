@@ -69,6 +69,12 @@ pub async fn start(
 ) -> EyreResult<()> {
     let mut config = config;
 
+    // Fail fast on a misconfigured CORS allowlist rather than silently serving a
+    // narrower-than-intended (or empty) origin set at runtime.
+    if let Err(e) = config.cors.validate() {
+        bail!("invalid CORS configuration: {e}");
+    }
+
     // Register HTTP request metrics on the same registry before the
     // metrics service consumes ownership of it via `mount_runtime_services`
     // → `metrics::service`. The middleware below will resolve the handle

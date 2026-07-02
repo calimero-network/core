@@ -66,6 +66,23 @@ impl Default for CorsConfig {
     }
 }
 
+impl CorsConfig {
+    /// Fail fast on a misconfigured allowlist: every entry in `allowed_origins`
+    /// must parse as a valid origin header value. Called at startup so a typo in
+    /// a security-sensitive origin list is an immediate, actionable error rather
+    /// than a silently-narrowed (or empty) allowlist discovered at runtime.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(origins) = &self.allowed_origins {
+            for origin in origins {
+                if axum::http::HeaderValue::from_str(origin).is_err() {
+                    return Err(format!("invalid entry in cors.allowed_origins: {origin:?}"));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ServerConfig {
