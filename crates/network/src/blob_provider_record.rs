@@ -37,6 +37,12 @@ const DOMAIN: &[u8] = b"calimero:dht:blob-provider:v1";
 /// (which produces a correctly signed record) and borsh-deserializing a value
 /// through [`Self::verify`] (which authenticates it). This prevents callers
 /// elsewhere in the crate from hand-constructing an unauthenticated record.
+///
+/// Borsh serializes fields in declaration order, so this field order
+/// (`peer_id`, `size`, `public_key`, `signature`) is a wire-format commitment:
+/// reordering, inserting, or removing a field changes the on-DHT encoding and
+/// is only safe as a coordinated format change (bump [`DOMAIN`] alongside it so
+/// old and new records can't be confused).
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct BlobProviderRecord {
     /// Provider `PeerId::to_bytes()`.
@@ -55,16 +61,18 @@ impl BlobProviderRecord {
     ///
     /// `record_key` is the full DHT key (`context_id ‖ blob_id`), so a record
     /// signed for one (context, blob) can't be lifted onto another key. The
-    /// variable-length fields are length-prefixed (`u32` LE) so no crafted
+    /// variable-length fields are length-prefixed (`u64` LE) so no crafted
     /// `record_key` / `peer_id` pair can shift the field boundary and collide
     /// with a different `(record_key, peer_id)` under the same signed message.
+    /// Lengths use `u64` (not `u32`) so the prefix can't silently truncate on
+    /// any target.
     fn signed_message(record_key: &[u8], peer_id: &[u8], size: u64) -> Vec<u8> {
         let mut message =
-            Vec::with_capacity(DOMAIN.len() + 4 + record_key.len() + 4 + peer_id.len() + 8);
+            Vec::with_capacity(DOMAIN.len() + 8 + record_key.len() + 8 + peer_id.len() + 8);
         message.extend_from_slice(DOMAIN);
-        message.extend_from_slice(&(record_key.len() as u32).to_le_bytes());
+        message.extend_from_slice(&(record_key.len() as u64).to_le_bytes());
         message.extend_from_slice(record_key);
-        message.extend_from_slice(&(peer_id.len() as u32).to_le_bytes());
+        message.extend_from_slice(&(peer_id.len() as u64).to_le_bytes());
         message.extend_from_slice(peer_id);
         message.extend_from_slice(&size.to_le_bytes());
         message
@@ -187,5 +195,20 @@ mod tests {
     #[test]
     fn rejects_garbage_value() {
         assert_eq!(BlobProviderRecord::verify(&key(), b"not a record"), None);
+    }
+
+    #[test]
+    fn signed_value_fits_under_the_kad_value_ceiling() {
+        // The inbound-replication validator drops values over
+        // `KAD_MAX_VALUE_BYTES`; a legitimately signed record must stay well
+        // under it, or our own announcements would be rejected on replication.
+        let kp = Keypair::generate_ed25519();
+        let value = BlobProviderRecord::signed_value(&key(), &kp, u64::MAX).expect("sign");
+        assert!(
+            value.len() <= crate::behaviour::KAD_MAX_VALUE_BYTES,
+            "signed record ({} bytes) must fit under KAD_MAX_VALUE_BYTES ({})",
+            value.len(),
+            crate::behaviour::KAD_MAX_VALUE_BYTES,
+        );
     }
 }
