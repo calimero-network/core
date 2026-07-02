@@ -16,7 +16,9 @@ path = "./data/auth_db_local"
 
 # CORS configuration
 [cors]
-allow_all_origins = true
+# Locked down by default (matches the code default). To allow cross-origin
+# browser clients, list them in `allowed_origins` (or set this true for any).
+allow_all_origins = false
 allowed_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 allowed_headers = ["Authorization", "Content-Type", "Accept", "X-CSRF-Token"]
 exposed_headers = ["X-Auth-Error"]
