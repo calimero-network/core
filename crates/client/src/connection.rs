@@ -23,7 +23,7 @@ use crate::traits::{ClientAuthenticator, ClientStorage};
 /// isn't sent with a token that lapses in flight (which would waste a 401
 /// round-trip). Also the window within which a still-valid token is refreshed
 /// proactively rather than reactively.
-const TOKEN_REFRESH_SKEW_SECS: i64 = 30;
+pub(crate) const TOKEN_REFRESH_SKEW_SECS: i64 = 30;
 
 /// Maximum size of a control-plane JSON response body we will buffer. Admin-API
 /// responses are small; a multi-gigabyte body from a hostile or buggy node must
