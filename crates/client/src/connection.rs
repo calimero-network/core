@@ -506,7 +506,11 @@ where
     }
 
     async fn try_refresh_token(&self, access_token: &str, refresh_token: &str) -> Result<JwtToken> {
-        let refresh_url = self.api_url.join("/auth/refresh")?;
+        // Resolve via `resolve_path` (not a raw `join`) so a reverse-proxy base
+        // path on `api_url` is preserved — an absolute `join("/auth/refresh")`
+        // would drop it and send the refresh to the wrong origin, the same class
+        // of bug the request/ws_url paths already guard against.
+        let refresh_url = resolve_path(&self.api_url, "auth/refresh")?;
 
         #[derive(serde::Serialize)]
         struct RefreshRequest {
@@ -588,7 +592,10 @@ where
     pub async fn detect_auth_mode(&self) -> Result<AuthMode> {
         // Probe a protected endpoint — if it returns 401, auth is required.
         // admin-api/health is intentionally public, so we probe a protected endpoint instead.
-        let probe_url = self.api_url.join("admin-api/contexts")?;
+        // Use `resolve_path` so a reverse-proxy base path is preserved and the
+        // probe doesn't depend on `api_url` having a trailing slash (a raw
+        // relative `join` drops the last base segment when it doesn't).
+        let probe_url = resolve_path(&self.api_url, "admin-api/contexts")?;
 
         match self.client.get(probe_url).send().await {
             Ok(response) => {

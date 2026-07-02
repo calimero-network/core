@@ -1179,3 +1179,86 @@ async fn traversal_path_is_rejected_before_send() {
         client.connection().get("admin-api/groups/../evil").await;
     assert!(result.is_err());
 }
+
+// ---- Reverse-proxy base-path preservation ----
+//
+// When `api_url` carries a mount path (a node behind a reverse proxy), every
+// endpoint the connection reaches — requests, token refresh, and the auth-mode
+// probe — must stay under that base path rather than resetting to the host root.
+
+#[tokio::test]
+async fn detect_auth_mode_preserves_base_path() {
+    let server = MockServer::start().await;
+    // Only the base-path-prefixed probe is mocked → 200 = AuthMode::None. If the
+    // base path were dropped the probe would hit `/admin-api/contexts` (unmocked
+    // → 404 → AuthMode::Required), so asserting `None` proves it was preserved.
+    Mock::given(method("GET"))
+        .and(path("/proxy/base/admin-api/contexts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let base = Url::parse(&format!("{}/proxy/base/", server.uri())).unwrap();
+    let client = make_client(&base);
+    let mode = client.connection().detect_auth_mode().await.unwrap();
+    assert!(matches!(mode, crate::connection::AuthMode::None));
+}
+
+#[tokio::test]
+async fn token_refresh_preserves_base_path() {
+    let server = MockServer::start().await;
+
+    // Protected endpoint under the base path: 401 once, then 200.
+    Mock::given(method("GET"))
+        .and(path("/proxy/base/admin-api/contexts"))
+        .respond_with(ResponseTemplate::new(401))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/proxy/base/admin-api/contexts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+        .with_priority(2)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // The refresh endpoint is mocked ONLY at the base-path-prefixed URL. If the
+    // refresh used an absolute `/auth/refresh` it would miss this mock, the
+    // refresh would fail, and the flow would fall back to interactive auth —
+    // so `expect(1)` here (plus `authenticate` never being called) proves the
+    // base path was preserved for the refresh POST.
+    Mock::given(method("POST"))
+        .and(path("/proxy/base/auth/refresh"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": { "access_token": "new-access", "refresh_token": "new-refresh" }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Seed a token that carries a refresh token so the 401 drives the refresh
+    // path (not the interactive-auth fallback).
+    let storage = MemStorage {
+        token: Arc::new(StdMutex::new(Some(JwtToken::with_refresh(
+            "initial-access".to_owned(),
+            "refresh-tok".to_owned(),
+        )))),
+    };
+    let auth_calls = Arc::new(StdMutex::new(0));
+    let auth = MemAuth {
+        calls: Arc::clone(&auth_calls),
+    };
+    let base = Url::parse(&format!("{}/proxy/base/", server.uri())).unwrap();
+    let conn = Conn::new(base, Some("node".to_owned()), auth, storage);
+    let client = Client::new(conn).unwrap();
+
+    let resp: serde_json::Value = client.connection().get("admin-api/contexts").await.unwrap();
+
+    assert_eq!(resp["ok"], serde_json::Value::Bool(true));
+    // Refresh succeeded via the base-path URL, so interactive auth was not used.
+    assert_eq!(*auth_calls.lock().unwrap(), 0);
+}
