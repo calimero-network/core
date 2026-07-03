@@ -1475,32 +1475,37 @@ impl DeltaStore {
         // incorrectly return false for any cross-restart ancestry.
         let mut topology_seed: Vec<([u8; 32], Vec<[u8; 32]>)> = Vec::new();
 
-        while progress_made && !remaining.is_empty() {
-            progress_made = false;
-            let mut to_remove = Vec::new();
+        // Hold the DAG write lock once across all restore passes rather than
+        // re-acquiring it per delta (the loop's only await was this lock).
+        // Scoped so it drops before the `restore_topology` await below.
+        // Startup-only path with no concurrent appliers, so no contention cost.
+        {
+            let mut dag = self.dag.write().await;
+            while progress_made && !remaining.is_empty() {
+                progress_made = false;
+                let mut to_remove = Vec::new();
 
-            for (delta_id, dag_delta) in &remaining {
-                let mut dag = self.dag.write().await;
+                for (delta_id, dag_delta) in &remaining {
+                    // Check if all parents have been applied before restoring
+                    let can_restore = dag_delta
+                        .parents
+                        .iter()
+                        .all(|p| *p == [0u8; 32] || dag.is_applied(p));
 
-                // Check if all parents have been applied before restoring
-                let can_restore = dag_delta
-                    .parents
-                    .iter()
-                    .all(|p| *p == [0u8; 32] || dag.is_applied(p));
-
-                if can_restore {
-                    // Restore topology WITHOUT re-applying (delta was already applied)
-                    if dag.restore_applied_delta(dag_delta.clone()) {
-                        loaded_count += 1;
-                        to_remove.push(*delta_id);
-                        topology_seed.push((*delta_id, dag_delta.parents.clone()));
-                        progress_made = true;
+                    if can_restore {
+                        // Restore topology WITHOUT re-applying (delta was already applied)
+                        if dag.restore_applied_delta(dag_delta.clone()) {
+                            loaded_count += 1;
+                            to_remove.push(*delta_id);
+                            topology_seed.push((*delta_id, dag_delta.parents.clone()));
+                            progress_made = true;
+                        }
                     }
                 }
-            }
 
-            for delta_id in to_remove {
-                drop(remaining.remove(&delta_id));
+                for delta_id in to_remove {
+                    drop(remaining.remove(&delta_id));
+                }
             }
         }
 

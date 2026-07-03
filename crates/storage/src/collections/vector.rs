@@ -230,12 +230,12 @@ where
     ///
     pub fn get(&self, index: usize) -> Result<Option<ValueRef<V>>, StoreError> {
         validate_index_bounds(index)?;
-        Ok(self
-            .inner
-            .entries()?
-            .nth(index)
-            .transpose()?
-            .map(ValueRef::new))
+        // O(1) positional lookup (id by index, then value by id), mirroring
+        // `update`. Avoid `entries().nth(index)`, which loads index+1 entries.
+        let Some(id) = self.inner.nth(index)? else {
+            return Ok(None);
+        };
+        Ok(self.inner.get(id)?.map(ValueRef::new))
     }
 
     /// Update the value at a specific index in the vector.
