@@ -113,14 +113,20 @@ impl NonceWindow {
         if self.contains(nonce) {
             return false;
         }
-        // Anti-DoS: refuse to grow the sparse above-set for a nonce that sits
-        // implausibly far above the floor, or once the set is already at
-        // capacity. A refused nonce is simply not applied; an honest op reaches
-        // us again once the intervening gap fills and the floor catches up.
-        if nonce.saturating_sub(self.floor) > Self::MAX_GAP_ABOVE_FLOOR
-            || self.above.len() >= Self::MAX_ABOVE_ENTRIES
-        {
-            return false;
+        // The immediate next nonce always advances the floor (and drains any
+        // now-contiguous run *out* of the sparse set), so it must never be
+        // refused by the anti-DoS caps below — refusing it could otherwise wedge
+        // a full window forever (floor can't advance ⇒ set never drains).
+        if nonce != self.floor + 1 {
+            // Anti-DoS: refuse a nonce that sits implausibly far above the floor,
+            // or that would grow the sparse set past capacity. A refused nonce
+            // is simply not applied; an honest op reaches us again once the
+            // intervening gap fills and the floor catches up.
+            if nonce.saturating_sub(self.floor) > Self::MAX_GAP_ABOVE_FLOOR
+                || self.above.len() >= Self::MAX_ABOVE_ENTRIES
+            {
+                return false;
+            }
         }
         // `contains` returned false, so `nonce` is not in `above` and the
         // insert must be new. The insert runs unconditionally (NOT inside the
