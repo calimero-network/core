@@ -72,6 +72,10 @@ impl<'a> GroupSettingsService<'a> {
     /// the whole op ONCE against the root admin: re-deriving live per-descendant
     /// authority here would make the apply/bail outcome depend on each replica's
     /// fold progress and diverge (see the cascade apply arms).
+    ///
+    /// Caller contract: invoke ONLY after a single deterministic root-authority
+    /// check (`ctx.permissions().require_manage_application`). Never from a
+    /// single-group op arm — use the checked [`Self::set_target_application`].
     pub(crate) fn set_target_application_unchecked(
         &self,
         app_key: &[u8; 32],

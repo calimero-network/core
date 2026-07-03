@@ -14,9 +14,11 @@ pub(crate) fn apply(
     let group_id = ctx.group_id();
     let store = ctx.store();
 
-    // Authorize the cascade ONCE against the root admin (at-cut resolver), not
-    // per-descendant. See `cascade_target_application_set` for the full
-    // divergence rationale.
+    // Authorize the cascade ONCE, against the ROOT signed group (this cascade's
+    // root, not necessarily the namespace root), using the at-cut apply-auth
+    // resolver (`ctx.permissions()`) — the deterministic decision already
+    // enforced at emit, NOT per-descendant caps. See `cascade_target_application_set`
+    // for the full divergence rationale.
     ctx.permissions()
         .require_manage_application(signer, "cascade group migration")?;
 
