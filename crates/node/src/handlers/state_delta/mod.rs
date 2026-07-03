@@ -1204,6 +1204,14 @@ async fn request_missing_deltas(
 ) -> Result<Vec<([u8; 32], Vec<u8>)>> {
     use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 
+    // Hard ceiling on how many parent deltas a single fetch walk will pull. The
+    // DAG is acyclic so a healthy walk terminates at genesis well below this,
+    // but a malicious peer can answer every `DeltaRequest` with a delta naming
+    // fresh fabricated parents, driving the walk (and its in-memory
+    // accumulation) without bound. Hitting the cap aborts the sync attempt; the
+    // caller backs off and retries, rather than being walked into OOM.
+    const MAX_PARENT_FETCH_DELTAS: usize = 10_000;
+
     // Metric: number of missing-parent IDs the caller is about to fetch.
     // Recorded *before* the stream open so a peer-stream failure doesn't
     // hide the demand signal in dashboards.
@@ -1236,8 +1244,8 @@ async fn request_missing_deltas(
     // caller so handlers can run.
     let mut cascaded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
-    // Phase 1: Fetch ALL missing deltas recursively
-    // No artificial limit - DAG is acyclic so this will naturally terminate at genesis
+    // Phase 1: Fetch missing deltas recursively (bounded — see
+    // MAX_PARENT_FETCH_DELTAS). A healthy acyclic DAG terminates at genesis.
     while !to_fetch.is_empty() {
         // Take ownership of this round's batch, leaving `to_fetch` empty to
         // collect the next round's parents — avoids cloning the whole Vec only
@@ -1245,6 +1253,12 @@ async fn request_missing_deltas(
         let current_batch = std::mem::take(&mut to_fetch);
 
         for missing_id in current_batch {
+            if fetch_count >= MAX_PARENT_FETCH_DELTAS {
+                bail!(
+                    "aborting parent-fetch walk for context {context_id}: exceeded \
+                     {MAX_PARENT_FETCH_DELTAS} deltas (peer may be feeding fabricated parents)"
+                );
+            }
             fetch_count += 1;
 
             info!(
