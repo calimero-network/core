@@ -2,8 +2,8 @@
 //! `apply_group_op_mutations` in #2304.
 
 use super::context::GroupApplyCtx;
-use crate::{GroupSettingsService, PermissionChecker};
-use eyre::{bail, Result as EyreResult};
+use crate::GroupSettingsService;
+use eyre::Result as EyreResult;
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
@@ -13,6 +13,12 @@ pub(crate) fn apply(
     let signer = ctx.signer();
     let group_id = ctx.group_id();
     let store = ctx.store();
+
+    // Authorize the cascade ONCE against the root admin (at-cut resolver), not
+    // per-descendant. See `cascade_target_application_set` for the full
+    // divergence rationale.
+    ctx.permissions()
+        .require_manage_application(signer, "cascade group migration")?;
 
     // Mirror of `CascadeTargetApplicationSet` but for migration
     // bytes only. ASYMMETRY: this variant does NOT mark contexts
@@ -24,23 +30,6 @@ pub(crate) fn apply(
     // status + propagator effects fire exactly once per cascade
     // round (driven by the target-application op, not this one).
     let entries = crate::cascade::walk_for_predicate(store, *group_id, *from_app_key)?;
-
-    // Pre-scan: same atomicity guard as the target-application
-    // arm — see the longer rationale comment there.
-    for entry in &entries {
-        if !entry.matched {
-            continue;
-        }
-        let entry_permissions = PermissionChecker::new(store, entry.group_id);
-        if !entry_permissions.can_manage_application(signer)? {
-            bail!(
-                "cascade group-migration set: signer {} lacks MANAGE_APPLICATION on \
-                 descendant {}; aborting before any writes to keep cascade atomic",
-                signer,
-                hex::encode(entry.group_id.to_bytes())
-            );
-        }
-    }
 
     let mut any_applied = false;
     for entry in entries {
@@ -55,7 +44,7 @@ pub(crate) fn apply(
             continue;
         }
         let entry_settings = GroupSettingsService::new(store, entry.group_id);
-        entry_settings.set_group_migration(signer, migration)?;
+        entry_settings.set_group_migration_unchecked(migration)?;
         // Match-success log — symmetric with the
         // `CascadeTargetApplicationSet` apply log. Migration bytes
         // size is recorded instead of the bytes themselves to keep

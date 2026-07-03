@@ -7526,3 +7526,136 @@ fn placeholder_admin_identity_never_equals_a_real_key() {
          it is not a legitimate signing identity"
     );
 }
+
+// -----------------------------------------------------------------------
+// Cascade authority determinism / cross-replica convergence
+// -----------------------------------------------------------------------
+
+/// CONVERGENCE PIN: two logical replicas with DIFFERENT fold progress on a
+/// matched descendant's capabilities MUST reach the SAME apply/bail outcome
+/// for the same signed cascade op.
+///
+/// The only difference between the two stores is descendant `D`'s
+/// `MANAGE_APPLICATION` capability for the signer — modelling a concurrent
+/// `MemberCapabilitySet` cap-revoke on `D` that one replica has folded and the
+/// other has not. Under the old per-descendant LIVE pre-scan, the replica that
+/// folded the revoke BAILED the whole op while the other APPLIED it, permanently
+/// diverging `target_application_id`/`app_key`. The fix authorizes the cascade
+/// once against the root admin, so the descendant's live caps no longer flip the
+/// outcome. Runs on the STANDALONE group-DAG path (`apply_local_signed_group_op`,
+/// LIVE fallback), so it proves convergence without relying on the at-cut
+/// authorizer.
+#[test]
+fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_storage::logical_clock::HybridTimestamp;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+
+    let root = ContextGroupId::from([0x70; 32]);
+    let descendant = ContextGroupId::from([0xD1; 32]);
+    let from_app_key = [0x11; 32];
+    let to_app_key = [0x22; 32];
+    let app_v1 = ApplicationId::from([0xC1; 32]);
+    let app_v2 = ApplicationId::from([0xC2; 32]);
+    // A different admin for `D`, so the signer is NOT admin-of-D via meta.
+    let other_admin = PublicKey::from([0x09; 32]);
+
+    // Build a store where `signer_has_cap_on_descendant` is the ONLY knob:
+    // whether the signer holds MANAGE_APPLICATION on the (Restricted) descendant.
+    let build = |signer_has_cap_on_descendant: bool| {
+        let store = test_store();
+
+        // Root: signer is a direct admin, on `from_app_key`.
+        let mut root_meta = sample_meta_with_admin(admin_pk);
+        root_meta.app_key = from_app_key;
+        root_meta.target_application_id = app_v1;
+        MetaRepository::new(&store).save(&root, &root_meta).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&root, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+
+        // Descendant: matched (same `from_app_key`) but admin'd by someone else.
+        // Left at the DEFAULT Restricted visibility, so the signer does NOT
+        // inherit admin authority across the boundary.
+        let mut d_meta = sample_meta_with_admin(other_admin);
+        d_meta.app_key = from_app_key;
+        d_meta.target_application_id = app_v1;
+        MetaRepository::new(&store)
+            .save(&descendant, &d_meta)
+            .unwrap();
+        nest_for_test(&store, &root, &descendant);
+
+        if signer_has_cap_on_descendant {
+            // Replica that has NOT folded the cap-revoke: signer still holds
+            // MANAGE_APPLICATION on the descendant (old pre-scan passes).
+            CapabilitiesRepository::new(&store)
+                .set_member_capability(
+                    &descendant,
+                    &admin_pk,
+                    calimero_context_config::MemberCapabilities::MANAGE_APPLICATION.bits(),
+                )
+                .unwrap();
+        }
+        // else: replica that HAS folded the cap-revoke — no cap on the
+        // descendant (old pre-scan bails the whole op).
+
+        store
+    };
+
+    let sign_cascade = || {
+        SignedGroupOp::sign(
+            &admin_sk,
+            root.to_bytes().into(),
+            vec![],
+            1,
+            GroupOp::CascadeUpgrade {
+                from_app_key: from_app_key.into(),
+                app_key: to_app_key.into(),
+                target_application_id: app_v2,
+                migration: None,
+                cascade_hlc: HybridTimestamp::zero(),
+            },
+        )
+        .expect("sign CascadeUpgrade")
+    };
+
+    let store_behind = build(true); // cap-revoke NOT yet folded
+    let store_synced = build(false); // cap-revoke folded
+
+    let res_behind = apply_local_signed_group_op(&store_behind, &sign_cascade());
+    let res_synced = apply_local_signed_group_op(&store_synced, &sign_cascade());
+
+    // Convergence: both replicas MUST reach the same apply/bail outcome. On the
+    // old code, `res_behind` is Ok and `res_synced` is Err -> divergence.
+    assert_eq!(
+        res_behind.is_ok(),
+        res_synced.is_ok(),
+        "cascade apply/bail outcome diverged across replicas with different \
+         descendant-cap fold progress: behind={:?} synced={:?}",
+        res_behind.as_ref().map(|_| ()),
+        res_synced.as_ref().map(|_| ()),
+    );
+    res_behind.expect("cascade authorized by root admin must apply (behind replica)");
+    res_synced.expect("cascade authorized by root admin must apply (synced replica)");
+
+    // And both must have actually mutated the matched descendant identically.
+    for (label, store) in [("behind", &store_behind), ("synced", &store_synced)] {
+        let d = MetaRepository::new(store)
+            .load(&descendant)
+            .unwrap()
+            .expect("descendant meta");
+        assert_eq!(
+            d.app_key, to_app_key,
+            "descendant must be cascaded to the new app_key on the {label} replica"
+        );
+        assert_eq!(
+            d.target_application_id, app_v2,
+            "descendant must point at the new target on the {label} replica"
+        );
+    }
+}
