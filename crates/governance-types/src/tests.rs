@@ -1487,4 +1487,44 @@ mod governance_op_storage_roundtrip {
             "expected a borsh length error, got: {err}"
         );
     }
+
+    #[test]
+    fn validate_bounds_encrypted_ciphertext() {
+        let oversized = EncryptedGroupOp {
+            nonce: [0u8; 12],
+            ciphertext: vec![0u8; bounds::MAX_CIPHERTEXT_BYTES + 1],
+        };
+        assert!(
+            oversized.validate().is_err(),
+            "ciphertext over the bound must be rejected"
+        );
+
+        let ok = EncryptedGroupOp {
+            nonce: [0u8; 12],
+            ciphertext: vec![0u8; 64],
+        };
+        assert!(ok.validate().is_ok(), "a normal ciphertext must pass");
+    }
+
+    #[test]
+    fn validate_bounds_parent_op_hashes() {
+        let mut op = SignedNamespaceOp {
+            version: 1,
+            namespace_id: NamespaceId::from([0u8; 32]),
+            parent_op_hashes: vec![[0u8; 32]; bounds::MAX_PARENT_OP_HASHES + 1],
+            signer: PublicKey::from([0u8; 32]),
+            nonce: 1,
+            op: NamespaceOp::Root(RootOp::AdminChanged {
+                new_admin: PublicKey::from([1u8; 32]),
+            }),
+            signature: [0u8; 64],
+        };
+        assert!(
+            op.validate().is_err(),
+            "too many parent_op_hashes must be rejected"
+        );
+
+        op.parent_op_hashes = vec![[0u8; 32]; 2];
+        assert!(op.validate().is_ok(), "a small parent set must pass");
+    }
 }

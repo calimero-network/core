@@ -1012,6 +1012,199 @@ pub enum GovernanceError {
     Signature(#[from] SignatureError),
     #[error("borsh serialization failed: {0}")]
     BorshSerialize(#[from] std::io::Error),
+    /// A decoded op's variable-length field exceeded its anti-amplification
+    /// bound (see [`bounds`]). Rejected before it can be applied/stored.
+    #[error("governance op exceeds size bounds: {0}")]
+    Bounds(String),
+}
+
+/// Anti-amplification bounds for variable-length fields in decoded governance
+/// ops. Legit ops are already capped at `MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`
+/// (64 KiB) on the send path, so every bound here sits far above any real op —
+/// they exist only to reject an untrusted peer's egregiously oversized op
+/// (borsh decodes gossip/backfill bytes with no inherent element cap).
+pub mod bounds {
+    /// Max DAG parents referenced by one op.
+    pub const MAX_PARENT_OP_HASHES: usize = 4096;
+    /// Max bytes in an encrypted-op / key-envelope ciphertext.
+    pub const MAX_CIPHERTEXT_BYTES: usize = 1 << 20;
+    /// Max bytes in a policy blob / migration blob.
+    pub const MAX_BLOB_BYTES: usize = 1 << 20;
+    /// Max ECDH envelopes in one key rotation (one per remaining member).
+    pub const MAX_KEY_ENVELOPES: usize = 65_536;
+    /// Max ids in a cascade (group-delete descendants) or per-context hash list.
+    pub const MAX_ID_LIST: usize = 65_536;
+    /// Max entries in a TEE allow-list field, and max length of each entry.
+    pub const MAX_TEE_ALLOWED_ENTRIES: usize = 1_024;
+    pub const MAX_TEE_ALLOWED_STRING_LEN: usize = 1_024;
+}
+
+/// Fail with [`GovernanceError::Bounds`] if `len > max`.
+fn check_bound(field: &str, len: usize, max: usize) -> Result<(), GovernanceError> {
+    if len > max {
+        return Err(GovernanceError::Bounds(format!("{field}: {len} > {max}")));
+    }
+    Ok(())
+}
+
+impl KeyEnvelope {
+    fn validate(&self) -> Result<(), GovernanceError> {
+        check_bound(
+            "key_envelope.ciphertext",
+            self.ciphertext.len(),
+            bounds::MAX_CIPHERTEXT_BYTES,
+        )
+    }
+}
+
+impl KeyRotation {
+    fn validate(&self) -> Result<(), GovernanceError> {
+        check_bound(
+            "key_rotation.envelopes",
+            self.envelopes.len(),
+            bounds::MAX_KEY_ENVELOPES,
+        )?;
+        for env in &self.envelopes {
+            env.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl EncryptedGroupOp {
+    /// Bound the ciphertext of an encrypted group op.
+    pub fn validate(&self) -> Result<(), GovernanceError> {
+        check_bound(
+            "encrypted_group_op.ciphertext",
+            self.ciphertext.len(),
+            bounds::MAX_CIPHERTEXT_BYTES,
+        )
+    }
+}
+
+impl GroupOp {
+    fn validate(&self) -> Result<(), GovernanceError> {
+        match self {
+            Self::MemberRemoved {
+                expected_context_state_hashes,
+                ..
+            }
+            | Self::MemberLeft {
+                expected_context_state_hashes,
+                ..
+            } => check_bound(
+                "group_op.expected_context_state_hashes",
+                expected_context_state_hashes.len(),
+                bounds::MAX_ID_LIST,
+            ),
+            Self::GroupMigrationSet {
+                migration: Some(m), ..
+            }
+            | Self::CascadeGroupMigrationSet {
+                migration: Some(m), ..
+            } => check_bound("group_op.migration", m.len(), bounds::MAX_BLOB_BYTES),
+            Self::TeeAdmissionPolicySet {
+                allowed_mrtd,
+                allowed_rtmr0,
+                allowed_rtmr1,
+                allowed_rtmr2,
+                allowed_rtmr3,
+                allowed_tcb_statuses,
+                ..
+            } => {
+                for (name, list) in [
+                    ("allowed_mrtd", allowed_mrtd),
+                    ("allowed_rtmr0", allowed_rtmr0),
+                    ("allowed_rtmr1", allowed_rtmr1),
+                    ("allowed_rtmr2", allowed_rtmr2),
+                    ("allowed_rtmr3", allowed_rtmr3),
+                    ("allowed_tcb_statuses", allowed_tcb_statuses),
+                ] {
+                    check_bound(name, list.len(), bounds::MAX_TEE_ALLOWED_ENTRIES)?;
+                    for s in list {
+                        check_bound(name, s.len(), bounds::MAX_TEE_ALLOWED_STRING_LEN)?;
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+impl RootOp {
+    fn validate(&self) -> Result<(), GovernanceError> {
+        match self {
+            Self::GroupDeleted {
+                cascade_group_ids,
+                cascade_context_ids,
+                ..
+            } => {
+                check_bound(
+                    "root_op.cascade_group_ids",
+                    cascade_group_ids.len(),
+                    bounds::MAX_ID_LIST,
+                )?;
+                check_bound(
+                    "root_op.cascade_context_ids",
+                    cascade_context_ids.len(),
+                    bounds::MAX_ID_LIST,
+                )
+            }
+            Self::PolicyUpdated { policy_bytes } => check_bound(
+                "root_op.policy_bytes",
+                policy_bytes.len(),
+                bounds::MAX_BLOB_BYTES,
+            ),
+            Self::KeyDelivery { envelope, .. } => envelope.validate(),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl NamespaceOp {
+    fn validate(&self) -> Result<(), GovernanceError> {
+        match self {
+            Self::Root(root) => root.validate(),
+            Self::Group {
+                encrypted,
+                key_rotation,
+                ..
+            } => {
+                encrypted.validate()?;
+                if let Some(rotation) = key_rotation {
+                    rotation.validate()?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl SignedGroupOp {
+    /// Reject an oversized/over-populated op before it is applied or stored.
+    /// See [`bounds`].
+    pub fn validate(&self) -> Result<(), GovernanceError> {
+        check_bound(
+            "signed_group_op.parent_op_hashes",
+            self.parent_op_hashes.len(),
+            bounds::MAX_PARENT_OP_HASHES,
+        )?;
+        self.op.validate()
+    }
+}
+
+impl SignedNamespaceOp {
+    /// Reject an oversized/over-populated op before it is applied or stored.
+    /// See [`bounds`].
+    pub fn validate(&self) -> Result<(), GovernanceError> {
+        check_bound(
+            "signed_namespace_op.parent_op_hashes",
+            self.parent_op_hashes.len(),
+            bounds::MAX_PARENT_OP_HASHES,
+        )?;
+        self.op.validate()
+    }
 }
 
 /// Bytes that are hashed/signed: `GROUP_GOVERNANCE_SIGN_DOMAIN` || `borsh(SignableGroupOp)`.
