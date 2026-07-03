@@ -370,7 +370,16 @@ impl DiscoveryState {
                 .peers
                 .iter()
                 .filter(|(id, info)| {
-                    *id != keep && info.relay.is_none() && info.rendezvous.is_none()
+                    // Never evict the peer we just touched or an infrastructure
+                    // peer. relay/rendezvous/autonat index sets are kept
+                    // separately from `PeerInfo`, so guard all of them too —
+                    // evicting an indexed peer would dangle that index.
+                    *id != keep
+                        && info.relay.is_none()
+                        && info.rendezvous.is_none()
+                        && !self.relay_index.contains(id)
+                        && !self.rendezvous_index.contains(id)
+                        && !self.autonat_index.contains(id)
                 })
                 .min_by_key(|(id, info)| (info.addrs.len(), **id))
                 .map(|(id, _)| *id);
