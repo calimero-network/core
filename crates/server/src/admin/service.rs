@@ -440,13 +440,13 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
 
     // Attempt to serve the requested file
     if let Some(file) = NodeUiStaticFiles::get(path) {
-        return serve_file(file);
+        return serve_file(path, file);
     }
 
     // Fallback to index.html for SPA routing if the file wasn't found and it's not already "index.html"
     if path != "index.html" {
         if let Some(index_file) = NodeUiStaticFiles::get("index.html") {
-            return serve_file(index_file);
+            return serve_file("index.html", index_file);
         }
     }
 
@@ -454,59 +454,108 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
     Err(StatusCode::NOT_FOUND)
 }
 
-/// Serves a static file with the correct MIME type.
-///
-/// This function builds a `Response` with the appropriate content type for the given file
-/// and serves the file's content.
-///
-/// # Parameters
-/// - `file`: A reference to the `EmbeddedFile` to be served.
-///
-/// # Returns
-/// - `Result<impl IntoResponse, StatusCode>`: If the response is successfully built, it returns an `Ok`
-///   with the response. If there is an error building the response, it returns an `Err` with a
-///   500 INTERNAL_SERVER_ERROR status code.
-fn serve_file(file: EmbeddedFile) -> Result<impl IntoResponse, StatusCode> {
-    let content = if let Ok(content) = String::from_utf8(file.data.to_vec()) {
-        // Process HTML, JavaScript, and CSS files
-        if file.metadata.mimetype().starts_with("text/html")
-            || file
-                .metadata
-                .mimetype()
-                .starts_with("application/javascript")
-            || file.metadata.mimetype() == "text/css"
-        {
-            // Get the node prefix from env var
-            let base_path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
-                format!("{prefix}/admin-dashboard")
-            } else {
-                "/admin-dashboard".to_owned()
-            };
+/// The `/admin-dashboard` base-path rewrite prefix, resolved from
+/// `NODE_PATH_PREFIX` once per process. `None` when unset — the overwhelmingly
+/// common case — which lets [`serve_file`] skip the rewrite (and its six
+/// full-content `.replace()` passes) entirely and serve the embedded bytes
+/// as-is.
+fn dashboard_base_prefix() -> Option<&'static str> {
+    static PREFIX: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    PREFIX
+        .get_or_init(|| {
+            std::env::var("NODE_PATH_PREFIX")
+                .ok()
+                .filter(|p| !p.is_empty())
+        })
+        .as_deref()
+}
 
-            // Replace all instances of /admin-dashboard with the correct base path
-            let modified_content = content
-                .replace("\"/admin-dashboard", &format!("\"{base_path}"))
-                .replace("'/admin-dashboard", &format!("'{base_path}"))
-                .replace("(/admin-dashboard", &format!("({base_path}"))
-                .replace(" /admin-dashboard", &format!(" {base_path}"))
-                .replace(
-                    "href=\"/admin-dashboard",
-                    &format!("href=\"{base_path}/admin-dashboard"),
-                )
-                .replace(
-                    "src=\"/admin-dashboard",
-                    &format!("src=\"{base_path}/admin-dashboard"),
-                );
-            modified_content.into_bytes()
-        } else {
-            file.data.into_owned()
+/// Cache of rewritten text assets, keyed by embed path. Only populated when a
+/// `NODE_PATH_PREFIX` is set (so the rewrite runs at most once per asset, not
+/// once per request). The embedded asset set is fixed and small, so it needs no
+/// eviction.
+fn rewritten_asset_cache(
+) -> &'static std::sync::RwLock<std::collections::HashMap<String, Arc<[u8]>>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::RwLock<std::collections::HashMap<String, Arc<[u8]>>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+fn is_rewritable_text(mimetype: &str) -> bool {
+    mimetype.starts_with("text/html")
+        || mimetype.starts_with("application/javascript")
+        || mimetype == "text/css"
+}
+
+/// Apply the six `/admin-dashboard` → `{prefix}/admin-dashboard` rewrites.
+fn rewrite_dashboard_paths(content: &str, prefix: &str) -> Vec<u8> {
+    let base_path = format!("{prefix}/admin-dashboard");
+    content
+        .replace("\"/admin-dashboard", &format!("\"{base_path}"))
+        .replace("'/admin-dashboard", &format!("'{base_path}"))
+        .replace("(/admin-dashboard", &format!("({base_path}"))
+        .replace(" /admin-dashboard", &format!(" {base_path}"))
+        .replace(
+            "href=\"/admin-dashboard",
+            &format!("href=\"{base_path}/admin-dashboard"),
+        )
+        .replace(
+            "src=\"/admin-dashboard",
+            &format!("src=\"{base_path}/admin-dashboard"),
+        )
+        .into_bytes()
+}
+
+/// Serve an embedded static asset. Text assets (html/js/css) get the
+/// `/admin-dashboard` base-path rewrite applied when a `NODE_PATH_PREFIX` is
+/// configured (cached per path); everything else is served as-is.
+fn serve_file(path: &str, file: EmbeddedFile) -> Result<Response<Body>, StatusCode> {
+    let mimetype = file.metadata.mimetype().to_owned();
+
+    let body = match (dashboard_base_prefix(), is_rewritable_text(&mimetype)) {
+        // No prefix override, or a non-text asset: serve the embedded bytes
+        // directly — no utf8 round-trip, no rewrite passes.
+        (None, _) | (_, false) => Body::from(file.data.into_owned()),
+        // Prefix override on a text asset: rewrite once, then cache by path so
+        // subsequent requests reuse the transformed bytes.
+        (Some(prefix), true) => {
+            if let Some(cached) = rewritten_asset_cache()
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(path)
+                .cloned()
+            {
+                Body::from(cached.to_vec())
+            } else {
+                let rewritten: Arc<[u8]> = match std::str::from_utf8(&file.data) {
+                    Ok(text) => Arc::from(rewrite_dashboard_paths(text, prefix)),
+                    // Non-utf8 despite the text mimetype: serve raw, don't cache.
+                    Err(_) => return build_asset_response(&mimetype, file.data.into_owned()),
+                };
+                let _ = rewritten_asset_cache()
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(path.to_owned(), Arc::clone(&rewritten));
+                Body::from(rewritten.to_vec())
+            }
         }
-    } else {
-        file.data.into_owned()
     };
+
     Response::builder()
         .status(StatusCode::OK)
-        .header("Content-Type", file.metadata.mimetype())
+        .header("Content-Type", mimetype)
+        .body(body)
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to build file response");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+fn build_asset_response(mimetype: &str, content: Vec<u8>) -> Result<Response<Body>, StatusCode> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", mimetype)
         .body(Body::from(content))
         .map_err(|e| {
             tracing::error!(error = %e, "failed to build file response");
@@ -701,5 +750,36 @@ async fn certificate_handler(Extension(state): Extension<Arc<AdminState>>) -> im
         (headers, file_content).into_response()
     } else {
         (StatusCode::NOT_FOUND, "Certificate not found").into_response()
+    }
+}
+
+#[cfg(test)]
+mod static_asset_tests {
+    use super::{is_rewritable_text, rewrite_dashboard_paths};
+
+    #[test]
+    fn rewrite_covers_all_reference_forms() {
+        let src = r#"<a href="/admin-dashboard/x"><img src="/admin-dashboard/y">"/admin-dashboard/z" '/admin-dashboard/w' (/admin-dashboard/q) /admin-dashboard/end"#;
+        let out = String::from_utf8(rewrite_dashboard_paths(src, "/node")).unwrap();
+        // Every /admin-dashboard reference is now prefixed with /node.
+        assert!(!out.contains("\"/admin-dashboard"));
+        assert!(!out.contains("'/admin-dashboard"));
+        assert!(!out.contains("(/admin-dashboard"));
+        assert!(!out.contains(" /admin-dashboard"));
+        assert!(out.contains("href=\"/node/admin-dashboard/x"));
+        assert!(out.contains("src=\"/node/admin-dashboard/y"));
+        assert!(out.contains("\"/node/admin-dashboard/z"));
+        assert!(out.contains("'/node/admin-dashboard/w"));
+        assert!(out.contains("(/node/admin-dashboard/q"));
+    }
+
+    #[test]
+    fn only_text_assets_are_rewritable() {
+        assert!(is_rewritable_text("text/html"));
+        assert!(is_rewritable_text("text/html; charset=utf-8"));
+        assert!(is_rewritable_text("application/javascript"));
+        assert!(is_rewritable_text("text/css"));
+        assert!(!is_rewritable_text("image/png"));
+        assert!(!is_rewritable_text("application/wasm"));
     }
 }
