@@ -1509,7 +1509,7 @@ mod governance_op_storage_roundtrip {
     #[test]
     fn validate_bounds_parent_op_hashes() {
         let mut op = SignedNamespaceOp {
-            version: 1,
+            version: SIGNED_NAMESPACE_OP_SCHEMA_VERSION,
             namespace_id: NamespaceId::from([0u8; 32]),
             parent_op_hashes: vec![[0u8; 32]; bounds::MAX_PARENT_OP_HASHES + 1],
             signer: PublicKey::from([0u8; 32]),

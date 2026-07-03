@@ -1034,15 +1034,37 @@ pub mod bounds {
     pub const MAX_KEY_ENVELOPES: usize = 65_536;
     /// Max ids in a cascade (group-delete descendants) or per-context hash list.
     pub const MAX_ID_LIST: usize = 65_536;
-    /// Max entries in a TEE allow-list field, and max length of each entry.
+    /// Max entries in a TEE allow-list field.
     pub const MAX_TEE_ALLOWED_ENTRIES: usize = 1_024;
+    /// Max byte length of each string entry in a TEE allow-list.
     pub const MAX_TEE_ALLOWED_STRING_LEN: usize = 1_024;
+    /// Max entries in a metadata map (`GroupOp::*MetadataSet.data`).
+    pub const MAX_METADATA_ENTRIES: usize = 1_024;
+    /// Max byte length of a metadata name / key / value string.
+    pub const MAX_METADATA_STRING_LEN: usize = 8_192;
 }
 
 /// Fail with [`GovernanceError::Bounds`] if `len > max`.
 fn check_bound(field: &str, len: usize, max: usize) -> Result<(), GovernanceError> {
     if len > max {
         return Err(GovernanceError::Bounds(format!("{field}: {len} > {max}")));
+    }
+    Ok(())
+}
+
+/// Bound a metadata record's optional name plus its key/value map.
+fn check_metadata(
+    field: &str,
+    name: Option<&String>,
+    data: &std::collections::BTreeMap<String, String>,
+) -> Result<(), GovernanceError> {
+    if let Some(name) = name {
+        check_bound(field, name.len(), bounds::MAX_METADATA_STRING_LEN)?;
+    }
+    check_bound(field, data.len(), bounds::MAX_METADATA_ENTRIES)?;
+    for (k, v) in data {
+        check_bound(field, k.len(), bounds::MAX_METADATA_STRING_LEN)?;
+        check_bound(field, v.len(), bounds::MAX_METADATA_STRING_LEN)?;
     }
     Ok(())
 }
@@ -1102,7 +1124,19 @@ impl GroupOp {
             }
             | Self::CascadeGroupMigrationSet {
                 migration: Some(m), ..
+            }
+            | Self::CascadeUpgrade {
+                migration: Some(m), ..
             } => check_bound("group_op.migration", m.len(), bounds::MAX_BLOB_BYTES),
+            Self::GroupMetadataSet { name, data } => {
+                check_metadata("group_op.group_metadata", name.as_ref(), data)
+            }
+            Self::MemberMetadataSet { name, data, .. } => {
+                check_metadata("group_op.member_metadata", name.as_ref(), data)
+            }
+            Self::ContextMetadataSet { name, data, .. } => {
+                check_metadata("group_op.context_metadata", name.as_ref(), data)
+            }
             Self::TeeAdmissionPolicySet {
                 allowed_mrtd,
                 allowed_rtmr0,
