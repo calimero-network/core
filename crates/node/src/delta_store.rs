@@ -1282,6 +1282,12 @@ impl DeltaStore {
     ///
     /// Deltas are loaded in topological order (parents before children) to properly
     /// reconstruct the DAG topology.
+    ///
+    /// Contract: call once per store at creation/restart, before it serves
+    /// concurrent appliers (all callers are `is_new`-gated). The topological
+    /// restore holds the DAG write lock across all passes, so a concurrent
+    /// `add_delta` would block for the whole restore — safe only under this
+    /// startup-only contract.
     pub async fn load_persisted_deltas(&self) -> Result<LoadPersistedResult> {
         use std::collections::HashMap;
 
