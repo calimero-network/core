@@ -1480,10 +1480,13 @@ impl DeltaStore {
             let mut to_remove = Vec::new();
 
             for (delta_id, parents) in &remaining {
-                let mut dag = self.dag.write().await;
-
-                // Check if all parents have been applied before restoring
-                let can_restore = parents.iter().all(|p| *p == [0u8; 32] || dag.is_applied(p));
+                // Check readiness under a read lock, then release it before the
+                // DB read so the DAG lock is never held across a blocking
+                // point-lookup (the write lock is taken only to restore, below).
+                let can_restore = {
+                    let dag = self.dag.read().await;
+                    parents.iter().all(|p| *p == [0u8; 32] || dag.is_applied(p))
+                };
 
                 if !can_restore {
                     continue;
@@ -1528,6 +1531,7 @@ impl DeltaStore {
                 };
 
                 // Restore topology WITHOUT re-applying (delta was already applied)
+                let mut dag = self.dag.write().await;
                 if dag.restore_applied_delta(dag_delta) {
                     loaded_count += 1;
                     to_remove.push(*delta_id);
