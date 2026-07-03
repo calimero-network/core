@@ -130,6 +130,7 @@ pub async fn execute_hash_comparison_sync(
         remote_root_hash: resp_root,
         context_client: None,
         session_peer: None,
+        init_pop: None,
     };
 
     // Run both sides concurrently using the PRODUCTION protocol
@@ -207,6 +208,7 @@ pub async fn execute_level_wise_sync(initiator: &mut SimNode, responder: &SimNod
         max_depth: 8,
         context_client: None,
         session_peer: None,
+        init_pop: None,
     };
 
     let initiator_fut = async {
@@ -1708,6 +1710,7 @@ mod tests {
                     remote_root_hash: stale_root,
                     context_client: None,
                     session_peer: None,
+                    init_pop: None,
                 },
             )
             .await
@@ -1785,6 +1788,7 @@ mod tests {
             remote_root_hash,
             context_client: None,
             session_peer: None,
+            init_pop: None,
         };
 
         let initiator_fut = async {
