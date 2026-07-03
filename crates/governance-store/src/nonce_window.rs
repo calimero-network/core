@@ -266,9 +266,12 @@ mod tests {
         // Fill the sparse set with even nonces (never filling floor+1) up to the
         // cap; further sparse entries are refused instead of growing unbounded.
         let mut recorded = 0usize;
+        let mut refused = 0usize;
         for k in 1..=(NonceWindow::MAX_ABOVE_ENTRIES as u64 + 100) {
             if w.record(2 * k + 1) {
                 recorded += 1;
+            } else {
+                refused += 1;
             }
         }
         assert!(
@@ -276,5 +279,9 @@ mod tests {
             "above-set stays bounded by MAX_ABOVE_ENTRIES"
         );
         assert!(recorded <= NonceWindow::MAX_ABOVE_ENTRIES);
+        assert!(
+            refused >= 100,
+            "the capacity cap must actually refuse the over-cap nonces (got {refused} refused)"
+        );
     }
 }
