@@ -31,20 +31,17 @@ where
 
     info!(alias=%alias, "Looking up alias");
 
+    // Lookup is a nullable getter: a missing alias returns 200 with a null
+    // `value` (the SDK contract), not 404 — callers use it to check existence.
     match state.node_client.lookup_alias(alias, scope) {
-        Ok(Some(value)) => {
-            info!(alias=%alias, "Alias looked up successfully");
+        Ok(value) => {
+            info!(alias=%alias, found=%value.is_some(), "Alias lookup complete");
             ApiResponse {
                 payload: LookupAliasResponse {
-                    data: LookupAliasResponseData::new(Some(value)),
+                    data: LookupAliasResponseData::new(value),
                 },
             }
             .into_response()
-        }
-        // A missing alias is 404, not a 200 with a null payload.
-        Ok(None) => {
-            info!(alias=%alias, "Alias not found");
-            (StatusCode::NOT_FOUND, "alias not found").into_response()
         }
         Err(err) => {
             error!(alias=%alias, error=?err, "Failed to lookup alias");
