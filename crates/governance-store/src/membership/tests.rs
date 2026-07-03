@@ -104,6 +104,37 @@ fn remove_member_clears_stale_capabilities_so_readd_starts_fresh() {
     );
 }
 
+// Complementary path: when the group DOES have non-zero default caps, re-add
+// must seed exactly those defaults — never the stale elevated grant. Distinguishes
+// "cap row cleared on removal" from "cap row happened to be overwritten by defaults".
+#[test]
+fn readd_with_defaults_seeds_defaults_not_stale_caps() {
+    use calimero_context_config::MemberCapabilities;
+
+    let store = test_store();
+    let gid = test_group_id();
+    let pk = PublicKey::from([0x08; 32]);
+    let elevated = MemberCapabilities::CAN_INVITE_MEMBERS.bits();
+    let defaults = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits();
+    assert_ne!(elevated, defaults);
+
+    let membership = MembershipRepository::new(&store);
+    let caps = CapabilitiesRepository::new(&store);
+    caps.set_default_capabilities(&gid, defaults).unwrap();
+
+    membership
+        .add_member(&gid, &pk, GroupMemberRole::Member)
+        .unwrap();
+    caps.set_member_capability(&gid, &pk, elevated).unwrap();
+
+    membership.remove_member(&gid, &pk).unwrap();
+    membership
+        .add_member(&gid, &pk, GroupMemberRole::Member)
+        .unwrap();
+
+    assert_eq!(caps.member_capability(&gid, &pk).unwrap(), Some(defaults));
+}
+
 #[test]
 fn get_member_role() {
     let store = test_store();
