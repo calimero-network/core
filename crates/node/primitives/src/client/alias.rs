@@ -2,12 +2,28 @@ use core::str::FromStr;
 
 use calimero_primitives::alias::Alias;
 use calimero_store::key::{self as key, Aliasable, StoreScopeCompat};
-use eyre::{bail, OptionExt};
+use eyre::OptionExt;
 
 use super::NodeClient;
 
 /// A resolved alias entry: the alias, its target value, and optional scope.
 type AliasEntry<T, S> = (Alias<T>, T, Option<S>);
+
+/// Returned by [`NodeClient::create_alias`] when the alias already exists.
+///
+/// A distinct error type (rather than a string `bail!`) so the caller can map
+/// it to `409 Conflict` by downcasting, without a separate pre-check that would
+/// race the write.
+#[derive(Debug)]
+pub struct AliasExists;
+
+impl core::fmt::Display for AliasExists {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("alias already exists")
+    }
+}
+
+impl core::error::Error for AliasExists {}
 
 impl NodeClient {
     pub fn create_alias<T>(
@@ -23,8 +39,11 @@ impl NodeClient {
 
         let key = key::Alias::new(scope, alias).ok_or_eyre("alias requires scope to be present")?;
 
+        // Existence check + write on the same handle (no separate caller-side
+        // pre-check that would race the write). Returns a typed `AliasExists` so
+        // the server can map it to 409 without inspecting the message.
         if handle.has(&key)? {
-            bail!("alias already exists");
+            return Err(AliasExists.into());
         }
 
         let value = (*value.as_ref()).into();
