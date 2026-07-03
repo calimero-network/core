@@ -11,6 +11,10 @@ pub struct XCallExample {
     /// targeting it is denied by the node, so it stays at zero unless reached
     /// by a direct call.
     secret_counter: Counter,
+    /// Bumped once per hop of the self-recursive `relay` cascade. The node's
+    /// xcall depth cap stops the cascade, so a single direct `relay` call
+    /// settles this at `MAX_XCALL_DEPTH + 1`.
+    relay_counter: Counter,
 }
 
 #[app::event]
@@ -32,6 +36,7 @@ impl XCallExample {
         XCallExample {
             counter: Counter::new(),
             secret_counter: Counter::new(),
+            relay_counter: Counter::new(),
         }
     }
 
@@ -112,6 +117,43 @@ impl XCallExample {
     /// reached via a denied `xcall`).
     pub fn get_secret_counter(&self) -> app::Result<u64> {
         Ok(self.secret_counter.value()?)
+    }
+
+    /// Exercises the node's xcall **depth cap**. Each hop bumps `relay_counter`
+    /// and queues one more `xcall` to `relay` on *this same context*, so a
+    /// single direct call would recurse forever if the node let it. It doesn't:
+    /// the node denies the onward xcall once the cascade reaches its depth cap,
+    /// so the counter settles at `MAX_XCALL_DEPTH + 1` (executions at depths
+    /// `0..=MAX_XCALL_DEPTH` all run; the deepest one's xcall is denied).
+    ///
+    /// Marked `#[app::xcall(from_same_app)]` so it is reachable via xcall (a
+    /// self-xcall is same-context, hence same app); it is also callable
+    /// directly, which is how the cascade is kicked off at depth 0.
+    #[app::xcall(from_same_app)]
+    pub fn relay(&mut self) -> app::Result<()> {
+        // No `env::xcall_origin()` check here (unlike `pong`): `relay` is
+        // intentionally callable both directly — to kick the cascade off at
+        // depth 0 — and via xcall. Adding an origin check would break the
+        // depth-cap test's direct kick-off.
+        self.relay_counter.increment()?;
+        let counter = self.relay_counter.value()?;
+
+        let me = ContextId::from(calimero_sdk::env::context_id());
+        app::log!("relay hop {} on {}; queueing xcall to self", counter, me);
+
+        // Fire-and-forget: `env::xcall` returns `()` and only *queues* the call
+        // (empty params — `relay` takes no arguments). Whether the node then
+        // dispatches or denies it is invisible here; the depth cap denies it at
+        // its limit, which surfaces in the node log and the settled counter.
+        calimero_sdk::env::xcall(me.as_ref(), "relay", &[]);
+
+        Ok(())
+    }
+
+    /// Current `relay` cascade counter — how many hops ran before the depth cap
+    /// stopped the cascade.
+    pub fn get_relay_counter(&self) -> app::Result<u64> {
+        Ok(self.relay_counter.value()?)
     }
 
     /// Queue an `xcall` to `method` on `target_context`, passing this context's
