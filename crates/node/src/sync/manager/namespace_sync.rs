@@ -755,8 +755,15 @@ impl SyncManager {
         // plain `[u8; 32]` copy left in the record struct on the stack (mirrors
         // the discipline in join_namespace / request_missing_deltas).
         record.private_key.zeroize();
-        self.sign_init_pop(ContextId::from([0u8; 32]), joiner_public_key, &private_key)
-            .await
+        // Bind the proof to the target namespace (the join `Init` itself carries
+        // a sentinel context_id) so it can't be replayed against a different
+        // namespace; the responder verifies against the same namespace id.
+        self.sign_init_pop(
+            ContextId::from(namespace_id),
+            joiner_public_key,
+            &private_key,
+        )
+        .await
     }
 
     pub(super) async fn initiate_open_subgroup_join(

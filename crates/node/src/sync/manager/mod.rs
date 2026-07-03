@@ -3403,8 +3403,19 @@ impl SyncManager {
         // that accidentally moves a variant in or out fails a unit test rather
         // than silently changing behaviour.
         if payload_requires_init_pop(&payload) {
+            // Join `Init`s carry a sentinel `context_id` ([0; 32]); bind their
+            // proof to the target `namespace_id` instead so a join proof can't
+            // be lifted from one namespace to another. Other payloads bind their
+            // real `context_id`.
+            let pop_context = match &payload {
+                InitPayload::NamespaceJoinRequest { namespace_id, .. }
+                | InitPayload::OpenSubgroupJoinRequest { namespace_id, .. } => {
+                    ContextId::from(*namespace_id)
+                }
+                _ => context_id,
+            };
             let pop_ok = pop.is_some_and(|proof| {
-                proof.verify(&context_id, &their_identity, &peer_id.to_bytes())
+                proof.verify(&pop_context, &their_identity, &peer_id.to_bytes())
             });
             // For joins, the identity that gets pre-registered is
             // `joiner_public_key`; require it to equal the proven `party_id` so
@@ -3429,7 +3440,10 @@ impl SyncManager {
                 if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
                     debug!(%err, "failed to send OpaqueError after rejecting unproven sync init");
                 }
-                return Ok(Some(()));
+                // Close the stream (Ok(None)) rather than looping for another
+                // Init: an unproven dialer must not get to keep issuing requests
+                // on the same stream after a rejection.
+                return Ok(None);
             }
         }
 
