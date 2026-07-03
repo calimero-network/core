@@ -357,12 +357,13 @@ impl SyncManager {
             .await?;
 
         // Verify snapshot integrity by computing the actual root hash from storage (I7).
-        // On success we always trust the locally-computed hash because it reflects what
-        // is actually persisted -- storing the peer's claimed hash when it disagrees
-        // with local storage would create a silent divergence.
-        // On failure (deserialization error) we fall back to the peer's claimed hash so
-        // that sync can still proceed; compute_root_hash may fail if the minimal structs
-        // drift from the real storage layout.
+        // We always persist the locally-computed hash because it reflects what is
+        // actually persisted; storing the peer's claimed hash would risk a silent
+        // divergence. If the local compute fails we must NOT fall back to the peer's
+        // claimed root — that would persist an unverified, peer-supplied value on a
+        // purely local error. Instead we fail the sync here; the sync-in-progress
+        // marker is left set (we return before clearing it), so crash-recovery
+        // re-syncs and retries rather than accepting an untrusted root.
         let root_to_store = match self.context_client.compute_root_hash(&context_id) {
             Ok(computed_root) => {
                 if computed_root != *boundary.boundary_root_hash {
@@ -386,9 +387,12 @@ impl SyncManager {
                     %context_id,
                     error = %e,
                     claimed_root = %hex::encode(*boundary.boundary_root_hash),
-                    "Could not compute root hash, trusting peer's claimed hash"
+                    "Could not compute local root hash; refusing to trust peer's claimed \
+                     root, failing sync for retry"
                 );
-                *boundary.boundary_root_hash
+                return Err(eyre::eyre!(
+                    "snapshot verify: could not compute local root hash for {context_id}: {e}"
+                ));
             }
         };
 

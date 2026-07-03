@@ -412,6 +412,25 @@ where
         }).fuse())
     }
 
+    /// Entries in a deterministic, replica-independent order: sorted by
+    /// borsh-serialized key.
+    ///
+    /// Raw [`entries`](Self::entries) follows the stored child list, ordered by
+    /// `(created_at, id)`, and `created_at` can differ across replicas for the
+    /// same logical entry (a CRDT merge re-materialises it at each node's own
+    /// HLC time — see `Index::add_child_to`). `Serialize`/`Eq`/`Ord` must be
+    /// replica-stable, or anything hashing a serialized map — or comparing two
+    /// maps — diverges between replicas. Sorting by the borsh key (not the
+    /// entity id) keeps cross-map comparison correct: the same key sorts the
+    /// same regardless of which collection id derived its entity id.
+    fn sorted_entries(&self) -> Result<Vec<(K, V)>, StoreError> {
+        let mut entries: Vec<(K, V)> = self.entries()?.collect();
+        // ponytail: borsh key encode is effectively infallible for in-memory
+        // keys; on the impossible error, `default()` keeps the sort total.
+        entries.sort_by_cached_key(|(k, _)| borsh::to_vec(k).unwrap_or_default());
+        Ok(entries)
+    }
+
     /// Get the number of entries in the map.
     ///
     /// # Errors
@@ -616,7 +635,10 @@ where
     S: StorageAdaptor,
 {
     fn eq(&self, other: &Self) -> bool {
-        super::fallible_iter_eq(self.entries(), other.entries())
+        super::fallible_iter_eq(
+            self.sorted_entries().map(IntoIterator::into_iter),
+            other.sorted_entries().map(IntoIterator::into_iter),
+        )
     }
 }
 
@@ -627,7 +649,10 @@ where
     S: StorageAdaptor,
 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        super::fallible_iter_cmp(self.entries(), other.entries())
+        super::fallible_iter_cmp(
+            self.sorted_entries().map(IntoIterator::into_iter),
+            other.sorted_entries().map(IntoIterator::into_iter),
+        )
     }
 }
 
@@ -638,7 +663,10 @@ where
     S: StorageAdaptor,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        super::fallible_iter_partial_cmp(self.entries(), other.entries())
+        super::fallible_iter_partial_cmp(
+            self.sorted_entries().map(IntoIterator::into_iter),
+            other.sorted_entries().map(IntoIterator::into_iter),
+        )
     }
 }
 
@@ -694,12 +722,14 @@ where
     where
         Ser: serde::Serializer,
     {
-        let len = self.len().map_err(serde::ser::Error::custom)?;
+        // Sorted so the serialized bytes are identical across replicas holding
+        // the same logical map (see `sorted_entries`).
+        let entries = self.sorted_entries().map_err(serde::ser::Error::custom)?;
 
-        let mut seq = serializer.serialize_map(Some(len))?;
+        let mut seq = serializer.serialize_map(Some(entries.len()))?;
 
-        for (k, v) in self.entries().map_err(serde::ser::Error::custom)? {
-            seq.serialize_entry(&k, &v)?;
+        for (k, v) in &entries {
+            seq.serialize_entry(k, v)?;
         }
 
         seq.end()

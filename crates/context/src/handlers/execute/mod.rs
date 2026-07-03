@@ -71,6 +71,10 @@ mod upgrade_gate;
 /// root call could recurse forever (a cycle A→B→A) or fan out `B^depth`. This
 /// cap bounds the executions one root call spawns to `B + B² + … + B^DEPTH`
 /// (children at depths 1..=`DEPTH`) — 584 at `B = 8`, `DEPTH = 3`.
+///
+/// Changing this value also changes the settled hop count asserted by the
+/// depth-cap scenario in `apps/xcall-example/workflows/xcall.yml` (it expects
+/// `MAX_XCALL_DEPTH + 1`); update that assertion alongside this constant.
 const MAX_XCALL_DEPTH: u32 = 3;
 
 use governance_position::compute_governance_position_for_context;
