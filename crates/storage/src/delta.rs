@@ -325,6 +325,15 @@ pub fn commit_causal_delta(root_hash: &[u8; 32]) -> eyre::Result<Option<CausalDe
         // Compute ID
         let id = CausalDelta::compute_id(&parents, &actions, &hlc);
 
+        // Serialize for environment. Wrap the actions to serialize by
+        // reference, then move them back out for the delta — avoids cloning
+        // every action just to encode the artifact.
+        let wrapped = StorageDelta::Actions(actions);
+        let artifact = to_vec(&wrapped)?;
+        let StorageDelta::Actions(actions) = wrapped else {
+            unreachable!("wrapped as Actions above")
+        };
+
         let delta = CausalDelta {
             id,
             parents,
@@ -336,8 +345,6 @@ pub fn commit_causal_delta(root_hash: &[u8; 32]) -> eyre::Result<Option<CausalDe
         // Update heads - this delta is now the new head
         context.current_heads = vec![delta.id];
 
-        // Serialize for environment
-        let artifact = to_vec(&StorageDelta::Actions(delta.actions.clone()))?;
         env::commit(root_hash, &artifact);
 
         Ok(Some(delta))
