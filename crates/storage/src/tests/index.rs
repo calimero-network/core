@@ -839,6 +839,13 @@ mod subtree_tombstoning {
             !<Index<S>>::is_deleted(fc).unwrap(),
             "walk must not recurse into a Frozen node: its subtree survives too"
         );
+        assert!(
+            <Index<S>>::get_children_of(root)
+                .unwrap()
+                .iter()
+                .all(|c| c.id() != a),
+            "deleted node must be removed from parent's children list"
+        );
     }
 
     /// The skip is by-subtree, not by-node-type: a Frozen node is skipped

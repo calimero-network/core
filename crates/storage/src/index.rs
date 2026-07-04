@@ -1037,8 +1037,9 @@ impl<S: StorageAdaptor> Index<S> {
             // its subtree (don't recurse) so deleting a non-frozen parent leaves
             // the frozen descendant as a surviving orphan. Mirrors the
             // `RemoveMode::Delete` Frozen guard in `Interface`. Scoped to
-            // descendants (`id != root_id`): a Frozen root is processed normally,
-            // since the reassign/re-key callers legitimately pass one.
+            // descendants (`id != root_id`): both callers (`remove_child_from`,
+            // `apply_delete_ref_action`) reject deleting Frozen data upstream, so
+            // the root is never Frozen here; the caller tombstones it regardless.
             if id != root_id
                 && matches!(
                     index.metadata.storage_type,
