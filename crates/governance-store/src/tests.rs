@@ -7701,5 +7701,18 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
             d.target_application_id, app_v2,
             "descendant must point at the new target on the {label} replica"
         );
+        // The sticky cascade fence must be stamped identically on both
+        // replicas — it is the boundary the state-delta HLC fence reads, and a
+        // dropped `repo.save` would silently regress it while the meta asserts
+        // above still pass.
+        let up = UpgradesRepository::new(store)
+            .load(&descendant)
+            .unwrap()
+            .expect("descendant upgrade record");
+        assert_eq!(
+            up.cascade_hlc,
+            Some(HybridTimestamp::zero()),
+            "descendant must carry the signed cascade_hlc fence on the {label} replica"
+        );
     }
 }
