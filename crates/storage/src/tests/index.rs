@@ -799,6 +799,12 @@ mod subtree_tombstoning {
     /// deleting the parent must SKIP the frozen node AND its subtree (no
     /// recursion) while still tombstoning the non-frozen rows. Regression for
     /// the #286 cascade, which tombstoned frozen leaves too.
+    ///
+    /// This exercises the `tombstone_descendants_of` skip layer directly
+    /// (`Index`-level). The `Interface`-level behavior — a local delete of such
+    /// a subtree is REJECTED before any mutation — is covered separately by
+    /// `remove_child_from_rejects_subtree_with_frozen_descendant` in
+    /// `tests/interface.rs`. The skip here is the replay-side fallback.
     #[test]
     fn subtree_delete_skips_frozen_descendant_and_its_subtree() {
         use crate::entities::StorageType;
@@ -845,6 +851,17 @@ mod subtree_tombstoning {
                 .iter()
                 .all(|c| c.id() != a),
             "deleted node must be removed from parent's children list"
+        );
+        // The skipped frozen node must NOT be advertised as deleted on the sync
+        // wire: it lives on, so listing it in its parent's `deleted_children`
+        // would make a syncing peer apply a spurious delete-wins against it.
+        assert!(
+            !<Index<S>>::get_index(a)
+                .unwrap()
+                .unwrap()
+                .deleted_children()
+                .contains(&f),
+            "surviving frozen node must not appear in parent's deleted_children advert"
         );
     }
 
