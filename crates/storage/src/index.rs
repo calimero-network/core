@@ -1004,8 +1004,12 @@ impl<S: StorageAdaptor> Index<S> {
     /// transitively.
     ///
     /// `Frozen` descendants are the one exception: they are immutable and never
-    /// deleted, so the walk skips a `Frozen` node and its whole subtree, leaving
-    /// the frozen data as a surviving orphan rather than tombstoning it.
+    /// deleted, so the walk skips a `Frozen` node and its whole subtree rather
+    /// than tombstoning it. A local delete never reaches this state — it is
+    /// rejected up front by `remove_child_from`'s `find_frozen_descendant` scan.
+    /// The skip here is the replay-side fallback: on `apply_delete_ref_action`
+    /// this replica can't reject a peer's `DeleteRef` without diverging, so it
+    /// preserves the frozen data (leaving it a detached orphan) and converges.
     ///
     /// Internal subtree parent-lists and hashes are intentionally NOT
     /// recomputed: the whole subtree is detached at the root, so none of it
@@ -1068,6 +1072,41 @@ impl<S: StorageAdaptor> Index<S> {
         }
 
         Ok(())
+    }
+
+    /// Returns the id of the first `Frozen` entity in `root_id`'s subtree
+    /// (excluding `root_id` itself), or `None` if the subtree holds no frozen
+    /// data.
+    ///
+    /// Read-only pre-check for the local delete guard in
+    /// [`remove_child_from`](crate::interface::Interface::remove_child_from): a
+    /// genuine subtree delete must refuse to strand `Frozen` data, so the
+    /// caller rejects the delete and asks the operator to relocate the frozen
+    /// entity out of the subtree first. Kept separate from
+    /// [`tombstone_descendants_of`](Self::tombstone_descendants_of) because the
+    /// check must complete and reject BEFORE any state is mutated.
+    pub(crate) fn find_frozen_descendant(root_id: Id) -> Result<Option<Id>, StorageError> {
+        let _mutation_guard = index_mutation_guard();
+        let mut stack = vec![root_id];
+        while let Some(id) = stack.pop() {
+            let Some(index) = Self::get_index(id)? else {
+                continue;
+            };
+            if id != root_id
+                && matches!(
+                    index.metadata.storage_type,
+                    crate::entities::StorageType::Frozen
+                )
+            {
+                return Ok(Some(id));
+            }
+            if let Some(children) = &index.children {
+                for child in children {
+                    stack.push(child.id());
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Removes a child reference from a parent without creating a tombstone.

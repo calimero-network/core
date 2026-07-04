@@ -892,6 +892,55 @@ mod subtree_tombstoning {
             "Frozen leaf (no children) survives"
         );
     }
+
+    /// `find_frozen_descendant` powers the local delete guard: it locates a
+    /// Frozen entity buried anywhere below the delete root (excluding the root
+    /// itself) and returns `None` for a frozen-free subtree.
+    #[test]
+    fn find_frozen_descendant_locates_deep_frozen_and_ignores_root() {
+        use crate::entities::StorageType;
+        type S = MockedStorage<2106>;
+
+        let frozen_md = Metadata {
+            storage_type: StorageType::Frozen,
+            ..Metadata::default()
+        };
+
+        let root = Id::random();
+        let a = Id::random(); // delete root (non-frozen)
+        let b = Id::random(); // non-frozen descendant
+        let f = Id::random(); // Frozen descendant, two levels down
+
+        <Index<S>>::add_root(ChildInfo::new(root, [1; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(root, ChildInfo::new(a, [2; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(b, [3; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(b, ChildInfo::new(f, [4; 32], frozen_md.clone())).unwrap();
+
+        assert_eq!(
+            <Index<S>>::find_frozen_descendant(a).unwrap(),
+            Some(f),
+            "must find the frozen entity nested below the delete root"
+        );
+
+        // A frozen-free subtree returns None.
+        let c = Id::random();
+        <Index<S>>::add_child_to(root, ChildInfo::new(c, [5; 32], Metadata::default())).unwrap();
+        assert_eq!(
+            <Index<S>>::find_frozen_descendant(c).unwrap(),
+            None,
+            "a subtree with no frozen data must not be flagged"
+        );
+
+        // The root's own StorageType is ignored — only descendants count.
+        let froot = Id::random();
+        <Index<S>>::add_child_to(root, ChildInfo::new(froot, [6; 32], frozen_md)).unwrap();
+        assert_eq!(
+            <Index<S>>::find_frozen_descendant(froot).unwrap(),
+            None,
+            "the scan excludes the root itself: a Frozen root with no frozen \
+             descendants returns None"
+        );
+    }
 }
 
 #[cfg(test)]
