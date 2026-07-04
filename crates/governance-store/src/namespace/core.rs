@@ -368,7 +368,10 @@ impl<'a> NamespaceRepository<'a> {
     /// Walk the parent chain to find the root group (namespace).
     pub fn resolve(&self, group_id: &ContextGroupId) -> EyreResult<ContextGroupId> {
         let mut current = *group_id;
-        for _ in 0..MAX_NAMESPACE_DEPTH {
+        // Inclusive bound (mirrors `check_path`): reaching the root at depth D
+        // requires D+1 iterations to observe the root's `None` parent, so the
+        // deepest legal subgroup (depth MAX) needs MAX+1 walk steps.
+        for _ in 0..=MAX_NAMESPACE_DEPTH {
             match self.parent(&current)? {
                 Some(parent) => current = parent,
                 None => return Ok(current),

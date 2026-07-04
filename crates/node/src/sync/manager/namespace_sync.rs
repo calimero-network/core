@@ -939,9 +939,17 @@ impl SyncManager {
         &self,
         namespace_id: [u8; 32],
     ) -> eyre::Result<Vec<Vec<u8>>> {
+        // Bound how much this collects into memory / one response, mirroring the
+        // backfill path's cap. Without it a namespace with a very long (or
+        // maliciously inflated) governance-op history is read fully into RAM and
+        // shipped in a single message.
+        const MAX_COLLECT_OPS: usize = 500;
+        const MAX_COLLECT_BYTES: usize = 8 * 1024 * 1024;
+
         let store = self.context_client.datastore_handle().into_inner();
         let handle = store.handle();
         let mut ops = Vec::new();
+        let mut total_bytes = 0usize;
 
         let start = calimero_store::key::NamespaceGovOp::new(namespace_id, [0u8; 32]);
         let mut iter = handle.iter::<calimero_store::key::NamespaceGovOp>()?;
@@ -955,10 +963,20 @@ impl SyncManager {
             if key.namespace_id() != namespace_id {
                 break;
             }
+            if ops.len() >= MAX_COLLECT_OPS || total_bytes >= MAX_COLLECT_BYTES {
+                warn!(
+                    namespace_id = %hex::encode(namespace_id),
+                    ops = ops.len(),
+                    total_bytes,
+                    "collect_namespace_governance_ops hit cap; truncating response"
+                );
+                break;
+            }
             if let Ok(Some(value)) = handle.get(&key) {
                 if let Some(bytes) =
                     crate::sync::helpers::extract_signed_op_bytes(&value.skeleton_bytes)
                 {
+                    total_bytes = total_bytes.saturating_add(bytes.len());
                     ops.push(bytes);
                 }
             }

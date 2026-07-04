@@ -1335,6 +1335,10 @@ pub fn apply_local_signed_group_op_at_cut(
             MAX_PARENT_OP_HASHES
         );
     }
+    // Anti-amplification: bound the op's variable-length fields (ciphertext,
+    // key-rotation envelopes, cascade/TEE lists, …) before doing crypto or
+    // touching state. Rejects an untrusted peer's egregiously oversized op.
+    op.validate()?;
     op.verify_signature()
         .map_err(|e| eyre::eyre!("signed group op: {e}"))?;
     let group_id = op.group_id;
