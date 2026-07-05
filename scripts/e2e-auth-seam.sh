@@ -46,13 +46,16 @@ check() { # check <label> <expected> <actual>
   fi
 }
 
-check_not() { # check_not <label> <forbidden> <actual>
-  local label="$1" forbidden="$2" actual="$3"
-  if [ "$actual" = "$forbidden" ]; then
-    echo "FAIL $label: got forbidden status $actual"
+check_admitted() { # check_admitted <label> <actual>
+  # The auth layer speaks 401 (unauthenticated) and 403 (denied); any other
+  # status means the request got PAST authorization (the handler may still
+  # 4xx on the body, which is fine for these probes).
+  local label="$1" actual="$2"
+  if [ "$actual" = "401" ] || [ "$actual" = "403" ]; then
+    echo "FAIL $label: rejected by the auth layer ($actual)"
     FAIL=$((FAIL + 1))
   else
-    echo "ok   $label ($actual, not $forbidden)"
+    echo "ok   $label ($actual, not 401/403)"
     PASS=$((PASS + 1))
   fi
 }
@@ -70,9 +73,13 @@ echo "== auth-seam e2e against $NODE_URL =="
 
 # 1. Bootstrap root login (first login on a fresh embedded-auth node creates
 #    the root key with admin).
+LOGIN_BODY=$(jq -n --arg u "$USERNAME" --arg p "$PASSWORD" --argjson ts "$(date +%s)" \
+  '{auth_method: "user_password", public_key: $u, client_name: "auth-seam-e2e",
+    permissions: ["admin"], timestamp: $ts,
+    provider_data: {username: $u, password: $p}}')
 ROOT_RESPONSE=$(curl -s -m 10 -X POST "$NODE_URL/auth/token" \
   -H 'Content-Type: application/json' \
-  -d "{\"auth_method\":\"user_password\",\"public_key\":\"$USERNAME\",\"client_name\":\"auth-seam-e2e\",\"permissions\":[\"admin\"],\"timestamp\":$(date +%s),\"provider_data\":{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}}")
+  -d "$LOGIN_BODY")
 ROOT_TOKEN=$(echo "$ROOT_RESPONSE" | jq -r '.data.access_token // empty')
 [ -n "$ROOT_TOKEN" ] || { echo "FATAL: root login failed: $ROOT_RESPONSE"; exit 1; }
 echo "ok   root login (bootstrap)"
@@ -96,11 +103,11 @@ check "GET /admin-api/contexts (context:list)" 200 \
   "$(status_of GET /admin-api/contexts "$CLIENT_TOKEN")"
 
 # Permission layer must admit these; the handler may still 4xx on the bodies
-# (that's fine — anything but 401/403 proves authorization passed).
-check_not "POST /jsonrpc (context:execute) not denied" 403 \
+# (anything but 401/403 proves the token authenticated AND was authorized).
+check_admitted "POST /jsonrpc (context:execute) admitted" \
   "$(status_of POST /jsonrpc "$CLIENT_TOKEN" '{"jsonrpc":"2.0","id":1,"method":"execute","params":{}}')"
 
-check_not "POST /admin-api/contexts (context:create) not denied" 403 \
+check_admitted "POST /admin-api/contexts (context:create) admitted" \
   "$(status_of POST /admin-api/contexts "$CLIENT_TOKEN" '{}')"
 
 # 4. KNOWN GAP pin: namespace routes have no permission mappings, so the
