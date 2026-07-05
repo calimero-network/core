@@ -81,12 +81,12 @@ jobs:
   # the routes the SDK uses (the 0.11.0-rc.9 login-loop outage shape).
   # Companion in-process pin: crates/auth/tests/client_token_contract.rs
   #
-  # merobox binary mode with the PR's own merod: `--auth-mode embedded` is
-  # binary-mode only in merobox, and its docker-mode `--auth-service` boots
-  # a prebuilt mero-auth image — the wrong artifact for a PR gate. So the
-  # PR-built merod is extracted from the already-built image and merobox
-  # supervises it natively. merobox tears the node down when its own
-  # process exits, hence the single-step background/kill dance.
+  # Declarative merobox workflow (workflows/auth-seam.yml) in binary mode
+  # with the PR's own merod: `--auth-mode embedded` is binary-mode only in
+  # merobox, and its docker-mode `--auth-service` boots a prebuilt
+  # mero-auth image — the wrong artifact for a PR gate. The PR-built merod
+  # is extracted from the already-built image; the seam assertions live in
+  # scripts/e2e-auth-seam.sh, invoked as the workflow's script step.
   auth-seam:
     name: Auth seam (client-token e2e)
     needs: build-image
@@ -116,29 +116,16 @@ jobs:
 
       - name: Run auth-seam e2e (merobox, embedded auth)
         run: |
-          merobox run --no-docker --binary-path ./merod --auth-mode embedded \
-            -c 1 -r 4001 -p 4002 --prefix auth-seam > merobox.log 2>&1 &
-          echo $! > merobox.pid
-          for i in $(seq 1 40); do
-            curl -sf -m 2 http://localhost:4001/auth/health >/dev/null 2>&1 && break
-            sleep 1
-          done
-          rc=0
-          ./scripts/e2e-auth-seam.sh http://localhost:4001 || rc=$?
-          kill "$(cat merobox.pid)" 2>/dev/null || true
-          exit $rc
+          merobox bootstrap run workflows/auth-seam.yml \
+            --no-docker --binary-path ./merod --auth-mode embedded
 
       - name: Logs on failure
         if: failure()
-        run: |
-          cat merobox.log || true
-          cat data/auth-seam-1/logs/*.log || true
+        run: cat data/auth-seam-1/logs/*.log || true
 
       - name: Stop nodes
         if: always()
-        run: |
-          kill "$(cat merobox.pid)" 2>/dev/null || true
-          merobox stop --no-docker --all || true
+        run: merobox stop --no-docker --all || true
 
   # ── Build WASM apps (runs in parallel with image build) ──
   build-apps:
