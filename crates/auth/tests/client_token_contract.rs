@@ -126,25 +126,54 @@ fn app_id_scoped_token_is_rejected_on_every_sdk_route() {
     }
 }
 
-/// Known gap (unfixed): the namespace routes — the *recommended* replacement
-/// for direct context creation — have no validator mappings, so the
-/// `/admin-api/*` default-deny makes them admin-only. A multi-context client
-/// token therefore cannot create a namespace, and the official migration
-/// path 403s for every app.
-///
-/// Ignored until core grows namespace permission mappings; run with
-/// `cargo test -p mero-auth --test client_token_contract -- --ignored`
-/// to check whether the gap still exists.
+/// The namespace routes are containers for contexts and map onto the same
+/// `ContextPermission` set an app already holds, so a multi-context client
+/// token can self-serve the `namespace → group → context` flow. This was the
+/// gap that 403'd the official app migration path; it is now closed.
 #[test]
-#[ignore = "namespace routes are admin-only: no validator mappings yet"]
-fn multi_context_client_token_can_create_namespaces() {
+fn multi_context_client_token_can_self_serve_namespaces() {
+    let validator = PermissionValidator::new();
+    let token = strings(MULTI_CONTEXT_PERMISSIONS);
+
+    // The full app-driven provisioning chain must be reachable.
+    for (method, path) in [
+        ("POST", "/admin-api/namespaces"), // create namespace
+        ("GET", "/admin-api/namespaces"),  // list namespaces
+        ("GET", "/admin-api/namespaces/for-application/app1"), // list for app
+        ("GET", "/admin-api/namespaces/ns1"), // get namespace
+        ("GET", "/admin-api/namespaces/ns1/groups"), // list groups
+        ("POST", "/admin-api/namespaces/ns1/groups"), // create group in namespace
+    ] {
+        let required = validator.determine_required_permissions(&request(method, path));
+        assert!(
+            !required.is_empty(),
+            "{method} {path} must have an explicit mapping, not fall through to \
+             the admin-only default-deny",
+        );
+        assert!(
+            validator.validate_permissions(&token, &required),
+            "a multi-context client token must reach {method} {path} \
+             (required: {required:?})",
+        );
+    }
+}
+
+/// Least privilege is preserved: destructive namespace deletion is NOT
+/// reachable by a plain multi-context token (it needs `context:delete`), so
+/// mapping the create/list paths didn't hand apps a demolition tool.
+#[test]
+fn multi_context_client_token_cannot_delete_a_namespace() {
     let validator = PermissionValidator::new();
 
     let required =
-        validator.determine_required_permissions(&request("POST", "/admin-api/namespaces"));
+        validator.determine_required_permissions(&request("DELETE", "/admin-api/namespaces/ns1"));
     assert!(
-        validator.validate_permissions(&strings(MULTI_CONTEXT_PERMISSIONS), &required),
-        "a multi-context client token must be able to create a namespace \
-         (required: {required:?})",
+        !validator.validate_permissions(&strings(MULTI_CONTEXT_PERMISSIONS), &required),
+        "namespace deletion must stay gated (required: {required:?})",
+    );
+    // An admin token still can.
+    assert!(
+        validator.validate_permissions(&["admin".to_owned()], &required),
+        "admin must be able to delete a namespace",
     );
 }

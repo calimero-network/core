@@ -110,11 +110,11 @@ check_admitted "POST /jsonrpc (context:execute) admitted" \
 check_admitted "POST /admin-api/contexts (context:create) admitted" \
   "$(status_of POST /admin-api/contexts "$CLIENT_TOKEN" '{}')"
 
-# 4. KNOWN GAP pin: namespace routes have no permission mappings, so the
-#    /admin-api/* default-deny makes them admin-only. When namespace
-#    mappings land, THIS ASSERTION MUST FLIP to expect success — that
-#    failure is the signal to update the seam, not an accident.
-check "POST /admin-api/namespaces is admin-only (pinned gap)" 403 \
+# 4. Namespace self-serve: namespace routes map onto the context permission
+#    set, so a client token can create a namespace (the auth layer admits it;
+#    the handler may still 4xx on this synthetic body, which is fine — not
+#    401/403 proves authorization passed). This closed the migration-path gap.
+check_admitted "POST /admin-api/namespaces (context:create) admitted" \
   "$(status_of POST /admin-api/namespaces "$CLIENT_TOKEN" '{"applicationId":"x","name":"seam"}')"
 
 # 5. Regression pin (the rc.9 outage shape): a token whose context

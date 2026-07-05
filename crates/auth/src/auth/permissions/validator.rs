@@ -31,6 +31,34 @@ static CONTEXTS_WITH_EXECUTORS_FOR_APPLICATION_REGEX: LazyLock<Regex> = LazyLock
     Regex::new(r"^/admin-api/contexts/with-executors/for-application/([^/]+)$").unwrap()
 });
 
+// Namespace routes. Namespaces are containers for contexts, so they map onto
+// the same `ContextPermission` set an app already holds — this lets a
+// multi-context client token (context:create/list/…) self-serve the
+// namespace → group → context flow, while destructive/governance ops
+// (delete, invite, leave) map to their restricted equivalents rather than the
+// `/admin-api/*` admin-only default-deny. More specific patterns are matched
+// before NAMESPACE_REGEX.
+static NAMESPACE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/([^/]+)$").unwrap());
+
+static NAMESPACE_GROUPS_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/([^/]+)/groups$").unwrap());
+
+static NAMESPACE_IDENTITY_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/([^/]+)/identity$").unwrap());
+
+static NAMESPACE_INVITE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/([^/]+)/invite$").unwrap());
+
+static NAMESPACE_JOIN_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/([^/]+)/join$").unwrap());
+
+static NAMESPACE_LEAVE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/([^/]+)/leave$").unwrap());
+
+static NAMESPACES_FOR_APPLICATION_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/for-application/([^/]+)$").unwrap());
+
 static BLOB_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/blobs/([^/]+)$").unwrap());
 
 static ADMIN_KEY_REGEX: LazyLock<Regex> =
@@ -118,6 +146,89 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
             let scope = ResourceScope::Specific(vec![app_id.as_str().to_string()]);
             return match method {
                 HttpMethod::GET => vec![Permission::Context(ContextPermission::List(scope))],
+                _ => vec![],
+            };
+        }
+    }
+
+    // Namespace routes (most specific first). Scoped to the namespace id so a
+    // token may be narrowed to a namespace; an unscoped context:* token
+    // (Global) still satisfies these (Global matches any Specific).
+    if let Some(captures) = NAMESPACES_FOR_APPLICATION_REGEX.captures(path) {
+        if let Some(app_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![app_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::GET => vec![Permission::Context(ContextPermission::List(scope))],
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = NAMESPACE_GROUPS_REGEX.captures(path) {
+        if let Some(ns_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![ns_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::GET => vec![Permission::Context(ContextPermission::List(scope))],
+                HttpMethod::POST => vec![Permission::Context(ContextPermission::Create(scope))],
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = NAMESPACE_IDENTITY_REGEX.captures(path) {
+        if let Some(ns_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![ns_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::GET => vec![Permission::Context(ContextPermission::List(scope))],
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = NAMESPACE_INVITE_REGEX.captures(path) {
+        if let Some(ns_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![ns_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::POST => vec![Permission::Context(ContextPermission::Invite(
+                    scope,
+                    UserScope::Any,
+                ))],
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = NAMESPACE_JOIN_REGEX.captures(path) {
+        if let Some(ns_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![ns_id.as_str().to_string()]);
+            return match method {
+                // Joining establishes local namespace membership — reachable by
+                // the same create authority that lets an app provision its own.
+                HttpMethod::POST => vec![Permission::Context(ContextPermission::Create(scope))],
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = NAMESPACE_LEAVE_REGEX.captures(path) {
+        if let Some(ns_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![ns_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::POST => vec![Permission::Context(ContextPermission::Leave(
+                    scope,
+                    UserScope::Any,
+                ))],
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = NAMESPACE_REGEX.captures(path) {
+        if let Some(ns_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![ns_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::GET => vec![Permission::Context(ContextPermission::List(scope))],
+                HttpMethod::DELETE => vec![Permission::Context(ContextPermission::Delete(scope))],
                 _ => vec![],
             };
         }
@@ -234,6 +345,15 @@ impl PermissionValidator {
                 ContextPermission::List(ResourceScope::Global),
             )],
             ("/admin-api/contexts", HttpMethod::POST) => vec![Permission::Context(
+                ContextPermission::Create(ResourceScope::Global),
+            )],
+
+            // Admin API - Namespaces (containers for contexts; mapped onto the
+            // context permission set so client tokens can self-serve).
+            ("/admin-api/namespaces", HttpMethod::GET) => vec![Permission::Context(
+                ContextPermission::List(ResourceScope::Global),
+            )],
+            ("/admin-api/namespaces", HttpMethod::POST) => vec![Permission::Context(
                 ContextPermission::Create(ResourceScope::Global),
             )],
 
