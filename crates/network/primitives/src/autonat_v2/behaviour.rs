@@ -253,6 +253,11 @@ impl NetworkBehaviour for Behaviour {
                 if conn_closed.remaining_established == 0 {
                     _ = self.server_dialback_peers.remove(&conn_closed.peer_id);
                     _ = self.client_expecting_dialback.remove(&conn_closed.peer_id);
+                    // Also drop the server-support marker: without this the set
+                    // grows one entry per peer ever seen (never pruned), an
+                    // unbounded map under peer churn. It's re-learned on the next
+                    // successful dial-request exchange if the peer reconnects.
+                    _ = self.peers_with_server_support.remove(&conn_closed.peer_id);
 
                     tracing::debug!(
                         peer_id = %conn_closed.peer_id,

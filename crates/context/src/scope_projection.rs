@@ -49,6 +49,14 @@ use crate::governance_dag::signed_namespace_op_to_delta;
 /// governance history — comfortably over the in-memory prune threshold (8192).
 const MAX_BACKFILL_OPS: usize = 100_000;
 
+/// High/low water marks for the per-scope **live** op-log. Bounds the memory the
+/// live feed retains (only backfill was capped before). The high-water mark
+/// mirrors `MAX_BACKFILL_OPS` so the retained causal-honor window matches what
+/// the backfill walk already covers — eviction introduces no coverage gap the
+/// backfill path didn't already have.
+const MAX_LIVE_LOG_OPS: usize = MAX_BACKFILL_OPS;
+const LIVE_LOG_LOW_WATER: usize = MAX_BACKFILL_OPS * 3 / 4;
+
 /// The resolved at-cut context for an apply-auth read: the folded `AclView`, the
 /// genesis root tuple `(root_group, genesis_admin)`, and the namespace default-cap
 /// base. Produced by `ScopeProjections::auth_cut_context`.
@@ -297,6 +305,40 @@ impl ScopeProjections {
             {
                 if let Some(entry) = self.logs.get_mut(&op.scope).and_then(|l| l.get_mut(idx)) {
                     *entry = op.clone();
+                }
+            }
+        }
+        self.enforce_log_bound(op.scope);
+    }
+
+    /// Cap the retained op-log for `scope` so the live feed can't grow memory
+    /// without bound. When the log crosses [`MAX_LIVE_LOG_OPS`] it is trimmed to
+    /// [`LIVE_LOG_LOW_WATER`] (batched, so eviction is amortized), dropping the
+    /// oldest ops. `seen` and `noop_log_pos` are kept consistent with the
+    /// trimmed log. The retained window matches the backfill walk's cap, so
+    /// `acl_view_at` for a cut older than the window degrades exactly as it
+    /// already does for a context whose history exceeded the backfill cap.
+    fn enforce_log_bound(&mut self, scope: ScopeId) {
+        let Some(log) = self.logs.get_mut(&scope) else {
+            return;
+        };
+        if log.len() <= MAX_LIVE_LOG_OPS {
+            return;
+        }
+        let drain = log.len() - LIVE_LOG_LOW_WATER;
+        let drained_ids: Vec<[u8; 32]> = log.drain(0..drain).map(|op| op.id()).collect();
+        if let Some(seen) = self.seen.get_mut(&scope) {
+            for id in &drained_ids {
+                let _ = seen.remove(id);
+            }
+        }
+        // `noop_log_pos` values are indices into `log`, which just shifted by
+        // `drain`; rebuild from the retained log (only runs on eviction).
+        if let Some(noop) = self.noop_log_pos.get_mut(&scope) {
+            noop.clear();
+            for (idx, op) in log.iter().enumerate() {
+                if matches!(op.payload, OpPayload::Noop) {
+                    let _ = noop.insert(op.id(), idx);
                 }
             }
         }

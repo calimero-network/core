@@ -180,6 +180,10 @@ impl<'a> NamespaceGovernance<'a> {
             ));
         }
 
+        // Anti-amplification: bound the op's variable-length fields (encrypted
+        // ciphertext, key-rotation envelopes, policy/cascade lists, …) before
+        // crypto or side effects. Rejects an untrusted peer's oversized op.
+        op.validate()?;
         op.verify_signature()
             .map_err(|e| eyre::eyre!("signed namespace op: {e}"))?;
 

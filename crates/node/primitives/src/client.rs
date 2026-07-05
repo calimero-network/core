@@ -35,6 +35,7 @@ use crate::TopicManager;
 pub use crate::join_bundle::JoinBundle;
 
 mod alias;
+pub use alias::AliasExists;
 mod application;
 mod blob;
 
