@@ -17,6 +17,7 @@ on:
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
       - "apps/components-demo/**"
+      - "apps/blobs/**"
       - ".github/workflows/e2e-rust-apps.yml"
 
   pull_request:
@@ -27,6 +28,7 @@ on:
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
       - "apps/components-demo/**"
+      - "apps/blobs/**"
       - ".github/workflows/e2e-rust-apps.yml"
 
   workflow_dispatch:
@@ -170,6 +172,11 @@ jobs:
           cd apps/components-demo
           ./build.sh
 
+      - name: Build blobs app
+        run: |
+          cd apps/blobs
+          ./build.sh
+
       - name: Upload app artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -187,6 +194,9 @@ jobs:
             apps/components-demo/res/*.wasm
             apps/components-demo/res/abi.json
             apps/components-demo/res/state-schema.json
+            apps/blobs/res/*.wasm
+            apps/blobs/res/abi.json
+            apps/blobs/res/state-schema.json
           retention-days: 1
 
   # ── Test phase: run each workflow in parallel ──
@@ -331,6 +341,12 @@ jobs:
           - workflow: components-demo
             file: workflows/components-demo.yml
             app: components-demo
+          - workflow: blobs-lifecycle
+            file: workflows/blobs.yml
+            app: blobs
+          - workflow: blobs-api-example
+            file: workflows/blobs-example.yml
+            app: blobs
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml
             app: scaffolding-e2e
