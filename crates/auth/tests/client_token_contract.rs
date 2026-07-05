@@ -30,6 +30,20 @@ use mero_auth::auth::permissions::PermissionValidator;
 /// non-deprecated app mode. auth-frontend forwards these unmodified.
 const MULTI_CONTEXT_PERMISSIONS: &[&str] = &["context:create", "context:list", "context:execute"];
 
+/// The grant set mero-react's companion PR requests once core maps the
+/// client-facing admin-api routes: the context trio plus the
+/// namespace/group/blob/alias umbrellas. Must be kept in lockstep with
+/// `getPermissionsForMode` when that PR lands.
+const MULTI_CONTEXT_PERMISSIONS_NEXT: &[&str] = &[
+    "context:create",
+    "context:list",
+    "context:execute",
+    "namespace",
+    "group",
+    "blob",
+    "context:alias",
+];
+
 /// The routes a multi-context app depends on after login: the mero-react
 /// auth gate used `GET /admin-api/contexts` up to v4.1.0, context
 /// self-service needs list + create, and every RPC goes through `/jsonrpc`.
@@ -126,25 +140,37 @@ fn app_id_scoped_token_is_rejected_on_every_sdk_route() {
     }
 }
 
-/// Known gap (unfixed): the namespace routes — the *recommended* replacement
-/// for direct context creation — have no validator mappings, so the
-/// `/admin-api/*` default-deny makes them admin-only. A multi-context client
-/// token therefore cannot create a namespace, and the official migration
-/// path 403s for every app.
-///
-/// Ignored until core grows namespace permission mappings; run with
-/// `cargo test -p mero-auth --test client_token_contract -- --ignored`
-/// to check whether the gap still exists.
+/// The namespace routes — the *recommended* replacement for direct context
+/// creation — are mapped to `namespace:*` permissions. A client token minted
+/// with the extended grant set (context trio + umbrellas) must be able to
+/// list and create namespaces; the legacy context-only grant set must NOT
+/// (the umbrella grants are opt-in, requested at login).
 #[test]
-#[ignore = "namespace routes are admin-only: no validator mappings yet"]
-fn multi_context_client_token_can_create_namespaces() {
+fn extended_client_token_can_create_namespaces() {
     let validator = PermissionValidator::new();
 
-    let required =
-        validator.determine_required_permissions(&request("POST", "/admin-api/namespaces"));
-    assert!(
-        validator.validate_permissions(&strings(MULTI_CONTEXT_PERMISSIONS), &required),
-        "a multi-context client token must be able to create a namespace \
-         (required: {required:?})",
-    );
+    for (method, path) in [
+        ("GET", "/admin-api/namespaces"),
+        ("POST", "/admin-api/namespaces"),
+    ] {
+        let required = validator.determine_required_permissions(&request(method, path));
+        assert!(
+            validator.validate_permissions(&strings(MULTI_CONTEXT_PERMISSIONS_NEXT), &required),
+            "an extended client token must be able to call {method} {path} \
+             (required: {required:?})",
+        );
+        assert!(
+            !validator.validate_permissions(&strings(MULTI_CONTEXT_PERMISSIONS), &required),
+            "the legacy context-only grant set must not reach {method} {path}",
+        );
+    }
+}
+
+/// The extended grant set must also reach every legacy SDK route — adding
+/// grants can only widen access, never narrow it.
+#[test]
+fn extended_client_token_reaches_every_sdk_route() {
+    let validator = PermissionValidator::new();
+
+    assert_token_reaches(&validator, &strings(MULTI_CONTEXT_PERMISSIONS_NEXT));
 }
