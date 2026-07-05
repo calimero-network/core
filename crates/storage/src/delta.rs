@@ -325,6 +325,10 @@ pub fn commit_causal_delta(root_hash: &[u8; 32]) -> eyre::Result<Option<CausalDe
         // Compute ID
         let id = CausalDelta::compute_id(&parents, &actions, &hlc);
 
+        // Serialize for the environment directly from a borrow — avoids
+        // cloning every action just to encode the artifact.
+        let artifact = actions_artifact(&actions)?;
+
         let delta = CausalDelta {
             id,
             parents,
@@ -336,12 +340,23 @@ pub fn commit_causal_delta(root_hash: &[u8; 32]) -> eyre::Result<Option<CausalDe
         // Update heads - this delta is now the new head
         context.current_heads = vec![delta.id];
 
-        // Serialize for environment
-        let artifact = to_vec(&StorageDelta::Actions(delta.actions.clone()))?;
         env::commit(root_hash, &artifact);
 
         Ok(Some(delta))
     })
+}
+
+/// Encode the [`StorageDelta::Actions`] artifact directly from a borrowed
+/// slice: variant tag `0` followed by the borsh-encoded list. This is the
+/// same wire format the derived `BorshSerialize` produces for the enum (and
+/// that the manual [`BorshDeserialize`] above reads back), without cloning
+/// the actions or round-tripping them through enum construction.
+/// `actions_artifact_matches_enum_encoding` pins the equivalence.
+fn actions_artifact(actions: &[Action]) -> io::Result<Vec<u8>> {
+    let mut artifact = Vec::new();
+    BorshSerialize::serialize(&0u8, &mut artifact)?;
+    BorshSerialize::serialize(actions, &mut artifact)?;
+    Ok(artifact)
 }
 
 /// Commits the root hash to the runtime (legacy compatibility).
@@ -507,6 +522,17 @@ mod borsh_roundtrip_tests {
             }
             other => panic!("expected Actions, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn actions_artifact_matches_enum_encoding() {
+        let actions = vec![make_action(1), make_action(2)];
+        let direct = actions_artifact(&actions).unwrap();
+        let via_enum = to_vec(&StorageDelta::Actions(actions)).unwrap();
+        assert_eq!(
+            direct, via_enum,
+            "direct artifact encoding diverged from StorageDelta::Actions"
+        );
     }
 
     #[test]
