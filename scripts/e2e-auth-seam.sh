@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Auth-seam e2e: prove that a client token minted the way the auth frontend
 # mints it can call the routes the SDK uses — against a real running merod
 # with embedded auth, over real HTTP.
@@ -19,7 +19,10 @@
 #   initialised with --auth-mode embedded (first login bootstraps the root
 #   user with the credentials below).
 
-set -euo pipefail
+# POSIX sh, not bash: merobox's script step hardcodes /bin/sh (dash on
+# Ubuntu CI), ignoring the shebang. No pipefail — every pipeline's output
+# is captured and validated explicitly below.
+set -eu
 
 NODE_URL="${1:-http://localhost:4001}"
 USERNAME="${MERO_E2E_USER:-dev}"
