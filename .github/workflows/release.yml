@@ -46,6 +46,9 @@ jobs:
   prepare:
     name: Prepare
     runs-on: big-machine
+    permissions:
+      # Needed by "Create release at trigger time" below.
+      contents: write
     outputs:
       version: ${{ steps.version_info.outputs.version }}
       binary_release: ${{ steps.version_info.outputs.binary_release }}
@@ -92,6 +95,11 @@ jobs:
               binary_release=true
               crate_release=true
               docker_release=true
+            elif [ "$(gh release view "$version" --repo ${{ github.repository }} --json assets --jq '.assets | length')" = "0" ]; then
+              # The release shell exists (created at trigger time by a
+              # previous attempt, or manually after a race) but no binaries
+              # were ever attached — a re-run must still upload them.
+              binary_release=true
             fi
           elif [ "${{ github.event_name }}" == "pull_request" ]; then
             docker_release=true
@@ -102,6 +110,38 @@ jobs:
           echo "binary_release=$binary_release" >> $GITHUB_OUTPUT
           echo "crate_release=$crate_release" >> $GITHUB_OUTPUT
           echo "docker_release=$docker_release" >> $GITHUB_OUTPUT
+
+      # Create the tag + release NOW, while ${{ github.sha }} is still the
+      # head of master. A workflow's GITHUB_TOKEN is an integration token,
+      # and GitHub rejects integration-token release/tag creation whose
+      # target is anything but the current branch head with
+      # `403 Resource not accessible by integration`
+      # (https://github.com/cli/cli/issues/9514). Release Binaries runs
+      # hours later (build + big-machine queue); if any PR merges to master
+      # in that window, the release-cut commit is no longer head and the
+      # upload step can no longer create the release. Creating it here
+      # shrinks the race window from hours to seconds. The upload step then
+      # finds the existing release and only attaches assets, which is
+      # always permitted.
+      - name: Create release at trigger time
+        if: github.event_name == 'push' && steps.version_info.outputs.binary_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version_info.outputs.version }}
+          PRERELEASE: ${{ steps.version_info.outputs.prerelease }}
+        run: |
+          if gh release view "$VERSION" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists — nothing to create."
+            exit 0
+          fi
+          args=(--repo "${{ github.repository }}" --target "${{ github.sha }}" --title "$VERSION" --notes "")
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          if ! gh release create "$VERSION" "${args[@]}"; then
+            echo "::error::Could not create release $VERSION. If master moved past ${{ github.sha }} already, create the tag+release manually and re-run failed jobs: gh api -X POST repos/${{ github.repository }}/git/refs -f ref=refs/tags/$VERSION -f sha=${{ github.sha }} && gh api -X POST repos/${{ github.repository }}/releases -f tag_name=$VERSION -f name=$VERSION -F prerelease=$PRERELEASE"
+            exit 1
+          fi
 
       # Match the file set that defines the profiling image's content:
       # the entrypoint + helper scripts baked into the image, the
