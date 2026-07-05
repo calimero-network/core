@@ -572,12 +572,14 @@ impl<T: Clone> DagStore<T> {
             // Cascade only the pending deltas this one unblocked (its children),
             // iteratively (constant stack depth — see
             // `test_cascade_does_not_grow_stack`) and without rescanning the
-            // whole pending map.
-            let seed = self
-                .pending_children
-                .get(&delta_id)
-                .cloned()
-                .unwrap_or_default();
+            // whole pending map. Take the waiter bucket out of the index
+            // entirely: `delta_id` is applied, so the bucket can never be
+            // seeded from again (a re-add is a duplicate), and any child the
+            // cascade skips as still-blocked is re-seeded via its other
+            // parents' buckets — readiness is decided by `can_apply`, never
+            // by this index. Removing (vs. cloning) also keeps the bucket
+            // from lingering until its children drain.
+            let seed = self.pending_children.remove(&delta_id).unwrap_or_default();
             let _ = self.cascade_ready(seed, applier).await?;
             Ok(AddDeltaOutcome::Applied)
         } else {
@@ -786,7 +788,13 @@ impl<T: Clone> DagStore<T> {
                     }
                 }
             }
-            // `id` is applied; its waiter bucket is no longer needed.
+            // `id` is applied; its waiter bucket is no longer needed (no-op
+            // if `id` never had waiters, or its bucket was already taken as
+            // the seed in `add_delta_with_outcome`). Children skipped above
+            // as still-blocked keep their reverse edges in their *other*
+            // parents' buckets and are re-seeded from there; readiness is
+            // decided by `can_apply` (the `applied` set), never by this
+            // index, so dropping the bucket cannot strand them.
             let _ = self.pending_children.remove(&id);
         }
 
@@ -1530,6 +1538,48 @@ mod basic_tests {
         dag.add_delta(parent, &applier).await.unwrap();
         assert_eq!(dag.pending.len(), 0);
         assert!(dag.is_applied(&[3; 32]), "grandchild cascaded to applied");
+        assert!(
+            dag.pending_children.is_empty(),
+            "children index must fully drain, not leak buckets"
+        );
+    }
+
+    /// An applied delta's waiter bucket is taken out of the index even when
+    /// a child in it stays blocked on another parent — the child is
+    /// re-seeded via that other parent's bucket, and no bucket lingers.
+    #[tokio::test]
+    async fn test_seed_bucket_removed_with_still_blocked_child() {
+        let applier = TestApplier {
+            applied: Arc::new(Mutex::new(Vec::new())),
+        };
+        let mut dag = DagStore::new([0; 32]);
+
+        let parent_a = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+        let parent_b = CausalDelta::new_test([4; 32], vec![[0; 32]], TestPayload { value: 4 });
+        // Merge child waiting on both parents, arriving first.
+        let merge =
+            CausalDelta::new_test([2; 32], vec![[1; 32], [4; 32]], TestPayload { value: 2 });
+
+        dag.add_delta(merge, &applier).await.unwrap();
+        assert_eq!(dag.pending.len(), 1);
+
+        // A applies; the merge child is seeded but still blocked on B. A's
+        // bucket must be gone, while B's keeps the child's reverse edge.
+        dag.add_delta(parent_a, &applier).await.unwrap();
+        assert!(!dag.is_applied(&[2; 32]), "merge child still blocked on B");
+        assert!(
+            !dag.pending_children.contains_key(&[1; 32]),
+            "applied parent's waiter bucket must be removed, not linger"
+        );
+        assert!(
+            dag.pending_children.contains_key(&[4; 32]),
+            "blocked child must stay indexed under its missing parent"
+        );
+
+        // B applies; the child cascades via B's bucket and everything drains.
+        dag.add_delta(parent_b, &applier).await.unwrap();
+        assert!(dag.is_applied(&[2; 32]), "merge child cascaded to applied");
+        assert_eq!(dag.pending.len(), 0);
         assert!(
             dag.pending_children.is_empty(),
             "children index must fully drain, not leak buckets"
