@@ -40,6 +40,12 @@ pub const DEFAULT_PAGE_BYTE_LIMIT: u32 = 64 * 1024;
 /// Maximum pages to send in a single burst.
 pub const DEFAULT_PAGE_LIMIT: u16 = 16;
 
+/// Hard ceiling on the peer-supplied `page_limit`. The responder generates up
+/// to this many pages per request in memory, so an unclamped peer value (up to
+/// `u16::MAX`) would let a caller drive page generation without bound. The
+/// per-page byte budget is separately clamped to `MAX_SNAPSHOT_PAGE_SIZE`.
+pub const MAX_PAGE_LIMIT: u16 = 1024;
+
 /// Leading byte of a **v2** (PR-6b / #2539) snapshot page: records are
 /// length-framed (`u32 LE len ‖ record_bytes`) so the receiver bounds each
 /// record's decode to its own sub-slice. This makes the backward-compatible
@@ -138,6 +144,13 @@ impl SyncManager {
         stream: &mut Stream,
         _nonce: Nonce,
     ) -> Result<()> {
+        // Clamp peer-supplied limits before they drive page generation: a caller
+        // must not be able to request an unbounded number of pages or an
+        // oversized per-page byte budget (OOM). `page_limit` floors at 1 so a
+        // zero value still makes progress.
+        let page_limit = page_limit.clamp(1, MAX_PAGE_LIMIT);
+        let byte_limit = byte_limit.clamp(1, MAX_SNAPSHOT_PAGE_SIZE);
+
         // Verify boundary is still valid
         let context = match self.context_client.get_context(&context_id)? {
             Some(ctx) => ctx,

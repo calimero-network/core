@@ -1,10 +1,10 @@
 //! High-level data structures for storage.
 
-use core::cell::RefCell;
+use core::cell::{RefCell, RefMut};
 use core::cmp::Ordering;
+use core::fmt;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
-use core::{fmt, ptr};
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
@@ -703,6 +703,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             collection: CollectionMut::new(self),
             entry,
             removed: false,
+            dirty: false,
         }))
     }
 
@@ -713,7 +714,11 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     fn entries(
         &self,
     ) -> StoreResult<impl ExactSizeIterator<Item = StoreResult<T>> + DoubleEndedIterator + '_> {
-        let iter = self.children_cache()?.iter().copied().map(|child| {
+        // Snapshot the child ids so the returned iterator does not borrow the
+        // `RefMut` guard (which is dropped at the end of this statement); each
+        // entry is still read lazily on iteration.
+        let ids: Vec<Id> = self.children_cache()?.iter().copied().collect();
+        let iter = ids.into_iter().map(|child| {
             let entry = <Interface<S>>::find_by_id::<Entry<_>>(child)?
                 .ok_or(StoreError::StorageError(StorageError::NotFound(child)))?;
 
@@ -769,37 +774,37 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Ok(())
     }
 
+    /// Lazily loads the child-id set from the index and hands back a `RefMut`
+    /// guard over it. The guard ties the borrow to the returned value, so
+    /// callers hold the `RefCell` borrow for exactly as long as they use the
+    /// set — no aliasing `&mut` outlives it (F166).
     #[expect(
         clippy::unwrap_in_result,
         clippy::expect_used,
-        clippy::mut_from_ref,
-        reason = "fatal error if it happens"
+        reason = "cache is populated immediately above"
     )]
-    fn children_cache(&self) -> StoreResult<&mut IndexSet<Id>> {
+    fn children_cache(&self) -> StoreResult<RefMut<'_, IndexSet<Id>>> {
         let mut cache = self.children_ids.borrow_mut();
 
         if cache.is_none() {
-            // Try to load children from index
-            // After CRDT sync, newly created collections might not have index entries yet
-            // In that case, start with an empty set
+            // `IndexNotFound` here means the parent has NO index record yet — a
+            // just-created or freshly-synced collection with no children, which
+            // is legitimately empty. Genuine read corruption surfaces as
+            // `DeserializationError` (from the index borsh decode) and is
+            // propagated by the `Err(e)` arm below, NOT collapsed to empty
+            // (F169). The one case indistinguishable from "never created" is a
+            // *lost* index record whose child entries survive — inherent to the
+            // storage model, where the index is the sole record of children.
             let children: IndexSet<Id> = match <Interface<S>>::child_info_for(self.id()) {
                 Ok(info) => info.into_iter().map(|c| c.id()).collect(),
-                Err(StorageError::IndexNotFound(_)) => {
-                    // Collection was just created/synced, no children yet
-                    IndexSet::new()
-                }
+                Err(StorageError::IndexNotFound(_)) => IndexSet::new(),
                 Err(e) => return Err(StoreError::StorageError(e)),
             };
 
             *cache = Some(children);
         }
 
-        let children = cache.as_mut().expect("children");
-
-        #[expect(unsafe_code, reason = "necessary for caching")]
-        let children = unsafe { &mut *ptr::from_mut(children) };
-
-        Ok(children)
+        Ok(RefMut::map(cache, |c| c.as_mut().expect("children")))
     }
 }
 
@@ -811,6 +816,9 @@ struct EntryMut<'a, T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> {
     /// When `remove()` is called, this is set to true to prevent the Drop impl
     /// from generating an Update action for the deleted entity.
     removed: bool,
+    /// Set by `deref_mut`. A `get_mut` used only for reading never writes back,
+    /// so its Drop must not emit a spurious Update (F167).
+    dirty: bool,
 }
 
 impl<T, S> EntryMut<'_, T, S>
@@ -865,6 +873,9 @@ where
     T: BorshSerialize + BorshDeserialize,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // Any real mutation goes through here, so this is the one place that can
+        // authoritatively mark the entry as needing a write-back (F167).
+        self.dirty = true;
         &mut self.entry.item
     }
 }
@@ -876,8 +887,11 @@ where
 {
     fn drop(&mut self) {
         // Don't save if the entry was removed - the DeleteRef action has
-        // already been created, and saving would create a conflicting Update action
-        if self.removed {
+        // already been created, and saving would create a conflicting Update action.
+        // Don't save a read-only `get_mut` either: with no mutation there is
+        // nothing to persist, and a spurious Update bumps `updated_at`,
+        // recomputes hashes, and can win an LWW race it should have lost (F167).
+        if self.removed || !self.dirty {
             return;
         }
         self.entry.element_mut().update();
@@ -908,7 +922,7 @@ where
     }
 
     fn clear(&mut self) -> StoreResult<()> {
-        let children = self.collection.children_cache()?;
+        let mut children = self.collection.children_cache()?;
 
         for child in children.drain(..) {
             let _ = <Interface<S>>::remove_child_from(self.collection.id(), child)?;
@@ -921,7 +935,7 @@ where
     /// children via [`Interface::relocate_child_from`] so `Frozen` entries are
     /// relocated rather than rejected. See [`Collection::clear_for_rekey`].
     fn clear_for_rekey(&mut self) -> StoreResult<()> {
-        let children = self.collection.children_cache()?;
+        let mut children = self.collection.children_cache()?;
 
         for child in children.drain(..) {
             let _ = <Interface<S>>::relocate_child_from(self.collection.id(), child)?;

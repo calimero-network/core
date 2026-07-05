@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use calimero_primitives::context::ContextId;
 use eyre::Error as EyreError;
 use serde::{Deserialize, Serialize};
@@ -99,6 +101,10 @@ pub struct UnsubscribeResponse {
 pub enum Command {
     Close(u16, String),
     Send(Response),
+    /// An already-serialized response shared across connections: the node-event
+    /// fan-out serializes each event once and hands every subscribed connection
+    /// the same bytes.
+    SendSerialized(Arc<str>),
     Ping(Vec<u8>),
     Pong(Vec<u8>),
 }
