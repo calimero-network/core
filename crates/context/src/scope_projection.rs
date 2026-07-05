@@ -128,6 +128,11 @@ pub fn op_from_rotation_entry(object: Id, scope: ScopeId, entry: &RotationLogEnt
 /// storage env), by walking its hashed-collection children. `None` if the
 /// anchor has no rotation collection yet (never rotated / not a Shared anchor).
 ///
+/// `only_delta` narrows the returned entries to the ones recorded by that
+/// delta (the live ACL feed only wants the just-applied delta's rotations, so
+/// the non-matching entries are dropped during the walk instead of collected
+/// and filtered by the caller). `None` keeps every entry.
+///
 /// This is the post-apply read the live ACL feed uses to recover the **raw**
 /// rotation entries (with their signer), the independent source the projection
 /// folds — as opposed to the resolver's already-merged output.
@@ -140,6 +145,7 @@ pub fn load_rotation_log_direct(
     client: &ContextClient,
     context_id: ContextId,
     anchor: Id,
+    only_delta: Option<&[u8; 32]>,
 ) -> Option<RotationLog> {
     let map_id = Interface::<MainStorage>::rotation_log_child_id(anchor);
     let handle = client.datastore_handle();
@@ -185,7 +191,11 @@ pub fn load_rotation_log_direct(
                 continue;
             };
             match decode_rotation_log_entry_child(&bytes) {
-                Some(entry) => entries.push(entry),
+                Some(entry) => {
+                    if only_delta.is_none_or(|delta_id| entry.delta_id == *delta_id) {
+                        entries.push(entry);
+                    }
+                }
                 // A child that doesn't decode yields a partial log; warn rather
                 // than skip in silence (matches the node-crate reader).
                 None => tracing::warn!(
@@ -195,9 +205,9 @@ pub fn load_rotation_log_direct(
             }
         }
     }
-    // Canonical order; the caller filters to this delta's id, so ordering is not
-    // load-bearing here (it mirrors the node-crate reader's shape).
-    entries.sort_by(|a, b| a.delta_id.cmp(&b.delta_id));
+    // No canonical ordering: the sole caller folds this delta's entries in
+    // walk order (sorting by delta_id was O(n log n) of pure overhead — with
+    // the `only_delta` narrowing, all retained ids are equal anyway).
     Some(RotationLog {
         snapshot: None,
         entries,
