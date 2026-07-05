@@ -66,17 +66,19 @@ and a narrowed token is still possible.
 
 ## Aliases (friendly names — all APP)
 
-`create`/`delete` → `Alias::Create/Delete`, `lookup`/`list` → `Alias::Lookup/List`,
-over `AliasType::{Context,Application,Identity}`. Aliases are app-level naming
-with no authority beyond resolving a name; there is no reason for them to be
-admin-only.
+Aliases are app-level naming with no authority beyond resolving a name, and are
+recreatable. They gate on **generic `context:create`/`list`** rather than the
+dedicated `context:alias` variant, so any context-capable client token can name
+its resources without a fine-grained alias grant (keeping the no-frontend-change
+guarantee). The `AliasType`/`AliasPermission` variants remain available for
+finer-grained tokens if ever needed.
 
 | Route family | Method | Decision | Permission |
 |-------|--------|----------|------------|
-| `/admin-api/alias/create/{context,application,identity/:ctx}` | POST | APP | `Context::Alias(Create(<type>, scope))` |
-| `/admin-api/alias/lookup/{...}/:name` | POST | APP | `Context::Alias(Lookup(<type>, scope))` |
-| `/admin-api/alias/delete/{...}/:name` | POST | APP | `Context::Alias(Delete(<type>, scope))` |
-| `/admin-api/alias/list/{...}` | GET | APP | `Context::Alias(List(<type>, scope))` |
+| `/admin-api/alias/create/{context,application,identity/:ctx}` | POST | APP | `Context::Create` |
+| `/admin-api/alias/delete/{...}/:name` | POST | APP | `Context::Create` |
+| `/admin-api/alias/lookup/{...}/:name` | POST | APP | `Context::List` |
+| `/admin-api/alias/list/{...}` | GET | APP | `Context::List` |
 
 ## Namespaces (shipped earlier in this PR)
 
@@ -155,8 +157,12 @@ capability authority, **not** a plain client token, but **not** admin either.
 | `/admin-api/blobs/:id` | DELETE | APP | `Blob::Remove([id])` |
 
 `BlobPermission` has only `Add`/`Remove`; reading (list/download) has no
-variant, so those reads are currently admin-only. Adding a `Blob::List`
-variant is the clean fix and is part of this PR.
+variant, so those reads stay admin-only for now. Adding a `Blob::List`
+variant is the clean fix but touches the permission enum's parse/display/
+satisfies surface, so it's tracked as a **follow-up** to keep this PR's
+security review focused on the context-family routes the app flow needs.
+Blob *writes* (`/blobs/stream|file|url`, `PUT /blobs`) and delete are already
+mapped to `Blob::Add`/`Blob::Remove`.
 
 ## TEE
 

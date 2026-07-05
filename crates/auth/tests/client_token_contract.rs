@@ -177,3 +177,129 @@ fn multi_context_client_token_cannot_delete_a_namespace() {
         "admin must be able to delete a namespace",
     );
 }
+
+// ---- Full admin-api permission map (see crates/auth/docs/admin-api-permissions.md) ----
+
+/// APP routes: reachable by a plain multi-context client token
+/// (`context:create/list/execute`). These are the resource CRUD + self-service
+/// membership + naming ops an app drives for itself.
+#[test]
+fn app_routes_are_reachable_by_a_client_token() {
+    let validator = PermissionValidator::new();
+    let token = strings(MULTI_CONTEXT_PERMISSIONS);
+
+    for (method, path) in [
+        // context sub-routes: reads + join + refresh
+        ("GET", "/admin-api/contexts/ctx1/identities"),
+        ("GET", "/admin-api/contexts/ctx1/group"),
+        ("GET", "/admin-api/contexts/ctx1/storage"),
+        ("POST", "/admin-api/contexts/ctx1/join"),
+        ("POST", "/admin-api/contexts/ctx1/resync"),
+        ("POST", "/admin-api/contexts/sync"),
+        ("POST", "/admin-api/identity/context"),
+        // aliases (create/lookup/list)
+        ("POST", "/admin-api/alias/create/context"),
+        ("POST", "/admin-api/alias/lookup/context/my-name"),
+        ("GET", "/admin-api/alias/list/context"),
+        // groups: create / join / read
+        ("POST", "/admin-api/groups"),
+        ("POST", "/admin-api/groups/join"),
+        ("GET", "/admin-api/groups/g1"),
+        ("GET", "/admin-api/groups/g1/members"),
+        ("GET", "/admin-api/groups/g1/subgroups"),
+        ("GET", "/admin-api/groups/g1/upgrade/status"),
+    ] {
+        let required = validator.determine_required_permissions(&request(method, path));
+        assert!(
+            !required.is_empty(),
+            "{method} {path} must be explicitly mapped, not admin-only default-deny",
+        );
+        assert!(
+            validator.validate_permissions(&token, &required),
+            "APP route {method} {path} must be reachable by a client token \
+             (required: {required:?})",
+        );
+    }
+}
+
+/// GOV routes: governance over other members. NOT reachable by a plain client
+/// token; reachable by one holding `context:capabilities`.
+#[test]
+fn governance_routes_need_capabilities_not_a_plain_client_token() {
+    let validator = PermissionValidator::new();
+    let plain = strings(MULTI_CONTEXT_PERMISSIONS);
+    let with_caps = strings(&["context:capabilities:grant", "context:capabilities:revoke"]);
+
+    for (method, path) in [
+        ("POST", "/admin-api/groups/g1/members"), // add member
+        ("POST", "/admin-api/groups/g1/members/remove"), // remove member
+        ("PUT", "/admin-api/groups/g1/members/id1/role"), // change role
+        ("PUT", "/admin-api/groups/g1/settings/default-capabilities"),
+        ("PATCH", "/admin-api/groups/g1"), // group settings
+    ] {
+        let required = validator.determine_required_permissions(&request(method, path));
+        assert!(
+            !validator.validate_permissions(&plain, &required),
+            "GOV route {method} {path} must NOT be reachable by a plain client token",
+        );
+        assert!(
+            validator.validate_permissions(&with_caps, &required),
+            "GOV route {method} {path} must be reachable with context:capabilities \
+             (required: {required:?})",
+        );
+    }
+}
+
+/// ADMIN routes: node-owner / security-critical. Only an admin token passes;
+/// neither a plain client token nor a capabilities token does.
+#[test]
+fn admin_routes_stay_admin_only() {
+    let validator = PermissionValidator::new();
+    let client = strings(MULTI_CONTEXT_PERMISSIONS);
+    let caps = strings(&["context:capabilities:grant", "context:capabilities:revoke"]);
+
+    for (method, path) in [
+        ("PUT", "/admin-api/groups/g1/settings/tee-admission-policy"),
+        ("POST", "/admin-api/groups/g1/signing-key"),
+        ("POST", "/admin-api/groups/g1/issue-ownership-proof"),
+        ("POST", "/admin-api/install-dev-application"),
+        ("POST", "/admin-api/contexts/invite-specialized-node"),
+        ("POST", "/admin-api/tee/attest"),
+        ("GET", "/admin-api/tee/info"),
+        ("GET", "/admin-api/usage"),
+        ("GET", "/admin-api/network/status"),
+    ] {
+        let required = validator.determine_required_permissions(&request(method, path));
+        assert!(
+            !validator.validate_permissions(&client, &required),
+            "ADMIN route {method} {path} must reject a client token",
+        );
+        assert!(
+            !validator.validate_permissions(&caps, &required),
+            "ADMIN route {method} {path} must reject a capabilities token",
+        );
+        assert!(
+            validator.validate_permissions(&["admin".to_owned()], &required),
+            "ADMIN route {method} {path} must accept admin",
+        );
+    }
+}
+
+/// PUBLIC routes: liveness / token self-check require no permission — any
+/// authenticated caller passes (they must NOT hit the admin default-deny).
+#[test]
+fn public_routes_require_no_permission() {
+    let validator = PermissionValidator::new();
+
+    for path in [
+        "/admin-api/is-authed",
+        "/admin-api/health",
+        "/admin-api/ready",
+    ] {
+        let required = validator.determine_required_permissions(&request("GET", path));
+        assert!(
+            required.is_empty(),
+            "PUBLIC route {path} must require no permission, got {required:?}",
+        );
+    }
+}

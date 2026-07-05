@@ -59,6 +59,85 @@ static NAMESPACE_LEAVE_REGEX: LazyLock<Regex> =
 static NAMESPACES_FOR_APPLICATION_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/for-application/([^/]+)$").unwrap());
 
+// Context sub-routes: reads + self-service membership. (capabilities and
+// /application are handled by their own regexes above.)
+static CONTEXT_SUBROUTE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^/admin-api/contexts/([^/]+)/(join|leave|identities|identities-owned|group|storage|resync)$",
+    )
+    .unwrap()
+});
+
+static CONTEXT_SYNC_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/contexts/sync(?:/([^/]+))?$").unwrap());
+
+// Aliases: create/lookup/delete/list over context|application|identity.
+// Friendly names — app-level; writes map to Create, reads to List.
+static ALIAS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^/admin-api/alias/(create|lookup|delete|list)/(context|application|identity)(?:/.+)?$",
+    )
+    .unwrap()
+});
+
+// Application versions read.
+static APPLICATION_VERSIONS_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/applications/([^/]+)/versions$").unwrap());
+
+// Group routes. Most specific first; GROUP_REGEX (bare /groups/:id) last.
+static GROUP_MEMBER_SUB_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^/admin-api/groups/([^/]+)/members/([^/]+)/(role|capabilities|auto-follow|metadata)$",
+    )
+    .unwrap()
+});
+
+static GROUP_MEMBERS_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/groups/([^/]+)/members$").unwrap());
+
+static GROUP_MEMBERS_REMOVE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/groups/([^/]+)/members/remove$").unwrap());
+
+static GROUP_CONTEXTS_SUB_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^/admin-api/groups/([^/]+)/contexts/([^/]+)/(metadata|remove)$").unwrap()
+});
+
+static GROUP_SETTINGS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^/admin-api/groups/([^/]+)/settings/(default-capabilities|subgroup-visibility|tee-admission-policy)$",
+    )
+    .unwrap()
+});
+
+static GROUP_UPGRADE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^/admin-api/groups/([^/]+)/upgrade(?:/(retry|status))?$").unwrap()
+});
+
+static GROUP_STATUS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^/admin-api/groups/([^/]+)/(cascade-status|migration-status)$").unwrap()
+});
+
+static GROUP_MIGRATION_ABORT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/groups/([^/]+)/migration/abort$").unwrap());
+
+// App-level and read group sub-routes (create/read/join/leave/invite/metadata).
+static GROUP_SUBROUTE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^/admin-api/groups/([^/]+)/(contexts|subgroups|metadata|leave|invite|reparent)$")
+        .unwrap()
+});
+
+// Security-critical group ops kept admin-only (matched so they resolve to
+// admin explicitly rather than relying only on the default-deny).
+static GROUP_ADMIN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^/admin-api/groups/([^/]+)/(signing-key|issue-ownership-proof|issue-namespace-ownership-proof)$",
+    )
+    .unwrap()
+});
+
+static GROUP_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/groups/([^/]+)$").unwrap());
+
 static BLOB_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/blobs/([^/]+)$").unwrap());
 
 static ADMIN_KEY_REGEX: LazyLock<Regex> =
@@ -82,15 +161,47 @@ pub struct PermissionValidator;
 
 fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<Permission> {
     // Handle parameterized routes with pre-compiled regex patterns
-    if let Some(captures) = APPLICATION_REGEX.captures(path) {
+    if let Some(captures) = APPLICATION_VERSIONS_REGEX.captures(path) {
         if let Some(app_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![app_id.as_str().to_string()]);
             return match method {
-                HttpMethod::GET => vec![Permission::Application(ApplicationPermission::List(
-                    ResourceScope::Specific(vec![app_id.as_str().to_string()]),
-                ))],
+                HttpMethod::GET => {
+                    vec![Permission::Application(ApplicationPermission::List(scope))]
+                }
                 _ => vec![],
             };
         }
+    }
+
+    if let Some(captures) = APPLICATION_REGEX.captures(path) {
+        if let Some(app_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![app_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::GET => {
+                    vec![Permission::Application(ApplicationPermission::List(scope))]
+                }
+                HttpMethod::DELETE => {
+                    vec![Permission::Application(ApplicationPermission::Uninstall(
+                        scope,
+                    ))]
+                }
+                _ => vec![],
+            };
+        }
+    }
+
+    // `/contexts/sync[/:id]` must be checked before the generic
+    // `/contexts/:id` regex, which would otherwise capture "sync" as a
+    // context id.
+    if let Some(captures) = CONTEXT_SYNC_REGEX.captures(path) {
+        let scope = captures
+            .get(1)
+            .map(|c| ResourceScope::Specific(vec![c.as_str().to_string()]))
+            .unwrap_or(ResourceScope::Global);
+        return match method {
+            HttpMethod::POST => vec![Permission::Context(ContextPermission::List(scope))],
+            _ => vec![],
+        };
     }
 
     if let Some(captures) = CONTEXT_REGEX.captures(path) {
@@ -234,6 +345,218 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
         }
     }
 
+    // Context sub-routes: reads → List, self-service membership → Create/Leave.
+    if let Some(captures) = CONTEXT_SUBROUTE_REGEX.captures(path) {
+        if let (Some(ctx_id), Some(action)) = (captures.get(1), captures.get(2)) {
+            let scope = ResourceScope::Specific(vec![ctx_id.as_str().to_string()]);
+            return match (method, action.as_str()) {
+                (HttpMethod::POST, "join") => {
+                    vec![Permission::Context(ContextPermission::Create(scope))]
+                }
+                (HttpMethod::POST, "leave") => vec![Permission::Context(ContextPermission::Leave(
+                    scope,
+                    UserScope::Any,
+                ))],
+                // resync refreshes the local replica — a read-family refresh.
+                (HttpMethod::POST, "resync") => {
+                    vec![Permission::Context(ContextPermission::List(scope))]
+                }
+                (HttpMethod::GET, "identities" | "identities-owned" | "group" | "storage") => {
+                    vec![Permission::Context(ContextPermission::List(scope))]
+                }
+                _ => vec![],
+            };
+        }
+    }
+
+    // Aliases: friendly names for app resources — low-risk and recreatable.
+    // Gated on generic context create/list (not the dedicated `context:alias`
+    // variant) so any context-capable client token can name its resources
+    // without a fine-grained alias grant. Writes (create/delete) → Create,
+    // reads (lookup/list) → List.
+    if let Some(captures) = ALIAS_REGEX.captures(path) {
+        if let Some(action) = captures.get(1) {
+            let scope = ResourceScope::Global;
+            return match (method, action.as_str()) {
+                (HttpMethod::POST, "create" | "delete") => {
+                    vec![Permission::Context(ContextPermission::Create(scope))]
+                }
+                (HttpMethod::POST, "lookup") | (HttpMethod::GET, "list") => {
+                    vec![Permission::Context(ContextPermission::List(scope))]
+                }
+                _ => vec![],
+            };
+        }
+    }
+
+    // ---- Group routes (most specific first) ----
+
+    // Security-critical: signing keys and ownership proofs stay admin-only.
+    if GROUP_ADMIN_REGEX.is_match(path) {
+        return match method {
+            HttpMethod::POST => vec![Permission::Admin(AdminPermission)],
+            _ => vec![],
+        };
+    }
+
+    // Member governance (add/remove/role/capabilities/auto-follow, member
+    // metadata writes) → capability-gated, not a plain client token.
+    if let Some(captures) = GROUP_MEMBER_SUB_REGEX.captures(path) {
+        if let (Some(gid), Some(action)) = (captures.get(1), captures.get(3)) {
+            let scope = ResourceScope::Specific(vec![gid.as_str().to_string()]);
+            return match (method, action.as_str()) {
+                (HttpMethod::GET, "capabilities" | "metadata") => {
+                    vec![Permission::Context(ContextPermission::List(scope))]
+                }
+                (HttpMethod::PUT, _) => vec![Permission::Context(ContextPermission::Capabilities(
+                    CapabilityPermission::Grant(scope),
+                ))],
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = GROUP_MEMBERS_REMOVE_REGEX.captures(path) {
+        if let Some(gid) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![gid.as_str().to_string()]);
+            return match method {
+                HttpMethod::POST => vec![Permission::Context(ContextPermission::Capabilities(
+                    CapabilityPermission::Revoke(scope),
+                ))],
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = GROUP_MEMBERS_REGEX.captures(path) {
+        if let Some(gid) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![gid.as_str().to_string()]);
+            return match method {
+                HttpMethod::GET => vec![Permission::Context(ContextPermission::List(scope))],
+                // Adding members = granting access → capability-gated.
+                HttpMethod::POST => vec![Permission::Context(ContextPermission::Capabilities(
+                    CapabilityPermission::Grant(scope),
+                ))],
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = GROUP_CONTEXTS_SUB_REGEX.captures(path) {
+        if let (Some(gid), Some(action)) = (captures.get(1), captures.get(3)) {
+            let scope = ResourceScope::Specific(vec![gid.as_str().to_string()]);
+            return match (method, action.as_str()) {
+                (HttpMethod::GET, "metadata") => {
+                    vec![Permission::Context(ContextPermission::List(scope))]
+                }
+                (HttpMethod::PUT, "metadata") => vec![Permission::Context(
+                    ContextPermission::Capabilities(CapabilityPermission::Grant(scope)),
+                )],
+                (HttpMethod::POST, "remove") => vec![Permission::Context(
+                    ContextPermission::Capabilities(CapabilityPermission::Revoke(scope)),
+                )],
+                _ => vec![],
+            };
+        }
+    }
+
+    // TEE admission policy is a trust-boundary setting → admin; other group
+    // settings are governance → capability-gated.
+    if let Some(captures) = GROUP_SETTINGS_REGEX.captures(path) {
+        if let (Some(gid), Some(setting)) = (captures.get(1), captures.get(2)) {
+            if setting.as_str() == "tee-admission-policy" {
+                return vec![Permission::Admin(AdminPermission)];
+            }
+            let scope = ResourceScope::Specific(vec![gid.as_str().to_string()]);
+            return match method {
+                HttpMethod::PUT => vec![Permission::Context(ContextPermission::Capabilities(
+                    CapabilityPermission::Grant(scope),
+                ))],
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = GROUP_UPGRADE_REGEX.captures(path) {
+        if let Some(gid) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![gid.as_str().to_string()]);
+            let is_status = captures.get(2).map(|m| m.as_str()) == Some("status");
+            return match method {
+                // Upgrading the group's app version — app-version management.
+                HttpMethod::POST => vec![Permission::Context(ContextPermission::Application(
+                    ContextApplicationPermission::Update(scope),
+                ))],
+                HttpMethod::GET if is_status => {
+                    vec![Permission::Context(ContextPermission::List(scope))]
+                }
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = GROUP_STATUS_REGEX.captures(path) {
+        if let Some(gid) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![gid.as_str().to_string()]);
+            return match method {
+                HttpMethod::GET => vec![Permission::Context(ContextPermission::List(scope))],
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = GROUP_MIGRATION_ABORT_REGEX.captures(path) {
+        if let Some(gid) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![gid.as_str().to_string()]);
+            return match method {
+                HttpMethod::POST => vec![Permission::Context(ContextPermission::Capabilities(
+                    CapabilityPermission::Grant(scope),
+                ))],
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = GROUP_SUBROUTE_REGEX.captures(path) {
+        if let (Some(gid), Some(action)) = (captures.get(1), captures.get(2)) {
+            let scope = ResourceScope::Specific(vec![gid.as_str().to_string()]);
+            return match (method, action.as_str()) {
+                (HttpMethod::GET, "contexts" | "subgroups" | "metadata") => {
+                    vec![Permission::Context(ContextPermission::List(scope))]
+                }
+                (HttpMethod::POST, "leave") => vec![Permission::Context(ContextPermission::Leave(
+                    scope,
+                    UserScope::Any,
+                ))],
+                (HttpMethod::POST, "invite") => vec![Permission::Context(
+                    ContextPermission::Invite(scope, UserScope::Any),
+                )],
+                // Writing group metadata / restructuring → capability-gated.
+                (HttpMethod::PUT, "metadata") | (HttpMethod::POST, "reparent") => {
+                    vec![Permission::Context(ContextPermission::Capabilities(
+                        CapabilityPermission::Grant(scope),
+                    ))]
+                }
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = GROUP_REGEX.captures(path) {
+        if let Some(gid) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![gid.as_str().to_string()]);
+            return match method {
+                HttpMethod::GET => vec![Permission::Context(ContextPermission::List(scope))],
+                HttpMethod::DELETE => vec![Permission::Context(ContextPermission::Delete(scope))],
+                // Updating group settings → capability-gated governance.
+                HttpMethod::PATCH => vec![Permission::Context(ContextPermission::Capabilities(
+                    CapabilityPermission::Grant(scope),
+                ))],
+                _ => vec![],
+            };
+        }
+    }
+
+    // Aliases and group routes handled above; blobs below.
     if let Some(captures) = BLOB_REGEX.captures(path) {
         if let Some(blob_id) = captures.get(1) {
             return match method {
@@ -357,6 +680,19 @@ impl PermissionValidator {
                 ContextPermission::Create(ResourceScope::Global),
             )],
 
+            // Generate a context identity (prerequisite for join) — app-level.
+            ("/admin-api/identity/context", HttpMethod::POST) => vec![Permission::Context(
+                ContextPermission::Create(ResourceScope::Global),
+            )],
+
+            // Groups: create / join a group — app-level (like create-in-namespace).
+            ("/admin-api/groups", HttpMethod::POST) => vec![Permission::Context(
+                ContextPermission::Create(ResourceScope::Global),
+            )],
+            ("/admin-api/groups/join", HttpMethod::POST) => vec![Permission::Context(
+                ContextPermission::Create(ResourceScope::Global),
+            )],
+
             // Admin auth endpoints
             ("/admin/keys", HttpMethod::GET) => vec![Permission::Keys(KeyPermission::List)],
             ("/admin/keys", HttpMethod::POST) => vec![Permission::Keys(KeyPermission::Create)],
@@ -447,7 +783,22 @@ impl PermissionValidator {
         // token that must reach one of these needs an explicit mapping added
         // above. `/jsonrpc`, `/ws`, `/sse` and the public `/auth/*` routes are
         // intentionally outside this namespace and unaffected.
-        if required_permissions.is_empty() && path.starts_with("/admin-api/") {
+        //
+        // Liveness/self-check routes are the exception: they carry no
+        // authority and must not be forced to admin. `is-authed` exists to
+        // report whether the caller's token is valid; `health`/`ready` are
+        // probes. They resolve to an empty requirement (any authenticated
+        // caller passes). Truly unauthenticated access would require mounting
+        // them outside the guard — a separate concern.
+        const PUBLIC_ADMIN_API_ROUTES: &[&str] = &[
+            "/admin-api/is-authed",
+            "/admin-api/health",
+            "/admin-api/ready",
+        ];
+        if required_permissions.is_empty()
+            && path.starts_with("/admin-api/")
+            && !PUBLIC_ADMIN_API_ROUTES.contains(&path)
+        {
             required_permissions.push(Permission::Admin(AdminPermission));
         }
 
@@ -901,11 +1252,12 @@ mod tests {
         let validator = PermissionValidator::new();
 
         for (method, path) in [
-            (Method::GET, "/admin-api/groups/some-group-id"),
-            (Method::POST, "/admin-api/groups"),
-            (Method::PATCH, "/admin-api/groups/some-group-id"),
+            // Security-critical group ops stay admin-only even though sibling
+            // group routes are now mapped.
+            (Method::POST, "/admin-api/groups/some-group-id/signing-key"),
             (Method::POST, "/admin-api/install-dev-application"),
             (Method::GET, "/admin-api/usage"),
+            (Method::POST, "/admin-api/tee/attest"),
             (Method::GET, "/admin-api/totally-unknown-subpath"),
             // Mapped path, unhandled method (the `_ => vec![]` arms):
             (Method::POST, "/admin-api/contexts/ctx-1"),
