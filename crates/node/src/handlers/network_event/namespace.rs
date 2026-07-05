@@ -571,6 +571,9 @@ async fn fetch_and_apply_namespace_backfill(
             use rand::Rng;
             rand::thread_rng().gen()
         },
+        // Sentinel party id; backfill serves only already-signed deltas, which
+        // the requester re-verifies on receipt — no proof of possession.
+        pop: None,
     };
 
     if let Err(err) = crate::sync::stream::send(&mut stream, &msg, None).await {

@@ -309,7 +309,11 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     ///
     /// Returns error if storage operation fails
     pub fn len(&self) -> Result<usize, StoreError> {
-        self.get_ordered_chars().map(|chars| chars.len())
+        // Deleted chars are dropped from the live child list `chars.len()`
+        // counts (tombstoned for merge, but excluded from that list) — the same
+        // list `get_ordered_chars` walks via `entries()`. So the stored count
+        // already equals the visible length; no need to re-linearize.
+        self.chars.len()
     }
 
     /// Check if the text is empty
@@ -629,6 +633,22 @@ mod merge_mode_tests {
                 .unwrap();
         });
         assert_eq!(rga.len().unwrap(), 1);
+    }
+
+    #[test]
+    fn len_matches_visible_text_after_delete() {
+        env::reset_for_testing();
+        let mut rga = Root::new(ReplicatedGrowableArray::new);
+        env::with_merge_mode(|| {
+            rga.insert_str_at_timestamp(0, HybridTimestamp::zero(), "Hi")
+                .unwrap();
+        });
+        assert_eq!(rga.len().unwrap(), 2);
+        rga.delete(0).unwrap(); // drops 'H' from the live child list
+                                // len() now reads the stored count; it must stay equal to the
+                                // re-linearized visible length that get_text() reflects.
+        assert_eq!(rga.len().unwrap(), 1);
+        assert_eq!(rga.len().unwrap(), rga.get_text().unwrap().chars().count());
     }
 }
 

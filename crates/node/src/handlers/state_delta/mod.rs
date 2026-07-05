@@ -1202,7 +1202,47 @@ async fn request_missing_deltas(
     // inline so the borrow outlives every projection read.
     node_state: &crate::NodeState,
 ) -> Result<Vec<([u8; 32], Vec<u8>)>> {
-    use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+    use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
+
+    // Transport-binding proof of possession for `our_identity`, attached to
+    // every DeltaRequest below so the responder can reject a caller that
+    // doesn't control the claimed identity (see `InitProof`). Signed once —
+    // it's independent of the per-delta payload/nonce — from the identity's
+    // private key in the local store and this node's own PeerId. `None` (no
+    // owned key / lookup failure) leaves the requests unproven, which a
+    // proof-requiring responder rejects.
+    let delta_pop: Option<InitProof> = {
+        let key = calimero_store::key::ContextIdentity::new(context_id, our_identity);
+        match datastore.handle().get(&key) {
+            Ok(Some(identity)) => match identity.private_key {
+                Some(mut sk_bytes) => {
+                    use zeroize::Zeroize;
+                    let private_key = calimero_primitives::identity::PrivateKey::from(sk_bytes);
+                    // `PrivateKey::from` copies into its own zeroizing wrapper,
+                    // but the bare `[u8; 32]` read out of the store value is a
+                    // `Copy` that lingers on the stack — wipe it now (mirrors the
+                    // discipline in `join_namespace` / `emit_namespace_ack`).
+                    sk_bytes.zeroize();
+                    let peer_id = network_client.network_status().await.local_peer_id;
+                    let message =
+                        InitProof::message(&context_id, &our_identity, &peer_id.to_bytes());
+                    private_key.sign(&message).ok().map(|signature| InitProof {
+                        signature: signature.to_bytes(),
+                    })
+                }
+                None => None,
+            },
+            _ => None,
+        }
+    };
+
+    // Hard ceiling on how many parent deltas a single fetch walk will pull. The
+    // DAG is acyclic so a healthy walk terminates at genesis well below this,
+    // but a malicious peer can answer every `DeltaRequest` with a delta naming
+    // fresh fabricated parents, driving the walk (and its in-memory
+    // accumulation) without bound. Hitting the cap aborts the sync attempt; the
+    // caller backs off and retries, rather than being walked into OOM.
+    const MAX_PARENT_FETCH_DELTAS: usize = 10_000;
 
     // Metric: number of missing-parent IDs the caller is about to fetch.
     // Recorded *before* the stream open so a peer-stream failure doesn't
@@ -1236,8 +1276,8 @@ async fn request_missing_deltas(
     // caller so handlers can run.
     let mut cascaded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
-    // Phase 1: Fetch ALL missing deltas recursively
-    // No artificial limit - DAG is acyclic so this will naturally terminate at genesis
+    // Phase 1: Fetch missing deltas recursively (bounded — see
+    // MAX_PARENT_FETCH_DELTAS). A healthy acyclic DAG terminates at genesis.
     while !to_fetch.is_empty() {
         // Take ownership of this round's batch, leaving `to_fetch` empty to
         // collect the next round's parents — avoids cloning the whole Vec only
@@ -1245,6 +1285,12 @@ async fn request_missing_deltas(
         let current_batch = std::mem::take(&mut to_fetch);
 
         for missing_id in current_batch {
+            if fetch_count >= MAX_PARENT_FETCH_DELTAS {
+                bail!(
+                    "aborting parent-fetch walk for context {context_id}: exceeded \
+                     {MAX_PARENT_FETCH_DELTAS} deltas (peer may be feeding fabricated parents)"
+                );
+            }
             fetch_count += 1;
 
             info!(
@@ -1266,6 +1312,7 @@ async fn request_missing_deltas(
                     use rand::Rng;
                     rand::thread_rng().gen()
                 },
+                pop: delta_pop,
             };
 
             crate::sync::stream::send(&mut stream, &request_msg, None).await?;

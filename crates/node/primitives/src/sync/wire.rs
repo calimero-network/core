@@ -68,6 +68,23 @@ pub enum StreamMessage<'a> {
         payload: InitPayload,
         /// Nonce for the next message.
         next_nonce: Nonce,
+        /// Proof that the sender controls `party_id`, bound to the dialer's
+        /// transport `PeerId` (see [`InitProof`]). `None` on handshake acks,
+        /// sentinel/keyless party ids, and pre-upgrade peers. The responder
+        /// **requires** a valid proof before serving state-read requests
+        /// (deltas, DAG heads, snapshots, tree/level nodes) or acting on a
+        /// namespace/subgroup join, and ignores it on paths whose payload is
+        /// already bound to the claimed identity by other means (e.g. blob and
+        /// group-key shares are ECDH-wrapped to `party_id`).
+        ///
+        /// # Wire Format Change
+        ///
+        /// New trailing field on the `Init` variant. Borsh is positional, so
+        /// pre-upgrade peers cannot deserialize an `Init` carrying it and vice
+        /// versa — a coordinated network upgrade is required, the same
+        /// constraint documented on `Message::sequence_id` and the
+        /// `NotMaterialized` variant.
+        pop: Option<InitProof>,
     },
     /// Follow-up message in an ongoing sync operation.
     Message {
@@ -114,6 +131,107 @@ pub enum StreamMessage<'a> {
     /// to the previous behaviour (no benign signal) and continue working
     /// for all other variants.
     NotMaterialized,
+}
+
+// =============================================================================
+// Init Proof (transport-bound proof of possession)
+// =============================================================================
+
+/// Proof that the sender of an [`StreamMessage::Init`] controls the private
+/// key of the identity it names in `party_id`, bound to the dialer's transport
+/// `PeerId`.
+///
+/// # Why
+///
+/// The responder serves context state — DAG heads, snapshots, deltas, tree and
+/// level nodes — and performs namespace/subgroup pre-registration keyed off the
+/// `party_id` (or `joiner_public_key`) carried in the `Init`. Those values are
+/// attacker-chosen: without a proof, any peer that learns a member's public key
+/// can name it and be served as that member, or register an identity it does
+/// not control. Membership checks alone don't help — they only confirm the
+/// *named* identity is a member, not that the *caller* holds it.
+///
+/// # Construction
+///
+/// An Ed25519 signature by `party_id`'s key over [`InitProof::message`], which
+/// binds:
+/// - the domain separator (protocol/version),
+/// - the `context_id`,
+/// - the claimed `party_id`,
+/// - the **initiator's own** libp2p `PeerId` bytes.
+///
+/// # Why it resists replay (and why there is deliberately no freshness nonce)
+///
+/// The bound `PeerId` is the dialer's. The responder recomputes the message
+/// with the `PeerId` it observes on the transport — which libp2p's noise
+/// handshake authenticates — so a proof captured from one member cannot be
+/// presented by a different peer (the observed `PeerId` would differ), and a
+/// caller cannot forge a proof for an identity whose key it lacks.
+///
+/// The proof is intentionally payload/nonce/time-independent — one signature is
+/// reusable for every request a node issues for a given (context, identity). It
+/// is a capability to *speak as* that identity **from that peer**, not a
+/// per-message token, and it needs no responder-issued challenge (which would
+/// add a round-trip to every sync) because a captured proof is not usable on its
+/// own:
+///
+/// - The stream is carried over libp2p's noise-encrypted transport, so the proof
+///   is not observable by a passive on-path attacker — only by the responder it
+///   is sent to (which already gets served) or a party that has compromised the
+///   host.
+/// - Even given the proof bytes, replaying them requires speaking as the bound
+///   `PeerId`, which the transport only lets the holder of that peer's network
+///   private key do. An attacker with that key already *is* the node.
+/// - Key rotation changes the network key and therefore the `PeerId`, so proofs
+///   bound to the old `PeerId` do not carry over to a rotated identity.
+///
+/// Bump [`InitProof::DOMAIN`] if a future change needs to invalidate all
+/// outstanding proofs.
+#[derive(Clone, Copy, Debug, BorshSerialize, BorshDeserialize)]
+pub struct InitProof {
+    /// Ed25519 signature over [`InitProof::message`] by `party_id`'s key.
+    pub signature: [u8; 64],
+}
+
+impl InitProof {
+    /// Domain separator for the signed message. Bump the version suffix on any
+    /// change to the signed layout so proofs never cross protocol versions.
+    pub const DOMAIN: &'static [u8] = b"calimero:sync:init-pop:v1";
+
+    /// Canonical bytes the [`signature`](InitProof::signature) covers:
+    /// `DOMAIN ‖ context_id ‖ party_id ‖ dialer_peer_id`.
+    ///
+    /// `dialer_peer_id` must be the raw `libp2p::PeerId` bytes
+    /// (`PeerId::to_bytes()`) of the node that opens the stream — the signer on
+    /// the initiator side, the transport-observed peer on the responder side.
+    #[must_use]
+    pub fn message(context_id: &ContextId, party_id: &PublicKey, dialer_peer_id: &[u8]) -> Vec<u8> {
+        use calimero_primitives::common::DIGEST_SIZE;
+        // context_id.digest() + party_id.digest() are each DIGEST_SIZE bytes.
+        let mut msg = Vec::with_capacity(
+            Self::DOMAIN.len() + DIGEST_SIZE + DIGEST_SIZE + dialer_peer_id.len(),
+        );
+        msg.extend_from_slice(Self::DOMAIN);
+        msg.extend_from_slice(context_id.digest());
+        msg.extend_from_slice(party_id.digest());
+        msg.extend_from_slice(dialer_peer_id);
+        msg
+    }
+
+    /// Verify this proof authorizes `party_id` to speak for `context_id` from
+    /// the peer identified by `dialer_peer_id` (raw `PeerId` bytes).
+    #[must_use]
+    pub fn verify(
+        &self,
+        context_id: &ContextId,
+        party_id: &PublicKey,
+        dialer_peer_id: &[u8],
+    ) -> bool {
+        let message = Self::message(context_id, party_id, dialer_peer_id);
+        party_id
+            .verify_raw_signature(&message, &self.signature)
+            .is_ok()
+    }
 }
 
 // =============================================================================
@@ -834,6 +952,109 @@ mod tests {
                 assert_eq!(applied_count, 42);
             }
             _ => panic!("wrong variant"),
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // InitProof (transport-bound proof of possession)
+    // ---------------------------------------------------------------------
+
+    use calimero_primitives::identity::PrivateKey;
+
+    /// A deterministic keypair from a seed byte (no `rand` feature needed).
+    fn test_keypair(seed: u8) -> (PrivateKey, PublicKey) {
+        let sk = PrivateKey::from([seed; 32]);
+        let pk = sk.public_key();
+        (sk, pk)
+    }
+
+    fn sign_pop(sk: &PrivateKey, ctx: &ContextId, party: &PublicKey, peer: &[u8]) -> InitProof {
+        let message = InitProof::message(ctx, party, peer);
+        InitProof {
+            signature: sk.sign(&message).expect("sign").to_bytes(),
+        }
+    }
+
+    #[test]
+    fn init_proof_verifies_for_matching_context_party_and_peer() {
+        let ctx = ContextId::from([7u8; 32]);
+        let (sk, pk) = test_keypair(1);
+        let peer = b"peer-id-bytes-A";
+
+        let proof = sign_pop(&sk, &ctx, &pk, peer);
+        assert!(proof.verify(&ctx, &pk, peer));
+    }
+
+    #[test]
+    fn init_proof_rejects_wrong_peer_id() {
+        // A proof captured for one dialer must not verify when replayed from a
+        // different transport peer — this is what stops identity spoofing.
+        let ctx = ContextId::from([7u8; 32]);
+        let (sk, pk) = test_keypair(1);
+
+        let proof = sign_pop(&sk, &ctx, &pk, b"peer-id-bytes-A");
+        assert!(!proof.verify(&ctx, &pk, b"peer-id-bytes-B"));
+    }
+
+    #[test]
+    fn init_proof_rejects_wrong_party_id() {
+        // Signing with one key but claiming another identity must fail: a caller
+        // cannot prove possession of a key it does not hold.
+        let ctx = ContextId::from([7u8; 32]);
+        let (attacker_sk, _attacker_pk) = test_keypair(1);
+        let (_victim_sk, victim_pk) = test_keypair(2);
+        let peer = b"peer-id-bytes-A";
+
+        // Attacker signs with its own key but stamps the victim's public key.
+        let forged = sign_pop(&attacker_sk, &ctx, &victim_pk, peer);
+        assert!(!forged.verify(&ctx, &victim_pk, peer));
+    }
+
+    #[test]
+    fn init_proof_rejects_wrong_context() {
+        let (sk, pk) = test_keypair(1);
+        let peer = b"peer-id-bytes-A";
+
+        let proof = sign_pop(&sk, &ContextId::from([7u8; 32]), &pk, peer);
+        assert!(!proof.verify(&ContextId::from([8u8; 32]), &pk, peer));
+    }
+
+    #[test]
+    fn init_proof_rejects_tampered_signature() {
+        let ctx = ContextId::from([7u8; 32]);
+        let (sk, pk) = test_keypair(1);
+        let peer = b"peer-id-bytes-A";
+
+        let mut proof = sign_pop(&sk, &ctx, &pk, peer);
+        proof.signature[0] ^= 0xff;
+        assert!(!proof.verify(&ctx, &pk, peer));
+    }
+
+    #[test]
+    fn init_message_roundtrips_with_and_without_pop() {
+        let ctx = ContextId::from([7u8; 32]);
+        let (sk, pk) = test_keypair(3);
+        let peer = b"peer-id-bytes-A";
+        let proof = sign_pop(&sk, &ctx, &pk, peer);
+
+        for pop in [Some(proof), None] {
+            let msg = StreamMessage::Init {
+                context_id: ctx,
+                party_id: pk,
+                payload: InitPayload::DagHeadsRequest { context_id: ctx },
+                next_nonce: [0u8; 12],
+                pop,
+            };
+            let encoded = borsh::to_vec(&msg).expect("serialize");
+            let decoded: StreamMessage<'_> = borsh::from_slice(&encoded).expect("deserialize");
+            match decoded {
+                StreamMessage::Init {
+                    pop: decoded_pop, ..
+                } => {
+                    assert_eq!(decoded_pop.map(|p| p.signature), pop.map(|p| p.signature));
+                }
+                _ => panic!("wrong variant"),
+            }
         }
     }
 }

@@ -67,6 +67,74 @@ fn remove_member() {
         .unwrap());
 }
 
+// A removed member's per-member capability row must NOT survive removal and be
+// read back on re-add — otherwise an elevated grant is silently restored when
+// the member re-joins as a plain Member with no non-zero group defaults.
+#[test]
+fn remove_member_clears_stale_capabilities_so_readd_starts_fresh() {
+    use calimero_context_config::MemberCapabilities;
+
+    let store = test_store();
+    let gid = test_group_id();
+    let pk = PublicKey::from([0x07; 32]);
+    let elevated = MemberCapabilities::CAN_INVITE_MEMBERS.bits();
+
+    let membership = MembershipRepository::new(&store);
+    let caps = CapabilitiesRepository::new(&store);
+
+    // Add member and grant an elevated capability.
+    membership
+        .add_member(&gid, &pk, GroupMemberRole::Member)
+        .unwrap();
+    caps.set_member_capability(&gid, &pk, elevated).unwrap();
+    assert_eq!(caps.member_capability(&gid, &pk).unwrap(), Some(elevated));
+
+    // Remove, then re-add as a plain Member. The group has no default caps
+    // (never set → `default_capabilities` is None), so `add_member` seeds none.
+    membership.remove_member(&gid, &pk).unwrap();
+    membership
+        .add_member(&gid, &pk, GroupMemberRole::Member)
+        .unwrap();
+
+    // The stale elevated grant must be gone — fresh member, no capability row.
+    assert_eq!(caps.member_capability(&gid, &pk).unwrap(), None);
+    assert_eq!(
+        membership.effective_capabilities(&gid, &pk).unwrap(),
+        Some(0)
+    );
+}
+
+// Complementary path: when the group DOES have non-zero default caps, re-add
+// must seed exactly those defaults — never the stale elevated grant. Distinguishes
+// "cap row cleared on removal" from "cap row happened to be overwritten by defaults".
+#[test]
+fn readd_with_defaults_seeds_defaults_not_stale_caps() {
+    use calimero_context_config::MemberCapabilities;
+
+    let store = test_store();
+    let gid = test_group_id();
+    let pk = PublicKey::from([0x08; 32]);
+    let elevated = MemberCapabilities::CAN_INVITE_MEMBERS.bits();
+    let defaults = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits();
+    assert_ne!(elevated, defaults);
+
+    let membership = MembershipRepository::new(&store);
+    let caps = CapabilitiesRepository::new(&store);
+    caps.set_default_capabilities(&gid, defaults).unwrap();
+
+    membership
+        .add_member(&gid, &pk, GroupMemberRole::Member)
+        .unwrap();
+    caps.set_member_capability(&gid, &pk, elevated).unwrap();
+
+    membership.remove_member(&gid, &pk).unwrap();
+    membership
+        .add_member(&gid, &pk, GroupMemberRole::Member)
+        .unwrap();
+
+    assert_eq!(caps.member_capability(&gid, &pk).unwrap(), Some(defaults));
+}
+
 #[test]
 fn get_member_role() {
     let store = test_store();

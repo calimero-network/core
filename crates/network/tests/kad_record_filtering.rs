@@ -17,7 +17,7 @@ use libp2p::identity::Keypair;
 use libp2p::kad::store::{MemoryStore, RecordStore};
 use libp2p::kad::{self, InboundRequest, Mode, Quorum, Record, RecordKey, StoreInserts};
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
-use libp2p::{PeerId, Swarm};
+use libp2p::Swarm;
 use libp2p_swarm_test::SwarmExt;
 
 #[derive(NetworkBehaviour)]
@@ -37,15 +37,12 @@ impl KadOnly {
     }
 }
 
-/// A record shaped like the blob announcement `AnnounceBlob` produces: a
-/// 64-byte key (context id + blob id) and a value of a peer id + 8-byte size.
+/// A record with a blob-announcement-shaped 64-byte key (context id + blob id).
+/// This test exercises the store's `FilterBoth` behaviour and the handler's
+/// explicit `put` directly, so the value bytes are opaque here — provider-record
+/// signature validation is covered in the `blob_provider_record` unit tests.
 fn blob_record() -> Record {
-    let value = [
-        PeerId::random().to_bytes().as_slice(),
-        &4096_u64.to_le_bytes(),
-    ]
-    .concat();
-    Record::new(RecordKey::new(&vec![9_u8; 64]), value)
+    Record::new(RecordKey::new(&vec![9_u8; 64]), b"opaque-value".to_vec())
 }
 
 #[tokio::test]
