@@ -76,6 +76,63 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+  # ── Auth seam: client-token e2e over real HTTP ──
+  # Proves a client token minted the way the auth frontend mints it can call
+  # the routes the SDK uses (the 0.11.0-rc.9 login-loop outage shape).
+  # Companion in-process pin: crates/auth/tests/client_token_contract.rs
+  #
+  # Deliberately NOT merobox: this must test the PR's own auth code, i.e.
+  # embedded auth inside the PR-built merod image. merobox's `--auth-mode
+  # embedded` is binary-mode only, and its docker-mode `--auth-service`
+  # boots a prebuilt mero-auth image (edge/released) behind Traefik — the
+  # wrong artifact for a PR gate. A separate merobox `--auth-service` job
+  # with a PR-built Dockerfile.auth image would cover the proxy topology;
+  # that is complementary, not a replacement.
+  auth-seam:
+    name: Auth seam (client-token e2e)
+    needs: build-image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v8
+        with:
+          name: merod-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: zstd -d /tmp/merod-local.tar.zst --stdout | docker load
+
+      - name: Boot merod (embedded auth, single node)
+        run: |
+          mkdir -p seam-home && chmod 777 seam-home
+          docker run --rm -v "$PWD/seam-home:/data" merod:local \
+            --home /data --node seam init --auth-mode embedded \
+            --server-host 0.0.0.0 --server-port 4001 --swarm-port 4002
+          docker run -d --name seam-node -p 127.0.0.1:4001:4001 \
+            -v "$PWD/seam-home:/data" merod:local \
+            --home /data --node seam run
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:4001/auth/health >/dev/null 2>&1 && { echo "auth healthy"; exit 0; }
+            sleep 2
+          done
+          echo "merod auth service did not become healthy"; exit 1
+
+      - name: Run auth-seam e2e
+        run: ./scripts/e2e-auth-seam.sh http://localhost:4001
+
+      - name: Node logs on failure
+        if: failure()
+        run: docker logs seam-node || true
+
+      - name: Stop node
+        if: always()
+        run: docker rm -f seam-node || true
+
   # ── Build WASM apps (runs in parallel with image build) ──
   build-apps:
     name: Build Apps
