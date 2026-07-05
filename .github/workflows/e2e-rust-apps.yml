@@ -341,11 +341,6 @@ jobs:
           - workflow: components-demo
             file: workflows/components-demo.yml
             app: components-demo
-          # Blobs app lifecycle: upload/announce/register/read-back/delete.
-          # These scenarios sat unwired in apps/blobs/workflows while the
-          # blobs app's file-id scheme changed (#3047) — only merobox's CI
-          # (testing a stale example against moving edge) noticed. Wired so
-          # blobs-app/storage regressions fail HERE, pre-merge.
           - workflow: blobs-lifecycle
             file: workflows/blobs.yml
             app: blobs
