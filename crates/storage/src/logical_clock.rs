@@ -347,8 +347,11 @@ impl LogicalClock {
         let now_nanos = time_now_fn();
 
         // Convert nanoseconds to NTP64 format
-        // NTP64: upper 32 bits = seconds, lower 32 bits = fraction of second
-        let secs = now_nanos / 1_000_000_000;
+        // NTP64: upper 32 bits = seconds, lower 32 bits = fraction of second.
+        // Saturate seconds at u32::MAX (~year 2106, the last value the 32-bit
+        // seconds field can hold) so `secs << 32` caps deterministically
+        // instead of silently wrapping the physical time back to a small value.
+        let secs = (now_nanos / 1_000_000_000).min(u64::from(u32::MAX));
         let nanos = now_nanos % 1_000_000_000;
         let frac = (nanos * (1_u64 << 32)) / 1_000_000_000;
         // Quantize physical time to the bits not reserved for the counter so
@@ -396,8 +399,10 @@ impl LogicalClock {
         // Get current physical time for drift check
         let now_nanos = time_now_fn();
 
-        // Convert nanoseconds to NTP64 format
-        let secs = now_nanos / 1_000_000_000;
+        // Convert nanoseconds to NTP64 format. Saturate seconds at u32::MAX
+        // (~year 2106) so `secs << 32` caps deterministically rather than
+        // silently wrapping the physical time.
+        let secs = (now_nanos / 1_000_000_000).min(u64::from(u32::MAX));
         let nanos = now_nanos % 1_000_000_000;
         let frac = (nanos * (1_u64 << 32)) / 1_000_000_000;
         let local_ntp = (secs << 32) | frac;
@@ -406,7 +411,9 @@ impl LogicalClock {
         // only — the remote counter bits are logical ordering, not clock
         // drift, and would otherwise inflate the comparison at the boundary.
         const DRIFT_TOLERANCE_SECS: u64 = 5;
-        let drift_ntp = local_ntp + (DRIFT_TOLERANCE_SECS << 32);
+        // Saturate: a `local_ntp` near the u32::MAX-seconds cap would overflow
+        // the add (a debug panic / release wrap) otherwise.
+        let drift_ntp = local_ntp.saturating_add(DRIFT_TOLERANCE_SECS << 32);
 
         if remote_phys > drift_ntp {
             return Err(ClockUpdateError::Drift {
@@ -516,6 +523,22 @@ mod tests {
         // And a third reading, still on the rewound clock, keeps advancing.
         let third = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
         assert!(third.get_time().as_u64() > after.get_time().as_u64());
+    }
+
+    #[test]
+    fn test_far_future_clock_saturates_instead_of_wrapping() {
+        // Seconds beyond NTP64's 32-bit seconds field (~year 2106) must
+        // saturate at u32::MAX, not wrap `secs << 32` down to a small physical
+        // time (which would let the HLC regress and collide timestamps).
+        let secs_overflow: u64 = (1_u64 << 33) * 1_000_000_000; // secs = 2^33
+        let time = AtomicU64::new(secs_overflow);
+        let mut hlc = LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf));
+        let ts = hlc.new_timestamp(|| time.load(Ordering::Relaxed));
+        assert_eq!(
+            physical_time_secs(&ts),
+            u32::MAX,
+            "far-future physical time must saturate at u32::MAX, not wrap to a small value",
+        );
     }
 
     #[test]

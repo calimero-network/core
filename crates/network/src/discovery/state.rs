@@ -46,6 +46,12 @@ pub(crate) const DIAL_FAILURE_EVICTION_THRESHOLD: u8 = 3;
 /// [`add_peer_addr`]: DiscoveryState::add_peer_addr
 pub(crate) const MAX_ADDRS_PER_PEER: usize = 4;
 
+/// Cap on the number of distinct peers the discovery book tracks. Rendezvous
+/// discovery can surface an unbounded stream of never-connected peers on a
+/// public namespace (sybil-friendly), which otherwise grows this map forever.
+/// Well above any real overlay's live peer count.
+pub(crate) const MAX_TRACKED_PEERS: usize = 4096;
+
 /// Rendezvous-key prefixes for per-overlay registration/discovery.
 ///
 /// Instead of one global rendezvous namespace (which returns every node
@@ -349,6 +355,43 @@ impl DiscoveryState {
     /// is responsible for filtering out forms we don't want to dial
     /// directly — most notably relayed multiaddrs (`/p2p-circuit/`) for
     /// inbound connection records.
+    /// Evict the lowest-value tracked peer while over [`MAX_TRACKED_PEERS`].
+    ///
+    /// Never evicts `keep` (the peer just touched) or an infrastructure peer we
+    /// actively use (a relay we hold a reservation with, or a rendezvous point).
+    /// Among the rest, drops the one with the fewest known addresses (ties
+    /// broken deterministically by `PeerId`) — i.e. the least useful
+    /// discovered-but-unconnected entry. If only protected peers remain, the
+    /// (bounded, real) infra set is left intact rather than evicting something
+    /// useful.
+    fn evict_peers_over_cap(&mut self, keep: &PeerId) {
+        while self.peers.len() > MAX_TRACKED_PEERS {
+            let victim = self
+                .peers
+                .iter()
+                .filter(|(id, info)| {
+                    // Never evict the peer we just touched or an infrastructure
+                    // peer. relay/rendezvous/autonat index sets are kept
+                    // separately from `PeerInfo`, so guard all of them too —
+                    // evicting an indexed peer would dangle that index.
+                    *id != keep
+                        && info.relay.is_none()
+                        && info.rendezvous.is_none()
+                        && !self.relay_index.contains(id)
+                        && !self.rendezvous_index.contains(id)
+                        && !self.autonat_index.contains(id)
+                })
+                .min_by_key(|(id, info)| (info.addrs.len(), **id))
+                .map(|(id, _)| *id);
+            match victim {
+                Some(v) => {
+                    let _ = self.peers.remove(&v);
+                }
+                None => break,
+            }
+        }
+    }
+
     pub(crate) fn add_peer_addr(&mut self, peer_id: PeerId, addr: &Multiaddr) {
         let addrs = &mut self.peers.entry(peer_id).or_default().addrs;
 
@@ -391,6 +434,8 @@ impl DiscoveryState {
         }
 
         let _ = addrs.insert(addr.clone(), 0);
+
+        self.evict_peers_over_cap(&peer_id);
     }
 
     /// Mark a dial failure for `addr` under `peer_id`. Increments the
@@ -474,6 +519,8 @@ impl DiscoveryState {
                 });
             }
         }
+
+        self.evict_peers_over_cap(peer_id);
     }
 
     pub(crate) fn update_rendezvous_cookie(&mut self, rendezvous_peer: &PeerId, cookie: &Cookie) {

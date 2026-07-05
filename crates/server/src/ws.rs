@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::pin::pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
@@ -28,7 +28,7 @@ use serde_json::{
     to_value as to_json_value, Value,
 };
 use tokio::spawn;
-use tokio::sync::{mpsc, oneshot, RwLock, Semaphore};
+use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio::time::interval;
 use tracing::{debug, error, field, info, info_span, warn, Instrument};
 use uuid::Uuid;
@@ -130,6 +130,10 @@ pub(crate) struct ServiceState {
     /// Whether the auth guard is active on this service's routes. When `false`
     /// the server was intentionally started without auth (no-auth mode).
     pub(crate) auth_enabled: bool,
+    /// Spawns the shared node-event fan-out task exactly once, lazily on the
+    /// first connection (so a WS service that never sees a client never holds
+    /// a broadcast-receiver subscription).
+    events_fanout: Once,
 }
 
 /// Get current Unix timestamp in seconds
@@ -173,6 +177,7 @@ pub(crate) fn service(
         connections: RwLock::default(),
         config: ws_config,
         auth_enabled,
+        events_fanout: Once::new(),
     });
 
     Some((path, get(ws_handler).layer(Extension(state))))
@@ -276,21 +281,13 @@ async fn handle_socket(
 
     debug!(%connection_id, "Client connection established");
 
-    // Cancellation signal for the node-event task. The sender lives on this
-    // stack frame; when the read loop below ends and `handle_socket` returns,
-    // dropping it resolves the receiver and stops the task. Without it, on a
-    // quiet node the task would park in `events.next()` indefinitely, holding a
-    // broadcast-receiver subscription and a `command_sender` clone long after
-    // the client disconnected — a per-disconnect leak that also delays shutdown.
-    let (events_shutdown_tx, events_shutdown_rx) = oneshot::channel::<()>();
-
-    drop(spawn(handle_node_events(
-        connection_id,
-        Arc::clone(&state),
-        connection_state.clone(),
-        commands_sender.clone(),
-        events_shutdown_rx,
-    )));
+    // One fan-out task serves every connection (spawned lazily here so tests
+    // that build a `ServiceState` directly get it too). It holds the only
+    // broadcast-receiver subscription and serializes each event once, instead
+    // of one subscription + one serialization per connected client.
+    state.events_fanout.call_once(|| {
+        drop(spawn(fan_out_node_events(Arc::clone(&state))));
+    });
 
     let (socket_sender, mut socket_receiver) = socket.split();
 
@@ -372,75 +369,35 @@ async fn handle_socket(
 
     debug!(%connection_id, "Client connection terminated");
 
-    // Stop the node-event task now rather than at the end of scope, so it
-    // releases its broadcast subscription promptly even if the client went quiet
-    // long before disconnecting.
-    drop(events_shutdown_tx);
-
     let mut state = state.connections.write().await;
     drop(state.remove(&connection_id));
 }
 
-async fn handle_node_events(
-    connection_id: ConnectionId,
-    state: Arc<ServiceState>,
-    connection_state: ConnectionState,
-    command_sender: mpsc::Sender<Command>,
-    mut shutdown: oneshot::Receiver<()>,
-) {
+/// The single node-event fan-out task, shared by every WS connection.
+///
+/// Spawned at most once per service (lazily, on the first connection) and runs
+/// for the rest of the process — `state` keeps the node's event sender alive,
+/// so the stream only ends at shutdown. Holding one broadcast-receiver
+/// subscription here (instead of one per connection) means each `NodeEvent` is
+/// cloned out of the broadcast channel once and JSON-serialized once, with the
+/// resulting bytes shared across all subscribed connections via
+/// [`Command::SendSerialized`] — previously every connection's own event task
+/// re-cloned and re-serialized the same event.
+async fn fan_out_node_events(state: Arc<ServiceState>) {
     let events = state.node_client.receive_events();
 
     let mut events = pin!(events);
 
-    loop {
-        let event = tokio::select! {
-            // Poll cancellation first so a disconnected connection stops this
-            // task promptly even under a steady event stream.
-            biased;
-            // Resolves as soon as `handle_socket` drops the shutdown sender at
-            // connection teardown (whether the client sent frames recently or
-            // not). This is what lets a quiet-node connection stop parking in
-            // `events.next()` and release its broadcast subscription.
-            _ = &mut shutdown => {
-                debug!(%connection_id, "WS connection closed, stopping event handler");
-                break;
-            }
-            maybe_event = events.next() => match maybe_event {
-                Some(event) => event,
-                None => {
-                    debug!(%connection_id, "Node event stream ended, stopping event handler");
-                    break;
-                }
-            },
-        };
+    while let Some(event) = events.next().await {
+        let NodeEvent::Context(ref context_event) = event;
+        let context_id = context_event.context_id;
 
-        debug!(
-            %connection_id,
-            "Received node event: {:?}, subscriptions state: {:?}",
-            event,
-            connection_state.inner.read().await.subscriptions
-        );
-
-        let event = match event {
-            NodeEvent::Context(event)
-                if {
-                    connection_state
-                        .inner
-                        .read()
-                        .await
-                        .subscriptions
-                        .contains(&event.context_id)
-                } =>
-            {
-                NodeEvent::Context(event)
-            }
-            NodeEvent::Context(_) => continue,
-        };
+        debug!("Received node event: {:?}", event);
 
         let body = match to_json_value(event) {
             Ok(v) => ResponseBody::Result(v),
             Err(err) => {
-                error!(%connection_id, %err, "Failed to serialize node event");
+                error!(%err, "Failed to serialize node event");
                 ResponseBody::Error(ResponseBodyError::ServerError(
                     ServerResponseError::InternalError { err: None },
                 ))
@@ -449,18 +406,51 @@ async fn handle_node_events(
 
         let response = Response { id: None, body };
 
-        if let Err(err) = command_sender.send(Command::Send(response)).await {
-            // The command receiver is gone (connection tearing down), so stop
-            // instead of logging an error for every subsequent event until the
-            // shutdown signal arrives.
-            debug!(
-                %connection_id,
-                %err,
-                "Failed to send WsCommand::Send (connection closed), stopping event handler",
-            );
-            break;
+        // The pushed response is identical for every subscriber (`id` is always
+        // `None`), so serialize it once and share the bytes.
+        let message: Arc<str> = match to_json_string(&response) {
+            Ok(message) => message.into(),
+            Err(err) => {
+                error!(%err, "Failed to serialize WsResponse");
+                continue;
+            }
         };
+
+        // Snapshot the matching subscribers under the read lock, then send
+        // without holding it, so neither the connection map nor per-connection
+        // state stays locked while command channels drain.
+        let mut targets = Vec::new();
+        {
+            let connections = state.connections.read().await;
+            for (connection_id, connection) in &*connections {
+                if connection
+                    .inner
+                    .read()
+                    .await
+                    .subscriptions
+                    .contains(&context_id)
+                {
+                    targets.push((*connection_id, connection.commands.clone()));
+                }
+            }
+        }
+
+        for (connection_id, commands) in targets {
+            // `try_send` so one slow client's full command channel can't stall
+            // event delivery to everyone else; that client just misses this
+            // event — the same skip-on-lag contract its dedicated broadcast
+            // receiver had before.
+            if let Err(err) = commands.try_send(Command::SendSerialized(Arc::clone(&message))) {
+                debug!(
+                    %connection_id,
+                    %err,
+                    "Dropping node event for slow or closing connection",
+                );
+            }
+        }
     }
+
+    debug!("Node event stream ended, stopping WS event fan-out");
 }
 
 async fn handle_commands(
@@ -504,6 +494,16 @@ async fn handle_commands(
                     }
                 };
                 if let Err(err) = socket_sender.send(Message::Text(response)).await {
+                    error!(%connection_id, %err, "Failed to send Message::Text");
+                }
+            }
+            Command::SendSerialized(message) => {
+                // One copy of the shared bytes into the frame's `String` — the
+                // serialization itself already happened once, upstream.
+                if let Err(err) = socket_sender
+                    .send(Message::Text((*message).to_owned()))
+                    .await
+                {
                     error!(%connection_id, %err, "Failed to send Message::Text");
                 }
             }
@@ -839,7 +839,7 @@ mod tests {
         let blob_manager = BlobManager::new(blob_store);
 
         // Initial receiver dropped immediately so `receiver_count()` reflects
-        // only the per-connection node-event tasks.
+        // only the shared node-event fan-out task.
         let (event_sender, _) = broadcast::channel(256);
         let (ctx_sync_tx, _ctx_sync_rx) = mpsc::channel(64);
         let (ns_sync_tx, _ns_sync_rx) = mpsc::channel(64);
@@ -866,6 +866,7 @@ mod tests {
             connections: RwLock::default(),
             config: WsConfig::new(true),
             auth_enabled: false,
+            events_fanout: std::sync::Once::new(),
         });
 
         let app = Router::new()
@@ -1036,17 +1037,17 @@ mod tests {
             .expect("subscribe response");
         assert_eq!(sub_resp["id"], json!(1));
 
-        // Wait until both per-connection node-event tasks have subscribed to the
-        // broadcast channel, otherwise the injected event could be sent before a
-        // receiver exists and be lost.
-        let both_listening = tokio::time::timeout(Duration::from_secs(5), async {
-            while server.event_sender.receiver_count() < 2 {
+        // Wait until the shared fan-out task (spawned on the first connection)
+        // has subscribed to the broadcast channel, otherwise the injected event
+        // could be sent before a receiver exists and be lost.
+        let listening = tokio::time::timeout(Duration::from_secs(5), async {
+            while server.event_sender.receiver_count() < 1 {
                 sleep(Duration::from_millis(20)).await;
             }
         })
         .await
         .is_ok();
-        assert!(both_listening, "both node-event tasks should be listening");
+        assert!(listening, "the event fan-out task should be listening");
 
         let event = NodeEvent::Context(ContextEvent {
             context_id: ctx,

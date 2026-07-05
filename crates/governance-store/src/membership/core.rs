@@ -162,6 +162,13 @@ impl<'a> MembershipRepository<'a> {
             handle.delete(&GroupMember::new(group_id.to_bytes(), *identity))?;
         }
         MetadataRepository::new(self.store).delete_member(group_id, identity)?;
+        // Clear the per-member capability row so a stale (possibly elevated)
+        // grant can't survive removal and be read back on re-add. Mirrors the
+        // deny-list clear on `MemberAdded`. Hash-neutral: a separate column
+        // from `GroupMember`, so it doesn't feed `compute_state_hash`.
+        // The three deletes aren't atomic, but apply is replay-safe: a crash
+        // between them is healed when the idempotent op re-applies.
+        CapabilitiesRepository::new(self.store).delete_member_capability(group_id, identity)?;
         Ok(())
     }
 

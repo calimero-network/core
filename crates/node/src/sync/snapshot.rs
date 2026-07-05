@@ -40,6 +40,12 @@ pub const DEFAULT_PAGE_BYTE_LIMIT: u32 = 64 * 1024;
 /// Maximum pages to send in a single burst.
 pub const DEFAULT_PAGE_LIMIT: u16 = 16;
 
+/// Hard ceiling on the peer-supplied `page_limit`. The responder generates up
+/// to this many pages per request in memory, so an unclamped peer value (up to
+/// `u16::MAX`) would let a caller drive page generation without bound. The
+/// per-page byte budget is separately clamped to `MAX_SNAPSHOT_PAGE_SIZE`.
+pub const MAX_PAGE_LIMIT: u16 = 1024;
+
 /// Leading byte of a **v2** (PR-6b / #2539) snapshot page: records are
 /// length-framed (`u32 LE len ‖ record_bytes`) so the receiver bounds each
 /// record's decode to its own sub-slice. This makes the backward-compatible
@@ -138,6 +144,13 @@ impl SyncManager {
         stream: &mut Stream,
         _nonce: Nonce,
     ) -> Result<()> {
+        // Clamp peer-supplied limits before they drive page generation: a caller
+        // must not be able to request an unbounded number of pages or an
+        // oversized per-page byte budget (OOM). `page_limit` floors at 1 so a
+        // zero value still makes progress.
+        let page_limit = page_limit.clamp(1, MAX_PAGE_LIMIT);
+        let byte_limit = byte_limit.clamp(1, MAX_SNAPSHOT_PAGE_SIZE);
+
         // Verify boundary is still valid
         let context = match self.context_client.get_context(&context_id)? {
             Some(ctx) => ctx,
@@ -357,12 +370,13 @@ impl SyncManager {
             .await?;
 
         // Verify snapshot integrity by computing the actual root hash from storage (I7).
-        // On success we always trust the locally-computed hash because it reflects what
-        // is actually persisted -- storing the peer's claimed hash when it disagrees
-        // with local storage would create a silent divergence.
-        // On failure (deserialization error) we fall back to the peer's claimed hash so
-        // that sync can still proceed; compute_root_hash may fail if the minimal structs
-        // drift from the real storage layout.
+        // We always persist the locally-computed hash because it reflects what is
+        // actually persisted; storing the peer's claimed hash would risk a silent
+        // divergence. If the local compute fails we must NOT fall back to the peer's
+        // claimed root — that would persist an unverified, peer-supplied value on a
+        // purely local error. Instead we fail the sync here; the sync-in-progress
+        // marker is left set (we return before clearing it), so crash-recovery
+        // re-syncs and retries rather than accepting an untrusted root.
         let root_to_store = match self.context_client.compute_root_hash(&context_id) {
             Ok(computed_root) => {
                 if computed_root != *boundary.boundary_root_hash {
@@ -386,9 +400,12 @@ impl SyncManager {
                     %context_id,
                     error = %e,
                     claimed_root = %hex::encode(*boundary.boundary_root_hash),
-                    "Could not compute root hash, trusting peer's claimed hash"
+                    "Could not compute local root hash; refusing to trust peer's claimed \
+                     root, failing sync for retry"
                 );
-                *boundary.boundary_root_hash
+                return Err(eyre::eyre!(
+                    "snapshot verify: could not compute local root hash for {context_id}: {e}"
+                ));
             }
         };
 
@@ -437,6 +454,7 @@ impl SyncManager {
                 requested_cutoff_timestamp: None,
             },
             next_nonce: super::helpers::generate_nonce(),
+            pop: self.build_init_pop(context_id, our_identity).await,
         };
         super::stream::send(stream, &msg, None).await?;
 
@@ -591,6 +609,11 @@ impl SyncManager {
         // target instead of the schema the synced entities actually carry).
         let mut deferred_members: DeferredMembers = Vec::new();
 
+        // Sign the transport-binding proof once — it's independent of the
+        // per-page cursor/nonce (see `InitProof`), so every page request in the
+        // burst loop reuses the same signature.
+        let pop = self.build_init_pop(context_id, our_identity).await;
+
         loop {
             let msg = StreamMessage::Init {
                 context_id,
@@ -603,6 +626,7 @@ impl SyncManager {
                     resume_cursor: resume_cursor.clone(),
                 },
                 next_nonce: super::helpers::generate_nonce(),
+                pop,
             };
             super::stream::send(stream, &msg, None).await?;
 

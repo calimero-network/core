@@ -1282,6 +1282,12 @@ impl DeltaStore {
     ///
     /// Deltas are loaded in topological order (parents before children) to properly
     /// reconstruct the DAG topology.
+    ///
+    /// Contract: call once per store at creation/restart, before it serves
+    /// concurrent appliers (all callers are `is_new`-gated). The topological
+    /// restore holds the DAG write lock across all passes, so a concurrent
+    /// `add_delta` would block for the whole restore — safe only under this
+    /// startup-only contract.
     pub async fn load_persisted_deltas(&self) -> Result<LoadPersistedResult> {
         use std::collections::HashMap;
 
@@ -1475,73 +1481,78 @@ impl DeltaStore {
         // incorrectly return false for any cross-restart ancestry.
         let mut topology_seed: Vec<([u8; 32], Vec<[u8; 32]>)> = Vec::new();
 
-        while progress_made && !remaining.is_empty() {
-            progress_made = false;
-            let mut to_remove = Vec::new();
+        // Hold the DAG write lock once across all restore passes rather than
+        // re-acquiring it per delta (the loop's only await was this lock).
+        // Scoped so it drops before the `restore_topology` await below.
+        // Startup-only path with no concurrent appliers, so no contention
+        // cost — which is also why holding it across the blocking DB
+        // point-lookups below is fine.
+        {
+            let mut dag = self.dag.write().await;
+            while progress_made && !remaining.is_empty() {
+                progress_made = false;
+                let mut to_remove = Vec::new();
 
-            for (delta_id, parents) in &remaining {
-                // Check readiness under a read lock, then release it before the
-                // DB read so the DAG lock is never held across a blocking
-                // point-lookup (the write lock is taken only to restore, below).
-                let can_restore = {
-                    let dag = self.dag.read().await;
-                    parents.iter().all(|p| *p == [0u8; 32] || dag.is_applied(p))
-                };
+                for (delta_id, parents) in &remaining {
+                    // Check if all parents have been applied before restoring
+                    let can_restore = parents.iter().all(|p| *p == [0u8; 32] || dag.is_applied(p));
 
-                if !can_restore {
-                    continue;
-                }
-
-                // Lazy-load the full delta only now that it's ready to restore,
-                // so we never hold all payloads in RAM at once. A row that
-                // vanished or whose actions won't decode is skipped (it stays
-                // pending and is retried once its parents/data are available).
-                let key =
-                    calimero_store::key::ContextDagDelta::new(self.applier.context_id, *delta_id);
-                let Some(stored_delta) = handle.get(&key)? else {
-                    continue;
-                };
-                let actions: Vec<Action> = match borsh::from_slice(&stored_delta.actions) {
-                    Ok(actions) => actions,
-                    Err(e) => {
-                        warn!(
-                            ?e,
-                            context_id = %self.applier.context_id,
-                            delta_id = ?delta_id,
-                            "Failed to deserialize persisted delta actions during restore, skipping"
-                        );
-                        to_remove.push(*delta_id);
+                    if !can_restore {
                         continue;
                     }
-                };
-                let is_checkpoint = stored_delta.parents.len() == 1
-                    && stored_delta.parents[0] == [0u8; 32]
-                    && actions.is_empty();
-                let dag_delta = CausalDelta {
-                    id: stored_delta.delta_id,
-                    parents: stored_delta.parents.clone(),
-                    payload: actions,
-                    hlc: stored_delta.hlc,
-                    expected_root_hash: stored_delta.expected_root_hash,
-                    kind: if is_checkpoint {
-                        calimero_dag::DeltaKind::Checkpoint
-                    } else {
-                        calimero_dag::DeltaKind::Regular
-                    },
-                };
 
-                // Restore topology WITHOUT re-applying (delta was already applied)
-                let mut dag = self.dag.write().await;
-                if dag.restore_applied_delta(dag_delta) {
-                    loaded_count += 1;
-                    to_remove.push(*delta_id);
-                    topology_seed.push((*delta_id, stored_delta.parents));
-                    progress_made = true;
+                    // Lazy-load the full delta only now that it's ready to restore,
+                    // so we never hold all payloads in RAM at once. A row that
+                    // vanished or whose actions won't decode is skipped (it stays
+                    // pending and is retried once its parents/data are available).
+                    let key = calimero_store::key::ContextDagDelta::new(
+                        self.applier.context_id,
+                        *delta_id,
+                    );
+                    let Some(stored_delta) = handle.get(&key)? else {
+                        continue;
+                    };
+                    let actions: Vec<Action> = match borsh::from_slice(&stored_delta.actions) {
+                        Ok(actions) => actions,
+                        Err(e) => {
+                            warn!(
+                                ?e,
+                                context_id = %self.applier.context_id,
+                                delta_id = ?delta_id,
+                                "Failed to deserialize persisted delta actions during restore, skipping"
+                            );
+                            to_remove.push(*delta_id);
+                            continue;
+                        }
+                    };
+                    let is_checkpoint = stored_delta.parents.len() == 1
+                        && stored_delta.parents[0] == [0u8; 32]
+                        && actions.is_empty();
+                    let dag_delta = CausalDelta {
+                        id: stored_delta.delta_id,
+                        parents: stored_delta.parents.clone(),
+                        payload: actions,
+                        hlc: stored_delta.hlc,
+                        expected_root_hash: stored_delta.expected_root_hash,
+                        kind: if is_checkpoint {
+                            calimero_dag::DeltaKind::Checkpoint
+                        } else {
+                            calimero_dag::DeltaKind::Regular
+                        },
+                    };
+
+                    // Restore topology WITHOUT re-applying (delta was already applied)
+                    if dag.restore_applied_delta(dag_delta) {
+                        loaded_count += 1;
+                        to_remove.push(*delta_id);
+                        topology_seed.push((*delta_id, stored_delta.parents));
+                        progress_made = true;
+                    }
                 }
-            }
 
-            for delta_id in to_remove {
-                drop(remaining.remove(&delta_id));
+                for delta_id in to_remove {
+                    drop(remaining.remove(&delta_id));
+                }
             }
         }
 

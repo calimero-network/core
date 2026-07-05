@@ -239,13 +239,7 @@ impl TokenValidation {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn jwt_with_exp(exp: i64) -> String {
-        let payload =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("{{\"exp\":{exp}}}"));
-        // header and signature segments are irrelevant to `exp` extraction.
-        format!("aGVhZGVy.{payload}.c2ln")
-    }
+    use crate::test_support::jwt_with_exp;
 
     #[test]
     fn decode_exp_from_valid_jwt() {

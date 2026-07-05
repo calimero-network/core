@@ -49,6 +49,14 @@ use crate::governance_dag::signed_namespace_op_to_delta;
 /// governance history — comfortably over the in-memory prune threshold (8192).
 const MAX_BACKFILL_OPS: usize = 100_000;
 
+/// High/low water marks for the per-scope **live** op-log. Bounds the memory the
+/// live feed retains (only backfill was capped before). The high-water mark
+/// mirrors `MAX_BACKFILL_OPS` so the retained causal-honor window matches what
+/// the backfill walk already covers — eviction introduces no coverage gap the
+/// backfill path didn't already have.
+const MAX_LIVE_LOG_OPS: usize = MAX_BACKFILL_OPS;
+const LIVE_LOG_LOW_WATER: usize = MAX_BACKFILL_OPS * 3 / 4;
+
 /// The resolved at-cut context for an apply-auth read: the folded `AclView`, the
 /// genesis root tuple `(root_group, genesis_admin)`, and the namespace default-cap
 /// base. Produced by `ScopeProjections::auth_cut_context`.
@@ -287,6 +295,40 @@ impl ScopeProjections {
             {
                 if let Some(entry) = self.logs.get_mut(&op.scope).and_then(|l| l.get_mut(idx)) {
                     *entry = op.clone();
+                }
+            }
+        }
+        self.enforce_log_bound(op.scope);
+    }
+
+    /// Cap the retained op-log for `scope` so the live feed can't grow memory
+    /// without bound. When the log crosses [`MAX_LIVE_LOG_OPS`] it is trimmed to
+    /// [`LIVE_LOG_LOW_WATER`] (batched, so eviction is amortized), dropping the
+    /// oldest ops. `seen` and `noop_log_pos` are kept consistent with the
+    /// trimmed log. The retained window matches the backfill walk's cap, so
+    /// `acl_view_at` for a cut older than the window degrades exactly as it
+    /// already does for a context whose history exceeded the backfill cap.
+    fn enforce_log_bound(&mut self, scope: ScopeId) {
+        let Some(log) = self.logs.get_mut(&scope) else {
+            return;
+        };
+        if log.len() <= MAX_LIVE_LOG_OPS {
+            return;
+        }
+        let drain = log.len() - LIVE_LOG_LOW_WATER;
+        let drained_ids: Vec<[u8; 32]> = log.drain(0..drain).map(|op| op.id()).collect();
+        if let Some(seen) = self.seen.get_mut(&scope) {
+            for id in &drained_ids {
+                let _ = seen.remove(id);
+            }
+        }
+        // `noop_log_pos` values are indices into `log`, which just shifted by
+        // `drain`; rebuild from the retained log (only runs on eviction).
+        if let Some(noop) = self.noop_log_pos.get_mut(&scope) {
+            noop.clear();
+            for (idx, op) in log.iter().enumerate() {
+                if matches!(op.payload, OpPayload::Noop) {
+                    let _ = noop.insert(op.id(), idx);
                 }
             }
         }
@@ -1441,11 +1483,9 @@ impl ScopeProjections {
     /// authoritative `None`-on-incomplete-ancestry contract as the other at-cut
     /// reads.
     ///
-    /// Mirrors live exactly (`GroupMembershipView::is_admin` + `has_another_admin`):
-    /// `member` counts as an admin via a direct `Admin`-role row OR the genesis group
-    /// admin (`group_admin` / namespace-root); but "another admin" counts only
-    /// another `Admin`-role ROW (`groups[group]`) — the genesis admin alone does NOT
-    /// satisfy it, matching live's row-based `has_another_admin`.
+    /// `member` is an admin via a direct `Admin`-role row OR the genesis admin
+    /// (`group_admin` / namespace-root). "another admin" = another `Admin`-role ROW
+    /// (`groups[group]`) OR the genesis admin when it is some other identity.
     ///
     /// Causal position: this reads the op's PARENT cut (admin set as of the op's own
     /// ancestry) — the correct state for a pre-mutation invariant — whereas the live
@@ -1469,16 +1509,21 @@ impl ScopeProjections {
             .and_then(|m| m.get(member))
             .is_some_and(|r| *r == GroupMemberRole::Admin)
             || view.group_admin.get(&group) == Some(member)
-            || root.is_some_and(|(root_g, root_admin)| root_g == group && root_admin == *member);
+            || root
+                .as_ref()
+                .is_some_and(|(root_g, root_admin)| *root_g == group && root_admin == member);
         if !member_is_admin {
             return Some(false);
         }
-        // Another admin exists only via a distinct `Admin`-role ROW — matching live's
-        // `has_another_admin`, which scans stored rows and ignores the genesis admin.
+        // another admin = a distinct `Admin`-role ROW or the genesis founder
+        // (group_admin / namespace-root) when it is some other identity
         let has_other = rows.is_some_and(|m| {
             m.iter()
                 .any(|(k, r)| *r == GroupMemberRole::Admin && k != member)
-        });
+        }) || view.group_admin.get(&group).is_some_and(|a| a != member)
+            || root
+                .as_ref()
+                .is_some_and(|(root_g, root_admin)| *root_g == group && root_admin != member);
         Some(!has_other)
     }
 

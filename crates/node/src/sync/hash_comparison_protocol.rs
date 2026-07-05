@@ -46,7 +46,7 @@ use crate::sync::helpers::{
 use async_trait::async_trait;
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::sync::{
-    compare_tree_nodes, create_runtime_env, EntityDeletion, InitPayload, LeafMetadata,
+    compare_tree_nodes, create_runtime_env, EntityDeletion, InitPayload, InitProof, LeafMetadata,
     MessagePayload, StreamMessage, SyncProtocolExecutor, SyncTransport, TreeCompareResult,
     TreeLeafData, TreeNode, TreeNodeResponse, MAX_LEAF_VALUE_SIZE, MAX_NODES_PER_RESPONSE,
 };
@@ -108,6 +108,11 @@ pub struct HashComparisonConfig {
     /// (Public) leaves on the peer's current membership. `None` when
     /// unattributable (e.g. sync-sim harness) → historical allow.
     pub session_peer: Option<PublicKey>,
+    /// Transport-binding proof of possession for `identity`, attached to every
+    /// state-read `Init` this initiator sends so the responder can reject a
+    /// caller that doesn't control the claimed identity. `None` in harnesses
+    /// with no real transport identity. See [`InitProof`].
+    pub init_pop: Option<InitProof>,
 }
 
 /// Data from the first `TreeNodeRequest` for responder dispatch.
@@ -184,6 +189,7 @@ impl SyncProtocolExecutor for HashComparisonProtocol {
             config.remote_root_hash,
             config.context_client.as_ref(),
             config.session_peer,
+            config.init_pop,
         )
         .await
     }
@@ -211,6 +217,7 @@ impl SyncProtocolExecutor for HashComparisonProtocol {
 // Initiator Implementation
 // =============================================================================
 
+#[allow(clippy::too_many_arguments)]
 async fn run_initiator_impl<T: SyncTransport>(
     transport: &mut T,
     store: &Store,
@@ -219,6 +226,7 @@ async fn run_initiator_impl<T: SyncTransport>(
     remote_root_hash: [u8; 32],
     context_client: Option<&ContextClient>,
     session_peer: Option<PublicKey>,
+    init_pop: Option<InitProof>,
 ) -> Result<HashComparisonStats> {
     info!(%context_id, "Starting HashComparison sync (initiator)");
 
@@ -267,6 +275,7 @@ async fn run_initiator_impl<T: SyncTransport>(
         let request_msg = StreamMessage::Init {
             context_id,
             party_id: identity,
+            pop: init_pop,
             payload: InitPayload::TreeNodeRequest {
                 context_id,
                 node_id,
@@ -688,7 +697,7 @@ async fn run_initiator_impl<T: SyncTransport>(
     // converges through HC's ordinary tree traversal like any other entity; no
     // separate writer-set reconcile is needed.)
     let (peer_current_root, peer_scope_root) =
-        match query_peer_current_root(transport, context_id, identity).await {
+        match query_peer_current_root(transport, context_id, identity, init_pop).await {
             Ok(Some((root, scope_root))) => (root, scope_root),
             Ok(None) | Err(_) => (remote_root_hash, None),
         };
@@ -807,12 +816,14 @@ pub(crate) async fn query_peer_current_root<T: SyncTransport>(
     transport: &mut T,
     context_id: ContextId,
     identity: PublicKey,
+    init_pop: Option<InitProof>,
 ) -> Result<Option<([u8; 32], Option<[u8; 32]>)>> {
     let request = StreamMessage::Init {
         context_id,
         party_id: identity,
         payload: InitPayload::DagHeadsRequest { context_id },
         next_nonce: generate_nonce(),
+        pop: init_pop,
     };
     transport.send(&request).await?;
 
@@ -1373,6 +1384,10 @@ async fn push_entities<T: SyncTransport>(
                 entities: chunk.to_vec(),
             },
             next_nonce: generate_nonce(),
+            // Pushes are writes: each entity is authorized by its own action
+            // path on apply, not by the sender's `party_id`, so no read-gating
+            // proof is attached (or required by the responder) here.
+            pop: None,
         };
 
         transport.send(&push_msg).await?;
@@ -1427,6 +1442,9 @@ async fn push_deletions<T: SyncTransport>(
                 deletions: chunk.to_vec(),
             },
             next_nonce: generate_nonce(),
+            // Writes (tombstones) — authorized per-action on apply. See the
+            // EntityPush site above.
+            pop: None,
         };
 
         transport.send(&push_msg).await?;
@@ -1677,6 +1695,7 @@ mod tests {
             remote_root_hash: [1u8; 32],
             context_client: None,
             session_peer: None,
+            init_pop: None,
         };
         assert_eq!(config.remote_root_hash, [1u8; 32]);
     }

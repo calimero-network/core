@@ -1051,9 +1051,11 @@ fn apply_local_signed_group_op_rejects_last_admin_removal() {
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 
-    MetaRepository::new(&store)
-        .save(&gid, &test_meta())
-        .unwrap();
+    // Founder == sole admin (no other admin to count), owner kept distinct so
+    // the last-admin guard fires, not owner-immunity.
+    let mut meta = test_meta();
+    meta.admin_identity = admin_pk;
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
     MembershipRepository::new(&store)
         .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
         .unwrap();
@@ -3560,6 +3562,50 @@ fn resolve_signing_key_none_when_exceeding_max_depth() {
         within_limit,
         Some(sk),
         "key should be reachable within depth limit"
+    );
+}
+
+#[test]
+fn resolve_reaches_root_at_max_depth() {
+    use super::namespace::MAX_NAMESPACE_DEPTH;
+
+    let store = test_store();
+
+    // Chain of MAX_NAMESPACE_DEPTH + 2 groups so we can exercise both the
+    // deepest legal subgroup (depth MAX) and one level past it (depth MAX+1).
+    let groups: Vec<ContextGroupId> = (0..=MAX_NAMESPACE_DEPTH + 1)
+        .map(|i| {
+            let mut bytes = [0u8; 32];
+            bytes[0] = 0xD0;
+            bytes[1] = i as u8;
+            ContextGroupId::from(bytes)
+        })
+        .collect();
+    for i in 0..MAX_NAMESPACE_DEPTH + 1 {
+        NamespaceRepository::new(&store)
+            .nest(&groups[i], &groups[i + 1])
+            .unwrap();
+    }
+
+    // Depth MAX (MAX edges to root) must resolve to the root. This is the
+    // regression: the old exclusive `0..MAX` bound bailed `DepthExceeded`
+    // here because reaching the root needs MAX+1 walk steps to observe its
+    // `None` parent.
+    assert_eq!(
+        NamespaceRepository::new(&store)
+            .resolve(&groups[MAX_NAMESPACE_DEPTH])
+            .unwrap(),
+        groups[0],
+        "deepest legal subgroup (depth MAX) must resolve to the root",
+    );
+
+    // One level past MAX stays unresolvable — depth-(MAX+1) is unreachable in
+    // production anyway, and this matches `check_path`'s inclusive bound.
+    assert!(
+        NamespaceRepository::new(&store)
+            .resolve(&groups[MAX_NAMESPACE_DEPTH + 1])
+            .is_err(),
+        "depth MAX+1 must still bail DepthExceeded",
     );
 }
 

@@ -47,12 +47,31 @@ pub struct BlobDeleteResponse {
     pub deleted: bool,
 }
 
-/// Convert axum Body to futures AsyncRead using tokio_util::io::StreamReader
-/// This allows streaming large files without loading them entirely into memory
+/// Hard ceiling on a single blob upload. The upload streams straight to blob
+/// storage, so without a cap a client could stream an unbounded body and fill
+/// the node's disk (there is no `Content-Length`-based limit — the body is
+/// consumed as a stream). Enforced by counting bytes as they flow.
+const MAX_BLOB_UPLOAD_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
+
+/// Convert axum Body to futures AsyncRead using tokio_util::io::StreamReader.
+/// This allows streaming large files without loading them entirely into memory.
+///
+/// The stream errors out once cumulative bytes exceed [`MAX_BLOB_UPLOAD_BYTES`],
+/// so an oversized (or unbounded/chunked) upload is aborted mid-stream rather
+/// than being written to disk in full.
 fn body_to_async_read(body: Body) -> impl AsyncRead {
-    let byte_stream = body
-        .into_data_stream()
-        .map(|result| result.map_err(std::io::Error::other));
+    let mut total: u64 = 0;
+    let byte_stream = body.into_data_stream().map(move |result| {
+        let chunk = result.map_err(std::io::Error::other)?;
+        total = total.saturating_add(chunk.len() as u64);
+        if total > MAX_BLOB_UPLOAD_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "blob upload exceeds maximum allowed size",
+            ));
+        }
+        Ok(chunk)
+    });
 
     StreamReader::new(byte_stream).compat()
 }

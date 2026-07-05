@@ -67,6 +67,74 @@ fn remove_member() {
         .unwrap());
 }
 
+// A removed member's per-member capability row must NOT survive removal and be
+// read back on re-add — otherwise an elevated grant is silently restored when
+// the member re-joins as a plain Member with no non-zero group defaults.
+#[test]
+fn remove_member_clears_stale_capabilities_so_readd_starts_fresh() {
+    use calimero_context_config::MemberCapabilities;
+
+    let store = test_store();
+    let gid = test_group_id();
+    let pk = PublicKey::from([0x07; 32]);
+    let elevated = MemberCapabilities::CAN_INVITE_MEMBERS.bits();
+
+    let membership = MembershipRepository::new(&store);
+    let caps = CapabilitiesRepository::new(&store);
+
+    // Add member and grant an elevated capability.
+    membership
+        .add_member(&gid, &pk, GroupMemberRole::Member)
+        .unwrap();
+    caps.set_member_capability(&gid, &pk, elevated).unwrap();
+    assert_eq!(caps.member_capability(&gid, &pk).unwrap(), Some(elevated));
+
+    // Remove, then re-add as a plain Member. The group has no default caps
+    // (never set → `default_capabilities` is None), so `add_member` seeds none.
+    membership.remove_member(&gid, &pk).unwrap();
+    membership
+        .add_member(&gid, &pk, GroupMemberRole::Member)
+        .unwrap();
+
+    // The stale elevated grant must be gone — fresh member, no capability row.
+    assert_eq!(caps.member_capability(&gid, &pk).unwrap(), None);
+    assert_eq!(
+        membership.effective_capabilities(&gid, &pk).unwrap(),
+        Some(0)
+    );
+}
+
+// Complementary path: when the group DOES have non-zero default caps, re-add
+// must seed exactly those defaults — never the stale elevated grant. Distinguishes
+// "cap row cleared on removal" from "cap row happened to be overwritten by defaults".
+#[test]
+fn readd_with_defaults_seeds_defaults_not_stale_caps() {
+    use calimero_context_config::MemberCapabilities;
+
+    let store = test_store();
+    let gid = test_group_id();
+    let pk = PublicKey::from([0x08; 32]);
+    let elevated = MemberCapabilities::CAN_INVITE_MEMBERS.bits();
+    let defaults = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits();
+    assert_ne!(elevated, defaults);
+
+    let membership = MembershipRepository::new(&store);
+    let caps = CapabilitiesRepository::new(&store);
+    caps.set_default_capabilities(&gid, defaults).unwrap();
+
+    membership
+        .add_member(&gid, &pk, GroupMemberRole::Member)
+        .unwrap();
+    caps.set_member_capability(&gid, &pk, elevated).unwrap();
+
+    membership.remove_member(&gid, &pk).unwrap();
+    membership
+        .add_member(&gid, &pk, GroupMemberRole::Member)
+        .unwrap();
+
+    assert_eq!(caps.member_capability(&gid, &pk).unwrap(), Some(defaults));
+}
+
 #[test]
 fn get_member_role() {
     let store = test_store();
@@ -157,6 +225,48 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
         .require_tee_attestation_verifier_membership(&outsider)
         .is_err());
     assert!(membership.read_required_tee_admission_policy().is_err());
+
+    // sole Admin row is demotable/removable when a different genesis founder exists
+    let founder_store = test_store();
+    let founder_gid = test_group_id();
+    let lone_admin = PrivateKey::random(&mut rng).public_key();
+    let founder = PrivateKey::random(&mut rng).public_key();
+    MembershipRepository::new(&founder_store)
+        .add_member(&founder_gid, &lone_admin, GroupMemberRole::Admin)
+        .unwrap();
+    let mut founder_meta = test_meta();
+    founder_meta.admin_identity = founder;
+    MetaRepository::new(&founder_store)
+        .save(&founder_gid, &founder_meta)
+        .unwrap();
+    let founder_policy = MembershipPolicy::new(&founder_store, founder_gid);
+    assert!(founder_policy
+        .ensure_not_last_admin_removal(&lone_admin)
+        .is_ok());
+    assert!(founder_policy
+        .ensure_not_last_admin_demotion(&lone_admin, &GroupMemberRole::Member)
+        .is_ok());
+
+    // symmetric case (independent store): when the founder IS the sole admin,
+    // the guard still fires
+    let sole_store = test_store();
+    let sole_gid = test_group_id();
+    let sole_admin = PrivateKey::random(&mut rng).public_key();
+    MembershipRepository::new(&sole_store)
+        .add_member(&sole_gid, &sole_admin, GroupMemberRole::Admin)
+        .unwrap();
+    let mut sole_founder_meta = test_meta();
+    sole_founder_meta.admin_identity = sole_admin;
+    MetaRepository::new(&sole_store)
+        .save(&sole_gid, &sole_founder_meta)
+        .unwrap();
+    let sole_policy = MembershipPolicy::new(&sole_store, sole_gid);
+    assert!(sole_policy
+        .ensure_not_last_admin_removal(&sole_admin)
+        .is_err());
+    assert!(sole_policy
+        .ensure_not_last_admin_demotion(&sole_admin, &GroupMemberRole::Member)
+        .is_err());
 
     let signer_sk = PrivateKey::random(&mut rng);
     let policy_op = SignedGroupOp::sign(
