@@ -34,6 +34,31 @@ impl From<SwarmEvent<BehaviourEvent>> for FromSwarm {
 #[derive(Debug)]
 pub struct FromSwarm(SwarmEvent<BehaviourEvent>);
 
+impl NetworkManager {
+    /// Route a behaviour-level swarm event to its `EventHandler` impl.
+    ///
+    /// Split out of the actix `StreamHandler` so tests can pump real swarm
+    /// events through the production handlers without an actor context —
+    /// every behaviour arm is context-free by construction (only the
+    /// connection-lifecycle arms below schedule actix timers). See
+    /// `manager_discovery_tests` for the loop that drives this.
+    pub(crate) fn dispatch_behaviour_event(&mut self, event: BehaviourEvent) {
+        match event {
+            BehaviourEvent::Autonat(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Dcutr(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Gossipsub(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Identify(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Kad(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Mdns(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Ping(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Relay(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Rendezvous(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Stream(()) => {}
+            BehaviourEvent::SpecializedNodeInvite(event) => EventHandler::handle(self, event),
+        }
+    }
+}
+
 impl StreamHandler<FromSwarm> for NetworkManager {
     fn started(&mut self, _ctx: &mut Self::Context) {
         debug!("started receiving swarm messages");
@@ -43,19 +68,7 @@ impl StreamHandler<FromSwarm> for NetworkManager {
     fn handle(&mut self, FromSwarm(event): FromSwarm, ctx: &mut Self::Context) {
         #[expect(clippy::wildcard_enum_match_arm, reason = "This is reasonable here")]
         match event {
-            SwarmEvent::Behaviour(event) => match event {
-                BehaviourEvent::Autonat(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Dcutr(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Gossipsub(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Identify(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Kad(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Mdns(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Ping(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Relay(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Rendezvous(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Stream(()) => {}
-                BehaviourEvent::SpecializedNodeInvite(event) => EventHandler::handle(self, event),
-            },
+            SwarmEvent::Behaviour(event) => self.dispatch_behaviour_event(event),
             SwarmEvent::NewListenAddr {
                 listener_id,
                 address,

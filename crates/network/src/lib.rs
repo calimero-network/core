@@ -38,6 +38,8 @@ pub mod behaviour;
 mod blob_provider_record;
 mod discovery;
 mod handlers;
+#[cfg(test)]
+mod manager_discovery_tests;
 
 use behaviour::Behaviour;
 use discovery::peer_cache::PeerAddrCache;
