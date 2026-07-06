@@ -1,4 +1,5 @@
 use libp2p::rendezvous::client::Event;
+use libp2p::rendezvous::ErrorCode;
 use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 use owo_colors::OwoColorize;
 use tracing::{debug, error, warn};
@@ -16,9 +17,24 @@ impl EventHandler<Event> for NetworkManager {
                 registrations,
                 cookie,
             } => {
-                self.discovery
-                    .state
-                    .update_rendezvous_cookie(&rendezvous_node, &cookie);
+                // Only remember cookies issued for the global discovery
+                // namespace. `rendezvous_discover` sends one global discover
+                // (WITH this stored cookie, for incremental results) plus
+                // per-overlay discovers (deliberately cookie-less). Cookies
+                // are bound to the namespace they were issued for, and the
+                // server rejects a discover whose cookie was issued for a
+                // different namespace (`CookieNamespaceMismatch` →
+                // `InvalidCookie`). Unconditionally storing whichever cookie
+                // arrived last let a per-overlay response poison the slot,
+                // after which every global discover — the only discovery
+                // path a namespace-join has, since the joiner is not a
+                // member of any shared overlay yet — failed with
+                // `InvalidCookie` until the node restarted.
+                if cookie.namespace() == Some(&self.discovery.rendezvous_config.namespace) {
+                    self.discovery
+                        .state
+                        .update_rendezvous_cookie(&rendezvous_node, &cookie);
+                }
 
                 for registration in registrations {
                     let peer_id = registration.record.peer_id();
@@ -123,6 +139,24 @@ impl EventHandler<Event> for NetworkManager {
                 error,
             } => {
                 warn!(?rendezvous_node, ?namespace, error_code=?error, "Rendezvous discovery failed");
+
+                // A rejected cookie never heals on its own: the server
+                // rejects the same stale/mismatched cookie on every retry
+                // (server restarts invalidate cookies too). Drop it and
+                // immediately re-discover from scratch. A cookie-less
+                // discover cannot be rejected for cookie reasons, so this
+                // cannot loop.
+                if error == ErrorCode::InvalidCookie {
+                    self.discovery
+                        .state
+                        .clear_rendezvous_cookie(&rendezvous_node);
+                    if let Err(err) = self.rendezvous_discover(&rendezvous_node, true) {
+                        error!(
+                            %err,
+                            "Failed to re-run rendezvous discovery after clearing rejected cookie"
+                        );
+                    }
+                }
             }
             Event::RegisterFailed {
                 rendezvous_node,

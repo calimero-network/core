@@ -530,6 +530,16 @@ impl DiscoveryState {
             .and_modify(|info| info.update_rendezvous_cookie(cookie.clone()));
     }
 
+    /// Forget the discovery cookie stored for `rendezvous_peer`. Called when
+    /// the server rejects the cookie (`InvalidCookie`) so the next discover
+    /// starts from scratch instead of re-sending the rejected cookie forever.
+    pub(crate) fn clear_rendezvous_cookie(&mut self, rendezvous_peer: &PeerId) {
+        let _ = self
+            .peers
+            .entry(*rendezvous_peer)
+            .and_modify(|info| info.clear_rendezvous_cookie());
+    }
+
     /// Remember that `listener_id` was opened against `relay_peer` as a
     /// relayed listener. The ListenerClosed handler uses this to route
     /// recovery for the quota-denied case where libp2p tears the listener
@@ -947,6 +957,12 @@ impl PeerInfo {
         }
     }
 
+    fn clear_rendezvous_cookie(&mut self) {
+        if let Some(ref mut info) = self.rendezvous {
+            info.clear_cookie();
+        }
+    }
+
     fn update_relay_reservation_status(&mut self, status: RelayReservationStatus) {
         if let Some(ref mut info) = self.relay {
             info.update_reservation_status(status);
@@ -1064,6 +1080,10 @@ impl PeerRendezvousInfo {
     fn update_cookie(&mut self, cookie: Cookie) {
         self.cookie = Some(cookie);
         self.last_discovery_at = Some(Instant::now());
+    }
+
+    fn clear_cookie(&mut self) {
+        self.cookie = None;
     }
 
     pub(crate) const fn registration_status(&self) -> RendezvousRegistrationStatus {
