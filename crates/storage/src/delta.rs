@@ -378,7 +378,18 @@ pub fn commit_root(root_hash: &[u8; 32]) -> eyre::Result<()> {
 
         let artifact = match (&*actions, &*comparisons) {
             (&[], &[]) => vec![],
-            (&[], _) => to_vec(&StorageDelta::Comparisons(comparisons))?,
+            (&[], _) => {
+                // Reachability probe (issue 1): the SOLE site that produces a
+                // `StorageDelta::Comparisons` wire artifact. If this never fires
+                // across a multi-node sync run, the state-based comparison sync
+                // path is dead in production and can be removed.
+                tracing::warn!(
+                    target: "sync_probe",
+                    comparison_count = comparisons.len(),
+                    "sync_probe: commit_root emitted StorageDelta::Comparisons artifact"
+                );
+                to_vec(&StorageDelta::Comparisons(comparisons))?
+            }
             (_, &[]) => to_vec(&StorageDelta::Actions(actions))?,
             _ => eyre::bail!("both actions and comparison are present"),
         };

@@ -397,6 +397,17 @@ where
         comparisons: Vec<Comparison>,
         ctx: &crate::interface::ApplyContext,
     ) -> Result<(), StorageError> {
+        // Reachability probe (issue 1): fires whenever a `StorageDelta::Comparisons`
+        // delta reaches `Root::sync` — including the zero-byte no-op artifact that
+        // deserializes to `Comparisons(vec![])` and seeds a root comparison below.
+        // If this never fires across a multi-node sync run, no peer ever delivers a
+        // Comparisons delta and the state-based comparison sync path is dead.
+        tracing::warn!(
+            target: "sync_probe",
+            comparison_count = comparisons.len(),
+            "sync_probe: apply_comparisons invoked (Comparisons sync path reached)"
+        );
+
         if comparisons.is_empty() {
             push_comparison(Comparison {
                 data: <Interface<S>>::find_by_id_raw(Id::root()),
@@ -457,6 +468,16 @@ where
 
             match action {
                 Action::Compare { id } => {
+                    // Reachability probe (issue 1): a received `Action::Compare` is
+                    // the trigger that turns into a Comparisons emission. Compare
+                    // actions are only generated inside `__calimero_sync_next`
+                    // (a non-broadcast state-op), so this arm should never fire from
+                    // peer traffic if the static analysis holds.
+                    tracing::warn!(
+                        target: "sync_probe",
+                        %id,
+                        "sync_probe: received Action::Compare in delta (state-based sync trigger)"
+                    );
                     push_comparison(Comparison {
                         data: <Interface<S>>::find_by_id_raw(id),
                         comparison_data: <Interface<S>>::generate_comparison_data(Some(id))?,
