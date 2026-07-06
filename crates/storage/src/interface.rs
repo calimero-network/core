@@ -211,6 +211,11 @@ enum RemoveMode {
     Relocate,
 }
 
+/// A resolved local `Shared` stamp authorization: the writer set to persist
+/// paired with the signer to record. Produced by
+/// [`Interface::authorize_local_shared_stamp`].
+type SharedStampAuthorization = (BTreeMap<PublicKey, OpMask>, PublicKey);
+
 /// The primary interface for the storage system.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
@@ -2759,22 +2764,16 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         }
 
-        // If this is a local shared action by a writer, set the nonce.
-        // Note: unlike save_raw, here `metadata` was just loaded from the index
-        // a few lines above and represents the current stored state. There's
-        // no separate "claimed" set to union against — the executor must be
-        // in the stored writer set to authorize the delete.
+        // If this is a local shared action by a writer, set the nonce. Same
+        // authority rule as save_raw, via the shared helper. Here `metadata`
+        // was just loaded from the index above, so its writers already are the
+        // stored set — the helper's stored ∪ claimed union collapses to the
+        // stored membership check this delete requires.
         let shared_to_stamp = if let StorageType::Shared {
-            writers: stored, ..
+            writers: claimed, ..
         } = &metadata.storage_type
         {
-            let executor: calimero_primitives::identity::PublicKey =
-                crate::env::executor_id().into();
-            if stored.contains_key(&executor) {
-                Some((stored.clone(), executor))
-            } else {
-                None
-            }
+            Self::authorize_local_shared_stamp(child_id, claimed)?
         } else {
             None
         };
@@ -3527,6 +3526,41 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(lww_pick(existing, incoming))
     }
 
+    /// Decides whether the local executor may stamp a `Shared` mutation of
+    /// `id`, returning the writer set to persist and the signer to record, or
+    /// `None` if the executor is not authorized.
+    ///
+    /// Authority is the union of two writer sets:
+    ///   - `claimed`: the writers carried in the metadata being written. On a
+    ///     save this is the incoming action's own claimed set; on a delete it
+    ///     is the set just loaded from the stored index (so `claimed` already
+    ///     equals stored there, and the union below is a no-op).
+    ///   - stored: the writers currently persisted in the index for `id`.
+    ///
+    /// Membership in EITHER set authorizes the stamp. The union is what lets a
+    /// writer rotate itself out: it is still in the stored set though absent
+    /// from the new claimed set, and the remote verifier also checks against
+    /// stored, so the signature still verifies there.
+    ///
+    /// Both the save and delete paths route through here so the local-write
+    /// authority rule lives in exactly one place and cannot drift between them;
+    /// each caller keeps its own nonce and any schema re-stamp.
+    fn authorize_local_shared_stamp(
+        id: Id,
+        claimed: &BTreeMap<PublicKey, OpMask>,
+    ) -> Result<Option<SharedStampAuthorization>, StorageError> {
+        let executor: PublicKey = crate::env::executor_id().into();
+        let stored_has_executor = <Index<S>>::get_metadata(id)?
+            .as_ref()
+            .map(|m| match &m.storage_type {
+                StorageType::Shared { writers, .. } => writers.contains_key(&executor),
+                _ => false,
+            })
+            .unwrap_or(false);
+        let authorized = stored_has_executor || claimed.contains_key(&executor);
+        Ok(authorized.then(|| (claimed.clone(), executor)))
+    }
+
     /// Saves raw serialized data with orphan checking.
     ///
     /// # Errors
@@ -3603,13 +3637,8 @@ impl<S: StorageAdaptor> Interface<S> {
         }
 
         // If this is a local shared action by a writer, set the nonce.
-        //
-        // Stamping authority is the union of (stored writers) and (action's claimed writers):
-        //   - Stored: the writer set as currently persisted in the index.
-        //   - Claimed: the writer set in the action's own metadata.
-        // Stamp if the executor is in EITHER. This is what enables rotate-self-out:
-        // a writer rotating themselves out has executor ∈ stored but ∉ claimed; the
-        // verifier on remote also uses stored, so the signature still verifies there.
+        // Authority (stored ∪ claimed) is decided by the shared helper; here
+        // `claimed` is the incoming action's own writer set.
         //
         // Same re-stamp-always rationale as the User arm above: a
         // re-write may carry the previously-stored real signature
@@ -3620,21 +3649,7 @@ impl<S: StorageAdaptor> Interface<S> {
             ..
         } = &metadata.storage_type
         {
-            let executor: calimero_primitives::identity::PublicKey =
-                crate::env::executor_id().into();
-            let stored_has_executor = <Index<S>>::get_metadata(id)?
-                .as_ref()
-                .map(|m| match &m.storage_type {
-                    StorageType::Shared { writers, .. } => writers.contains_key(&executor),
-                    _ => false,
-                })
-                .unwrap_or(false);
-            let claimed_has_executor = claimed_writers.contains_key(&executor);
-            if stored_has_executor || claimed_has_executor {
-                Some((claimed_writers.clone(), executor))
-            } else {
-                None
-            }
+            Self::authorize_local_shared_stamp(id, claimed_writers)?
         } else {
             None
         };
