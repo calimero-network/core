@@ -1627,3 +1627,31 @@ fn reachability_reachable_to_unreachable_when_last_address_removed() {
     assert!(gone.disable_autonat_server);
     assert!(gone.has_actions());
 }
+
+#[test]
+fn test_clear_rendezvous_cookie_forgets_rejected_cookie() {
+    let mut state = DiscoveryState::default();
+    let peer_id = PeerId::random();
+    let cookie = Cookie::for_namespace(Namespace::from_static("test"));
+
+    state.update_peer_protocols(&peer_id, &[RENDEZVOUS_PROTOCOL_NAME]);
+    state.update_rendezvous_cookie(&peer_id, &cookie);
+    assert_eq!(
+        state.peers[&peer_id].rendezvous.as_ref().unwrap().cookie(),
+        Some(&cookie)
+    );
+
+    // Server rejected the cookie (InvalidCookie) → the handler clears it so
+    // the next discover starts cookie-less instead of re-sending the
+    // rejected cookie forever.
+    state.clear_rendezvous_cookie(&peer_id);
+    assert_eq!(
+        state.peers[&peer_id].rendezvous.as_ref().unwrap().cookie(),
+        None
+    );
+
+    // Clearing for an unknown peer is a no-op, not a panic or an insertion.
+    let unknown = PeerId::random();
+    state.clear_rendezvous_cookie(&unknown);
+    assert!(!state.peers.contains_key(&unknown));
+}
