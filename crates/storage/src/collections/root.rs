@@ -393,19 +393,26 @@ where
     /// from its match expression and then runs through `.inspect_err`.
     /// Inlining the body in the match arm would let `?` skip over the
     /// trace.
+    #[expect(
+        unreachable_code,
+        unused_variables,
+        reason = "issue-1 reachability probe hard-aborts at entry"
+    )]
     fn apply_comparisons(
         comparisons: Vec<Comparison>,
         ctx: &crate::interface::ApplyContext,
     ) -> Result<(), StorageError> {
         // Reachability probe (issue 1): fires whenever a `StorageDelta::Comparisons`
         // delta reaches `Root::sync` — including the zero-byte no-op artifact that
-        // deserializes to `Comparisons(vec![])` and seeds a root comparison below.
-        // If this never fires across a multi-node sync run, no peer ever delivers a
-        // Comparisons delta and the state-based comparison sync path is dead.
-        tracing::warn!(
-            target: "sync_probe",
-            comparison_count = comparisons.len(),
-            "sync_probe: apply_comparisons invoked (Comparisons sync path reached)"
+        // deserializes to `Comparisons(vec![])` (count 0) and would seed a root
+        // comparison below. Hard-abort so reachability surfaces as a CI failure
+        // regardless of guest-log capture. Green CI ⇒ no peer ever delivers a
+        // Comparisons/empty artifact and this path is dead. The `count` distinguishes
+        // the empty-artifact-sentinel case (0) from a real received Comparisons batch.
+        panic!(
+            "sync_probe(apply_comparisons): Comparisons delta reached Root::sync with {} \
+             comparison(s) — the state-based comparison sync path IS reachable",
+            comparisons.len()
         );
 
         if comparisons.is_empty() {
@@ -468,20 +475,18 @@ where
 
             match action {
                 Action::Compare { id } => {
-                    // Reachability probe (issue 1): a received `Action::Compare` is
-                    // the trigger that turns into a Comparisons emission. Compare
-                    // actions are only generated inside `__calimero_sync_next`
+                    // Reachability probe (issue 1): a received `Action::Compare` in a
+                    // delta is the trigger that turns into a Comparisons emission.
+                    // Compare actions are only generated inside `__calimero_sync_next`
                     // (a non-broadcast state-op), so this arm should never fire from
-                    // peer traffic if the static analysis holds.
-                    tracing::warn!(
-                        target: "sync_probe",
-                        %id,
-                        "sync_probe: received Action::Compare in delta (state-based sync trigger)"
+                    // peer traffic if the static analysis holds. Hard-abort so
+                    // reachability surfaces as a CI failure regardless of guest-log
+                    // capture; green CI ⇒ Compare actions never reach peers.
+                    panic!(
+                        "sync_probe(apply_actions): received Action::Compare {{id={id}}} in a \
+                         delta — Compare actions ARE reaching peers and the state-based sync \
+                         path IS reachable"
                     );
-                    push_comparison(Comparison {
-                        data: <Interface<S>>::find_by_id_raw(id),
-                        comparison_data: <Interface<S>>::generate_comparison_data(Some(id))?,
-                    });
                 }
                 Action::Add {
                     id,

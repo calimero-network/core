@@ -380,15 +380,16 @@ pub fn commit_root(root_hash: &[u8; 32]) -> eyre::Result<()> {
             (&[], &[]) => vec![],
             (&[], _) => {
                 // Reachability probe (issue 1): the SOLE site that produces a
-                // `StorageDelta::Comparisons` wire artifact. If this never fires
-                // across a multi-node sync run, the state-based comparison sync
-                // path is dead in production and can be removed.
-                tracing::warn!(
-                    target: "sync_probe",
-                    comparison_count = comparisons.len(),
-                    "sync_probe: commit_root emitted StorageDelta::Comparisons artifact"
+                // `StorageDelta::Comparisons` wire artifact. Hard-abort so
+                // reachability surfaces as a CI failure regardless of guest-log
+                // capture (guest `tracing` is filtered out of captured node logs).
+                // If CI stays green, this emission never happens and the
+                // state-based comparison sync path is dead in production.
+                panic!(
+                    "sync_probe(commit_root): emitted StorageDelta::Comparisons with {} \
+                     comparison(s) — the state-based comparison sync path IS reachable",
+                    comparisons.len()
                 );
-                to_vec(&StorageDelta::Comparisons(comparisons))?
             }
             (_, &[]) => to_vec(&StorageDelta::Actions(actions))?,
             _ => eyre::bail!("both actions and comparison are present"),
