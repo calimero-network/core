@@ -2767,13 +2767,14 @@ impl<S: StorageAdaptor> Interface<S> {
         // If this is a local shared action by a writer, set the nonce. Same
         // authority rule as save_raw, via the shared helper. Here `metadata`
         // was just loaded from the index above, so its writers already are the
-        // stored set — the helper's stored ∪ claimed union collapses to the
-        // stored membership check this delete requires.
+        // stored set — pass them as `stored` so the helper skips a redundant
+        // index read, and the stored ∪ claimed union collapses to the stored
+        // membership check this delete requires.
         let shared_to_stamp = if let StorageType::Shared {
             writers: claimed, ..
         } = &metadata.storage_type
         {
-            Self::authorize_local_shared_stamp(child_id, claimed)?
+            Self::authorize_local_shared_stamp(child_id, claimed, Some(claimed))?
         } else {
             None
         };
@@ -3545,18 +3546,29 @@ impl<S: StorageAdaptor> Interface<S> {
     /// Both the save and delete paths route through here so the local-write
     /// authority rule lives in exactly one place and cannot drift between them;
     /// each caller keeps its own nonce and any schema re-stamp.
+    ///
+    /// `stored`: the caller's already-loaded stored writer set, when it has one.
+    /// The delete path loads `metadata` from the index immediately before
+    /// calling, so its writers ARE the stored set — it passes `Some(..)` to
+    /// avoid a redundant index read. The save path's `claimed` is the incoming
+    /// action's set (not stored), so it passes `None` and the stored set is
+    /// looked up here.
     fn authorize_local_shared_stamp(
         id: Id,
         claimed: &BTreeMap<PublicKey, OpMask>,
+        stored: Option<&BTreeMap<PublicKey, OpMask>>,
     ) -> Result<Option<SharedStampAuthorization>, StorageError> {
         let executor: PublicKey = crate::env::executor_id().into();
-        let stored_has_executor = <Index<S>>::get_metadata(id)?
-            .as_ref()
-            .map(|m| match &m.storage_type {
-                StorageType::Shared { writers, .. } => writers.contains_key(&executor),
-                _ => false,
-            })
-            .unwrap_or(false);
+        let stored_has_executor = match stored {
+            Some(stored) => stored.contains_key(&executor),
+            None => <Index<S>>::get_metadata(id)?
+                .as_ref()
+                .map(|m| match &m.storage_type {
+                    StorageType::Shared { writers, .. } => writers.contains_key(&executor),
+                    _ => false,
+                })
+                .unwrap_or(false),
+        };
         let authorized = stored_has_executor || claimed.contains_key(&executor);
         Ok(authorized.then(|| (claimed.clone(), executor)))
     }
@@ -3649,7 +3661,7 @@ impl<S: StorageAdaptor> Interface<S> {
             ..
         } = &metadata.storage_type
         {
-            Self::authorize_local_shared_stamp(id, claimed_writers)?
+            Self::authorize_local_shared_stamp(id, claimed_writers, None)?
         } else {
             None
         };
