@@ -520,12 +520,15 @@ fn serve_file(path: &str, file: EmbeddedFile) -> Result<Response<Body>, StatusCo
         // Prefix override on a text asset: rewrite once, then cache by path so
         // subsequent requests reuse the transformed bytes.
         (Some(prefix), true) => {
-            if let Some(cached) = rewritten_asset_cache()
+            // Bind the lookup so the read guard drops here; in edition 2021 an
+            // `if let` scrutinee temporary would outlive the whole `else`
+            // branch and self-deadlock against the `.write()` below.
+            let cached = rewritten_asset_cache()
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .get(path)
-                .cloned()
-            {
+                .cloned();
+            if let Some(cached) = cached {
                 Body::from(cached)
             } else {
                 let rewritten = match std::str::from_utf8(&file.data) {
