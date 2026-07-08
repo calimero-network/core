@@ -30,6 +30,8 @@ where
 
     info!(alias=%alias, "Deleting alias");
 
+    // Delete is idempotent: removing an absent alias succeeds (the store delete
+    // doesn't distinguish), matching the SDK's expectation.
     if let Err(err) = state.node_client.delete_alias(alias, scope) {
         error!(alias=%alias, error=?err, "Failed to delete alias");
         return parse_api_error(err).into_response();

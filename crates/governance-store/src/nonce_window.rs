@@ -88,10 +88,21 @@ impl NonceWindow {
         self.above.iter().next_back().copied().unwrap_or(self.floor)
     }
 
+    /// Largest gap above the floor a single nonce may sit at, and the most
+    /// above-floor entries the sparse set will hold. Legit nonces are minted
+    /// `max_applied() + 1` (contiguous) and any out-of-order arrival is bounded
+    /// by real in-flight concurrency, so both caps sit far above any honest
+    /// window. They exist only to stop a peer feeding sparse/huge nonces
+    /// (e.g. `floor+2, floor+4, …`, or a single `u64::MAX`) from growing the
+    /// persisted set without bound.
+    const MAX_GAP_ABOVE_FLOOR: u64 = 1 << 20;
+    const MAX_ABOVE_ENTRIES: usize = 4096;
+
     /// Record `nonce` as applied. Returns `true` if it was newly applied
     /// (the caller should apply the op), `false` if it was already present
-    /// (a dedup — drop it). Advances the floor through any run that
-    /// `nonce` made contiguous.
+    /// (a dedup) or was refused as out-of-window (too far above the floor, or
+    /// the sparse set is saturated) — in both `false` cases the caller drops
+    /// the op. Advances the floor through any run that `nonce` made contiguous.
     pub fn record(&mut self, nonce: u64) -> bool {
         // Governance nonces are minted as `max_applied() + 1`, so the first
         // valid nonce is 1; nonce 0 is never authored. A fresh window has
@@ -101,6 +112,21 @@ impl NonceWindow {
         debug_assert!(nonce > 0, "governance nonces must be >= 1, got {nonce}");
         if self.contains(nonce) {
             return false;
+        }
+        // The immediate next nonce always advances the floor (and drains any
+        // now-contiguous run *out* of the sparse set), so it must never be
+        // refused by the anti-DoS caps below — refusing it could otherwise wedge
+        // a full window forever (floor can't advance ⇒ set never drains).
+        if nonce != self.floor + 1 {
+            // Anti-DoS: refuse a nonce that sits implausibly far above the floor,
+            // or that would grow the sparse set past capacity. A refused nonce
+            // is simply not applied; an honest op reaches us again once the
+            // intervening gap fills and the floor catches up.
+            if nonce.saturating_sub(self.floor) > Self::MAX_GAP_ABOVE_FLOOR
+                || self.above.len() >= Self::MAX_ABOVE_ENTRIES
+            {
+                return false;
+            }
         }
         // `contains` returned false, so `nonce` is not in `above` and the
         // insert must be new. The insert runs unconditionally (NOT inside the
@@ -217,5 +243,45 @@ mod tests {
         let w = NonceWindow::default();
         assert_eq!(w.max_applied(), 0, "fresh signer → next nonce is 1");
         assert!(!w.contains(1));
+    }
+
+    #[test]
+    fn refuses_nonce_implausibly_far_above_floor() {
+        let mut w = NonceWindow::default();
+        // A single huge nonce must not be tracked (would let one op pin an
+        // entry arbitrarily far out and defeat gap reasoning).
+        assert!(
+            !w.record(u64::MAX),
+            "far-above nonce is refused, not applied"
+        );
+        assert_eq!(w.above().count(), 0, "refused nonce must not grow the set");
+        // A normal next nonce still works.
+        assert!(w.record(1));
+        assert_eq!(w.floor(), 1);
+    }
+
+    #[test]
+    fn caps_the_sparse_above_set() {
+        let mut w = NonceWindow::default();
+        // Fill the sparse set with even nonces (never filling floor+1) up to the
+        // cap; further sparse entries are refused instead of growing unbounded.
+        let mut recorded = 0usize;
+        let mut refused = 0usize;
+        for k in 1..=(NonceWindow::MAX_ABOVE_ENTRIES as u64 + 100) {
+            if w.record(2 * k + 1) {
+                recorded += 1;
+            } else {
+                refused += 1;
+            }
+        }
+        assert!(
+            w.above().count() <= NonceWindow::MAX_ABOVE_ENTRIES,
+            "above-set stays bounded by MAX_ABOVE_ENTRIES"
+        );
+        assert!(recorded <= NonceWindow::MAX_ABOVE_ENTRIES);
+        assert!(
+            refused >= 100,
+            "the capacity cap must actually refuse the over-cap nonces (got {refused} refused)"
+        );
     }
 }

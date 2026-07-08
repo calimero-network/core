@@ -43,7 +43,27 @@ pub async fn handler(
             group_name: req.group_name,
         })
         .await
-        .map_err(parse_api_error);
+        .map_err(|err| {
+            // The failure users actually hit here is peer discovery: the
+            // joiner holds a valid invitation but cannot open a stream to
+            // any current member within the discovery deadline (see
+            // node/src/sync/manager/namespace_join.rs). parse_api_error
+            // deliberately masks untyped reports as a bare 500, which the
+            // client then can't distinguish from a real internal fault —
+            // so type this one as a retryable 504 with an actionable
+            // message before falling through.
+            if format!("{err:?}").contains("namespace-join stream") {
+                ApiError {
+                    status_code: StatusCode::GATEWAY_TIMEOUT,
+                    message: "could not reach any member of this namespace to \
+                              complete the join; make sure the inviting node is \
+                              online and retry"
+                        .into(),
+                }
+            } else {
+                parse_api_error(err)
+            }
+        });
 
     match result {
         Ok(resp) => {

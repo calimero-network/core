@@ -17,6 +17,7 @@ on:
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
       - "apps/components-demo/**"
+      - "apps/blobs/**"
       - ".github/workflows/e2e-rust-apps.yml"
 
   pull_request:
@@ -27,6 +28,7 @@ on:
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
       - "apps/components-demo/**"
+      - "apps/blobs/**"
       - ".github/workflows/e2e-rust-apps.yml"
 
   workflow_dispatch:
@@ -76,6 +78,57 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+  # ── Auth seam: client-token e2e over real HTTP ──
+  # Proves a client token minted the way the auth frontend mints it can call
+  # the routes the SDK uses (the 0.11.0-rc.9 login-loop outage shape).
+  # Companion in-process pin: crates/auth/tests/client_token_contract.rs
+  #
+  # Declarative merobox workflow (workflows/auth-seam.yml) in binary mode
+  # with the PR's own merod: `--auth-mode embedded` is binary-mode only in
+  # merobox, and its docker-mode `--auth-service` boots a prebuilt
+  # mero-auth image — the wrong artifact for a PR gate. The PR-built merod
+  # is extracted from the already-built image; the seam assertions live in
+  # scripts/e2e-auth-seam.sh, invoked as the workflow's script step.
+  auth-seam:
+    name: Auth seam (client-token e2e)
+    needs: build-image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v8
+        with:
+          name: merod-image
+          path: /tmp
+
+      - name: Extract merod binary from image
+        run: |
+          zstd -d /tmp/merod-local.tar.zst --stdout | docker load
+          id=$(docker create merod:local)
+          docker cp "$id:/usr/local/bin/merod" ./merod
+          docker rm "$id"
+          chmod +x ./merod
+
+      - name: Setup merobox
+        uses: ./.github/actions/setup-merobox
+
+      - name: Run auth-seam e2e (merobox, embedded auth)
+        run: |
+          merobox bootstrap run workflows/auth-seam.yml \
+            --no-docker --binary-path ./merod --auth-mode embedded
+
+      - name: Logs on failure
+        if: failure()
+        run: cat data/auth-seam-1/logs/*.log || true
+
+      - name: Stop nodes
+        if: always()
+        run: merobox stop --no-docker --all || true
+
   # ── Build WASM apps (runs in parallel with image build) ──
   build-apps:
     name: Build Apps
@@ -119,6 +172,11 @@ jobs:
           cd apps/components-demo
           ./build.sh
 
+      - name: Build blobs app
+        run: |
+          cd apps/blobs
+          ./build.sh
+
       - name: Upload app artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -136,6 +194,9 @@ jobs:
             apps/components-demo/res/*.wasm
             apps/components-demo/res/abi.json
             apps/components-demo/res/state-schema.json
+            apps/blobs/res/*.wasm
+            apps/blobs/res/abi.json
+            apps/blobs/res/state-schema.json
           retention-days: 1
 
   # ── Test phase: run each workflow in parallel ──
@@ -280,6 +341,12 @@ jobs:
           - workflow: components-demo
             file: workflows/components-demo.yml
             app: components-demo
+          - workflow: blobs-lifecycle
+            file: workflows/blobs.yml
+            app: blobs
+          - workflow: blobs-api-example
+            file: workflows/blobs-example.yml
+            app: blobs
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml
             app: scaffolding-e2e
@@ -562,16 +629,16 @@ jobs:
   # ── Report phase: notify on PR failure ──
   comment:
     name: Report Failed Workflow
-    needs: test
+    needs: [test, auth-seam]
     runs-on: ubuntu-latest
     if: always() && github.event_name == 'pull_request'
     steps:
       - name: Check if main job failed or was cancelled
         id: check_status
         run: |
-          if [ "${{ needs.test.result }}" != "success" ]; then
+          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ]; then
             echo "job_failed=true" >> $GITHUB_OUTPUT
-            if [ "${{ needs.test.result }}" == "cancelled" ]; then
+            if [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ]; then
               echo "was_cancelled=true" >> $GITHUB_OUTPUT
             else
               echo "was_cancelled=false" >> $GITHUB_OUTPUT

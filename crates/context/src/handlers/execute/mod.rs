@@ -1032,10 +1032,11 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 &context_client,
                                 context_id,
                                 *object,
+                                Some(delta_id),
                             ) else {
                                 continue;
                             };
-                            for entry in log.entries.iter().filter(|e| e.delta_id == *delta_id) {
+                            for entry in &log.entries {
                                 if let Some(op) = crate::scope_projection::op_from_rotation_entry(
                                     *object, scope, entry,
                                 ) {

@@ -49,6 +49,14 @@ use crate::governance_dag::signed_namespace_op_to_delta;
 /// governance history — comfortably over the in-memory prune threshold (8192).
 const MAX_BACKFILL_OPS: usize = 100_000;
 
+/// High/low water marks for the per-scope **live** op-log. Bounds the memory the
+/// live feed retains (only backfill was capped before). The high-water mark
+/// mirrors `MAX_BACKFILL_OPS` so the retained causal-honor window matches what
+/// the backfill walk already covers — eviction introduces no coverage gap the
+/// backfill path didn't already have.
+const MAX_LIVE_LOG_OPS: usize = MAX_BACKFILL_OPS;
+const LIVE_LOG_LOW_WATER: usize = MAX_BACKFILL_OPS * 3 / 4;
+
 /// The resolved at-cut context for an apply-auth read: the folded `AclView`, the
 /// genesis root tuple `(root_group, genesis_admin)`, and the namespace default-cap
 /// base. Produced by `ScopeProjections::auth_cut_context`.
@@ -120,6 +128,11 @@ pub fn op_from_rotation_entry(object: Id, scope: ScopeId, entry: &RotationLogEnt
 /// storage env), by walking its hashed-collection children. `None` if the
 /// anchor has no rotation collection yet (never rotated / not a Shared anchor).
 ///
+/// `only_delta` narrows the returned entries to the ones recorded by that
+/// delta (the live ACL feed only wants the just-applied delta's rotations, so
+/// the non-matching entries are dropped during the walk instead of collected
+/// and filtered by the caller). `None` keeps every entry.
+///
 /// This is the post-apply read the live ACL feed uses to recover the **raw**
 /// rotation entries (with their signer), the independent source the projection
 /// folds — as opposed to the resolver's already-merged output.
@@ -132,6 +145,7 @@ pub fn load_rotation_log_direct(
     client: &ContextClient,
     context_id: ContextId,
     anchor: Id,
+    only_delta: Option<&[u8; 32]>,
 ) -> Option<RotationLog> {
     let map_id = Interface::<MainStorage>::rotation_log_child_id(anchor);
     let handle = client.datastore_handle();
@@ -177,7 +191,11 @@ pub fn load_rotation_log_direct(
                 continue;
             };
             match decode_rotation_log_entry_child(&bytes) {
-                Some(entry) => entries.push(entry),
+                Some(entry) => {
+                    if only_delta.is_none_or(|delta_id| entry.delta_id == *delta_id) {
+                        entries.push(entry);
+                    }
+                }
                 // A child that doesn't decode yields a partial log; warn rather
                 // than skip in silence (matches the node-crate reader).
                 None => tracing::warn!(
@@ -187,9 +205,9 @@ pub fn load_rotation_log_direct(
             }
         }
     }
-    // Canonical order; the caller filters to this delta's id, so ordering is not
-    // load-bearing here (it mirrors the node-crate reader's shape).
-    entries.sort_by(|a, b| a.delta_id.cmp(&b.delta_id));
+    // No canonical ordering: the sole caller folds this delta's entries in
+    // walk order (sorting by delta_id was O(n log n) of pure overhead — with
+    // the `only_delta` narrowing, all retained ids are equal anyway).
     Some(RotationLog {
         snapshot: None,
         entries,
@@ -287,6 +305,40 @@ impl ScopeProjections {
             {
                 if let Some(entry) = self.logs.get_mut(&op.scope).and_then(|l| l.get_mut(idx)) {
                     *entry = op.clone();
+                }
+            }
+        }
+        self.enforce_log_bound(op.scope);
+    }
+
+    /// Cap the retained op-log for `scope` so the live feed can't grow memory
+    /// without bound. When the log crosses [`MAX_LIVE_LOG_OPS`] it is trimmed to
+    /// [`LIVE_LOG_LOW_WATER`] (batched, so eviction is amortized), dropping the
+    /// oldest ops. `seen` and `noop_log_pos` are kept consistent with the
+    /// trimmed log. The retained window matches the backfill walk's cap, so
+    /// `acl_view_at` for a cut older than the window degrades exactly as it
+    /// already does for a context whose history exceeded the backfill cap.
+    fn enforce_log_bound(&mut self, scope: ScopeId) {
+        let Some(log) = self.logs.get_mut(&scope) else {
+            return;
+        };
+        if log.len() <= MAX_LIVE_LOG_OPS {
+            return;
+        }
+        let drain = log.len() - LIVE_LOG_LOW_WATER;
+        let drained_ids: Vec<[u8; 32]> = log.drain(0..drain).map(|op| op.id()).collect();
+        if let Some(seen) = self.seen.get_mut(&scope) {
+            for id in &drained_ids {
+                let _ = seen.remove(id);
+            }
+        }
+        // `noop_log_pos` values are indices into `log`, which just shifted by
+        // `drain`; rebuild from the retained log (only runs on eviction).
+        if let Some(noop) = self.noop_log_pos.get_mut(&scope) {
+            noop.clear();
+            for (idx, op) in log.iter().enumerate() {
+                if matches!(op.payload, OpPayload::Noop) {
+                    let _ = noop.insert(op.id(), idx);
                 }
             }
         }

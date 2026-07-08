@@ -350,6 +350,13 @@ pub struct DagStore<T> {
     /// Next sequence number to assign to a pending insert.
     next_pending_seq: u64,
 
+    /// Reverse edges among pending deltas: `parent_id -> [pending delta ids that
+    /// list it as a parent]`. Lets the cascade after an apply visit only the
+    /// deltas actually unblocked by it, instead of rescanning the whole pending
+    /// map every pass (was O(N^2)). Kept in lockstep via `insert_pending` /
+    /// `remove_pending` / `evict_oldest_pending`.
+    pending_children: HashMap<[u8; 32], Vec<[u8; 32]>>,
+
     /// Current heads (deltas with no children yet)
     heads: HashSet<[u8; 32]>,
 
@@ -395,6 +402,7 @@ impl<T: Clone> DagStore<T> {
             pending: HashMap::new(),
             pending_order: std::collections::BTreeMap::new(),
             next_pending_seq: 0,
+            pending_children: HashMap::new(),
             heads,
             root,
             pruned: HashSet::new(),
@@ -485,30 +493,8 @@ impl<T: Clone> DagStore<T> {
     where
         T: Send + Sync,
     {
-        let mut applied_count = 0;
-        let mut applied_any = true;
-
-        while applied_any {
-            applied_any = false;
-
-            // Find deltas that are now ready
-            let ready: Vec<[u8; 32]> = self
-                .pending
-                .iter()
-                .filter(|(_, pending)| self.can_apply(&pending.delta))
-                .map(|(id, _)| *id)
-                .collect();
-
-            for id in ready {
-                if let Some(pending) = self.remove_pending(&id) {
-                    self.apply_delta(pending.delta, applier).await?;
-                    applied_count += 1;
-                    applied_any = true;
-                }
-            }
-        }
-
-        Ok(applied_count)
+        let seed: Vec<[u8; 32]> = self.pending.keys().copied().collect();
+        self.cascade_ready(seed, applier).await
     }
 
     /// Add a delta to the DAG.
@@ -583,12 +569,18 @@ impl<T: Clone> DagStore<T> {
         // Check if we can apply immediately
         if self.can_apply(&delta) {
             self.apply_delta(delta, applier).await?;
-            // Cascade any pending children that this delta unblocked.
-            // Cascading is now done iteratively at the call site rather
-            // than recursively from inside `apply_delta` so the stack
-            // depth stays constant regardless of cascade length. See
-            // `test_cascade_does_not_grow_stack`.
-            self.apply_pending(applier).await?;
+            // Cascade only the pending deltas this one unblocked (its children),
+            // iteratively (constant stack depth — see
+            // `test_cascade_does_not_grow_stack`) and without rescanning the
+            // whole pending map. Take the waiter bucket out of the index
+            // entirely: `delta_id` is applied, so the bucket can never be
+            // seeded from again (a re-add is a duplicate), and any child the
+            // cascade skips as still-blocked is re-seeded via its other
+            // parents' buckets — readiness is decided by `can_apply`, never
+            // by this index. Removing (vs. cloning) also keeps the bucket
+            // from lingering until its children drain.
+            let seed = self.pending_children.remove(&delta_id).unwrap_or_default();
+            let _ = self.cascade_ready(seed, applier).await?;
             Ok(AddDeltaOutcome::Applied)
         } else {
             // Missing parents - store as pending. Cap the pending map so a
@@ -616,6 +608,16 @@ impl<T: Clone> DagStore<T> {
         let seq = self.next_pending_seq;
         self.next_pending_seq = self.next_pending_seq.wrapping_add(1);
 
+        for parent in &delta.parents {
+            if *parent == [0; 32] {
+                continue;
+            }
+            self.pending_children
+                .entry(*parent)
+                .or_default()
+                .push(delta_id);
+        }
+
         self.pending_order.insert(seq, delta_id);
         self.pending.insert(delta_id, PendingDelta::new(delta, seq));
     }
@@ -625,6 +627,7 @@ impl<T: Clone> DagStore<T> {
     fn remove_pending(&mut self, id: &[u8; 32]) -> Option<PendingDelta<T>> {
         let removed = self.pending.remove(id)?;
         let _ = self.pending_order.remove(&removed.seq);
+        Self::deindex_pending_children(&mut self.pending_children, id, &removed.delta.parents);
         Some(removed)
     }
 
@@ -638,9 +641,38 @@ impl<T: Clone> DagStore<T> {
     fn evict_oldest_pending(&mut self) -> Option<[u8; 32]> {
         let (&seq, &oldest) = self.pending_order.iter().next()?;
         let _ = self.pending_order.remove(&seq);
-        let _ = self.pending.remove(&oldest);
+        if let Some(removed) = self.pending.remove(&oldest) {
+            Self::deindex_pending_children(
+                &mut self.pending_children,
+                &oldest,
+                &removed.delta.parents,
+            );
+        }
         let _ = self.deltas.remove(&oldest);
         Some(oldest)
+    }
+
+    /// Remove `child` from the reverse-edge lists of each of its `parents`,
+    /// dropping now-empty entries so the index can't grow without bound.
+    fn deindex_pending_children(
+        index: &mut HashMap<[u8; 32], Vec<[u8; 32]>>,
+        child: &[u8; 32],
+        parents: &[[u8; 32]],
+    ) {
+        for parent in parents {
+            if *parent == [0; 32] {
+                continue;
+            }
+            if let Some(children) = index.get_mut(parent) {
+                children.retain(|c| c != child);
+                if children.is_empty() {
+                    let _ = index.remove(parent);
+                }
+            }
+        }
+        // NB: we do NOT drop `index[child]` (child-as-parent) here — that bucket
+        // holds deltas still waiting on `child` and the cascade reads it after
+        // `child` applies. It empties (and is removed) as those waiters drain.
     }
 
     /// Check if a delta can be applied
@@ -715,35 +747,58 @@ impl<T: Clone> DagStore<T> {
     }
 
     /// Apply pending deltas whose parents are now available
-    async fn apply_pending<A: DeltaApplier<T> + Sync>(
+    /// Apply every pending delta reachable from `seed` (a set of candidate
+    /// pending ids) whose parents are all satisfied, cascading to each applied
+    /// delta's own pending children. Visits only unblocked deltas — no full
+    /// rescan of the pending map. Returns the number applied.
+    async fn cascade_ready<A: DeltaApplier<T> + Sync>(
         &mut self,
+        seed: Vec<[u8; 32]>,
         applier: &A,
-    ) -> Result<(), DagError>
+    ) -> Result<usize, DagError>
     where
         T: Send + Sync,
     {
-        let mut applied_any = true;
+        use std::collections::VecDeque;
+        let mut queue: VecDeque<[u8; 32]> = seed.into_iter().collect();
+        let mut queued: std::collections::HashSet<[u8; 32]> = queue.iter().copied().collect();
+        let mut applied = 0usize;
 
-        while applied_any {
-            applied_any = false;
-
-            // Find deltas that are now ready
-            let ready: Vec<[u8; 32]> = self
+        while let Some(id) = queue.pop_front() {
+            let _ = queued.remove(&id);
+            // Still pending and now applicable?
+            let ready = self
                 .pending
-                .iter()
-                .filter(|(_, pending)| self.can_apply(&pending.delta))
-                .map(|(id, _)| *id)
-                .collect();
+                .get(&id)
+                .is_some_and(|p| self.can_apply(&p.delta));
+            if !ready {
+                continue;
+            }
+            let Some(pending) = self.remove_pending(&id) else {
+                continue;
+            };
+            self.apply_delta(pending.delta, applier).await?;
+            applied += 1;
 
-            for id in ready {
-                if let Some(pending) = self.remove_pending(&id) {
-                    self.apply_delta(pending.delta, applier).await?;
-                    applied_any = true;
+            // Enqueue the deltas that were waiting on `id`.
+            if let Some(children) = self.pending_children.get(&id) {
+                for child in children.clone() {
+                    if queued.insert(child) {
+                        queue.push_back(child);
+                    }
                 }
             }
+            // `id` is applied; its waiter bucket is no longer needed (no-op
+            // if `id` never had waiters, or its bucket was already taken as
+            // the seed in `add_delta_with_outcome`). Children skipped above
+            // as still-blocked keep their reverse edges in their *other*
+            // parents' buckets and are re-seeded from there; readiness is
+            // decided by `can_apply` (the `applied` set), never by this
+            // index, so dropping the bucket cannot strand them.
+            let _ = self.pending_children.remove(&id);
         }
 
-        Ok(())
+        Ok(applied)
     }
 
     /// Get missing parent IDs (parents that are not in the DAG at all)
@@ -1458,6 +1513,76 @@ mod basic_tests {
             dag.pending_order.len(),
             0,
             "order index must drain with the pending map, not leak tombstones"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pending_children_index_no_leak() {
+        let applier = TestApplier {
+            applied: Arc::new(Mutex::new(Vec::new())),
+        };
+        let mut dag = DagStore::new([0; 32]);
+
+        // A 3-deep chain arriving fully out of order (grandchild, child, then
+        // parent) exercises the children-seeded cascade end to end.
+        let parent = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+        let child = CausalDelta::new_test([2; 32], vec![[1; 32]], TestPayload { value: 2 });
+        let grandchild = CausalDelta::new_test([3; 32], vec![[2; 32]], TestPayload { value: 3 });
+
+        dag.add_delta(grandchild, &applier).await.unwrap();
+        dag.add_delta(child, &applier).await.unwrap();
+        assert_eq!(dag.pending.len(), 2);
+        assert!(!dag.pending_children.is_empty());
+
+        // Parent unblocks the whole chain via the children index.
+        dag.add_delta(parent, &applier).await.unwrap();
+        assert_eq!(dag.pending.len(), 0);
+        assert!(dag.is_applied(&[3; 32]), "grandchild cascaded to applied");
+        assert!(
+            dag.pending_children.is_empty(),
+            "children index must fully drain, not leak buckets"
+        );
+    }
+
+    /// An applied delta's waiter bucket is taken out of the index even when
+    /// a child in it stays blocked on another parent — the child is
+    /// re-seeded via that other parent's bucket, and no bucket lingers.
+    #[tokio::test]
+    async fn test_seed_bucket_removed_with_still_blocked_child() {
+        let applier = TestApplier {
+            applied: Arc::new(Mutex::new(Vec::new())),
+        };
+        let mut dag = DagStore::new([0; 32]);
+
+        let parent_a = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+        let parent_b = CausalDelta::new_test([4; 32], vec![[0; 32]], TestPayload { value: 4 });
+        // Merge child waiting on both parents, arriving first.
+        let merge =
+            CausalDelta::new_test([2; 32], vec![[1; 32], [4; 32]], TestPayload { value: 2 });
+
+        dag.add_delta(merge, &applier).await.unwrap();
+        assert_eq!(dag.pending.len(), 1);
+
+        // A applies; the merge child is seeded but still blocked on B. A's
+        // bucket must be gone, while B's keeps the child's reverse edge.
+        dag.add_delta(parent_a, &applier).await.unwrap();
+        assert!(!dag.is_applied(&[2; 32]), "merge child still blocked on B");
+        assert!(
+            !dag.pending_children.contains_key(&[1; 32]),
+            "applied parent's waiter bucket must be removed, not linger"
+        );
+        assert!(
+            dag.pending_children.contains_key(&[4; 32]),
+            "blocked child must stay indexed under its missing parent"
+        );
+
+        // B applies; the child cascades via B's bucket and everything drains.
+        dag.add_delta(parent_b, &applier).await.unwrap();
+        assert!(dag.is_applied(&[2; 32]), "merge child cascaded to applied");
+        assert_eq!(dag.pending.len(), 0);
+        assert!(
+            dag.pending_children.is_empty(),
+            "children index must fully drain, not leak buckets"
         );
     }
 

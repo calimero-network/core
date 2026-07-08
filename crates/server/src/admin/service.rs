@@ -616,10 +616,17 @@ impl IntoResponse for ApiError {
 pub fn parse_api_error(err: Report) -> ApiError {
     match err.downcast::<ApiError>() {
         Ok(api_error) => api_error,
-        Err(original_error) => ApiError {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: original_error.to_string(),
-        },
+        // An untyped error is an unexpected internal failure. Don't echo its
+        // message back to the caller — it can carry store paths, key material,
+        // or other internals. Log the detail server-side and return a generic
+        // 500. (Typed `ApiError`s above keep their intended message/code.)
+        Err(original_error) => {
+            tracing::error!(error = ?original_error, "unhandled admin-api error");
+            ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Internal server error".to_owned(),
+            }
+        }
     }
 }
 

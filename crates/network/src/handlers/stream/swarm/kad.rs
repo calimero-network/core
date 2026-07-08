@@ -3,7 +3,6 @@ use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use libp2p::kad::store::RecordStore;
 use libp2p::kad::{Event, GetRecordError, GetRecordOk, InboundRequest, QueryResult, Record};
-use libp2p::PeerId;
 use libp2p_metrics::Recorder;
 use owo_colors::OwoColorize;
 use tracing::{debug, warn};
@@ -46,23 +45,25 @@ impl EventHandler<Event> for NetworkManager {
                                 record.record.value.len()
                             );
 
-                            // Extract peer IDs from record values
+                            // Authenticate the provider record before trusting
+                            // the peer id it names. An unsigned/forged record
+                            // could otherwise point us at an arbitrary peer
+                            // (misdirection / eclipse); `verify` binds the
+                            // record to the peer that signed it.
                             let mut peers = Vec::new();
-                            if record.record.value.len() >= 8 {
-                                // Need at least 8 bytes for size
-                                // The value format is: peer_id_bytes (variable length) + size (8 bytes)
-                                // Extract size from the last 8 bytes
-                                let size_start = record.record.value.len() - 8;
-                                if let Ok(peer_id) =
-                                    PeerId::from_bytes(&record.record.value[..size_start])
-                                {
+                            match crate::blob_provider_record::BlobProviderRecord::verify(
+                                record.record.key.as_ref(),
+                                &record.record.value,
+                            ) {
+                                Some(peer_id) => {
                                     peers.push(peer_id);
-                                    debug!("Extracted peer_id {} from DHT record", peer_id);
-                                } else {
-                                    debug!("Failed to parse peer_id from DHT record value");
+                                    debug!("Verified provider peer_id {} from DHT record", peer_id);
+                                }
+                                None => {
+                                    debug!("Dropping DHT record: provider signature invalid or malformed");
                                 }
                             }
-                            debug!("Found {} peers with blob", peers.len());
+                            debug!("Found {} verified peers with blob", peers.len());
 
                             // Extract blob_id and context_id from record key
                             if record.record.key.as_ref().len() >= 64 {
@@ -183,116 +184,93 @@ impl EventHandler<Event> for NetworkManager {
 fn is_valid_blob_provider_record(record: &Record) -> bool {
     /// context_id (32) + blob_id (32).
     const EXPECTED_KEY_LEN: usize = 64;
-    /// Trailing little-endian `u64` blob size.
-    const SIZE_LEN: usize = 8;
 
     if record.key.as_ref().len() != EXPECTED_KEY_LEN {
         return false;
     }
 
-    // Reject anything larger than the store would accept, up front — a valid
-    // blob-provider value is ~50 bytes, far below this ceiling.
+    // Reject anything larger than the store would accept, up front.
     if record.value.len() > crate::behaviour::KAD_MAX_VALUE_BYTES {
         return false;
     }
 
-    let Some(peer_id_bytes) = record
-        .value
-        .len()
-        .checked_sub(SIZE_LEN)
-        .map(|end| &record.value[..end])
-    else {
-        return false;
-    };
-
-    // A zero-length peer id can never be valid; `from_bytes` also rejects it,
-    // but bail explicitly so intent is clear.
-    !peer_id_bytes.is_empty() && PeerId::from_bytes(peer_id_bytes).is_ok()
+    // Authenticate the record: valid signature + the embedded key hashes to the
+    // named peer. This is applied to records another peer asks us to replicate,
+    // so we never store (and later re-serve) a forged provider announcement.
+    crate::blob_provider_record::BlobProviderRecord::verify(record.key.as_ref(), &record.value)
+        .is_some()
 }
 
 #[cfg(test)]
 mod tests {
+    use libp2p::identity::Keypair;
     use libp2p::kad::RecordKey;
 
     use super::*;
+    use crate::blob_provider_record::BlobProviderRecord;
 
     fn record(key: Vec<u8>, value: Vec<u8>) -> Record {
         Record::new(RecordKey::new(&key), value)
     }
 
-    fn valid_value() -> Vec<u8> {
-        let peer_id = PeerId::random();
-        let size: u64 = 4096;
-        [peer_id.to_bytes().as_slice(), &size.to_le_bytes()].concat()
+    /// A signed value for a 64-byte key of all `key_byte`s.
+    fn signed_value(key_byte: u8) -> (Vec<u8>, Vec<u8>) {
+        let key = vec![key_byte; 64];
+        let kp = Keypair::generate_ed25519();
+        let value = BlobProviderRecord::signed_value(&key, &kp, 4096).expect("sign");
+        (key, value)
     }
 
     #[test]
-    fn accepts_a_well_formed_blob_record() {
-        let rec = record(vec![7u8; 64], valid_value());
-        assert!(is_valid_blob_provider_record(&rec));
+    fn accepts_a_well_formed_signed_record() {
+        let (key, value) = signed_value(7);
+        assert!(is_valid_blob_provider_record(&record(key, value)));
     }
 
     #[test]
     fn rejects_wrong_key_length() {
-        // One byte short and one byte long — only exactly 64 is a blob key.
+        // Exactly 64 is the only accepted blob-key length; the validator bails
+        // on length before even attempting to verify.
+        let (_key, value) = signed_value(7);
         assert!(!is_valid_blob_provider_record(&record(
             vec![7u8; 63],
-            valid_value()
+            value.clone()
         )));
         assert!(!is_valid_blob_provider_record(&record(
             vec![7u8; 65],
-            valid_value()
-        )));
-    }
-
-    #[test]
-    fn rejects_value_too_short_for_a_size_suffix() {
-        // At most 8 bytes (<= SIZE_LEN) leaves no room for a peer id: below 8
-        // the `checked_sub` fails, and exactly 8 yields an empty prefix caught
-        // by the `is_empty` guard.
-        assert!(!is_valid_blob_provider_record(&record(
-            vec![7u8; 64],
-            vec![0u8; 4]
-        )));
-        assert!(!is_valid_blob_provider_record(&record(
-            vec![7u8; 64],
-            vec![0u8; 8]
-        )));
-        // One byte past the size suffix is a non-empty prefix, so it clears the
-        // `is_empty` guard and must instead be rejected by the peer-id parse.
-        assert!(!is_valid_blob_provider_record(&record(
-            vec![7u8; 64],
-            vec![0u8; 9]
-        )));
-    }
-
-    #[test]
-    fn rejects_unparseable_peer_id() {
-        // Right shape (>8 bytes) but the leading bytes aren't a valid peer id.
-        let value = [vec![0xffu8; 16], 1024u64.to_le_bytes().to_vec()].concat();
-        assert!(!is_valid_blob_provider_record(&record(
-            vec![7u8; 64],
             value
+        )));
+    }
+
+    #[test]
+    fn rejects_record_signed_for_a_different_key() {
+        // A record legitimately signed for key A must not validate under key B —
+        // `verify` binds the signature to the DHT key.
+        let (_key_a, value) = signed_value(7);
+        assert!(!is_valid_blob_provider_record(&record(
+            vec![9u8; 64],
+            value
+        )));
+    }
+
+    #[test]
+    fn rejects_unsigned_or_garbage_value() {
+        assert!(!is_valid_blob_provider_record(&record(
+            vec![7u8; 64],
+            b"legacy-unsigned-or-garbage".to_vec()
         )));
     }
 
     #[test]
     fn rejects_value_over_the_store_ceiling() {
-        // A parseable peer id + size suffix, but padded past the store's
-        // `max_value_bytes`: the validator drops it up front rather than
-        // leaving the store's `put` as the only guard.
-        let peer_id = PeerId::random();
-        let padding = vec![0u8; crate::behaviour::KAD_MAX_VALUE_BYTES];
-        let value = [
-            peer_id.to_bytes().as_slice(),
-            &padding,
-            &4096u64.to_le_bytes(),
-        ]
-        .concat();
+        // Padded past the store's `max_value_bytes`: dropped up front rather
+        // than leaving the store's `put` as the only guard.
+        let (key, mut value) = signed_value(7);
+        value.extend(std::iter::repeat_n(
+            0u8,
+            crate::behaviour::KAD_MAX_VALUE_BYTES,
+        ));
         assert!(value.len() > crate::behaviour::KAD_MAX_VALUE_BYTES);
-        assert!(!is_valid_blob_provider_record(&record(
-            vec![7u8; 64],
-            value
-        )));
+        assert!(!is_valid_blob_provider_record(&record(key, value)));
     }
 }

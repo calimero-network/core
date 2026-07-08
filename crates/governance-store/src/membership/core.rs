@@ -162,6 +162,13 @@ impl<'a> MembershipRepository<'a> {
             handle.delete(&GroupMember::new(group_id.to_bytes(), *identity))?;
         }
         MetadataRepository::new(self.store).delete_member(group_id, identity)?;
+        // Clear the per-member capability row so a stale (possibly elevated)
+        // grant can't survive removal and be read back on re-add. Mirrors the
+        // deny-list clear on `MemberAdded`. Hash-neutral: a separate column
+        // from `GroupMember`, so it doesn't feed `compute_state_hash`.
+        // The three deletes aren't atomic, but apply is replay-safe: a crash
+        // between them is healed when the idempotent op re-applies.
+        CapabilitiesRepository::new(self.store).delete_member_capability(group_id, identity)?;
         Ok(())
     }
 
@@ -312,6 +319,13 @@ impl<'a> MembershipRepository<'a> {
             .collect();
         let mut result = Vec::new();
 
+        // Walk the Open-reachable ancestor chain ONCE (parent-of `group_id`
+        // first, up to the first non-Open level / the root). Previously
+        // `check_path` re-derived this same chain — re-reading every level's
+        // visibility + parent — for *every* candidate, making the auth path
+        // O(candidates x depth) in store reads. We build it here and evaluate
+        // each candidate against the in-memory chain via `check_path_in_chain`.
+        let mut chain: Vec<ContextGroupId> = Vec::new();
         let mut current = *group_id;
         let mut terminated = false;
         for _ in 0..=MAX_NAMESPACE_DEPTH {
@@ -325,13 +339,20 @@ impl<'a> MembershipRepository<'a> {
                 terminated = true;
                 break;
             };
+            chain.push(parent);
+            current = parent;
+        }
+        if !terminated {
+            bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH));
+        }
 
+        for parent in &chain {
             let mut candidates: Vec<PublicKey> = self
-                .list(&parent, 0, usize::MAX)?
+                .list(parent, 0, usize::MAX)?
                 .into_iter()
                 .map(|(pk, _)| pk)
                 .collect();
-            if let Some(meta) = MetaRepository::new(self.store).load(&parent)? {
+            if let Some(meta) = MetaRepository::new(self.store).load(parent)? {
                 candidates.push(meta.admin_identity);
             }
 
@@ -343,7 +364,7 @@ impl<'a> MembershipRepository<'a> {
                     continue;
                 }
                 if let MembershipPath::Inherited { anchor, via_admin } =
-                    self.check_path(group_id, &candidate)?
+                    self.check_path_in_chain(group_id, &chain, &candidate)?
                 {
                     // For a non-admin inheritor, carry the member's REAL role
                     // from the anchor (the ancestor where they hold the direct
@@ -360,15 +381,53 @@ impl<'a> MembershipRepository<'a> {
                     result.push((candidate, role));
                 }
             }
-
-            current = parent;
-        }
-        if !terminated {
-            bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH));
         }
         Ok(result)
     }
 
+    /// [`Self::check_path`] evaluated against a precomputed Open-reachable
+    /// ancestor `chain` (parent-of the queried group first). Identical logic —
+    /// direct membership, then per-ancestor admin / open-subgroup-capability —
+    /// but it does not re-read each level's visibility + parent from the store,
+    /// so callers that resolve many identities against the same chain (see
+    /// [`Self::enumerate_inherited`]) pay the O(depth) structure walk once
+    /// rather than once per identity.
+    fn check_path_in_chain(
+        &self,
+        group_id: &ContextGroupId,
+        chain: &[ContextGroupId],
+        identity: &PublicKey,
+    ) -> EyreResult<MembershipPath> {
+        if has_direct_member(self.store, group_id, identity)? {
+            return Ok(MembershipPath::Direct);
+        }
+
+        let mut anchor_decision: Option<MembershipPath> = None;
+        for parent in chain {
+            if self.is_admin(parent, identity)? {
+                return Ok(MembershipPath::Inherited {
+                    anchor: *parent,
+                    via_admin: true,
+                });
+            }
+            if has_direct_member(self.store, parent, identity)? && anchor_decision.is_none() {
+                let caps = CapabilitiesRepository::new(self.store)
+                    .member_capability(parent, identity)?
+                    .unwrap_or(0);
+                anchor_decision = Some(
+                    if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits() != 0 {
+                        MembershipPath::Inherited {
+                            anchor: *parent,
+                            via_admin: false,
+                        }
+                    } else {
+                        MembershipPath::None
+                    },
+                );
+            }
+        }
+        Ok(anchor_decision.unwrap_or(MembershipPath::None))
+    }
     /// Returns `true` if `identity` is a direct admin of this specific group
     /// (no ancestor walk).
     pub fn is_direct_admin(

@@ -11,7 +11,15 @@ impl Handler<Unsubscribe> for NetworkManager {
         Unsubscribe(topic): Unsubscribe,
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
-        let _ignored = self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic);
+        let was_subscribed = self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic);
+
+        // Mirror of the subscribe path: drop our per-overlay rendezvous key
+        // so joiners stop being steered toward a node that no longer
+        // follows this overlay (the record would otherwise linger until
+        // its TTL).
+        if was_subscribed {
+            self.unregister_dropped_overlay_topic(topic.hash().as_str());
+        }
 
         Ok(topic)
     }
