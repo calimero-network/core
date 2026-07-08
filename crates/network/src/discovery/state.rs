@@ -690,6 +690,35 @@ impl DiscoveryState {
         self.rendezvous_index.iter().copied()
     }
 
+    /// Rendezvous peers currently holding (or awaiting confirmation of) a
+    /// server-side registration — status `Requested` or `Registered`.
+    ///
+    /// These are the peers whose registrations must be *extended* when the
+    /// node subscribes a new overlay topic: `rendezvous_register` snapshots
+    /// the subscribed-topic set at call time, and its fan-out gate
+    /// ([`Self::is_rendezvous_registration_required`]) skips peers in these
+    /// two states, so a key subscribed afterwards stays unknown to the
+    /// server until an unrelated trigger re-registers (TTL expiry — hours —
+    /// a reachability flip, or a restart). Idle peers (`Discovered`,
+    /// `Pending`, `Expired`) are deliberately excluded: their next full
+    /// registration re-enumerates the subscribed topics and picks the new
+    /// key up on its own.
+    pub(crate) fn slot_holding_rendezvous_peers(&self) -> Vec<PeerId> {
+        self.get_rendezvous_peer_ids()
+            .filter(|peer_id| {
+                self.get_peer_info(peer_id)
+                    .and_then(PeerInfo::rendezvous)
+                    .is_some_and(|info| {
+                        matches!(
+                            info.registration_status(),
+                            RendezvousRegistrationStatus::Requested
+                                | RendezvousRegistrationStatus::Registered
+                        )
+                    })
+            })
+            .collect()
+    }
+
     pub(crate) fn get_relay_peer_ids(&self) -> impl Iterator<Item = PeerId> + '_ {
         self.relay_index.iter().copied()
     }

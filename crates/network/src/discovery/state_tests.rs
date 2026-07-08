@@ -1655,3 +1655,74 @@ fn test_clear_rendezvous_cookie_forgets_rejected_cookie() {
     state.clear_rendezvous_cookie(&unknown);
     assert!(!state.peers.contains_key(&unknown));
 }
+
+// ---------------------------------------------------------------------------
+// slot_holding_rendezvous_peers — the eager-registration target set for
+// overlays subscribed after the last full registration round
+// ---------------------------------------------------------------------------
+
+#[test]
+fn slot_holding_peers_are_requested_and_registered_only() {
+    let mut state = DiscoveryState::default();
+
+    let registered = PeerId::random();
+    let requested = PeerId::random();
+    let discovered = PeerId::random();
+    let pending = PeerId::random();
+    let expired = PeerId::random();
+
+    for peer in [&registered, &requested, &discovered, &pending, &expired] {
+        state.update_peer_protocols(peer, &[RENDEZVOUS_PROTOCOL_NAME]);
+    }
+
+    state.update_rendezvous_registration_status(
+        &registered,
+        RendezvousRegistrationStatus::Registered,
+    );
+    state
+        .update_rendezvous_registration_status(&requested, RendezvousRegistrationStatus::Requested);
+    state.update_rendezvous_registration_status(
+        &discovered,
+        RendezvousRegistrationStatus::Discovered,
+    );
+    state.update_rendezvous_registration_status(&pending, RendezvousRegistrationStatus::Pending);
+    state.update_rendezvous_registration_status(&expired, RendezvousRegistrationStatus::Expired);
+
+    let slot_holding = state.slot_holding_rendezvous_peers();
+
+    assert!(
+        slot_holding.contains(&registered),
+        "a Registered peer holds a live server-side record that must be extended"
+    );
+    assert!(
+        slot_holding.contains(&requested),
+        "a Requested peer has a register in flight; the new key must follow it"
+    );
+    for (peer, status) in [
+        (&discovered, "Discovered"),
+        (&pending, "Pending"),
+        (&expired, "Expired"),
+    ] {
+        assert!(
+            !slot_holding.contains(peer),
+            "{status} peers re-enumerate topics on their next full registration; \
+             eagerly registering with them would duplicate that"
+        );
+    }
+}
+
+#[test]
+fn slot_holding_peers_excludes_non_rendezvous_peers() {
+    let mut state = DiscoveryState::default();
+
+    // A regular peer (no rendezvous protocol) never appears, even though
+    // the peer map knows it.
+    let regular = PeerId::random();
+    state.update_peer_protocols(&regular, &[]);
+
+    // A rendezvous peer we merely discovered doesn't either.
+    let idle_rendezvous = PeerId::random();
+    state.update_peer_protocols(&idle_rendezvous, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    assert!(state.slot_holding_rendezvous_peers().is_empty());
+}
