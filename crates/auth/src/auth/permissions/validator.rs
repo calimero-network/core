@@ -528,7 +528,11 @@ impl PermissionValidator {
     pub fn determine_required_permissions(&self, request: &Request<Body>) -> Vec<Permission> {
         let path = request.uri().path();
         let method = match request.method().as_str() {
-            "GET" => HttpMethod::GET,
+            // HEAD is GET-without-body (RFC 9110 §9.3.2): same resource read,
+            // same permission. Without this, HEAD probes on mapped GET routes
+            // (e.g. mero-js getBlobInfo → HEAD /admin-api/blobs/:id) fall into
+            // the /admin-api/* default-deny and 403 for scoped client tokens.
+            "GET" | "HEAD" => HttpMethod::GET,
             "POST" => HttpMethod::POST,
             "PUT" => HttpMethod::PUT,
             "DELETE" => HttpMethod::DELETE,
@@ -882,6 +886,21 @@ mod tests {
     #[test]
     fn test_blob_permissions() {
         let validator = PermissionValidator::new();
+
+        // HEAD is a body-less GET: blob info probes (mero-js getBlobInfo)
+        // must require blob:get, not fall into the admin default-deny.
+        let req = Request::builder()
+            .method(Method::HEAD)
+            .uri("/admin-api/blobs/blob-1")
+            .body(Body::empty())
+            .unwrap();
+        let perms = validator.determine_required_permissions(&req);
+        assert_eq!(perms.len(), 1);
+        assert!(matches!(
+            &perms[0],
+            Permission::Blob(BlobPermission::Get(ResourceScope::Specific(ids)))
+                if ids == &vec!["blob-1".to_string()]
+        ));
 
         // Test stream upload permission
         let req = Request::builder()

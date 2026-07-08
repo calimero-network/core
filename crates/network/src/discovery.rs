@@ -568,6 +568,99 @@ impl NetworkManager {
         Ok(())
     }
 
+    /// Eagerly register a newly-subscribed overlay topic with every
+    /// rendezvous peer that already holds (or is awaiting) a registration.
+    ///
+    /// `rendezvous_register` snapshots the subscribed-topic set at call
+    /// time, so an overlay subscribed *after* the last registration round
+    /// is invisible on the rendezvous server until an unrelated trigger
+    /// re-registers — TTL expiry (hours), a reachability flip, or a
+    /// restart. During that window a peer joining the namespace discovers
+    /// zero registrations under `/calimero/ns/<hex>` and the join stalls
+    /// on "No namespace mesh peer discovered yet" until it gives up.
+    /// Registering the key at subscribe time closes the window.
+    ///
+    /// Deliberately bypasses `is_rendezvous_registration_required`: that
+    /// gate bounds fan-out across rendezvous *peers*; here we only add a
+    /// key to registrations that already occupy a slot.
+    pub(crate) fn register_new_overlay_topic(&mut self, topic: &str) {
+        if self.discovery.reserved_topics.contains(topic) {
+            return;
+        }
+        let Some(key) = rendezvous_key_for_topic(topic) else {
+            return;
+        };
+
+        for peer_id in self.discovery.state.slot_holding_rendezvous_peers() {
+            if !self.swarm.is_connected(&peer_id) {
+                continue;
+            }
+            match self
+                .swarm
+                .behaviour_mut()
+                .rendezvous
+                .register(key.clone(), peer_id, None)
+            {
+                Ok(()) => {
+                    debug!(
+                        %peer_id,
+                        rendezvous_namespace = %key,
+                        "Registered newly-subscribed overlay with rendezvous"
+                    );
+                }
+                Err(RegisterError::NoExternalAddresses) => {
+                    // Nothing to advertise yet. The next
+                    // ExternalAddrConfirmed triggers a full re-register,
+                    // which enumerates subscribed topics at send time and
+                    // will carry this key.
+                    trace!(
+                        %peer_id,
+                        rendezvous_namespace = %key,
+                        "No external addresses; overlay key rides the next full registration"
+                    );
+                }
+                Err(err @ RegisterError::FailedToMakeRecord(_)) => {
+                    error!(
+                        %err,
+                        %peer_id,
+                        rendezvous_namespace = %key,
+                        "Failed to register newly-subscribed overlay with rendezvous"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Mirror of [`Self::register_new_overlay_topic`] for unsubscribe:
+    /// drop the per-overlay key from every slot-holding rendezvous peer so
+    /// departed members stop being discovered under it. Without this the
+    /// stale record lingers until its TTL, steering joiners toward a node
+    /// that no longer follows the overlay. Unregistering a key we never
+    /// registered is a harmless server-side no-op.
+    pub(crate) fn unregister_dropped_overlay_topic(&mut self, topic: &str) {
+        if self.discovery.reserved_topics.contains(topic) {
+            return;
+        }
+        let Some(key) = rendezvous_key_for_topic(topic) else {
+            return;
+        };
+
+        for peer_id in self.discovery.state.slot_holding_rendezvous_peers() {
+            if !self.swarm.is_connected(&peer_id) {
+                continue;
+            }
+            self.swarm
+                .behaviour_mut()
+                .rendezvous
+                .unregister(key.clone(), peer_id);
+            debug!(
+                %peer_id,
+                rendezvous_namespace = %key,
+                "Unregistered dropped overlay from rendezvous"
+            );
+        }
+    }
+
     // Requests relay reservation on relay peer if one is required.
     // This function expectes that the relay peer is already connected.
     pub(crate) fn create_relay_reservation(&mut self, relay_peer: &PeerId) -> EyreResult<()> {
