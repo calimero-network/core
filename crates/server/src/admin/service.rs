@@ -9,6 +9,7 @@ use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
 use axum::{Extension, Router};
+use bytes::Bytes;
 use eyre::Report;
 use rust_embed::{EmbeddedFile, RustEmbed};
 use serde::{Deserialize, Serialize};
@@ -422,17 +423,10 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(String, Router)> {
 ///   succeeds, it returns an `Ok` with the response. If no file can be served, it returns an `Err` with
 ///   a 404 NOT_FOUND status code.
 async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> {
-    // Get the full path prefix (node prefix + admin dashboard)
-    let full_prefix = if let Ok(node_prefix) = std::env::var("NODE_PATH_PREFIX") {
-        format!("{node_prefix}/admin-dashboard/")
-    } else {
-        "/admin-dashboard/".to_owned()
-    };
-
     // Extract the path from the URI, removing the full prefix and any leading slashes
     let path = uri
         .path()
-        .trim_start_matches(&full_prefix)
+        .trim_start_matches(dashboard_full_prefix())
         .trim_start_matches('/');
 
     // Use "index.html" for empty paths (root requests)
@@ -456,7 +450,7 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
 
 /// The `/admin-dashboard` base-path rewrite prefix, resolved from
 /// `NODE_PATH_PREFIX` once per process. `None` when unset — the overwhelmingly
-/// common case — which lets [`serve_file`] skip the rewrite (and its six
+/// common case — which lets [`serve_file`] skip the rewrite (and its
 /// full-content `.replace()` passes) entirely and serve the embedded bytes
 /// as-is.
 fn dashboard_base_prefix() -> Option<&'static str> {
@@ -470,15 +464,25 @@ fn dashboard_base_prefix() -> Option<&'static str> {
         .as_deref()
 }
 
+/// Full request-path prefix for dashboard assets
+/// (`{NODE_PATH_PREFIX}/admin-dashboard/`), resolved once per process so
+/// request handling never touches the environment.
+fn dashboard_full_prefix() -> &'static str {
+    static PREFIX: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PREFIX.get_or_init(|| match dashboard_base_prefix() {
+        Some(node_prefix) => format!("{node_prefix}/admin-dashboard/"),
+        None => "/admin-dashboard/".to_owned(),
+    })
+}
+
 /// Cache of rewritten text assets, keyed by embed path. Only populated when a
 /// `NODE_PATH_PREFIX` is set (so the rewrite runs at most once per asset, not
-/// once per request). The embedded asset set is fixed and small, so it needs no
-/// eviction.
-fn rewritten_asset_cache(
-) -> &'static std::sync::RwLock<std::collections::HashMap<String, Arc<[u8]>>> {
-    static CACHE: std::sync::OnceLock<
-        std::sync::RwLock<std::collections::HashMap<String, Arc<[u8]>>>,
-    > = std::sync::OnceLock::new();
+/// once per request). Stored as [`Bytes`] so cache hits hand the body a
+/// refcounted view instead of copying the asset. The embedded asset set is
+/// fixed and small, so it needs no eviction.
+fn rewritten_asset_cache() -> &'static std::sync::RwLock<std::collections::HashMap<String, Bytes>> {
+    static CACHE: std::sync::OnceLock<std::sync::RwLock<std::collections::HashMap<String, Bytes>>> =
+        std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
 }
 
@@ -488,7 +492,11 @@ fn is_rewritable_text(mimetype: &str) -> bool {
         || mimetype == "text/css"
 }
 
-/// Apply the six `/admin-dashboard` → `{prefix}/admin-dashboard` rewrites.
+/// Apply the `/admin-dashboard` → `{prefix}/admin-dashboard` rewrites.
+///
+/// The `"`-quoted pass already covers `href="/admin-dashboard` and
+/// `src="/admin-dashboard` occurrences (the old dedicated passes for those
+/// could never match after it and were dead code).
 fn rewrite_dashboard_paths(content: &str, prefix: &str) -> Vec<u8> {
     let base_path = format!("{prefix}/admin-dashboard");
     content
@@ -496,14 +504,6 @@ fn rewrite_dashboard_paths(content: &str, prefix: &str) -> Vec<u8> {
         .replace("'/admin-dashboard", &format!("'{base_path}"))
         .replace("(/admin-dashboard", &format!("({base_path}"))
         .replace(" /admin-dashboard", &format!(" {base_path}"))
-        .replace(
-            "href=\"/admin-dashboard",
-            &format!("href=\"{base_path}/admin-dashboard"),
-        )
-        .replace(
-            "src=\"/admin-dashboard",
-            &format!("src=\"{base_path}/admin-dashboard"),
-        )
         .into_bytes()
 }
 
@@ -526,18 +526,18 @@ fn serve_file(path: &str, file: EmbeddedFile) -> Result<Response<Body>, StatusCo
                 .get(path)
                 .cloned()
             {
-                Body::from(cached.to_vec())
+                Body::from(cached)
             } else {
-                let rewritten: Arc<[u8]> = match std::str::from_utf8(&file.data) {
-                    Ok(text) => Arc::from(rewrite_dashboard_paths(text, prefix)),
+                let rewritten = match std::str::from_utf8(&file.data) {
+                    Ok(text) => Bytes::from(rewrite_dashboard_paths(text, prefix)),
                     // Non-utf8 despite the text mimetype: serve raw, don't cache.
                     Err(_) => return build_asset_response(&mimetype, file.data.into_owned()),
                 };
                 let _ = rewritten_asset_cache()
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(path.to_owned(), Arc::clone(&rewritten));
-                Body::from(rewritten.to_vec())
+                    .insert(path.to_owned(), rewritten.clone());
+                Body::from(rewritten)
             }
         }
     };
