@@ -883,6 +883,27 @@ pub enum BroadcastMessage<'a> {
         namespace_id: [u8; 32],
         dag_heads: Vec<[u8; 32]>,
     },
+
+    /// Transient ephemeral presence message — encrypted presence slice broadcast
+    /// on the context gossip topic. Never enters state_delta; dispatched inline.
+    ///
+    /// The payload is sealed under the group key identified by `key_id` so only
+    /// context members can read it. `seq` provides a per-author monotonic counter
+    /// for LWW tiebreaking at the receiver without any persistent state.
+    Ephemeral {
+        context_id: ContextId,
+        /// Context identity of the sender (LWW key).
+        author: PublicKey,
+        /// Per-author monotonic counter; LWW tiebreak.
+        seq: u64,
+        /// `sha256(group_key)` — identifies which group key sealed this;
+        /// receiver resolves it from its local `GroupKeyEntry` store.
+        key_id: [u8; 32],
+        /// Nonce for the AEAD seal (same `Nonce` type as `StateDelta`).
+        nonce: Nonce,
+        /// `SharedKey`-encrypted borsh-encoded presence slice.
+        ciphertext: Cow<'a, [u8]>,
+    },
 }
 
 // Wire protocol types (StreamMessage, InitPayload, MessagePayload) are in wire.rs
@@ -1622,6 +1643,26 @@ mod tests {
         let encoded = borsh::to_vec(&aux).expect("serialize");
         let decoded: SnapshotRecord = borsh::from_slice(&encoded).expect("deserialize");
         assert_eq!(aux, decoded);
+    }
+
+    // =========================================================================
+    // BroadcastMessage::Ephemeral Tests
+    // =========================================================================
+
+    #[test]
+    fn ephemeral_broadcast_roundtrips() {
+        use calimero_crypto::NONCE_LEN;
+        let msg = BroadcastMessage::Ephemeral {
+            context_id: ContextId::from([1u8; 32]),
+            author: PublicKey::from([2u8; 32]),
+            seq: 7,
+            key_id: [3u8; 32],
+            nonce: [0u8; NONCE_LEN],
+            ciphertext: std::borrow::Cow::Borrowed(&[9, 9, 9]),
+        };
+        let bytes = borsh::to_vec(&msg).unwrap();
+        let back: BroadcastMessage<'_> = borsh::from_slice(&bytes).unwrap();
+        assert!(matches!(back, BroadcastMessage::Ephemeral { seq: 7, .. }));
     }
 
     #[test]
