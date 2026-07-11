@@ -42,7 +42,7 @@ const STATE_DELTA_KEY_LOOKUP_POLL: std::time::Duration = std::time::Duration::fr
 ///
 /// Returns `Ok(Some(_))` on success, `Ok(None)` when the wait expires
 /// without the key arriving, `Err(_)` on store errors.
-pub(super) async fn lookup_group_key_with_wait(
+pub(crate) async fn lookup_group_key_with_wait(
     context_client: &calimero_context_client::client::ContextClient,
     group_id: &calimero_context_config::types::ContextGroupId,
     key_id: &[u8; 32],

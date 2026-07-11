@@ -27,6 +27,7 @@ pub enum Diff {
 // Internal types
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 struct Entry {
     slice: Vec<u8>,
     seq: u64,
@@ -38,6 +39,7 @@ struct Entry {
 // ---------------------------------------------------------------------------
 
 /// Per-context map of `author -> {slice, seq, last_seen_ms}`.
+#[derive(Debug)]
 pub struct AwarenessStore {
     // Outer: context → per-author entries.
     // Inner: BTreeMap so PublicKey (which is Ord but not std::hash::Hash)

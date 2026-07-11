@@ -13,7 +13,7 @@ use calimero_network_primitives::messages::NetworkEvent;
 use calimero_node_primitives::sync::BroadcastMessage;
 use tracing::{debug, error, info, warn};
 
-use crate::handlers::{state_delta, stream_opened};
+use crate::handlers::{ephemeral, state_delta, stream_opened};
 use crate::state_delta_bridge::{StateDeltaJob, StateDeltaSendError};
 use crate::NodeManager;
 
@@ -214,6 +214,25 @@ impl Handler<NetworkEvent> for NodeManager {
                             source,
                             namespace_id,
                             peer_heads,
+                        );
+                    }
+                    BroadcastMessage::Ephemeral {
+                        context_id,
+                        author,
+                        seq,
+                        key_id,
+                        nonce,
+                        ciphertext,
+                    } => {
+                        ephemeral::inbound::handle_ephemeral_broadcast(
+                            self,
+                            ctx,
+                            context_id,
+                            author,
+                            seq,
+                            key_id,
+                            nonce,
+                            ciphertext.into_owned(),
                         );
                     }
                     _ => {
