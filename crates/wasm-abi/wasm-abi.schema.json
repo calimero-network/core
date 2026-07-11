@@ -64,6 +64,13 @@
           }
         }
       }
+    },
+    "ephemeral": {
+      "type": "array",
+      "description": "Ephemeral presence DTOs declared with #[app::ephemeral]. Their type shapes are recorded in 'types'; this array names the entrypoints. Absent on manifests compiled before this field existed.",
+      "items": {
+        "$ref": "#/definitions/EphemeralType"
+      }
     }
   },
   "definitions": {
@@ -440,6 +447,24 @@
         },
         "payload": {
           "$ref": "#/definitions/TypeRef"
+        }
+      }
+    },
+    "EphemeralType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type_ref"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The struct name of the ephemeral presence DTO"
+        },
+        "type_ref": {
+          "$ref": "#/definitions/TypeRef",
+          "description": "Reference to the type definition in the 'types' map"
         }
       }
     }
