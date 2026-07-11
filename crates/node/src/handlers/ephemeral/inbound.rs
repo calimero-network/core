@@ -141,7 +141,7 @@ pub(crate) fn emit_ephemeral_diff(node_client: &NodeClient, context_id: ContextI
 /// the node's event broadcast sink.
 ///
 /// **Never touches state-delta, RocksDB, or the DAG.**
-pub fn handle_ephemeral_broadcast(
+pub(crate) fn handle_ephemeral_broadcast(
     this: &mut NodeManager,
     ctx: &mut actix::Context<NodeManager>,
     context_id: ContextId,
