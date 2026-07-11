@@ -16,6 +16,7 @@ use crate::NodeManager;
 
 // Each handler in its own focused file (SRP)
 mod blob_protocol;
+pub mod ephemeral;
 mod get_blob_bytes;
 mod network_event;
 mod specialized_node_invite;
