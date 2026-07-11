@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -6,6 +6,8 @@ use actix::{Actor, Addr};
 use calimero_blobstore::BlobManager as BlobStore;
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use prometheus_client::metrics::counter::Counter;
 
@@ -137,6 +139,21 @@ pub struct NodeManager {
     /// Arbiter. A plain (non-`Arc<Mutex<>>`) field is therefore correct and
     /// avoids lock overhead on a high-frequency path.
     pub(crate) awareness_store: crate::handlers::ephemeral::store::AwarenessStore,
+    /// Per-`(ContextId, PublicKey)` outbound ephemeral-presence state.
+    ///
+    /// Tracks the monotonic sequence counter and current slice for every
+    /// `(context_id, author)` pair that **this node** has set locally via
+    /// [`set_local_ephemeral`]. The heartbeat tick iterates this map to
+    /// re-publish with a bumped seq (so remote nodes refresh their
+    /// `last_seen_ms` and do not sweep this author). Remote (inbound)
+    /// entries live only in `awareness_store` and are never in this map.
+    ///
+    /// Plain `HashMap` is correct: only the single-threaded actor Arbiter
+    /// mutates it; no lock needed.
+    ///
+    /// [`set_local_ephemeral`]: crate::handlers::ephemeral::outbound::set_local_ephemeral
+    pub(crate) ephemeral_local:
+        BTreeMap<(ContextId, PublicKey), crate::handlers::ephemeral::outbound::LocalEphemeral>,
 }
 
 impl NodeManager {
@@ -174,6 +191,7 @@ impl NodeManager {
             migration_status_cache: Arc::new(MigrationStatusCache::default()),
             migration_emitter_addr: None,
             awareness_store: crate::handlers::ephemeral::store::AwarenessStore::new(),
+            ephemeral_local: BTreeMap::new(),
         }
     }
 }
@@ -185,6 +203,7 @@ impl Actor for NodeManager {
         self.setup_startup_subscriptions(ctx);
         self.setup_maintenance_intervals(ctx);
         self.setup_hash_heartbeat_interval(ctx);
+        self.setup_ephemeral_heartbeat_interval(ctx);
         self.setup_readiness_manager(ctx);
         self.setup_migration_emitter(ctx);
     }

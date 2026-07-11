@@ -167,6 +167,30 @@ impl NodeManager {
         );
     }
 
+    /// Schedule the ephemeral-presence heartbeat: every
+    /// [`PRESENCE_HEARTBEAT_MS`] milliseconds, re-publish all locally-set
+    /// ephemeral slices (with bumped seq so remote nodes refresh liveness)
+    /// and sweep stale remote entries from the [`AwarenessStore`].
+    ///
+    /// Mirrors the `setup_hash_heartbeat_interval` pattern; uses
+    /// [`heartbeat_tick`] from the outbound ephemeral handler.
+    ///
+    /// [`PRESENCE_HEARTBEAT_MS`]: crate::handlers::ephemeral::PRESENCE_HEARTBEAT_MS
+    /// [`AwarenessStore`]: crate::handlers::ephemeral::store::AwarenessStore
+    /// [`heartbeat_tick`]: crate::handlers::ephemeral::outbound::heartbeat_tick
+    pub(super) fn setup_ephemeral_heartbeat_interval(&self, ctx: &mut actix::Context<Self>) {
+        use crate::handlers::ephemeral::outbound::heartbeat_tick;
+        use crate::handlers::ephemeral::PRESENCE_HEARTBEAT_MS;
+
+        let _handle = ctx.run_interval(Duration::from_millis(PRESENCE_HEARTBEAT_MS), |act, ctx| {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            heartbeat_tick(act, ctx, now_ms);
+        });
+    }
+
     pub(super) fn setup_hash_heartbeat_interval(&self, ctx: &mut actix::Context<Self>) {
         let _handle = ctx.run_interval(
             Duration::from_secs(constants::HASH_HEARTBEAT_FREQUENCY_S),

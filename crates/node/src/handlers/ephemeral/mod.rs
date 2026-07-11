@@ -14,4 +14,5 @@ pub const PRESENCE_TTL_MS: u64 = 7_000;
 pub const EPHEMERAL_MAX_BYTES: usize = 16_384;
 
 pub(crate) mod inbound;
+pub(crate) mod outbound;
 pub mod store;
