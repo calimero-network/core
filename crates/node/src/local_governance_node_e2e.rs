@@ -141,7 +141,11 @@ pub(crate) struct TestNode {
     /// `Handler<NetworkEvent>` dispatch (the same entrypoint a real
     /// gossipsub message takes), exercising the network-event → admission
     /// path without standing up a libp2p transport.
-    node_addr: actix::Addr<NodeManager>,
+    ///
+    /// `pub(crate)` so sibling e2e test modules (e.g. `ephemeral_dispatch_e2e`)
+    /// can drive a `BroadcastMessage` through the real `Handler<NetworkEvent>`
+    /// match without duplicating the ~130-LOC boot machinery.
+    pub(crate) node_addr: actix::Addr<NodeManager>,
 }
 
 /// Boots a `ContextManager` + `NodeManager` against an in-memory store and

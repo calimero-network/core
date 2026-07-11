@@ -13,5 +13,5 @@ pub const PRESENCE_TTL_MS: u64 = 7_000;
 /// Maximum byte length of a single ephemeral awareness slice.
 pub const EPHEMERAL_MAX_BYTES: usize = 16_384;
 
-pub mod inbound;
+pub(crate) mod inbound;
 pub mod store;
