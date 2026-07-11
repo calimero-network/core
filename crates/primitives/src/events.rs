@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::ContextId;
 use crate::hash::Hash;
+use crate::identity::PublicKey;
 use crate::sync_status::SyncState;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -35,6 +36,26 @@ pub enum ContextEventPayload {
     /// execution error — giving the fire-and-forget xcall path a feedback
     /// channel (#2137). `contextId` on the wrapper is the *source* context.
     XCall(XCallPayload),
+    /// Transient per-peer presence update; never persisted, decrypted from the
+    /// context group key before reaching a subscriber.
+    Ephemeral(EphemeralPayload),
+}
+
+/// Payload of a [`ContextEventPayload::Ephemeral`] event. Carries a per-peer
+/// presence slice, decrypted from the context group key before delivery.
+/// `state` is present on upsert and absent on TTL/disconnect expiry
+/// (`removed = true`). `contextId` rides on the flattened [`ContextEvent`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EphemeralPayload {
+    /// The peer whose presence slice this update belongs to.
+    pub author: PublicKey,
+    /// Decrypted slice bytes on upsert; absent when `removed` is `true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<Vec<u8>>,
+    /// `true` on TTL/disconnect expiry; `state` is omitted in that case.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
 }
 
 /// Payload of a [`ContextEventPayload::AppVersionChanged`] event. Versions are
@@ -183,5 +204,35 @@ mod tests {
     fn xcall_outcome_ok_shape() {
         let v = serde_json::to_value(XCallOutcome::Ok).expect("serialize");
         assert_eq!(v["status"], "ok");
+    }
+
+    // Ephemeral upsert: tag is "Ephemeral", state present, contextId on wrapper.
+    #[test]
+    fn ephemeral_upsert_tag_and_shape() {
+        let event = ContextEvent {
+            context_id: ContextId::from([0x01; 32]),
+            payload: ContextEventPayload::Ephemeral(EphemeralPayload {
+                author: PublicKey::from([0x05; 32]),
+                state: Some(vec![1, 2, 3]),
+                removed: false,
+            }),
+        };
+        let v = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(v["type"], "Ephemeral");
+        assert_eq!(v["data"]["state"], serde_json::json!([1, 2, 3]));
+        assert!(v.get("contextId").is_some());
+    }
+
+    // Ephemeral removal: state absent, removed=true.
+    #[test]
+    fn ephemeral_removed_omits_state() {
+        let payload = ContextEventPayload::Ephemeral(EphemeralPayload {
+            author: PublicKey::from([0x05; 32]),
+            state: None,
+            removed: true,
+        });
+        let v = serde_json::to_value(&payload).expect("serialize");
+        assert!(v["data"].get("state").is_none());
+        assert_eq!(v["data"]["removed"], true);
     }
 }
