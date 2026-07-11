@@ -35,6 +35,7 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{quote, ToTokens};
 use syn::{DeriveInput, Expr, ItemImpl};
 
+use crate::ephemeral::{EphemeralImpl, EphemeralImplInput};
 use crate::event::{EventImpl, EventImplInput};
 use crate::items::{Empty, StructOrEnumItem};
 use crate::logic::{LogicImpl, LogicImplInput};
@@ -42,6 +43,7 @@ use crate::private::{PrivateArgs, PrivateImpl, PrivateImplInput};
 use crate::state::{StateArgs, StateImpl, StateImplInput};
 
 mod abi_type;
+mod ephemeral;
 mod errors;
 mod event;
 mod forbidden_types;
@@ -302,6 +304,35 @@ pub fn migrate(args: TokenStream, input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn migration_check(args: TokenStream, input: TokenStream) -> TokenStream {
     migration::migration_check_impl(args.into(), input.into()).into()
+}
+
+/// Marks a struct as a transient, never-persisted ephemeral presence DTO.
+///
+/// This macro derives `BorshSerialize`, `BorshDeserialize`, `serde::Serialize`,
+/// and `serde::Deserialize` for the annotated struct, making it ready for
+/// over-the-wire transmission as an ephemeral presence message. It generates
+/// no runtime code path and does not implement `AppEvent` — the type is picked
+/// up by the ABI emitter as a presence DTO.
+///
+/// # Usage
+///
+/// Apply the `#[app::ephemeral]` attribute to a struct to define an ephemeral
+/// presence type.
+///
+/// # Constraints
+///
+/// - Must be applied to a `struct` (not an `enum`).
+/// - The generated derives use the SDK's re-exported `borsh` and `serde` crates.
+#[proc_macro_attribute]
+pub fn ephemeral(args: TokenStream, input: TokenStream) -> TokenStream {
+    reserved::init();
+    let _args = parse_macro_input!({ input } => args as Empty);
+    let item = parse_macro_input!(input as StructOrEnumItem);
+    let tokens = match EphemeralImpl::try_from(EphemeralImplInput { item: &item }) {
+        Ok(data) => data.to_token_stream(),
+        Err(err) => err.to_compile_error(),
+    };
+    tokens.into()
 }
 
 /// Defines application events for external communication.
