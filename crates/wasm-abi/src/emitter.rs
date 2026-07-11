@@ -6,8 +6,8 @@ use syn::{Item, ItemEnum, ItemImpl, ItemStruct, Type};
 
 use crate::normalize::{normalize_type, ResolvedLocal, TypeResolver};
 use crate::schema::{
-    Event, Field, Manifest, Method, MethodIntent, MigrationEdgeAbi, Parameter, ScalarType, TypeDef,
-    TypeRef, Variant, XCallCallers,
+    EphemeralType, Event, Field, Manifest, Method, MethodIntent, MigrationEdgeAbi, Parameter,
+    ScalarType, TypeDef, TypeRef, Variant, XCallCallers,
 };
 
 /// ABI emitter that processes Rust source code
@@ -17,6 +17,7 @@ pub struct AbiEmitter {
     local_types: HashMap<String, ResolvedLocal>,
     methods: Vec<Method>,
     events: Vec<Event>,
+    ephemeral: Vec<EphemeralType>,
     state_type: Option<String>,
     /// Errors collected during visitation (visitor methods cannot return Result)
     normalize_errors: Vec<String>,
@@ -30,6 +31,7 @@ impl<'ast> AbiEmitter {
             local_types: HashMap::new(),
             methods: Vec::new(),
             events: Vec::new(),
+            ephemeral: Vec::new(),
             state_type: None,
             normalize_errors: Vec::new(),
         }
@@ -263,6 +265,18 @@ impl<'ast> AbiEmitter {
             });
         }
     }
+
+    fn process_ephemeral(&mut self, item_struct: &'ast ItemStruct) {
+        let name = item_struct.ident.to_string();
+        // Build the record TypeDef from the struct's fields and register it in
+        // type_definitions (reuses the same named-field machinery as visit_item_struct).
+        self.visit_item_struct(item_struct);
+        // Record this struct as an ephemeral presence entry.
+        self.ephemeral.push(EphemeralType {
+            name: name.clone(),
+            type_ref: TypeRef::reference(&name),
+        });
+    }
 }
 
 impl Default for AbiEmitter {
@@ -304,6 +318,16 @@ fn has_app_state_attribute(attrs: &[syn::Attribute]) -> bool {
         let path = attr.path();
         let segments: Vec<_> = path.segments.iter().collect();
         segments.len() == 2 && segments[0].ident == "app" && segments[1].ident == "state"
+    })
+}
+
+/// Returns `true` when the struct carries `#[app::ephemeral]`, marking it as
+/// a transient presence DTO whose shape should be recorded in the ABI manifest.
+fn has_app_ephemeral_attribute(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        let path = attr.path();
+        let segments: Vec<_> = path.segments.iter().collect();
+        segments.len() == 2 && segments[0].ident == "app" && segments[1].ident == "ephemeral"
     })
 }
 
@@ -873,6 +897,20 @@ pub fn emit_manifest_from_crate(
         }
     }
 
+    // Fifth pass: collect all structs tagged #[app::ephemeral] across all files.
+    // This is a dedicated pass (mirroring the #[app::state] scan above) so that
+    // unreferenced ephemeral structs are still captured even when no method
+    // mentions them in its signature.
+    for file in &files {
+        for item in &file.items {
+            if let Item::Struct(s) = item {
+                if has_app_ephemeral_attribute(&s.attrs) {
+                    emitter.process_ephemeral(s);
+                }
+            }
+        }
+    }
+
     let mut manifest = Manifest {
         schema_version: "wasm-abi/1".to_owned(),
         types: emitter.type_definitions.into_iter().collect(),
@@ -881,6 +919,7 @@ pub fn emit_manifest_from_crate(
         state_root: emitter.state_type,
         state_version,
         migrations,
+        ephemeral: emitter.ephemeral,
     };
 
     // Remove any internal types that shouldn't be exposed
@@ -1106,5 +1145,22 @@ mod migration_tests {
         "#;
         let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
         assert!(m.migrations.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod ephemeral_tests {
+    use super::*;
+
+    #[test]
+    fn emits_ephemeral_section() {
+        let src = r#"
+            #[app::ephemeral]
+            pub struct Presence { pub cursor: u32, pub name: String }
+            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
+        "#;
+        let manifest = emit_manifest(src).unwrap();
+        assert!(manifest.ephemeral.iter().any(|e| e.name == "Presence"));
+        assert!(manifest.types.contains_key("Presence"));
     }
 }
