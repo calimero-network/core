@@ -155,6 +155,15 @@ pub struct NodeManager {
     /// local residue, and the emitter publishes the node's own signed
     /// heartbeat (on-change + periodic) on the namespace topic.
     pub(crate) migration_emitter_addr: Option<Addr<MigrationEmitter>>,
+    /// In-memory per-context ephemeral-presence awareness store.
+    ///
+    /// Held directly on the manager (not on `NodeState`) because it is
+    /// never cloned, never persisted, and is only accessed from the
+    /// single-threaded actor context — the `BroadcastMessage::Ephemeral`
+    /// inbound arm and the outbound heartbeat arm both run on this actor's
+    /// Arbiter. A plain (non-`Arc<Mutex<>>`) field is therefore correct and
+    /// avoids lock overhead on a high-frequency path.
+    pub(crate) awareness_store: crate::handlers::ephemeral::store::AwarenessStore,
 }
 
 impl NodeManager {
@@ -193,6 +202,7 @@ impl NodeManager {
             ns_provable_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
             migration_status_cache: Arc::new(MigrationStatusCache::default()),
             migration_emitter_addr: None,
+            awareness_store: crate::handlers::ephemeral::store::AwarenessStore::new(),
         }
     }
 }
