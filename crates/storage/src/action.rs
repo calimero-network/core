@@ -1,7 +1,5 @@
 //! Synchronization action types for CRDT operations.
 
-use std::collections::BTreeMap;
-
 use borsh::{BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 
@@ -97,34 +95,6 @@ pub enum Action {
         /// The metadata of the entity.
         metadata: Metadata,
     },
-}
-
-/// Comparison data for tree synchronization.
-///
-/// Contains entity metadata needed for Merkle tree comparison.
-/// Used to determine if entities differ without transferring full data.
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct ComparisonData {
-    /// Entity ID.
-    pub id: Id,
-
-    /// Full Merkle hash (entity + all descendants).
-    pub full_hash: [u8; 32],
-
-    /// Own hash (entity data only, excluding descendants).
-    pub own_hash: [u8; 32],
-
-    /// Children organized by collection name.
-    ///
-    /// Each collection maps to a vector of child metadata (ID, hash, timestamp).
-    /// Used for recursive tree comparison.
-    pub children: BTreeMap<String, Vec<ChildInfo>>,
-
-    /// Ancestors of the entity.
-    pub ancestors: Vec<ChildInfo>,
-
-    /// Metadata of the entity.
-    pub metadata: Metadata,
 }
 
 impl Action {

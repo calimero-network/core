@@ -22,7 +22,6 @@
 //!
 //! **Synchronization:**
 //! - [`apply_action()`](Interface::apply_action()) - Execute remote changes
-//! - [`compare_trees()`](Interface::compare_trees()) - Generate sync actions
 //!
 //! # Conflict Resolution
 //!
@@ -42,7 +41,6 @@ use std::collections::BTreeMap;
 
 use borsh::{from_slice, to_vec};
 use calimero_primitives::identity::PublicKey;
-use indexmap::IndexMap;
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
@@ -54,7 +52,7 @@ use crate::index::Index;
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 // Re-export types for convenience
-pub use crate::action::{Action, ComparisonData};
+pub use crate::action::Action;
 pub use crate::error::StorageError;
 
 /// Convenient type alias for the main storage system.
@@ -2039,17 +2037,10 @@ impl<S: StorageAdaptor> Interface<S> {
                     // save_internal short-circuited because stored.updated_at >
                     // incoming.updated_at: nothing changed locally, but the
                     // apply still "happened" from the network's perspective —
-                    // we received and acknowledged this delta. Push
-                    // Action::Compare so this node's current Merkle state for
-                    // `id` ships in the next outbound delta and peers can
-                    // reconcile via state-based sync. Without this, two nodes
-                    // that concurrently merge the same entity (each holding
-                    // the locally-newer side) keep emitting deltas the other
-                    // drops, and the Merkle root divergence stalls until an
-                    // unrelated trigger forces a hash-comparison sweep.
-                    if S::participates_in_sync() {
-                        crate::delta::push_action(Action::Compare { id });
-                    }
+                    // we received and acknowledged this delta. Merkle-root
+                    // convergence for concurrently-merged entities is handled by
+                    // the HashComparison/level-wise sync protocols, not by this
+                    // apply path, so there is nothing further to emit here.
                     return Ok(());
                 };
 
@@ -2153,11 +2144,6 @@ impl<S: StorageAdaptor> Interface<S> {
                         parent.id(),
                         ChildInfo::new(id, own_hash, metadata.clone()),
                     )?;
-                }
-
-                if S::participates_in_sync() {
-                    crate::delta::push_action(Action::Compare { id });
-                    debug!(%id, "Queued compare action after apply");
                 }
             }
             Action::Compare { .. } => {
@@ -2363,201 +2349,6 @@ impl<S: StorageAdaptor> Interface<S> {
         <Index<S>>::get_children_of(parent_id)
     }
 
-    /// Compares local and remote entity trees, generating sync actions.
-    ///
-    /// Compares Merkle hashes recursively, producing action lists for both sides.
-    /// Returns `(local_actions, remote_actions)` to bring trees into sync.
-    ///
-    /// # Errors
-    /// Returns error if index lookup or hash comparison fails.
-    ///
-    pub fn compare_trees(
-        foreign_entity_data: Option<Vec<u8>>,
-        foreign_index_data: ComparisonData,
-    ) -> Result<(Vec<Action>, Vec<Action>), StorageError> {
-        let mut actions = (vec![], vec![]);
-
-        let id = foreign_index_data.id;
-
-        let local_metadata = <Index<S>>::get_metadata(id)?;
-
-        let Some(local_entity) = Self::find_by_id_raw(id) else {
-            if let Some(foreign_entity) = foreign_entity_data {
-                // Local entity doesn't exist, so we need to add it
-                actions.0.push(Action::Add {
-                    id,
-                    data: foreign_entity,
-                    ancestors: foreign_index_data.ancestors,
-                    metadata: foreign_index_data.metadata,
-                });
-            }
-
-            return Ok(actions);
-        };
-
-        let local_metadata = local_metadata.ok_or(StorageError::IndexNotFound(id))?;
-
-        let (local_full_hash, local_own_hash) =
-            <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;
-
-        // Compare full Merkle hashes
-        if local_full_hash == foreign_index_data.full_hash {
-            return Ok(actions);
-        }
-
-        // Compare own hashes and timestamps
-        if local_own_hash != foreign_index_data.own_hash {
-            match foreign_entity_data {
-                Some(foreign_entity_data)
-                    if local_metadata.updated_at <= foreign_index_data.metadata.updated_at =>
-                {
-                    actions.0.push(Action::Update {
-                        id,
-                        data: foreign_entity_data,
-                        ancestors: foreign_index_data.ancestors,
-                        metadata: foreign_index_data.metadata,
-                    });
-                }
-                _ => {
-                    actions.1.push(Action::Update {
-                        id,
-                        data: local_entity,
-                        ancestors: <Index<S>>::get_ancestors_of(id)?,
-                        metadata: local_metadata,
-                    });
-                }
-            }
-        }
-
-        // The list of collections from the type will be the same on both sides, as
-        // the type is the same.
-
-        let local_collection_names = <Index<S>>::get_collection_names_for(id)?;
-
-        let local_collections = local_collection_names
-            .into_iter()
-            .map(|name| {
-                let children = <Index<S>>::get_children_of(id)?;
-                Ok((name, children))
-            })
-            .collect::<Result<BTreeMap<_, _>, StorageError>>()?;
-
-        // Compare children
-        for (local_coll_name, local_children) in &local_collections {
-            if let Some(foreign_children) = foreign_index_data.children.get(local_coll_name) {
-                let local_child_map: IndexMap<_, _> = local_children
-                    .iter()
-                    .map(|child| (child.id(), child.merkle_hash()))
-                    .collect();
-                let foreign_child_map: IndexMap<_, _> = foreign_children
-                    .iter()
-                    .map(|child| (child.id(), child.merkle_hash()))
-                    .collect();
-
-                for (child_id, local_hash) in &local_child_map {
-                    match foreign_child_map.get(child_id) {
-                        Some(foreign_hash) if local_hash != foreign_hash => {
-                            actions.0.push(Action::Compare { id: *child_id });
-                            actions.1.push(Action::Compare { id: *child_id });
-                        }
-                        None => {
-                            if let Some(local_child) = Self::find_by_id_raw(*child_id) {
-                                let metadata = <Index<S>>::get_metadata(*child_id)?
-                                    .ok_or(StorageError::IndexNotFound(*child_id))?;
-
-                                actions.1.push(Action::Add {
-                                    id: *child_id,
-                                    data: local_child,
-                                    // Ancestors of the entity being added (the
-                                    // child), not its parent `id` — apply
-                                    // rebuilds the path down to `*child_id` and
-                                    // links it under `ancestors[0]` (its
-                                    // immediate parent). Using `id` here dropped
-                                    // the immediate parent from the chain,
-                                    // orphaning the child on the receiver (the
-                                    // "collection entirely missing" arm below
-                                    // already does this correctly).
-                                    ancestors: <Index<S>>::get_ancestors_of(*child_id)?,
-                                    metadata,
-                                });
-                            }
-                        }
-                        // Hashes match, no action needed
-                        _ => {}
-                    }
-                }
-
-                for id in foreign_child_map.keys() {
-                    if !local_child_map.contains_key(id) {
-                        // Child exists in foreign but not locally, compare.
-                        // We can't get the full data for the foreign child, so we flag it for
-                        // comparison.
-                        actions.1.push(Action::Compare { id: *id });
-                    }
-                }
-            } else {
-                // The entire collection is missing from the foreign entity
-                for child in local_children {
-                    if let Some(local_child) = Self::find_by_id_raw(child.id()) {
-                        let metadata = <Index<S>>::get_metadata(child.id())?
-                            .ok_or(StorageError::IndexNotFound(child.id()))?;
-
-                        actions.1.push(Action::Add {
-                            id: child.id(),
-                            data: local_child,
-                            ancestors: <Index<S>>::get_ancestors_of(child.id())?,
-                            metadata,
-                        });
-                    }
-                }
-            }
-        }
-
-        // Check for collections in the foreign entity that don't exist locally
-        for (foreign_coll_name, foreign_children) in &foreign_index_data.children {
-            if !local_collections.contains_key(foreign_coll_name) {
-                for child in foreign_children {
-                    // We can't get the full data for the foreign child, so we flag it for comparison
-                    actions.1.push(Action::Compare { id: child.id() });
-                }
-            }
-        }
-
-        Ok(actions)
-    }
-
-    /// Compares entities and automatically applies sync actions locally.
-    ///
-    /// Convenience wrapper around [`compare_trees()`](Self::compare_trees()) that applies
-    /// local actions immediately and pushes remote actions to sync queue.
-    ///
-    /// # Errors
-    /// Returns error if comparison or action application fails.
-    ///
-    pub fn compare_affective(
-        data: Option<Vec<u8>>,
-        comparison_data: ComparisonData,
-        ctx: &ApplyContext,
-    ) -> Result<(), StorageError> {
-        let (local, remote) = <Interface<S>>::compare_trees(data, comparison_data)?;
-
-        for action in local {
-            if let Action::Compare { .. } = &action {
-                continue;
-            }
-
-            <Interface<S>>::apply_action(action, ctx)?;
-        }
-
-        if S::participates_in_sync() {
-            for action in remote {
-                crate::delta::push_action(action);
-            }
-        }
-
-        Ok(())
-    }
-
     /// Finds and deserializes an entity by its unique ID.
     ///
     /// Filters out tombstoned (deleted) entities automatically.
@@ -2611,41 +2402,6 @@ impl<S: StorageAdaptor> Interface<S> {
     ///
     pub fn get(id: Id) -> Result<Vec<u8>, StorageError> {
         Self::find_by_id_raw(id).ok_or(StorageError::IndexNotFound(id))
-    }
-
-    /// Generates comparison metadata for tree synchronization.
-    ///
-    /// Includes hashes, ancestors, children info. Used by [`compare_trees()`](Self::compare_trees()).
-    ///
-    /// # Errors
-    /// Returns error if index lookup fails.
-    ///
-    pub fn generate_comparison_data(id: Option<Id>) -> Result<ComparisonData, StorageError> {
-        let id = id.unwrap_or_else(Id::root);
-
-        let (full_hash, own_hash) = <Index<S>>::get_hashes_for(id)?.unwrap_or_default();
-
-        let metadata = <Index<S>>::get_metadata(id)?.unwrap_or_default();
-
-        let ancestors = <Index<S>>::get_ancestors_of(id)?;
-
-        let collection_names = <Index<S>>::get_collection_names_for(id)?;
-
-        let children = collection_names
-            .into_iter()
-            .map(|collection_name| {
-                <Index<S>>::get_children_of(id).map(|children| (collection_name.clone(), children))
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
-
-        Ok(ComparisonData {
-            id,
-            own_hash,
-            full_hash,
-            ancestors,
-            children,
-            metadata,
-        })
     }
 
     /// Checks if a collection has any children.
@@ -3150,14 +2906,11 @@ impl<S: StorageAdaptor> Interface<S> {
         //   * `find_by_id_raw` does NOT consult the index — it returns
         //     raw bytes whenever `Key::Entry(id)` is present. In
         //     principle this exposes the orphan, but every production
-        //     caller (`compare_trees` and its sync-layer cousins in
+        //     caller (the sync-layer traversals in
         //     `hash_comparison{,_protocol}.rs`, `level_sync.rs`)
         //     reaches `find_by_id_raw` only after iterating a parent's
         //     index-derived child list — and the orphan's id is, by
-        //     definition, not in any parent's index. `compare_trees`
-        //     called directly with the orphan's id also bails: line
-        //     1525 returns `IndexNotFound` from the `local_metadata`
-        //     check before the orphan bytes can become an `Action`.
+        //     definition, not in any parent's index.
         //   * The next successful `apply_action` for the same id
         //     overwrites the orphan bytes, so the storage cost is
         //     transient.
