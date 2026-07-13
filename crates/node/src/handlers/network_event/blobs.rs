@@ -55,12 +55,25 @@ pub(super) fn handle_blob_downloaded(
             let reader = &blob_data[..];
 
             match blobstore.put(reader).await {
-                Ok((stored_blob_id, _hash, size)) => {
+                Ok((stored_blob_id, _hash, size)) if stored_blob_id == blob_id => {
                     info!(
                         requested_blob_id = %blob_id,
                         stored_blob_id = %stored_blob_id,
                         size = size,
                         "Blob stored successfully"
+                    );
+                }
+                Ok((stored_blob_id, _hash, size)) => {
+                    // Blob ids are content hashes: the id the peer served under
+                    // must equal the hash of the bytes it delivered. A mismatch
+                    // means we were handed the wrong (or tampered) content, so
+                    // the requested blob is NOT satisfied — never report success.
+                    error!(
+                        requested_blob_id = %blob_id,
+                        stored_blob_id = %stored_blob_id,
+                        %from_peer,
+                        size = size,
+                        "Downloaded blob content hash does not match the requested id; discarding"
                     );
                 }
                 Err(e) => {

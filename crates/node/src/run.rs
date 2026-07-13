@@ -181,7 +181,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // Create dedicated network event channel for reliable message delivery
     // This replaces LazyRecipient<NetworkEvent> to avoid cross-arbiter message loss
     let channel_config = NetworkEventChannelConfig {
-        channel_size: 1000,     // Configurable, handles burst patterns
+        channel_size: crate::constants::NETWORK_EVENT_CHANNEL_SIZE,
         warning_threshold: 0.8, // Log warning at 80% capacity
         stats_log_interval: Duration::from_secs(30),
         // On a full channel, apply backpressure (wait for capacity) rather
@@ -189,7 +189,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         send_timeout: Duration::from_secs(5),
         // Bound extra buffering from waiting overflow events to ~1x the
         // channel before escalating to a true drop.
-        max_pending_retries: 1000,
+        max_pending_retries: crate::constants::NETWORK_EVENT_MAX_PENDING_RETRIES,
     };
     let (network_event_sender, network_event_receiver) =
         network_event_channel::channel(channel_config, &mut registry);
@@ -234,15 +234,15 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         ))
         .await?;
 
-    // Increased buffer sizes for better burst handling and concurrency
-    // 256 events: supports more concurrent WebSocket clients
-    // 64 sync requests: handles burst context joins/syncs
-    let (event_sender, _) = broadcast::channel(256);
+    // Channel capacities are named in `crate::constants` so the burst/concurrency
+    // budgets live in one place rather than as scattered magic numbers.
+    let (event_sender, _) = broadcast::channel(crate::constants::EVENT_BROADCAST_CHANNEL_SIZE);
 
-    let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(64);
-    let (ns_sync_tx, ns_sync_rx) = mpsc::channel(16);
-    let (ns_join_tx, ns_join_rx) = mpsc::channel(16);
-    let (open_subgroup_join_tx, open_subgroup_join_rx) = mpsc::channel(16);
+    let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(crate::constants::CTX_SYNC_CHANNEL_SIZE);
+    let (ns_sync_tx, ns_sync_rx) = mpsc::channel(crate::constants::NS_SYNC_CHANNEL_SIZE);
+    let (ns_join_tx, ns_join_rx) = mpsc::channel(crate::constants::NS_JOIN_CHANNEL_SIZE);
+    let (open_subgroup_join_tx, open_subgroup_join_rx) =
+        mpsc::channel(crate::constants::OPEN_SUBGROUP_JOIN_CHANNEL_SIZE);
 
     let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
 
@@ -250,7 +250,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // applied deltas so the in-memory DeltaStore stays current without
     // re-scanning the DB on every interval sync. Drained by a task
     // spawned once `node_state` is available (below).
-    let (local_delta_tx, mut local_delta_rx) = mpsc::channel(256);
+    let (local_delta_tx, mut local_delta_rx) =
+        mpsc::channel(crate::constants::LOCAL_DELTA_CHANNEL_SIZE);
 
     let node_client = NodeClient::new(
         datastore.clone(),

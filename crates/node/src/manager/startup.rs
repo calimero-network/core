@@ -171,6 +171,16 @@ impl NodeManager {
         let _handle = ctx.run_interval(
             Duration::from_secs(constants::HASH_HEARTBEAT_FREQUENCY_S),
             |act, ctx| {
+                // Reclaim heartbeat bookkeeping for peers/contexts that have gone
+                // quiet, so these maps can't grow without bound on peer churn.
+                // Both are touched only here and in the (synchronous) heartbeat
+                // handler on this actor, so a plain retain is race-free.
+                let now = std::time::Instant::now();
+                act.divergence_streak
+                    .retain(|_, mark| now.duration_since(mark.last_seen) < crate::manager::HEARTBEAT_STATE_TTL);
+                act.behind_sync_at
+                    .retain(|_, last| now.duration_since(*last) < crate::manager::HEARTBEAT_STATE_TTL);
+
                 let context_client = act.clients.context.clone();
                 let node_client = act.clients.node.clone();
 

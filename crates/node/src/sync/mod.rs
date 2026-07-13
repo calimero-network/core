@@ -35,6 +35,13 @@
 mod blobs;
 mod config;
 pub(crate) mod delta_request;
+
+/// Maximum ops exchanged in a single namespace backfill response, capping
+/// memory use from large namespace governance DAGs. Enforced on BOTH ends: the
+/// responder never sends more, and the receiver never applies more, so a
+/// misbehaving responder cannot push an unbounded batch either way.
+pub(crate) const MAX_BACKFILL_OPS: usize = 500;
+
 pub(crate) mod driver;
 mod hash_comparison;
 pub mod hash_comparison_protocol;

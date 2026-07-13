@@ -32,6 +32,17 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
+/// Minimum spacing between repeated channel-pressure warnings, so sustained
+/// overload does not turn them into a per-event log flood.
+const PRESSURE_WARN_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Process uptime in milliseconds, measured from a lazily captured base
+/// instant. Backs the lock-free warning throttle.
+fn process_uptime_millis() -> u64 {
+    static BASE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    BASE.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
 /// Configuration for the network event channel.
 #[derive(Debug, Clone, Copy)]
 pub struct NetworkEventChannelConfig {
@@ -120,6 +131,14 @@ pub struct NetworkEventChannelMetrics {
     /// retry path. Backs `max_pending_retries` and drives
     /// `backpressure_active`. Not a registered metric (operational state).
     pub pending_retries: Arc<AtomicU64>,
+
+    /// Process-uptime (ms) of the last emitted "approaching capacity" warning.
+    /// Used to throttle that log line so sustained pressure can't flood it.
+    pub last_capacity_warn_ms: Arc<AtomicU64>,
+
+    /// Process-uptime (ms) of the last emitted backpressure warning; throttles
+    /// that log line the same way.
+    pub last_backpressure_warn_ms: Arc<AtomicU64>,
 }
 
 impl NetworkEventChannelMetrics {
@@ -190,6 +209,8 @@ impl NetworkEventChannelMetrics {
             processing_latency,
             high_watermark: Arc::new(AtomicU64::new(0)),
             pending_retries: Arc::new(AtomicU64::new(0)),
+            last_capacity_warn_ms: Arc::new(AtomicU64::new(0)),
+            last_backpressure_warn_ms: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -207,6 +228,26 @@ impl NetworkEventChannelMetrics {
             processing_latency: Histogram::new(exponential_buckets(0.0001, 2.0, 18)),
             high_watermark: Arc::new(AtomicU64::new(0)),
             pending_retries: Arc::new(AtomicU64::new(0)),
+            last_capacity_warn_ms: Arc::new(AtomicU64::new(0)),
+            last_backpressure_warn_ms: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Returns `true` at most once per `min_interval` for the given throttle
+    /// slot, stamping it with the current process uptime. Lock-free; a slot of
+    /// `0` means "never warned" so the first call always passes.
+    fn throttle_warn(slot: &AtomicU64, min_interval: Duration) -> bool {
+        let now = process_uptime_millis();
+        let interval = min_interval.as_millis() as u64;
+        let mut last = slot.load(Ordering::Relaxed);
+        loop {
+            if last != 0 && now.saturating_sub(last) < interval {
+                return false;
+            }
+            match slot.compare_exchange_weak(last, now, Ordering::AcqRel, Ordering::Relaxed) {
+                Ok(_) => return true,
+                Err(actual) => last = actual,
+            }
         }
     }
 
@@ -279,7 +320,12 @@ impl NetworkEventSender {
 
                 // Check warning threshold
                 let fill_ratio = current_depth as f64 / max_capacity as f64;
-                if fill_ratio >= self.config.warning_threshold {
+                if fill_ratio >= self.config.warning_threshold
+                    && NetworkEventChannelMetrics::throttle_warn(
+                        &self.metrics.last_capacity_warn_ms,
+                        PRESSURE_WARN_INTERVAL,
+                    )
+                {
                     warn!(
                         current_depth,
                         max_capacity,
@@ -335,12 +381,17 @@ impl NetworkEventSender {
 
         self.metrics.events_retried.inc();
         self.metrics.backpressure_active.set(1);
-        warn!(
-            event_type,
-            pending,
-            channel_size = self.config.channel_size,
-            "Network event channel full - applying backpressure (retrying event)"
-        );
+        if NetworkEventChannelMetrics::throttle_warn(
+            &self.metrics.last_backpressure_warn_ms,
+            PRESSURE_WARN_INTERVAL,
+        ) {
+            warn!(
+                event_type,
+                pending,
+                channel_size = self.config.channel_size,
+                "Network event channel full - applying backpressure (retrying event)"
+            );
+        }
 
         let tx = self.tx.clone();
         let metrics = self.metrics.clone();
@@ -449,6 +500,12 @@ impl NetworkEventReceiver {
         }
 
         Some(timestamped.event)
+    }
+
+    /// A clone of the shared channel metrics, so downstream stages (e.g. the
+    /// NodeManager bridge) can record into the same series.
+    pub fn metrics(&self) -> NetworkEventChannelMetrics {
+        self.metrics.clone()
     }
 
     /// Try to receive without blocking.

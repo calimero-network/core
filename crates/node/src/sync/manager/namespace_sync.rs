@@ -21,6 +21,7 @@ use tokio::time;
 use tracing::{debug, info, warn};
 
 use super::SyncManager;
+use crate::sync::MAX_BACKFILL_OPS;
 
 impl SyncManager {
     /// Actively request governance catch-up from a specific peer whose
@@ -363,10 +364,6 @@ impl SyncManager {
         let store = self.context_client.datastore_handle().into_inner();
         let handle = store.handle();
         let mut found = Vec::new();
-
-        /// Maximum ops returned in a single backfill response to prevent
-        /// memory exhaustion from large namespace governance DAGs.
-        const MAX_BACKFILL_OPS: usize = 500;
 
         if delta_ids.is_empty() {
             // Empty request = "give me everything for this namespace".

@@ -496,6 +496,15 @@ impl ReadinessManager {
         // change, and collect the post-recompute `*Ready` snapshots
         // for emission.
         let now = Instant::now();
+
+        // Evict probe rate-limit stamps for (peer, namespace) pairs that have
+        // gone quiet, so this map can't grow without bound on peer churn. The
+        // stamps only gate probe responses within `beacon_interval / 2`, so any
+        // entry older than this TTL is safe to drop — a later probe re-inserts.
+        const PROBE_RESPONSE_TTL: Duration = Duration::from_secs(300);
+        self.last_probe_response_at
+            .retain(|_, at| now.duration_since(*at) < PROBE_RESPONSE_TTL);
+
         let ttl = self.config.ttl_heartbeat;
         let cfg = self.config;
         let mut to_emit: Vec<([u8; 32], ReadinessState)> = Vec::new();

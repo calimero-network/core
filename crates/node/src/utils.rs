@@ -25,12 +25,15 @@ pub(crate) async fn choose_stream<T>(
     stream: impl Stream<Item = T>,
     rng: &mut impl Rng,
 ) -> Option<T> {
-    let mut stream = pin!(stream);
+    let mut stream = pin!(stream.enumerate());
 
-    let mut item = stream.next().await;
+    let mut item = None;
 
-    let mut stream = stream.enumerate();
-
+    // Algorithm R over the whole stream: the (idx+1)-th item (0-based `idx`)
+    // replaces the reservoir with probability 1/(idx+1). The first item
+    // (idx == 0) always fills the empty reservoir. Consuming the first element
+    // *before* enumerating — as an earlier version did — offset every
+    // probability by one and biased selection toward later elements.
     while let Some((idx, this)) = stream.next().await {
         if rng.gen_range(0..idx + 1) == 0 {
             item = Some(this);
