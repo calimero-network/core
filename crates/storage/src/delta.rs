@@ -100,10 +100,6 @@ impl CausalDelta {
                     // deleted_at excluded - it's a timestamp
                     hash_metadata_storage_type_for_id(&mut hasher, metadata);
                 }
-                Action::Compare { id } => {
-                    let id_bytes: [u8; 32] = (*id).into();
-                    hasher.update(id_bytes);
-                }
             }
         }
 

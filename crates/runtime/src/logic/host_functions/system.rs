@@ -1273,8 +1273,7 @@ impl VMHostFunctions<'_> {
                         .map(|action| match action {
                             Action::Add { id, .. }
                             | Action::Update { id, .. }
-                            | Action::DeleteRef { id, .. }
-                            | Action::Compare { id } => format!("{id:?}"),
+                            | Action::DeleteRef { id, .. } => format!("{id:?}"),
                         })
                         .collect();
 

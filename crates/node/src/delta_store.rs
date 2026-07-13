@@ -374,7 +374,6 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
                 .payload
                 .iter()
                 .map(|a| match a {
-                    Action::Compare { .. } => "Compare",
                     Action::Add { .. } => "Add",
                     Action::Update { .. } => "Update",
                     Action::DeleteRef { .. } => "DeleteRef",
@@ -857,7 +856,6 @@ impl ContextStorageApplier {
                 Action::Add { metadata, .. }
                 | Action::Update { metadata, .. }
                 | Action::DeleteRef { metadata, .. } => metadata,
-                Action::Compare { .. } => continue,
             };
             match metadata.storage_type {
                 StorageType::Shared { .. } => {
@@ -2156,7 +2154,6 @@ impl DeltaStore {
                     StorageType::SharedMember { anchor, .. } => anchor,
                     _ => continue,
                 },
-                Action::Compare { .. } => continue,
             };
             if shared_here.contains(&anchor) {
                 continue;

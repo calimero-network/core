@@ -421,12 +421,6 @@ where
             let action_ctx = ctx_for_action(&action);
 
             match action {
-                // Legacy state-based-comparison sync trigger. That protocol has
-                // been removed (HashComparison/level-wise sync handles Merkle
-                // convergence), and no path emits `Compare` onto the wire, so a
-                // received `Compare` is an inert no-op rather than a reconcile
-                // request.
-                Action::Compare { .. } => {}
                 Action::Add {
                     id,
                     data,

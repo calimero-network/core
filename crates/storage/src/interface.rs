@@ -344,7 +344,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 Action::Add { id, metadata, .. } | Action::Update { id, metadata, .. } => {
                     (*id, metadata)
                 }
-                Action::DeleteRef { .. } | Action::Compare { .. } => continue,
+                Action::DeleteRef { .. } => continue,
             };
             let StorageType::Shared {
                 writers,
@@ -507,7 +507,6 @@ impl<S: StorageAdaptor> Interface<S> {
         match action {
             Action::Add { .. } | Action::Update { .. } => OpMask::WRITE,
             Action::DeleteRef { .. } => OpMask::DELETE,
-            Action::Compare { .. } => OpMask::NONE,
         }
     }
 
@@ -1883,7 +1882,6 @@ impl<S: StorageAdaptor> Interface<S> {
                     StorageType::Public => { /* No special checks */ }
                 }
             }
-            Action::Compare { .. } => { /* No checks needed */ }
         }
 
         match action {
@@ -2150,9 +2148,6 @@ impl<S: StorageAdaptor> Interface<S> {
                         ChildInfo::new(id, own_hash, metadata.clone()),
                     )?;
                 }
-            }
-            Action::Compare { .. } => {
-                return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
             }
             Action::DeleteRef { id, deleted_at, .. } => {
                 Self::apply_delete_ref_action(id, deleted_at)?;
@@ -3714,7 +3709,6 @@ fn verify_action_timestamp(action: &Action) -> Result<(), StorageError> {
     let timestamp = match action {
         Action::Add { metadata, .. } | Action::Update { metadata, .. } => metadata.updated_at(),
         Action::DeleteRef { deleted_at, .. } => *deleted_at,
-        Action::Compare { .. } => return Ok(()),
     };
 
     let now = time_now();

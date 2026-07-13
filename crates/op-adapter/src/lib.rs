@@ -26,8 +26,9 @@ use calimero_storage::rotation_log::RotationLogEntry;
 
 /// Encode a storage data [`Action`] as an [`OpPayload`].
 ///
-/// Returns `None` for [`Action::Compare`] — a sync reconciliation *hint*, not
-/// a state change, so it has no op-model representation.
+/// Every state-changing [`Action`] maps to an op, so this currently always
+/// returns `Some`; the `Option` is retained so a future non-state-changing
+/// action can encode as `None` without a signature change.
 #[must_use]
 pub fn payload_from_action(action: &Action) -> Option<OpPayload> {
     match action {
@@ -36,7 +37,6 @@ pub fn payload_from_action(action: &Action) -> Option<OpPayload> {
             value: data.clone(),
         }),
         Action::DeleteRef { id, .. } => Some(OpPayload::Delete { entity: *id }),
-        Action::Compare { .. } => None,
     }
 }
 
@@ -270,7 +270,6 @@ mod tests {
             deleted_at: 0,
             metadata: Metadata::default(),
         };
-        let cmp = Action::Compare { id };
 
         assert_eq!(
             payload_from_action(&add),
@@ -290,8 +289,6 @@ mod tests {
             payload_from_action(&del),
             Some(OpPayload::Delete { entity: id })
         );
-        // Compare is a sync hint, not a state change.
-        assert_eq!(payload_from_action(&cmp), None);
     }
 
     /// Build a `SetWriters` op chain from a rotation log and assert the unified

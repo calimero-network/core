@@ -1631,9 +1631,6 @@ fn test_e2e_sync_flow_with_isolated_storage() {
                 Action::DeleteRef { id, .. } => {
                     println!("  Action {i}: DeleteRef id={id}");
                 }
-                Action::Compare { id } => {
-                    println!("  Action {i}: Compare id={id}");
-                }
             }
         }
 
