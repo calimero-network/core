@@ -14,6 +14,35 @@ anthropic:
   default_model: claude-sonnet-5
   enable_prompt_caching: true
 
+# Review agents. Only takes effect when the workflow passes --config; the App's
+# webhook uses its own config. Names must match the reviewer's registry exactly.
+# Order matters: --agents N runs the first N. Thinking is ON only for the two
+# highest-value reasoning agents (security, logic) - off elsewhere to bound cost
+# and latency. max_tokens is raised where thinking is on so it doesn't eat the
+# findings-JSON budget.
+agents:
+  - name: security-reviewer      # security, auth, crypto, untrusted input
+    model: claude-sonnet-5
+    thinking_enabled: true
+    max_tokens: 16000
+    max_tool_calls: 20
+  - name: logic-reviewer         # correctness, edge cases, concurrency, CRDT/DAG invariants
+    model: claude-sonnet-5
+    thinking_enabled: true
+    max_tokens: 16000
+    max_tool_calls: 20
+  - name: patterns-reviewer      # architecture, consistency, maintainability
+    model: claude-sonnet-5
+    thinking_enabled: false
+    max_tool_calls: 20
+
+# Skip agents on vendored / generated paths (read even without --config).
+ignore:
+  - "target/**"
+  - "Cargo.lock"
+  - "**/*.lock"
+  - "**/snapshots/**"
+
 # Doc auto-update — opens a draft PR on merges to master with proposed
 # changes to the architecture site (and any Markdown docs that go stale).
 # Disabled by default upstream; enabled here so doc-update.yaml has work to do.
