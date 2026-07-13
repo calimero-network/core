@@ -1104,8 +1104,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
     /// Applies a synchronization action from a remote node.
     ///
-    /// Handles Add/Update/Delete actions, creating missing ancestors if needed.
-    /// Generates Compare action for hash verification after applying changes.
+    /// Handles Add/Update/DeleteRef actions, creating missing ancestors if needed.
     ///
     /// `ctx` carries apply-time metadata. For `Shared`-storage actions
     /// (#2266), if `ctx.effective_writers` is `Some`, the signature is
@@ -1119,7 +1118,8 @@ impl<S: StorageAdaptor> Interface<S> {
     ///
     /// # Errors
     /// - `DeserializationError` if action data is invalid
-    /// - `ActionNotAllowed` if Compare action is passed directly
+    /// - `ActionNotAllowed` if the action violates storage-type access rules
+    ///   (e.g. deleting `Frozen` data, or an unauthorized `Shared`/`User` write)
     ///
     pub fn apply_action(action: Action, ctx: &ApplyContext) -> Result<(), StorageError> {
         // Verify that the action timestamp is not too far in the future
