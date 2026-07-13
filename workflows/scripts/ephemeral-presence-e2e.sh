@@ -1,0 +1,238 @@
+#!/bin/sh
+# ephemeral-presence-e2e.sh — assertion script for the ephemeral presence e2e.
+#
+# Called by merobox as a `script` step (target: local). All merobox dynamic
+# values are available as uppercase env vars; the ones this script uses:
+#
+#   CONTEXT_ID          – base58 context id (from create_context output)
+#   NODE1_KEY           – base58 public key of node 1's context member identity
+#   NODE1_URL           – http://localhost:<rpc_port> for node 1
+#   NODE2_URL           – http://localhost:<rpc_port> for node 2
+#
+# Exit 0 = all assertions passed. Exit 1 = at least one assertion failed.
+#
+# Auth: nodes are in Proxy mode (default); no Bearer token required.
+# The /jsonrpc and /admin-api endpoints are reachable without auth in this mode.
+
+set -eu
+
+NODE1_URL="${1:-http://localhost:8930}"
+NODE2_URL="${2:-http://localhost:8931}"
+CONTEXT_ID="${3:-${CONTEXT_ID:-}}"
+NODE1_KEY="${4:-${NODE1_KEY:-}}"
+
+PASS=0
+FAIL=0
+
+# --- helpers -----------------------------------------------------------------
+
+ok() {
+  label="$1"
+  echo "ok   $label"
+  PASS=$((PASS + 1))
+}
+
+fail() {
+  label="$1"; detail="${2:-}"
+  echo "FAIL $label${detail:+: $detail}"
+  FAIL=$((FAIL + 1))
+}
+
+check() {
+  # check <label> <expected> <actual>
+  label="$1"; expected="$2"; actual="$3"
+  if [ "$actual" = "$expected" ]; then
+    ok "$label (got: $actual)"
+  else
+    fail "$label" "expected=$expected actual=$actual"
+  fi
+}
+
+check_not_empty() {
+  label="$1"; val="$2"
+  if [ -n "$val" ] && [ "$val" != "null" ] && [ "$val" != "none" ]; then
+    ok "$label (got: $val)"
+  else
+    fail "$label" "value is empty or null"
+  fi
+}
+
+# --- sanity ------------------------------------------------------------------
+
+echo "=== ephemeral-presence-e2e assertions ==="
+echo "  node1_url   : $NODE1_URL"
+echo "  node2_url   : $NODE2_URL"
+echo "  context_id  : $CONTEXT_ID"
+echo "  node1_key   : $NODE1_KEY"
+
+if [ -z "$CONTEXT_ID" ]; then
+  echo "FATAL: CONTEXT_ID is empty — was the create_context step output captured?"
+  exit 1
+fi
+
+# --- Phase 0: verify both nodes have the context ----------------------------
+
+echo ""
+echo "-- Phase 0: context reachable on both nodes --"
+
+CTX1=$(curl -sf -m 10 "$NODE1_URL/admin-api/contexts/$CONTEXT_ID" 2>/dev/null || true)
+CTX2=$(curl -sf -m 10 "$NODE2_URL/admin-api/contexts/$CONTEXT_ID" 2>/dev/null || true)
+
+check_not_empty "node1 context API responds" "$(echo "$CTX1" | jq -r '.data.id // empty' 2>/dev/null || true)"
+check_not_empty "node2 context API responds" "$(echo "$CTX2" | jq -r '.data.id // empty' 2>/dev/null || true)"
+
+# Log context state hashes for diagnostic purposes.
+echo "  node1 contextStateHash : $(echo "$CTX1" | jq -r '.data.contextStateHash // "null"' 2>/dev/null || true)"
+echo "  node2 contextStateHash : $(echo "$CTX2" | jq -r '.data.contextStateHash // "null"' 2>/dev/null || true)"
+
+# --- Phase 1: advance node 1's DAG with a real kv-store write ----------------
+#
+# The no-DAG-growth guard (Phase 4) is only meaningful if the DAG has something
+# to protect. We drive a genuine persisted write on node 1 (which has kv_store
+# installed and created the context, so this needs NO cross-node sync), then
+# assert node 1's contextStateHash is NON-NULL — proving the DAG actually
+# advanced. Later we re-check it is UNCHANGED after set_ephemeral, so the guard
+# is directly falsifiable: any DAG op emitted by the ephemeral handler would
+# move this hash and fail the test.
+#
+# The genesis / null hash is base58 of [0u8; 32] == "11111111111111111111111111111111".
+NULL_HASH="11111111111111111111111111111111"
+
+echo ""
+echo "-- Phase 1: advance node 1 DAG with a real kv-store write, capture NON-NULL hash --"
+
+# execute wire shape (see calimero_server_primitives::jsonrpc::ExecutionRequest):
+#   params = { contextId, method, argsJson }  — executor identity is auto-
+#   resolved server-side to the node's owned key (no executorPublicKey field).
+EXEC_BODY=$(printf '{"jsonrpc":"2.0","id":10,"method":"execute","params":{"contextId":"%s","method":"set","argsJson":{"key":"dag-guard","value":"1"}}}' "$CONTEXT_ID")
+
+EXEC_RESP=$(curl -sf -m 15 -X POST "$NODE1_URL/jsonrpc" \
+  -H "Content-Type: application/json" \
+  -d "$EXEC_BODY" 2>/dev/null || true)
+
+echo "  execute(set) response: $EXEC_RESP"
+
+EXEC_ERROR=$(echo "$EXEC_RESP" | jq -r '.error // empty' 2>/dev/null || true)
+if [ -n "$EXEC_ERROR" ] && [ "$EXEC_ERROR" != "null" ]; then
+  fail "kv-store execute(set) on node 1" "RPC error: $EXEC_ERROR"
+else
+  ok "kv-store execute(set) on node 1 succeeded (no RPC error)"
+fi
+
+# Capture node 1's hash AFTER the write. This is the baseline the guard protects.
+HASH_BEFORE=$(curl -sf -m 10 "$NODE1_URL/admin-api/contexts/$CONTEXT_ID" 2>/dev/null \
+  | jq -r '.data.contextStateHash // empty' 2>/dev/null || true)
+
+echo "  node1 contextStateHash after kv write: $HASH_BEFORE"
+
+# Assert the DAG actually advanced (hash is not the genesis/null hash).
+if [ -n "$HASH_BEFORE" ] && [ "$HASH_BEFORE" != "$NULL_HASH" ]; then
+  ok "node1 contextStateHash is NON-NULL after kv write — DAG advanced (got: $HASH_BEFORE)"
+else
+  fail "node1 contextStateHash is NON-NULL after kv write" "still genesis/null: $HASH_BEFORE — guard would be vacuous"
+fi
+
+# --- Phase 2: call set_ephemeral on node 1 -----------------------------------
+
+echo ""
+echo "-- Phase 2: set_ephemeral on node 1 --"
+
+# state = [1, 2, 3] — an arbitrary small presence slice
+SET_BODY=$(printf '{"jsonrpc":"2.0","id":1,"method":"set_ephemeral","params":{"contextId":"%s","state":[1,2,3]}}' "$CONTEXT_ID")
+
+SET_RESP=$(curl -sf -m 10 -X POST "$NODE1_URL/jsonrpc" \
+  -H "Content-Type: application/json" \
+  -d "$SET_BODY" 2>/dev/null || true)
+
+echo "  set_ephemeral response: $SET_RESP"
+
+SET_ERROR=$(echo "$SET_RESP" | jq -r '.error // empty' 2>/dev/null || true)
+if [ -n "$SET_ERROR" ] && [ "$SET_ERROR" != "null" ]; then
+  fail "set_ephemeral on node 1" "RPC error: $SET_ERROR"
+else
+  SET_RESULT=$(echo "$SET_RESP" | jq -r '.result // empty' 2>/dev/null || true)
+  check_not_empty "set_ephemeral returned result" "$SET_RESULT"
+  ok "set_ephemeral: no RPC error"
+fi
+
+# --- Phase 3: poll get_ephemeral on node 2 for node 1's entry ---------------
+
+echo ""
+echo "-- Phase 3: poll node 2 get_ephemeral until node 1 entry appears --"
+
+GET_BODY=$(printf '{"jsonrpc":"2.0","id":2,"method":"get_ephemeral","params":{"contextId":"%s"}}' "$CONTEXT_ID")
+
+FOUND=0
+ATTEMPTS=0
+MAX_ATTEMPTS=30   # 30 × 0.5s = 15s budget
+
+while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+  sleep 0.5
+  ATTEMPTS=$((ATTEMPTS + 1))
+
+  GET_RESP=$(curl -sf -m 5 -X POST "$NODE2_URL/jsonrpc" \
+    -H "Content-Type: application/json" \
+    -d "$GET_BODY" 2>/dev/null || true)
+
+  ENTRIES=$(echo "$GET_RESP" | jq '.result.entries // []' 2>/dev/null || true)
+  COUNT=$(echo "$ENTRIES" | jq 'length' 2>/dev/null || echo 0)
+
+  if [ "$COUNT" -gt 0 ]; then
+    echo "  got $COUNT entries from node 2 after $ATTEMPTS polls (${ATTEMPTS}×0.5s)"
+    FOUND=1
+    break
+  fi
+done
+
+if [ "$FOUND" = "1" ]; then
+  ok "get_ephemeral on node 2 received at least 1 entry within 15s"
+else
+  fail "get_ephemeral on node 2 received 0 entries after 15s — gossip not delivered"
+  # Still proceed so subsequent assertions capture all failures
+  GET_RESP=""
+  ENTRIES="[]"
+fi
+
+# Verify the state bytes of the first entry are [1,2,3]
+# Use -c (compact) so the comparison is a single-line string.
+ENTRY_STATE=$(echo "$ENTRIES" | jq -c '.[0].state // empty' 2>/dev/null || true)
+echo "  entry state (first): $ENTRY_STATE"
+check "node 2 entry state equals [1,2,3]" "[1,2,3]" "$ENTRY_STATE"
+
+# If node1_key was provided, verify the author field
+if [ -n "$NODE1_KEY" ]; then
+  ENTRY_AUTHOR=$(echo "$ENTRIES" | jq -r '.[0].author // empty' 2>/dev/null || true)
+  echo "  entry author (first): $ENTRY_AUTHOR"
+  check "node 2 entry author matches node 1 key" "$NODE1_KEY" "$ENTRY_AUTHOR"
+else
+  echo "  (node1_key not provided — skipping author assertion)"
+fi
+
+# --- Phase 4: no-DAG-growth guard — node 1 hash UNCHANGED by set_ephemeral ---
+#
+# LOAD-BEARING. We re-read node 1's contextStateHash (the same node the
+# ephemeral write hit) and assert it equals the NON-NULL baseline captured in
+# Phase 1. Because the baseline is a real, DAG-advanced hash, this is directly
+# falsifiable: if set_ephemeral had emitted any DAG op, node 1's hash would
+# have moved and this assertion would fail.
+
+echo ""
+echo "-- Phase 4: no-DAG-growth guard (node 1, falsifiable) --"
+
+HASH_AFTER=$(curl -sf -m 10 "$NODE1_URL/admin-api/contexts/$CONTEXT_ID" 2>/dev/null \
+  | jq -r '.data.contextStateHash // empty' 2>/dev/null || true)
+
+echo "  node1 hash before set_ephemeral (NON-NULL baseline): $HASH_BEFORE"
+echo "  node1 hash after  set_ephemeral                    : $HASH_AFTER"
+
+check "no DAG growth: node1 contextStateHash unchanged by set_ephemeral (LOAD-BEARING)" \
+  "$HASH_BEFORE" "$HASH_AFTER"
+
+# --- Summary -----------------------------------------------------------------
+# Phase 5 (TTL expiry) is a separate script step in the workflow; it runs
+# AFTER the workflow has stopped node 1, so that no more heartbeats from
+# node 1 can refresh its entry on node 2. See ephemeral-ttl-check.sh.
+
+echo ""
+echo "=== $PASS passed, $FAIL failed ==="
+[ "$FAIL" -eq 0 ]
