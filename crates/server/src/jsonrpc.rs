@@ -17,6 +17,8 @@ use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
 use crate::config::ServerConfig;
 
 mod execute;
+mod get_ephemeral;
+mod set_ephemeral;
 mod sync_status;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -182,6 +184,26 @@ async fn handle_request_inner(
                 span.record("method", "sync_status");
 
                 status_request
+                    .handle(state, auth_key, auth_node_owner)
+                    .await
+                    .to_res_body()
+            }
+            RequestPayload::SetEphemeral(set_req) => {
+                let span = tracing::Span::current();
+                span.record("context_id", field::display(&set_req.context_id));
+                span.record("method", "set_ephemeral");
+
+                set_req
+                    .handle(state, auth_key, auth_node_owner)
+                    .await
+                    .to_res_body()
+            }
+            RequestPayload::GetEphemeral(get_req) => {
+                let span = tracing::Span::current();
+                span.record("context_id", field::display(&get_req.context_id));
+                span.record("method", "get_ephemeral");
+
+                get_req
                     .handle(state, auth_key, auth_node_owner)
                     .await
                     .to_res_body()

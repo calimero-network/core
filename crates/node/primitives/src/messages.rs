@@ -1,6 +1,7 @@
 use actix::Message;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
+
 use tokio::sync::oneshot;
 
 pub mod get_blob_bytes;
@@ -72,6 +73,28 @@ pub enum NodeMessage {
     GetSyncStatus {
         context_id: ContextId,
         outcome: oneshot::Sender<Option<crate::SyncStatusSnapshot>>,
+    },
+    /// Set the local node's ephemeral-presence slice for `(context_id, author)`.
+    ///
+    /// Routes to `handlers::ephemeral::outbound::set_local_ephemeral` on the
+    /// actor so seq-counter management and the async gossip-publish stay on the
+    /// actor's Arbiter. Returns `Err` when the slice exceeds
+    /// `EPHEMERAL_MAX_BYTES` or crypto/key lookup fails; the publish failure
+    /// (no mesh peers) is best-effort and not propagated.
+    SetLocalEphemeral {
+        context_id: ContextId,
+        author: PublicKey,
+        slice: Vec<u8>,
+        outcome: oneshot::Sender<eyre::Result<()>>,
+    },
+    /// Snapshot the live awareness entries for a context from the in-memory
+    /// [`AwarenessStore`]. Returns an empty `Vec` when the context has no
+    /// recorded entries.
+    ///
+    /// [`AwarenessStore`]: crate::handlers::ephemeral::store::AwarenessStore
+    GetEphemeralSnapshot {
+        context_id: ContextId,
+        outcome: oneshot::Sender<Vec<(PublicKey, Vec<u8>)>>,
     },
     /// Snapshot the node-side migration-heartbeat TTL cache (Task 6c.8) for a
     /// namespace into the per-member reports the `get_migration_status` rollup

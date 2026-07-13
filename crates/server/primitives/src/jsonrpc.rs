@@ -75,6 +75,8 @@ impl Request<RequestPayload> {
 pub enum RequestPayload {
     Execute(ExecutionRequest),
     SyncStatus(SyncStatusRequest),
+    SetEphemeral(SetEphemeralRequest),
+    GetEphemeral(GetEphemeralRequest),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -263,9 +265,133 @@ pub enum SyncStatusError {
     ContextNotFound,
 }
 
+// -------------------------------------------- Ephemeral presence types --------------------------------------------
+
+/// Set the caller's local ephemeral-presence slice for a context.
+///
+/// The author identity is resolved server-side (the node's owned key for the
+/// context) — callers never specify it, mirroring the `execute` convention.
+/// `state` is the raw presence bytes (e.g. cursor position, typing indicator).
+/// Rejected by the handler when `state.len() > EPHEMERAL_MAX_BYTES` (16 384).
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct SetEphemeralRequest {
+    pub context_id: ContextId,
+    pub state: Vec<u8>,
+}
+
+impl SetEphemeralRequest {
+    #[must_use]
+    pub const fn new(context_id: ContextId, state: Vec<u8>) -> Self {
+        Self { context_id, state }
+    }
+}
+
+/// Acknowledgement returned by `set_ephemeral`. Empty body — the call is
+/// fire-and-forget from the client's perspective; the JSON-RPC ack keeps
+/// the transport uniform and lets the client detect size/auth errors.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct SetEphemeralResponse {}
+
+/// Errors that the `set_ephemeral` handler can return to the client.
+#[derive(Debug, Deserialize, Serialize, thiserror::Error)]
+#[serde(tag = "type", content = "data")]
+#[non_exhaustive]
+pub enum SetEphemeralError {
+    /// No owned identity found for the context — the node is not a member.
+    #[error("no owned identity found for context")]
+    NoOwnedIdentity,
+    /// The presence slice exceeds the protocol maximum (16 384 bytes).
+    #[error("ephemeral slice too large: {size} bytes (max {max})")]
+    SliceTooLarge { size: usize, max: usize },
+    /// Any other node-level error (key-loading failure, crypto error, etc.).
+    #[error("set_ephemeral failed: {0}")]
+    InternalError(String),
+}
+
+/// Request the current live ephemeral-presence snapshot for a context.
+///
+/// Returns all authors whose entry has not expired (within
+/// `PRESENCE_TTL_MS`). This is the client's initial seed; live deltas then
+/// arrive on the event stream (subscribe-then-seed, self-healing within the
+/// heartbeat interval).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct GetEphemeralRequest {
+    pub context_id: ContextId,
+}
+
+impl GetEphemeralRequest {
+    #[must_use]
+    pub const fn new(context_id: ContextId) -> Self {
+        Self { context_id }
+    }
+}
+
+/// A single author's live ephemeral-presence entry.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct EphemeralEntry {
+    pub author: PublicKey,
+    pub state: Vec<u8>,
+}
+
+impl EphemeralEntry {
+    #[must_use]
+    pub const fn new(author: PublicKey, state: Vec<u8>) -> Self {
+        Self { author, state }
+    }
+}
+
+/// Response carrying the live ephemeral-presence snapshot for a context.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct GetEphemeralResponse {
+    pub entries: Vec<EphemeralEntry>,
+}
+
+impl GetEphemeralResponse {
+    #[must_use]
+    pub const fn new(entries: Vec<EphemeralEntry>) -> Self {
+        Self { entries }
+    }
+}
+
+/// Errors that the `get_ephemeral` handler can return to the client.
+#[derive(Debug, Deserialize, Serialize, thiserror::Error)]
+#[serde(tag = "type", content = "data")]
+#[non_exhaustive]
+pub enum GetEphemeralError {
+    /// Any node-level or internal error.
+    #[error("get_ephemeral failed: {0}")]
+    InternalError(String),
+}
+
 // -------------------------------------------- Validation Implementation --------------------------------------------
 
 impl Validate for SyncStatusRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        // `context_id` is a typed, fixed-size identifier — nothing to bound.
+        Vec::new()
+    }
+}
+
+impl Validate for SetEphemeralRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        // Size is enforced by the node layer (`EPHEMERAL_MAX_BYTES`); the
+        // server handler propagates `SetEphemeralError::SliceTooLarge` if the
+        // node rejects. Nothing to bound at the parse layer.
+        Vec::new()
+    }
+}
+
+impl Validate for GetEphemeralRequest {
     fn validate(&self) -> Vec<ValidationError> {
         // `context_id` is a typed, fixed-size identifier — nothing to bound.
         Vec::new()
