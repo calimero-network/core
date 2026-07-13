@@ -7,6 +7,7 @@ use axum::http::Request;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use tracing::{debug, error};
 use validator::Validate;
 
@@ -28,6 +29,10 @@ pub struct UserPasswordAuthData {
     pub username: String,
     /// Password (will be hashed)
     pub password: String,
+    /// Out-of-band bootstrap secret, only consulted when creating the very
+    /// first root key on a fresh node (ignored for existing users).
+    #[serde(default)]
+    pub bootstrap_secret: Option<String>,
 }
 
 /// Username/password auth data type for the registry
@@ -156,12 +161,39 @@ impl UserPasswordProvider {
         Ok((key_id, root_key))
     }
 
+    /// Resolve the effective bootstrap secret.
+    ///
+    /// The `MERO_AUTH_BOOTSTRAP_SECRET` environment variable takes precedence
+    /// (the recommended out-of-band channel); the configured value is used as
+    /// a fallback. Returns `None` when neither is set, which disables
+    /// first-login bootstrap entirely.
+    fn effective_bootstrap_secret(&self) -> Option<String> {
+        std::env::var("MERO_AUTH_BOOTSTRAP_SECRET")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.config.bootstrap_secret.clone())
+    }
+
+    /// Constant-time comparison of a presented bootstrap secret against the
+    /// expected one.
+    ///
+    /// Both values are hashed to fixed-length digests first, so the comparison
+    /// runs in time independent of the secret's length or content and does not
+    /// leak the expected length.
+    fn bootstrap_secret_matches(expected: &str, provided: &str) -> bool {
+        let expected_digest = Sha256::digest(expected.as_bytes());
+        let provided_digest = Sha256::digest(provided.as_bytes());
+        expected_digest.ct_eq(&provided_digest).into()
+    }
+
     /// Core authentication logic for username/password
     ///
     /// # Arguments
     ///
     /// * `username` - The username
     /// * `password` - The password
+    /// * `bootstrap_secret` - The out-of-band secret presented by the caller,
+    ///   only consulted on the first-root-key bootstrap path
     ///
     /// # Returns
     ///
@@ -170,6 +202,7 @@ impl UserPasswordProvider {
         &self,
         username: &str,
         password: &str,
+        bootstrap_secret: Option<&str>,
     ) -> eyre::Result<(String, Vec<String>)> {
         // Try to verify existing credentials
         if let Some((key_id, root_key)) = self.verify_credentials(username, password).await? {
@@ -190,7 +223,24 @@ impl UserPasswordProvider {
             .await?;
 
         if existing_keys.is_empty() {
-            // Bootstrap case - create the first root key
+            // Bootstrap case - create the first root key, but only for a caller
+            // that proves possession of the out-of-band bootstrap secret.
+            // Without this gate the first unauthenticated caller to reach a
+            // fresh node is silently granted a ROOT admin key (trust-on-first-
+            // use). We deliberately return the same generic error on every
+            // failure path so a probe cannot distinguish "bootstrap disabled",
+            // "wrong secret", and "already bootstrapped".
+            let Some(expected_secret) = self.effective_bootstrap_secret() else {
+                debug!("Bootstrap rejected: no bootstrap secret configured (bootstrap disabled)");
+                return Err(eyre::eyre!("Invalid username or password"));
+            };
+
+            let provided_secret = bootstrap_secret.unwrap_or_default();
+            if !Self::bootstrap_secret_matches(&expected_secret, provided_secret) {
+                debug!("Bootstrap rejected: bootstrap secret missing or mismatched");
+                return Err(eyre::eyre!("Invalid username or password"));
+            }
+
             let (key_id, root_key) = self.create_root_key(username, password).await?;
             debug!(
                 user = %crate::utils::sanitize_for_log(username),
@@ -218,7 +268,11 @@ impl AuthVerifierFn for UserPasswordVerifier {
         // Authenticate using the core authentication logic
         let (key_id, permissions) = self
             .provider
-            .authenticate_core(&auth_data.username, &auth_data.password)
+            .authenticate_core(
+                &auth_data.username,
+                &auth_data.password,
+                auth_data.bootstrap_secret.as_deref(),
+            )
             .await?;
 
         // Return the authentication response
@@ -252,6 +306,11 @@ pub struct UserPasswordRequest {
     /// Password
     #[validate(length(min = 1, message = "Password is required"))]
     pub password: String,
+
+    /// Optional out-of-band bootstrap secret, only used to create the first
+    /// root key on a fresh node.
+    #[serde(default)]
+    pub bootstrap_secret: Option<String>,
 }
 
 #[async_trait]
@@ -303,7 +362,8 @@ impl AuthProvider for UserPasswordProvider {
         // Create username/password specific auth data JSON
         Ok(serde_json::json!({
             "username": user_pass_data.username,
-            "password": user_pass_data.password
+            "password": user_pass_data.password,
+            "bootstrap_secret": user_pass_data.bootstrap_secret
         }))
     }
 
@@ -357,8 +417,18 @@ impl AuthProvider for UserPasswordProvider {
             .map_err(|_| eyre::eyre!("Invalid password"))?
             .to_string();
 
+        // Optional out-of-band bootstrap secret header.
+        let bootstrap_secret = headers
+            .get("x-bootstrap-secret")
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_string);
+
         // Create auth data
-        let auth_data = UserPasswordAuthData { username, password };
+        let auth_data = UserPasswordAuthData {
+            username,
+            password,
+            bootstrap_secret,
+        };
 
         // Create verifier
         let provider = Arc::new(self.clone());
@@ -452,3 +522,133 @@ register_auth_provider!(UserPasswordProviderRegistration);
 
 // Register the username/password auth data type
 register_auth_data_type!(UserPasswordAuthDataType);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::JwtConfig;
+    use crate::secrets::SecretManager;
+    use crate::storage::models::KeyType;
+    use crate::storage::providers::memory::MemoryStorage;
+
+    fn test_provider(config: UserPasswordConfig) -> UserPasswordProvider {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        let token_manager = TokenManager::new(
+            JwtConfig {
+                issuer: "test".to_string(),
+                access_token_expiry: 3600,
+                refresh_token_expiry: 30 * 24 * 3600,
+            },
+            Arc::clone(&storage),
+            secret_manager,
+        );
+        let key_manager = KeyManager::new(Arc::clone(&storage));
+        UserPasswordProvider {
+            storage,
+            key_manager,
+            token_manager,
+            config,
+        }
+    }
+
+    fn config_with_secret(secret: Option<&str>) -> UserPasswordConfig {
+        UserPasswordConfig {
+            bootstrap_secret: secret.map(str::to_string),
+            ..UserPasswordConfig::default()
+        }
+    }
+
+    async fn root_key_count(provider: &UserPasswordProvider) -> usize {
+        provider
+            .key_manager
+            .list_keys(KeyType::Root)
+            .await
+            .unwrap()
+            .len()
+    }
+
+    #[tokio::test]
+    async fn bootstrap_disabled_by_default_rejects_first_login() {
+        let provider = test_provider(config_with_secret(None));
+        let result = provider
+            .authenticate_core("admin", "correct horse battery staple", None)
+            .await;
+        assert!(
+            result.is_err(),
+            "bootstrap must fail closed when no bootstrap secret is configured"
+        );
+        assert_eq!(
+            root_key_count(&provider).await,
+            0,
+            "no root key should be minted without a bootstrap secret"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_requires_matching_secret() {
+        let provider = test_provider(config_with_secret(Some("s3cr3t-bootstrap")));
+
+        // Missing secret -> rejected, no key created.
+        assert!(provider
+            .authenticate_core("admin", "pw", None)
+            .await
+            .is_err());
+        assert_eq!(root_key_count(&provider).await, 0);
+
+        // Wrong secret -> rejected, no key created.
+        assert!(provider
+            .authenticate_core("admin", "pw", Some("wrong"))
+            .await
+            .is_err());
+        assert_eq!(root_key_count(&provider).await, 0);
+
+        // Correct secret -> exactly one admin root key minted.
+        let (_, perms) = provider
+            .authenticate_core("admin", "pw", Some("s3cr3t-bootstrap"))
+            .await
+            .expect("correct bootstrap secret should succeed");
+        assert!(perms.contains(&"admin".to_string()));
+        assert_eq!(root_key_count(&provider).await, 1);
+    }
+
+    #[tokio::test]
+    async fn existing_user_authenticates_without_bootstrap_secret() {
+        let provider = test_provider(config_with_secret(Some("s3cr3t-bootstrap")));
+
+        // Bootstrap the first key with the secret.
+        provider
+            .authenticate_core("admin", "pw", Some("s3cr3t-bootstrap"))
+            .await
+            .unwrap();
+        assert_eq!(root_key_count(&provider).await, 1);
+
+        // The now-existing user authenticates on the fast path, no secret needed.
+        let (_, perms) = provider
+            .authenticate_core("admin", "pw", None)
+            .await
+            .expect("existing user should authenticate without the bootstrap secret");
+        assert!(perms.contains(&"admin".to_string()));
+        assert_eq!(root_key_count(&provider).await, 1, "no duplicate root key");
+
+        // Once a root key exists, a different identity cannot bootstrap a second
+        // one even with the correct secret.
+        assert!(provider
+            .authenticate_core("intruder", "pw2", Some("s3cr3t-bootstrap"))
+            .await
+            .is_err());
+        assert_eq!(root_key_count(&provider).await, 1);
+    }
+
+    #[test]
+    fn bootstrap_secret_matches_is_exact() {
+        assert!(UserPasswordProvider::bootstrap_secret_matches("abc", "abc"));
+        assert!(!UserPasswordProvider::bootstrap_secret_matches(
+            "abc", "abcd"
+        ));
+        assert!(!UserPasswordProvider::bootstrap_secret_matches("abc", ""));
+        assert!(!UserPasswordProvider::bootstrap_secret_matches(
+            "abc", "abC"
+        ));
+    }
+}
