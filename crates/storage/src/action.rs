@@ -1,5 +1,7 @@
 //! Synchronization action types for CRDT operations.
 
+use std::io;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 
@@ -8,23 +10,11 @@ use crate::entities::{ChildInfo, Metadata, StorageType};
 
 /// Actions to be taken during synchronisation.
 ///
-/// The following variants represent the possible actions arising from either a
-/// direct change or a comparison between two nodes.
-///
-///   - **Direct change**: When a direct change is made, in other words, when
-///     there is local activity that results in data modification to propagate
-///     to other nodes, the possible resulting actions are [`Add`](Action::Add),
-///     [`DeleteRef`](Action::DeleteRef), and [`Update`](Action::Update). A comparison
-///     is not needed in this case, as the deltas are known, and assuming all of
-///     the actions are carried out, the nodes will be in sync.
-///
-///   - **Comparison**: When a comparison is made between two nodes, the
-///     possible resulting actions are [`Add`](Action::Add), [`DeleteRef`](Action::DeleteRef),
-///     [`Update`](Action::Update), and [`Compare`](Action::Compare). The extra
-///     comparison action arises in the case of tree traversal, where a child
-///     entity is found to differ between the two nodes. In this case, the child
-///     entity is compared, and the resulting actions are added to the list of
-///     actions to be taken. This process is recursive.
+/// The variants represent the actions arising from a direct change: local
+/// activity that modifies data to propagate to other nodes produces
+/// [`Add`](Action::Add), [`DeleteRef`](Action::DeleteRef), and
+/// [`Update`](Action::Update). The deltas are known, so assuming every action
+/// is carried out the nodes end up in sync.
 ///
 /// Note: Some actions contain the full entity, and not just the entity ID, as
 /// the actions will often be in context of data that is not available locally
@@ -35,7 +25,11 @@ use crate::entities::{ChildInfo, Metadata, StorageType};
 /// Note: This enum contains the entity type, for passing to the guest for
 /// processing along with the ID and data.
 ///
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Borsh wire tags are assigned by hand (see the impls below) so they stay
+/// stable across the removal of the old `Compare` variant: `Add` = 0,
+/// `DeleteRef` = 2, `Update` = 3. Tag 1 (the removed `Compare`) is rejected, so
+/// every persisted and in-flight delta stays decodable.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[expect(clippy::exhaustive_enums, reason = "Exhaustive")]
 pub enum Action {
     /// Add an entity with the given ID, type, and data.
@@ -51,16 +45,6 @@ pub enum Action {
 
         /// The metadata of the entity.
         metadata: Metadata,
-    },
-
-    /// Compare the entity with the given ID and type. Note that this results in
-    /// a direct comparison of the specific entity in question, including data
-    /// that is immediately available to it, such as the hashes of its children.
-    /// This may well result in further actions being generated if children
-    /// differ, leading to a recursive comparison.
-    Compare {
-        /// Unique identifier of the entity.
-        id: Id,
     },
 
     /// Delete reference (tombstone-based deletion).
@@ -104,7 +88,6 @@ impl Action {
             Action::Add { id, .. } => *id,
             Action::Update { id, .. } => *id,
             Action::DeleteRef { id, .. } => *id,
-            Action::Compare { id, .. } => *id,
         }
     }
 
@@ -155,13 +138,84 @@ impl Action {
                 hasher.update(deleted_at.to_le_bytes());
                 hash_authorization_for_payload(&mut hasher, metadata);
             }
-            Action::Compare { id } => {
-                // Compare actions are not signed.
-                hasher.update(b"v2_compare");
-                hasher.update(id.as_bytes());
-            }
         }
         hasher.finalize().into()
+    }
+}
+
+impl BorshSerialize for Action {
+    fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        // Hand-rolled to keep wire tags stable across the removal of the old
+        // `Compare` variant (tag 1): `Add` = 0, `DeleteRef` = 2, `Update` = 3.
+        // Field order matches what the derive produced, so the encoding of every
+        // surviving variant is byte-identical to pre-removal deltas.
+        match self {
+            Action::Add {
+                id,
+                data,
+                ancestors,
+                metadata,
+            } => {
+                0u8.serialize(writer)?;
+                id.serialize(writer)?;
+                data.serialize(writer)?;
+                ancestors.serialize(writer)?;
+                metadata.serialize(writer)?;
+            }
+            Action::DeleteRef {
+                id,
+                deleted_at,
+                metadata,
+            } => {
+                2u8.serialize(writer)?;
+                id.serialize(writer)?;
+                deleted_at.serialize(writer)?;
+                metadata.serialize(writer)?;
+            }
+            Action::Update {
+                id,
+                data,
+                ancestors,
+                metadata,
+            } => {
+                3u8.serialize(writer)?;
+                id.serialize(writer)?;
+                data.serialize(writer)?;
+                ancestors.serialize(writer)?;
+                metadata.serialize(writer)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl BorshDeserialize for Action {
+    fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
+        let tag = u8::deserialize_reader(reader)?;
+        match tag {
+            0 => Ok(Action::Add {
+                id: Id::deserialize_reader(reader)?,
+                data: Vec::deserialize_reader(reader)?,
+                ancestors: Vec::deserialize_reader(reader)?,
+                metadata: Metadata::deserialize_reader(reader)?,
+            }),
+            // Tag 1 was the removed `Compare` variant; reject it.
+            2 => Ok(Action::DeleteRef {
+                id: Id::deserialize_reader(reader)?,
+                deleted_at: u64::deserialize_reader(reader)?,
+                metadata: Metadata::deserialize_reader(reader)?,
+            }),
+            3 => Ok(Action::Update {
+                id: Id::deserialize_reader(reader)?,
+                data: Vec::deserialize_reader(reader)?,
+                ancestors: Vec::deserialize_reader(reader)?,
+                metadata: Metadata::deserialize_reader(reader)?,
+            }),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid Action tag",
+            )),
+        }
     }
 }
 
@@ -632,5 +686,41 @@ mod tests {
             b.payload_for_signing(),
             "unsigned and signed-with-nonce-zero must produce distinct payloads"
         );
+    }
+
+    #[test]
+    fn borsh_wire_tags_are_stable_and_removed_compare_tag_is_rejected() {
+        let id = Id::from([7_u8; 32]);
+        let add = Action::Add {
+            id,
+            data: vec![1, 2, 3],
+            ancestors: vec![],
+            metadata: meta_public(),
+        };
+        let del = Action::DeleteRef {
+            id,
+            deleted_at: 42,
+            metadata: meta_public(),
+        };
+        let upd = Action::Update {
+            id,
+            data: vec![4, 5],
+            ancestors: vec![],
+            metadata: meta_public(),
+        };
+
+        // Tags must stay Add=0, DeleteRef=2, Update=3 (tag 1 was the removed
+        // `Compare`) so pre-removal persisted/in-flight deltas stay decodable.
+        for (action, tag) in [(&add, 0_u8), (&del, 2), (&upd, 3)] {
+            let bytes = borsh::to_vec(action).unwrap();
+            assert_eq!(bytes[0], tag, "unexpected wire tag for {action:?}");
+            let decoded: Action = borsh::from_slice(&bytes).unwrap();
+            assert_eq!(&decoded, action, "roundtrip mismatch for {action:?}");
+        }
+
+        // Tag 1 (the removed `Compare` variant) is rejected, not misinterpreted.
+        assert!(borsh::from_slice::<Action>(&[1_u8]).is_err());
+        // An unknown tag errors too.
+        assert!(borsh::from_slice::<Action>(&[9_u8]).is_err());
     }
 }

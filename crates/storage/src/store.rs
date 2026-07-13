@@ -86,11 +86,10 @@ pub trait StorageAdaptor: 'static {
     /// Whether writes through this adaptor participate in the synced
     /// state delta stream.
     ///
-    /// `Interface::save_raw` (and the `Action::Compare` push at the end of
-    /// `Interface::apply_action`, and the `Action::DeleteRef` push at the
-    /// end of the delete path) records every storage mutation as an
-    /// `Action` in the global delta stream. Those actions get bundled into
-    /// the next outgoing `StateDelta` and replayed on every peer.
+    /// `Interface::save_raw` (and the `Action::DeleteRef` push at the end of
+    /// the delete path) records every storage mutation as an `Action` in the
+    /// global delta stream. Those actions get bundled into the next outgoing
+    /// `StateDelta` and replayed on every peer.
     ///
     /// That's correct for `MainStorage`, where the whole point is that
     /// writes propagate. It's a bug for `PrivateStorage`: a write that

@@ -393,15 +393,6 @@ mod interface__apply_actions {
     }
 
     #[test]
-    fn apply_action__compare() {
-        let page = Page::new_from_element("Test Page", Element::root());
-        let action = Action::Compare { id: page.id() };
-
-        // Compare should fail
-        assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_err());
-    }
-
-    #[test]
     fn apply_action__non_existent_update() {
         let page = Page::new_from_element("Test Page", Element::root());
         let serialized = to_vec(&page).unwrap();
@@ -423,9 +414,8 @@ mod interface__apply_actions {
 
     // A stale-by-HLC apply (incoming.updated_at < stored.updated_at) hits the
     // `save_internal -> None` short-circuit and contributes nothing to the
-    // causal delta: the apply path no longer enqueues an `Action::Compare` for
-    // the stale entity. Merkle-root convergence for concurrently-merged entities
-    // is owned by the HashComparison / level-wise sync protocols instead. This
+    // causal delta. Merkle-root convergence for concurrently-merged entities is
+    // owned by the HashComparison / level-wise sync protocols instead. This
     // asserts that contract — the stale apply succeeds but emits no delta.
     #[test]
     fn apply_action__stale_update_emits_no_delta() {
@@ -459,8 +449,8 @@ mod interface__apply_actions {
         let delta = commit_causal_delta(&[0; 32]).unwrap();
         assert!(
             delta.is_none(),
-            "stale apply must not emit a delta now that the apply path no longer \
-             pushes Action::Compare, got: {delta:?}"
+            "stale apply must not emit a delta (the apply path enqueues no action \
+             for an entity that lost the LWW tiebreak), got: {delta:?}"
         );
     }
 }
