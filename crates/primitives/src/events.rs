@@ -89,14 +89,36 @@ pub enum ContextEventPayload {
     Ephemeral(EphemeralPayload),
 }
 
+/// Maximum size, in bytes, of a single ephemeral-presence slice.
+///
+/// **Single source of truth** for the presence size cap, shared across the
+/// node (which enforces it on the outbound path in
+/// `calimero-node::handlers::ephemeral`) and the JSON-RPC layer (which
+/// pre-validates against it in `calimero-server`'s `set_ephemeral` handler so
+/// the client receives a typed `SliceTooLarge` error). Defined here — in the
+/// crate both depend on — so the two paths can never drift.
+pub const EPHEMERAL_MAX_BYTES: usize = 16_384;
+
 /// Payload of a [`ContextEventPayload::Ephemeral`] event. Carries a per-peer
 /// presence slice, decrypted from the context group key before delivery.
 /// `state` is present on upsert and absent on TTL/disconnect expiry
 /// (`removed = true`). `contextId` rides on the flattened [`ContextEvent`].
+///
+/// # Security — `author` is NOT cryptographically authenticated
+///
+/// The presence message is encrypted under the context **group key** but is
+/// **not signed**. Any context member holding the group key can therefore
+/// publish an `Ephemeral` update carrying another member's `author`. This sits
+/// within the existing member trust boundary — every member can already write
+/// context state via `execute` — and presence is transient and never
+/// persisted, so it is not a new escalation. But clients MUST NOT treat the
+/// presence `author` as an authenticated identity (e.g. for access control);
+/// it is a best-effort display hint only.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EphemeralPayload {
-    /// The peer whose presence slice this update belongs to.
+    /// The peer whose presence slice this update belongs to. **Not
+    /// cryptographically authenticated** — see the type-level security note.
     pub author: PublicKey,
     /// Decrypted slice bytes on upsert; absent when `removed` is `true`.
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -175,8 +175,13 @@ pub struct NodeManager {
     /// `last_seen_ms` and do not sweep this author). Remote (inbound)
     /// entries live only in `awareness_store` and are never in this map.
     ///
-    /// Plain `HashMap` is correct: only the single-threaded actor Arbiter
-    /// mutates it; no lock needed.
+    /// A plain (unsynchronised) map is correct: only the single-threaded actor
+    /// Arbiter mutates it; no lock needed. A `BTreeMap` (rather than a
+    /// `HashMap`) is used so entries iterate in key order — `heartbeat_tick`
+    /// collects `contexts_seen` from the ordered keys and `dedup()`s adjacent
+    /// duplicates, which only collapses same-context keys because a `BTreeMap`
+    /// groups them contiguously. A `HashMap` would scatter them, leaving
+    /// duplicate context ids that trigger redundant (though idempotent) sweeps.
     ///
     /// [`set_local_ephemeral`]: crate::handlers::ephemeral::outbound::set_local_ephemeral
     pub(crate) ephemeral_local:
