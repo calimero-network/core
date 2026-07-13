@@ -12,6 +12,7 @@
 use std::pin::pin;
 use std::sync::Arc;
 
+use calimero_primitives::events::EPHEMERAL_MAX_BYTES;
 use calimero_server_primitives::jsonrpc::{
     SetEphemeralError, SetEphemeralRequest, SetEphemeralResponse,
 };
@@ -33,6 +34,22 @@ impl Request for SetEphemeralRequest {
     ) -> Result<Self::Response, RpcError<Self::Error>> {
         let context_id = self.context_id;
 
+        // Reject oversize slices up front with the typed `SliceTooLarge` error
+        // so the client learns the exact cap, rather than a stringified opaque
+        // node error. `EPHEMERAL_MAX_BYTES` is the single source of truth in
+        // `calimero-primitives`, the same const the node's outbound path
+        // enforces — they cannot drift. The node still re-checks (defense in
+        // depth); this handler pre-check only exists to produce the typed wire
+        // error before the round-trip through the actor.
+        if self.state.len() > EPHEMERAL_MAX_BYTES {
+            return Err(RpcError::MethodCallError(
+                SetEphemeralError::SliceTooLarge {
+                    size: self.state.len(),
+                    max: EPHEMERAL_MAX_BYTES,
+                },
+            ));
+        }
+
         // Auto-resolve the node's owned identity for this context.
         // Each node has exactly one owned identity per context (the namespace
         // identity). Mirroring the `execute` path: the first member returned
@@ -53,19 +70,15 @@ impl Request for SetEphemeralRequest {
             }
         };
 
-        // Delegate to the node actor, which enforces EPHEMERAL_MAX_BYTES and
-        // drives the seq counter + async publish.
+        // Delegate to the node actor, which re-enforces EPHEMERAL_MAX_BYTES and
+        // drives the seq counter + async publish. Any error surfacing here is a
+        // key-loading/crypto/transport failure (the size case is caught above),
+        // so it maps to the catch-all `InternalError`.
         state
             .node_client
             .set_local_ephemeral(context_id, author, self.state)
             .await
             .map_err(|err| {
-                // The node returns a typed `EphemeralOutboundError::SliceTooLarge(n)`
-                // wrapped in an eyre report. Since the node crate is not available
-                // here we detect it by the error message the typed error formats to
-                // ("ephemeral slice is too large"). Both size and generic errors map
-                // through `InternalError(msg)` so the client always gets a readable
-                // string; a future split can add a `SliceTooLarge` wire variant.
                 RpcError::MethodCallError(SetEphemeralError::InternalError(err.to_string()))
             })?;
 
@@ -152,6 +165,135 @@ mod tests {
         assert!(
             matches!(payload, RequestPayload::SetEphemeral(_)),
             "wrong variant: {payload:?}"
+        );
+    }
+
+    /// The typed `SliceTooLarge` error serializes with the `size`/`max` fields
+    /// under the tagged `{type, data}` envelope, so a JS client can read the
+    /// exact cap it exceeded rather than parsing an opaque string. This is the
+    /// wire proof for I1 (the variant is real and reachable, not dead API).
+    #[test]
+    fn slice_too_large_error_wire_shape() {
+        use calimero_server_primitives::jsonrpc::SetEphemeralError;
+
+        let err = SetEphemeralError::SliceTooLarge {
+            size: 20_000,
+            max: 16_384,
+        };
+        let json_val: Value = serde_json::to_value(&err).expect("serialize");
+        assert_eq!(
+            json_val,
+            json!({ "type": "SliceTooLarge", "data": { "size": 20_000, "max": 16_384 } }),
+            "SliceTooLarge must carry size + max under the tagged envelope"
+        );
+    }
+}
+
+/// Handler-path tests: drive `SetEphemeralRequest::handle` against a real
+/// (in-memory-backed) `ServiceState` to prove the oversize guard returns the
+/// typed `SliceTooLarge` BEFORE any node round-trip (the size check is the
+/// first statement in the handler, so the stub clients are never reached).
+#[cfg(test)]
+mod handler_tests {
+    use std::sync::Arc;
+
+    use calimero_blobstore::config::BlobStoreConfig;
+    use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
+    use calimero_context_client::client::ContextClient;
+    use calimero_network_primitives::client::NetworkClient;
+    use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::events::{NodeEvent, EPHEMERAL_MAX_BYTES};
+    use calimero_server_primitives::jsonrpc::{SetEphemeralError, SetEphemeralRequest};
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
+    use tempfile::TempDir;
+    use tokio::sync::{broadcast, mpsc};
+
+    use super::super::{Request, RpcError, ServiceState};
+
+    async fn minimal_state() -> (Arc<ServiceState>, TempDir) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let blob_dir = TempDir::new().expect("tempdir");
+        let blob_store = BlobStore::new(
+            store.clone(),
+            FileSystem::new(&BlobStoreConfig::new(
+                blob_dir.path().to_path_buf().try_into().expect("utf8 path"),
+            ))
+            .await
+            .expect("blob fs"),
+        );
+        let blob_manager = BlobManager::new(blob_store);
+
+        let (event_sender, _) = broadcast::channel::<NodeEvent>(16);
+        let (ctx_sync_tx, _r0) = mpsc::channel(8);
+        let (ns_sync_tx, _r1) = mpsc::channel(8);
+        let (ns_join_tx, _r2) = mpsc::channel(8);
+        let (open_subgroup_join_tx, _r3) = mpsc::channel(8);
+        let sync_client =
+            SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+
+        let node_client = NodeClient::new(
+            store.clone(),
+            blob_manager,
+            NetworkClient::new(LazyRecipient::new()),
+            LazyRecipient::new(),
+            event_sender,
+            sync_client,
+            String::new(),
+            None,
+        );
+        let ctx_client = ContextClient::new(store, node_client.clone(), LazyRecipient::new());
+
+        let state = Arc::new(ServiceState {
+            ctx_client,
+            node_client,
+            auth_enabled: false,
+        });
+        (state, blob_dir)
+    }
+
+    #[tokio::test]
+    async fn oversize_slice_returns_typed_slice_too_large() {
+        let (state, _blob_dir) = minimal_state().await;
+        let ctx_id = ContextId::from([0x05; 32]);
+        let oversized = vec![0xAB_u8; EPHEMERAL_MAX_BYTES + 1];
+        let req = SetEphemeralRequest::new(ctx_id, oversized);
+
+        let result = req.handle(state, None, None).await;
+
+        match result {
+            Err(RpcError::MethodCallError(SetEphemeralError::SliceTooLarge { size, max })) => {
+                assert_eq!(
+                    size,
+                    EPHEMERAL_MAX_BYTES + 1,
+                    "size must be the actual length"
+                );
+                assert_eq!(max, EPHEMERAL_MAX_BYTES, "max must be the shared cap");
+            }
+            other => panic!("expected typed SliceTooLarge, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_cap_slice_passes_the_size_guard() {
+        // A slice exactly at the cap must NOT trip the size guard; it proceeds
+        // to author resolution, which fails (no context) with NoOwnedIdentity —
+        // proving the boundary is `> max`, not `>= max`.
+        let (state, _blob_dir) = minimal_state().await;
+        let ctx_id = ContextId::from([0x06; 32]);
+        let at_cap = vec![0xCD_u8; EPHEMERAL_MAX_BYTES];
+        let req = SetEphemeralRequest::new(ctx_id, at_cap);
+
+        let result = req.handle(state, None, None).await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RpcError::MethodCallError(SetEphemeralError::NoOwnedIdentity))
+            ),
+            "at-cap slice must clear the size guard and fail later at identity resolution, got {result:?}"
         );
     }
 }

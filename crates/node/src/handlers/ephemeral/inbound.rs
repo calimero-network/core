@@ -4,6 +4,16 @@
 //! interaction is a read of the group-key entry (via `lookup_group_key_with_wait`
 //! with `Duration::ZERO`, a single-shot non-blocking lookup) to decrypt the
 //! sealed presence slice before handing it to the in-memory `AwarenessStore`.
+//!
+//! **Security — the wire `author` is not authenticated.** Presence messages are
+//! encrypted under the group key but not signed, so any context member holding
+//! the key can publish an `Ephemeral` carrying another member's `author`. This
+//! is within the existing member trust boundary (all members can already write
+//! context state via `execute`) and presence is transient/non-persisted — but
+//! the decrypted `author` on the emitted event MUST NOT be treated by clients
+//! as an authenticated identity. See [`EphemeralPayload`] for the full note.
+//!
+//! [`EphemeralPayload`]: calimero_primitives::events::EphemeralPayload
 
 use actix::{ActorFutureExt, AsyncContext, WrapFuture};
 use calimero_context_client::client::ContextClient;

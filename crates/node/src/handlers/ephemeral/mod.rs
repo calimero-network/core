@@ -11,7 +11,11 @@ pub const PRESENCE_HEARTBEAT_MS: u64 = 2_500;
 pub const PRESENCE_TTL_MS: u64 = 7_000;
 
 /// Maximum byte length of a single ephemeral awareness slice.
-pub const EPHEMERAL_MAX_BYTES: usize = 16_384;
+///
+/// Re-exported from `calimero-primitives` — the single source of truth shared
+/// with the JSON-RPC `set_ephemeral` handler in `calimero-server` — so the
+/// node's enforcement and the server's pre-validation can never drift.
+pub use calimero_primitives::events::EPHEMERAL_MAX_BYTES;
 
 pub(crate) mod inbound;
 pub(crate) mod outbound;
