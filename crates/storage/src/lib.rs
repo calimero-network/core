@@ -18,7 +18,6 @@ pub mod entities;
 pub mod env;
 pub mod error;
 pub mod index;
-pub mod integration;
 pub mod interface;
 pub mod js;
 pub mod logical_clock;

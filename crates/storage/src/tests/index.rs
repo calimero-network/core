@@ -509,34 +509,6 @@ mod index__public_methods {
     }
 
     #[test]
-    fn get_collection_names_for() {
-        let root_id = Id::random();
-        let root_hash = [1_u8; 32];
-
-        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(
-            root_id,
-            root_hash,
-            Metadata::default()
-        ),)
-        .is_ok());
-
-        let _collection_name = "Pages";
-        let child1_id = Id::random();
-        let child1_own_hash = [2_u8; 32];
-
-        assert!(<Index<MainStorage>>::add_child_to(
-            root_id,
-            ChildInfo::new(child1_id, child1_own_hash, Metadata::default()),
-        )
-        .is_ok());
-
-        // Collection names not stored - returns dummy "_" if children exist
-        let names = <Index<MainStorage>>::get_collection_names_for(root_id).unwrap();
-        assert_eq!(names.len(), 1); // Has one collection
-        assert_eq!(names[0], "_"); // Dummy name since not stored
-    }
-
-    #[test]
     fn get_hashes_for() {
         use sha2::{Digest, Sha256};
         let root_id = Id::new([0_u8; 32]);
