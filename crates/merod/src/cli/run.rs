@@ -9,7 +9,8 @@ use clap::Parser;
 use eyre::{bail, Result as EyreResult, WrapErr};
 use mero_auth::config::StorageConfig as AuthStorageConfig;
 use mero_auth::embedded::default_config;
-use tracing::info;
+use multiaddr::{Multiaddr, Protocol};
+use tracing::{info, warn};
 
 use super::auth_mode::AuthModeArg;
 use super::validation::validate_config;
@@ -172,6 +173,12 @@ impl RunCommand {
                 }
             }
         }
+        if let Some(msg) =
+            unauthenticated_exposure_warning(server_source.auth_mode, &server_source.listen)
+        {
+            warn!("{msg}");
+        }
+
         let server_config = ServerConfig::with_auth(
             server_source.listen,
             config.identity.keypair.clone(),
@@ -229,5 +236,82 @@ impl RunCommand {
             mock_tee: self.mock_tee,
         })
         .await
+    }
+}
+
+/// Warn when the server is reachable off-box but the node authenticates nothing
+/// itself. In `Proxy` mode the node relies entirely on a front reverse proxy for
+/// auth, so a non-loopback bind without one exposes an unauthenticated admin/RPC
+/// API. Returns the warning message when it applies, else `None`.
+fn unauthenticated_exposure_warning(auth_mode: AuthMode, listen: &[Multiaddr]) -> Option<String> {
+    if !matches!(auth_mode, AuthMode::Proxy) {
+        return None;
+    }
+
+    let exposed: Vec<&Multiaddr> = listen
+        .iter()
+        .filter(|addr| multiaddr_ip(addr).is_some_and(|ip| !ip.is_loopback()))
+        .collect();
+
+    if exposed.is_empty() {
+        return None;
+    }
+
+    let addrs = exposed
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "SECURITY: server is bound to non-loopback address(es) [{addrs}] while auth mode is \
+         Proxy - the node performs NO authentication of its own in Proxy mode. Ensure an \
+         authenticating reverse proxy is in front of it, or switch to Embedded auth. The \
+         admin/RPC API is otherwise reachable UNAUTHENTICATED from the network."
+    ))
+}
+
+fn multiaddr_ip(addr: &Multiaddr) -> Option<core::net::IpAddr> {
+    addr.iter().find_map(|proto| match proto {
+        Protocol::Ip4(ip) => Some(ip.into()),
+        Protocol::Ip6(ip) => Some(ip.into()),
+        _ => None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn addr(s: &str) -> Multiaddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn proxy_non_loopback_warns() {
+        let listen = vec![addr("/ip4/0.0.0.0/tcp/2528")];
+        assert!(unauthenticated_exposure_warning(AuthMode::Proxy, &listen).is_some());
+    }
+
+    #[test]
+    fn proxy_loopback_only_is_silent() {
+        let listen = vec![addr("/ip4/127.0.0.1/tcp/2528"), addr("/ip6/::1/tcp/2528")];
+        assert!(unauthenticated_exposure_warning(AuthMode::Proxy, &listen).is_none());
+    }
+
+    #[test]
+    fn embedded_non_loopback_is_silent() {
+        let listen = vec![addr("/ip4/0.0.0.0/tcp/2528")];
+        assert!(unauthenticated_exposure_warning(AuthMode::Embedded, &listen).is_none());
+    }
+
+    #[test]
+    fn proxy_mixed_loopback_and_public_warns() {
+        let listen = vec![
+            addr("/ip4/127.0.0.1/tcp/2528"),
+            addr("/ip4/192.168.1.5/tcp/2528"),
+        ];
+        let msg = unauthenticated_exposure_warning(AuthMode::Proxy, &listen).unwrap();
+        assert!(msg.contains("192.168.1.5"));
+        assert!(!msg.contains("127.0.0.1"));
     }
 }
