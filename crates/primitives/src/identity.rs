@@ -1,4 +1,5 @@
 use core::fmt;
+// Required by `PublicKey`'s `Deref` impl below; `PrivateKey` deliberately has none.
 use core::ops::Deref;
 use core::str::FromStr;
 
@@ -6,6 +7,11 @@ use core::str::FromStr;
 use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+// `random()` zeroizes its local seed copy, which needs the `Zeroize` trait in
+// scope. Both the call site and this import are gated on `rand` so a default
+// build (without `random`) doesn't pull in an unused import.
+#[cfg(feature = "rand")]
+use zeroize::Zeroize;
 
 use crate::context::ContextId;
 use crate::hash::{Hash, HashError};

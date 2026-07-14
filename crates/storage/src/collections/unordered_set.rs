@@ -35,6 +35,7 @@ use serde::ser::SerializeSeq;
 use serde::Serialize;
 
 use super::{compute_id, Collection, CrdtType, StorageKey};
+use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::Data;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -68,7 +69,7 @@ where
             .inner
             .entries_with_storage_type()
             .expect("read set elements for re-key");
-        self.inner.clear().expect("clear set for re-key");
+        self.inner.clear_for_rekey().expect("clear set for re-key");
         self.inner.reassign_deterministic_id_under(
             Some(parent_id),
             "__set",
@@ -183,8 +184,12 @@ where
             .entries_with_storage_type()
             .expect("failed to read elements for migration");
 
-        // Clear the collection (removes old entries with old IDs)
-        self.inner.clear().expect("failed to clear for migration");
+        // Clear the collection (removes old entries with old IDs).
+        // Uses the re-key clear so `Frozen` entries are relocated (re-inserted
+        // below under their new id) rather than rejected as deletions.
+        self.inner
+            .clear_for_rekey()
+            .expect("failed to clear for migration");
 
         // Now reassign the collection's ID
         self.inner.reassign_deterministic_id_with_crdt_type(
@@ -229,6 +234,17 @@ where
         let _ignored = self.inner.insert(Some(id), value)?;
 
         Ok(true)
+    }
+
+    /// The deterministic storage entity id this `value` maps to. Lets the
+    /// add-wins merge consult `Index::is_deleted` without re-deriving
+    /// `compute_id` and drifting from the set's own keying.
+    pub(crate) fn entry_id<Q>(&self, value: &Q) -> Id
+    where
+        V: Borrow<Q>,
+        Q: AsRef<[u8]> + ?Sized,
+    {
+        compute_id(self.inner.id(), value.as_ref())
     }
 
     /// Get an iterator over the items in the set.
@@ -350,12 +366,8 @@ where
     V: PartialEq + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn eq(&self, other: &Self) -> bool {
-        let l = self.iter().unwrap();
-        let r = other.iter().unwrap();
-
-        l.eq(r)
+        super::fallible_iter_eq(self.iter(), other.iter())
     }
 }
 
@@ -364,12 +376,8 @@ where
     V: Ord + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let l = self.iter().unwrap();
-        let r = other.iter().unwrap();
-
-        l.cmp(r)
+        super::fallible_iter_cmp(self.iter(), other.iter())
     }
 }
 
@@ -379,10 +387,7 @@ where
     S: StorageAdaptor,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        let l = self.iter().ok()?;
-        let r = other.iter().ok()?;
-
-        l.partial_cmp(r)
+        super::fallible_iter_partial_cmp(self.iter(), other.iter())
     }
 }
 
@@ -391,14 +396,20 @@ where
     V: fmt::Debug + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    #[expect(clippy::unwrap_used, clippy::unwrap_in_result, reason = "'tis fine")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {
             f.debug_struct("UnorderedSet")
                 .field("items", &self.inner)
                 .finish()
         } else {
-            f.debug_set().entries(self.iter().unwrap()).finish()
+            // A store fault while reading must not panic a Debug format.
+            match self.iter() {
+                Ok(iter) => f.debug_set().entries(iter).finish(),
+                Err(e) => f
+                    .debug_struct("UnorderedSet")
+                    .field("read_error", &e)
+                    .finish(),
+            }
         }
     }
 }

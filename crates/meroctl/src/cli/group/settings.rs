@@ -51,7 +51,11 @@ impl SettingsCommand {
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Get current default settings for a group")]
 pub struct SettingsGetCommand {
-    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    #[clap(
+        name = "GROUP_ID",
+        value_parser = crate::cli::validation::group_id,
+        help = "The hex-encoded group ID"
+    )]
     pub group_id: String,
 }
 
@@ -72,7 +76,7 @@ impl SettingsGetCommand {
         let _ = table.add_row(vec!["Subgroup Visibility", vis.as_str()]);
         let _ = table.add_row(vec![
             "CAN_CREATE_CONTEXT",
-            if caps & MemberCapabilities::CAN_CREATE_CONTEXT != 0 {
+            if caps & MemberCapabilities::CAN_CREATE_CONTEXT.bits() != 0 {
                 "true"
             } else {
                 "false"
@@ -80,7 +84,7 @@ impl SettingsGetCommand {
         ]);
         let _ = table.add_row(vec![
             "CAN_INVITE_MEMBERS",
-            if caps & MemberCapabilities::CAN_INVITE_MEMBERS != 0 {
+            if caps & MemberCapabilities::CAN_INVITE_MEMBERS.bits() != 0 {
                 "true"
             } else {
                 "false"
@@ -88,7 +92,7 @@ impl SettingsGetCommand {
         ]);
         let _ = table.add_row(vec![
             "CAN_JOIN_OPEN_SUBGROUPS",
-            if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS != 0 {
+            if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits() != 0 {
                 "true"
             } else {
                 "false"
@@ -103,7 +107,11 @@ impl SettingsGetCommand {
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Set default capabilities for new group members (admin-only)")]
 pub struct SetDefaultCapabilitiesCommand {
-    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    #[clap(
+        name = "GROUP_ID",
+        value_parser = crate::cli::validation::group_id,
+        help = "The hex-encoded group ID"
+    )]
     pub group_id: String,
 
     #[clap(long, help = "Allow new members to create contexts by default")]
@@ -126,13 +134,13 @@ impl SetDefaultCapabilitiesCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let mut capabilities: u32 = 0;
         if self.can_create_context {
-            capabilities |= MemberCapabilities::CAN_CREATE_CONTEXT;
+            capabilities |= MemberCapabilities::CAN_CREATE_CONTEXT.bits();
         }
         if self.can_invite_members {
-            capabilities |= MemberCapabilities::CAN_INVITE_MEMBERS;
+            capabilities |= MemberCapabilities::CAN_INVITE_MEMBERS.bits();
         }
         if self.can_join_open_subgroups {
-            capabilities |= MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS;
+            capabilities |= MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits();
         }
 
         let request = SetDefaultCapabilitiesApiRequest {
@@ -159,7 +167,11 @@ impl SetDefaultCapabilitiesCommand {
              add_group_members"
 )]
 pub struct SetSubgroupVisibilityCommand {
-    #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
+    #[clap(
+        name = "GROUP_ID",
+        value_parser = crate::cli::validation::group_id,
+        help = "The hex-encoded group ID"
+    )]
     pub group_id: String,
 
     #[clap(long, value_enum, help = "Subgroup visibility: open or restricted")]

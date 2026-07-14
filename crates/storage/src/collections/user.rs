@@ -211,6 +211,18 @@ where
     }
 }
 
+// `RekeyTarget` is a supertrait of `Mergeable`: delegate re-keying to the
+// inner collection so it converges when this wrapper is stored as a value.
+impl<T, S> crate::collections::rekey::RekeyTarget for UserStorage<T, S>
+where
+    T: BorshSerialize + BorshDeserialize + 'static,
+    S: StorageAdaptor,
+{
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        self.inner.rekey_relative_to(parent_id);
+    }
+}
+
 // Implement Mergeable so it correctly merges in #[app::state]
 #[diagnostic::do_not_recommend]
 impl<T, S> Mergeable for UserStorage<T, S>

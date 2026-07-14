@@ -20,11 +20,11 @@
 //! legitimately advances it to its own newer `cascade_hlc`.
 
 use super::context::GroupApplyCtx;
-use crate::{GroupSettingsService, NamespaceRepository, PermissionChecker, UpgradesRepository};
+use crate::{GroupSettingsService, NamespaceRepository, UpgradesRepository};
 use calimero_primitives::application::ApplicationId;
 use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue, NamespaceGovHead};
-use eyre::{bail, Result as EyreResult};
+use eyre::Result as EyreResult;
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
@@ -37,6 +37,25 @@ pub(crate) fn apply(
     let signer = ctx.signer();
     let group_id = ctx.group_id();
     let store = ctx.store();
+
+    // Authorize the cascade ONCE, against the ROOT signed group, using the
+    // at-cut apply-auth resolver (`ctx.permissions()`) — the deterministic,
+    // replicated decision the rest of governance folds. The cascade's authority
+    // is the root admin decision (already enforced at emit via
+    // `MembershipRepository::require_admin`), NOT per-descendant caps.
+    //
+    // The old code re-derived `can_manage_application(signer)` per matched
+    // descendant from LIVE store reads. Descendant caps come from concurrent
+    // `MemberCapabilitySet` / `DefaultCapabilitiesSet` / `MemberRoleSet` ops,
+    // folded at different times per peer, so a peer that had folded a concurrent
+    // cap-revoke on a matched descendant BAILED the whole op (Err before the
+    // nonce was recorded — no partial apply, not self-healing) while a peer that
+    // hadn't APPLIED to root + all descendants: a permanent divergence on
+    // `target_application_id` / `app_key` / migration. Gating once at the root
+    // removes that per-descendant divergence on BOTH the namespace-envelope and
+    // standalone paths.
+    ctx.permissions()
+        .require_manage_application(signer, "cascade upgrade")?;
 
     // Walk the descendant tree (incl. signed group) and apply the atomic
     // mutation to every descendant whose current `app_key` matches
@@ -64,27 +83,6 @@ pub(crate) fn apply(
         .get(&NamespaceGovHead::new(ns.to_bytes()))?
         .map(|head| head.sequence);
 
-    // Pre-scan: verify the signer would pass the per-descendant
-    // `require_manage_application` check on EVERY matched descendant
-    // before issuing any writes, so a stricter descendant deep in the
-    // cascade can't abort the apply mid-loop after earlier descendants
-    // were already mutated (partial-cascade state on both emitter and
-    // receiver paths).
-    for entry in &entries {
-        if !entry.matched {
-            continue;
-        }
-        let entry_permissions = PermissionChecker::new(store, entry.group_id);
-        if !entry_permissions.can_manage_application(signer)? {
-            bail!(
-                "cascade upgrade: signer {} lacks MANAGE_APPLICATION on \
-                 descendant {}; aborting before any writes to keep cascade atomic",
-                signer,
-                hex::encode(entry.group_id.to_bytes())
-            );
-        }
-    }
-
     let mut any_applied = false;
     for entry in entries {
         if !entry.matched {
@@ -102,12 +100,13 @@ pub(crate) fn apply(
 
         // Atomic per-descendant mutation: target_application_id + app_key
         // AND migration in one go, eliminating the legacy two-op ordering
-        // hazard. The pre-scan above already verified `signer` holds
-        // `MANAGE_APPLICATION` on every matched descendant, so these `?`s
-        // are unreachable in production — kept as defensive backstops.
+        // hazard. UNCHECKED writes: the cascade was authorized once against
+        // the root admin above, so per-descendant authority is not re-derived
+        // here (doing so from live caps is the cross-replica divergence this
+        // fix removes).
         let entry_settings = GroupSettingsService::new(store, gid);
-        entry_settings.set_target_application(signer, app_key, target_application_id)?;
-        entry_settings.set_group_migration(signer, migration)?;
+        entry_settings.set_target_application_unchecked(app_key, target_application_id)?;
+        entry_settings.set_group_migration_unchecked(migration)?;
 
         // Stamp the sticky cascade fence onto the per-group upgrade
         // record. Load-or-default: a descendant with no prior upgrade

@@ -55,6 +55,13 @@ impl Mergeable for IntegrationState {
     }
 }
 
+// `RekeyTarget` is a supertrait of `Mergeable`. `IntegrationState` holds no
+// nested collection (just a `Vec<u32>` merged by union), so the no-op default
+// `rekey_relative_to` is correct.
+impl calimero_storage::collections::rekey::RekeyTarget for IntegrationState {
+    fn rekey_relative_to(&mut self, _parent_id: calimero_storage::address::Id) {}
+}
+
 #[test]
 fn register_and_dispatch_against_production_registry() {
     // Registering against the real RwLock-backed global registry.

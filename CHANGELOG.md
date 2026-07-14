@@ -2,6 +2,141 @@
 
 ## [Unreleased]
 
+## [0.11.0-rc.10] - 2026-07-05
+
+> **Draft — release manager to curate.** Another large hardening release
+> (~95 PRs since rc.9): DoS bounds across node/server/network, IDOR and
+> auth fixes in the server API, CRDT/storage correctness, a meroctl
+> security batch, and hot-path performance work. The `Fixed` set is
+> representative rather than exhaustive — please trim/expand to house
+> style before publishing.
+
+### Added
+
+- **Configurable CORS origin allowlist** and private-network toggle on the
+  server ([#3153])
+- **Optional path confinement** for `install-dev-application` ([#3155])
+
+### Changed
+
+- Hot-path performance: WS node events serialized once and fanned out as
+  shared bytes ([#3185]); confirmed CRDT/DAG hot-path costs removed
+  ([#3187]); delta-store restore streams payloads instead of holding them
+  all in RAM ([#3181])
+- Type-safety refactors: typed id newtypes for key/app/namespace/group ids
+  ([#3105]), `GroupCapabilities` bitflags ([#3093]), encapsulation pass
+  ([#3087])
+
+### Fixed
+
+- **Server API** — context membership enforced on WS and SSE subscribe
+  (subscription IDOR) ([#3134]); blob delete/announce scoped to
+  owned/installed blobs ([#3132], [#3133]); private blobs no longer cached
+  publicly ([#3131]); `GET /admin-api/contexts` paginated and list page
+  sizes clamped ([#3135], [#3138]); blob upload body capped ([#3174]); raw
+  errors no longer leak in 500s ([#3170]); duplicate alias create returns
+  409 ([#3169])
+- **DoS bounds** — decoded governance-op fields, nonce windows, the scope
+  projection op-log, the peer-identity cache, peer-supplied snapshot
+  page/byte limits, namespace governance-op collection, and parent-fetch
+  walks are all bounded ([#3178], [#3176], [#3180], [#3177], [#3172],
+  [#3173], [#3171]); per-execution runtime budgets for storage, blobs,
+  returns & events ([#3143]); local xcall cascade bounded ([#3156]); URL
+  application install gets a timeout + body cap ([#3152])
+- **Network** — discovery peer book capped against sybil growth ([#3179]);
+  autonat server-support set pruned on disconnect ([#3175]); blob-provider
+  DHT records authenticated with a signature ([#3168]); inbound handshake
+  identity bound to the transport with a proof of possession ([#3167]);
+  libp2p resource-exhaustion & DHT hardening ([#3109])
+- **Storage / CRDT** — collection soundness: aliasing UB,
+  corruption-masking, read-only writeback ([#3166]); add-wins merges no
+  longer resurrect deleted entries ([#3084]); tombstone lifted when a
+  strictly-newer write outlives it ([#3123]); child tombstone cleared on
+  re-add ([#3085]); single-pass, capped tombstone GC ([#3100]);
+  overflow/truncation guards ([#3165]); key-encoding & panic-path
+  hardening ([#3148])
+- **Governance** — member capabilities cleared on removal so re-add can't
+  restore stale privileges ([#3189]); `resolve()` off-by-one depth bound
+  ([#3188]); genesis founder counted as "another admin" in the last-admin
+  guard ([#2983]); invitation signature verified before seeding namespace
+  admin ([#3147]); key delivery, rotation & namespace-boundary hardening
+  ([#3114])
+- **Node lifecycle** — graceful shutdown, real health/ready endpoints, and
+  store durability hardening ([#3115]); persisted-but-unapplied deltas
+  re-driven on restart ([#3124]); peer-claimed snapshot root not trusted
+  on local hash error ([#3150]); ReadOnly write-gate fails closed on
+  lookup error ([#3145]); `update_application` caller authorized
+  ([#3127])
+- **meroctl** — secrets resolved from env/file/stdin instead of argv
+  ([#3070]); loopback OAuth callback bound to a single-use state nonce
+  ([#3071]); least-privilege token scope per command ([#3072]);
+  destructive commands confirm (TTY prompt or `--yes`) ([#3074]); plus
+  output, parsing & dispatch fixes ([#3073], [#3075], [#3076], [#3077],
+  [#3078])
+- **Runtime / client** — host-function safety hardening: UB, OOM,
+  transmute, block_on ([#3097]); wasm guest validation & blob refcounting
+  ([#3128]); integer-cast & clock-arithmetic hardening ([#3125]); client
+  HTTP/auth layer hardened against replay, herd, traversal & OOM
+  ([#3142]); reverse-proxy base path preserved for token refresh & auth
+  probe ([#3149])
+
+### CI
+
+- Supply-chain & image hardening: action pins, image digests, checksums,
+  secret handling ([#3104]); prebuilt base images pinned by digest
+  ([#3158]); advisory/CVE scanning enabled and lock-fixable advisories
+  cleared ([#3091])
+
+## [0.11.0-rc.9] - 2026-06-30
+
+> **Draft — release manager to curate.** A large security & correctness
+> hardening release (~90 PRs since rc.8). The notable items are grouped below;
+> the `Fixed` set is representative rather than exhaustive — please trim/expand
+> to house style before publishing.
+
+### Added
+
+- **Node-enforced xcall caller policy** — `#[app::xcall(from_same_app)]`
+  restricts a cross-context entry point to callers running the same
+  application id, enforced by the node so authorization no longer relies on
+  every target hand-checking `env::xcall_origin()` ([#3068])
+- **Method-aware contract-gate route coverage** with nest resolution ([#2960])
+
+### Changed
+
+- Hot-path performance: removed redundant reads, serializations, and
+  allocations ([#3055])
+- Storage internals: `reject_frozen` bool replaced with a `RemoveMode` enum,
+  and the opaque `HlcDriftError` replaced with a typed `ClockUpdateError`
+  ([#3052], [#3020])
+
+### Fixed
+
+- **Auth / server** — default-deny admin API, SSE session ownership, and
+  permission-update escalation closed ([#3040]); node-bound tokens fail closed
+  with no request host ([#3063]); auth-guard permission enforcement and
+  revoked-token 403 mapping ([#3018], [#3066]); node home/datastore restricted
+  to owner-only ([#3045]); secret/logging hygiene ([#3064])
+- **Storage / CRDT correctness** — deleting a node now tombstones its whole
+  subtree so GC can reclaim it ([#3061]); RGA/CRDT HLC receive-path,
+  tombstone-aware merge, deterministic id-seed, and RekeyTarget compile-guard
+  ([#2950]); unified equal-HLC delete-vs-update tiebreak and non-regressing
+  tombstone nonce ([#3029], [#3036]); Frozen child deletion rejected, undefined
+  OpMask bits rejected ([#3039], [#3046])
+- **Network** — connection limits + startup dial-burst cap ([#3065]);
+  per-peer address cap and blob-download size cap ([#3013], [#3014]);
+  backpressure on a full event channel ([#3027]); cold cross-network
+  namespace-join wait ([#3059])
+- **Runtime sandbox limits** — bounded precompiled-module deserialization,
+  commit-artifact, and pending-delta-map sizes ([#3016], [#3009], [#3010])
+- **Governance** — typed op discriminants with bounds checks ([#3048]);
+  locally-recomputed cascade-delete on `GroupDeleted` ([#3043]); admin identity
+  moved to the new owner on `TransferOwnership` ([#3034])
+- **Store / crypto** — version+nonce bound as AAD in AES-GCM ([#3004]);
+  state-delta root hash sealed inside the encrypted payload ([#3051]);
+  mandatory expected app hash in TEE attestation ([#2980]); `PrivateKey` raw
+  access gated and zeroized ([#3041])
+
 ## [0.11.0-rc.8] - 2026-06-26
 
 ### Added
@@ -310,7 +445,9 @@ Integrations:
 
 <!-- versions -->
 
-[unreleased]: https://github.com/calimero-network/core/compare/0.11.0-rc.8...HEAD
+[unreleased]: https://github.com/calimero-network/core/compare/0.11.0-rc.10...HEAD
+[0.11.0-rc.10]: https://github.com/calimero-network/core/compare/0.11.0-rc.9...0.11.0-rc.10
+[0.11.0-rc.9]: https://github.com/calimero-network/core/compare/0.11.0-rc.8...0.11.0-rc.9
 [0.11.0-rc.8]: https://github.com/calimero-network/core/compare/0.11.0-rc.7...0.11.0-rc.8
 [0.11.0-rc.7]: https://github.com/calimero-network/core/compare/0.11.0-rc.6...0.11.0-rc.7
 [0.11.0-rc.6]: https://github.com/calimero-network/core/compare/0.11.0-rc.5...0.11.0-rc.6
@@ -335,6 +472,104 @@ Integrations:
 
 <!-- patches -->
 
+[#3189]: https://github.com/calimero-network/core/pull/3189
+[#3188]: https://github.com/calimero-network/core/pull/3188
+[#3187]: https://github.com/calimero-network/core/pull/3187
+[#3185]: https://github.com/calimero-network/core/pull/3185
+[#3181]: https://github.com/calimero-network/core/pull/3181
+[#3180]: https://github.com/calimero-network/core/pull/3180
+[#3179]: https://github.com/calimero-network/core/pull/3179
+[#3178]: https://github.com/calimero-network/core/pull/3178
+[#3177]: https://github.com/calimero-network/core/pull/3177
+[#3176]: https://github.com/calimero-network/core/pull/3176
+[#3175]: https://github.com/calimero-network/core/pull/3175
+[#3174]: https://github.com/calimero-network/core/pull/3174
+[#3173]: https://github.com/calimero-network/core/pull/3173
+[#3172]: https://github.com/calimero-network/core/pull/3172
+[#3171]: https://github.com/calimero-network/core/pull/3171
+[#3170]: https://github.com/calimero-network/core/pull/3170
+[#3169]: https://github.com/calimero-network/core/pull/3169
+[#3168]: https://github.com/calimero-network/core/pull/3168
+[#3167]: https://github.com/calimero-network/core/pull/3167
+[#3166]: https://github.com/calimero-network/core/pull/3166
+[#3165]: https://github.com/calimero-network/core/pull/3165
+[#3158]: https://github.com/calimero-network/core/pull/3158
+[#3156]: https://github.com/calimero-network/core/pull/3156
+[#3155]: https://github.com/calimero-network/core/pull/3155
+[#3153]: https://github.com/calimero-network/core/pull/3153
+[#3152]: https://github.com/calimero-network/core/pull/3152
+[#3150]: https://github.com/calimero-network/core/pull/3150
+[#3149]: https://github.com/calimero-network/core/pull/3149
+[#3148]: https://github.com/calimero-network/core/pull/3148
+[#3147]: https://github.com/calimero-network/core/pull/3147
+[#3145]: https://github.com/calimero-network/core/pull/3145
+[#3143]: https://github.com/calimero-network/core/pull/3143
+[#3142]: https://github.com/calimero-network/core/pull/3142
+[#3138]: https://github.com/calimero-network/core/pull/3138
+[#3135]: https://github.com/calimero-network/core/pull/3135
+[#3134]: https://github.com/calimero-network/core/pull/3134
+[#3133]: https://github.com/calimero-network/core/pull/3133
+[#3132]: https://github.com/calimero-network/core/pull/3132
+[#3131]: https://github.com/calimero-network/core/pull/3131
+[#3128]: https://github.com/calimero-network/core/pull/3128
+[#3127]: https://github.com/calimero-network/core/pull/3127
+[#3125]: https://github.com/calimero-network/core/pull/3125
+[#3124]: https://github.com/calimero-network/core/pull/3124
+[#3123]: https://github.com/calimero-network/core/pull/3123
+[#3115]: https://github.com/calimero-network/core/pull/3115
+[#3114]: https://github.com/calimero-network/core/pull/3114
+[#3109]: https://github.com/calimero-network/core/pull/3109
+[#3105]: https://github.com/calimero-network/core/pull/3105
+[#3104]: https://github.com/calimero-network/core/pull/3104
+[#3100]: https://github.com/calimero-network/core/pull/3100
+[#3097]: https://github.com/calimero-network/core/pull/3097
+[#3093]: https://github.com/calimero-network/core/pull/3093
+[#3091]: https://github.com/calimero-network/core/pull/3091
+[#3087]: https://github.com/calimero-network/core/pull/3087
+[#3085]: https://github.com/calimero-network/core/pull/3085
+[#3084]: https://github.com/calimero-network/core/pull/3084
+[#3078]: https://github.com/calimero-network/core/pull/3078
+[#3077]: https://github.com/calimero-network/core/pull/3077
+[#3076]: https://github.com/calimero-network/core/pull/3076
+[#3075]: https://github.com/calimero-network/core/pull/3075
+[#3074]: https://github.com/calimero-network/core/pull/3074
+[#3073]: https://github.com/calimero-network/core/pull/3073
+[#3072]: https://github.com/calimero-network/core/pull/3072
+[#3071]: https://github.com/calimero-network/core/pull/3071
+[#3070]: https://github.com/calimero-network/core/pull/3070
+[#2983]: https://github.com/calimero-network/core/pull/2983
+[#3068]: https://github.com/calimero-network/core/pull/3068
+[#3066]: https://github.com/calimero-network/core/pull/3066
+[#3065]: https://github.com/calimero-network/core/pull/3065
+[#3064]: https://github.com/calimero-network/core/pull/3064
+[#3063]: https://github.com/calimero-network/core/pull/3063
+[#3061]: https://github.com/calimero-network/core/pull/3061
+[#3059]: https://github.com/calimero-network/core/pull/3059
+[#3055]: https://github.com/calimero-network/core/pull/3055
+[#3052]: https://github.com/calimero-network/core/pull/3052
+[#3051]: https://github.com/calimero-network/core/pull/3051
+[#3048]: https://github.com/calimero-network/core/pull/3048
+[#3046]: https://github.com/calimero-network/core/pull/3046
+[#3045]: https://github.com/calimero-network/core/pull/3045
+[#3043]: https://github.com/calimero-network/core/pull/3043
+[#3041]: https://github.com/calimero-network/core/pull/3041
+[#3040]: https://github.com/calimero-network/core/pull/3040
+[#3039]: https://github.com/calimero-network/core/pull/3039
+[#3036]: https://github.com/calimero-network/core/pull/3036
+[#3034]: https://github.com/calimero-network/core/pull/3034
+[#3029]: https://github.com/calimero-network/core/pull/3029
+[#3027]: https://github.com/calimero-network/core/pull/3027
+[#3020]: https://github.com/calimero-network/core/pull/3020
+[#3018]: https://github.com/calimero-network/core/pull/3018
+[#3016]: https://github.com/calimero-network/core/pull/3016
+[#3014]: https://github.com/calimero-network/core/pull/3014
+[#3013]: https://github.com/calimero-network/core/pull/3013
+[#3010]: https://github.com/calimero-network/core/pull/3010
+[#3009]: https://github.com/calimero-network/core/pull/3009
+[#3004]: https://github.com/calimero-network/core/pull/3004
+[#2980]: https://github.com/calimero-network/core/pull/2980
+[#2960]: https://github.com/calimero-network/core/pull/2960
+[#2950]: https://github.com/calimero-network/core/pull/2950
 [#2946]: https://github.com/calimero-network/core/pull/2946
 [#2944]: https://github.com/calimero-network/core/pull/2944
 [#2941]: https://github.com/calimero-network/core/pull/2941

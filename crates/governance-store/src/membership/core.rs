@@ -1,5 +1,6 @@
 use crate::{CapabilitiesRepository, MetadataRepository};
 use crate::{DenyListRepository, MetaRepository, NamespaceRepository};
+use calimero_governance_types::NamespaceId;
 use std::collections::BTreeSet;
 
 use calimero_context_config::types::ContextGroupId;
@@ -83,12 +84,91 @@ impl<'a> MembershipRepository<'a> {
         Ok(())
     }
 
+    /// Change ONLY the role of an existing member, preserving every other
+    /// field on the row (`private_key`, `sender_key`, `auto_follow`).
+    ///
+    /// This is the correct primitive for a role change (`MemberRoleSet`, admin
+    /// promotion): unlike [`add_member`](Self::add_member) — which rewrites the
+    /// whole `GroupMemberValue` and therefore zeroes `private_key`/`sender_key`
+    /// (it preserves only `auto_follow`) — `set_role` touches the role and
+    /// nothing else. Bails with `MemberNotFound` if the row does not already
+    /// exist, so callers must have verified membership first.
+    ///
+    /// For a non-admin role, baseline capabilities are seeded ONLY when the
+    /// member has no capability row yet. A role change — unlike a fresh add —
+    /// must not overwrite an existing grant: `set_role` can demote an admin who
+    /// holds custom capabilities to a non-admin role, and unconditionally
+    /// re-seeding the group defaults would silently wipe them.
+    pub fn set_role(
+        &self,
+        group_id: &ContextGroupId,
+        identity: &PublicKey,
+        role: GroupMemberRole,
+    ) -> EyreResult<()> {
+        let is_admin = role == GroupMemberRole::Admin;
+        let mut handle = self.store.handle();
+        let key = GroupMember::new(group_id.to_bytes(), *identity);
+        let existing =
+            handle
+                .get::<GroupMember>(&key)?
+                .ok_or_else(|| MembershipError::MemberNotFound {
+                    group_id: format!("{group_id:?}"),
+                    member: format!("{identity:?}"),
+                })?;
+        handle.put(
+            &key,
+            &GroupMemberValue {
+                role,
+                private_key: existing.private_key,
+                sender_key: existing.sender_key,
+                auto_follow: existing.auto_follow,
+            },
+        )?;
+        drop(handle);
+
+        // Two-phase write (member row, then the default-caps row on its own
+        // handle), identical to `add_member_with_keys`. It is NOT a transaction,
+        // and deliberately so: the store is unbuffered/write-through, so a single
+        // shared handle would not make the two puts atomic across a crash anyway.
+        // Safety rests on the apply model, not a lock: group-op apply is
+        // serialized per group_id by the single-threaded ContextManager actor, so
+        // no concurrent reader observes the in-between state; and apply is
+        // replay-safe/idempotent, so a crash landing between the two writes is
+        // healed when the op re-applies (set_role re-runs and re-seeds the caps).
+        //
+        // Seed baseline caps ONLY when no capability row exists yet — never
+        // clobber an existing grant on a role change (e.g. demoting an admin who
+        // held custom caps). The `is_none` gate also keeps re-apply idempotent.
+        if !is_admin {
+            let capabilities = CapabilitiesRepository::new(self.store);
+            if capabilities
+                .member_capability(group_id, identity)?
+                .is_none()
+            {
+                if let Some(defaults) = capabilities.default_capabilities(group_id)? {
+                    if defaults != 0 {
+                        capabilities.set_member_capability(group_id, identity, defaults)?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn remove_member(&self, group_id: &ContextGroupId, identity: &PublicKey) -> EyreResult<()> {
         {
             let mut handle = self.store.handle();
             handle.delete(&GroupMember::new(group_id.to_bytes(), *identity))?;
         }
         MetadataRepository::new(self.store).delete_member(group_id, identity)?;
+        // Clear the per-member capability row so a stale (possibly elevated)
+        // grant can't survive removal and be read back on re-add. Mirrors the
+        // deny-list clear on `MemberAdded`. Hash-neutral: a separate column
+        // from `GroupMember`, so it doesn't feed `compute_state_hash`.
+        // The three deletes aren't atomic, but apply is replay-safe: a crash
+        // between them is healed when the idempotent op re-applies.
+        CapabilitiesRepository::new(self.store).delete_member_capability(group_id, identity)?;
         Ok(())
     }
 
@@ -176,15 +256,16 @@ impl<'a> MembershipRepository<'a> {
                 let caps = CapabilitiesRepository::new(self.store)
                     .member_capability(&parent, identity)?
                     .unwrap_or(0);
-                anchor_decision =
-                    Some(if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS != 0 {
+                anchor_decision = Some(
+                    if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits() != 0 {
                         MembershipPath::Inherited {
                             anchor: parent,
                             via_admin: false,
                         }
                     } else {
                         MembershipPath::None
-                    });
+                    },
+                );
             }
             current = parent;
         }
@@ -238,6 +319,13 @@ impl<'a> MembershipRepository<'a> {
             .collect();
         let mut result = Vec::new();
 
+        // Walk the Open-reachable ancestor chain ONCE (parent-of `group_id`
+        // first, up to the first non-Open level / the root). Previously
+        // `check_path` re-derived this same chain — re-reading every level's
+        // visibility + parent — for *every* candidate, making the auth path
+        // O(candidates x depth) in store reads. We build it here and evaluate
+        // each candidate against the in-memory chain via `check_path_in_chain`.
+        let mut chain: Vec<ContextGroupId> = Vec::new();
         let mut current = *group_id;
         let mut terminated = false;
         for _ in 0..=MAX_NAMESPACE_DEPTH {
@@ -251,13 +339,20 @@ impl<'a> MembershipRepository<'a> {
                 terminated = true;
                 break;
             };
+            chain.push(parent);
+            current = parent;
+        }
+        if !terminated {
+            bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH));
+        }
 
+        for parent in &chain {
             let mut candidates: Vec<PublicKey> = self
-                .list(&parent, 0, usize::MAX)?
+                .list(parent, 0, usize::MAX)?
                 .into_iter()
                 .map(|(pk, _)| pk)
                 .collect();
-            if let Some(meta) = MetaRepository::new(self.store).load(&parent)? {
+            if let Some(meta) = MetaRepository::new(self.store).load(parent)? {
                 candidates.push(meta.admin_identity);
             }
 
@@ -269,7 +364,7 @@ impl<'a> MembershipRepository<'a> {
                     continue;
                 }
                 if let MembershipPath::Inherited { anchor, via_admin } =
-                    self.check_path(group_id, &candidate)?
+                    self.check_path_in_chain(group_id, &chain, &candidate)?
                 {
                     // For a non-admin inheritor, carry the member's REAL role
                     // from the anchor (the ancestor where they hold the direct
@@ -286,15 +381,53 @@ impl<'a> MembershipRepository<'a> {
                     result.push((candidate, role));
                 }
             }
-
-            current = parent;
-        }
-        if !terminated {
-            bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH));
         }
         Ok(result)
     }
 
+    /// [`Self::check_path`] evaluated against a precomputed Open-reachable
+    /// ancestor `chain` (parent-of the queried group first). Identical logic —
+    /// direct membership, then per-ancestor admin / open-subgroup-capability —
+    /// but it does not re-read each level's visibility + parent from the store,
+    /// so callers that resolve many identities against the same chain (see
+    /// [`Self::enumerate_inherited`]) pay the O(depth) structure walk once
+    /// rather than once per identity.
+    fn check_path_in_chain(
+        &self,
+        group_id: &ContextGroupId,
+        chain: &[ContextGroupId],
+        identity: &PublicKey,
+    ) -> EyreResult<MembershipPath> {
+        if has_direct_member(self.store, group_id, identity)? {
+            return Ok(MembershipPath::Direct);
+        }
+
+        let mut anchor_decision: Option<MembershipPath> = None;
+        for parent in chain {
+            if self.is_admin(parent, identity)? {
+                return Ok(MembershipPath::Inherited {
+                    anchor: *parent,
+                    via_admin: true,
+                });
+            }
+            if has_direct_member(self.store, parent, identity)? && anchor_decision.is_none() {
+                let caps = CapabilitiesRepository::new(self.store)
+                    .member_capability(parent, identity)?
+                    .unwrap_or(0);
+                anchor_decision = Some(
+                    if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits() != 0 {
+                        MembershipPath::Inherited {
+                            anchor: *parent,
+                            via_admin: false,
+                        }
+                    } else {
+                        MembershipPath::None
+                    },
+                );
+            }
+        }
+        Ok(anchor_decision.unwrap_or(MembershipPath::None))
+    }
     /// Returns `true` if `identity` is a direct admin of this specific group
     /// (no ancestor walk).
     pub fn is_direct_admin(
@@ -473,8 +606,8 @@ impl<'a> MembershipRepository<'a> {
     /// Public-key-only view of the current member set for a namespace.
     /// Includes the meta `admin_identity` if not already in the member
     /// rows — see the original `namespace_member_pubkeys` doc.
-    pub fn namespace_pubkeys(&self, namespace_id: [u8; 32]) -> EyreResult<Vec<PublicKey>> {
-        let group_id = ContextGroupId::from(namespace_id);
+    pub fn namespace_pubkeys(&self, namespace_id: NamespaceId) -> EyreResult<Vec<PublicKey>> {
+        let group_id = ContextGroupId::from(namespace_id.to_bytes());
         let members = self.list(&group_id, 0, usize::MAX)?;
         let mut pubkeys: Vec<PublicKey> = members.into_iter().map(|(pk, _role)| pk).collect();
         if let Some(meta) = MetaRepository::new(self.store).load(&group_id)? {
@@ -511,10 +644,10 @@ impl<'a> MembershipRepository<'a> {
     /// admitted TEE node. See original `is_authoritative_namespace_identity`.
     pub fn is_authoritative_namespace_identity(
         &self,
-        namespace_id: [u8; 32],
+        namespace_id: NamespaceId,
         identity: &PublicKey,
     ) -> EyreResult<bool> {
-        let gid = ContextGroupId::from(namespace_id);
+        let gid = ContextGroupId::from(namespace_id.to_bytes());
 
         if let Some(meta) = MetaRepository::new(self.store).load(&gid)? {
             if *identity == meta.owner_identity {

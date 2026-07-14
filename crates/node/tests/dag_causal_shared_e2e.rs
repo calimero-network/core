@@ -167,7 +167,6 @@ impl SharedRotationApplier {
                 Action::Add { metadata, .. }
                 | Action::Update { metadata, .. }
                 | Action::DeleteRef { metadata, .. } => metadata,
-                Action::Compare { .. } => continue,
             };
             if matches!(metadata.storage_type, StorageType::Shared { .. }) {
                 let _inserted = shared_entities.insert(action.id());

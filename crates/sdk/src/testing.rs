@@ -339,6 +339,14 @@ where
         host::set_context_id(id);
     }
 
+    /// Makes [`env::blob_announce_to_context`](crate::env::blob_announce_to_context)
+    /// report failure (`false`) for subsequent calls, so a test can exercise
+    /// the announce-failure branch app code hits under real WASM. Pass `false`
+    /// to restore the default (announce succeeds).
+    pub fn set_blob_announce_should_fail(&mut self, fail: bool) {
+        host::set_blob_announce_should_fail(fail);
+    }
+
     /// Returns the current executor identity.
     #[must_use]
     pub fn executor_id(&self) -> [u8; 32] {

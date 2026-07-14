@@ -146,17 +146,28 @@ impl KvStore {
     pub fn remove(&mut self, key: &str) -> app::Result<Option<String>> {
         app::log!("Removing key: {:?}", key);
 
-        app::emit!(Event::Removed { key });
+        // Only emit `Removed` when a value was actually present — emitting for
+        // an absent key would broadcast a change that never happened.
+        let removed = self.items.remove(key)?.map(|v| v.get().clone());
+        if removed.is_some() {
+            app::emit!(Event::Removed { key });
+        }
 
-        Ok(self.items.remove(key)?.map(|v| v.get().clone()))
+        Ok(removed)
     }
 
     pub fn clear(&mut self) -> app::Result<()> {
         app::log!("Clearing all entries");
 
-        app::emit!(Event::Cleared);
+        // Only emit `Cleared` when the map had entries, and only after the
+        // clear succeeds.
+        let was_non_empty = !self.items.is_empty()?;
+        self.items.clear()?;
+        if was_non_empty {
+            app::emit!(Event::Cleared);
+        }
 
-        self.items.clear().map_err(Into::into)
+        Ok(())
     }
 }
 
@@ -228,5 +239,34 @@ mod tests {
 
         app.call(|s| s.set("k".into(), "v".into())).unwrap();
         assert_eq!(app.events().len(), 1);
+    }
+
+    #[test]
+    fn remove_absent_and_clear_empty_emit_nothing() {
+        let mut app = TestHost::new(KvStore::init);
+
+        // Removing a key that was never set must not broadcast a change.
+        assert_eq!(app.call(|s| s.remove("missing")).unwrap(), None);
+        assert!(app.events().is_empty());
+
+        // Clearing an already-empty store likewise emits nothing.
+        app.call(|s| s.clear()).unwrap();
+        assert!(app.events().is_empty());
+
+        // A real removal still emits exactly one `Removed` event.
+        app.call(|s| s.set("k".into(), "v".into())).unwrap();
+        let _ = app.take_events();
+        assert_eq!(app.call(|s| s.remove("k")).unwrap(), Some("v".to_owned()));
+        let events = app.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "Removed");
+
+        // And a real clear (non-empty store) emits exactly one `Cleared`.
+        app.call(|s| s.set("k".into(), "v".into())).unwrap();
+        let _ = app.take_events();
+        app.call(|s| s.clear()).unwrap();
+        let events = app.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "Cleared");
     }
 }

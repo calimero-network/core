@@ -10,7 +10,7 @@ use reqwest::StatusCode;
 use serde::Serialize;
 use tracing::{error, info};
 
-use crate::admin::service::ApiResponse;
+use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler<T>(
@@ -31,9 +31,11 @@ where
 
     info!(alias=%alias, "Looking up alias");
 
+    // Lookup is a nullable getter: a missing alias returns 200 with a null
+    // `value` (the SDK contract), not 404 — callers use it to check existence.
     match state.node_client.lookup_alias(alias, scope) {
         Ok(value) => {
-            info!(alias=%alias, "Alias looked up successfully");
+            info!(alias=%alias, found=%value.is_some(), "Alias lookup complete");
             ApiResponse {
                 payload: LookupAliasResponse {
                     data: LookupAliasResponseData::new(value),
@@ -43,7 +45,7 @@ where
         }
         Err(err) => {
             error!(alias=%alias, error=?err, "Failed to lookup alias");
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+            parse_api_error(err).into_response()
         }
     }
 }

@@ -6,6 +6,8 @@ stop_all_nodes: false
 restart: false
 wait_timeout: 120
 
+auth_mode: embedded
+
 nodes:
   chain_id: testnet-1
   count: 2
@@ -13,6 +15,20 @@ nodes:
   prefix: new-calimero-node
 
 steps:
+  # First login on a fresh embedded-auth node bootstraps its root key
+  # and seeds merobox's token cache; every step below runs authenticated.
+  - name: Login on new-calimero-node-1
+    type: login
+    node: new-calimero-node-1
+    username: dev
+    password: dev
+
+  - name: Login on new-calimero-node-2
+    type: login
+    node: new-calimero-node-2
+    username: dev
+    password: dev
+
   # Step 1: Install on node 1. Installer becomes the sole initial writer.
   - name: Install Application on Node 1
     type: install_application

@@ -94,12 +94,17 @@ impl TeeConfig {
     /// must be mutually exclusive on a single node.
     ///
     /// Returns `false` when no KMS provider is configured (e.g. `kms.phala`
-    /// absent), which permits `--mock-tee`. If a second KMS provider is added,
-    /// extend this predicate to cover it.
+    /// absent), which permits `--mock-tee`.
+    ///
+    /// The `KmsConfig` is destructured field-by-field with no `..` rest pattern
+    /// on purpose: adding a new provider field to `KmsConfig` will fail to
+    /// compile here until it is folded into this predicate. That keeps the
+    /// `--mock-tee` deny-guard exhaustive across every provider rather than
+    /// silently ignoring a newly-added one.
     #[must_use]
     pub fn has_real_attestation(&self) -> bool {
-        self.kms
-            .phala
+        let KmsConfig { phala } = &self.kms;
+        phala
             .as_ref()
             .is_some_and(|phala| phala.attestation.enabled && !phala.attestation.accept_mock)
     }
@@ -295,6 +300,7 @@ fn default_kms_attestation_tcb_statuses() -> Vec<String> {
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SyncConfig {
     #[serde(rename = "timeout_ms", with = "serde_duration")]
     pub timeout: Duration,
@@ -314,6 +320,26 @@ pub struct SyncConfig {
     pub interval: Duration,
     #[serde(rename = "frequency_ms", with = "serde_duration")]
     pub frequency: Duration,
+}
+
+impl SyncConfig {
+    /// Construct a [`SyncConfig`]. `SyncConfig` is `#[non_exhaustive]`, so
+    /// external crates build it through this constructor rather than a struct
+    /// literal — adding a field then stays source-compatible here.
+    #[must_use]
+    pub const fn new(
+        timeout: Duration,
+        session_deadline: Duration,
+        interval: Duration,
+        frequency: Duration,
+    ) -> Self {
+        Self {
+            timeout,
+            session_deadline,
+            interval,
+            frequency,
+        }
+    }
 }
 
 fn default_sync_session_deadline() -> Duration {

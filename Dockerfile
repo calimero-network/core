@@ -4,7 +4,10 @@ ARG RUST_VERSION=1.88.0
 # ^~~ keep this in sync with rust-toolchain.toml
 
 ################################################################################
-FROM rust:${RUST_VERSION}-slim-bookworm AS build
+# Digest pins the exact base image for reproducible builds. When bumping
+# RUST_VERSION, refresh this digest too (docker buildx imagetools inspect
+# rust:<version>-slim-bookworm) — the digest, not the tag, selects the image.
+FROM rust:${RUST_VERSION}-slim-bookworm@sha256:38bc5a86d998772d4aec2348656ed21438d20fcdce2795b56ca434cf21430d89 AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     clang \
@@ -42,7 +45,9 @@ RUN --mount=type=cache,target=/app/target/ \
     cp /app/target/release/merod /app/target/release/meroctl /usr/local/bin/
 
 ################################################################################
-FROM debian:bookworm-slim AS runtime
+# Digest-pinned runtime base; refresh with `docker buildx imagetools inspect
+# debian:bookworm-slim` when updating.
+FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df AS runtime
 
 LABEL org.opencontainers.image.description="Calimero Node" \
     org.opencontainers.image.licenses="MIT OR Apache-2.0" \

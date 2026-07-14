@@ -10,8 +10,9 @@ use axum::extract::Query;
 use axum::response::Html;
 use axum::routing::get;
 use axum::Router;
-use calimero_client::{auth, get_session_cache, AuthMode, JwtToken};
+use calimero_client::{auth, AuthMode, ClientStorage, JwtToken};
 use eyre::{bail, eyre, OptionExt, Result};
+use rand::RngCore;
 use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -41,10 +42,15 @@ pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
         bail!("Server does not require authentication");
     }
 
-    // Set up callback server
-    let (callback_port, callback_rx) = start_callback_server().await?;
+    // A single-use, unguessable state nonce binds the browser round-trip to
+    // this CLI invocation. Without it, any local process that can reach the
+    // loopback callback port could inject its own tokens (login-CSRF).
+    let state = generate_state();
 
-    let auth_url = build_auth_url(api_url, callback_port)?;
+    // Set up callback server
+    let (callback_port, callback_rx) = start_callback_server(state.clone()).await?;
+
+    let auth_url = build_auth_url(api_url, callback_port, &state)?;
 
     output.write(&InfoLine(
         "Opening browser for authentication — you have 2 minutes to complete sign-in.",
@@ -80,9 +86,12 @@ pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
     }
 }
 
-async fn start_callback_server() -> Result<(u16, oneshot::Receiver<Result<AuthCallback, String>>)> {
+async fn start_callback_server(
+    expected_state: String,
+) -> Result<(u16, oneshot::Receiver<Result<AuthCallback, String>>)> {
     let (tx, rx) = oneshot::channel();
     let tx = Arc::new(Mutex::new(Some(tx)));
+    let expected_state = Arc::new(expected_state);
 
     let (start_port, end_port) = (9080u16, 9090u16);
 
@@ -112,9 +121,28 @@ async fn start_callback_server() -> Result<(u16, oneshot::Receiver<Result<AuthCa
         "/callback",
         get({
             let tx = Arc::clone(&tx);
+            let expected_state = Arc::clone(&expected_state);
             move |Query(params): Query<HashMap<String, String>>| async move {
                 // Check if we have tokens as query parameters
                 if params.contains_key("access_token") {
+                    // Reject any callback whose `state` does not match the
+                    // single-use nonce minted for this flow. This is what stops
+                    // another local process from injecting tokens into our
+                    // loopback callback (login-CSRF).
+                    if params.get("state").map(String::as_str) != Some(expected_state.as_str()) {
+                        // Wake the waiting CLI with an error instead of dropping
+                        // the request silently — otherwise it blocks until the
+                        // 2-minute auth timeout.
+                        if let Ok(mut guard) = tx.lock() {
+                            if let Some(sender) = guard.take() {
+                                drop(sender.send(Err(
+                                    "authentication state mismatch (possible CSRF); rejected"
+                                        .to_owned(),
+                                )));
+                            }
+                        }
+                        return STATE_MISMATCH_HTML;
+                    }
                     let callback = AuthCallback {
                         access_token: params.get("access_token").cloned(),
                         refresh_token: params.get("refresh_token").cloned(),
@@ -258,6 +286,10 @@ async fn start_callback_server() -> Result<(u16, oneshot::Receiver<Result<AuthCa
                 const q = new URLSearchParams();
                 q.set('access_token', accessToken);
                 if (refreshToken) q.set('refresh_token', refreshToken);
+                // Preserve the state nonce from the callback URL's query so the
+                // server-side handler can verify it before accepting the tokens.
+                const state = new URLSearchParams(window.location.search).get('state');
+                if (state) q.set('state', state);
                 window.location.href = window.location.origin + window.location.pathname + '?' + q.toString();
             } else {
                 document.querySelector('.spinner').style.display = 'none';
@@ -291,20 +323,117 @@ async fn start_callback_server() -> Result<(u16, oneshot::Receiver<Result<AuthCa
     Ok((bound_port, rx))
 }
 
-fn build_auth_url(api_url: &Url, callback_port: u16) -> Result<Url> {
+/// Generate a single-use, unguessable state nonce (256 bits, hex-encoded).
+fn generate_state() -> String {
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+/// The token scope a command requests at login.
+///
+/// Read-only commands no longer have to persist a full-`admin` token; they can
+/// request a narrower, non-admin scope so a leaked CLI token can do less.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenScope {
+    /// Full administrative access. Used for mutating/admin/node commands and any
+    /// command whose required permissions we do not conservatively narrow.
+    Admin,
+    /// Non-admin resource access (no `admin`, no `keys`): sufficient for
+    /// read-only resource commands (list/get/info/download).
+    Resource,
+}
+
+impl TokenScope {
+    /// The `permissions` value sent to `/auth/login` for this scope.
+    fn as_permissions(self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::Resource => "application,package,context,blob",
+        }
+    }
+
+    /// Parse an explicit scope override (e.g. from `MEROCTL_AUTH_SCOPE`),
+    /// case-insensitively. Unrecognised values return `None`.
+    fn parse_override(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "admin" => Some(Self::Admin),
+            "resource" => Some(Self::Resource),
+            _ => None,
+        }
+    }
+}
+
+static REQUESTED_SCOPE: std::sync::OnceLock<TokenScope> = std::sync::OnceLock::new();
+
+/// Record the least-privilege token scope for the current command, applying the
+/// `MEROCTL_AUTH_SCOPE` override once. Called exactly once at startup, before any
+/// authentication happens.
+///
+/// The final scope is stored in a process-global `OnceLock`, so a second call
+/// can't change it. Rather than silently discard the repeat (which would let one
+/// command's scope bleed into another) we surface it: a warning in every build,
+/// plus a hard `debug_assert` failure in debug/test builds.
+pub fn set_requested_scope(command_scope: TokenScope) {
+    let scope = resolve_scope_override(command_scope);
+    if REQUESTED_SCOPE.set(scope).is_err() {
+        eprintln!("warning: token scope already set; ignoring repeated set_requested_scope call");
+        debug_assert!(false, "set_requested_scope called more than once");
+    }
+}
+
+/// Apply the `MEROCTL_AUTH_SCOPE` env override (`admin`/`resource`,
+/// case-insensitive) to the command-derived scope — an escape hatch in either
+/// direction if the command-derived scope is wrong for a particular server. An
+/// unrecognised value is warned about and ignored. Read exactly once, from
+/// [`set_requested_scope`], so the env read and any warning happen a single time.
+fn resolve_scope_override(command_scope: TokenScope) -> TokenScope {
+    let Ok(raw) = std::env::var("MEROCTL_AUTH_SCOPE") else {
+        return command_scope;
+    };
+    TokenScope::parse_override(&raw).unwrap_or_else(|| {
+        // Make misconfiguration visible: an operator who fat-fingers the value
+        // (e.g. `resourc`) would otherwise silently get the per-command scope
+        // while believing they had overridden it.
+        eprintln!(
+            "warning: unrecognised MEROCTL_AUTH_SCOPE value {raw:?} (expected `admin` or `resource`); ignoring"
+        );
+        command_scope
+    })
+}
+
+/// The resolved scope to request at login, recorded by [`set_requested_scope`]
+/// (defaults to `Admin` when unset). A pure reader — deterministic across the
+/// multiple `build_auth_url` calls in a single command.
+fn requested_scope() -> TokenScope {
+    REQUESTED_SCOPE.get().copied().unwrap_or(TokenScope::Admin)
+}
+
+fn build_auth_url(api_url: &Url, callback_port: u16, state: &str) -> Result<Url> {
     let mut auth_url = api_url.clone();
     auth_url.set_path("/auth/login");
+    // Carry the state nonce in the callback URL itself; the server echoes the
+    // callback URL back to the browser, so the nonce round-trips without any
+    // server-side support and is verified in the callback handler.
+    let callback = format!("http://127.0.0.1:{callback_port}/callback?state={state}");
     let _ = auth_url
         .query_pairs_mut()
-        .append_pair(
-            "callback-url",
-            &format!("http://127.0.0.1:{callback_port}/callback"),
-        )
+        .append_pair("callback-url", &callback)
         .append_pair("app-url", api_url.as_str().trim_end_matches('/'))
-        .append_pair("permissions", "admin");
+        .append_pair("permissions", requested_scope().as_permissions());
 
     Ok(auth_url)
 }
+
+/// Page shown when a callback arrives with a missing/incorrect state nonce.
+const STATE_MISMATCH_HTML: Html<&'static str> = Html(
+    r#"<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Authentication rejected</title></head>
+<body style="font-family:sans-serif;background:#111;color:#fff;text-align:center;padding-top:4rem">
+<h1>Authentication rejected</h1>
+<p>The sign-in response did not match this session. Please close this window and run the command again.</p>
+</body></html>"#,
+);
 
 /// Helper function to authenticate against a URL if required
 /// Returns Some(tokens) if authentication was needed and successful, None if no auth required
@@ -333,12 +462,20 @@ pub async fn check_authentication(
     }
 }
 
-/// Helper function for session-based authentication with caching for external connections
-/// Returns a ConnectionInfo with appropriate authentication tokens.
+/// Authenticate against `url` if it requires auth, persist the node + tokens in
+/// config, and return a `ConnectionInfo` bound to `node_name`. When the server
+/// requires no auth, returns an unauthenticated connection.
+///
+/// If `FileTokenStorage` already holds usable, non-expired tokens for
+/// `node_name`, the browser auth flow is skipped and they are reused — so this
+/// is idempotent and safe to call repeatedly without popping a browser tab on
+/// every invocation. A stored token that has since been revoked (but not yet
+/// expired) is still handled: the connection's own request path refreshes or
+/// re-authenticates on the resulting 401.
 ///
 /// `local_node_path` should be `Some(path)` when the node is a local node found via the
 /// filesystem (so it is persisted as `NodeConnection::Local`).  Pass `None` for remote/URL nodes.
-pub async fn authenticate_with_session_cache(
+pub async fn authenticate_and_connect(
     url: &Url,
     node_name: &str,
     local_node_path: Option<&Utf8PathBuf>,
@@ -352,52 +489,40 @@ pub async fn authenticate_with_session_cache(
     );
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
-    if auth_mode != AuthMode::None {
-        // Check if we have tokens in session cache for this URL
-        let session_cache = get_session_cache();
-
-        if let Some(_cached_tokens) = session_cache.get_tokens(url.as_str()).await {
-            // We have existing tokens for this URL in session cache
-            Ok(ConnectionInfo::new(
-                url.clone(),
-                Some(node_name.to_owned()),
-                create_cli_authenticator(output),
-                FileTokenStorage::new(),
-            ))
-        } else {
-            // Need to authenticate and store in session cache
-            match authenticate(url, output).await {
-                Ok(jwt_tokens) => {
-                    // Store in session cache for future use during this session
-                    session_cache.store_tokens(url.as_str(), &jwt_tokens).await;
-
-                    // Persist the node in config so FileTokenStorage can use tokens across
-                    // sessions. Reload config immediately before writing to reduce (but not
-                    // eliminate) the TOCTOU window; only insert when the key is absent so an
-                    // explicit `node add` entry is never overwritten.
-                    persist_node_in_config(node_name, url, local_node_path, &jwt_tokens).await?;
-
-                    Ok(ConnectionInfo::new(
-                        url.clone(),
-                        Some(node_name.to_owned()),
-                        create_cli_authenticator(output),
-                        FileTokenStorage::new(),
-                    ))
-                }
-                Err(e) => {
-                    bail!("Authentication failed for {}: {}", node_name, e);
-                }
-            }
-        }
-    } else {
-        // No authentication required
-        Ok(ConnectionInfo::new(
+    if auth_mode == AuthMode::None {
+        // No authentication required.
+        return Ok(ConnectionInfo::new(
             url.clone(),
             None,
             create_cli_authenticator(output),
             FileTokenStorage::new(),
-        ))
+        ));
     }
+
+    // Reuse already-stored credentials when they're still usable, so a repeat
+    // invocation doesn't pop a browser tab needlessly. Only when none are found
+    // do we run the browser auth flow and persist the fresh tokens.
+    // `persist_node_in_config` reloads config immediately before writing to
+    // shrink the TOCTOU window and never overwrites an explicit `node add` entry.
+    let has_usable_tokens = FileTokenStorage::new()
+        .load_tokens(node_name)
+        .await?
+        .is_some_and(|tokens| tokens.is_usable() && !tokens.is_expired());
+
+    if !has_usable_tokens {
+        let jwt_tokens = authenticate(url, output)
+            .await
+            .map_err(|e| eyre!("Authentication failed for {}: {}", node_name, e))?;
+
+        persist_node_in_config(node_name, url, local_node_path, &jwt_tokens).await?;
+    }
+
+    Ok(ConnectionInfo::new(
+        url.clone(),
+        Some(node_name.to_owned()),
+        create_cli_authenticator(output),
+        FileTokenStorage::new(),
+    ))
 }
 
 /// Persist a node entry and its fresh tokens in the meroctl config file.
@@ -494,10 +619,14 @@ impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
             "Opening browser for authentication — you have 2 minutes to complete sign-in.",
         );
 
-        // Set up callback server
-        let (callback_port, callback_rx) = start_callback_server().await?;
+        // Single-use state nonce binds this browser round-trip to this flow,
+        // preventing another local process from injecting tokens (login-CSRF).
+        let state = generate_state();
 
-        let auth_url = build_auth_url(api_url, callback_port)?;
+        // Set up callback server
+        let (callback_port, callback_rx) = start_callback_server(state.clone()).await?;
+
+        let auth_url = build_auth_url(api_url, callback_port, &state)?;
 
         // Open the OAuth URL in the browser
         if let Err(e) = self.output.open_browser(&auth_url) {
@@ -649,8 +778,56 @@ mod tests {
     use camino::Utf8PathBuf;
     use url::Url;
 
+    use super::{build_auth_url, generate_state};
     use crate::config::{Config, NodeConnection};
     use crate::storage::JwtToken;
+
+    #[test]
+    fn generate_state_is_unguessable_hex_and_unique() {
+        let a = generate_state();
+        let b = generate_state();
+        assert_eq!(a.len(), 64, "32 bytes hex-encoded");
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b, "each invocation must produce a fresh nonce");
+    }
+
+    #[test]
+    fn build_auth_url_embeds_state_in_callback() {
+        let api = Url::parse("https://node.example/").unwrap();
+        let url = build_auth_url(&api, 9080, "abc123").unwrap();
+        let callback = url
+            .query_pairs()
+            .find(|(k, _)| k == "callback-url")
+            .map(|(_, v)| v.into_owned())
+            .expect("callback-url present");
+        assert_eq!(callback, "http://127.0.0.1:9080/callback?state=abc123");
+        assert!(url.query_pairs().any(|(k, _)| k == "permissions"));
+    }
+
+    #[test]
+    fn token_scope_permission_strings() {
+        use super::TokenScope;
+        assert_eq!(TokenScope::Admin.as_permissions(), "admin");
+        // Resource scope never grants `admin` or `keys`.
+        let resource = TokenScope::Resource.as_permissions();
+        assert!(!resource.split(',').any(|p| p == "admin" || p == "keys"));
+        assert!(resource.split(',').any(|p| p == "context"));
+    }
+
+    #[test]
+    fn token_scope_override_parses_both_directions() {
+        use super::TokenScope;
+        assert_eq!(TokenScope::parse_override("admin"), Some(TokenScope::Admin));
+        assert_eq!(
+            TokenScope::parse_override("RESOURCE"),
+            Some(TokenScope::Resource)
+        );
+        assert_eq!(
+            TokenScope::parse_override(" resource "),
+            Some(TokenScope::Resource)
+        );
+        assert_eq!(TokenScope::parse_override("bogus"), None);
+    }
 
     fn make_tokens(access: &str) -> JwtToken {
         JwtToken {

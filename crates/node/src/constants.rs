@@ -27,6 +27,31 @@ pub const OLD_BLOBS_EVICTION_FREQUENCY_S: u64 = 300;
 /// Prevents log spam when buffer is under sustained pressure.
 pub const DELTA_BUFFER_DROP_WARNING_RATE_LIMIT_S: u64 = 5;
 
+/// Capacity of the dedicated network-event channel between the network
+/// manager and the NodeManager bridge. Sized to absorb burst traffic; the
+/// bridge applies backpressure (and, past `NETWORK_EVENT_MAX_PENDING_RETRIES`,
+/// drops with a metric) once full.
+pub const NETWORK_EVENT_CHANNEL_SIZE: usize = 1000;
+/// Upper bound on overflow events buffered in the network-event channel's
+/// async retry path before a true drop — roughly one channel's worth.
+pub const NETWORK_EVENT_MAX_PENDING_RETRIES: usize = 1000;
+
+/// Broadcast capacity for server-facing node events (supports many concurrent
+/// WebSocket clients).
+pub const EVENT_BROADCAST_CHANNEL_SIZE: usize = 256;
+/// Buffer for queued context sync requests (absorbs bursts of context
+/// joins/syncs).
+pub const CTX_SYNC_CHANNEL_SIZE: usize = 64;
+/// Buffer for queued namespace governance sync requests.
+pub const NS_SYNC_CHANNEL_SIZE: usize = 16;
+/// Buffer for queued namespace join requests.
+pub const NS_JOIN_CHANNEL_SIZE: usize = 16;
+/// Buffer for queued open-subgroup join requests.
+pub const OPEN_SUBGROUP_JOIN_CHANNEL_SIZE: usize = 16;
+/// Buffer for the execute path's locally-applied-delta notifications to the
+/// node's in-memory DeltaStore.
+pub const LOCAL_DELTA_CHANNEL_SIZE: usize = 256;
+
 /// How often the gossipsub mesh-peer-count snapshot is logged per node
 /// (in seconds). The snapshot is CI-observable evidence of actual mesh
 /// state — the libp2p-gossipsub `Updating mesh, new mesh: {}` log reports

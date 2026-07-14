@@ -66,17 +66,19 @@ pub enum NamespaceSubCommands {
 
 impl NamespaceCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        match self.subcommand {
-            NamespaceSubCommands::Create(cmd) => cmd.run(environment).await,
-            NamespaceSubCommands::Get(cmd) => cmd.run(environment).await,
-            NamespaceSubCommands::Delete(cmd) => cmd.run(environment).await,
-            NamespaceSubCommands::Invite(cmd) => cmd.run(environment).await,
-            NamespaceSubCommands::Join(cmd) => cmd.run(environment).await,
-            NamespaceSubCommands::Leave(cmd) => cmd.run(environment).await,
-            NamespaceSubCommands::Groups(cmd) => cmd.run(environment).await,
-            NamespaceSubCommands::CreateGroup(cmd) => cmd.run(environment).await,
-            NamespaceSubCommands::List(cmd) => cmd.run(environment).await,
-            NamespaceSubCommands::Identity(cmd) => cmd.run(environment).await,
-        }
+        crate::cli::dispatch_subcommands!(
+            self.subcommand,
+            environment,
+            NamespaceSubCommands::Create,
+            NamespaceSubCommands::Get,
+            NamespaceSubCommands::Delete,
+            NamespaceSubCommands::Invite,
+            NamespaceSubCommands::Join,
+            NamespaceSubCommands::Leave,
+            NamespaceSubCommands::Groups,
+            NamespaceSubCommands::CreateGroup,
+            NamespaceSubCommands::List,
+            NamespaceSubCommands::Identity,
+        )
     }
 }

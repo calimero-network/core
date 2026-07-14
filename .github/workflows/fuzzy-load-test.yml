@@ -101,7 +101,7 @@ jobs:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # Under workflow_run, github.sha is the default-branch HEAD —
           # not the commit Release actually built from. Pin to the
@@ -149,7 +149,7 @@ jobs:
 
       # Use artifacts for same-run handoff between jobs (faster than cache for this use case)
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzzy-test-build-artifacts
           path: |
@@ -169,7 +169,7 @@ jobs:
     if: github.event.inputs.test_app == 'all' || github.event.inputs.test_app == 'kv-store' || github.event.inputs.test_app == ''
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # Under workflow_run, github.sha is the default-branch HEAD —
           # not the commit Release actually built from. Pin to the
@@ -178,7 +178,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: fuzzy-test-build-artifacts
           # The artifact's least-common-ancestor is apps/ (it holds only
@@ -246,6 +246,8 @@ jobs:
 
       - name: Setup vmagent for metrics collection
         id: setup-vmagent
+        env:
+          VICTORIA_METRICS_BEARER_TOKEN: ${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}
         run: |
           chmod +x scripts/setup-vmagent.sh
           COMMIT_HASH="${{ github.sha }}"
@@ -254,7 +256,6 @@ jobs:
             "kv-store" \
             "kv-store-${SHORT_COMMIT}" \
             "${{ github.run_id }}" \
-            "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
             "8429" \
             "$COMMIT_HASH" \
             "${{ github.ref_name }}"
@@ -373,7 +374,7 @@ jobs:
 
       - name: Upload KV Store test artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzzy-test-kv-store-${{ github.run_number }}-${{ github.run_id }}
           path: fuzzy-test-logs/kv-store/
@@ -392,7 +393,7 @@ jobs:
     if: github.event.inputs.test_app == 'all' || github.event.inputs.test_app == 'kv-store-with-handlers' || github.event.inputs.test_app == ''
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # Under workflow_run, github.sha is the default-branch HEAD —
           # not the commit Release actually built from. Pin to the
@@ -401,7 +402,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: fuzzy-test-build-artifacts
           # The artifact's least-common-ancestor is apps/ (it holds only
@@ -468,6 +469,8 @@ jobs:
 
       - name: Setup vmagent for metrics collection
         id: setup-vmagent-handlers
+        env:
+          VICTORIA_METRICS_BEARER_TOKEN: ${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}
         run: |
           chmod +x scripts/setup-vmagent.sh
           COMMIT_HASH="${{ github.sha }}"
@@ -476,7 +479,6 @@ jobs:
             "kv-store-with-handlers" \
             "kv-store-with-handlers-${SHORT_COMMIT}" \
             "${{ github.run_id }}" \
-            "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
             "8430" \
             "$COMMIT_HASH" \
             "${{ github.ref_name }}"
@@ -589,7 +591,7 @@ jobs:
 
       - name: Upload Handlers test artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzzy-test-handlers-${{ github.run_number }}-${{ github.run_id }}
           path: fuzzy-test-logs/kv-store-with-handlers/
@@ -608,12 +610,12 @@ jobs:
     if: github.event.inputs.test_app == 'all' || github.event.inputs.test_app == 'scaffolding-e2e' || github.event.inputs.test_app == ''
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: fuzzy-test-build-artifacts
           # The artifact's least-common-ancestor is apps/ (it holds only
@@ -680,6 +682,8 @@ jobs:
 
       - name: Setup vmagent for metrics collection
         id: setup-vmagent-e2e
+        env:
+          VICTORIA_METRICS_BEARER_TOKEN: ${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}
         run: |
           chmod +x scripts/setup-vmagent.sh
           COMMIT_HASH="${{ github.sha }}"
@@ -688,7 +692,6 @@ jobs:
             "scaffolding-e2e" \
             "scaffolding-e2e-${SHORT_COMMIT}" \
             "${{ github.run_id }}" \
-            "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
             "8431" \
             "$COMMIT_HASH" \
             "${{ github.ref_name }}"
@@ -799,7 +802,7 @@ jobs:
 
       - name: Upload Scaffolding E2E test artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzzy-test-scaffolding-e2e-${{ github.run_number }}-${{ github.run_id }}
           path: fuzzy-test-logs/scaffolding-e2e/
@@ -818,12 +821,12 @@ jobs:
     if: github.event.inputs.test_app == 'all' || github.event.inputs.test_app == 'group-governance' || github.event.inputs.test_app == ''
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: fuzzy-test-build-artifacts
           # The artifact's least-common-ancestor is apps/ (it holds only
@@ -890,6 +893,8 @@ jobs:
 
       - name: Setup vmagent for metrics collection
         id: setup-vmagent-gov
+        env:
+          VICTORIA_METRICS_BEARER_TOKEN: ${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}
         run: |
           chmod +x scripts/setup-vmagent.sh
           COMMIT_HASH="${{ github.sha }}"
@@ -898,7 +903,6 @@ jobs:
             "group-governance" \
             "group-governance-${SHORT_COMMIT}" \
             "${{ github.run_id }}" \
-            "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
             "8432" \
             "$COMMIT_HASH" \
             "${{ github.ref_name }}"
@@ -1009,7 +1013,7 @@ jobs:
 
       - name: Upload Group Governance test artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzzy-test-group-governance-${{ github.run_number }}-${{ github.run_id }}
           path: fuzzy-test-logs/group-governance/

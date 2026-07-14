@@ -113,7 +113,12 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                         .await?;
                     let envelope: KeyEnvelope = borsh::from_slice(&envelope_bytes)
                         .map_err(|e| eyre::eyre!("decode KeyEnvelope from peer response: {e}"))?;
-                    let group_key = GroupKeyring::unwrap_for_recipient(&signer_sk, &envelope)?;
+                    let group_key = GroupKeyring::unwrap_for_recipient(
+                        &signer_sk,
+                        &group_id.to_bytes(),
+                        None,
+                        &envelope,
+                    )?;
                     let _key_id = GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
                 } else {
                     info!(
@@ -140,13 +145,13 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                 // wouldn't know to retry.
                 let op = NamespaceOp::Root(RootOp::MemberJoinedOpen {
                     member: joiner_identity,
-                    group_id: group_id.to_bytes(),
+                    group_id: group_id.to_bytes().into(),
                 });
                 calimero_governance_store::sign_apply_and_publish_namespace_op(
                     &datastore,
                     &node_client,
                     &ack_router,
-                    ns_id.to_bytes(),
+                    ns_id.to_bytes().into(),
                     &signer_sk,
                     op,
                 )

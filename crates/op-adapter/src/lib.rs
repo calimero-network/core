@@ -26,8 +26,9 @@ use calimero_storage::rotation_log::RotationLogEntry;
 
 /// Encode a storage data [`Action`] as an [`OpPayload`].
 ///
-/// Returns `None` for [`Action::Compare`] — a sync reconciliation *hint*, not
-/// a state change, so it has no op-model representation.
+/// Every state-changing [`Action`] maps to an op, so this currently always
+/// returns `Some`; the `Option` is retained so a future non-state-changing
+/// action can encode as `None` without a signature change.
 #[must_use]
 pub fn payload_from_action(action: &Action) -> Option<OpPayload> {
     match action {
@@ -36,7 +37,6 @@ pub fn payload_from_action(action: &Action) -> Option<OpPayload> {
             value: data.clone(),
         }),
         Action::DeleteRef { id, .. } => Some(OpPayload::Delete { entity: *id }),
-        Action::Compare { .. } => None,
     }
 }
 
@@ -52,17 +52,6 @@ pub fn set_writers_payload(object: Id, entry: &RotationLogEntry) -> OpPayload {
     OpPayload::SetWriters {
         object,
         writers: entry.new_writers.clone(),
-    }
-}
-
-/// Map an invitation's `invited_role` byte (0 = Admin, 2 = ReadOnly, else
-/// Member) to a [`GroupMemberRole`] — the same mapping governance-store uses
-/// (reimplemented here so the adapter doesn't depend on a `pub(crate)` helper).
-fn role_from_invited_role(value: u8) -> GroupMemberRole {
-    match value {
-        0 => GroupMemberRole::Admin,
-        2 => GroupMemberRole::ReadOnly,
-        _ => GroupMemberRole::Member,
     }
 }
 
@@ -203,10 +192,10 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
         } => Some(OpPayload::MemberAdded {
             group: signed_invitation.invitation.group_id,
             member: *member,
-            role: role_from_invited_role(signed_invitation.invitation.invited_role),
+            role: GroupMemberRole::from_invited_role(signed_invitation.invitation.invited_role),
         }),
         RootOp::MemberJoinedOpen { member, group_id } => Some(OpPayload::MemberAdded {
-            group: ContextGroupId::from(*group_id),
+            group: *group_id,
             member: *member,
             role: GroupMemberRole::Member,
         }),
@@ -215,8 +204,8 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
             parent_id,
             restricted,
         } => Some(OpPayload::SubgroupCreated {
-            child: ScopeId::from(*group_id),
-            parent: ScopeId::from(*parent_id),
+            child: ScopeId::from(group_id.to_bytes()),
+            parent: ScopeId::from(parent_id.to_bytes()),
             // Visibility is now carried atomically on the live op (#2771):
             // `restricted: true` = Restricted (default), `false` = born-Open.
             // This aligns the projection-plane `SubgroupCreated.restricted`
@@ -228,11 +217,11 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
             child_group_id,
             new_parent_id,
         } => Some(OpPayload::SubgroupReparented {
-            child: ScopeId::from(*child_group_id),
-            new_parent: ScopeId::from(*new_parent_id),
+            child: ScopeId::from(child_group_id.to_bytes()),
+            new_parent: ScopeId::from(new_parent_id.to_bytes()),
         }),
         RootOp::GroupDeleted { root_group_id, .. } => Some(OpPayload::SubgroupDeleted {
-            scope: ScopeId::from(*root_group_id),
+            scope: ScopeId::from(root_group_id.to_bytes()),
         }),
         // Out-of-model: `KeyDelivery` is key transport, not authorization
         // state. (`RootOp` is `#[non_exhaustive]`, so a `_` arm is mandatory.)
@@ -281,7 +270,6 @@ mod tests {
             deleted_at: 0,
             metadata: Metadata::default(),
         };
-        let cmp = Action::Compare { id };
 
         assert_eq!(
             payload_from_action(&add),
@@ -301,8 +289,6 @@ mod tests {
             payload_from_action(&del),
             Some(OpPayload::Delete { entity: id })
         );
-        // Compare is a sync hint, not a state change.
-        assert_eq!(payload_from_action(&cmp), None);
     }
 
     /// Build a `SetWriters` op chain from a rotation log and assert the unified
@@ -353,16 +339,9 @@ mod tests {
             };
             let parents: Vec<[u8; 32]> = prev_id.into_iter().collect();
             let id = Op::compute_id(scope, &parents, &admin, &h, &payload);
-            ops.push(Op {
-                id,
-                scope,
-                parents,
-                author: admin,
-                hlc: h,
-                payload,
-                expected_scope_root: [0u8; 32],
-                signature: [0u8; 64],
-            });
+            ops.push(Op::from_parts(
+                id, scope, parents, admin, h, payload, [0u8; 32], [0u8; 64],
+            ));
             prev_id = Some(id);
         }
 
@@ -410,17 +389,15 @@ mod tests {
             writers_nonce: 1,
         };
         let payload = set_writers_payload(object, &entry);
-        let id = Op::compute_id(scope, &[], &admin, &entry.delta_hlc, &payload);
-        let op = Op {
-            id,
+        let op = Op::new(
             scope,
-            parents: vec![],
-            author: admin,
-            hlc: entry.delta_hlc,
+            vec![],
+            admin,
+            entry.delta_hlc,
             payload,
-            expected_scope_root: [0u8; 32],
-            signature: [0u8; 64],
-        };
+            [0u8; 32],
+            [0u8; 64],
+        );
 
         let resolved = ScopeState::from_ops([&op])
             .acl_view()
@@ -500,10 +477,17 @@ mod tests {
         assert_eq!(payload_from_group_op(group, &GroupOp::Noop), None);
         // Capability plane is now folded (gates inherited membership).
         assert_eq!(
-            payload_from_group_op(group, &GroupOp::DefaultCapabilitiesSet { capabilities: 7 }),
+            payload_from_group_op(
+                group,
+                &GroupOp::DefaultCapabilitiesSet {
+                    capabilities: calimero_context_config::MemberCapabilities::from_bits_truncate(
+                        7
+                    )
+                }
+            ),
             Some(OpPayload::DefaultCapabilitiesSet {
                 group,
-                capabilities: 7,
+                capabilities: calimero_context_config::MemberCapabilities::from_bits_truncate(7),
             })
         );
     }
@@ -536,7 +520,7 @@ mod tests {
             payload_from_root_op(
                 &RootOp::MemberJoinedOpen {
                     member: m,
-                    group_id: gid,
+                    group_id: gid.into(),
                 },
                 PublicKey::from([1u8; 32])
             ),
@@ -597,8 +581,8 @@ mod tests {
         assert_eq!(
             payload_from_root_op(
                 &RootOp::GroupCreated {
-                    group_id: gid,
-                    parent_id: parent,
+                    group_id: gid.into(),
+                    parent_id: parent.into(),
                     restricted: true,
                 },
                 PublicKey::from([1u8; 32])
@@ -614,8 +598,8 @@ mod tests {
         assert_eq!(
             payload_from_root_op(
                 &RootOp::GroupReparented {
-                    child_group_id: gid,
-                    new_parent_id: [9u8; 32],
+                    child_group_id: gid.into(),
+                    new_parent_id: [9u8; 32].into(),
                 },
                 PublicKey::from([1u8; 32])
             ),
@@ -627,7 +611,7 @@ mod tests {
         assert_eq!(
             payload_from_root_op(
                 &RootOp::GroupDeleted {
-                    root_group_id: gid,
+                    root_group_id: gid.into(),
                     cascade_group_ids: vec![],
                     cascade_context_ids: vec![],
                 },
@@ -651,17 +635,7 @@ mod tests {
 
         let build = |ns: u64, payload: OpPayload| -> Op {
             let h = hlc(ns);
-            let id = Op::compute_id(scope, &[], &admin, &h, &payload);
-            Op {
-                id,
-                scope,
-                parents: vec![],
-                author: admin,
-                hlc: h,
-                payload,
-                expected_scope_root: [0u8; 32],
-                signature: [0u8; 64],
-            }
+            Op::new(scope, vec![], admin, h, payload, [0u8; 32], [0u8; 64])
         };
 
         // Add(Member)@10 → Remove@20 → Add(Admin)@30 → present as Admin.

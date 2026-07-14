@@ -7,6 +7,7 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
+use indexmap::IndexMap;
 use libp2p::core::transport::ListenerId;
 use libp2p::relay::HOP_PROTOCOL_NAME;
 use libp2p::rendezvous::{Cookie, Namespace};
@@ -25,6 +26,31 @@ const RENDEZVOUS_PROTOCOL_NAME: StreamProtocol = StreamProtocol::new("/rendezvou
 /// race) without keeping a permanently broken address around long enough
 /// to waste many rendezvous-tick dial attempts.
 pub(crate) const DIAL_FAILURE_EVICTION_THRESHOLD: u8 = 3;
+
+/// Maximum number of direct-dial addresses retained per peer in the live
+/// address book. Mirrors the persistent peer-cache cap
+/// ([`crate::discovery::peer_cache`]'s `MAX_ADDRS_PER_PEER`): a peer
+/// rarely needs more than one good address, and a small cap tolerates an
+/// in-flight IP change (old + new both present briefly).
+///
+/// The per-address dial-failure eviction
+/// ([`DIAL_FAILURE_EVICTION_THRESHOLD`]) already trims *dead* addresses,
+/// but it never bounds the count of *live* ones: a peer — honest with
+/// many interfaces, or adversarial — can advertise an unbounded list of
+/// listen addresses via identify, and without a cap [`add_peer_addr`]
+/// would grow the per-peer map one entry per distinct address ever seen.
+/// When the cap is reached, the address with the most consecutive dial
+/// failures is evicted to make room, preferentially keeping addresses
+/// that still work.
+///
+/// [`add_peer_addr`]: DiscoveryState::add_peer_addr
+pub(crate) const MAX_ADDRS_PER_PEER: usize = 4;
+
+/// Cap on the number of distinct peers the discovery book tracks. Rendezvous
+/// discovery can surface an unbounded stream of never-connected peers on a
+/// public namespace (sybil-friendly), which otherwise grows this map forever.
+/// Well above any real overlay's live peer count.
+pub(crate) const MAX_TRACKED_PEERS: usize = 4096;
 
 /// Rendezvous-key prefixes for per-overlay registration/discovery.
 ///
@@ -329,13 +355,87 @@ impl DiscoveryState {
     /// is responsible for filtering out forms we don't want to dial
     /// directly — most notably relayed multiaddrs (`/p2p-circuit/`) for
     /// inbound connection records.
+    /// Evict the lowest-value tracked peer while over [`MAX_TRACKED_PEERS`].
+    ///
+    /// Never evicts `keep` (the peer just touched) or an infrastructure peer we
+    /// actively use (a relay we hold a reservation with, or a rendezvous point).
+    /// Among the rest, drops the one with the fewest known addresses (ties
+    /// broken deterministically by `PeerId`) — i.e. the least useful
+    /// discovered-but-unconnected entry. If only protected peers remain, the
+    /// (bounded, real) infra set is left intact rather than evicting something
+    /// useful.
+    fn evict_peers_over_cap(&mut self, keep: &PeerId) {
+        while self.peers.len() > MAX_TRACKED_PEERS {
+            let victim = self
+                .peers
+                .iter()
+                .filter(|(id, info)| {
+                    // Never evict the peer we just touched or an infrastructure
+                    // peer. relay/rendezvous/autonat index sets are kept
+                    // separately from `PeerInfo`, so guard all of them too —
+                    // evicting an indexed peer would dangle that index.
+                    *id != keep
+                        && info.relay.is_none()
+                        && info.rendezvous.is_none()
+                        && !self.relay_index.contains(id)
+                        && !self.rendezvous_index.contains(id)
+                        && !self.autonat_index.contains(id)
+                })
+                .min_by_key(|(id, info)| (info.addrs.len(), **id))
+                .map(|(id, _)| *id);
+            match victim {
+                Some(v) => {
+                    let _ = self.peers.remove(&v);
+                }
+                None => break,
+            }
+        }
+    }
+
     pub(crate) fn add_peer_addr(&mut self, peer_id: PeerId, addr: &Multiaddr) {
-        let _ = self
-            .peers
-            .entry(peer_id)
-            .or_default()
-            .addrs
-            .insert(addr.clone(), 0);
+        let addrs = &mut self.peers.entry(peer_id).or_default().addrs;
+
+        // Existing address: a refresh, not growth. Reset its failure
+        // counter and move it to the most-recent end of the order by
+        // re-inserting. This keeps the ordering keyed on *last
+        // confirmation* rather than first insertion, so a long-lived
+        // address that keeps getting re-confirmed (identify push or
+        // successful dial) is treated as freshest and is the last to be
+        // evicted — faithful to the peer-cache's newest-first policy,
+        // which likewise moves an address to the front on every record.
+        // Bypasses the cap: membership is unchanged, so no sibling is
+        // evicted to "make room" for an address that's already present.
+        if addrs.shift_remove(addr).is_some() {
+            let _ = addrs.insert(addr.clone(), 0);
+            return;
+        }
+
+        // New address: enforce the per-peer cap before inserting so the
+        // map can't grow without bound. Evict the *worst* existing address
+        // — highest consecutive-failure count, ties broken toward the
+        // least-recently-confirmed (front of the insertion order; refreshes
+        // above move entries to the back). `min_by_key` over
+        // `(Reverse(count), idx)` reads unambiguously: smallest key wins, so
+        // the highest `count` and then the lowest `idx` are selected. This
+        // is deterministic (no HashMap iteration-order randomness) and
+        // mirrors the peer-cache's newest-first policy: the freshly added
+        // address is always kept, and when everything is equally healthy we
+        // drop the stalest entry — which is what lets us pick up a peer's
+        // new address after an IP change instead of pinning to an old one.
+        if addrs.len() >= MAX_ADDRS_PER_PEER {
+            if let Some(evict_idx) = addrs
+                .iter()
+                .enumerate()
+                .min_by_key(|(idx, (_, &count))| (core::cmp::Reverse(count), *idx))
+                .map(|(idx, _)| idx)
+            {
+                let _ = addrs.shift_remove_index(evict_idx);
+            }
+        }
+
+        let _ = addrs.insert(addr.clone(), 0);
+
+        self.evict_peers_over_cap(&peer_id);
     }
 
     /// Mark a dial failure for `addr` under `peer_id`. Increments the
@@ -353,7 +453,10 @@ impl DiscoveryState {
 
         *count = count.saturating_add(1);
         if *count >= DIAL_FAILURE_EVICTION_THRESHOLD {
-            let _ = peer_info.addrs.remove(addr);
+            // `shift_remove` (not `swap_remove`) so the remaining addresses
+            // keep their insertion order, which the cap-eviction tie-break
+            // relies on.
+            let _ = peer_info.addrs.shift_remove(addr);
             true
         } else {
             false
@@ -408,7 +511,7 @@ impl DiscoveryState {
                 let _ = discoveries.insert(mechanism);
 
                 let _ = entry.insert(PeerInfo {
-                    addrs: HashMap::default(),
+                    addrs: IndexMap::default(),
                     discoveries,
                     relay: None,
                     rendezvous: None,
@@ -416,6 +519,8 @@ impl DiscoveryState {
                 });
             }
         }
+
+        self.evict_peers_over_cap(peer_id);
     }
 
     pub(crate) fn update_rendezvous_cookie(&mut self, rendezvous_peer: &PeerId, cookie: &Cookie) {
@@ -423,6 +528,16 @@ impl DiscoveryState {
             .peers
             .entry(*rendezvous_peer)
             .and_modify(|info| info.update_rendezvous_cookie(cookie.clone()));
+    }
+
+    /// Forget the discovery cookie stored for `rendezvous_peer`. Called when
+    /// the server rejects the cookie (`InvalidCookie`) so the next discover
+    /// starts from scratch instead of re-sending the rejected cookie forever.
+    pub(crate) fn clear_rendezvous_cookie(&mut self, rendezvous_peer: &PeerId) {
+        let _ = self
+            .peers
+            .entry(*rendezvous_peer)
+            .and_modify(|info| info.clear_rendezvous_cookie());
     }
 
     /// Remember that `listener_id` was opened against `relay_peer` as a
@@ -573,6 +688,35 @@ impl DiscoveryState {
 
     pub(crate) fn get_rendezvous_peer_ids(&self) -> impl Iterator<Item = PeerId> + '_ {
         self.rendezvous_index.iter().copied()
+    }
+
+    /// Rendezvous peers currently holding (or awaiting confirmation of) a
+    /// server-side registration — status `Requested` or `Registered`.
+    ///
+    /// These are the peers whose registrations must be *extended* when the
+    /// node subscribes a new overlay topic: `rendezvous_register` snapshots
+    /// the subscribed-topic set at call time, and its fan-out gate
+    /// ([`Self::is_rendezvous_registration_required`]) skips peers in these
+    /// two states, so a key subscribed afterwards stays unknown to the
+    /// server until an unrelated trigger re-registers (TTL expiry — hours —
+    /// a reachability flip, or a restart). Idle peers (`Discovered`,
+    /// `Pending`, `Expired`) are deliberately excluded: their next full
+    /// registration re-enumerates the subscribed topics and picks the new
+    /// key up on its own.
+    pub(crate) fn slot_holding_rendezvous_peers(&self) -> Vec<PeerId> {
+        self.get_rendezvous_peer_ids()
+            .filter(|peer_id| {
+                self.get_peer_info(peer_id)
+                    .and_then(PeerInfo::rendezvous)
+                    .is_some_and(|info| {
+                        matches!(
+                            info.registration_status(),
+                            RendezvousRegistrationStatus::Requested
+                                | RendezvousRegistrationStatus::Registered
+                        )
+                    })
+            })
+            .collect()
     }
 
     pub(crate) fn get_relay_peer_ids(&self) -> impl Iterator<Item = PeerId> + '_ {
@@ -779,7 +923,12 @@ impl DiscoveryState {
 /// counter at zero indefinitely.
 #[derive(Clone, Debug, Default)]
 pub struct PeerInfo {
-    addrs: HashMap<Multiaddr, u8>,
+    /// Known direct-dial addresses mapped to their consecutive
+    /// dial-failure count. An `IndexMap` (insertion-ordered) rather than a
+    /// `HashMap` so cap eviction is deterministic and can break failure-
+    /// count ties by age — see [`MAX_ADDRS_PER_PEER`] and
+    /// [`DiscoveryState::add_peer_addr`].
+    addrs: IndexMap<Multiaddr, u8>,
     discoveries: HashSet<PeerDiscoveryMechanism>,
     relay: Option<PeerRelayInfo>,
     rendezvous: Option<PeerRendezvousInfo>,
@@ -834,6 +983,12 @@ impl PeerInfo {
     fn update_rendezvous_cookie(&mut self, cookie: Cookie) {
         if let Some(ref mut info) = self.rendezvous {
             info.update_cookie(cookie);
+        }
+    }
+
+    fn clear_rendezvous_cookie(&mut self) {
+        if let Some(ref mut info) = self.rendezvous {
+            info.clear_cookie();
         }
     }
 
@@ -954,6 +1109,10 @@ impl PeerRendezvousInfo {
     fn update_cookie(&mut self, cookie: Cookie) {
         self.cookie = Some(cookie);
         self.last_discovery_at = Some(Instant::now());
+    }
+
+    fn clear_cookie(&mut self) {
+        self.cookie = None;
     }
 
     pub(crate) const fn registration_status(&self) -> RendezvousRegistrationStatus {
