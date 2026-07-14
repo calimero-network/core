@@ -552,7 +552,6 @@ impl NodeClient {
         );
 
         let shared_key = SharedKey::from_sk(sender_key);
-        let nonce = rand::thread_rng().gen();
 
         // Seal the expected post-apply root hash and the execution events
         // together with the storage delta so none of them ride the gossip
@@ -571,8 +570,8 @@ impl NodeClient {
             events,
         })?;
 
-        let encrypted = shared_key
-            .encrypt(sealed, nonce)
+        let (nonce, encrypted) = shared_key
+            .encrypt(sealed)
             .ok_or_eyre("failed to encrypt delta payload")?;
 
         let payload = BroadcastMessage::StateDelta {
