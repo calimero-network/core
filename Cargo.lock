@@ -1203,6 +1203,7 @@ dependencies = [
  "mero-auth",
  "multiaddr",
  "serde",
+ "tempfile",
  "tokio",
  "toml 0.8.23",
  "url",
