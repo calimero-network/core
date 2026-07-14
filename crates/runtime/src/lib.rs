@@ -1,14 +1,15 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::Arc;
 
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use tracing::{debug, error, info};
-use wasmer::{Instance, SerializeError, Store};
-
-// Profiling feature: Only compile these imports when profiling feature is enabled
-#[cfg(feature = "profiling")]
+// `CompilerConfig` brings `push_middleware`/`enable_perfmap` into scope for the
+// Cranelift config built in `create_engine`.
 use wasmer::sys::{CompilerConfig, Cranelift};
+use wasmer::{Instance, SerializeError, Store};
+use wasmer_middlewares::Metering;
 
 pub mod config;
 mod constants;
@@ -16,6 +17,7 @@ mod constraint;
 pub mod errors;
 pub mod logic;
 mod memory;
+pub mod metering;
 mod panic_payload;
 pub mod store;
 
@@ -103,6 +105,16 @@ impl Default for Engine {
 }
 
 impl Engine {
+    /// Wrap a caller-supplied `wasmer::Engine` with the runtime's limits.
+    ///
+    /// **Metering caveat:** gas metering is instrumented at *compile time* by
+    /// the middleware baked into the engine's compiler config. This constructor
+    /// takes an already-built engine as-is, so it does **not** add metering: a
+    /// plain `wasmer::Engine::default()` passed here compiles *unmetered*
+    /// modules, and `limits.max_gas` then has no effect. Prefer
+    /// [`Engine::with_limits`] (which builds a metered compiler engine) for any
+    /// engine that will `compile` guest code. Passing a headless engine here is
+    /// fine — it only deserializes already-instrumented artifacts.
     #[must_use]
     pub fn new(mut engine: wasmer::Engine, limits: VMLimits) -> Self {
         // A self-contradictory limits config (e.g. a total register budget
@@ -125,8 +137,26 @@ impl Engine {
         Self { limits, engine }
     }
 
-    /// Create an engine, using Cranelift compiler for profiling builds with PerfMap support
-    fn create_engine() -> wasmer::Engine {
+    /// Build the compiling engine used for guest modules.
+    ///
+    /// The engine is a Cranelift engine carrying the [gas metering
+    /// middleware](crate::metering), which instruments every module it compiles
+    /// with a decrementing points counter so an untrusted guest cannot run
+    /// unbounded (see the module docs for why this is metering and not a
+    /// timeout). `initial_gas` is baked in as the counter's starting value, but
+    /// it is only a fallback: each execution overrides it per-run via
+    /// [`metering::set_gas_limit`] before calling the guest.
+    ///
+    /// Under the `profiling` feature (and when `ENABLE_WASMER_PROFILING=true`)
+    /// PerfMap emission is layered on the same Cranelift config, so profiling
+    /// and metering compose rather than being mutually exclusive.
+    ///
+    /// One engine compiles exactly one module: the metering middleware panics if
+    /// reused across modules, and every caller here constructs a fresh engine
+    /// per compile, so this is not a constraint in practice.
+    fn create_engine(initial_gas: u64) -> wasmer::Engine {
+        let mut config = Cranelift::default();
+
         #[cfg(feature = "profiling")]
         {
             if std::env::var("ENABLE_WASMER_PROFILING")
@@ -134,15 +164,13 @@ impl Engine {
                 .unwrap_or(false)
             {
                 info!("Enabling Wasmer PerfMap profiling for WASM stack traces");
-                // Create Cranelift config and enable PerfMap file generation
-                let mut config = Cranelift::default();
                 config.enable_perfmap();
-                return wasmer::Engine::from(config);
             }
         }
 
-        // Default engine (no profiling)
-        wasmer::Engine::default()
+        config.push_middleware(Arc::new(Metering::new(initial_gas, metering::gas_cost)));
+
+        wasmer::Engine::from(config)
     }
 
     /// Like [`Engine::default`], but with operator-configured `limits` instead
@@ -150,7 +178,7 @@ impl Engine {
     /// engine compiles and applied at execution time.
     #[must_use]
     pub fn with_limits(limits: VMLimits) -> Self {
-        let engine = Self::create_engine();
+        let engine = Self::create_engine(limits.max_gas);
 
         Self::new(engine, limits)
     }
@@ -432,6 +460,7 @@ impl Module {
                 method,
                 &context_id,
                 self.limits.max_method_name_length,
+                self.limits.max_gas,
             )
         }));
 
@@ -483,6 +512,10 @@ impl Module {
     /// This method is separated to allow catch_unwind to capture any panics.
     /// Returns `Ok(Some(error))` if execution failed with an error,
     /// `Ok(None)` if execution succeeded, or `Err` for critical runtime errors.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "orthogonal execution inputs threaded from run_with_origin"
+    )]
     fn execute_wasm(
         store: &mut Store,
         module: &wasmer::Module,
@@ -491,6 +524,7 @@ impl Module {
         method: &str,
         context_id: &ContextId,
         max_method_name_length: u64,
+        max_gas: u64,
     ) -> RuntimeResult<Option<FunctionCallError>> {
         // Validate method name before attempting to look it up
         if let Err(err) = validate_method_name(method, max_method_name_length) {
@@ -504,6 +538,12 @@ impl Module {
                 return Ok(Some(err.into()));
             }
         };
+
+        // Charge this whole execution — the merge-registration hook below *and*
+        // the guest method — against a single per-run gas budget, overriding the
+        // value baked into the module at compile time. Exhaustion traps the
+        // guest; we reclassify that trap as `GasExhausted` after the call.
+        metering::set_gas_limit(store, &instance, max_gas);
 
         // Get memory from the WASM instance and attach it to VMLogic.
         // Note: memory.clone() is cheap - it just increments an Arc reference count,
@@ -563,6 +603,15 @@ impl Module {
         }
 
         if let Err(err) = function.call(store, &[]) {
+            // A trap whose cause is an exhausted gas budget is reported as
+            // `GasExhausted`, not as the generic `unreachable` trap the metering
+            // middleware injects to stop the guest. Checked before decoding the
+            // trace so the resource-limit case is unambiguous.
+            if metering::is_exhausted(store, &instance) {
+                error!(%context_id, method, max_gas, "WASM execution exhausted its gas budget");
+                return Ok(Some(FunctionCallError::GasExhausted { limit: max_gas }));
+            }
+
             let traces = err
                 .trace()
                 .iter()
@@ -604,6 +653,16 @@ impl Module {
                 Ok(err) => Ok(Some(err.try_into()?)),
                 Err(err) => Ok(Some(err.into())),
             };
+        }
+
+        if let Some(remaining) = metering::remaining_gas(store, &instance) {
+            debug!(
+                %context_id,
+                method,
+                gas_used = max_gas.saturating_sub(remaining),
+                gas_remaining = remaining,
+                "WASM execution gas accounting"
+            );
         }
 
         Ok(None)
@@ -1626,5 +1685,379 @@ mod wasm_integration_tests {
             }
             Ok(_) => panic!("empty slice should not deserialize into a module"),
         }
+    }
+}
+
+/// Tests for WASM gas metering: the bound that stops an untrusted guest from
+/// running unbounded computation (a tight loop that calls no host function and
+/// so escapes every other limit) and pinning a node thread forever.
+#[cfg(test)]
+mod gas_metering_tests {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::logic::VMLimits;
+    use crate::store::InMemoryStorage;
+
+    /// An engine whose executions are capped at `max_gas` points, everything
+    /// else default. Uses [`Engine::with_limits`] — the constructor that builds
+    /// a metered compiler engine — not [`Engine::new`], which would take a
+    /// pre-built engine and silently run unmetered. Fresh per call, so the
+    /// metering middleware (one module per engine) is never reused.
+    fn engine_with_gas(max_gas: u64) -> Engine {
+        Engine::with_limits(VMLimits {
+            max_gas,
+            ..Default::default()
+        })
+    }
+
+    /// How a run terminated, reduced to something `Send` so it can cross the
+    /// watchdog thread boundary (a raw `Outcome` need not be `Send`).
+    #[derive(Debug, PartialEq, Eq)]
+    enum Verdict {
+        Ok,
+        GasExhausted,
+        OtherError(String),
+    }
+
+    fn classify(outcome: &Outcome) -> Verdict {
+        match &outcome.returns {
+            Ok(_) => Verdict::Ok,
+            Err(FunctionCallError::GasExhausted { .. }) => Verdict::GasExhausted,
+            Err(other) => Verdict::OtherError(format!("{other:?}")),
+        }
+    }
+
+    /// Compile `wat` and run `method` under a `max_gas` budget, on a watchdog
+    /// thread. If the run does not finish within `timeout` the test fails loudly
+    /// instead of hanging CI — which is exactly the failure mode (an unbounded
+    /// guest loop) these tests exist to prevent, so a regression that defeats
+    /// metering surfaces as a fast, clear failure rather than a stuck job.
+    fn run_bounded(wat: &str, method: &'static str, max_gas: u64, timeout: Duration) -> Verdict {
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let (tx, rx) = mpsc::channel();
+
+        let handle = thread::spawn(move || {
+            let engine = engine_with_gas(max_gas);
+            let module = engine.compile(&wasm).expect("Failed to compile module");
+            let mut storage = InMemoryStorage::default();
+            let outcome = module
+                .run(
+                    [0; 32].into(),
+                    [0; 32].into(),
+                    method,
+                    &[],
+                    &mut storage,
+                    None,
+                    None,
+                )
+                .expect("run must return an Outcome");
+            // Ignore send errors: if the receiver already timed out, the test
+            // has failed and this thread is being abandoned.
+            let _ = tx.send(classify(&outcome));
+        });
+
+        match rx.recv_timeout(timeout) {
+            Ok(verdict) => {
+                handle.join().expect("watchdog thread panicked");
+                verdict
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+                "execution of `{method}` was not bounded by gas within {timeout:?}: metering \
+                 failed to trap the guest — this is the node-thread-pinning DoS the meter prevents"
+            ),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("watchdog thread died without producing a verdict")
+            }
+        }
+    }
+
+    /// A busy-loop counting down from `local.get`-loaded iterations. Enough
+    /// operators per iteration to burn gas predictably; no host calls, so gas is
+    /// the only thing that can stop it.
+    const COUNTDOWN_WAT: &str = r#"
+        (module
+            (memory (export "memory") 1)
+            (func (export "spin")
+                (local $i i32)
+                (local.set $i (i32.const 100000))
+                (block $exit
+                    (loop $again
+                        (br_if $exit (i32.eqz (local.get $i)))
+                        (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+                        (br $again)
+                    )
+                )
+            )
+        )
+    "#;
+
+    /// The core regression test: an *infinite* loop that calls no host function
+    /// is trapped by gas rather than pinning the thread forever.
+    #[test]
+    fn infinite_loop_is_trapped_by_gas() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "spin_forever")
+                    (loop $again (br $again))
+                )
+            )
+        "#;
+        // Small budget so exhaustion is near-instant; watchdog is generous.
+        let verdict = run_bounded(wat, "spin_forever", 100_000, Duration::from_secs(30));
+        assert_eq!(
+            verdict,
+            Verdict::GasExhausted,
+            "an infinite guest loop must trap with GasExhausted"
+        );
+    }
+
+    /// A bounded computation succeeds when the budget covers it and traps with
+    /// `GasExhausted` when it does not — the meter enforces the configured limit
+    /// rather than being all-or-nothing.
+    #[test]
+    fn budget_gates_a_bounded_computation() {
+        // A million-iteration countdown needs well over a million points.
+        let tight = run_bounded(COUNTDOWN_WAT, "spin", 100_000, Duration::from_secs(30));
+        assert_eq!(
+            tight,
+            Verdict::GasExhausted,
+            "a budget far below the work required must be exhausted"
+        );
+
+        let generous = run_bounded(
+            COUNTDOWN_WAT,
+            "spin",
+            1_000_000_000,
+            Duration::from_secs(30),
+        );
+        assert_eq!(
+            generous,
+            Verdict::Ok,
+            "a budget well above the work required must let the run complete"
+        );
+    }
+
+    /// Gas exhaustion is reported as `GasExhausted`, distinct from a guest that
+    /// genuinely executes `unreachable`: the latter, given ample gas, must still
+    /// surface as `WasmTrap::Unreachable` so the two causes are never conflated.
+    #[test]
+    fn genuine_unreachable_is_not_reported_as_gas_exhaustion() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "boom") unreachable)
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let module = engine_with_gas(1_000_000_000)
+            .compile(&wasm)
+            .expect("Failed to compile module");
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                "boom",
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+
+        match &outcome.returns {
+            Err(FunctionCallError::WasmTrap(errors::WasmTrap::Unreachable)) => {}
+            other => panic!("expected WasmTrap::Unreachable, got: {other:?}"),
+        }
+    }
+
+    /// A normal, cheap method runs to completion under the default budget —
+    /// metering must not perturb ordinary execution.
+    #[test]
+    fn cheap_method_succeeds_under_default_budget() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "noop"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let module = Engine::default()
+            .compile(&wasm)
+            .expect("Failed to compile module");
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                [0; 32].into(),
+                "noop",
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+        assert!(
+            outcome.returns.is_ok(),
+            "a trivial method must succeed under the default gas budget, got: {:?}",
+            outcome.returns
+        );
+    }
+
+    /// Every module the engine compiles is instrumented: the metering globals
+    /// the middleware injects are present on the instantiated module. This is
+    /// the invariant the runtime relies on when it calls `set_gas_limit` /
+    /// `is_exhausted`.
+    #[test]
+    fn compiled_module_carries_metering_globals() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "noop"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let mut store = Store::new(module.engine.clone());
+        let imports = wasmer::Imports::new();
+        let instance =
+            Instance::new(&mut store, &module.module, &imports).expect("instantiation failed");
+
+        assert!(
+            crate::metering::is_metered(&store, &instance),
+            "a module compiled by the runtime engine must carry the metering globals"
+        );
+    }
+
+    /// The gas charge for a fixed computation is reproducible across independent
+    /// compiles: the exact budget at which a run flips from success to
+    /// exhaustion is identical for two freshly built engines. Reproducibility is
+    /// the property that makes gas safe for a replicated state machine — every
+    /// node must charge the same or their outcomes fork.
+    #[test]
+    fn gas_charge_is_deterministic_across_compiles() {
+        // Find the minimal budget at which `spin` completes, via exponential
+        // growth then binary search. The threshold is a pure function of the
+        // module and the cost model, so it must be stable.
+        fn min_gas_to_complete() -> u64 {
+            let ok = |gas: u64| {
+                run_bounded(COUNTDOWN_WAT, "spin", gas, Duration::from_secs(30)) == Verdict::Ok
+            };
+            // Exponential search for an upper bound that succeeds.
+            let mut hi = 1_000_000u64;
+            while !ok(hi) {
+                hi = hi.checked_mul(2).expect("threshold search overflowed");
+            }
+            let mut lo = hi / 2; // known to fail (or 500k, safely below the ~1M+ needed)
+                                 // Binary search for the boundary.
+            while lo + 1 < hi {
+                let mid = lo + (hi - lo) / 2;
+                if ok(mid) {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            hi
+        }
+
+        let first = min_gas_to_complete();
+        let second = min_gas_to_complete();
+        assert_eq!(
+            first, second,
+            "the gas threshold for a fixed computation must be identical across compiles \
+             (first={first}, second={second}) — divergence would fork replicated state"
+        );
+    }
+
+    /// Gas metering survives serialization: a module serialized and restored via
+    /// the precompiled path (headless engine, no compiler) still traps an
+    /// infinite loop. This guards the claim that the metering counter is baked
+    /// into the artifact, not reconstructed at compile time.
+    #[test]
+    fn metering_survives_serialize_round_trip() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "spin_forever")
+                    (loop $again (br $again))
+                )
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let limits = VMLimits {
+            max_gas: 100_000,
+            ..Default::default()
+        };
+        let compiling = Engine::with_limits(limits);
+        let module = compiling.compile(&wasm).expect("Failed to compile module");
+        let serialized = module.to_bytes().expect("Failed to serialize module");
+
+        let (tx, rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let headless = Engine::headless_with_limits(limits);
+            // SAFETY: bytes were just produced by `to_bytes` in this test.
+            let restored = unsafe { headless.from_precompiled(&serialized) }
+                .expect("Failed to restore precompiled module");
+            let mut storage = InMemoryStorage::default();
+            let outcome = restored
+                .run(
+                    [0; 32].into(),
+                    [0; 32].into(),
+                    "spin_forever",
+                    &[],
+                    &mut storage,
+                    None,
+                    None,
+                )
+                .expect("run must return an Outcome");
+            let _ = tx.send(classify(&outcome));
+        });
+
+        match rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(verdict) => {
+                handle.join().expect("watchdog thread panicked");
+                assert_eq!(
+                    verdict,
+                    Verdict::GasExhausted,
+                    "a deserialized (precompiled) module must still be gas-metered"
+                );
+            }
+            Err(_) => panic!(
+                "deserialized module's infinite loop was not bounded by gas: metering did not \
+                 survive serialization"
+            ),
+        }
+    }
+
+    /// Gas exhausted inside the optional `__calimero_register_merge` hook (which
+    /// runs before the method and whose own errors are non-fatal) still fails
+    /// the overall execution: the method call that follows immediately re-traps
+    /// on the drained budget and surfaces `GasExhausted`, rather than the run
+    /// silently proceeding as if nothing happened.
+    #[test]
+    fn gas_exhausted_in_register_hook_fails_execution() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "__calimero_register_merge")
+                    (loop $again (br $again))
+                )
+                (func (export "app_method"))
+            )
+        "#;
+        let verdict = run_bounded(wat, "app_method", 100_000, Duration::from_secs(30));
+        assert_eq!(
+            verdict,
+            Verdict::GasExhausted,
+            "exhausting gas in the merge-registration hook must fail the execution"
+        );
     }
 }
