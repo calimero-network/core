@@ -57,6 +57,12 @@ pub async fn start_gui_server(port: u16) -> eyre::Result<()> {
         .layer(SetResponseHeaderLayer::overriding(
             axum::http::header::CACHE_CONTROL,
             HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            axum::http::header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+            ),
         ));
 
     let addr = format!("127.0.0.1:{port}");
