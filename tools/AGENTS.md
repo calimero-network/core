@@ -6,8 +6,9 @@ Development and debugging tools for Calimero infrastructure.
 
 | Tool           | Binary     | Purpose                                      |
 | -------------- | ---------- | -------------------------------------------- |
-| `merodb`       | `merodb`   | RocksDB debugging, inspection, and migration |
-| `calimero-abi` | `mero-abi` | ABI extraction and inspection from WASM      |
+| `merodb`       | `merodb`    | RocksDB debugging, inspection, and migration |
+| `calimero-abi` | `mero-abi`  | ABI extraction and inspection from WASM      |
+| `mero-sign`    | `mero-sign` | Sign Calimero bundle manifests (Ed25519)     |
 
 ## merodb - Database Tool
 
@@ -113,6 +114,9 @@ cargo run -p mero-abi -- [command]
 | --------- | -------------------------- |
 | `extract` | Extract ABI from WASM file |
 | `state`   | Inspect state schema       |
+| `inspect` | Inspect WASM file sections |
+| `embed`   | Embed a state-schema.json into a WASM as the `calimero_abi_v1` section (in place) |
+| `diff`    | Diff two state-schema.json versions; flag breaking + unsafe identity downgrades |
 
 ### Usage
 
@@ -132,7 +136,9 @@ calimero-abi/
 └── src/
     ├── main.rs               # CLI entry point
     ├── extract.rs            # ABI extraction
-    └── inspect.rs            # State inspection
+    ├── inspect.rs            # State inspection
+    ├── diff.rs               # Schema diffing
+    └── embed.rs              # Schema embedding
 ```
 
 ## JIT Index

@@ -6,7 +6,7 @@ SDK for developing Calimero WebAssembly applications with macros and CRDT helper
 
 - **Crate**: `calimero-sdk`
 - **Entry**: `src/lib.rs`
-- **Sub-crates**: `calimero-sdk-macros`, `calimero-sdk-near`
+- **Sub-crates**: `calimero-sdk-macros`
 
 ## Commands
 
@@ -38,13 +38,15 @@ src/
 └── private_storage.rs        # Private storage utilities
 macros/
 ├── src/
-│   ├── lib.rs                # Proc macro entry
-│   ├── app.rs                # #[calimero_sdk::app] macro
-│   ├── state.rs              # #[calimero_sdk::state] macro
+│   ├── lib.rs                # Proc macro entry (#[app::*] macros)
+│   ├── items.rs              # App item expansion
+│   ├── logic.rs              # #[app::logic] macro
+│   ├── state.rs              # #[app::state] macro
+│   ├── event.rs              # #[app::event] macro
+│   ├── migration.rs          # #[app::migrate] macro
 │   └── ...
 └── tests/
     └── ...                   # Compile-time tests (trybuild)
-libs/near/                    # NEAR-specific SDK extensions
 tests/
 ├── *.rs                      # Runtime tests
 └── *.stderr                  # Expected compile errors
@@ -444,7 +446,7 @@ let val = entry.or_insert(LwwRegister::new(value))?;
 | -------------------------- | ---------------------------- |
 | `src/lib.rs`               | Public API re-exports        |
 | `macros/src/lib.rs`        | Proc macro definitions       |
-| `macros/src/app.rs`        | `#[app::*]` macro impl       |
+| `macros/src/items.rs`      | `#[app::*]` item expansion   |
 | `src/env.rs`               | Environment functions        |
 | `src/event.rs`             | Event emission               |
 | `apps/kv-store/src/lib.rs` | Example app (best reference) |
@@ -459,25 +461,25 @@ rg -n "pub fn " macros/src/
 rg -n "pub " src/lib.rs
 
 # Find example apps
-rg -l "#\[app::state\]" ../apps/
+rg -l "#\[app::state\]" ../../apps/
 
 # Find event definitions
-rg -n "#\[app::event\]" ../apps/
+rg -n "#\[app::event\]" ../../apps/
 
 # Find event emissions
-rg -n "app::emit!" ../apps/
+rg -n "app::emit!" ../../apps/
 
 # Find error definitions
-rg -n "#\[derive.*Error" ../apps/
+rg -n "#\[derive.*Error" ../../apps/
 
 # Find error handling
-rg -n "app::bail!" ../apps/
+rg -n "app::bail!" ../../apps/
 
 # Find CRDT usage patterns
-rg -n "\.into\(\)" ../apps/
+rg -n "\.into\(\)" ../../apps/
 
 # Find compile test expectations
-ls tests/*.stderr
+ls tests/macros/*.stderr
 ```
 
 ## Building Apps

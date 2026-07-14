@@ -25,6 +25,12 @@ Core library crates for Calimero infrastructure. Each crate is conceptually sepa
 | `calimero-dag`     | `dag/src/lib.rs`     | DAG causal ordering       |
 | `calimero-store`   | `store/src/lib.rs`   | KV store (RocksDB)        |
 | `calimero-sdk`     | `sdk/src/lib.rs`     | App development SDK       |
+| `calimero-projection` | `projection/src/lib.rs` | Deterministic ScopeState projection of the op-log |
+| `calimero-authz`   | `authz/src/lib.rs`   | Authorization decision over the unified causal log |
+| `calimero-op-adapter` | `op-adapter/src/lib.rs` | Bridges per-plane ops onto the unified causal log |
+| `calimero-governance-store` | `governance-store/src/lib.rs` | Local group-governance apply pipeline & broadcast |
+| `calimero-tee-attestation` | `tee-attestation/src/lib.rs` | TEE (TDX) attestation generation & verification |
+| `calimero-wasm-abi` | `wasm-abi/src/lib.rs` | WASM ABI schema emit/normalize/validate/embed |
 
 ### Support Crates
 
@@ -34,6 +40,8 @@ Core library crates for Calimero infrastructure. Each crate is conceptually sepa
 | `calimero-crypto`     | Cryptographic utilities                                         |
 | `calimero-config`     | Configuration parsing                                           |
 | `calimero-client`     | HTTP/WS client for nodes                                        |
+| `calimero-op`         | Unified op envelope types + id/root hashing                     |
+| `calimero-governance-types` | Signed group-operation types (local governance)           |
 
 ## Patterns & Conventions
 
@@ -98,7 +106,7 @@ libp2p = "0.56"
 wasmer = "6.1"
 
 # Storage
-rocksdb = "0.22"
+rocksdb = "0.24"
 ```
 
 ## Commands
