@@ -18,6 +18,13 @@
 #   NODE_URL defaults to http://localhost:4001. The node must be freshly
 #   initialised with --auth-mode embedded (first login bootstraps the root
 #   user with the credentials below).
+#
+#   First-login bootstrap requires the out-of-band secret: export
+#   MERO_AUTH_BOOTSTRAP_SECRET before starting the node AND before running
+#   this script. merobox (binary mode) and this script both inherit the
+#   caller's environment, so a single export covers both ends — the node
+#   reads it as its expected secret, and the login below presents it in
+#   provider_data.bootstrap_secret.
 
 # POSIX sh, not bash: merobox's script step hardcodes /bin/sh (dash on
 # Ubuntu CI), ignoring the shebang. No pipefail — every pipeline's output
@@ -27,6 +34,9 @@ set -eu
 NODE_URL="${1:-http://localhost:4001}"
 USERNAME="${MERO_E2E_USER:-dev}"
 PASSWORD="${MERO_E2E_PASS:-dev}"
+# Out-of-band bootstrap secret for the first root key (empty = not presented;
+# the node then fails the bootstrap login closed, by design).
+BOOTSTRAP_SECRET="${MERO_AUTH_BOOTSTRAP_SECRET:-}"
 
 # The exact permission strings mero-react demands for AppMode.MultiContext
 # (getPermissionsForMode) and auth-frontend forwards untouched.
@@ -72,11 +82,15 @@ status_of() { # status_of <method> <path> <token> [body]
 echo "== auth-seam e2e against $NODE_URL =="
 
 # 1. Bootstrap root login (first login on a fresh embedded-auth node creates
-#    the root key with admin).
-LOGIN_BODY=$(jq -n --arg u "$USERNAME" --arg p "$PASSWORD" --argjson ts "$(date +%s)" \
+#    the root key with admin — gated on the out-of-band bootstrap secret,
+#    presented in provider_data.bootstrap_secret; omitted when unset so an
+#    unsecured run fails exactly like a real unprovisioned node would).
+LOGIN_BODY=$(jq -n --arg u "$USERNAME" --arg p "$PASSWORD" --arg bs "$BOOTSTRAP_SECRET" \
+  --argjson ts "$(date +%s)" \
   '{auth_method: "user_password", public_key: $u, client_name: "auth-seam-e2e",
     permissions: ["admin"], timestamp: $ts,
-    provider_data: {username: $u, password: $p}}')
+    provider_data: ({username: $u, password: $p}
+      + (if $bs == "" then {} else {bootstrap_secret: $bs} end))}')
 ROOT_RESPONSE=$(curl -s -m 10 -X POST "$NODE_URL/auth/token" \
   -H 'Content-Type: application/json' \
   -d "$LOGIN_BODY")
