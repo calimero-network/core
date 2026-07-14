@@ -8,7 +8,8 @@ use axum::http::Request;
 use ring::pbkdf2;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{debug, error};
+use sha2::{Digest, Sha256};
+use tracing::{debug, error, info, warn};
 use validator::Validate;
 
 use crate::api::handlers::auth::TokenRequest;
@@ -64,6 +65,18 @@ fn derive_key_id(username: &str, password: &str) -> String {
     hex::encode(out)
 }
 
+/// The pre-PBKDF2 key-id derivation: an unsalted `SHA256("user_password:{u}:{p}")`.
+///
+/// Retained ONLY so that a node upgraded from a release that used this scheme
+/// can still find the root key it already stored, and transparently re-key it to
+/// the salted derivation on the next successful login (see
+/// [`UserPasswordProvider::verify_credentials`]). Never used to *create* a key.
+fn legacy_key_id(username: &str, password: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(format!("user_password:{username}:{password}").as_bytes());
+    hex::encode(hasher.finalize())
+}
+
 /// Enforce configured password length bounds.
 ///
 /// Returns a clear validation error when the password is shorter than
@@ -82,6 +95,17 @@ fn validate_password_length(
         eyre::bail!("Password must be at most {max_length} characters long");
     }
     Ok(())
+}
+
+/// Guard the KDF against absurdly long inputs on the *authentication* path.
+///
+/// The minimum length is a policy for NEW credentials and is deliberately NOT
+/// enforced here: an existing user whose password predates the policy must still
+/// be able to log in (enforcing the minimum at login would lock them out of
+/// their own node, with no recovery path). The maximum is still enforced because
+/// it bounds PBKDF2 work per request.
+fn validate_password_for_auth(password: &str, max_length: usize) -> eyre::Result<()> {
+    validate_password_length(password, 0, max_length)
 }
 
 /// Username/password authentication data
@@ -151,12 +175,57 @@ impl UserPasswordProvider {
     }
 
     /// Enforce the configured password length bounds for this provider.
+    ///
+    /// Creation-path policy (bootstrap / `create_root_key`) — enforces BOTH the
+    /// minimum and the maximum.
     fn validate_password(&self, password: &str) -> eyre::Result<()> {
         validate_password_length(
             password,
             self.config.min_password_length,
             self.config.max_password_length,
         )
+    }
+
+    /// Re-key a root key stored under the legacy unsalted-SHA256 id onto the
+    /// salted-KDF id, in place, on a successful credential match.
+    ///
+    /// Returns the key under its NEW id when the migration applies, `None` when
+    /// no legacy key exists for these credentials (i.e. the credentials are
+    /// simply wrong). The move is write-then-delete: if the process dies between
+    /// the two, the key exists under both ids and the next login resolves via
+    /// the new id — never a state where the key is gone.
+    async fn migrate_legacy_key(
+        &self,
+        username: &str,
+        password: &str,
+        new_key_id: &str,
+    ) -> eyre::Result<Option<(String, Key)>> {
+        let legacy_id = legacy_key_id(username, password);
+
+        let Some(key) = self.key_manager.get_key(&legacy_id).await? else {
+            return Ok(None);
+        };
+        if !key.is_valid() || !key.is_root_key() {
+            return Ok(None);
+        }
+
+        // Store under the new id first so a crash can't lose the key.
+        self.key_manager.set_key(new_key_id, &key).await?;
+        if let Err(e) = self.key_manager.delete_key(&legacy_id).await {
+            // The new id is already usable; a stale legacy copy is harmless and
+            // will be retried on the next login. Don't fail the login for it.
+            warn!(
+                error = %e,
+                "Migrated user_password key id but failed to delete the legacy entry"
+            );
+        }
+
+        info!(
+            user = %crate::utils::sanitize_for_log(username),
+            "Migrated user_password root key from the legacy unsalted key id to the salted KDF id"
+        );
+
+        Ok(Some((new_key_id.to_string(), key)))
     }
 
     /// Verify username and password by checking if corresponding root key exists
@@ -186,7 +255,13 @@ impl UserPasswordProvider {
                     Ok(None)
                 }
             }
-            Ok(None) => Ok(None),
+            // No key under the salted id. Before rejecting, check whether this
+            // node still stores the key under the OLD unsalted-SHA256 id: on an
+            // upgraded node every pre-existing user is in exactly that state, and
+            // without this migration they would be permanently locked out of
+            // their own node (the bootstrap path cannot rescue them either — it
+            // only fires when NO root key exists).
+            Ok(None) => self.migrate_legacy_key(username, password, &key_id).await,
             Err(err) => {
                 error!("Failed to get root key: {}", err);
                 Err(eyre::eyre!("Failed to verify credentials: {}", err))
@@ -205,6 +280,10 @@ impl UserPasswordProvider {
     ///
     /// * `eyre::Result<(String, Key)>` - The created key ID and root key
     async fn create_root_key(&self, username: &str, password: &str) -> eyre::Result<(String, Key)> {
+        // Creation path: the configured length policy (min AND max) applies to
+        // every NEW credential.
+        self.validate_password(password)?;
+
         // Generate key ID from username/password
         let key_id = self.generate_key_id(username, password);
 
@@ -240,9 +319,12 @@ impl UserPasswordProvider {
         username: &str,
         password: &str,
     ) -> eyre::Result<(String, Vec<String>)> {
-        // Enforce password length bounds at the provider entry point, for both
-        // first-time registration (bootstrap) and subsequent authentication.
-        self.validate_password(password)?;
+        // On the authentication path enforce only the MAXIMUM length (a bound on
+        // PBKDF2 work per request). The minimum is a policy for new credentials
+        // and is enforced in `create_root_key` below: applying it here would
+        // reject an existing user whose password predates the policy, locking
+        // them out of their own node with no recovery path.
+        validate_password_for_auth(password, self.config.max_password_length)?;
 
         // Try to verify existing credentials
         if let Some((key_id, root_key)) = self.verify_credentials(username, password).await? {
@@ -539,6 +621,185 @@ mod tests {
         let mut hasher = Sha256::new();
         hasher.update(format!("user_password:{username}:{password}").as_bytes());
         hex::encode(hasher.finalize())
+    }
+
+    /// A provider backed by in-memory storage, with the default length policy
+    /// (min 8 / max 128).
+    fn test_provider() -> UserPasswordProvider {
+        use crate::config::JwtConfig;
+        use crate::secrets::SecretManager;
+        use crate::storage::MemoryStorage;
+
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        let token_manager = TokenManager::new(
+            JwtConfig {
+                issuer: "calimero-test".to_string(),
+                access_token_expiry: 3600,
+                refresh_token_expiry: 30 * 24 * 3600,
+            },
+            Arc::clone(&storage),
+            secret_manager,
+        );
+        // Constructed directly rather than through `new(ProviderContext, _)`:
+        // `ProviderContext` carries a full `AuthConfig` the provider never keeps.
+        UserPasswordProvider {
+            storage: Arc::clone(&storage),
+            key_manager: KeyManager::new(storage),
+            token_manager,
+            config: UserPasswordConfig::default(),
+        }
+    }
+
+    // --- legacy key-id migration (upgrade path) --------------------------
+
+    #[tokio::test]
+    async fn legacy_key_id_is_migrated_in_place_on_login() {
+        // An upgraded node stores the root key under the OLD unsalted id.
+        // Without migration the salted lookup misses, root keys exist so the
+        // bootstrap branch is skipped, and the operator is locked out forever.
+        let provider = test_provider();
+        let (user, pass) = ("alice", "correct horse battery staple");
+
+        let legacy_id = old_unsalted_key_id(user, pass);
+        let key = Key::new_root_key_with_permissions(
+            user.to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        provider
+            .key_manager
+            .set_key(&legacy_id, &key)
+            .await
+            .unwrap();
+
+        // The existing operator can still log in.
+        let (key_id, permissions) = provider
+            .authenticate_core(user, pass)
+            .await
+            .expect("an existing user must not be locked out by the key-id change");
+
+        // ...and they are silently re-keyed onto the salted id.
+        let new_id = derive_key_id(user, pass);
+        assert_eq!(key_id, new_id, "login must return the migrated key id");
+        assert_eq!(permissions, vec!["admin".to_string()]);
+        assert!(
+            provider
+                .key_manager
+                .get_key(&new_id)
+                .await
+                .unwrap()
+                .is_some(),
+            "key must now exist under the salted id"
+        );
+        assert!(
+            provider
+                .key_manager
+                .get_key(&legacy_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "legacy entry must be removed after migration"
+        );
+
+        // A second login resolves directly via the new id.
+        let (again, _) = provider.authenticate_core(user, pass).await.unwrap();
+        assert_eq!(again, new_id);
+    }
+
+    #[tokio::test]
+    async fn wrong_password_does_not_migrate_or_authenticate() {
+        let provider = test_provider();
+        let legacy_id = old_unsalted_key_id("alice", "right-password");
+        let key = Key::new_root_key_with_permissions(
+            "alice".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        provider
+            .key_manager
+            .set_key(&legacy_id, &key)
+            .await
+            .unwrap();
+
+        // Wrong password: no legacy key exists for THOSE credentials.
+        assert!(provider
+            .authenticate_core("alice", "wrong-password")
+            .await
+            .is_err());
+        // The real key is untouched.
+        assert!(provider
+            .key_manager
+            .get_key(&legacy_id)
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    // --- password bounds apply to CREATION, not to existing logins -------
+
+    #[tokio::test]
+    async fn short_legacy_password_still_authenticates_after_upgrade() {
+        // The min-length policy must not lock out a user whose password predates
+        // it (e.g. the `dev`/`dev` credentials every e2e harness uses).
+        let provider = test_provider();
+        let (user, pass) = ("dev", "dev"); // 3 chars, below the min of 8
+        let legacy_id = old_unsalted_key_id(user, pass);
+        let key = Key::new_root_key_with_permissions(
+            user.to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        provider
+            .key_manager
+            .set_key(&legacy_id, &key)
+            .await
+            .unwrap();
+
+        assert!(
+            provider.authenticate_core(user, pass).await.is_ok(),
+            "an existing short password must still authenticate"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_still_enforces_the_minimum_length() {
+        // Creating a NEW credential is where the policy bites.
+        let provider = test_provider();
+        let err = provider
+            .authenticate_core("dev", "dev")
+            .await
+            .expect_err("bootstrap with a too-short password must be rejected");
+        assert!(
+            err.to_string().contains("at least"),
+            "expected a min-length error, got: {err}"
+        );
+        assert!(
+            provider
+                .key_manager
+                .list_keys(crate::storage::models::KeyType::Root)
+                .await
+                .unwrap()
+                .is_empty(),
+            "no root key may be created when the password violates the policy"
+        );
+    }
+
+    #[tokio::test]
+    async fn overlong_password_is_rejected_on_the_auth_path() {
+        // The maximum IS enforced at login: it bounds PBKDF2 work per request.
+        let provider = test_provider();
+        let err = provider
+            .authenticate_core("alice", &"x".repeat(129))
+            .await
+            .expect_err("an over-long password must be rejected before the KDF runs");
+        assert!(
+            err.to_string().contains("at most"),
+            "expected a max-length error, got: {err}"
+        );
     }
 
     // --- #8: salted KDF key-id derivation -------------------------------

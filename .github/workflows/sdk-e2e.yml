@@ -105,6 +105,12 @@ jobs:
           NODE_BASE_URL: "http://localhost:${{ env.SERVER_PORT }}"
           # The e2e coverage recorder writes the endpoints it hit here.
           MERO_COVERAGE_OUT: "${{ github.workspace }}/_mero-js/covered-endpoints.json"
+          # The SDK harness bootstraps the node's first root key, so its password
+          # must satisfy the provider's minimum length (default 8). The harness
+          # would otherwise fall back to its own `dev`/`dev` default and be
+          # rejected at creation.
+          MERO_E2E_USER: dev
+          MERO_E2E_PASS: dev-password
         run: |
           pnpm install --frozen-lockfile
           pnpm test:e2e

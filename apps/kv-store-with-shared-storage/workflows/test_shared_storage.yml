@@ -21,13 +21,13 @@ steps:
     type: login
     node: new-calimero-node-1
     username: dev
-    password: dev
+    password: dev-password
 
   - name: Login on new-calimero-node-2
     type: login
     node: new-calimero-node-2
     username: dev
-    password: dev
+    password: dev-password
 
   # Step 1: Install on node 1. Installer becomes the sole initial writer.
   - name: Install Application on Node 1
