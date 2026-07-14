@@ -727,13 +727,40 @@ impl TokenManager {
     /// keys that id may have been deleted by a later successful rotation, so
     /// revoking by `sub` alone would silently miss the live key and leave the
     /// (presumed stolen) family valid. Chase the rotation mapping first.
+    ///
+    /// **Root keys are never revoked here.** A user_password login mints its
+    /// pair against the ROOT key, so revoking on reuse would revoke the node's
+    /// root key — and `verify_credentials` rejects an invalid key while
+    /// `list_keys` still reports it, so the bootstrap path can't re-fire either:
+    /// the node becomes permanently unauthenticatable. That is a far worse
+    /// outcome than the replay itself, which is already refused by the
+    /// single-use denylist. (The HTTP layer applies the same rule — see
+    /// `delete_key_handler`, which refuses to revoke the last active root key.)
+    /// Revoking a root key stays an explicit, authenticated admin action.
     async fn revoke_token_family(&self, key_id: &str) -> Result<(), AuthError> {
-        match self.resolve_live_key_id(key_id).await? {
-            Some(live_id) => self.revoke_client_tokens(&live_id).await,
-            None => Err(AuthError::InvalidToken(format!(
+        let Some(live_id) = self.resolve_live_key_id(key_id).await? else {
+            return Err(AuthError::InvalidToken(format!(
                 "No live key found for token family {key_id}"
-            ))),
+            )));
+        };
+
+        let key = self
+            .key_manager
+            .get_key(&live_id)
+            .await
+            .map_err(|e| AuthError::StorageError(e.into()))?
+            .ok_or_else(|| AuthError::InvalidToken("Key not found".to_string()))?;
+
+        if key.key_type == KeyType::Root {
+            tracing::warn!(
+                "Refresh-token reuse on ROOT key {live_id}: rejecting the replay but NOT \
+                 revoking the key (revoking it would lock the node out permanently). \
+                 Re-authenticate; revoke the key explicitly if compromise is suspected."
+            );
+            return Ok(());
         }
+
+        self.revoke_client_tokens(&live_id).await
     }
 
     /// Throttled GC of expired consumed-refresh entries. Runs at most once per
@@ -1307,11 +1334,12 @@ mod tests {
             "replayed refresh token must be rejected as reuse, got {err:?}"
         );
 
-        // Family revoked: the freshly-rotated refresh token no longer works either.
-        let err2 = tm.refresh_token_pair(&refresh2).await.unwrap_err();
+        // This family is rooted at a ROOT key, so the replay is refused but the
+        // key is NOT revoked — revoking it would brick the node (see
+        // `root_key_survives_refresh_reuse`). The rotated token keeps working.
         assert!(
-            matches!(err2, AuthError::InvalidToken(_) | AuthError::TokenReuse),
-            "after a reuse-triggered family revoke the rotated token must also fail, got {err2:?}"
+            tm.refresh_token_pair(&refresh2).await.is_ok(),
+            "a root key's rotated refresh token must survive someone else's replay"
         );
     }
 
@@ -1370,6 +1398,58 @@ mod tests {
              may succeed, got r1={:?} r2={:?}",
             r1.is_ok(),
             r2.is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn root_key_survives_refresh_reuse() {
+        // Node-brick regression: a user_password login mints its pair against the
+        // ROOT key, so revoking the family on reuse would revoke the root key —
+        // and then verify_credentials rejects it while list_keys still reports it,
+        // so bootstrap can't re-fire: the node can never be authenticated again.
+        // Two tabs sharing one token bundle are enough to trigger this, so the
+        // replay must be REJECTED without revoking the key.
+        let (tm, _sm) = test_manager().await;
+        let key = crate::storage::models::Key::new_root_key_with_permissions(
+            "pk".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        tm.get_key_manager().set_key("root-1", &key).await.unwrap();
+
+        let (_access, refresh) = tm
+            .generate_token_pair("root-1".to_string(), vec!["admin".to_string()], None)
+            .await
+            .unwrap();
+
+        let (_a2, refresh2) = tm.refresh_token_pair(&refresh).await.unwrap();
+
+        // Replaying the consumed refresh token is still refused...
+        let err = tm.refresh_token_pair(&refresh).await.unwrap_err();
+        assert!(
+            matches!(err, AuthError::TokenReuse),
+            "replayed root refresh token must be rejected as reuse, got {err:?}"
+        );
+
+        // ...but the root key MUST remain valid, or the node is bricked.
+        let root = tm
+            .get_key_manager()
+            .get_key("root-1")
+            .await
+            .unwrap()
+            .expect("root key must still exist");
+        assert!(
+            root.is_valid(),
+            "root key must NOT be revoked by refresh-token reuse — that would \
+             permanently lock the node out"
+        );
+
+        // And the legitimately rotated token still works, so the user is not
+        // logged out by someone else's replay.
+        assert!(
+            tm.refresh_token_pair(&refresh2).await.is_ok(),
+            "the live rotated refresh token must keep working"
         );
     }
 
