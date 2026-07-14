@@ -294,13 +294,13 @@ impl<'a> NamespaceRepository<'a> {
 
         let mut result = Vec::with_capacity(groups.len());
         for gid in groups {
-            let secret_salt: [u8; 32] = OsRng.gen();
+            let invitation_nonce: [u8; 32] = OsRng.gen();
 
             let invitation = GroupInvitationFromAdmin {
                 inviter_identity: inviter_signer_id,
                 group_id: gid,
                 expiration_timestamp: expiration,
-                secret_salt,
+                invitation_nonce,
                 invited_role,
             };
 
