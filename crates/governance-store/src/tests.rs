@@ -7903,3 +7903,122 @@ mod apply_auth_at_cut {
         }
     }
 }
+
+// -----------------------------------------------------------------------
+// A removal must not mint a group key that peers will reject.
+//
+// The publish gate for removal is admin OR `MANAGE_MEMBERS`; the rotation's
+// receive gate is strict admin, checked against the namespace identity that signs
+// the outer op. A non-admin `MANAGE_MEMBERS` holder therefore used to: mint a new
+// key, store it locally at the TOP epoch (making it this node's "current" key),
+// attach a rotation every peer silently rejected, and thereafter encrypt every
+// group op under a key no other node held — peers buffering them as undecryptable
+// forever. A group-wide liveness break, not a skipped rotation.
+//
+// Fail closed instead: refuse the removal. Groups encrypted under the NAMESPACE
+// key never rotate on removal, so a `MANAGE_MEMBERS` holder may still remove there.
+mod rotation_gate_alignment {
+    use super::*;
+    use crate::group_governance_publisher::ensure_rotation_is_publishable;
+    use crate::test_fixtures::bootstrap_namespace_with_admin;
+    use calimero_context_config::VisibilityMode;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    /// Namespace + a subgroup nested under it. The subgroup's visibility is left at
+    /// the default (Restricted), so it encrypts under its OWN key and a removal
+    /// there rotates.
+    fn namespace_with_subgroup() -> (Store, ContextGroupId, ContextGroupId, PublicKey) {
+        let store = test_store();
+        let ns_id = [0xF1u8; 32];
+        let ns_gid = ContextGroupId::from(ns_id);
+        let (_admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
+
+        let sub_gid = ContextGroupId::from([0xF2u8; 32]);
+        MetaRepository::new(&store)
+            .save(&sub_gid, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&sub_gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+        nest_for_test(&store, &ns_gid, &sub_gid);
+
+        (store, ns_gid, sub_gid, admin_pk)
+    }
+
+    /// Repoint this node's namespace identity at a fresh keypair that holds no
+    /// admin row anywhere — the non-admin `MANAGE_MEMBERS` holder's node.
+    fn make_namespace_identity_a_non_admin(store: &Store, ns_gid: &ContextGroupId) -> PublicKey {
+        let sk_bytes: [u8; 32] = rand::Rng::gen(&mut OsRng);
+        let sk = PrivateKey::from(sk_bytes);
+        let pk = sk.public_key();
+        NamespaceRepository::new(store)
+            .store_identity(ns_gid, &pk, &sk_bytes, &[0u8; 32])
+            .unwrap();
+        pk
+    }
+
+    #[test]
+    fn restricted_group_removal_by_non_admin_is_refused() {
+        let (store, ns_gid, sub_gid, _admin) = namespace_with_subgroup();
+        let non_admin = make_namespace_identity_a_non_admin(&store, &ns_gid);
+
+        assert!(
+            !PermissionChecker::new(&store, sub_gid)
+                .is_admin(&non_admin)
+                .unwrap(),
+            "precondition: this node's namespace identity must not be an admin of the subgroup"
+        );
+
+        let err = ensure_rotation_is_publishable(&store, sub_gid).expect_err(
+            "a removal that must rotate, from a node whose rotation peers would reject, \
+             must be refused rather than split the keyring",
+        );
+        assert!(
+            format!("{err:#}").contains("splitting the keyring"),
+            "the error should explain the keyring split it is preventing, got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn restricted_group_removal_by_admin_is_allowed() {
+        // The mirror: the node's namespace identity IS an admin of the subgroup, so
+        // peers will accept its rotation. The removal must go through.
+        let (store, _ns_gid, sub_gid, admin) = namespace_with_subgroup();
+
+        assert!(
+            PermissionChecker::new(&store, sub_gid)
+                .is_admin(&admin)
+                .unwrap(),
+            "precondition: the bootstrapped namespace identity is the subgroup admin"
+        );
+
+        ensure_rotation_is_publishable(&store, sub_gid)
+            .expect("an admin's removal rotates cleanly and must be allowed");
+    }
+
+    #[test]
+    fn open_chain_group_removal_by_non_admin_is_allowed() {
+        // An Open subgroup under an Open chain encrypts with the NAMESPACE key, so a
+        // removal mints no per-subgroup key and there is no rotation to reject. The
+        // MANAGE_MEMBERS holder keeps the ability to remove here — narrowing the gate
+        // must not over-reach into groups that never rotate.
+        let (store, ns_gid, sub_gid, _admin) = namespace_with_subgroup();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&sub_gid, VisibilityMode::Open)
+            .unwrap();
+        let _non_admin = make_namespace_identity_a_non_admin(&store, &ns_gid);
+
+        assert!(
+            CapabilitiesRepository::new(&store)
+                .is_open_chain_to_namespace(&sub_gid, &ns_gid)
+                .unwrap(),
+            "precondition: the subgroup must sit on a fully-Open chain to the namespace"
+        );
+
+        ensure_rotation_is_publishable(&store, sub_gid).expect(
+            "an Open-chain group never rotates on removal, so a non-admin removal must \
+             still be permitted",
+        );
+    }
+}
