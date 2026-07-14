@@ -26,6 +26,7 @@ tracing.workspace = true
 ureq.workspace = true
 wasmer.workspace = true
 wasmer-types.workspace = true
+wasmer-middlewares.workspace = true
 wasmer-compiler-cranelift = { workspace = true, optional = true }
 
 calimero-context-config.workspace = true
