@@ -41,8 +41,13 @@ pub async fn send(
     let encoded = borsh::to_vec(message)?;
 
     let message = match shared_key {
-        Some((key, nonce)) => key
-            .encrypt(encoded, nonce)
+        // This encrypted-stream path is currently disabled - `send` is only
+        // ever called with `None`. `SharedKey::encrypt` now picks a fresh nonce
+        // per call; if enabled, that nonce must be carried to the receiver
+        // (which decrypts with the nonce it was handed).
+        Some((key, _nonce)) => key
+            .encrypt(encoded)
+            .map(|(_nonce, ciphertext)| ciphertext)
             .ok_or_eyre("encryption failed")?,
         None => encoded,
     };

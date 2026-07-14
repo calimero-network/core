@@ -74,8 +74,20 @@ impl SharedKey {
         }
     }
 
+    /// Encrypt `payload` under this key, returning the freshly generated nonce
+    /// alongside the ciphertext.
+    ///
+    /// The nonce is drawn from a CSPRNG internally rather than accepted from the
+    /// caller: reusing a nonce under one key is catastrophic for AES-GCM, and a
+    /// per-call random nonce removes that footgun entirely. The returned nonce
+    /// MUST be transmitted/stored next to the ciphertext so [`decrypt`] can be
+    /// given it back.
+    ///
+    /// [`decrypt`]: SharedKey::decrypt
     #[must_use]
-    pub fn encrypt(&self, payload: Vec<u8>, nonce: Nonce) -> Option<Vec<u8>> {
+    pub fn encrypt(&self, payload: Vec<u8>) -> Option<(Nonce, Vec<u8>)> {
+        let nonce: Nonce = rand::random();
+
         let encryption_key =
             aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &*self.key).ok()?);
 
@@ -88,7 +100,7 @@ impl SharedKey {
             )
             .ok()?;
 
-        Some(cipher_text)
+        Some((nonce, cipher_text))
     }
 
     #[must_use]
@@ -130,10 +142,9 @@ mod tests {
         let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
 
         let payload = b"privacy is important";
-        let nonce = [0u8; NONCE_LEN];
 
-        let encrypted_payload = signer_shared_key
-            .encrypt(payload.to_vec(), nonce)
+        let (nonce, encrypted_payload) = signer_shared_key
+            .encrypt(payload.to_vec())
             .ok_or_eyre("encryption failed")?;
 
         let decrypted_payload = verifier_shared_key
@@ -158,10 +169,9 @@ mod tests {
         let invalid_shared_key = SharedKey::new(&invalid, &invalid.public_key())?;
 
         let token = b"privacy is important";
-        let nonce = [0u8; NONCE_LEN];
 
-        let encrypted_token = signer_shared_key
-            .encrypt(token.to_vec(), nonce)
+        let (nonce, encrypted_token) = signer_shared_key
+            .encrypt(token.to_vec())
             .ok_or_eyre("encryption failed")?;
 
         let decrypted_data = invalid_shared_key.decrypt(encrypted_token, nonce);
@@ -183,9 +193,8 @@ mod tests {
         let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
 
         let payload = b"privacy is important";
-        let nonce = [0u8; NONCE_LEN];
-        let mut encrypted = signer_shared_key
-            .encrypt(payload.to_vec(), nonce)
+        let (nonce, mut encrypted) = signer_shared_key
+            .encrypt(payload.to_vec())
             .ok_or_eyre("encryption failed")?;
 
         // The tag is the trailing bytes of the sealed buffer.
@@ -210,9 +219,8 @@ mod tests {
         let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
 
         let payload = b"privacy is important";
-        let nonce = [0u8; NONCE_LEN];
-        let mut encrypted = signer_shared_key
-            .encrypt(payload.to_vec(), nonce)
+        let (nonce, mut encrypted) = signer_shared_key
+            .encrypt(payload.to_vec())
             .ok_or_eyre("encryption failed")?;
 
         // Flip the first ciphertext byte (well before the appended tag).
@@ -236,13 +244,12 @@ mod tests {
         let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
 
         let payload = b"privacy is important";
-        let seal_nonce = [7u8; NONCE_LEN];
+
+        let (seal_nonce, encrypted) = signer_shared_key
+            .encrypt(payload.to_vec())
+            .ok_or_eyre("encryption failed")?;
         let mut open_nonce = seal_nonce;
         open_nonce[0] ^= 0x01;
-
-        let encrypted = signer_shared_key
-            .encrypt(payload.to_vec(), seal_nonce)
-            .ok_or_eyre("encryption failed")?;
 
         assert!(
             verifier_shared_key
