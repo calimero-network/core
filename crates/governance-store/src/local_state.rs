@@ -496,6 +496,10 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     // membership-removal precondition.
     GroupKeyring::new(store, *group_id).delete_all_for_group()?;
     DenyListRepository::new(store).clear_all_for_group(group_id)?;
+    // Drop any rotation the group still owed. There is nothing left to rotate — the
+    // keyring is gone — and leaving the rows behind would have the rotation listener
+    // retry forever against a group that no longer exists.
+    crate::PendingRotationRepository::new(store).clear_all_for_group(group_id)?;
     delete_op_log_and_head(store, group_id)?;
     MetaRepository::new(store).delete(group_id)?;
     Ok(())

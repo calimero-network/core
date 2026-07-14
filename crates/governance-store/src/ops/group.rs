@@ -24,6 +24,7 @@ mod context_metadata_set;
 mod context_registered;
 mod default_capabilities_set;
 mod group_delete;
+mod group_key_rotated;
 mod group_metadata_set;
 mod group_migration_set;
 mod member_added;
@@ -77,6 +78,7 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             expected_group_state_hash,
             expected_context_state_hashes,
         )?,
+        GroupOp::GroupKeyRotated { departed } => group_key_rotated::apply(ctx, departed)?,
         GroupOp::MemberRoleSet { member, role } => member_role_set::apply(ctx, member, role)?,
         GroupOp::MemberCapabilitySet {
             member,

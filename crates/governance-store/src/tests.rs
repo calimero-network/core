@@ -8208,3 +8208,457 @@ mod undecidable_authority_parks {
         assert!(handled);
     }
 }
+
+// -----------------------------------------------------------------------
+// Forward secrecy on self-leave.
+//
+// A rotation is minted by whoever PUBLISHES the op that triggers it. For an
+// admin-initiated removal that works — the publisher stays in the group. For a
+// self-leave it cannot: the publisher IS the leaver, who would have to mint the very
+// key they are being cut off from (and would keep it), and peers reject a rotation
+// from a non-admin anyway. Before this, `MemberLeft` simply did no rotation at all:
+// the leaver kept the namespace key and every Restricted subgroup key, indefinitely.
+//
+// So the leave records the debt and a remaining admin pays it. These tests pin the
+// recording half (which groups owe a rotation, and which correctly owe nothing) and
+// the discharge half (`GroupKeyRotated` clears the row, only for an admin, and
+// idempotently — which is what makes a two-admin race harmless).
+mod self_leave_rotation {
+    use super::*;
+    use crate::pending_rotation::group_rotates_on_departure;
+    use crate::test_fixtures::bootstrap_namespace_with_admin;
+    use crate::PendingRotationRepository;
+    use calimero_context_config::VisibilityMode;
+    use calimero_governance_types::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    /// A namespace root plus a subgroup, with `admin` in charge of both and `leaver` a
+    /// plain member of both. The subgroup's visibility is left at the default
+    /// (Restricted), so it encrypts under its own key.
+    struct Fixture {
+        store: Store,
+        ns_gid: ContextGroupId,
+        sub_gid: ContextGroupId,
+        admin: PublicKey,
+        leaver_sk: PrivateKey,
+        leaver: PublicKey,
+    }
+
+    fn fixture() -> Fixture {
+        let store = test_store();
+        let ns_id = [0xA1u8; 32];
+        let ns_gid = ContextGroupId::from(ns_id);
+        let (_admin_sk, admin) = bootstrap_namespace_with_admin(&store, ns_id);
+
+        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver = leaver_sk.public_key();
+
+        let sub_gid = ContextGroupId::from([0xA2u8; 32]);
+        MetaRepository::new(&store)
+            .save(&sub_gid, &sample_meta_with_admin(admin))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&sub_gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        nest_for_test(&store, &ns_gid, &sub_gid);
+
+        // The leaver is a direct member of both the root and the subgroup.
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &leaver, GroupMemberRole::Member)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&sub_gid, &leaver, GroupMemberRole::Member)
+            .unwrap();
+
+        Fixture {
+            store,
+            ns_gid,
+            sub_gid,
+            admin,
+            leaver_sk,
+            leaver,
+        }
+    }
+
+    fn apply_member_left(f: &Fixture, group: &ContextGroupId) {
+        let op = SignedGroupOp::sign(
+            &f.leaver_sk,
+            group.to_bytes().into(),
+            vec![],
+            1,
+            GroupOp::MemberLeft {
+                member: f.leaver,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        )
+        .expect("sign MemberLeft");
+        apply_local_signed_group_op(&f.store, &op).expect("apply MemberLeft");
+    }
+
+    #[test]
+    fn which_groups_owe_a_rotation_on_departure() {
+        let f = fixture();
+
+        // A Restricted subgroup holds its OWN key, which the leaver has. Rotate.
+        assert!(
+            group_rotates_on_departure(&f.store, &f.sub_gid).unwrap(),
+            "a Restricted subgroup encrypts under its own key — a departure must rotate it"
+        );
+
+        // The namespace ROOT holds the namespace key, which also decrypts every Open
+        // subgroup beneath it. A member who leaves the namespace keeps that key unless
+        // it is rotated — this is the hole that makes a namespace-leave meaningless
+        // without rotation.
+        assert!(
+            group_rotates_on_departure(&f.store, &f.ns_gid).unwrap(),
+            "the namespace root holds the namespace key — leaving it must rotate that key"
+        );
+
+        // An Open subgroup on a fully-Open chain is encrypted with the NAMESPACE key,
+        // which the leaver still holds by virtue of namespace membership. Minting a
+        // per-subgroup key would revoke nothing — it would just go unused.
+        CapabilitiesRepository::new(&f.store)
+            .set_subgroup_visibility(&f.sub_gid, VisibilityMode::Open)
+            .unwrap();
+        assert!(
+            !group_rotates_on_departure(&f.store, &f.sub_gid).unwrap(),
+            "an Open subgroup is encrypted with the namespace key — a per-subgroup rotation \
+             there would revoke nothing, so none is owed"
+        );
+    }
+
+    #[test]
+    fn leaving_a_restricted_subgroup_records_the_rotation_debt() {
+        let f = fixture();
+        let pending = PendingRotationRepository::new(&f.store);
+
+        assert!(
+            !pending.is_pending(&f.sub_gid, &f.leaver).unwrap(),
+            "precondition: nothing owed before the leave"
+        );
+
+        apply_member_left(&f, &f.sub_gid);
+
+        assert!(
+            pending.is_pending(&f.sub_gid, &f.leaver).unwrap(),
+            "a self-leave from a Restricted subgroup must record the forward-secrecy debt — \
+             without it, nobody ever rotates and the leaver keeps the subgroup key"
+        );
+        // The row is written by the deterministic apply, so every node has it. That is
+        // what lets any remaining admin pick the work up with no coordination.
+        assert_eq!(
+            pending.departed_for_group(&f.sub_gid).unwrap(),
+            vec![f.leaver],
+            "the group's worklist must name exactly the departed member"
+        );
+    }
+
+    #[test]
+    fn leaving_an_open_subgroup_records_nothing() {
+        let f = fixture();
+        CapabilitiesRepository::new(&f.store)
+            .set_subgroup_visibility(&f.sub_gid, VisibilityMode::Open)
+            .unwrap();
+
+        apply_member_left(&f, &f.sub_gid);
+
+        assert!(
+            !PendingRotationRepository::new(&f.store)
+                .is_pending(&f.sub_gid, &f.leaver)
+                .unwrap(),
+            "an Open subgroup is encrypted with the namespace key, so a departure owes no \
+             per-subgroup rotation — recording one would queue work that revokes nothing"
+        );
+    }
+
+    #[test]
+    fn leaving_the_namespace_records_debt_for_the_root_and_every_restricted_descendant() {
+        // The namespace-leave cascade. The leaver held a row in the root AND in a
+        // Restricted subgroup, and holds a key for each. Both must be rotated, or they
+        // go on reading whichever one was missed.
+        let f = fixture();
+        let pending = PendingRotationRepository::new(&f.store);
+
+        apply_member_left(&f, &f.ns_gid);
+
+        assert!(
+            pending.is_pending(&f.ns_gid, &f.leaver).unwrap(),
+            "leaving the namespace must rotate the NAMESPACE key — otherwise the leaver keeps \
+             reading the root and every Open subgroup under it"
+        );
+        assert!(
+            pending.is_pending(&f.sub_gid, &f.leaver).unwrap(),
+            "the cascade must also rotate every Restricted descendant the leaver had a row in \
+             — each has its own key, which the leaver holds"
+        );
+
+        let mut backlog = pending.all_pending().unwrap();
+        backlog.sort_by_key(|(g, _)| g.to_bytes());
+        let mut expected = vec![(f.ns_gid, f.leaver), (f.sub_gid, f.leaver)];
+        expected.sort_by_key(|(g, _)| g.to_bytes());
+        assert_eq!(
+            backlog, expected,
+            "the whole backlog is what a restarting admin drains — it must list every group \
+             that still owes a rotation, and nothing else"
+        );
+    }
+
+    #[test]
+    fn group_key_rotated_discharges_the_debt_and_is_idempotent() {
+        let f = fixture();
+        let pending = PendingRotationRepository::new(&f.store);
+        apply_member_left(&f, &f.sub_gid);
+        assert!(pending.is_pending(&f.sub_gid, &f.leaver).unwrap());
+
+        // The admin's rotation carries the new key; applying it discharges the debt.
+        let admin_sk = NamespaceRepository::new(&f.store)
+            .identity_record(&f.ns_gid)
+            .unwrap()
+            .map(|i| PrivateKey::from(i.private_key))
+            .expect("namespace identity");
+        assert_eq!(admin_sk.public_key(), f.admin);
+
+        let rotate = |nonce: u64| {
+            SignedGroupOp::sign(
+                &admin_sk,
+                f.sub_gid.to_bytes().into(),
+                vec![],
+                nonce,
+                GroupOp::GroupKeyRotated { departed: f.leaver },
+            )
+            .expect("sign GroupKeyRotated")
+        };
+
+        apply_local_signed_group_op(&f.store, &rotate(1)).expect("admin's rotation must apply");
+        assert!(
+            !pending.is_pending(&f.sub_gid, &f.leaver).unwrap(),
+            "GroupKeyRotated must discharge the pending row"
+        );
+
+        // Two admins racing both publish a rotation. The second to land finds nothing
+        // left to clear and must simply no-op — if it errored, a perfectly ordinary
+        // race would wedge the group's governance DAG on every replica.
+        apply_local_signed_group_op(&f.store, &rotate(2))
+            .expect("a second, redundant rotation must be a harmless no-op, not an error");
+        assert!(!pending.is_pending(&f.sub_gid, &f.leaver).unwrap());
+    }
+
+    #[test]
+    fn a_non_admin_cannot_discharge_the_debt() {
+        // The pending row says "this group still owes a rotation". Clearing it is a
+        // claim that the rotation happened. Peers accept a rotation only from an admin,
+        // so if a non-admin could clear the row, the group would believe it had rotated
+        // while every peer threw the key away — the debt would vanish unpaid.
+        let f = fixture();
+        let pending = PendingRotationRepository::new(&f.store);
+        apply_member_left(&f, &f.sub_gid);
+
+        let outsider_sk = PrivateKey::random(&mut OsRng);
+        MembershipRepository::new(&f.store)
+            .add_member(
+                &f.sub_gid,
+                &outsider_sk.public_key(),
+                GroupMemberRole::Member,
+            )
+            .unwrap();
+
+        let op = SignedGroupOp::sign(
+            &outsider_sk,
+            f.sub_gid.to_bytes().into(),
+            vec![],
+            1,
+            GroupOp::GroupKeyRotated { departed: f.leaver },
+        )
+        .expect("sign GroupKeyRotated");
+
+        let _ = apply_local_signed_group_op(&f.store, &op)
+            .expect_err("a non-admin's GroupKeyRotated must be rejected");
+        assert!(
+            pending.is_pending(&f.sub_gid, &f.leaver).unwrap(),
+            "the debt must survive a rejected rotation — otherwise it is silently written off \
+             and no admin ever pays it"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// The crypto half of self-leave forward secrecy.
+//
+// Recording the debt and publishing a `GroupKeyRotated` is bookkeeping. What actually
+// revokes the leaver's read access is that the rotation's envelopes are wrapped for
+// everyone who remains and for NOBODY who left. These tests assert that directly, and
+// assert the convergence property that lets several admins rotate concurrently without
+// coordination.
+mod self_leave_rotation_crypto {
+    use super::*;
+    use crate::test_fixtures::bootstrap_namespace_with_admin;
+    use crate::GroupKeyring;
+    use calimero_governance_types::SignedGroupOp;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+    use rand::Rng;
+
+    #[test]
+    fn the_rotation_wraps_the_new_key_for_everyone_except_the_leaver() {
+        let store = test_store();
+        let ns_id = [0xB1u8; 32];
+        let ns_gid = ContextGroupId::from(ns_id);
+        let (admin_sk, admin) = bootstrap_namespace_with_admin(&store, ns_id);
+
+        let stayer_sk = PrivateKey::random(&mut OsRng);
+        let stayer = stayer_sk.public_key();
+        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver = leaver_sk.public_key();
+
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &stayer, GroupMemberRole::Member)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &leaver, GroupMemberRole::Member)
+            .unwrap();
+
+        let new_key: [u8; 32] = OsRng.gen();
+        let rotation = GroupKeyring::new(&store, ns_gid)
+            .build_rotation(&new_key, &admin_sk, Some(&leaver))
+            .expect("build rotation excluding the leaver");
+
+        let recipients: Vec<PublicKey> = rotation.envelopes.iter().map(|e| e.recipient).collect();
+
+        assert!(
+            !recipients.contains(&leaver),
+            "the leaver must get NO envelope — an envelope for them would hand back the very \
+             key the rotation exists to cut them off from"
+        );
+        assert!(
+            recipients.contains(&stayer),
+            "every remaining member must get an envelope, or the rotation locks them out of \
+             their own group"
+        );
+        assert!(
+            recipients.contains(&admin),
+            "the rotating admin must also hold the new key"
+        );
+
+        // The leaver cannot unwrap what was never wrapped for them: even handed the
+        // whole rotation, no envelope decrypts under their key.
+        for envelope in &rotation.envelopes {
+            assert!(
+                GroupKeyring::unwrap_for_recipient(
+                    &leaver_sk,
+                    &ns_gid.to_bytes(),
+                    Some(&admin),
+                    envelope,
+                )
+                .is_err(),
+                "no envelope in the rotation may be unwrappable by the departed member"
+            );
+        }
+
+        // ...while a member who stayed unwraps their envelope and gets the real key.
+        let stayer_envelope = rotation
+            .envelopes
+            .iter()
+            .find(|e| e.recipient == stayer)
+            .expect("the stayer has an envelope");
+        let unwrapped = GroupKeyring::unwrap_for_recipient(
+            &stayer_sk,
+            &ns_gid.to_bytes(),
+            Some(&admin),
+            stayer_envelope,
+        )
+        .expect("a remaining member must be able to unwrap the new key");
+        assert_eq!(
+            unwrapped, new_key,
+            "the unwrapped key must be the key that was minted"
+        );
+    }
+
+    #[test]
+    fn two_admins_rotating_concurrently_converge_on_one_key_and_neither_is_the_leavers() {
+        // This is why the design needs no election. Two admins both react to the same
+        // departure and mint DIFFERENT keys. Every node must still end up agreeing which
+        // key is current — and, whichever wins, the leaver must hold neither.
+        let store_a = test_store();
+        let store_b = test_store();
+        let gid = test_group_id();
+
+        // Two rotations, minted independently, landing at different DAG sequences.
+        let key_from_admin_1: [u8; 32] = OsRng.gen();
+        let key_from_admin_2: [u8; 32] = OsRng.gen();
+
+        // Replica A sees admin 1's rotation first, then admin 2's. Replica B sees them
+        // in the opposite order — the whole point is that arrival order must not matter.
+        let ring_a = GroupKeyring::new(&store_a, gid);
+        ring_a.store_key_with_epoch(&key_from_admin_1, 10).unwrap();
+        ring_a.store_key_with_epoch(&key_from_admin_2, 11).unwrap();
+
+        let ring_b = GroupKeyring::new(&store_b, gid);
+        ring_b.store_key_with_epoch(&key_from_admin_2, 11).unwrap();
+        ring_b.store_key_with_epoch(&key_from_admin_1, 10).unwrap();
+
+        let current_a = ring_a.load_current_key_record().unwrap().unwrap();
+        let current_b = ring_b.load_current_key_record().unwrap().unwrap();
+
+        assert_eq!(
+            current_a.group_key, current_b.group_key,
+            "both replicas must select the SAME current key regardless of the order the two \
+             concurrent rotations arrived in — otherwise the group splits its keyring"
+        );
+        assert_eq!(
+            current_a.group_key, key_from_admin_2,
+            "the higher epoch wins, deterministically"
+        );
+
+        // And the safety property that makes the race benign: both candidate keys were
+        // minted by rotations that excluded the leaver, so whichever wins, the leaver
+        // has neither. Losing the race costs a wasted key, never forward secrecy.
+        assert_ne!(key_from_admin_1, key_from_admin_2);
+    }
+
+    #[test]
+    fn the_leaver_cannot_publish_their_own_rotation() {
+        // Belt-and-braces on the core asymmetry: even if a departing member tried to
+        // rotate, peers reject a rotation whose signer is not an admin of the group. The
+        // leaver is not an admin (their row is gone), so the op is refused — they cannot
+        // mint themselves a fresh key and stay in.
+        let store = test_store();
+        let ns_id = [0xB2u8; 32];
+        let ns_gid = ContextGroupId::from(ns_id);
+        let (_admin_sk, _admin) = bootstrap_namespace_with_admin(&store, ns_id);
+
+        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver = leaver_sk.public_key();
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &leaver, GroupMemberRole::Member)
+            .unwrap();
+
+        let leave = SignedGroupOp::sign(
+            &leaver_sk,
+            ns_gid.to_bytes().into(),
+            vec![],
+            1,
+            calimero_governance_types::GroupOp::MemberLeft {
+                member: leaver,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        )
+        .expect("sign MemberLeft");
+        apply_local_signed_group_op(&store, &leave).expect("apply MemberLeft");
+
+        let self_rotation = SignedGroupOp::sign(
+            &leaver_sk,
+            ns_gid.to_bytes().into(),
+            vec![],
+            2,
+            calimero_governance_types::GroupOp::GroupKeyRotated { departed: leaver },
+        )
+        .expect("sign GroupKeyRotated");
+
+        let _ = apply_local_signed_group_op(&store, &self_rotation).expect_err(
+            "a departed member must not be able to rotate the key they are being cut off from",
+        );
+    }
+}

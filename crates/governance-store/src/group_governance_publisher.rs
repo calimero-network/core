@@ -112,6 +112,42 @@ impl<'a> GroupGovernancePublisher<'a> {
         .await
     }
 
+    /// Discharge a pending forward-secrecy rotation left behind by a self-leave.
+    ///
+    /// A leaver cannot rotate for themselves — they would mint the key they are being
+    /// cut off from, and peers reject a rotation from a non-admin anyway. So
+    /// `MemberLeft` records the debt and a REMAINING ADMIN calls this to pay it.
+    ///
+    /// `GroupOp::GroupKeyRotated` carries no state of its own; it exists so the
+    /// rotation sidecar has an op to ride on. Passing `departed` as the excluded
+    /// member reuses the removal path's machinery exactly: mint a fresh key, stamp it
+    /// with the DAG sequence this op will occupy, wrap it for every remaining member,
+    /// and wrap it for nobody who left.
+    ///
+    /// Safe to call concurrently from several admins. They mint different keys, but
+    /// the keyring converges on one (highest epoch, ties broken by the larger key id),
+    /// and every competing key excludes the leaver — so whichever wins, forward
+    /// secrecy holds. The only cost of a race is redundant envelopes on the wire.
+    pub async fn sign_apply_and_publish_rotation(
+        &self,
+        ack_router: &AckRouter,
+        signer_sk: &PrivateKey,
+        departed: &PublicKey,
+    ) -> EyreResult<Option<DeliveryReport>> {
+        // Same fail-closed gate as a removal: never mint a key peers would reject.
+        self.ensure_rotation_is_publishable()?;
+
+        self.sign_apply_and_publish_inner(
+            ack_router,
+            signer_sk,
+            GroupOp::GroupKeyRotated {
+                departed: *departed,
+            },
+            Some(departed),
+        )
+        .await
+    }
+
     async fn sign_apply_and_publish_inner(
         &self,
         ack_router: &AckRouter,
@@ -382,7 +418,7 @@ pub(crate) fn ensure_rotation_is_publishable(
     // Encrypted under the namespace key ⇒ removal mints no per-subgroup key, so
     // there is no rotation to authorize. Removing here revokes authorization but
     // not read access, and that trade-off is deliberate and unchanged.
-    if CapabilitiesRepository::new(store).is_open_chain_to_namespace(&group_id, &namespace_id)? {
+    if !crate::pending_rotation::group_rotates_on_departure(store, &group_id)? {
         return Ok(());
     }
 
