@@ -45,7 +45,7 @@ fn sign_invitation(
         inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
         group_id,
         expiration_timestamp,
-        secret_salt: [0x42; 32],
+        invitation_nonce: [0x42; 32],
         invited_role,
     };
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
@@ -283,7 +283,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
         inviter_identity: SignerId::from(*admin_pk.digest()),
         group_id: gid,
         expiration_timestamp: 0,
-        secret_salt: [0x42; 32],
+        invitation_nonce: [0x42; 32],
         invited_role: 1,
     };
 
@@ -1844,7 +1844,7 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
         inviter_identity: SignerId::from(*admin_pk.digest()),
         group_id: gid,
         expiration_timestamp: 0,
-        secret_salt: [0x42; 32],
+        invitation_nonce: [0x42; 32],
         invited_role: 1,
     };
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");

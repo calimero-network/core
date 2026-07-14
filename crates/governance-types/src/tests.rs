@@ -499,7 +499,7 @@ const GOLDEN_ROOT_OP_POLICY_UPDATED: &[u8] = &[
 ///
 /// Encoding: member (32 bytes) + SignedGroupOpenInvitation with a minimal
 /// GroupInvitationFromAdmin (inviter_identity[0;32] + group_id[0;32] +
-/// expiration_timestamp 0 (u64) + secret_salt[0;32] + invited_role 1 (u8))
+/// expiration_timestamp 0 (u64) + invitation_nonce[0;32] + invited_role 1 (u8))
 /// + inviter_signature "" + application_id None + app_key None.
 const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
     0, // NamespaceOp::Root
@@ -511,7 +511,7 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
     0, // signed_invitation.invitation.group_id [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // signed_invitation.invitation.expiration_timestamp u64 = 0:
-    0, 0, 0, 0, 0, 0, 0, 0, // signed_invitation.invitation.secret_salt [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, // signed_invitation.invitation.invitation_nonce [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // signed_invitation.invitation.invited_role u8 = 1:
     1, // signed_invitation.inviter_signature String len = 0:
@@ -567,7 +567,7 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_AT: &[u8] = &[
     0, // group_id
     0, 0, 0, 0, 0, 0, 0, 0, // expiration_timestamp
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // secret_salt
+    0, // invitation_nonce
     1, // invited_role = 1
     0, 0, 0, 0, // inviter_signature len = 0
     0, // application_id = None
@@ -1364,7 +1364,7 @@ mod governance_op_storage_roundtrip {
                 inviter_identity: SignerId::from([0xA1; 32]),
                 group_id: ContextGroupId::from([0x22; 32]),
                 expiration_timestamp: 1_900_000_000,
-                secret_salt: [0x33; 32],
+                invitation_nonce: [0x33; 32],
                 invited_role: 1,
             },
             inviter_signature: "deadbeef".to_string(),
