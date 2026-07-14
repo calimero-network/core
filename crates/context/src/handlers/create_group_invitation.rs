@@ -68,7 +68,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             let private_key = PrivateKey::from(signing_key_bytes);
 
             let mut rng = rand::thread_rng();
-            let secret_salt: [u8; 32] = rng.gen();
+            let invitation_nonce: [u8; 32] = rng.gen();
 
             let now_secs = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -83,7 +83,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 inviter_identity: inviter_signer_id,
                 group_id,
                 expiration_timestamp,
-                secret_salt,
+                invitation_nonce,
                 invited_role: 1, // Member
             };
 

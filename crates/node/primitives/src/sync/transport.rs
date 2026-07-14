@@ -126,8 +126,11 @@ impl EncryptionState {
     /// Returns error if encryption fails.
     pub fn encrypt(&self, data: Vec<u8>) -> Result<Vec<u8>> {
         match &self.key_nonce {
-            Some((key, nonce)) => key
-                .encrypt(data, *nonce)
+            // Dead path: nothing sets `key_nonce` to `Some`. If revived, carry
+            // the per-call nonce with the ciphertext instead of reusing this one.
+            Some((key, _nonce)) => key
+                .encrypt(data)
+                .map(|(_nonce, ciphertext)| ciphertext)
                 .ok_or_else(|| eyre::eyre!("encryption failed")),
             None => Ok(data),
         }
