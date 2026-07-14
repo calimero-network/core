@@ -24,12 +24,12 @@ agents:
   - name: security-reviewer      # security, auth, crypto, untrusted input
     model: claude-sonnet-5
     thinking_enabled: true
-    max_tokens: 16000
+    max_tokens: 32000
     max_tool_calls: 20
   - name: logic-reviewer         # correctness, edge cases, concurrency, CRDT/DAG invariants
     model: claude-sonnet-5
     thinking_enabled: true
-    max_tokens: 16000
+    max_tokens: 32000
     max_tool_calls: 20
   - name: patterns-reviewer      # architecture, consistency, maintainability
     model: claude-sonnet-5
