@@ -499,11 +499,25 @@ impl SyncManager {
         // `MemberJoined` straight to gossip and never open a stream at all. This
         // gate is what makes the rejection land as a clean, diagnosable error on
         // the joiner instead of a silent stall.
-        if let Err(err) = ReentryRepository::new(&store).require_invitation_admits(
-            &group_id,
-            &joiner_public_key,
-            invitation.invitation.invitation_nonce,
-        ) {
+        //
+        // Skipped for an identity that is already a member: the block governs
+        // RE-ENTRY, and a current member is not re-entering. They land here on a
+        // perfectly ordinary re-sync or a retried join round — and since a
+        // successful join consumes the invitation, gating them would reject every
+        // repeat request they ever make with their own invitation.
+        let already_member = MembershipRepository::new(&store)
+            .has_direct_member(&group_id, &joiner_public_key)
+            .unwrap_or(false);
+        let admission = if already_member {
+            Ok(())
+        } else {
+            ReentryRepository::new(&store).require_invitation_admits(
+                &group_id,
+                &joiner_public_key,
+                invitation.invitation.invitation_nonce,
+            )
+        };
+        if let Err(err) = admission {
             warn!(
                 namespace_id = %hex::encode(namespace_id),
                 %joiner_public_key,

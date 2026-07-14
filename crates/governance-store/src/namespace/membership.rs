@@ -59,22 +59,6 @@ impl<'a> NamespaceMembershipService<'a> {
         // Do not add joined_at lookups below this point without handling the
         // None case explicitly.
 
-        // Re-entry gate. Rejects two cases: an identity an admin REMOVED (no
-        // invitation readmits them — only an admin `MemberAdded` does), and an
-        // identity replaying an invitation they have already consumed (they
-        // left, and the invitation they joined with is spent for them; they need
-        // a freshly issued one). A first-time joiner has neither row, so this is
-        // a no-op for them.
-        //
-        // Placement is load-bearing on both sides. It must come AFTER
-        // `verify_member_join_signature`, so we never read state on the say-so of
-        // an unauthenticated op — and BEFORE the direct-row dedup below, which
-        // returns `Ok(None)` early and would skip the check entirely for anyone
-        // who already holds a row (which the sync responder's pre-register can
-        // give them).
-        let reentry = ReentryRepository::new(self.store);
-        reentry.require_invitation_admits(&group_id, member, inv.invitation_nonce)?;
-
         let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
         self.require_inviter_permission(&group_id, &inviter_pk)?;
 
@@ -87,6 +71,36 @@ impl<'a> NamespaceMembershipService<'a> {
         if MembershipRepository::new(self.store).has_direct_member(&group_id, member)? {
             return Ok(None);
         }
+
+        // Re-entry gate. Rejects two cases: an identity an admin REMOVED (no
+        // invitation readmits them — only an admin `MemberAdded` does), and an
+        // identity replaying an invitation they have already consumed (they
+        // left, and the invitation they joined with is spent for them; they need
+        // a freshly issued one). A first-time joiner has neither row, so this is
+        // a no-op for them.
+        //
+        // Placement is load-bearing, and it belongs AFTER the direct-row dedup
+        // above, not before it. The block governs RE-ENTRY; someone who already
+        // holds a member row is not re-entering, so the gate has nothing to say
+        // about them. Put it ahead of the dedup and it fires on its own
+        // bookkeeping: this op is re-applied whenever `join_group` re-publishes
+        // `MemberJoinedAt` (the durable re-publish that survives a peer being
+        // down), and a re-publish is a fresh op with a fresh content hash, so the
+        // op-log dedup does not absorb it. The second apply would then see the
+        // consumption row the first apply wrote and bail — a failing apply does
+        // not advance the namespace governance head, so every later governance op
+        // stalls behind it and the whole namespace stops converging.
+        //
+        // It must still come after `verify_member_join_signature`, so we never
+        // read state on the say-so of an unauthenticated op.
+        //
+        // Nothing is smuggled past the gate by sitting behind the dedup: a
+        // blocked identity cannot acquire a direct row out of band. Every writer
+        // of one is itself gated — the sync responder's pre-register, and
+        // `join_group`'s local self-add — so a row existing here means the gate
+        // already passed for them.
+        let reentry = ReentryRepository::new(self.store);
+        reentry.require_invitation_admits(&group_id, member, inv.invitation_nonce)?;
 
         let role = role_from_invited_role(inv.invited_role);
         if role == GroupMemberRole::Admin
