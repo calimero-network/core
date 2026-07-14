@@ -602,7 +602,18 @@ impl Module {
             )));
         }
 
-        if let Err(err) = function.call(store, &[]) {
+        let call_result = function.call(store, &[]);
+
+        // Record gas consumed for both the success and error paths (and surface
+        // it on the Outcome via VMLogic) before branching, so `gas_used` is
+        // populated regardless of how the call ended.
+        let gas_used = metering::gas_used(store, &instance, max_gas);
+        logic.set_gas_used(gas_used);
+        if let Some(used) = gas_used {
+            debug!(%context_id, method, gas_used = used, "WASM execution gas accounting");
+        }
+
+        if let Err(err) = call_result {
             // A trap whose cause is an exhausted gas budget is reported as
             // `GasExhausted`, not as the generic `unreachable` trap the metering
             // middleware injects to stop the guest. Checked before decoding the
@@ -653,16 +664,6 @@ impl Module {
                 Ok(err) => Ok(Some(err.try_into()?)),
                 Err(err) => Ok(Some(err.into())),
             };
-        }
-
-        if let Some(remaining) = metering::remaining_gas(store, &instance) {
-            debug!(
-                %context_id,
-                method,
-                gas_used = max_gas.saturating_sub(remaining),
-                gas_remaining = remaining,
-                "WASM execution gas accounting"
-            );
         }
 
         Ok(None)
@@ -2035,6 +2036,68 @@ mod gas_metering_tests {
                  survive serialization"
             ),
         }
+    }
+
+    /// `Outcome::gas_used` reports the metering points an execution consumed:
+    /// `Some(>0)` on a normal run, `Some(max_gas)` when the budget is exhausted,
+    /// and it grows with the work done. This is the telemetry operators size
+    /// `max_gas` from, so its semantics are pinned here.
+    #[test]
+    fn outcome_reports_gas_used() {
+        // A loop whose iteration count comes from a guest local, so "more work"
+        // is expressed without changing the module.
+        fn run_spins(spins: i32, max_gas: u64) -> Outcome {
+            let wat = format!(
+                r#"
+                (module
+                    (memory (export "memory") 1)
+                    (func (export "work")
+                        (local $i i32)
+                        (local.set $i (i32.const {spins}))
+                        (block $exit (loop $again
+                            (br_if $exit (i32.eqz (local.get $i)))
+                            (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+                            (br $again)))))
+            "#
+            );
+            let wasm = wat::parse_str(&wat).expect("parse");
+            let module = engine_with_gas(max_gas).compile(&wasm).expect("compile");
+            let mut storage = InMemoryStorage::default();
+            module
+                .run(
+                    [0; 32].into(),
+                    [0; 32].into(),
+                    "work",
+                    &[],
+                    &mut storage,
+                    None,
+                    None,
+                )
+                .expect("run")
+        }
+
+        let light = run_spins(100, 1_000_000_000);
+        let heavy = run_spins(10_000, 1_000_000_000);
+        assert!(light.returns.is_ok() && heavy.returns.is_ok());
+        let light_gas = light.gas_used.expect("metered run reports gas");
+        let heavy_gas = heavy.gas_used.expect("metered run reports gas");
+        assert!(light_gas > 0, "a real run must consume gas");
+        assert!(
+            heavy_gas > light_gas,
+            "more iterations must cost more gas ({heavy_gas} !> {light_gas})"
+        );
+
+        // On exhaustion the whole budget is reported as consumed.
+        let exhausted = run_spins(1_000_000, 50_000);
+        assert!(matches!(
+            exhausted.returns,
+            Err(FunctionCallError::GasExhausted { .. })
+        ));
+        assert_eq!(
+            exhausted.gas_used,
+            Some(50_000),
+            "an exhausted run reports the full budget as consumed"
+        );
     }
 
     /// Gas exhausted inside the optional `__calimero_register_merge` hook (which

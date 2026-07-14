@@ -98,17 +98,22 @@ pub(crate) fn is_exhausted(store: &mut impl AsStoreMut, instance: &Instance) -> 
     )
 }
 
-/// The gas remaining for `instance`, or `None` for an unmetered module or one
-/// that has already exhausted its budget. Used only for observability (logging
-/// gas consumed on a successful run).
-pub(crate) fn remaining_gas(store: &mut impl AsStoreMut, instance: &Instance) -> Option<u64> {
+/// Gas consumed by `instance` given the `budget` it started with, or `None`
+/// for an unmetered module. On exhaustion the whole budget was consumed, so
+/// this returns `budget`; otherwise `budget - remaining`. Used for the
+/// `Outcome::gas_used` telemetry that operators size `max_gas` from.
+pub(crate) fn gas_used(
+    store: &mut impl AsStoreMut,
+    instance: &Instance,
+    budget: u64,
+) -> Option<u64> {
     use wasmer_middlewares::metering::MeteringPoints;
 
     if !is_metered(store, instance) {
         return None;
     }
     match wasmer_middlewares::metering::get_remaining_points(store, instance) {
-        MeteringPoints::Remaining(points) => Some(points),
-        MeteringPoints::Exhausted => None,
+        MeteringPoints::Remaining(points) => Some(budget.saturating_sub(points)),
+        MeteringPoints::Exhausted => Some(budget),
     }
 }

@@ -492,6 +492,10 @@ pub struct VMLogic<'a> {
     storage_write_bytes: u64,
     /// Cumulative bytes streamed into blobs so far across all write handles.
     blob_bytes_written: u64,
+    /// Gas the execution consumed, recorded by the runtime after the guest
+    /// call returns and carried out on the [`Outcome`]. `None` until set (or if
+    /// the module was unmetered).
+    gas_used: Option<u64>,
 }
 
 /// Charges one storage write of `add` bytes against the shared per-execution
@@ -583,7 +587,14 @@ impl<'a> VMLogic<'a> {
             storage_writes: 0,
             storage_write_bytes: 0,
             blob_bytes_written: 0,
+            gas_used: None,
         }
+    }
+
+    /// Record the gas this execution consumed, to be carried out on the
+    /// [`Outcome`]. Called once by the runtime after the guest call returns.
+    pub(crate) fn set_gas_used(&mut self, gas_used: Option<u64>) {
+        self.gas_used = gas_used;
     }
 
     /// Charges one storage write of `bytes` (`key.len() + value.len()`) against
@@ -714,7 +725,13 @@ pub struct Outcome {
     /// Transient migration witness: a borsh blob `#[app::migrate]` emitted for
     /// `#[app::migration_check]`. Carried like logs/events; never persisted.
     pub migration_witness: Option<Vec<u8>>,
-    //TODO: execution runtime (???).
+    /// Gas (metering points) this execution consumed, if the module was
+    /// metered. `None` only when execution never reached a metered instance
+    /// (e.g. an invalid method name or an instantiation failure). On gas
+    /// exhaustion this equals the budget. Node-local telemetry — not part of
+    /// the replicated artifact — surfaced so operators can size
+    /// [`VMLimits::max_gas`] from the distribution of real workloads.
+    pub gas_used: Option<u64>,
     //TODO: current storage usage of the app (???).
 }
 
@@ -809,6 +826,7 @@ impl VMLogic<'_> {
             root_hash: self.root_hash,
             artifact: self.artifact,
             migration_witness: self.migration_witness,
+            gas_used: self.gas_used,
         }
     }
 }
