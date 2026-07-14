@@ -16,7 +16,7 @@ use zeroize::Zeroize;
 use crate::context::ContextId;
 use crate::hash::{Hash, HashError};
 
-use ed25519_dalek::{Signature, SignatureError, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, SignatureError, Signer, SigningKey, VerifyingKey};
 
 // NOTE: `PrivateKey` deliberately derives no serialization (Borsh, Serde, …).
 // Serializing would copy the secret into a buffer that is never zeroized,
@@ -133,7 +133,7 @@ impl Deref for PublicKey {
 impl PublicKey {
     /// Verify a signature against this public key.
     pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), SignatureError> {
-        VerifyingKey::from_bytes(self.as_ref())?.verify(message, signature)
+        VerifyingKey::from_bytes(self.as_ref())?.verify_strict(message, signature)
     }
 
     /// Verify a signature passed as a raw bytes against this public key.
