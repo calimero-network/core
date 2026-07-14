@@ -141,9 +141,8 @@ impl MockNetwork {
     ) -> eyre::Result<()> {
         // Encrypt artifact
         let shared_key = SharedKey::from_sk(sender_key);
-        let nonce: Nonce = rand::random();
-        let encrypted = shared_key
-            .encrypt(artifact.clone(), nonce)
+        let (nonce, encrypted) = shared_key
+            .encrypt(artifact.clone())
             .ok_or_else(|| eyre::eyre!("Failed to encrypt"))?;
 
         let msg = BroadcastMessage {

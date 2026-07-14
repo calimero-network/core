@@ -272,13 +272,8 @@ impl<'a> GroupKeyring<'a> {
         let sk = PrivateKey::from(*group_key);
         let shared_key = SharedKey::from_sk(&sk);
 
-        let nonce: [u8; 12] = {
-            use rand::Rng;
-            rand::thread_rng().gen()
-        };
-
-        let ciphertext = shared_key
-            .encrypt(plaintext, nonce)
+        let (nonce, ciphertext) = shared_key
+            .encrypt(plaintext)
             .ok_or(KeyringError::EncryptionFailed)?;
 
         Ok(EncryptedGroupOp { nonce, ciphertext })
@@ -336,13 +331,8 @@ impl<'a> GroupKeyring<'a> {
             }
         })?;
 
-        let nonce: [u8; 12] = {
-            use rand::Rng;
-            rand::thread_rng().gen()
-        };
-
-        let ciphertext = shared
-            .encrypt(group_key.to_vec(), nonce)
+        let (nonce, ciphertext) = shared
+            .encrypt(group_key.to_vec())
             .ok_or(KeyringError::EncryptionFailed)?;
 
         let sender = sender_sk.public_key();

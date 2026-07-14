@@ -539,7 +539,7 @@ mod tests {
                 inviter_identity: [0xA1; 32].into(),
                 group_id: ContextGroupId::from(gid),
                 expiration_timestamp: 1_700_000_000,
-                secret_salt: [0x33; 32],
+                invitation_nonce: [0x33; 32],
                 invited_role: 0, // Admin
             },
             inviter_signature: "deadbeef".to_string(),
