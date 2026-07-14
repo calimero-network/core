@@ -126,11 +126,8 @@ impl EncryptionState {
     /// Returns error if encryption fails.
     pub fn encrypt(&self, data: Vec<u8>) -> Result<Vec<u8>> {
         match &self.key_nonce {
-            // This fixed-nonce session path is currently disabled - nothing
-            // ever sets `key_nonce` to `Some`. `SharedKey::encrypt` now picks a
-            // fresh nonce per call; if this path is ever enabled that nonce must
-            // travel with the ciphertext (decrypt still reads the stored one),
-            // not be reused across the session.
+            // Dead path: nothing sets `key_nonce` to `Some`. If revived, carry
+            // the per-call nonce with the ciphertext instead of reusing this one.
             Some((key, _nonce)) => key
                 .encrypt(data)
                 .map(|(_nonce, ciphertext)| ciphertext)
