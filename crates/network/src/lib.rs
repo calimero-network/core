@@ -19,6 +19,7 @@ use calimero_network_primitives::stream::{CALIMERO_BLOB_PROTOCOL, CALIMERO_STREA
 use calimero_utils_actix::actor;
 use eyre::Result as EyreResult;
 use futures_util::StreamExt;
+use libp2p::identity::Keypair;
 use libp2p::kad::QueryId;
 use libp2p::swarm::{ConnectionId, Swarm};
 use libp2p::PeerId;
@@ -34,8 +35,11 @@ use crate::handlers::stream::incoming::FromIncoming;
 
 pub use calimero_network_primitives::autonat_v2 as autonat;
 pub mod behaviour;
+mod blob_provider_record;
 mod discovery;
 mod handlers;
+#[cfg(test)]
+mod manager_discovery_tests;
 
 use behaviour::Behaviour;
 use discovery::peer_cache::PeerAddrCache;
@@ -76,6 +80,10 @@ pub struct NetworkManager {
     // `ConnectionClosed` that the rest of the recovery machinery waits for.
     // Reset to absent on the next ping success or when the connection closes.
     ping_failures: HashMap<ConnectionId, u32>,
+    /// This node's network keypair, used to sign the blob-provider DHT records
+    /// it publishes so peers resolving them can authenticate the announcement
+    /// binds to this peer. See [`blob_provider_record`].
+    identity: Keypair,
     metrics: Metrics,
 }
 
@@ -138,6 +146,7 @@ impl NetworkManager {
             pending_bootstrap: HashMap::default(),
             pending_blob_queries: HashMap::new(),
             ping_failures: HashMap::default(),
+            identity: config.identity.clone(),
             metrics: Metrics::new(prom_registry),
         };
 

@@ -63,6 +63,10 @@ impl ToTokens for StateImpl<'_> {
         let rekey_register_method = generate_rekey_register_method(ident, generics, orig);
         let rekey_call = quote! { <#ident #ty_generics>::__calimero_register_rekey(); };
 
+        // Generate the `RekeyTarget` impl (supertrait of the `Mergeable` impl
+        // above). Without it, the supertrait bound fails to compile.
+        let rekey_target_impl = generate_rekey_target_impl(ident, generics, orig);
+
         // Generate registration hook
         let registration_hook = generate_registration_hook(ident, &ty_generics, &rekey_call);
 
@@ -98,6 +102,10 @@ impl ToTokens for StateImpl<'_> {
 
             // Auto-generated CRDT merge support
             #merge_impl
+
+            // Auto-generated deterministic re-key support (RekeyTarget — the
+            // supertrait of the Mergeable impl above)
+            #rekey_target_impl
 
             // Auto-generated registration hook
             #registration_hook
@@ -766,6 +774,83 @@ fn generate_rekey_register_method(
     }
 }
 
+/// Generate the `RekeyTarget` impl for the state struct (the supertrait of the
+/// `Mergeable` impl `#[app::state]` also generates).
+///
+/// Mirrors `#[derive(Mergeable)]`: `rekey_relative_to` cascades over the fields
+/// (`rekey_field_if_supported!` — real re-key for `RekeyTarget` fields, no-op
+/// for leaves) and `register_nested_value_types` re-runs the same per-field scan
+/// (`rekey_register_calls`). Enums get no impl (they get no `Mergeable` impl).
+fn generate_rekey_target_impl(
+    ident: &Ident,
+    generics: &Generics,
+    orig: &StructOrEnumItem,
+) -> TokenStream {
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    let fields = match orig {
+        StructOrEnumItem::Struct(s) => &s.fields,
+        StructOrEnumItem::Enum(_) => return quote! {},
+    };
+
+    let rekey_body = generate_struct_rekey(fields);
+    let register_body = rekey_register_calls(fields);
+
+    quote! {
+        impl #impl_generics ::calimero_storage::collections::rekey::RekeyTarget
+            for #ident #ty_generics #where_clause
+        {
+            fn rekey_relative_to(
+                &mut self,
+                parent_id: ::calimero_storage::address::Id,
+            ) {
+                #rekey_body
+            }
+
+            fn register_nested_value_types() {
+                #register_body
+            }
+        }
+    }
+}
+
+/// Emit the per-field re-key cascade for a struct's `rekey_relative_to`, mirroring
+/// `#[derive(Mergeable)]`: each field is re-keyed under a field-namespaced child id
+/// (`rekey_field_if_supported!` autoref-dispatches — real re-key for `RekeyTarget`
+/// fields, no-op for leaves). Each expansion stays in its own block (the macro
+/// defines per-invocation helper traits).
+fn generate_struct_rekey(fields: &syn::Fields) -> TokenStream {
+    match fields {
+        syn::Fields::Named(named) => {
+            let calls = named.named.iter().map(|f| {
+                let name = f.ident.as_ref().expect("named field has ident");
+                let name_str = name.to_string();
+                quote! {
+                    ::calimero_storage::rekey_field_if_supported!(
+                        &mut self.#name,
+                        ::calimero_storage::collections::rekey::field_child_id(parent_id, #name_str)
+                    );
+                }
+            });
+            quote! { #(#calls)* }
+        }
+        syn::Fields::Unnamed(unnamed) => {
+            let calls = unnamed.unnamed.iter().enumerate().map(|(i, _)| {
+                let idx = syn::Index::from(i);
+                let name_str = i.to_string();
+                quote! {
+                    ::calimero_storage::rekey_field_if_supported!(
+                        &mut self.#idx,
+                        ::calimero_storage::collections::rekey::field_child_id(parent_id, #name_str)
+                    );
+                }
+            });
+            quote! { #(#calls)* }
+        }
+        syn::Fields::Unit => quote! {},
+    }
+}
+
 /// Emit one `register_rekey_if_supported!(T)` per distinct type token reachable
 /// from `fields` (each field type plus its generic args, recursively). Shared by
 /// the root `#[app::state]` scan and `#[derive(Mergeable)]`'s
@@ -944,13 +1029,34 @@ fn generate_test_state_impl(
     }
 }
 
+/// The final path-segment identifier of a field type, e.g. `UnorderedMap` for
+/// `calimero_storage::collections::UnorderedMap<K, V>`, or `Option` for
+/// `Option<UnorderedMap<K, V>>`. Returns `None` for non-path types (references,
+/// tuples, …).
+///
+/// Classification keys off this exact identifier rather than a substring of the
+/// stringified type. Substring matching misfires on both ends: `RateCounter`
+/// contains `Counter` (a false positive that would emit a `reassign` call the
+/// type can't answer), and a wrapper like `Option<UnorderedMap<…>>` contains
+/// `UnorderedMap` (another false positive — `Option` has no such method). Either
+/// produces a hard compile error or, worse, an id that diverges across nodes.
+fn outer_type_ident(ty: &Type) -> Option<String> {
+    match ty {
+        Type::Path(path) => path.path.segments.last().map(|seg| seg.ident.to_string()),
+        _ => None,
+    }
+}
+
 /// Whether a field type is a single-owner identity-gated collection that the
 /// one-tap `migrate_my_entries()` sweeps. Matches `AuthoredMap`/`AuthoredVector`
 /// only. `SharedStorage` (group writer-set) is deliberately excluded: its value
 /// converts via the organic writer-write substrate, and a batch re-write would
 /// force a `T: Clone` bound on every shared value type.
-fn is_identity_gated_collection(type_str: &str) -> bool {
-    type_str.contains("AuthoredMap") || type_str.contains("AuthoredVector")
+fn is_identity_gated_collection(ty: &Type) -> bool {
+    matches!(
+        outer_type_ident(ty).as_deref(),
+        Some("AuthoredMap" | "AuthoredVector")
+    )
 }
 
 /// Generate the one-tap `migrate_my_entries()` wasm export + its inherent
@@ -975,10 +1081,10 @@ fn generate_migrate_my_entries_impl(
     let mut count_loops: Vec<TokenStream> = Vec::new();
     for (idx, field) in fields.iter().enumerate() {
         let field_type = &field.ty;
-        let type_str = quote! { #field_type }.to_string();
-        if !is_identity_gated_collection(&type_str) {
+        if !is_identity_gated_collection(field_type) {
             continue;
         }
+        let is_authored_map = outer_type_ident(field_type).as_deref() == Some("AuthoredMap");
 
         let access = if let Some(name) = &field.ident {
             quote! { self.#name }
@@ -989,7 +1095,7 @@ fn generate_migrate_my_entries_impl(
 
         // Count-only twin of the migrate loop: tally the caller's still-stale
         // owned entries without re-writing them (read-only, no signed delta).
-        let count_body = if type_str.contains("AuthoredMap") {
+        let count_body = if is_authored_map {
             quote! {
                 let __keys: ::std::vec::Vec<_> = match #access.entries() {
                     ::core::result::Result::Ok(__it) => __it.map(|(__k, _)| __k).collect(),
@@ -1019,9 +1125,8 @@ fn generate_migrate_my_entries_impl(
         };
         count_loops.push(count_body);
 
-        // `AuthoredVector` also contains the substring "Vector"; check the map
-        // first, then fall to the vector shape (keyed-by-index vs keyed-by-key).
-        let loop_body = if type_str.contains("AuthoredMap") {
+        // Map shape (keyed-by-key) vs vector shape (keyed-by-index).
+        let loop_body = if is_authored_map {
             quote! {
                 // Collect into an owned Vec in its own statement so the immutable
                 // `entries()` borrow is fully released before the mutable owner
@@ -1207,44 +1312,36 @@ fn generate_assign_deterministic_ids_impl(
         }
     };
 
-    // Helper function to check if a type is a collection that needs ID assignment
-    fn is_collection_type(type_str: &str) -> bool {
-        type_str.contains("UnorderedMap")
-            // `SortedMap` is NOT a substring of any other entry, so it must be
-            // listed explicitly — otherwise a top-level `SortedMap` state field
-            // keeps its `Id::random()` and diverges across nodes (CIP I9).
-            || type_str.contains("SortedMap")
-            || type_str.contains("Vector")
-            || type_str.contains("UnorderedSet")
-            // `SortedSet` is NOT a substring of any other entry (same reason as
-            // `SortedMap`): list it explicitly or its id stays random and diverges.
-            || type_str.contains("SortedSet")
-            || type_str.contains("Counter")
-            || type_str.contains("ReplicatedGrowableArray")
-            || type_str.contains("UserStorage")
-            || type_str.contains("FrozenStorage")
-            || type_str.contains("SharedStorage")
-            // `PermissionedStorage` and its `Ownable` alias wrap a
-            // `SharedStorage`; their `reassign_deterministic_id` delegates to it,
-            // so the inner wrapper gets the field-derived id and converges. Both
-            // must be listed: a field written as `Ownable<_>` shows the `Ownable`
-            // token (alias is not resolved here), and `PermissionedStorage` is not
-            // a substring of `SharedStorage`.
-            || type_str.contains("PermissionedStorage")
-            || type_str.contains("Ownable")
-            // `AccessControl` wraps a single guarded storage; its
-            // `reassign_deterministic_id` delegates to it. The macro does not
-            // recurse into nested structs, so without this its inner storage
-            // keeps a random id and diverges across nodes.
-            || type_str.contains("AccessControl")
-            // `AuthoredVector` is already matched by the `"Vector"` substring above;
-            // `AuthoredMap` is NOT a substring of any entry, so it must be listed
-            // explicitly or its outer wrapper id stays `Id::random()` and a
-            // freshly-constructed map (in `init`/`migrate`) diverges across nodes.
-            // Safe: the inner map is built with a deterministic id, so its
-            // `reassign` is an idempotent no-op (no clear+reinsert), and only the
-            // wrapper's id is canonicalised — owner stamps are preserved.
-            || type_str.contains("AuthoredMap")
+    // Whether a top-level state field is a CRDT collection whose deterministic
+    // id must be (re)assigned from its field name (CIP Invariant I9). Keyed off
+    // the type's final path-segment identifier — matched exactly, never as a
+    // substring. `AuthoredVector` and `AuthoredMap` are listed in their own right
+    // (exact-match does not treat `AuthoredVector` as `Vector`), and a wrapper
+    // such as `Option<UnorderedMap<…>>` is correctly excluded (its outer ident is
+    // `Option`, which has no `reassign_deterministic_id`). `Ownable` is the alias
+    // for `PermissionedStorage` and is listed because the alias is not resolved
+    // at macro time; both delegate `reassign` to the inner `SharedStorage`.
+    fn is_collection_type(ty: &Type) -> bool {
+        matches!(
+            outer_type_ident(ty).as_deref(),
+            Some(
+                "UnorderedMap"
+                    | "SortedMap"
+                    | "Vector"
+                    | "AuthoredVector"
+                    | "UnorderedSet"
+                    | "SortedSet"
+                    | "Counter"
+                    | "ReplicatedGrowableArray"
+                    | "UserStorage"
+                    | "FrozenStorage"
+                    | "SharedStorage"
+                    | "PermissionedStorage"
+                    | "Ownable"
+                    | "AccessControl"
+                    | "AuthoredMap"
+            )
+        )
     }
 
     // Generate reassign calls for each collection field
@@ -1253,9 +1350,8 @@ fn generate_assign_deterministic_ids_impl(
         .enumerate()
         .filter_map(|(idx, field)| {
             let field_type = &field.ty;
-            let type_str = quote! { #field_type }.to_string();
 
-            if !is_collection_type(&type_str) {
+            if !is_collection_type(field_type) {
                 return None;
             }
 
@@ -1375,6 +1471,45 @@ mod tests {
         let generics = item.generics.clone();
         let orig = StructOrEnumItem::Struct(item);
         generate_migrate_my_entries_impl(&ident, &generics, &orig).to_string()
+    }
+
+    /// Helper: render the generated deterministic-id assignment block.
+    fn render_assign(item: syn::ItemStruct) -> String {
+        let ident = item.ident.clone();
+        let generics = item.generics.clone();
+        let orig = StructOrEnumItem::Struct(item);
+        generate_assign_deterministic_ids_impl(&ident, &generics, &orig).to_string()
+    }
+
+    /// Classification keys off the type's outer ident, not a substring, so a
+    /// non-collection whose name merely *contains* a collection name
+    /// (`RateCounter` ⊃ `Counter`) and a wrapper around a collection
+    /// (`Option<UnorderedMap<…>>`) are both excluded — only genuine top-level
+    /// collections get a `reassign_deterministic_id` call. Substring matching
+    /// used to emit calls for both, producing a hard compile error or a
+    /// divergent id.
+    #[test]
+    fn assign_ids_skips_lookalikes_and_wrappers() {
+        let rendered = render_assign(parse_quote! {
+            pub struct AppRoot {
+                pub real: UnorderedMap<String, u64>,
+                pub rate: RateCounter,
+                pub maybe: Option<UnorderedMap<String, u64>>,
+            }
+        });
+
+        assert!(
+            rendered.contains("self . real . reassign_deterministic_id"),
+            "a genuine top-level collection must be (re)assigned, got:\n{rendered}",
+        );
+        assert!(
+            !rendered.contains("self . rate"),
+            "`RateCounter` is not a `Counter` — must NOT be reassigned, got:\n{rendered}",
+        );
+        assert!(
+            !rendered.contains("self . maybe"),
+            "`Option<UnorderedMap<…>>` is a wrapper — must NOT be reassigned, got:\n{rendered}",
+        );
     }
 
     #[test]

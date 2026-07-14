@@ -15,6 +15,7 @@
 //! specialized for `ContextRegistered`; this module is its general-
 //! purpose peer covering all op variants that downstream handlers care
 //! about.
+use calimero_governance_types::NamespaceId;
 use std::sync::OnceLock;
 
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -39,7 +40,7 @@ pub enum OpEvent {
     /// nested under `parent_group_id`. Replaces the old SubgroupNested event,
     /// fired during create flows.
     SubgroupCreated {
-        namespace_id: [u8; 32],
+        namespace_id: NamespaceId,
         parent_group_id: [u8; 32],
         child_group_id: [u8; 32],
     },
@@ -47,7 +48,7 @@ pub enum OpEvent {
     /// another atomically. Replaces the old SubgroupNested/SubgroupUnnested
     /// pair (orphan state is no longer expressible).
     SubgroupReparented {
-        namespace_id: [u8; 32],
+        namespace_id: NamespaceId,
         old_parent_group_id: [u8; 32],
         new_parent_group_id: [u8; 32],
         child_group_id: [u8; 32],

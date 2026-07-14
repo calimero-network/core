@@ -78,12 +78,12 @@ pub(super) fn handle_readiness_beacon(
 ) {
     if !verify_readiness_beacon(&manager.datastore, &beacon) {
         debug!(
-            namespace_id = %hex::encode(beacon.namespace_id),
+            namespace_id = %hex::encode(beacon.namespace_id.as_bytes()),
             "ReadinessBeacon failed verification; dropping"
         );
         return;
     }
-    let namespace_id = beacon.namespace_id;
+    let namespace_id = beacon.namespace_id.to_bytes();
     let peer_pubkey = beacon.peer_pubkey;
     let applied_through = beacon.applied_through;
     let strong = beacon.strong;
@@ -211,7 +211,7 @@ pub(super) fn handle_readiness_probe(
     // probe-driven amplification regardless of probe content.
     if let Some(addr) = &manager.readiness_addr {
         addr.do_send(EmitOutOfCycleBeacon {
-            namespace_id: probe.namespace_id,
+            namespace_id: probe.namespace_id.to_bytes(),
             requesting_peer: peer_id,
         });
     }

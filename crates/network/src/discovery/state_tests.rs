@@ -743,6 +743,170 @@ fn test_independent_addresses_track_failures_separately() {
 }
 
 #[test]
+fn test_add_peer_addr_caps_addresses_per_peer() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+
+    // Advertise far more distinct addresses than the cap allows.
+    for port in 0..(MAX_ADDRS_PER_PEER as u16 + 5) {
+        let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", 4001 + port)
+            .parse()
+            .unwrap();
+        state.add_peer_addr(peer, &addr);
+    }
+
+    assert_eq!(
+        state.peers[&peer].addrs.len(),
+        MAX_ADDRS_PER_PEER,
+        "per-peer address book must be capped"
+    );
+}
+
+#[test]
+fn test_add_peer_addr_evicts_worst_address_when_capped() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+
+    // Fill the book to capacity.
+    let mut addrs = Vec::new();
+    for port in 0..(MAX_ADDRS_PER_PEER as u16) {
+        let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", 4001 + port)
+            .parse()
+            .unwrap();
+        state.add_peer_addr(peer, &addr);
+        addrs.push(addr);
+    }
+
+    // Give the first address some (sub-threshold) dial failures so it is
+    // the worst — but not enough to be evicted by the failure path.
+    let worst = &addrs[0];
+    for _ in 0..(DIAL_FAILURE_EVICTION_THRESHOLD - 1) {
+        let _ = state.record_dial_failure(&peer, worst);
+    }
+
+    // Adding a fresh address must evict the worst one, not a healthy one.
+    let fresh: Multiaddr = "/ip4/127.0.0.1/tcp/5999".parse().unwrap();
+    state.add_peer_addr(peer, &fresh);
+
+    assert_eq!(state.peers[&peer].addrs.len(), MAX_ADDRS_PER_PEER);
+    assert!(
+        !state.peers[&peer].addrs.contains_key(worst),
+        "the address with the most failures must be evicted first"
+    );
+    assert!(
+        state.peers[&peer].addrs.contains_key(&fresh),
+        "the freshly added address must be retained"
+    );
+    // The healthy addresses must be untouched — only `worst` was evicted.
+    for addr in &addrs[1..] {
+        assert!(
+            state.peers[&peer].addrs.contains_key(addr),
+            "healthy address {addr:?} must survive eviction"
+        );
+    }
+}
+
+#[test]
+fn test_add_peer_addr_refresh_moves_address_to_newest_end() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+
+    // Fill the book to capacity with all-healthy addresses.
+    let mut addrs = Vec::new();
+    for port in 0..(MAX_ADDRS_PER_PEER as u16) {
+        let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", 4001 + port)
+            .parse()
+            .unwrap();
+        state.add_peer_addr(peer, &addr);
+        addrs.push(addr);
+    }
+
+    // Re-confirm the oldest address. Eviction order is keyed on last
+    // confirmation, so this address is now the freshest — no longer the
+    // first eviction candidate.
+    state.add_peer_addr(peer, &addrs[0]);
+
+    // Overflow with a new address. With all counts equal, the
+    // least-recently-confirmed entry is dropped — now addrs[1], because
+    // the just-refreshed addrs[0] moved to the most-recent end.
+    let fresh: Multiaddr = "/ip4/127.0.0.1/tcp/5999".parse().unwrap();
+    state.add_peer_addr(peer, &fresh);
+
+    assert_eq!(state.peers[&peer].addrs.len(), MAX_ADDRS_PER_PEER);
+    assert!(
+        state.peers[&peer].addrs.contains_key(&addrs[0]),
+        "a re-confirmed address must survive as most-recently-confirmed"
+    );
+    assert!(
+        !state.peers[&peer].addrs.contains_key(&addrs[1]),
+        "the least-recently-confirmed address must be evicted"
+    );
+    assert!(state.peers[&peer].addrs.contains_key(&fresh));
+}
+
+#[test]
+fn test_add_peer_addr_evicts_oldest_when_all_healthy() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+
+    // Fill the book to capacity with all-healthy (zero-failure) addresses.
+    let mut addrs = Vec::new();
+    for port in 0..(MAX_ADDRS_PER_PEER as u16) {
+        let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", 4001 + port)
+            .parse()
+            .unwrap();
+        state.add_peer_addr(peer, &addr);
+        addrs.push(addr);
+    }
+
+    // With no failures to distinguish them, eviction is deterministic:
+    // the oldest (first-inserted) address is dropped and the newest is
+    // kept — mirroring the peer-cache's newest-first policy so an IP
+    // change is captured rather than pinned out.
+    let fresh: Multiaddr = "/ip4/127.0.0.1/tcp/5999".parse().unwrap();
+    state.add_peer_addr(peer, &fresh);
+
+    assert_eq!(state.peers[&peer].addrs.len(), MAX_ADDRS_PER_PEER);
+    assert!(
+        !state.peers[&peer].addrs.contains_key(&addrs[0]),
+        "the oldest address must be evicted on an all-healthy tie"
+    );
+    assert!(state.peers[&peer].addrs.contains_key(&fresh));
+    // Every later (younger) healthy address survives.
+    for addr in &addrs[1..] {
+        assert!(state.peers[&peer].addrs.contains_key(addr));
+    }
+}
+
+#[test]
+fn test_add_peer_addr_refresh_of_existing_does_not_evict() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+
+    // Fill the book to capacity.
+    let mut addrs = Vec::new();
+    for port in 0..(MAX_ADDRS_PER_PEER as u16) {
+        let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", 4001 + port)
+            .parse()
+            .unwrap();
+        state.add_peer_addr(peer, &addr);
+        addrs.push(addr);
+    }
+
+    // Re-adding an address that is already present is a refresh: it resets
+    // the counter without evicting any sibling, and the book stays full
+    // with the same membership.
+    let _ = state.record_dial_failure(&peer, &addrs[0]);
+    state.add_peer_addr(peer, &addrs[0]);
+
+    assert_eq!(state.peers[&peer].addrs.len(), MAX_ADDRS_PER_PEER);
+    for addr in &addrs {
+        assert!(state.peers[&peer].addrs.contains_key(addr));
+    }
+    assert_eq!(state.peers[&peer].addrs[&addrs[0]], 0);
+}
+
+#[test]
 fn test_take_relay_listener_returns_recorded_peer_and_removes_entry() {
     let mut state = DiscoveryState::default();
     let relay = PeerId::random();
@@ -1344,4 +1508,221 @@ fn test_rendezvous_key_group_and_context_produce_distinct_keys() {
     );
     assert!(grp_key.to_string().contains("/calimero/grp/"));
     assert!(ctx_key.to_string().contains("/calimero/ctx/"));
+}
+
+// ---------------------------------------------------------------------------
+// Reachability FSM — on_address_confirmed / on_address_removed / check_transition
+//
+// The state machine has three states (Unknown/Reachable/Unreachable) and
+// emits a `ReachabilityActions` set only on an ACTUAL transition. These tests
+// pin both the state edges and the exact action-set each edge produces, and
+// the "no action on a non-transition" invariant the dispatcher relies on.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reachability_unknown_to_reachable_on_confirmed_address() {
+    let mut state = DiscoveryState::default();
+    assert_eq!(state.reachability_state, ReachabilityState::Unknown);
+    let rendezvous = PeerId::random();
+    state.update_peer_protocols(&rendezvous, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    let addr: Multiaddr = "/ip4/203.0.113.1/tcp/4001".parse().unwrap();
+    let actions = state.on_address_confirmed(&addr);
+
+    assert_eq!(
+        state.reachability_state,
+        ReachabilityState::Reachable,
+        "a confirmed external address makes the node publicly reachable"
+    );
+    // became_reachable turns ON the AutoNAT server and (re-)registers with
+    // every known rendezvous peer so inbound peers can find us.
+    assert!(actions.enable_autonat_server);
+    assert!(!actions.disable_autonat_server);
+    assert_eq!(actions.rendezvous_register, vec![rendezvous]);
+    assert!(actions.rendezvous_unregister.is_empty());
+    assert!(actions.relay_reservations.is_empty());
+    assert!(actions.has_actions());
+}
+
+#[test]
+fn reachability_unknown_to_unreachable_on_removed_address() {
+    // From Unknown, the first signal that we have NO confirmed external
+    // address transitions straight to Unreachable (behind-NAT).
+    let mut state = DiscoveryState::default();
+    let rendezvous = PeerId::random();
+    let relay = PeerId::random();
+    state.update_peer_protocols(&rendezvous, &[RENDEZVOUS_PROTOCOL_NAME]);
+    state.update_peer_protocols(&relay, &[HOP_PROTOCOL_NAME]);
+
+    let addr: Multiaddr = "/ip4/203.0.113.1/tcp/4001".parse().unwrap();
+    let actions = state.on_address_removed(&addr);
+
+    assert_eq!(state.reachability_state, ReachabilityState::Unreachable);
+    // became_unreachable turns the AutoNAT server OFF, and drives relay
+    // reservations + rendezvous (re-)registration and discovery so a
+    // NAT'd node can still be reached and can still find peers.
+    assert!(!actions.enable_autonat_server);
+    assert!(actions.disable_autonat_server);
+    assert_eq!(actions.relay_reservations, vec![relay]);
+    assert_eq!(actions.rendezvous_register, vec![rendezvous]);
+    assert_eq!(actions.rendezvous_unregister, vec![rendezvous]);
+    assert_eq!(actions.rendezvous_discover, vec![rendezvous]);
+    assert!(actions.has_actions());
+}
+
+#[test]
+fn reachability_no_action_when_state_unchanged() {
+    // Confirming a second address while already Reachable is NOT a
+    // transition — the dispatcher must see an empty action set so it
+    // short-circuits instead of re-registering on every address event.
+    let mut state = DiscoveryState::default();
+    let addr1: Multiaddr = "/ip4/203.0.113.1/tcp/4001".parse().unwrap();
+    let addr2: Multiaddr = "/ip4/203.0.113.2/tcp/4001".parse().unwrap();
+
+    let first = state.on_address_confirmed(&addr1);
+    assert_eq!(state.reachability_state, ReachabilityState::Reachable);
+    assert!(
+        first.has_actions(),
+        "the first confirmation is a transition"
+    );
+
+    let second = state.on_address_confirmed(&addr2);
+    assert_eq!(
+        state.reachability_state,
+        ReachabilityState::Reachable,
+        "state is unchanged"
+    );
+    assert!(
+        !second.has_actions(),
+        "a non-transition must emit no actions"
+    );
+}
+
+#[test]
+fn reachability_reachable_to_unreachable_when_last_address_removed() {
+    // Reachable → Unreachable fires only when the LAST confirmed address is
+    // removed (the set becomes empty).
+    let mut state = DiscoveryState::default();
+    let rendezvous = PeerId::random();
+    state.update_peer_protocols(&rendezvous, &[RENDEZVOUS_PROTOCOL_NAME]);
+    let addr1: Multiaddr = "/ip4/203.0.113.1/tcp/4001".parse().unwrap();
+    let addr2: Multiaddr = "/ip4/203.0.113.2/tcp/4001".parse().unwrap();
+
+    let _ = state.on_address_confirmed(&addr1);
+    let _ = state.on_address_confirmed(&addr2);
+    assert_eq!(state.reachability_state, ReachabilityState::Reachable);
+
+    // Removing one of two addresses leaves a confirmed address → still
+    // Reachable → no transition.
+    let still = state.on_address_removed(&addr1);
+    assert_eq!(state.reachability_state, ReachabilityState::Reachable);
+    assert!(
+        !still.has_actions(),
+        "one address remains, so this is not a transition"
+    );
+
+    // Removing the last address empties the set → transition to Unreachable.
+    let gone = state.on_address_removed(&addr2);
+    assert_eq!(state.reachability_state, ReachabilityState::Unreachable);
+    assert!(gone.disable_autonat_server);
+    assert!(gone.has_actions());
+}
+
+#[test]
+fn test_clear_rendezvous_cookie_forgets_rejected_cookie() {
+    let mut state = DiscoveryState::default();
+    let peer_id = PeerId::random();
+    let cookie = Cookie::for_namespace(Namespace::from_static("test"));
+
+    state.update_peer_protocols(&peer_id, &[RENDEZVOUS_PROTOCOL_NAME]);
+    state.update_rendezvous_cookie(&peer_id, &cookie);
+    assert_eq!(
+        state.peers[&peer_id].rendezvous.as_ref().unwrap().cookie(),
+        Some(&cookie)
+    );
+
+    // Server rejected the cookie (InvalidCookie) → the handler clears it so
+    // the next discover starts cookie-less instead of re-sending the
+    // rejected cookie forever.
+    state.clear_rendezvous_cookie(&peer_id);
+    assert_eq!(
+        state.peers[&peer_id].rendezvous.as_ref().unwrap().cookie(),
+        None
+    );
+
+    // Clearing for an unknown peer is a no-op, not a panic or an insertion.
+    let unknown = PeerId::random();
+    state.clear_rendezvous_cookie(&unknown);
+    assert!(!state.peers.contains_key(&unknown));
+}
+
+// ---------------------------------------------------------------------------
+// slot_holding_rendezvous_peers — the eager-registration target set for
+// overlays subscribed after the last full registration round
+// ---------------------------------------------------------------------------
+
+#[test]
+fn slot_holding_peers_are_requested_and_registered_only() {
+    let mut state = DiscoveryState::default();
+
+    let registered = PeerId::random();
+    let requested = PeerId::random();
+    let discovered = PeerId::random();
+    let pending = PeerId::random();
+    let expired = PeerId::random();
+
+    for peer in [&registered, &requested, &discovered, &pending, &expired] {
+        state.update_peer_protocols(peer, &[RENDEZVOUS_PROTOCOL_NAME]);
+    }
+
+    state.update_rendezvous_registration_status(
+        &registered,
+        RendezvousRegistrationStatus::Registered,
+    );
+    state
+        .update_rendezvous_registration_status(&requested, RendezvousRegistrationStatus::Requested);
+    state.update_rendezvous_registration_status(
+        &discovered,
+        RendezvousRegistrationStatus::Discovered,
+    );
+    state.update_rendezvous_registration_status(&pending, RendezvousRegistrationStatus::Pending);
+    state.update_rendezvous_registration_status(&expired, RendezvousRegistrationStatus::Expired);
+
+    let slot_holding = state.slot_holding_rendezvous_peers();
+
+    assert!(
+        slot_holding.contains(&registered),
+        "a Registered peer holds a live server-side record that must be extended"
+    );
+    assert!(
+        slot_holding.contains(&requested),
+        "a Requested peer has a register in flight; the new key must follow it"
+    );
+    for (peer, status) in [
+        (&discovered, "Discovered"),
+        (&pending, "Pending"),
+        (&expired, "Expired"),
+    ] {
+        assert!(
+            !slot_holding.contains(peer),
+            "{status} peers re-enumerate topics on their next full registration; \
+             eagerly registering with them would duplicate that"
+        );
+    }
+}
+
+#[test]
+fn slot_holding_peers_excludes_non_rendezvous_peers() {
+    let mut state = DiscoveryState::default();
+
+    // A regular peer (no rendezvous protocol) never appears, even though
+    // the peer map knows it.
+    let regular = PeerId::random();
+    state.update_peer_protocols(&regular, &[]);
+
+    // A rendezvous peer we merely discovered doesn't either.
+    let idle_rendezvous = PeerId::random();
+    state.update_peer_protocols(&idle_rendezvous, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    assert!(state.slot_holding_rendezvous_peers().is_empty());
 }

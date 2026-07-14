@@ -39,21 +39,10 @@ pub enum Status {
     Completed { result: String },
 }
 
-/// Mergeable struct from module (tests CRDT in modules)
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
+/// Mergeable struct from module (tests CRDT in modules).
+#[derive(Debug, BorshSerialize, BorshDeserialize, calimero_storage::collections::Mergeable)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct MergeableRecord {
     pub counter: Counter,
     pub name: LwwRegister<String>,
-}
-
-impl calimero_storage::collections::Mergeable for MergeableRecord {
-    fn merge(
-        &mut self,
-        other: &Self,
-    ) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
-        self.counter.merge(&other.counter)?;
-        self.name.merge(&other.name);
-        Ok(())
-    }
 }

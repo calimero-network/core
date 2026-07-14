@@ -120,10 +120,6 @@ pub fn get_delta_details(
                                 "storage_type": "UNIMPLEMENTED",
                             }
                         }),
-                        Action::Compare { id } => json!({
-                            "type": "Compare",
-                            "id": hex::encode(id.as_bytes()),
-                        }),
                     }
                 })
                 .collect();

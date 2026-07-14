@@ -371,3 +371,193 @@ async fn client_discovered_under_global_and_per_namespace_keys_additive() {
         "A must be discoverable under per-namespace key"
     );
 }
+
+/// Regression pin for the cookie-poisoning failure behind broken
+/// namespace-invite joins: replaying a cookie issued for a *per-overlay*
+/// discover on the *global* discover is rejected by the server with
+/// `InvalidCookie` — and a cookie-less global discover afterwards
+/// succeeds.
+///
+/// The production client stored whichever cookie arrived last into the
+/// single per-peer slot, so a per-overlay response poisoned the next
+/// global discover; nothing cleared the rejected cookie, so global
+/// discovery (the only path a namespace-join has to find members of a
+/// namespace the joiner isn't in yet) stayed dead until restart. The
+/// handler-side rules are unit-tested next to the handler
+/// (`is_global_discovery_cookie`, clear-on-`InvalidCookie`); this test
+/// pins the server-side contract those rules exist for, so a future
+/// "simplification" that reintroduces cross-namespace cookie reuse fails
+/// CI instead of shipping.
+#[tokio::test]
+async fn cross_namespace_cookie_is_rejected_and_cookieless_discover_recovers() {
+    use libp2p::rendezvous::ErrorCode;
+
+    let port_a = {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let p = l.local_addr().unwrap().port();
+        drop(l);
+        p
+    };
+    let port_b = {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let p = l.local_addr().unwrap().port();
+        drop(l);
+        p
+    };
+
+    let (mut server, server_peer, server_addr) = build_server().await;
+    let mut a = build_client(format!("/ip4/127.0.0.1/tcp/{port_a}").parse().unwrap()).await;
+    let mut b = build_client(format!("/ip4/127.0.0.1/tcp/{port_b}").parse().unwrap()).await;
+    let peer_a = *a.local_peer_id();
+
+    let global_ns = Namespace::from_static("/calimero/devnet/global");
+    let per_ns = ns(0x44); // the overlay key whose cookie poisons the slot
+
+    a.dial(server_addr.clone()).expect("A dial server");
+    b.dial(server_addr.clone()).expect("B dial server");
+
+    // Phase machine mirroring the production sequence:
+    // RegisterGlobal/RegisterPerNs: A registers under both keys.
+    // DiscoverPerNs: B discovers the overlay key → captures its cookie.
+    // PoisonedGlobal: B replays that cookie on a GLOBAL discover →
+    //   must fail with InvalidCookie (the bug's mechanism).
+    // RecoveryGlobal: B re-discovers global cookie-less → must find A
+    //   (what the clear-on-InvalidCookie handler now guarantees).
+    #[derive(Debug, PartialEq)]
+    enum Phase {
+        RegisterGlobal,
+        RegisterPerNs,
+        DiscoverPerNs,
+        PoisonedGlobal,
+        RecoveryGlobal,
+    }
+    let mut phase = Phase::RegisterGlobal;
+    let mut a_connected = false;
+    let mut b_connected = false;
+    let mut a_global_sent = false;
+    let mut a_per_ns_sent = false;
+    let mut saw_invalid_cookie = false;
+
+    let outcome = timeout(Duration::from_secs(45), async {
+        loop {
+            tokio::select! {
+                ev = server.next() => { let _ = ev; }
+                ev = a.next() => {
+                    if let Some(SwarmEvent::ConnectionEstablished { peer_id, .. }) = ev {
+                        if peer_id == server_peer { a_connected = true; }
+                    }
+                    if let Some(SwarmEvent::Behaviour(BehaviourEvent::Rendezvous(
+                        RzClientEvent::Registered { .. },
+                    ))) = ev
+                    {
+                        match phase {
+                            Phase::RegisterGlobal => phase = Phase::RegisterPerNs,
+                            Phase::RegisterPerNs => {
+                                if b_connected {
+                                    b.behaviour_mut().rendezvous.discover(
+                                        Some(per_ns.clone()),
+                                        None,
+                                        None,
+                                        server_peer,
+                                    );
+                                    phase = Phase::DiscoverPerNs;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                ev = b.next() => {
+                    if let Some(SwarmEvent::ConnectionEstablished { peer_id, .. }) = ev {
+                        if peer_id == server_peer { b_connected = true; }
+                    }
+                    match ev {
+                        Some(SwarmEvent::Behaviour(BehaviourEvent::Rendezvous(
+                            RzClientEvent::Discovered { registrations, cookie, .. },
+                        ))) => {
+                            let found_a = registrations
+                                .iter()
+                                .any(|r| r.record.peer_id() == peer_a);
+                            match phase {
+                                Phase::DiscoverPerNs => {
+                                    assert!(
+                                        found_a,
+                                        "sanity: A must be discoverable under its overlay key"
+                                    );
+                                    // THE BUG'S MECHANISM: replay the
+                                    // per-overlay cookie on a global discover.
+                                    b.behaviour_mut().rendezvous.discover(
+                                        Some(global_ns.clone()),
+                                        Some(cookie),
+                                        None,
+                                        server_peer,
+                                    );
+                                    phase = Phase::PoisonedGlobal;
+                                }
+                                Phase::PoisonedGlobal => {
+                                    panic!(
+                                        "server accepted a per-overlay cookie on a global \
+                                         discover — the cookie-namespace contract changed; \
+                                         re-evaluate is_global_discovery_cookie"
+                                    );
+                                }
+                                Phase::RecoveryGlobal => {
+                                    if found_a {
+                                        return; // recovered: global discovery works again
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        Some(SwarmEvent::Behaviour(BehaviourEvent::Rendezvous(
+                            RzClientEvent::DiscoverFailed { error, .. },
+                        ))) => {
+                            assert_eq!(
+                                phase, Phase::PoisonedGlobal,
+                                "only the poisoned global discover may fail"
+                            );
+                            assert_eq!(error, ErrorCode::InvalidCookie);
+                            saw_invalid_cookie = true;
+                            // What clear-on-InvalidCookie now does: retry
+                            // the global discover WITHOUT a cookie.
+                            b.behaviour_mut().rendezvous.discover(
+                                Some(global_ns.clone()),
+                                None,
+                                None,
+                                server_peer,
+                            );
+                            phase = Phase::RecoveryGlobal;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            if a_connected {
+                if !a_global_sent {
+                    a.behaviour_mut()
+                        .rendezvous
+                        .register(global_ns.clone(), server_peer, None)
+                        .expect("A register under global");
+                    a_global_sent = true;
+                } else if !a_per_ns_sent && phase == Phase::RegisterPerNs {
+                    a.behaviour_mut()
+                        .rendezvous
+                        .register(per_ns.clone(), server_peer, None)
+                        .expect("A register under per-namespace");
+                    a_per_ns_sent = true;
+                }
+            }
+        }
+    })
+    .await;
+
+    outcome.expect(
+        "sequence did not complete: per-overlay cookie replayed on global discover must be \
+         rejected with InvalidCookie, and a cookie-less global discover must then find A",
+    );
+    assert!(
+        saw_invalid_cookie,
+        "the poisoned global discover must have failed"
+    );
+}

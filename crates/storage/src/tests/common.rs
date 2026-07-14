@@ -34,6 +34,16 @@ impl Data for EmptyData {
     }
 }
 
+// RekeyTarget supertrait of Mergeable.
+impl crate::collections::rekey::RekeyTarget for EmptyData {
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        crate::rekey_field_if_supported!(
+            &mut self.storage,
+            crate::collections::rekey::field_child_id(parent_id, "storage")
+        );
+    }
+}
+
 // LWW-based merge for test type (no CRDT fields)
 impl Mergeable for EmptyData {
     fn merge(&mut self, _other: &Self) -> Result<(), MergeError> {
@@ -65,6 +75,24 @@ impl Page {
 }
 
 impl AtomicUnit for Page {}
+
+// RekeyTarget supertrait of Mergeable.
+impl crate::collections::rekey::RekeyTarget for Page {
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        crate::rekey_field_if_supported!(
+            &mut self.title,
+            crate::collections::rekey::field_child_id(parent_id, "title")
+        );
+        crate::rekey_field_if_supported!(
+            &mut self.paragraphs,
+            crate::collections::rekey::field_child_id(parent_id, "paragraphs")
+        );
+        crate::rekey_field_if_supported!(
+            &mut self.storage,
+            crate::collections::rekey::field_child_id(parent_id, "storage")
+        );
+    }
+}
 
 // LWW-based merge for test type (no CRDT fields)
 impl Mergeable for Page {
@@ -117,6 +145,20 @@ impl Paragraph {
 }
 
 impl AtomicUnit for Paragraph {}
+
+// RekeyTarget supertrait of Mergeable.
+impl crate::collections::rekey::RekeyTarget for Paragraph {
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        crate::rekey_field_if_supported!(
+            &mut self.text,
+            crate::collections::rekey::field_child_id(parent_id, "text")
+        );
+        crate::rekey_field_if_supported!(
+            &mut self.storage,
+            crate::collections::rekey::field_child_id(parent_id, "storage")
+        );
+    }
+}
 
 // LWW-based merge for test type (no CRDT fields)
 impl Mergeable for Paragraph {
@@ -183,6 +225,24 @@ impl Data for Person {
 
     fn element_mut(&mut self) -> &mut Element {
         &mut self.storage
+    }
+}
+
+// RekeyTarget supertrait of Mergeable.
+impl crate::collections::rekey::RekeyTarget for Person {
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        crate::rekey_field_if_supported!(
+            &mut self.name,
+            crate::collections::rekey::field_child_id(parent_id, "name")
+        );
+        crate::rekey_field_if_supported!(
+            &mut self.age,
+            crate::collections::rekey::field_child_id(parent_id, "age")
+        );
+        crate::rekey_field_if_supported!(
+            &mut self.storage,
+            crate::collections::rekey::field_child_id(parent_id, "storage")
+        );
     }
 }
 

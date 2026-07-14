@@ -83,8 +83,10 @@ impl Handler<StoreGroupMetaRequest> for ContextManager {
             .flatten()
             .is_none()
         {
-            let _ = CapabilitiesRepository::new(&self.datastore)
-                .set_default_capabilities(&group_id, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS);
+            let _ = CapabilitiesRepository::new(&self.datastore).set_default_capabilities(
+                &group_id,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            );
         }
 
         info!(?group_id, %admin_identity, "stored group metadata from gossip");

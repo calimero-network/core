@@ -12,7 +12,7 @@ use calimero_crypto::Nonce;
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::{NamespaceJoinParams, OpenSubgroupJoinParams};
 use calimero_node_primitives::join_bundle::JoinBundle;
-use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use libp2p::PeerId;
@@ -21,6 +21,7 @@ use tokio::time;
 use tracing::{debug, info, warn};
 
 use super::SyncManager;
+use crate::sync::MAX_BACKFILL_OPS;
 
 impl SyncManager {
     /// Actively request governance catch-up from a specific peer whose
@@ -102,6 +103,9 @@ impl SyncManager {
                 delta_ids: Vec::new(),
             },
             next_nonce: rand::thread_rng().gen(),
+            // Sentinel party id (no owned key to prove); backfill serves only
+            // already-signed deltas, which the requester re-verifies on receipt.
+            pop: None,
         };
 
         if let Err(err) = crate::sync::stream::send(&mut stream, &msg, None).await {
@@ -361,10 +365,6 @@ impl SyncManager {
         let handle = store.handle();
         let mut found = Vec::new();
 
-        /// Maximum ops returned in a single backfill response to prevent
-        /// memory exhaustion from large namespace governance DAGs.
-        const MAX_BACKFILL_OPS: usize = 500;
-
         if delta_ids.is_empty() {
             // Empty request = "give me everything for this namespace".
             let start = calimero_store::key::NamespaceGovOp::new(namespace_id, [0u8; 32]);
@@ -468,7 +468,7 @@ impl SyncManager {
         // point-to-point, not folded governance state, so responders
         // disagreeing cannot diverge membership.
         let now_secs = calimero_context::group_store::now_secs();
-        if let Err(err) = NamespaceMembershipService::new(&store, namespace_id)
+        if let Err(err) = NamespaceMembershipService::new(&store, namespace_id.into())
             .validate_open_invitation(&invitation, now_secs)
         {
             let msg = StreamMessage::Message {
@@ -493,6 +493,7 @@ impl SyncManager {
                         match GroupKeyring::wrap_for_member(
                             &sender_sk,
                             &joiner_public_key,
+                            &group_id.to_bytes(),
                             &group_key,
                         ) {
                             Ok(envelope) => borsh::to_vec(&envelope).unwrap_or_default(),
@@ -678,6 +679,7 @@ impl SyncManager {
                         match GroupKeyring::wrap_for_member(
                             &sender_sk,
                             &joiner_public_key,
+                            &subgroup_gid.to_bytes(),
                             &group_key,
                         ) {
                             Ok(envelope) => borsh::to_vec(&envelope).unwrap_or_default(),
@@ -724,10 +726,50 @@ impl SyncManager {
     /// on the namespace topic, opens a stream, sends the request, and
     /// returns the wrapped key envelope. Same peer-discovery retry loop
     /// as `initiate_namespace_join`.
+    /// Sign the transport-binding proof for a namespace/subgroup join `Init`.
+    ///
+    /// The joiner's key lives in the namespace identity store (keyed by the
+    /// namespace group id), not the per-context identity store, so this loads
+    /// it directly rather than via [`SyncManager::build_init_pop`]. The proof
+    /// binds the zero context id — matching the sentinel the join `Init`
+    /// carries — plus `joiner_public_key` and this node's transport `PeerId`,
+    /// so the responder can confirm the caller controls the identity it is
+    /// about to pre-register. See [`InitProof`].
+    async fn build_join_init_pop(
+        &self,
+        namespace_id: [u8; 32],
+        joiner_public_key: PublicKey,
+    ) -> Option<InitProof> {
+        use zeroize::Zeroize;
+        let store = self.context_client.datastore_handle().into_inner();
+        let group_id = calimero_context_config::types::ContextGroupId::from(namespace_id);
+        let mut record = NamespaceRepository::new(&store)
+            .resolve_identity_record(&group_id)
+            .ok()
+            .flatten()?;
+        let private_key = calimero_primitives::identity::PrivateKey::from(record.private_key);
+        // `PrivateKey::from` copies into its own zeroizing wrapper; wipe the
+        // plain `[u8; 32]` copy left in the record struct on the stack (mirrors
+        // the discipline in join_namespace / request_missing_deltas).
+        record.private_key.zeroize();
+        // Bind the proof to the target namespace (the join `Init` itself carries
+        // a sentinel context_id) so it can't be replayed against a different
+        // namespace; the responder verifies against the same namespace id.
+        self.sign_init_pop(
+            ContextId::from(namespace_id),
+            joiner_public_key,
+            &private_key,
+        )
+        .await
+    }
+
     pub(super) async fn initiate_open_subgroup_join(
         &self,
         params: OpenSubgroupJoinParams,
     ) -> eyre::Result<Vec<u8>> {
+        let join_pop = self
+            .build_join_init_pop(params.namespace_id, params.joiner_public_key)
+            .await;
         let topic = libp2p::gossipsub::TopicHash::from_raw(format!(
             "ns/{}",
             hex::encode(params.namespace_id)
@@ -800,6 +842,7 @@ impl SyncManager {
                     joiner_public_key: params.joiner_public_key,
                 },
                 next_nonce: rand::thread_rng().gen(),
+                pop: join_pop,
             };
 
             if let Err(e) = crate::sync::stream::send(&mut stream, &msg, None).await {
@@ -893,9 +936,17 @@ impl SyncManager {
         &self,
         namespace_id: [u8; 32],
     ) -> eyre::Result<Vec<Vec<u8>>> {
+        // Bound how much this collects into memory / one response, mirroring the
+        // backfill path's cap. Without it a namespace with a very long (or
+        // maliciously inflated) governance-op history is read fully into RAM and
+        // shipped in a single message.
+        const MAX_COLLECT_OPS: usize = 500;
+        const MAX_COLLECT_BYTES: usize = 8 * 1024 * 1024;
+
         let store = self.context_client.datastore_handle().into_inner();
         let handle = store.handle();
         let mut ops = Vec::new();
+        let mut total_bytes = 0usize;
 
         let start = calimero_store::key::NamespaceGovOp::new(namespace_id, [0u8; 32]);
         let mut iter = handle.iter::<calimero_store::key::NamespaceGovOp>()?;
@@ -909,10 +960,20 @@ impl SyncManager {
             if key.namespace_id() != namespace_id {
                 break;
             }
+            if ops.len() >= MAX_COLLECT_OPS || total_bytes >= MAX_COLLECT_BYTES {
+                warn!(
+                    namespace_id = %hex::encode(namespace_id),
+                    ops = ops.len(),
+                    total_bytes,
+                    "collect_namespace_governance_ops hit cap; truncating response"
+                );
+                break;
+            }
             if let Ok(Some(value)) = handle.get(&key) {
                 if let Some(bytes) =
                     crate::sync::helpers::extract_signed_op_bytes(&value.skeleton_bytes)
                 {
+                    total_bytes = total_bytes.saturating_add(bytes.len());
                     ops.push(bytes);
                 }
             }
@@ -927,6 +988,9 @@ impl SyncManager {
         &self,
         params: NamespaceJoinParams,
     ) -> eyre::Result<JoinBundle> {
+        let join_pop = self
+            .build_join_init_pop(params.namespace_id, params.joiner_public_key)
+            .await;
         // Connect-loop logic (shuffled-peer retry, per-peer timeout,
         // outer deadline) lives in `super::namespace_join::open_namespace_join_stream`
         // so it can be unit-tested against `MockSyncNetwork` without
@@ -968,6 +1032,7 @@ impl SyncManager {
                 std::time::Duration::from_millis(
                     crate::sync::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
                 ),
+                self.sync_config.namespace_discovery_wait,
                 &rejected_peers,
             )
             .await
@@ -1005,6 +1070,7 @@ impl SyncManager {
             let msg = StreamMessage::Init {
                 context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
                 party_id: params.joiner_public_key,
+                pop: join_pop,
                 payload: InitPayload::NamespaceJoinRequest {
                     namespace_id: params.namespace_id,
                     invitation_bytes: params.invitation_bytes.clone(),
@@ -1162,6 +1228,8 @@ impl SyncManager {
                 use rand::Rng;
                 rand::thread_rng().gen()
             },
+            // Sentinel party id; see the catch-up backfill site above.
+            pop: None,
         };
 
         if let Err(err) = crate::sync::stream::send(&mut stream, &msg, None).await {
@@ -1221,6 +1289,8 @@ impl SyncManager {
                                         calimero_context_client::local_governance::NamespaceOp::Group { .. } => {
                                             "Group".to_owned()
                                         }
+                                        // `NamespaceOp` is `#[non_exhaustive]`.
+                                        _ => "Unknown".to_owned(),
                                     };
                                     warn!(
                                         namespace_id = %hex::encode(namespace_id),
@@ -1345,13 +1415,16 @@ impl SyncManager {
             }
         };
 
-        let awaiting = match calimero_context::group_store::namespace_groups_awaiting_key(
+        // `(group_id, key_id)` pairs we're stranded on — we ask each peer for
+        // the EXACT key epoch a buffered op needs, so a rotated-out key can be
+        // recovered (a current-key-only request could not deliver it).
+        let awaiting = match calimero_context::group_store::namespace_group_keys_awaiting(
             &store,
-            namespace_id,
+            namespace_id.into(),
         ) {
-            Ok(groups) => groups,
+            Ok(pairs) => pairs,
             Err(err) => {
-                debug!(%err, "failed to enumerate groups awaiting key");
+                debug!(%err, "failed to enumerate group keys awaiting");
                 return;
             }
         };
@@ -1378,7 +1451,7 @@ impl SyncManager {
             return;
         }
 
-        for group_id in awaiting {
+        for (group_id, key_id) in awaiting {
             for peer in &candidates {
                 let Some((envelope_bytes, responder_identity)) = self
                     .request_group_key_from_peer(
@@ -1386,6 +1459,7 @@ impl SyncManager {
                         namespace_id,
                         group_id,
                         requester_public_key,
+                        Some(key_id),
                     )
                     .await
                 else {
@@ -1398,7 +1472,7 @@ impl SyncManager {
                 let store = self.context_client.datastore_handle().into_inner();
                 let outcome = calimero_context::group_store::apply_received_group_key(
                     &store,
-                    namespace_id,
+                    namespace_id.into(),
                     group_id,
                     &envelope_bytes,
                     responder_identity,
@@ -1476,6 +1550,7 @@ impl SyncManager {
         namespace_id: [u8; 32],
         group_id: [u8; 32],
         requester_public_key: PublicKey,
+        key_id: Option<[u8; 32]>,
     ) -> Option<(Vec<u8>, PublicKey)> {
         use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 
@@ -1494,11 +1569,17 @@ impl SyncManager {
                 namespace_id,
                 group_id,
                 requester_public_key,
+                key_id,
             },
             next_nonce: {
                 use rand::Rng;
                 rand::thread_rng().gen()
             },
+            // The response is an ECDH key envelope wrapped to
+            // `requester_public_key`; only the holder of its private key can
+            // unwrap it, so possession is proven implicitly and no signed proof
+            // is required on this path.
+            pop: None,
         };
 
         if let Err(err) = crate::sync::stream::send(&mut stream, &msg, None).await {
@@ -1540,6 +1621,7 @@ impl SyncManager {
         namespace_id: [u8; 32],
         group_id: [u8; 32],
         requester_public_key: PublicKey,
+        requested_key_id: Option<[u8; 32]>,
         stream: &mut Stream,
         nonce: Nonce,
     ) -> eyre::Result<()> {
@@ -1549,9 +1631,10 @@ impl SyncManager {
         let (key_envelope_bytes, responder_identity) =
             match calimero_context::group_store::build_group_key_delivery(
                 &store,
-                namespace_id,
+                namespace_id.into(),
                 group_id,
                 requester_public_key,
+                requested_key_id,
             ) {
                 Ok(pair) => pair,
                 Err(err) => {

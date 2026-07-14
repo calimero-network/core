@@ -1313,10 +1313,10 @@ impl TeeVerifyQuoteResponse {
 use crate::validation::{
     helpers::{
         validate_bytes_size, validate_hex_string, validate_optional_string_length,
-        validate_string_length, validate_url,
+        validate_safe_path, validate_string_length, validate_url,
     },
     Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE, MAX_PACKAGE_NAME_LENGTH,
-    MAX_PATH_LENGTH, MAX_QUOTE_B64_LENGTH, MAX_VERSION_LENGTH,
+    MAX_QUOTE_B64_LENGTH, MAX_VERSION_LENGTH,
 };
 
 impl Validate for InstallApplicationRequest {
@@ -1351,12 +1351,8 @@ impl Validate for InstallDevApplicationRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
 
-        if self.path.as_str().len() > MAX_PATH_LENGTH {
-            errors.push(ValidationError::StringTooLong {
-                field: "path",
-                max: MAX_PATH_LENGTH,
-                actual: self.path.as_str().len(),
-            });
+        if let Some(e) = validate_safe_path(self.path.as_str(), "path") {
+            errors.push(e);
         }
 
         if let Some(e) = validate_bytes_size(&self.metadata, "metadata", MAX_METADATA_SIZE) {

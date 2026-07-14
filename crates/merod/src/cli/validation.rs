@@ -19,6 +19,16 @@ const MIN_SYNC_TIMEOUT_MS: u64 = 1000; // 1 second
 /// Maximum sync timeout in milliseconds
 const MAX_SYNC_TIMEOUT_MS: u64 = 300_000; // 5 minutes
 
+/// Minimum per-session sync deadline in milliseconds. A zero deadline makes
+/// every session's timeout wrap to fire immediately, silently aborting sync
+/// before it can make progress — divergence with no error. 1s floors it above
+/// that failure mode.
+const MIN_SYNC_SESSION_DEADLINE_MS: u64 = 1000; // 1 second
+/// Maximum per-session sync deadline in milliseconds. Generous because a
+/// cold-start snapshot sync can legitimately take minutes; past this a stuck
+/// session should fail-fast rather than hang for the whole window.
+const MAX_SYNC_SESSION_DEADLINE_MS: u64 = 600_000; // 10 minutes
+
 /// Minimum sync interval in milliseconds
 const MIN_SYNC_INTERVAL_MS: u64 = 100; // 100ms
 /// Maximum sync interval in milliseconds
@@ -545,6 +555,13 @@ fn validate_limit_values(config: &ConfigFile) -> EyreResult<()> {
         "sync.frequency",
         Duration::from_millis(MIN_SYNC_INTERVAL_MS),
         Duration::from_millis(MAX_SYNC_INTERVAL_MS),
+    )?;
+
+    validate_duration_range(
+        config.sync.session_deadline,
+        "sync.session_deadline",
+        Duration::from_millis(MIN_SYNC_SESSION_DEADLINE_MS),
+        Duration::from_millis(MAX_SYNC_SESSION_DEADLINE_MS),
     )?;
 
     // Validate discovery limits

@@ -75,8 +75,13 @@ impl DagCompactor {
         let config = self.config;
         let in_progress = self.sweep_in_progress.clone();
         actix::spawn(async move {
+            // Clear the in-progress flag on the way out via RAII, so a panic
+            // inside `compact_all` (e.g. a bug in DAG pruning) still releases the
+            // guard. A plain post-await `store(false)` would be skipped on unwind,
+            // leaving `sweep_in_progress` stuck `true` and silently disabling all
+            // future compaction sweeps for the process lifetime.
+            let _guard = SweepGuard(in_progress);
             DagCompactor::compact_all(delta_stores, config).await;
-            in_progress.store(false, Ordering::Release);
         });
     }
 
@@ -121,6 +126,17 @@ impl DagCompactor {
     }
 }
 
+/// RAII guard that clears [`DagCompactor::sweep_in_progress`] when the sweep
+/// task finishes — whether it returns normally or unwinds on panic — so a
+/// failed sweep can never permanently wedge the compactor.
+struct SweepGuard(Arc<AtomicBool>);
+
+impl Drop for SweepGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 impl Actor for DagCompactor {
     type Context = Context<Self>;
 
@@ -142,5 +158,37 @@ impl Actor for DagCompactor {
 
     fn stopped(&mut self, _ctx: &mut Self::Context) {
         info!("DAG compaction actor stopped");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A compaction sweep that unwinds mid-run must still clear
+    /// `sweep_in_progress`, or the guard permanently wedges the compactor and no
+    /// later sweep ever starts. The flag is released by `SweepGuard::drop`, which
+    /// runs on panic, so catching a simulated panic must leave it cleared.
+    #[test]
+    fn panicking_sweep_clears_in_progress_flag() {
+        let flag = Arc::new(AtomicBool::new(false));
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Set the flag BEFORE constructing the guard, matching production
+            // (`spawn_sweep` sets it via `compare_exchange`, then builds the
+            // guard). If it were set after — or not at all — the flag would
+            // already be `false` and the final assertion would pass even with a
+            // no-op `Drop`; setting it first makes the assertion actually prove
+            // the guard cleared it.
+            flag.store(true, Ordering::Release);
+            let _guard = SweepGuard(Arc::clone(&flag));
+            panic!("simulated compaction sweep panic");
+        }));
+        assert!(result.is_err(), "the sweep must have unwound");
+
+        assert!(
+            !flag.load(Ordering::Acquire),
+            "SweepGuard must clear the in-progress flag even when the sweep panics"
+        );
     }
 }

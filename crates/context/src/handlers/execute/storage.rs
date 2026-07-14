@@ -2,6 +2,7 @@
 
 use core::cell::RefCell;
 use core::mem;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use calimero_primitives::context::ContextId;
@@ -27,8 +28,14 @@ pub struct ContextStorage {
     #[covariant]
     #[borrows(mut store)]
     inner: Temporal<'this, 'static, Store>,
-    // todo! unideal, will revisit the shape of WriteLayer to own keys (since they are now fixed-sized)
-    keys: RefCell<Vec<Arc<key::ContextState>>>,
+    // Interned state keys, keyed by their padded 32-byte form. The temporal
+    // layer above borrows keys with a `'static` lifetime (see `state_key`), so
+    // their backing allocations must live as long as `Self` and cannot be
+    // cleared mid-life. Interning bounds this to one `Arc` per *distinct* key
+    // rather than one per storage operation (which previously grew unbounded
+    // for read-heavy contexts).
+    // todo! revisit the shape of WriteLayer to own keys (since they are now fixed-sized)
+    keys: RefCell<HashMap<[u8; 32], Arc<key::ContextState>>>,
 }
 
 /// The exclusive upper bound for a byte prefix (smallest key not starting with
@@ -57,7 +64,9 @@ pub struct ContextPrivateStorage {
     #[covariant]
     #[borrows(mut store)]
     inner: Temporal<'this, 'static, Store>,
-    keys: RefCell<Vec<Arc<key::ContextPrivateState>>>,
+    // Interned like `ContextStorage::keys` — bounded by distinct keys, not by
+    // operation count.
+    keys: RefCell<HashMap<[u8; 32], Arc<key::ContextPrivateState>>>,
 }
 
 // safety: ContextStorage is constructed exclusively for the runtime
@@ -105,23 +114,40 @@ impl ContextStorage {
     fn state_key(&self, key: &[u8]) -> Option<&'static key::ContextState> {
         let mut state_key = [0; 32];
 
-        (key.len() <= state_key.len()).then_some(())?;
+        // Context-state keys are exactly 32 bytes (the runtime hands us
+        // fixed-width `calimero_storage::store::Key::to_bytes()` values).
+        // Anything else is rejected outright: zero-padding a shorter key
+        // collided distinct keys onto the same slot (e.g. `b"a"` and
+        // `b"a\0"`), and silently truncating/dropping a longer one turned
+        // get/set/remove/has into no-ops — both are data loss. Refusing the
+        // key surfaces the mismatch as a clean miss instead.
+        (key.len() == state_key.len()).then_some(())?;
 
-        state_key[..key.len()].copy_from_slice(key);
+        state_key.copy_from_slice(key);
 
         let mut keys = self.borrow_keys().borrow_mut();
 
         let context_id = self.borrow_context_id();
 
-        keys.push(Arc::new(key::ContextState::new(*context_id, state_key)));
+        // Intern by the padded 32-byte key. The context id is fixed for a given
+        // storage instance, so the key bytes alone identify the entry; repeated
+        // accesses reuse the same `Arc` instead of leaking a new one each call.
+        let interned = keys
+            .entry(state_key)
+            .or_insert_with(|| Arc::new(key::ContextState::new(*context_id, state_key)));
 
-        // safety: TemporalStore lives as long as Self, so the reference will hold
-        //         plus, we never return a reference to the keys externally
-        unsafe {
-            mem::transmute::<Option<&key::ContextState>, Option<&'static key::ContextState>>(
-                keys.last().map(|x| &**x),
-            )
-        }
+        // safety: the interned `Arc` lives in `self`'s `keys` map for as long as
+        //         `Self` (the temporal layer that borrows it is also a field of
+        //         `Self`), and its heap payload keeps a stable address across
+        //         later map inserts/rehashes — taking the reference through the
+        //         `Arc` (`&**interned`), not into the `HashMap`, so a rehash does
+        //         not invalidate it. `Self` is an `ouroboros` self-referential
+        //         struct, so it is pinned in place: a move cannot invalidate the
+        //         temporal layer's borrow of these keys. We never hand a key
+        //         reference out past `Self`.
+        Some(unsafe {
+            mem::transmute::<&key::ContextState, &'static key::ContextState>(&**interned)
+        })
     }
 
     pub fn commit(mut self) -> eyre::Result<Store> {
@@ -164,11 +190,13 @@ impl Storage for ContextStorage {
         let key = self.state_key(&key)?;
 
         self.with_inner_mut(|inner| {
+            // Single read: `get` already distinguishes present from absent, so
+            // the prior `has` + `get` was a redundant second lookup per write.
+            // `.ok()?` preserves the original abort-on-read-error behavior — a
+            // failed lookup skips the put rather than treating it as absent.
             let old = inner
-                .has(key)
+                .get(key)
                 .ok()?
-                .then(|| inner.get(key).ok().flatten())
-                .flatten()
                 .map(|slice| slice.into_boxed().into_vec());
 
             inner.put(key, value.into()).ok()?;
@@ -288,27 +316,34 @@ impl ContextPrivateStorage {
     fn state_key(&self, key: &[u8]) -> Option<&'static key::ContextPrivateState> {
         let mut state_key = [0; 32];
 
-        (key.len() <= state_key.len()).then_some(())?;
+        // Exactly 32 bytes required — see `ContextStorage::state_key` for why
+        // zero-padding short keys (collision) and dropping long keys (silent
+        // no-op) are both unacceptable.
+        (key.len() == state_key.len()).then_some(())?;
 
-        state_key[..key.len()].copy_from_slice(key);
+        state_key.copy_from_slice(key);
 
         let mut keys = self.borrow_keys().borrow_mut();
 
         let context_id = self.borrow_context_id();
 
-        keys.push(Arc::new(key::ContextPrivateState::new(
-            *context_id,
-            state_key,
-        )));
+        // Intern by the padded 32-byte key — see `ContextStorage::state_key`.
+        let interned = keys
+            .entry(state_key)
+            .or_insert_with(|| Arc::new(key::ContextPrivateState::new(*context_id, state_key)));
 
-        // safety: TemporalStore lives as long as Self, so the reference will hold
-        //         plus, we never return a reference to the keys externally
-        unsafe {
-            mem::transmute::<
-                Option<&key::ContextPrivateState>,
-                Option<&'static key::ContextPrivateState>,
-            >(keys.last().map(|x| &**x))
-        }
+        // safety: same as `ContextStorage::state_key` — the interned `Arc` lives
+        //         in `self`'s `keys` map for as long as `Self`, its heap payload
+        //         keeps a stable address across map rehashes (the reference goes
+        //         through the `Arc`, not the `HashMap`), and `Self` is an
+        //         `ouroboros`-pinned self-referential struct so a move cannot
+        //         invalidate the temporal layer's borrow. We never hand a key
+        //         reference out past `Self`.
+        Some(unsafe {
+            mem::transmute::<&key::ContextPrivateState, &'static key::ContextPrivateState>(
+                &**interned,
+            )
+        })
     }
 
     pub fn commit(mut self) -> eyre::Result<Store> {
@@ -347,11 +382,13 @@ impl Storage for ContextPrivateStorage {
         let key = self.state_key(&key)?;
 
         self.with_inner_mut(|inner| {
+            // Single read: `get` already distinguishes present from absent, so
+            // the prior `has` + `get` was a redundant second lookup per write.
+            // `.ok()?` preserves the original abort-on-read-error behavior — a
+            // failed lookup skips the put rather than treating it as absent.
             let old = inner
-                .has(key)
+                .get(key)
                 .ok()?
-                .then(|| inner.get(key).ok().flatten())
-                .flatten()
                 .map(|slice| slice.into_boxed().into_vec());
 
             inner.put(key, value.into()).ok()?;
@@ -435,5 +472,65 @@ impl<S: Storage> Storage for ReadOnlyContextStorage<'_, S> {
     fn index_del_prefix(&mut self, _prefix: &[u8]) -> bool {
         tracing::debug!("ReadOnlyContextStorage: write suppressed (index_del_prefix)");
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_primitives::context::ContextId;
+    use calimero_runtime::store::Storage;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
+    use super::ContextStorage;
+
+    fn storage() -> ContextStorage {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        ContextStorage::from(store, ContextId::from([0x11; 32]))
+    }
+
+    #[test]
+    fn exact_32_byte_key_roundtrips() {
+        let mut s = storage();
+        let key = vec![0x42u8; 32];
+        assert!(s.set(key.clone(), b"value".to_vec()).is_none());
+        assert_eq!(s.get(&key), Some(b"value".to_vec()));
+        assert!(s.has(&key));
+    }
+
+    #[test]
+    fn keys_not_exactly_32_bytes_are_rejected() {
+        let mut s = storage();
+        for len in [0usize, 1, 31, 33, 64] {
+            let key = vec![0x42u8; len];
+            // Attempt the write. Its `None` return is NOT proof of rejection —
+            // `set` also returns `None` on an accepted insert with no prior
+            // value — so the reads below are what prove the key was refused
+            // (not truncated/padded and stored).
+            s.set(key.clone(), b"value".to_vec());
+            assert_eq!(s.get(&key), None, "get must miss for a {len}-byte key");
+            assert!(!s.has(&key), "has must be false for a {len}-byte key");
+        }
+    }
+
+    #[test]
+    fn short_key_does_not_collide_with_zero_padded_32_byte_key() {
+        // Before the fix a 31-byte key was zero-padded to 32 bytes, colliding
+        // with the genuine 32-byte key that ends in a zero. Now the short key
+        // is refused outright, so the padded key is the only real entry.
+        let mut s = storage();
+        let mut padded = vec![0x42u8; 31];
+        padded.push(0x00); // 32 bytes — the OLD zero-padding of `short`
+        let short = vec![0x42u8; 31];
+
+        s.set(padded.clone(), b"real".to_vec());
+        assert_eq!(
+            s.get(&short),
+            None,
+            "short key must not alias the padded key"
+        );
+        assert_eq!(s.get(&padded), Some(b"real".to_vec()));
     }
 }

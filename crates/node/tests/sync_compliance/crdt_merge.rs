@@ -6,10 +6,18 @@
 //!
 //! > Initialized nodes MUST CRDT-merge; overwrite ONLY for fresh nodes.
 //!
-//! These tests verify that HashComparison (and other state-based protocols)
-//! ALWAYS use CRDT merge semantics at leaf entities, NEVER raw overwrite.
+//! ## SCOPE — what these tests actually assert (read before extending)
 //!
-//! ## Test Coverage
+//! These run against the `sync_sim` harness, which models entity metadata +
+//! protocol *selection*. `force_protocol` only sets a field — it does NOT execute
+//! a merge. So every `test_i5_*` asserts only that both nodes hold the entity with
+//! the expected `crdt_type` and preserved `hlc_timestamp` — NOT merged values. The
+//! names read like value assertions; the bodies are metadata/protocol assertions.
+//!
+//! Real value-level merge laws (convergence, interleave, counter sums, LWW,
+//! tombstone non-resurrection) live in `calimero-storage`'s `tests/` + `src/tests/`.
+//!
+//! ## Test Coverage (metadata / protocol-selection only)
 //!
 //! | Test | CIP Section | Invariant |
 //! |------|-------------|-----------|
@@ -64,8 +72,10 @@ fn test_i5_lww_timestamp_wins() {
     // Verify different values (different root hashes)
     assert_ne!(alice.root_hash(), bob.root_hash());
 
-    // After CRDT merge, Bob's value (timestamp 200) should win
-    // This is verified by the actual sync execution
+    // NOTE: this harness does NOT execute the merge — `force_protocol` only
+    // selects a protocol. We assert only that the per-entity HLC metadata is
+    // preserved (the input to LWW), not that "Bob's value wins". The actual
+    // LWW-by-HLC merge is exercised in `calimero-storage`'s lww_register tests.
     let alice_entity = alice.get_entity(&entity_id).unwrap();
     let bob_entity = bob.get_entity(&entity_id).unwrap();
 
@@ -322,32 +332,34 @@ fn test_i5_unordered_set_union_merge() {
 // I5: RGA Merge
 // =============================================================================
 
-/// CIP §6.2.6: RGA merge interleaves by timestamp.
+/// CIP §6.2.6: asserts only that RGA entities are tagged `CrdtType::Rga` and
+/// selected for the state-based protocol — the `sync_sim` harness runs no merge,
+/// so the opaque blobs are just bodies and interleave order is not checked. The
+/// real interleave/convergence merge is in
+/// `calimero-storage::tests::rga::test_rga_real_interleave_merge_converges`.
 #[test]
-fn test_i5_rga_interleave_merge() {
+fn test_i5_rga_crdt_type_and_protocol_selection() {
     let mut alice = SimNode::new("alice");
     let mut bob = SimNode::new("bob");
 
     let rga_id = EntityId::from_u64(555);
 
-    // Alice's RGA
+    // Opaque bodies — NOT real RGA streams; this harness never decodes them.
     alice.insert_entity_with_metadata(
         rga_id,
         b"rga-alice".to_vec(),
         EntityMetadata::new(CrdtType::Rga, 100),
     );
-
-    // Bob's RGA
     bob.insert_entity_with_metadata(
         rga_id,
         b"rga-bob".to_vec(),
         EntityMetadata::new(CrdtType::Rga, 200),
     );
 
-    // Force HashComparison
+    // Selects the state-based protocol; does NOT execute a merge.
     alice.force_protocol(SelectedProtocol::HashComparison);
 
-    // Verify CRDT type preserved
+    // Only the crdt_type tag is verifiable here.
     let alice_entity = alice.get_entity(&rga_id).unwrap();
     assert_eq!(alice_entity.metadata.crdt_type, CrdtType::Rga);
 }
@@ -524,9 +536,10 @@ fn test_i5_mixed_crdt_types() {
     );
 }
 
-/// Summary: verify all I5 compliance tests pass.
+/// Summary: documents the I5 CRDT types this module tags + selects a protocol
+/// for. (Value-level merge laws live in `calimero-storage`; see the module
+/// header.)
 ///
-/// This test documents the I5 invariant requirements:
 /// 1. LWW Register: Higher timestamp wins
 /// 2. GCounter: Max per contributor
 /// 3. PnCounter: Combine positive and negative

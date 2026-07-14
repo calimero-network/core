@@ -47,7 +47,7 @@ EOF
 
 # Sign the manifest
 cargo run -p mero-sign --quiet -- sign res/bundle-temp/manifest.json \
-    --key ../../scripts/test-signing-key/test-key.json
+    --dev
 
 # Create .mpk bundle (tar.gz archive)
 cd res/bundle-temp

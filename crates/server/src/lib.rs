@@ -1,6 +1,8 @@
 use core::net::{IpAddr, SocketAddr};
+use core::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
 use tower as _;
 
 use axum::http::Method;
@@ -29,12 +31,81 @@ mod service_mounts;
 pub mod sse;
 pub mod ws;
 
+/// Node lifecycle state consulted by the readiness (`/ready`) probe.
+///
+/// A k8s readiness probe asks a single question — "should traffic be routed
+/// here right now?" — so a node exposes one coarse lifecycle signal rather
+/// than the per-namespace governance readiness FSM (which has no single
+/// node-wide tier). `run::start` flips it to [`READY`](Self::READY) once every
+/// subsystem is up, and to [`SHUTTING_DOWN`](Self::SHUTTING_DOWN) the moment a
+/// termination signal arrives so the orchestrator stops routing new traffic
+/// while in-flight requests drain.
+#[derive(Debug)]
+pub struct NodeReadiness(AtomicU8);
+
+impl NodeReadiness {
+    /// Subsystems still coming up — not yet safe to route traffic.
+    pub const STARTING: u8 = 0;
+    /// Fully started and serving.
+    pub const READY: u8 = 1;
+    /// Termination in progress — draining in-flight work, refuse new traffic.
+    pub const SHUTTING_DOWN: u8 = 2;
+
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(AtomicU8::new(Self::STARTING))
+    }
+
+    // A single independent flag with no cross-atomic ordering requirements, so
+    // `Release`/`Acquire` are sufficient — `SeqCst`'s total order buys nothing
+    // here.
+    pub fn set_ready(&self) {
+        self.0.store(Self::READY, Ordering::Release);
+    }
+
+    pub fn set_shutting_down(&self) {
+        self.0.store(Self::SHUTTING_DOWN, Ordering::Release);
+    }
+
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.0.load(Ordering::Acquire) == Self::READY
+    }
+
+    /// Lower-case label for logs and probe responses.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self.0.load(Ordering::Acquire) {
+            Self::READY => "ready",
+            Self::SHUTTING_DOWN => "shutting_down",
+            Self::STARTING => "starting",
+            // Only the three constants above are ever stored; a fresh value
+            // means a new state was added without updating this match. Treat it
+            // as not-ready ("starting") in release, but trip in debug so the
+            // omission is caught in tests rather than silently masked.
+            other => {
+                debug_assert!(false, "NodeReadiness holds unknown state {other}");
+                "starting"
+            }
+        }
+    }
+}
+
+impl Default for NodeReadiness {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct AdminState {
     pub store: Store,
     pub ctx_client: ContextClient,
     pub node_client: NodeClient,
+    /// Node lifecycle signal driven by `run::start`; read by the readiness
+    /// probe.
+    pub readiness: Arc<NodeReadiness>,
     /// DEV/TEST ONLY. When true, the TEE admin handlers produce and accept mock
     /// attestation quotes instead of requiring real TDX hardware. Insecure —
     /// never enable in production. Sourced from `merod run --mock-tee`
@@ -48,26 +119,40 @@ impl AdminState {
         store: Store,
         ctx_client: ContextClient,
         node_client: NodeClient,
+        readiness: Arc<NodeReadiness>,
         mock_tee: bool,
     ) -> Self {
         Self {
             store,
             ctx_client,
             node_client,
+            readiness,
             mock_tee,
         }
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "top-level server entry point wiring node-wide handles"
+)]
 pub async fn start(
     config: ServerConfig,
     ctx_client: ContextClient,
     node_client: NodeClient,
     datastore: Store,
     mut prom_registry: Registry,
+    readiness: Arc<NodeReadiness>,
+    shutdown: CancellationToken,
     mock_tee: bool,
 ) -> EyreResult<()> {
     let mut config = config;
+
+    // Fail fast on a misconfigured CORS allowlist rather than silently serving a
+    // narrower-than-intended (or empty) origin set at runtime.
+    if let Err(e) = config.cors.validate() {
+        bail!("invalid CORS configuration: {e}");
+    }
 
     // Register HTTP request metrics on the same registry before the
     // metrics service consumes ownership of it via `mount_runtime_services`
@@ -125,6 +210,7 @@ pub async fn start(
         datastore.clone(),
         ctx_client.clone(),
         node_client.clone(),
+        readiness,
         mock_tee,
     ));
     let mounted = mount_runtime_services(
@@ -161,13 +247,22 @@ pub async fn start(
         .layer(axum::middleware::from_fn(crate::metrics::track_request))
         .layer(Extension(http_metrics));
 
-    app = app.layer(build_cors_layer());
+    app = app.layer(build_cors_layer(&config.cors));
 
     let mut set = JoinSet::new();
 
     for listener in listeners {
         let app = app.clone();
-        drop(set.spawn(async move { axum::serve(listener, app).await }));
+        let shutdown = shutdown.clone();
+        // `with_graceful_shutdown` stops accepting new connections when the
+        // token fires and then waits for in-flight requests to finish before
+        // the serve future resolves — so a termination signal drains requests
+        // instead of the server task being dropped mid-response.
+        drop(set.spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move { shutdown.cancelled().await })
+                .await
+        }));
     }
 
     while let Some(result) = set.join_next().await {
@@ -190,12 +285,19 @@ pub async fn start(
 ///
 /// **`allow_credentials` is intentionally not set.** It is incompatible with
 /// `allow_origin(Any)` per the CORS spec, so adding it here would be a no-op
-/// for browsers in the current configuration. If credentialed requests
-/// (cookies, TLS client certs) ever become required, `allow_origin(Any)`
-/// must first be replaced with an explicit allow-list of trusted origins.
-fn build_cors_layer() -> CorsLayer {
-    CorsLayer::new()
-        .allow_origin(Any)
+/// for browsers in the current configuration.
+///
+/// Origins and private-network access are driven by [`crate::config::CorsConfig`].
+/// The default (`allowed_origins: None`) preserves the historical permissive
+/// `Any` + private-network behavior so existing browser apps / Tauri webviews /
+/// deployed apps that reach a user's local node keep working. Production
+/// deployments should set an explicit `allowed_origins` list (and
+/// `allow_private_network = false`) to remove the wildcard-origin +
+/// private-network combination.
+fn build_cors_layer(cors: &crate::config::CorsConfig) -> CorsLayer {
+    use tower_http::cors::AllowOrigin;
+
+    let layer = CorsLayer::new()
         .allow_headers(Any)
         .allow_methods([
             Method::POST,
@@ -213,7 +315,35 @@ fn build_cors_layer() -> CorsLayer {
             axum::http::HeaderName::from_static("x-auth-user"),
             axum::http::HeaderName::from_static("x-auth-permissions"),
         ])
-        .allow_private_network(true)
+        .allow_private_network(cors.allow_private_network);
+
+    match &cors.allowed_origins {
+        Some(origins) => {
+            let list: Vec<axum::http::HeaderValue> = origins
+                .iter()
+                .filter_map(|o| match axum::http::HeaderValue::from_str(o) {
+                    Ok(v) => Some(v),
+                    Err(err) => {
+                        // A dropped origin silently weakens a security-sensitive
+                        // allowlist, so surface it loudly (error, not warn).
+                        tracing::error!(origin = %o, %err, "invalid CORS origin dropped from allowlist");
+                        None
+                    }
+                })
+                .collect();
+            // A configured-but-all-invalid allowlist refuses every origin —
+            // safe, but almost certainly a misconfiguration. Flag it clearly.
+            if list.is_empty() && !origins.is_empty() {
+                tracing::error!(
+                    configured = origins.len(),
+                    "CORS allowed_origins is set but no entry parsed as a valid origin; \
+                     all cross-origin requests will be refused"
+                );
+            }
+            layer.allow_origin(AllowOrigin::list(list))
+        }
+        None => layer.allow_origin(Any),
+    }
 }
 
 #[cfg(test)]
@@ -266,7 +396,7 @@ mod cors_tests {
     {
         Router::new()
             .route("/x", get(handler))
-            .layer(build_cors_layer())
+            .layer(build_cors_layer(&crate::config::CorsConfig::default()))
     }
 
     /// Browser preflight for the PATCH-backed admin routes (e.g.
@@ -391,6 +521,59 @@ mod cors_tests {
         assert!(
             exposed.contains("x-auth-error"),
             "X-Auth-Error must be exposed to JS even on error responses; got: {exposed}"
+        );
+    }
+
+    /// With a configured allowlist, only listed origins get an
+    /// `Access-Control-Allow-Origin` echo; others are refused.
+    #[tokio::test]
+    async fn cors_allowlist_admits_only_listed_origins() {
+        let cors = crate::config::CorsConfig {
+            allowed_origins: Some(vec!["http://localhost:5173".to_owned()]),
+            allow_private_network: false,
+        };
+        let app = Router::new()
+            .route("/x", get(ok_handler))
+            .layer(build_cors_layer(&cors));
+
+        // Allowlisted origin → echoed back.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/x")
+                    .header(header::ORIGIN, "http://localhost:5173")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|v| v.to_str().ok()),
+            Some("http://localhost:5173"),
+            "allowlisted origin must be admitted"
+        );
+
+        // Non-allowlisted origin → no allow-origin header.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/x")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            resp.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none(),
+            "a non-allowlisted origin must not receive Access-Control-Allow-Origin"
         );
     }
 }

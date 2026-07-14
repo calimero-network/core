@@ -2,6 +2,7 @@ use super::op_log::NamespaceOpLogService;
 use crate::GroupKeyring;
 use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_types::NamespaceId;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
@@ -15,11 +16,11 @@ pub struct RetryCandidate {
 /// Service for retrying deferred encrypted group operations after key delivery.
 pub struct NamespaceRetryService<'a> {
     store: &'a Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
 }
 
 impl<'a> NamespaceRetryService<'a> {
-    pub fn new(store: &'a Store, namespace_id: [u8; 32]) -> Self {
+    pub fn new(store: &'a Store, namespace_id: NamespaceId) -> Self {
         Self {
             store,
             namespace_id,
@@ -45,7 +46,7 @@ impl<'a> NamespaceRetryService<'a> {
         let op_keys = op_log
             .collect_buffered_group_op_keys()
             .map_err(|e| eyre::eyre!("op_log.collect_buffered_group_op_keys: {e}"))?;
-        let ns_typed = ContextGroupId::from(self.namespace_id);
+        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
 
         let mut awaiting = std::collections::BTreeSet::new();
         for (group_id, key_id) in op_keys {
@@ -63,6 +64,39 @@ impl<'a> NamespaceRetryService<'a> {
                     .is_some();
             if !resolvable {
                 awaiting.insert(group_id);
+            }
+        }
+        Ok(awaiting.into_iter().collect())
+    }
+
+    /// Distinct `(group_id, key_id)` pairs the local node is buffering an
+    /// undecryptable op for — the same set [`groups_awaiting_key`] collapses to
+    /// group ids, but keeping the specific `key_id` each op needs. The
+    /// direct-pull requester uses this to ask a peer for the EXACT key epoch a
+    /// buffered op was encrypted under, instead of only the group's "current"
+    /// key: after a rotation the op it's stranded on may be under an older
+    /// epoch the peer has since rotated past, which a current-key request could
+    /// never deliver.
+    pub fn awaited_group_keys(&self) -> EyreResult<Vec<([u8; 32], [u8; 32])>> {
+        let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
+        let op_keys = op_log
+            .collect_buffered_group_op_keys()
+            .map_err(|e| eyre::eyre!("op_log.collect_buffered_group_op_keys: {e}"))?;
+        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
+
+        let mut awaiting = std::collections::BTreeSet::new();
+        for (group_id, key_id) in op_keys {
+            let gid_typed = ContextGroupId::from(group_id);
+            let resolvable = GroupKeyring::new(self.store, gid_typed)
+                .load_key_by_id(&key_id)
+                .map_err(|e| eyre::eyre!("load_key_by_id(group): {e}"))?
+                .is_some()
+                || GroupKeyring::new(self.store, ns_typed)
+                    .load_key_by_id(&key_id)
+                    .map_err(|e| eyre::eyre!("load_key_by_id(namespace): {e}"))?
+                    .is_some();
+            if !resolvable {
+                awaiting.insert((group_id, key_id));
             }
         }
         Ok(awaiting.into_iter().collect())
@@ -93,7 +127,7 @@ impl<'a> NamespaceRetryService<'a> {
         let op_keys = op_log
             .collect_buffered_group_op_keys()
             .map_err(|e| eyre::eyre!("op_log.collect_buffered_group_op_keys: {e}"))?;
-        let ns_typed = ContextGroupId::from(self.namespace_id);
+        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
 
         let mut held = std::collections::BTreeSet::new();
         for (group_id, key_id) in op_keys {
@@ -122,7 +156,7 @@ impl<'a> NamespaceRetryService<'a> {
     ) -> EyreResult<Vec<RetryCandidate>> {
         let mut candidates = Vec::new();
         let gid_typed = ContextGroupId::from(group_id);
-        let ns_typed = ContextGroupId::from(self.namespace_id);
+        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
         let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
         let entries = op_log
             .collect_signed_group_ops_for_group(group_id)
@@ -135,13 +169,13 @@ impl<'a> NamespaceRetryService<'a> {
             // may have been encrypted with the namespace key if the
             // subgroup was `Open` at publish time.
             let group_key = match GroupKeyring::new(self.store, gid_typed)
-                .load_key_by_id(&key_id)
+                .load_key_by_id(key_id.as_bytes())
                 .map_err(|e| eyre::eyre!("load_group_key_by_id(group): {e}"))?
             {
                 Some(k) => k,
                 None => {
                     let Some(k) = GroupKeyring::new(self.store, ns_typed)
-                        .load_key_by_id(&key_id)
+                        .load_key_by_id(key_id.as_bytes())
                         .map_err(|e| eyre::eyre!("load_group_key_by_id(namespace): {e}"))?
                     else {
                         continue;

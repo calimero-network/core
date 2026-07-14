@@ -1,7 +1,7 @@
 use core::panic;
 
 use super::Location;
-use crate::Slice;
+use crate::Buffer;
 
 impl Location<'_> {
     #[inline]
@@ -22,9 +22,11 @@ impl Location<'_> {
         unimplemented!("Slice construction is only permitted in wasm32")
     }
 
+    // Returns a borrow (not an owned descriptor): `Slice` is move-only, so the
+    // field cannot be copied out of `&self`.
     #[inline]
-    pub fn file(&self) -> Slice<'_, u8> {
-        self.file
+    pub fn file(&self) -> &Buffer<'_> {
+        &self.file
     }
 }
 

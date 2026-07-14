@@ -3,15 +3,17 @@
 //! See `architecture/membership-and-leave.html` § 4 for the design.
 //!
 //! Mechanism:
-//!   1. Look up the context's local signing identity by scanning
-//!      `ContextIdentity` rows for `(context_id, *)` and finding the one
-//!      where this node holds the private key. This handles cases where
-//!      a context was created with a per-context identity that differs
-//!      from the namespace-level identity (e.g. via
-//!      `CreateContextRequest.identity_secret`).
-//!   2. In a single batched store handle, write the `ContextLeftMarker`
+//!   1. Look up ALL of the context's local signing identities by scanning
+//!      `ContextIdentity` rows for `(context_id, *)` and collecting every
+//!      one where this node holds the private key. A node can hold more
+//!      than one identity per context (e.g. one minted at create time via
+//!      `CreateContextRequest.identity_secret` plus an inherited
+//!      namespace-level identity); tombstoning only the first would leave
+//!      the rest syncing and re-armable by auto-follow.
+//!   2. In a single batched store handle, write a `ContextLeftMarker`
 //!      tombstone in `Column::ContextLocal` AND delete the
-//!      `ContextIdentity` row. The auto-follow handler
+//!      `ContextIdentity` row for every one of those identities. The
+//!      auto-follow handler
 //!      (`crate::auto_follow::has_left_context`) checks the marker
 //!      before re-joining; the deleted identity row stops sync.
 //!   3. Unsubscribe from the context's gossipsub topic so the node
@@ -53,65 +55,62 @@ impl Handler<LeaveContextRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                // Find this node's actual context-specific identity by scanning
-                // the `ContextIdentity` column for a row keyed by this context
-                // where we hold the private key. Falls back to the namespace
-                // identity only when no such row exists (e.g. inherited
-                // membership we've never explicitly joined).
+                // Find EVERY local identity for this context by scanning the
+                // `ContextIdentity` column for rows keyed by this context where
+                // we hold the private key. Falls back to the namespace identity
+                // only when no such row exists (e.g. inherited membership we've
+                // never explicitly joined).
                 //
-                // This is the right resolution because `ContextIdentity` rows
-                // can be keyed by an identity that differs from the
-                // namespace-level pk (`CreateContextRequest.identity_secret`
-                // can mint a per-context identity on creation). Resolving
-                // through `find_local_signing_identity` deletes the row that
-                // actually exists on disk.
-                let member_public_key = match calimero_governance_store::find_local_signing_identity(
-                    &datastore,
-                    &context_id,
-                )? {
-                    Some(pk) => pk,
-                    None => {
-                        // No ContextIdentity row exists locally — the node
-                        // never joined or was already cleaned up. Fall back
-                        // to the namespace identity for the marker so a
-                        // future auto-follow event still finds an opt-out
-                        // record under our identity. If even that fails,
-                        // there's nothing for us to leave.
-                        let group_id =
-                            calimero_governance_store::get_group_for_context(&datastore, &context_id)?
-                                .ok_or_else(|| {
-                                    eyre!(
-                                        "context {} is not mapped to any local group; \
-                                         nothing to leave on this node",
-                                        context_id
-                                    )
-                                })?;
-                        match NamespaceRepository::new(&datastore).resolve_identity(&group_id)? {
-                            Some((pk, _, _)) => pk,
-                            None => bail!(
-                                "no local identity for context {}; nothing to leave",
-                                context_id
-                            ),
-                        }
+                // Enumerating all of them (not just the first) matters:
+                // `ContextIdentity` rows can be keyed by identities that differ
+                // from the namespace-level pk (`CreateContextRequest.identity_secret`
+                // can mint a per-context identity on creation), and a node may
+                // legitimately hold several. Tombstoning only one would leave
+                // the others syncing, and a later auto-follow event could
+                // re-arm them.
+                let mut member_public_keys =
+                    calimero_governance_store::find_local_signing_identities(
+                        &datastore,
+                        &context_id,
+                    )?;
+
+                if member_public_keys.is_empty() {
+                    // No ContextIdentity row exists locally — the node
+                    // never joined or was already cleaned up. Fall back
+                    // to the namespace identity for the marker so a
+                    // future auto-follow event still finds an opt-out
+                    // record under our identity. If even that fails,
+                    // there's nothing for us to leave.
+                    let group_id =
+                        calimero_governance_store::get_group_for_context(&datastore, &context_id)?
+                            .ok_or_else(|| {
+                                eyre!(
+                                    "context {} is not mapped to any local group; \
+                                     nothing to leave on this node",
+                                    context_id
+                                )
+                            })?;
+                    match NamespaceRepository::new(&datastore).resolve_identity(&group_id)? {
+                        Some((pk, _, _)) => member_public_keys.push(pk),
+                        None => bail!(
+                            "no local identity for context {}; nothing to leave",
+                            context_id
+                        ),
                     }
-                };
+                }
 
                 let now_ms = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .wrap_err("system clock is before UNIX_EPOCH")?
                     .as_millis() as u64;
 
-                let marker_key = key::ContextLeftMarker::new(context_id, member_public_key);
-                let marker_value = types::ContextLeftMarker { left_at_ms: now_ms };
-                let identity_key = key::ContextIdentity::new(context_id, member_public_key);
-
-                // The two writes are sequential, not atomic — `Handle`
-                // forwards each `put`/`delete` directly to the underlying
-                // DB layer, which commits per-call. The store does have a
-                // batched `WriteLayer::apply(&Transaction)` primitive
-                // (crates/store/src/layer.rs:44) we could thread through,
-                // but ordering + idempotency get us the same correctness
-                // guarantee here:
+                // The marker/delete pair per identity is written sequentially,
+                // not atomically — `Handle` forwards each `put`/`delete`
+                // directly to the underlying DB layer, which commits per-call.
+                // The store does have a batched `WriteLayer::apply(&Transaction)`
+                // primitive (crates/store/src/layer.rs:44) we could thread
+                // through, but ordering + idempotency get us the same
+                // correctness guarantee here:
                 //
                 //   * Marker first → if the delete then fails, the marker
                 //     still gates auto-follow (it returns `false` for any
@@ -130,13 +129,30 @@ impl Handler<LeaveContextRequest> for ContextManager {
                 // auto-follow won't re-add. Calling leave again succeeds.
                 {
                     let mut handle = datastore.handle();
-                    handle
-                        .put(&marker_key, &marker_value)
-                        .wrap_err("failed to write context-leave marker")?;
-                    handle
-                        .delete(&identity_key)
-                        .wrap_err("failed to delete context identity row")?;
+                    for member_public_key in &member_public_keys {
+                        let marker_key =
+                            key::ContextLeftMarker::new(context_id, *member_public_key);
+                        let marker_value = types::ContextLeftMarker { left_at_ms: now_ms };
+                        let identity_key =
+                            key::ContextIdentity::new(context_id, *member_public_key);
+                        handle
+                            .put(&marker_key, &marker_value)
+                            .wrap_err("failed to write context-leave marker")?;
+                        handle
+                            .delete(&identity_key)
+                            .wrap_err("failed to delete context identity row")?;
+                    }
                 }
+
+                // The response reports the primary (first) identity; every
+                // identity above has been tombstoned regardless. The vec is
+                // non-empty here by construction (the scan found keys, or the
+                // fallback pushed one, or we already bailed) — make that
+                // invariant explicit rather than indexing blindly.
+                let member_public_key = member_public_keys
+                    .first()
+                    .copied()
+                    .expect("member_public_keys is non-empty: scan found keys or fallback pushed one");
 
                 // Stop receiving gossipsub traffic for this context. The
                 // inverse of `node_client.subscribe(context_id)` that

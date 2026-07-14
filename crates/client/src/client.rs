@@ -129,8 +129,15 @@ where
         Ok(Self { connection })
     }
 
+    /// Access the underlying connection (crate-internal; used by tests to drive
+    /// raw request verbs).
+    #[cfg(test)]
+    pub(crate) fn connection(&self) -> &ConnectionInfo<A, S> {
+        &self.connection
+    }
+
     pub fn api_url(&self) -> &Url {
-        &self.connection.api_url
+        self.connection.api_url()
     }
 
     /// The WebSocket endpoint URL (`ws(s)://…/ws`) for this connection, derived
@@ -141,7 +148,7 @@ where
     /// unexpected scheme errors rather than silently degrading to cleartext
     /// `ws://`, which would leak the bearer token attached to the handshake.
     pub fn ws_url(&self) -> Result<Url> {
-        let mut url = self.connection.api_url.clone();
+        let mut url = self.connection.api_url().clone();
 
         let scheme = match url.scheme() {
             "http" => "ws",
@@ -150,7 +157,14 @@ where
         };
         url.set_scheme(scheme)
             .map_err(|()| eyre::eyre!("failed to set WebSocket URL scheme"))?;
-        url.set_path("ws");
+        // Append `ws` to the existing path rather than replacing it, so a
+        // reverse-proxy base path (e.g. `https://host/calimero/node1/`) is kept
+        // and the bearer-carrying upgrade handshake reaches the right origin
+        // (`wss://host/calimero/node1/ws`) instead of `wss://host/ws`.
+        url.path_segments_mut()
+            .map_err(|()| eyre::eyre!("api_url cannot be a base URL"))?
+            .pop_if_empty()
+            .push("ws");
         // Drop any query/fragment from the HTTP base so they don't ride along
         // to the upgrade request (they're meaningless to `/ws` and could carry
         // sensitive values).

@@ -1,10 +1,20 @@
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 use actix::{AsyncContext, WrapFuture};
 use calimero_primitives::context::ContextId;
 use tracing::{debug, error, info, warn};
 
+use crate::constants::HASH_HEARTBEAT_FREQUENCY_S;
 use crate::NodeManager;
+
+/// Minimum spacing between hash-heartbeat "peer is ahead" recovery syncs for a
+/// given context. A context-wide sync serves every peer, so this collapses the
+/// per-peer heartbeat storm (N ahead peers → N syncs each ~30s cycle) to at
+/// most one sync per context per cycle. Sized just under the heartbeat cadence
+/// so a still-behind context can re-sync on the next cycle.
+const HEARTBEAT_BEHIND_SYNC_DEBOUNCE: Duration =
+    Duration::from_secs(HASH_HEARTBEAT_FREQUENCY_S.saturating_sub(5));
 
 /// Cap on per-child `warn!` events emitted from the divergence dump.
 /// A wide context (e.g. UnorderedMap with hundreds of entries) could
@@ -142,6 +152,7 @@ pub(super) fn handle_hash_heartbeat(
                     our_hash,
                     their_hash: their_root_hash,
                     count,
+                    last_seen: Instant::now(),
                 },
             );
 
@@ -291,6 +302,23 @@ pub(super) fn handle_hash_heartbeat(
                 );
                 return;
             }
+
+            // Debounce per context: one recovery sync covers whatever any peer
+            // is ahead on, so don't spawn another within the window even as
+            // other peers' heartbeats keep reporting us behind.
+            let now = Instant::now();
+            if let Some(last) = manager.behind_sync_at.get(&context_id) {
+                if now.duration_since(*last) < HEARTBEAT_BEHIND_SYNC_DEBOUNCE {
+                    debug!(
+                        %context_id,
+                        ?source,
+                        "Peer has heads we don't have, but a recovery sync ran recently; \
+                         skipping (debounced)"
+                    );
+                    return;
+                }
+            }
+            let _ = manager.behind_sync_at.insert(context_id, now);
 
             info!(
                 %context_id,

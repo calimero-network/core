@@ -2,6 +2,7 @@ use crate::{MembershipRepository, NamespaceRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_context_config::MemberCapabilities;
+use calimero_governance_types::NamespaceId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
@@ -13,11 +14,11 @@ use super::super::membership::role_from_invited_role;
 /// Namespace-scoped service for handling `RootOp::MemberJoined`.
 pub struct NamespaceMembershipService<'a> {
     store: &'a Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
 }
 
 impl<'a> NamespaceMembershipService<'a> {
-    pub fn new(store: &'a Store, namespace_id: [u8; 32]) -> Self {
+    pub fn new(store: &'a Store, namespace_id: NamespaceId) -> Self {
         Self {
             store,
             namespace_id,
@@ -79,7 +80,7 @@ impl<'a> NamespaceMembershipService<'a> {
         }
 
         let resolved_ns = NamespaceRepository::new(self.store).resolve(&group_id)?;
-        if resolved_ns.to_bytes() != self.namespace_id {
+        if resolved_ns.to_bytes() != self.namespace_id.to_bytes() {
             bail!("group does not belong to this namespace");
         }
 
@@ -112,7 +113,7 @@ impl<'a> NamespaceMembershipService<'a> {
         self.verify_inviter_signature(signed_invitation)?;
 
         let resolved_ns = NamespaceRepository::new(self.store).resolve(&group_id)?;
-        if resolved_ns.to_bytes() != self.namespace_id {
+        if resolved_ns.to_bytes() != self.namespace_id.to_bytes() {
             bail!("group does not belong to this namespace");
         }
 
@@ -146,6 +147,22 @@ impl<'a> NamespaceMembershipService<'a> {
         &self,
         signed_invitation: &SignedGroupOpenInvitation,
     ) -> EyreResult<()> {
+        Self::verify_open_invitation_signature(signed_invitation)
+    }
+
+    /// Store-free verification of an open invitation's inviter signature:
+    /// `sha256(borsh(invitation))` checked against `inviter_identity`.
+    ///
+    /// Exposed so trust-seeding paths that run before governance state is
+    /// available (e.g. a fresh joiner writing its local `admin_identity` in
+    /// `join_namespace` / the `join_group` handler) can reject a forged
+    /// invitation up front. This is only the cryptographic check — namespace
+    /// ownership, inviter permission, and expiry still require DAG state and are
+    /// enforced by [`Self::validate_open_invitation`] on the responder and by
+    /// the deterministic apply-time check.
+    pub fn verify_open_invitation_signature(
+        signed_invitation: &SignedGroupOpenInvitation,
+    ) -> EyreResult<()> {
         let inv = &signed_invitation.invitation;
         let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
         let invitation_bytes = borsh::to_vec(inv).map_err(|e| eyre::eyre!("borsh: {e}"))?;
@@ -169,7 +186,7 @@ impl<'a> NamespaceMembershipService<'a> {
         if !MembershipRepository::new(self.store).is_admin_or_has_capability(
             group_id,
             inviter_pk,
-            MemberCapabilities::CAN_INVITE_MEMBERS,
+            MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
         )? {
             bail!(
                 "invitation inviter {} lacks permission for group {:?}",
