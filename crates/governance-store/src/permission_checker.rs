@@ -7,7 +7,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use super::{CapabilitiesError, MembershipError};
+use super::{ApplyError, CapabilitiesError, MembershipError};
 
 /// Authorization service for group governance operations.
 ///
@@ -52,18 +52,47 @@ impl<'a> PermissionChecker<'a> {
         self
     }
 
+    /// Guard the live fallback.
+    ///
+    /// The at-cut resolver abstains for two very different reasons, and collapsing
+    /// them is what made apply-time authority replica-dependent:
+    ///
+    /// - There is no cut to resolve against (a genesis op's empty `parents`, or a
+    ///   construction with no apply-auth context at all — the emit path, the local
+    ///   apply, the read side, tests). Live is the right answer; nothing contradicts it.
+    ///
+    /// - The cut is real, but this node has not folded its ancestry. Live is the WRONG
+    ///   answer: it is a different cut — this replica's current one — so the verdict
+    ///   would turn on how much this replica happens to have folded. A replica that had
+    ///   folded a concurrent capability revoke would reject an op its peers applied, and
+    ///   because the reject path never advances the DAG head, everything descending from
+    ///   that op would stall on that replica alone.
+    ///
+    /// In the second case, refuse to answer rather than guess. The op is retried once
+    /// the missing history arrives.
+    fn ensure_live_fallback_is_sound(&self, identity: &PublicKey) -> EyreResult<()> {
+        if self
+            .authorizer
+            .can_resolve_cut(&self.group_id, self.parents)
+        {
+            return Ok(());
+        }
+        bail!(ApplyError::AuthorityUndecidable {
+            group_id: format!("{:?}", self.group_id),
+            signer: format!("{identity}"),
+        });
+    }
+
     pub fn is_admin(&self, identity: &PublicKey) -> EyreResult<bool> {
-        // F5 #28 stage 4b: decide from the PROJECTION at the op's causal cut — admin
-        // authority as of the op's own parents (causal-honor), validated divergence-
-        // free on the `group-auth` plane (stage 4a). `None` (no apply-auth context —
-        // a local pre-check / cascade / test — OR an incomplete fold) falls back to
-        // the live resolver. The live fallback retires in #29b.
+        // Decide from the PROJECTION at the op's causal cut — admin authority as of the
+        // op's own parents, which is the same answer on every replica.
         if let Some(verdict) =
             self.authorizer
                 .is_admin_at_cut(&self.group_id, identity, self.parents)
         {
             return Ok(verdict);
         }
+        self.ensure_live_fallback_is_sound(identity)?;
         // Issue #2256: admin authority cascades into Open subgroups
         // from any ancestor where the signer is a direct admin.
         // Uses `is_inherited_admin` (a dedicated walk) rather than
@@ -246,9 +275,12 @@ impl<'a> PermissionChecker<'a> {
         identity: &PublicKey,
         capability_bit: u32,
     ) -> EyreResult<bool> {
-        // F5 #28 stage 4b: decide from the PROJECTION at the op's causal cut (the
-        // capability analogue of `is_admin`); `None` falls back to live. Validated on
-        // the `group-auth` plane in stage 4a.
+        // Decide from the PROJECTION at the op's causal cut (the capability analogue
+        // of `is_admin`). Capabilities are exactly what concurrent
+        // `MemberCapabilitySet` / `DefaultCapabilitiesSet` / `MemberRoleSet` ops
+        // mutate, so a live read here is the tightest version of the divergence loop:
+        // the gate for a capability op would depend on capabilities this replica may
+        // or may not have folded yet.
         if let Some(verdict) = self.authorizer.is_admin_or_capability_at_cut(
             &self.group_id,
             identity,
@@ -257,6 +289,7 @@ impl<'a> PermissionChecker<'a> {
         ) {
             return Ok(verdict);
         }
+        self.ensure_live_fallback_is_sound(identity)?;
         let direct = MembershipRepository::new(self.store).is_admin_or_has_capability(
             &self.group_id,
             identity,

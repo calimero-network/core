@@ -182,3 +182,57 @@ impl crate::authorizer::AtCutAuthorizer for FixedAuthorizer {
 /// A non-empty causal cut for apply-auth tests. Value is irrelevant — only
 /// non-emptiness matters (see [`FixedAuthorizer`]).
 pub(super) const TEST_CUT: [[u8; 32]; 1] = [[0xAB; 32]];
+
+/// An [`AtCutAuthorizer`](crate::authorizer::AtCutAuthorizer) standing in for a
+/// projection that has NOT folded the ancestry the op's cut cites — the
+/// catching-up replica, mid-backfill.
+///
+/// It abstains from every gate (`None`) AND reports the cut as unresolvable. That
+/// pairing is the whole point: an abstention alone used to be indistinguishable
+/// from "no apply-auth context", so the gate quietly answered from the live rows —
+/// a different cut — and two replicas decided the same op differently. A gate that
+/// honors `can_resolve_cut` refuses to answer instead.
+pub(super) struct UnresolvableAuthorizer;
+
+impl crate::authorizer::AtCutAuthorizer for UnresolvableAuthorizer {
+    fn is_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        None
+    }
+
+    fn can_resolve_cut(&self, _group: &ContextGroupId, _parents: &[[u8; 32]]) -> bool {
+        false
+    }
+}

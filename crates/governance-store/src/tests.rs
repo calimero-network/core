@@ -8022,3 +8022,189 @@ mod rotation_gate_alignment {
         );
     }
 }
+
+// -----------------------------------------------------------------------
+// An unresolvable cut must PARK the op, not guess from live.
+//
+// The projection abstains for two very different reasons, and the apply gates used
+// to collapse them into one "fall back to live" branch:
+//
+//   * no cut to resolve against (a genesis op, or no apply-auth context at all) —
+//     live is correct, nothing contradicts it;
+//   * the cut is real but this node has not folded its ancestry — live is a
+//     DIFFERENT cut (this replica's current one).
+//
+// In the second case the verdict became a function of fold progress. A replica that
+// had folded a concurrent capability revoke rejected an op its peers applied; and
+// since the reject path never advances the DAG head, every op descending from it
+// stalled on that replica alone. Permanent, silent divergence.
+//
+// Now the gate refuses to answer: `AuthorityUndecidable`, which the DAG treats like
+// any other apply error (head not advanced, nonce not burned), so the op is retried
+// once the missing history arrives. A loud stall beats a quiet divergence.
+mod undecidable_authority_parks {
+    use super::*;
+    use crate::test_fixtures::{FixedAuthorizer, UnresolvableAuthorizer, TEST_CUT as CUT};
+    use calimero_context_config::types::AppKey;
+    use calimero_governance_types::GroupOp;
+
+    fn target_application_set_op() -> GroupOp {
+        GroupOp::TargetApplicationSet {
+            app_key: AppKey::from([0x5A; 32]),
+            target_application_id: ApplicationId::from([0x5B; 32]),
+        }
+    }
+
+    fn group_with_live_admin(signer: &PublicKey) -> (Store, ContextGroupId) {
+        let store = test_store();
+        let gid = test_group_id();
+        let mut meta = test_meta();
+        meta.admin_identity = *signer;
+        meta.owner_identity = *signer;
+        MetaRepository::new(&store).save(&gid, &meta).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, signer, GroupMemberRole::Admin)
+            .unwrap();
+        (store, gid)
+    }
+
+    fn group_with_live_stranger() -> (Store, ContextGroupId) {
+        let store = test_store();
+        let gid = test_group_id();
+        let other = PublicKey::from([0x77; 32]);
+        let mut meta = test_meta();
+        meta.admin_identity = other;
+        meta.owner_identity = other;
+        MetaRepository::new(&store).save(&gid, &meta).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &other, GroupMemberRole::Admin)
+            .unwrap();
+        (store, gid)
+    }
+
+    fn assert_undecidable(err: &eyre::Report) {
+        assert!(
+            format!("{err:#}").contains("authority undecidable"),
+            "expected AuthorityUndecidable (a retryable park), got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn unresolvable_cut_refuses_rather_than_granting_from_live() {
+        // Live rows would GRANT. Guessing from them would apply an op the peers
+        // (resolving at the real cut) might reject.
+        let signer = PublicKey::from([0x11; 32]);
+        let (store, gid) = group_with_live_admin(&signer);
+
+        let err = apply_group_op_mutations(
+            &store,
+            &gid,
+            &signer,
+            &target_application_set_op(),
+            &CUT,
+            &UnresolvableAuthorizer,
+        )
+        .expect_err("an unresolvable cut must not be answered from the live rows");
+        assert_undecidable(&err);
+
+        let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+        assert_ne!(
+            meta.app_key, [0x5A; 32],
+            "a parked op must not mutate state — it has not been authorized yet"
+        );
+    }
+
+    #[test]
+    fn unresolvable_cut_refuses_rather_than_denying_from_live() {
+        // The load-bearing direction. Live rows would DENY, and the old code turned
+        // that into a hard rejection — permanent on this replica, because its live
+        // state (with the concurrent revoke folded) never changes back. Peers that
+        // had not folded the revoke applied the op. That is the reported divergence.
+        //
+        // The rejection must instead be an UNDECIDABLE, which is retryable.
+        let signer = PublicKey::from([0x11; 32]);
+        let (store, gid) = group_with_live_stranger();
+
+        let err = apply_group_op_mutations(
+            &store,
+            &gid,
+            &signer,
+            &target_application_set_op(),
+            &CUT,
+            &UnresolvableAuthorizer,
+        )
+        .expect_err("an unresolvable cut must not harden into a permanent rejection");
+        assert_undecidable(&err);
+    }
+
+    #[test]
+    fn both_replicas_park_instead_of_disagreeing() {
+        // The divergence, replayed as two replicas of the SAME op with OPPOSITE live
+        // rows and neither able to resolve the cut.
+        //
+        // Before: replica A (revoke folded) rejected forever, replica B (revoke not
+        // folded) applied. After: both park. They still agree — which is the only
+        // property that matters — and both proceed once the ancestry arrives.
+        let signer = PublicKey::from([0x11; 32]);
+        let (store_a, gid_a) = group_with_live_stranger(); // would have REJECTED
+        let (store_b, gid_b) = group_with_live_admin(&signer); // would have APPLIED
+
+        for (store, gid, label) in [
+            (&store_a, &gid_a, "revoke-folded replica"),
+            (&store_b, &gid_b, "revoke-unfolded replica"),
+        ] {
+            let err = match apply_group_op_mutations(
+                store,
+                gid,
+                &signer,
+                &target_application_set_op(),
+                &CUT,
+                &UnresolvableAuthorizer,
+            ) {
+                Ok(_) => panic!("{label} must park, not reach a verdict of its own"),
+                Err(e) => e,
+            };
+            assert_undecidable(&err);
+
+            let meta = MetaRepository::new(store).load(gid).unwrap().unwrap();
+            assert_ne!(
+                meta.app_key, [0x5A; 32],
+                "{label}: a parked op must leave state untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn resolvable_cut_still_decides_and_a_genesis_op_still_uses_live() {
+        // The guard must not swallow the cases where abstention is legitimate.
+        //
+        // 1. A resolvable cut decides normally (no spurious parking).
+        let signer = PublicKey::from([0x11; 32]);
+        let (store, gid) = group_with_live_stranger();
+        let (handled, _, _) = apply_group_op_mutations(
+            &store,
+            &gid,
+            &signer,
+            &target_application_set_op(),
+            &CUT,
+            &FixedAuthorizer(true),
+        )
+        .expect("a resolvable cut must decide, not park");
+        assert!(handled);
+
+        // 2. No apply-auth context (empty cut + live-fallback authorizer) — the emit
+        //    path, the local apply, tests. Abstention here means "no cut", so live
+        //    decides and a live admin is authorized. This must NOT become undecidable.
+        let (store, gid) = group_with_live_admin(&signer);
+        let (handled, _, _) = apply_group_op_mutations(
+            &store,
+            &gid,
+            &signer,
+            &target_application_set_op(),
+            &[],
+            &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+        )
+        .expect("a construction with no apply-auth context must still resolve live");
+        assert!(handled);
+    }
+}

@@ -87,7 +87,18 @@ impl<'a> NamespaceApplyCtx<'a> {
             .is_admin_at_cut(&ns_gid, signer, self.parents)
         {
             Some(verdict) => verdict,
-            None => MembershipRepository::new(self.store).is_admin(&ns_gid, signer)?,
+            None => {
+                // Abstained. Live is sound only when there is no cut to resolve
+                // against; if the cut is real but unfolded here, answering from live
+                // would decide this op against a DIFFERENT cut than peers used.
+                if !self.authorizer.can_resolve_cut(&ns_gid, self.parents) {
+                    bail!(crate::ApplyError::AuthorityUndecidable {
+                        group_id: hex::encode(self.namespace_id.as_bytes()),
+                        signer: format!("{signer}"),
+                    });
+                }
+                MembershipRepository::new(self.store).is_admin(&ns_gid, signer)?
+            }
         };
         if !authorized {
             bail!(MembershipError::NotAdmin {
