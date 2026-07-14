@@ -100,6 +100,8 @@ pub struct UserPasswordConfig {
     /// will not mint a root key for an unauthenticated caller, and a root key
     /// must be provisioned out of band. When set, the bootstrapping client
     /// must present a matching secret before the first root key is created.
+    /// An empty string is treated the same as `None` (bootstrap disabled), so
+    /// a blank value from env interpolation can never open the gate.
     #[serde(default)]
     pub bootstrap_secret: Option<String>,
 }

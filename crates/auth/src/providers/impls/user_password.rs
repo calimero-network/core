@@ -166,12 +166,21 @@ impl UserPasswordProvider {
     /// The `MERO_AUTH_BOOTSTRAP_SECRET` environment variable takes precedence
     /// (the recommended out-of-band channel); the configured value is used as
     /// a fallback. Returns `None` when neither is set, which disables
-    /// first-login bootstrap entirely.
+    /// first-login bootstrap entirely. An empty string in either source is
+    /// treated as unset — otherwise a blank env interpolation or
+    /// `bootstrap_secret = ""` in config would let `""` match a caller that
+    /// omitted the field (`unwrap_or_default`), silently re-enabling the
+    /// unauthenticated TOFU bootstrap this gate exists to close.
     fn effective_bootstrap_secret(&self) -> Option<String> {
         std::env::var("MERO_AUTH_BOOTSTRAP_SECRET")
             .ok()
             .filter(|s| !s.is_empty())
-            .or_else(|| self.config.bootstrap_secret.clone())
+            .or_else(|| {
+                self.config
+                    .bootstrap_secret
+                    .clone()
+                    .filter(|s| !s.is_empty())
+            })
     }
 
     /// Constant-time comparison of a presented bootstrap secret against the
@@ -638,6 +647,29 @@ mod tests {
             .await
             .is_err());
         assert_eq!(root_key_count(&provider).await, 1);
+    }
+
+    #[tokio::test]
+    async fn empty_config_secret_is_treated_as_unset() {
+        // `bootstrap_secret = ""` (e.g. a blank env interpolation in config)
+        // must behave exactly like no secret at all: bootstrap stays disabled
+        // and, critically, a caller omitting the field (which the verifier
+        // defaults to "") must not match SHA-256("") == SHA-256("").
+        let provider = test_provider(config_with_secret(Some("")));
+
+        assert!(provider
+            .authenticate_core("admin", "pw", None)
+            .await
+            .is_err());
+        assert!(provider
+            .authenticate_core("admin", "pw", Some(""))
+            .await
+            .is_err());
+        assert_eq!(
+            root_key_count(&provider).await,
+            0,
+            "an empty configured secret must never mint a root key"
+        );
     }
 
     #[test]
