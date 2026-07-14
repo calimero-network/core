@@ -458,7 +458,7 @@ pub async fn refresh_token_handler(
             // replay the consumed token again).
             warn!("Refresh token reuse detected; token family revoked");
             let mut reuse_headers = HeaderMap::new();
-            reuse_headers.insert("X-Auth-Error", "token_reuse".parse().unwrap());
+            reuse_headers.insert("X-Auth-Error", HeaderValue::from_static("token_reuse"));
             error_response(
                 StatusCode::UNAUTHORIZED,
                 "Refresh token reuse detected; re-authentication required",
