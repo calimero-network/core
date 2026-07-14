@@ -137,7 +137,11 @@ impl Path {
         Ok(Self { offsets, path: str })
     }
 
-    /// Returns the depth (number of segments).
+    /// Returns the depth of the path: the zero-based index of the deepest
+    /// segment, i.e. the number of segments minus one. A single-segment root
+    /// path (`::root`) has depth `0`; `::a::b::c` has depth `2`. The segment
+    /// count is `depth() + 1`, which is why the segment accessors iterate
+    /// `0..=depth()`.
     #[must_use]
     pub fn depth(&self) -> usize {
         self.offsets.len()
@@ -159,16 +163,13 @@ impl Path {
         if self.depth() >= other.depth() {
             return false;
         }
-        let mut last_offset = 0_usize;
-
-        for &offset in &self.offsets {
-            if self.path[last_offset..offset as usize] != other.path[last_offset..offset as usize] {
-                return false;
-            }
-            last_offset = offset as usize;
-        }
-
-        true
+        // Every one of self's segments must equal other's segment at the same
+        // position — all `depth() + 1` of them, including the deepest. `zip`
+        // stops at self's (shorter) length, so this checks self as a full
+        // segment-wise prefix of other. Iterating only the offsets between
+        // segments, as an earlier version did, silently skipped self's final
+        // segment: `::a::x` then wrongly read as an ancestor of `::a::y::z`.
+        self.segments().zip(other.segments()).all(|(a, b)| a == b)
     }
 
     /// Checks if this path is a descendant of another.

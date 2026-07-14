@@ -923,7 +923,11 @@ mod tests {
 
             // Root row: CAN_JOIN_OPEN_SUBGROUPS + auto_follow.contexts = true.
             CapabilitiesRepository::new(&store)
-                .set_member_capability(&root_gid, &pk, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+                .set_member_capability(
+                    &root_gid,
+                    &pk,
+                    MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+                )
                 .expect("set_member_capability");
             MembershipRepository::new(&store)
                 .set_auto_follow(
@@ -964,7 +968,11 @@ mod tests {
             let (store, _sk, pk) = seed_self_member(&mut rng, root_gid);
 
             CapabilitiesRepository::new(&store)
-                .set_member_capability(&root_gid, &pk, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+                .set_member_capability(
+                    &root_gid,
+                    &pk,
+                    MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+                )
                 .expect("set_member_capability");
             MembershipRepository::new(&store)
                 .set_auto_follow(

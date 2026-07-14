@@ -1,10 +1,28 @@
 use libp2p::rendezvous::client::Event;
+use libp2p::rendezvous::{Cookie, ErrorCode, Namespace};
 use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 use owo_colors::OwoColorize;
 use tracing::{debug, error, warn};
 
 use super::{EventHandler, NetworkManager};
 use crate::discovery::state::{PeerDiscoveryMechanism, RendezvousRegistrationStatus};
+
+/// May `cookie` occupy the per-peer cookie slot that the next *global*
+/// discover sends for incremental results?
+///
+/// `rendezvous_discover` sends one global discover (WITH the stored
+/// cookie) plus per-overlay discovers (deliberately cookie-less). Cookies
+/// are bound to the namespace they were issued for, and the server
+/// rejects a discover whose cookie was issued for a different namespace
+/// (`CookieNamespaceMismatch` → `InvalidCookie`). So only a cookie issued
+/// for the global namespace may be stored: storing whichever cookie
+/// arrived last let a per-overlay response poison the slot, after which
+/// every global discover — the only discovery path a namespace-join has,
+/// since the joiner is not a member of any shared overlay yet — failed
+/// with `InvalidCookie` until the node restarted.
+fn is_global_discovery_cookie(cookie: &Cookie, global_namespace: &Namespace) -> bool {
+    cookie.namespace() == Some(global_namespace)
+}
 
 impl EventHandler<Event> for NetworkManager {
     fn handle(&mut self, event: Event) {
@@ -16,9 +34,14 @@ impl EventHandler<Event> for NetworkManager {
                 registrations,
                 cookie,
             } => {
-                self.discovery
-                    .state
-                    .update_rendezvous_cookie(&rendezvous_node, &cookie);
+                // See `is_global_discovery_cookie`: only a global-namespace
+                // cookie may occupy the slot the next global discover sends.
+                if is_global_discovery_cookie(&cookie, &self.discovery.rendezvous_config.namespace)
+                {
+                    self.discovery
+                        .state
+                        .update_rendezvous_cookie(&rendezvous_node, &cookie);
+                }
 
                 for registration in registrations {
                     let peer_id = registration.record.peer_id();
@@ -123,6 +146,24 @@ impl EventHandler<Event> for NetworkManager {
                 error,
             } => {
                 warn!(?rendezvous_node, ?namespace, error_code=?error, "Rendezvous discovery failed");
+
+                // A rejected cookie never heals on its own: the server
+                // rejects the same stale/mismatched cookie on every retry
+                // (server restarts invalidate cookies too). Drop it and
+                // immediately re-discover from scratch. A cookie-less
+                // discover cannot be rejected for cookie reasons, so this
+                // cannot loop.
+                if error == ErrorCode::InvalidCookie {
+                    self.discovery
+                        .state
+                        .clear_rendezvous_cookie(&rendezvous_node);
+                    if let Err(err) = self.rendezvous_discover(&rendezvous_node, true) {
+                        error!(
+                            %err,
+                            "Failed to re-run rendezvous discovery after clearing rejected cookie"
+                        );
+                    }
+                }
             }
             Event::RegisterFailed {
                 rendezvous_node,
@@ -153,5 +194,45 @@ impl EventHandler<Event> for NetworkManager {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn global() -> Namespace {
+        Namespace::from_static("/calimero/devnet/global")
+    }
+
+    #[test]
+    fn global_namespace_cookie_is_stored() {
+        let cookie = Cookie::for_namespace(global());
+        assert!(is_global_discovery_cookie(&cookie, &global()));
+    }
+
+    #[test]
+    fn per_overlay_cookie_must_not_poison_the_global_slot() {
+        // The production failure: a per-overlay discover response
+        // (`/calimero/ns/<hex>` etc.) returned a cookie, it was stored,
+        // and the next global discover sent it — which the server
+        // rejects with InvalidCookie, forever, because nothing cleared
+        // it. Namespace-invite joins (which can only find members via
+        // the global discover) failed with an opaque 500/HTTP 0 until
+        // the node was restarted.
+        let overlay = Namespace::new(format!("/calimero/ns/{}", hex::encode([0x11; 32]))).unwrap();
+        let cookie = Cookie::for_namespace(overlay);
+        assert!(!is_global_discovery_cookie(&cookie, &global()));
+    }
+
+    #[test]
+    fn namespace_less_cookie_is_not_stored_either() {
+        // We never issue discover-all requests, so a namespace-less
+        // cookie can't pair with our global discover — keep it out of
+        // the slot (the server rejects (Some(ns), None-namespace-cookie)
+        // combinations only in the inverse case, but a cookie we never
+        // produced has no business being replayed).
+        let cookie = Cookie::for_all_namespaces();
+        assert!(!is_global_discovery_cookie(&cookie, &global()));
     }
 }

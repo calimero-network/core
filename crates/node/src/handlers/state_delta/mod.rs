@@ -33,7 +33,9 @@ use buffering::{drain_governance_pending, fence_and_maybe_absorb, FenceOutcome};
 // reach these internally within `buffering`).
 #[cfg(test)]
 use buffering::{drain_absorbed_records, recover_absorbed_records};
-use crypto::{decrypt_delta_actions, lookup_group_key_with_wait, STATE_DELTA_KEY_LOOKUP_WAIT};
+use crypto::{
+    decrypt_delta_actions, lookup_group_key_with_wait, DecryptedDelta, STATE_DELTA_KEY_LOOKUP_WAIT,
+};
 use events::{
     emit_state_mutation_event_parsed, execute_cascaded_events, execute_event_handlers_parsed,
     parse_events_payload, CascadeOutcome,
@@ -50,10 +52,12 @@ pub(crate) struct StateDeltaMessage {
     pub(crate) delta_id: [u8; 32],
     pub(crate) parent_ids: Vec<[u8; 32]>,
     pub(crate) hlc: calimero_storage::logical_clock::HybridTimestamp,
-    pub(crate) root_hash: Hash,
+    /// Encrypted delta payload — a borsh-encoded `SealedDeltaPayload`. The
+    /// expected post-apply root hash AND the execution events are sealed
+    /// inside this ciphertext (not separate fields) and recovered when the
+    /// payload is decrypted.
     pub(crate) artifact: Vec<u8>,
     pub(crate) nonce: Nonce,
-    pub(crate) events: Option<Vec<u8>>,
     pub(crate) governance_position: Option<GovernanceParentEdge>,
     pub(crate) key_id: [u8; 32],
     pub(crate) delta_signature: Option<[u8; 64]>,
@@ -87,10 +91,8 @@ fn state_delta_message_from_buffered(
         delta_id: buffered.id,
         parent_ids: buffered.parents,
         hlc: buffered.hlc,
-        root_hash: buffered.root_hash,
         artifact: buffered.payload,
         nonce: buffered.nonce,
-        events: buffered.events,
         governance_position: buffered.governance_position,
         key_id: buffered.key_id,
         delta_signature: buffered.delta_signature,
@@ -158,10 +160,8 @@ pub(crate) async fn apply_authorized_state_delta(
         delta_id,
         parent_ids,
         hlc,
-        root_hash,
         artifact,
         nonce,
-        events,
         governance_position,
         key_id,
         delta_signature,
@@ -234,8 +234,6 @@ pub(crate) async fn apply_authorized_state_delta(
                 payload: artifact.clone(),
                 nonce,
                 author_id,
-                root_hash,
-                events: events.clone(),
                 source_peer: source,
                 key_id,
                 governance_position: governance_position.clone(),
@@ -263,7 +261,10 @@ pub(crate) async fn apply_authorized_state_delta(
     // `Member(role)` with a wildcard role that the drain matches against.
     if NamespaceRepository::new(node_clients.context.datastore())
         .is_read_only_for_context(&context_id, &author_id)
-        .unwrap_or(false)
+        .unwrap_or_else(|err| {
+            warn!(%context_id, %author_id, %err, "ReadOnly lookup failed; failing closed");
+            true
+        })
     {
         warn!(
             %context_id,
@@ -284,7 +285,6 @@ pub(crate) async fn apply_authorized_state_delta(
             %context_id,
             delta_id = ?delta_id,
             is_uninitialized,
-            has_events = events.is_some(),
             "Buffering delta (sync in progress or context uninitialized)"
         );
 
@@ -295,8 +295,6 @@ pub(crate) async fn apply_authorized_state_delta(
             payload: artifact.clone(),
             nonce,
             author_id,
-            root_hash,
-            events: events.clone(),
             source_peer: source,
             key_id,
             governance_position: governance_position.clone(),
@@ -332,8 +330,6 @@ pub(crate) async fn apply_authorized_state_delta(
                 payload: artifact.clone(),
                 nonce,
                 author_id,
-                root_hash,
-                events: events.clone(),
                 source_peer: source,
                 key_id,
                 governance_position: governance_position.clone(),
@@ -408,7 +404,15 @@ pub(crate) async fn apply_authorized_state_delta(
         }
     };
 
-    let actions = decrypt_delta_actions(artifact, nonce, group_key)?;
+    // The expected root hash and the execution events ride sealed inside the
+    // encrypted payload (they are not cleartext wire fields), so they become
+    // available here alongside the decrypted actions rather than at
+    // message-receive time.
+    let DecryptedDelta {
+        root_hash,
+        actions,
+        events,
+    } = decrypt_delta_actions(artifact, nonce, group_key)?;
 
     let delta = calimero_dag::CausalDelta {
         id: delta_id,
@@ -906,10 +910,8 @@ pub async fn handle_state_delta(
         delta_id,
         parent_ids,
         hlc,
-        root_hash,
         artifact,
         nonce,
-        events,
         governance_position,
         key_id,
         delta_signature,
@@ -926,7 +928,10 @@ pub async fn handle_state_delta(
     // cross-DAG membership lookup on a delta we'll reject anyway.
     if NamespaceRepository::new(node_clients.context.datastore())
         .is_read_only_for_context(&context_id, &author_id)
-        .unwrap_or(false)
+        .unwrap_or_else(|err| {
+            warn!(%context_id, %author_id, %err, "ReadOnly lookup failed; failing closed");
+            true
+        })
     {
         warn!(
             %context_id,
@@ -991,7 +996,6 @@ pub async fn handle_state_delta(
         %author_id,
         delta_id = ?delta_id,
         parent_count = parent_ids.len(),
-        expected_root_hash = %root_hash,
         current_root_hash = %context.root_hash,
         governance_dag_heads = governance_position
             .as_ref()
@@ -1122,8 +1126,6 @@ pub async fn handle_state_delta(
                 payload: artifact.clone(),
                 nonce,
                 author_id,
-                root_hash,
-                events: events.clone(),
                 source_peer: source,
                 key_id,
                 governance_position: governance_position.clone(),
@@ -1155,10 +1157,8 @@ pub async fn handle_state_delta(
             delta_id,
             parent_ids,
             hlc,
-            root_hash,
             artifact,
             nonce,
-            events,
             governance_position,
             key_id,
             delta_signature,
@@ -1202,7 +1202,47 @@ async fn request_missing_deltas(
     // inline so the borrow outlives every projection read.
     node_state: &crate::NodeState,
 ) -> Result<Vec<([u8; 32], Vec<u8>)>> {
-    use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+    use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
+
+    // Transport-binding proof of possession for `our_identity`, attached to
+    // every DeltaRequest below so the responder can reject a caller that
+    // doesn't control the claimed identity (see `InitProof`). Signed once —
+    // it's independent of the per-delta payload/nonce — from the identity's
+    // private key in the local store and this node's own PeerId. `None` (no
+    // owned key / lookup failure) leaves the requests unproven, which a
+    // proof-requiring responder rejects.
+    let delta_pop: Option<InitProof> = {
+        let key = calimero_store::key::ContextIdentity::new(context_id, our_identity);
+        match datastore.handle().get(&key) {
+            Ok(Some(identity)) => match identity.private_key {
+                Some(mut sk_bytes) => {
+                    use zeroize::Zeroize;
+                    let private_key = calimero_primitives::identity::PrivateKey::from(sk_bytes);
+                    // `PrivateKey::from` copies into its own zeroizing wrapper,
+                    // but the bare `[u8; 32]` read out of the store value is a
+                    // `Copy` that lingers on the stack — wipe it now (mirrors the
+                    // discipline in `join_namespace` / `emit_namespace_ack`).
+                    sk_bytes.zeroize();
+                    let peer_id = network_client.network_status().await.local_peer_id;
+                    let message =
+                        InitProof::message(&context_id, &our_identity, &peer_id.to_bytes());
+                    private_key.sign(&message).ok().map(|signature| InitProof {
+                        signature: signature.to_bytes(),
+                    })
+                }
+                None => None,
+            },
+            _ => None,
+        }
+    };
+
+    // Hard ceiling on how many parent deltas a single fetch walk will pull. The
+    // DAG is acyclic so a healthy walk terminates at genesis well below this,
+    // but a malicious peer can answer every `DeltaRequest` with a delta naming
+    // fresh fabricated parents, driving the walk (and its in-memory
+    // accumulation) without bound. Hitting the cap aborts the sync attempt; the
+    // caller backs off and retries, rather than being walked into OOM.
+    const MAX_PARENT_FETCH_DELTAS: usize = 10_000;
 
     // Metric: number of missing-parent IDs the caller is about to fetch.
     // Recorded *before* the stream open so a peer-stream failure doesn't
@@ -1236,13 +1276,21 @@ async fn request_missing_deltas(
     // caller so handlers can run.
     let mut cascaded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
-    // Phase 1: Fetch ALL missing deltas recursively
-    // No artificial limit - DAG is acyclic so this will naturally terminate at genesis
+    // Phase 1: Fetch missing deltas recursively (bounded — see
+    // MAX_PARENT_FETCH_DELTAS). A healthy acyclic DAG terminates at genesis.
     while !to_fetch.is_empty() {
-        let current_batch = to_fetch.clone();
-        to_fetch.clear();
+        // Take ownership of this round's batch, leaving `to_fetch` empty to
+        // collect the next round's parents — avoids cloning the whole Vec only
+        // to immediately clear it.
+        let current_batch = std::mem::take(&mut to_fetch);
 
         for missing_id in current_batch {
+            if fetch_count >= MAX_PARENT_FETCH_DELTAS {
+                bail!(
+                    "aborting parent-fetch walk for context {context_id}: exceeded \
+                     {MAX_PARENT_FETCH_DELTAS} deltas (peer may be feeding fabricated parents)"
+                );
+            }
             fetch_count += 1;
 
             info!(
@@ -1264,6 +1312,7 @@ async fn request_missing_deltas(
                     use rand::Rng;
                     rand::thread_rng().gen()
                 },
+                pop: delta_pop,
             };
 
             crate::sync::stream::send(&mut stream, &request_msg, None).await?;
@@ -1424,7 +1473,10 @@ async fn request_missing_deltas(
                     // though gossip rejects the same envelope.
                     if NamespaceRepository::new(&datastore)
                         .is_read_only_for_context(&context_id, &response_author)
-                        .unwrap_or(false)
+                        .unwrap_or_else(|err| {
+                            warn!(%context_id, %response_author, %err, "ReadOnly lookup failed; failing closed");
+                            true
+                        })
                     {
                         warn!(
                             %context_id,
@@ -1720,7 +1772,6 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         %context_id,
         delta_id = ?delta_id,
         author = %buffered.author_id,
-        has_events = buffered.events.is_some(),
         "Replaying buffered delta"
     );
 
@@ -1781,16 +1832,31 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // `apply_authorized_state_delta`. Snapshot-sync replay must enforce the
     // same per-context role gate; otherwise a peer that became ReadOnly
     // between authoring and replay slips a write through.
-    if NamespaceRepository::new(context_client.datastore())
+    match NamespaceRepository::new(context_client.datastore())
         .is_read_only_for_context(&context_id, &buffered.author_id)
-        .unwrap_or(false)
     {
-        warn!(
-            %context_id,
-            author = %buffered.author_id,
-            "Rejecting buffered state delta from ReadOnly member"
-        );
-        return Ok(false);
+        Ok(true) => {
+            warn!(
+                %context_id,
+                author = %buffered.author_id,
+                "Rejecting buffered state delta from ReadOnly member"
+            );
+            return Ok(false);
+        }
+        Ok(false) => {}
+        // Unlike the gossip/catchup sites, a buffered delta is consumed from the
+        // buffer and does NOT re-arrive via gossip, so silently dropping it on a
+        // transient store error would lose a possibly-legitimate delta. Propagate
+        // the error so the caller surfaces/retries instead of dropping.
+        Err(err) => {
+            warn!(
+                %context_id,
+                author = %buffered.author_id,
+                %err,
+                "ReadOnly lookup failed during buffered replay; propagating error"
+            );
+            return Err(err);
+        }
     }
 
     // Apply-time cross-DAG membership check, parallel to `handle_state_delta`.
@@ -1936,14 +2002,21 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         }
     };
 
-    let actions = decrypt_delta_actions(buffered.payload, buffered.nonce, group_key)?;
+    // The expected root hash and the execution events are sealed inside the
+    // buffered (encrypted) payload, so they come back from decryption here
+    // rather than from stored fields.
+    let DecryptedDelta {
+        root_hash,
+        actions,
+        events,
+    } = decrypt_delta_actions(buffered.payload, buffered.nonce, group_key)?;
 
     let delta = calimero_dag::CausalDelta {
         id: buffered.id,
         parents: buffered.parents,
         payload: actions,
         hlc: buffered.hlc,
-        expected_root_hash: *buffered.root_hash,
+        expected_root_hash: *root_hash,
         kind: calimero_dag::DeltaKind::Regular,
     };
 
@@ -2037,7 +2110,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         delta_store
             .add_delta_with_events(
                 delta.clone(),
-                buffered.events.clone(),
+                events.clone(),
                 Some(buffered.author_id),
                 buffered_gov_blob,
                 buffered.delta_signature,
@@ -2059,7 +2132,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         add_result.applied || is_checkpoint_match || is_covered_by_checkpoint;
 
     if should_execute_handlers {
-        if let Some(events_data) = &buffered.events {
+        if let Some(events_data) = &events {
             let events_payload: Option<Vec<ExecutionEvent>> =
                 match serde_json::from_slice(events_data) {
                     Ok(events) => Some(events),
@@ -2117,19 +2190,14 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                 }
 
                 // Emit to WebSocket clients
-                emit_state_mutation_event_parsed(
-                    &node_client,
-                    &context_id,
-                    buffered.root_hash,
-                    events,
-                );
+                emit_state_mutation_event_parsed(&node_client, &context_id, root_hash, events);
             }
         }
     } else {
         debug!(
             %context_id,
             delta_id = ?delta_id,
-            has_events = buffered.events.is_some(),
+            has_events = events.is_some(),
             "Skipping handler execution for pending delta (will execute when delta is applied)"
         );
     }
@@ -2306,7 +2374,6 @@ mod tests {
 
         use calimero_context::group_store::{AbsorbRecord, AbsorbRepository};
         use calimero_node_primitives::delta_buffer::BufferedDelta;
-        use calimero_primitives::hash::Hash;
 
         use super::super::{fence_and_maybe_absorb, FenceOutcome};
 
@@ -2321,8 +2388,6 @@ mod tests {
                 payload: vec![1, 2, 3],
                 nonce: [0; 12],
                 author_id: PublicKey::from([0xAB; 32]),
-                root_hash: Hash::default(),
-                events: None,
                 source_peer: libp2p::PeerId::random(),
                 key_id: [0; 32],
                 governance_position: None,

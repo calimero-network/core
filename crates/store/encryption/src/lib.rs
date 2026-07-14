@@ -176,6 +176,12 @@ impl<'a, D: Database<'a>> Database<'a> for EncryptedDatabase<D> {
         )))
     }
 
+    fn flush(&self) -> Result<()> {
+        // Encryption adds no buffering of its own — durability is entirely the
+        // inner backend's concern, so delegate straight through.
+        self.inner.flush()
+    }
+
     fn apply(&self, tx: &Transaction<'a>) -> Result<()> {
         // Build a new transaction with encrypted values
         let mut encrypted_tx = Transaction::default();

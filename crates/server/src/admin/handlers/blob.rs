@@ -47,12 +47,31 @@ pub struct BlobDeleteResponse {
     pub deleted: bool,
 }
 
-/// Convert axum Body to futures AsyncRead using tokio_util::io::StreamReader
-/// This allows streaming large files without loading them entirely into memory
+/// Hard ceiling on a single blob upload. The upload streams straight to blob
+/// storage, so without a cap a client could stream an unbounded body and fill
+/// the node's disk (there is no `Content-Length`-based limit — the body is
+/// consumed as a stream). Enforced by counting bytes as they flow.
+const MAX_BLOB_UPLOAD_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
+
+/// Convert axum Body to futures AsyncRead using tokio_util::io::StreamReader.
+/// This allows streaming large files without loading them entirely into memory.
+///
+/// The stream errors out once cumulative bytes exceed [`MAX_BLOB_UPLOAD_BYTES`],
+/// so an oversized (or unbounded/chunked) upload is aborted mid-stream rather
+/// than being written to disk in full.
 fn body_to_async_read(body: Body) -> impl AsyncRead {
-    let byte_stream = body
-        .into_data_stream()
-        .map(|result| result.map_err(std::io::Error::other));
+    let mut total: u64 = 0;
+    let byte_stream = body.into_data_stream().map(move |result| {
+        let chunk = result.map_err(std::io::Error::other)?;
+        total = total.saturating_add(chunk.len() as u64);
+        if total > MAX_BLOB_UPLOAD_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "blob upload exceeds maximum allowed size",
+            ));
+        }
+        Ok(chunk)
+    });
 
     StreamReader::new(byte_stream).compat()
 }
@@ -124,18 +143,33 @@ pub async fn upload_handler(
                 "Blob upload details"
             );
 
-            // Announce blob to network if context_id is provided
+            // Announce blob to network if context_id is provided.
+            //
+            // Announcing writes a discovery record advertising that this node
+            // holds the blob for the given context. Only announce for a context
+            // this node actually participates in: without this check a caller
+            // could inject blob-availability records into arbitrary contexts'
+            // discovery. Membership is proven by the node owning an identity in
+            // the context (the same signal the signed serving path relies on).
             if let Some(ctx_id) = context_id {
-                match state
-                    .node_client
-                    .announce_blob_to_network(&blob_id, &ctx_id, size)
-                    .await
-                {
-                    Ok(_) => {
-                        info!(blob_id=%blob_id, context_id=%ctx_id, "Blob announced to network");
+                match state.node_client.find_owned_identity(&ctx_id) {
+                    Ok(Some(_)) => match state
+                        .node_client
+                        .announce_blob_to_network(&blob_id, &ctx_id, size)
+                        .await
+                    {
+                        Ok(_) => {
+                            info!(blob_id=%blob_id, context_id=%ctx_id, "Blob announced to network");
+                        }
+                        Err(err) => {
+                            error!(blob_id=%blob_id, context_id=%ctx_id, error=?err, "Failed to announce blob to network");
+                        }
+                    },
+                    Ok(None) => {
+                        error!(blob_id=%blob_id, context_id=%ctx_id, "Skipping announce: node is not a member of the requested context");
                     }
                     Err(err) => {
-                        error!(blob_id=%blob_id, context_id=%ctx_id, error=?err, "Failed to announce blob to network");
+                        error!(blob_id=%blob_id, context_id=%ctx_id, error=?err, "Skipping announce: failed to verify context membership");
                     }
                 }
             }
@@ -195,7 +229,13 @@ fn build_blob_response_headers(blob_metadata: &BlobMetadata, blob_id: BlobId) ->
         .header("Content-Length", blob_metadata.size.to_string())
         .header("Content-Type", &blob_metadata.mime_type)
         .header("ETag", &etag)
-        .header("Cache-Control", "public, max-age=3600") // 1 hour cache
+        // Blobs may be private context data served through this admin API, so
+        // never allow shared proxies/CDNs to cache them (`private`). We use
+        // `no-cache` (revalidate before reuse) rather than `immutable`: a blob
+        // id can be deleted via this same API, and `immutable` would let a
+        // client keep serving a since-deleted blob for the max-age window.
+        // Revalidation is cheap for an admin API, so correctness wins.
+        .header("Cache-Control", "private, no-cache")
         .header("X-Blob-ID", blob_id.to_string())
         .header("X-Blob-Hash", hex::encode(blob_metadata.hash))
         .header("X-Blob-MIME-Type", &blob_metadata.mime_type)
@@ -257,28 +297,32 @@ pub async fn download_handler(
 
     match blob_result {
         Ok(Some(blob)) => {
-            // Now get metadata for headers (blob should be local after discovery)
+            // Now get metadata for headers (blob should be local after discovery).
+            //
+            // The metadata drives the Content-Length and ETag response headers. If
+            // it is missing or unreadable we must NOT fabricate zero metadata: that
+            // would emit `Content-Length: 0` and an all-zero ETag while streaming a
+            // non-empty body, causing clients to truncate the response and caches to
+            // collide distinct blobs under the same `"00..00"` ETag. A blob whose
+            // bytes exist but whose metadata is gone is an inconsistent store state,
+            // so surface it as a 500 rather than serving a corrupt response.
             let blob_metadata = match state.node_client.get_blob_info(blob_id).await {
                 Ok(Some(metadata)) => metadata,
                 Ok(None) => {
-                    tracing::warn!("Blob found but metadata missing: {}", blob_id);
-                    // Create default metadata
-                    BlobMetadata {
-                        blob_id,
-                        size: 0,       // Will be updated by streaming response
-                        hash: [0; 32], // Default hash
-                        mime_type: "application/octet-stream".to_owned(),
+                    error!(%blob_id, "Blob bytes found but metadata missing; refusing to serve");
+                    return ApiError {
+                        status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                        message: "Blob metadata is unavailable".to_owned(),
                     }
+                    .into_response();
                 }
                 Err(err) => {
-                    tracing::warn!("Failed to get blob metadata {}: {:?}", blob_id, err);
-                    // Create default metadata
-                    BlobMetadata {
-                        blob_id,
-                        size: 0,
-                        hash: [0; 32], // Default hash
-                        mime_type: "application/octet-stream".to_owned(),
+                    error!(%blob_id, ?err, "Failed to read blob metadata; refusing to serve");
+                    return ApiError {
+                        status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                        message: "Failed to read blob metadata".to_owned(),
                     }
+                    .into_response();
                 }
             };
 
@@ -335,6 +379,34 @@ pub async fn delete_handler(
     };
 
     tracing::info!("Attempting to delete blob {}", blob_id);
+
+    // Blob deletion is a global, reference-counted operation with no per-caller
+    // ownership: any authenticated caller can release a reference to any blob by
+    // its global id. That is acceptable for ordinary content, but application
+    // bytecode/compiled artifacts are shared blobs that installed apps depend on
+    // to execute. Releasing the last reference to one would brick every context
+    // running that app. Refuse to delete blobs that are referenced as an
+    // application artifact.
+    match state.node_client.is_blob_application_artifact(&blob_id) {
+        Ok(true) => {
+            tracing::warn!(%blob_id, "refusing to delete blob referenced by an installed application");
+            return ApiError {
+                status_code: StatusCode::FORBIDDEN,
+                message: "Blob is referenced by an installed application and cannot be deleted"
+                    .to_owned(),
+            }
+            .into_response();
+        }
+        Ok(false) => {}
+        Err(err) => {
+            tracing::error!(%blob_id, ?err, "failed to check application references before delete");
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to verify blob is safe to delete".to_owned(),
+            }
+            .into_response();
+        }
+    }
 
     match state.node_client.delete_blob(blob_id).await {
         Ok(true) => {

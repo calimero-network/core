@@ -48,11 +48,11 @@ jobs:
       pull-requests: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -64,7 +64,7 @@ jobs:
       # come from meroreviewer[bot] (not whatever GH_PAT/GITHUB_TOKEN
       # resolves to), matching the --reviewer-name label below.
       - name: Create GitHub App token
-        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
           app-id: ${{ vars.MERO_REVIEWER_APP_ID }}
@@ -81,8 +81,9 @@ jobs:
             echo "agents=${{ github.event.inputs.agents }}"    >> $GITHUB_OUTPUT
           else
             echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
-            # Default to 1 agent for cost; bump via workflow_dispatch when needed.
-            echo "agents=1"                                        >> $GITHUB_OUTPUT
+            # 3 agents so the cross-review validation round runs (needs >=3);
+            # the agents block in .ai-reviewer.yaml selects security/logic/patterns.
+            echo "agents=3"                                        >> $GITHUB_OUTPUT
           fi
 
       - name: Run AI Code Review
@@ -93,6 +94,7 @@ jobs:
           ai-reviewer review-pr \
             ${{ github.repository }} \
             ${{ steps.pr.outputs.number }} \
+            --config .ai-reviewer.yaml \
             --agents ${{ steps.pr.outputs.agents }} \
             --reviewer-name "MeroReviewer" \
             --output github

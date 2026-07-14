@@ -18,14 +18,49 @@
 //! async spawn patterns that work within Actix's actor model.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use actix::Addr;
 use calimero_network_primitives::messages::NetworkEvent;
 use tokio::sync::Notify;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
-use crate::network_event_channel::NetworkEventReceiver;
+use crate::network_event_channel::{NetworkEventChannelMetrics, NetworkEventReceiver};
 use crate::NodeManager;
+
+/// Bound on NodeManager's actor mailbox. `try_send` (below) respects this, so
+/// the network-event feed can no longer grow the mailbox without limit — unlike
+/// `do_send`, which ignores capacity entirely.
+pub(crate) const NODE_MANAGER_MAILBOX_CAPACITY: usize = 1024;
+
+/// How many times `forward_event` retries a full mailbox before dropping.
+const MAILBOX_SEND_MAX_RETRIES: usize = 20;
+
+/// Delay between mailbox-full retries. `MAILBOX_SEND_MAX_RETRIES` × this bounds
+/// how long a single event is held (and how long the source channel is left to
+/// backpressure) before the event is dropped.
+const MAILBOX_SEND_RETRY_BACKOFF: Duration = Duration::from_millis(25);
+
+/// Stable label for a network event, for logs and drop metrics.
+fn event_type_str(event: &NetworkEvent) -> &'static str {
+    match event {
+        NetworkEvent::Message { .. } => "Message",
+        NetworkEvent::StreamOpened { .. } => "StreamOpened",
+        NetworkEvent::Subscribed { .. } => "Subscribed",
+        NetworkEvent::Unsubscribed { .. } => "Unsubscribed",
+        NetworkEvent::ListeningOn { .. } => "ListeningOn",
+        NetworkEvent::BlobRequested { .. } => "BlobRequested",
+        NetworkEvent::BlobProvidersFound { .. } => "BlobProvidersFound",
+        NetworkEvent::BlobDownloaded { .. } => "BlobDownloaded",
+        NetworkEvent::BlobDownloadFailed { .. } => "BlobDownloadFailed",
+        NetworkEvent::SpecializedNodeVerificationRequest { .. } => {
+            "SpecializedNodeVerificationRequest"
+        }
+        NetworkEvent::SpecializedNodeInvitationResponse { .. } => {
+            "SpecializedNodeInvitationResponse"
+        }
+    }
+}
 
 /// Bridge that forwards events from the channel to NodeManager.
 ///
@@ -38,6 +73,10 @@ pub struct NetworkEventBridge {
     /// NodeManager actor address.
     node_manager: Addr<NodeManager>,
 
+    /// Shared channel metrics, so a mailbox-full drop is counted in the same
+    /// `events_dropped` series as source-channel drops.
+    metrics: NetworkEventChannelMetrics,
+
     /// Shutdown signal.
     shutdown: Arc<Notify>,
 }
@@ -46,6 +85,7 @@ impl NetworkEventBridge {
     /// Create a new bridge.
     pub fn new(receiver: NetworkEventReceiver, node_manager: Addr<NodeManager>) -> Self {
         Self {
+            metrics: receiver.metrics(),
             receiver,
             node_manager,
             shutdown: Arc::new(Notify::new()),
@@ -71,7 +111,7 @@ impl NetworkEventBridge {
                 event = self.receiver.recv() => {
                     match event {
                         Some(event) => {
-                            self.forward_event(event);
+                            self.forward_event(event).await;
                         }
                         None => {
                             info!("Network event channel closed, shutting down bridge");
@@ -95,31 +135,41 @@ impl NetworkEventBridge {
     }
 
     /// Forward a single event to NodeManager.
-    fn forward_event(&self, event: NetworkEvent) {
-        // Log event type for debugging
-        let event_type = match &event {
-            NetworkEvent::Message { .. } => "Message",
-            NetworkEvent::StreamOpened { .. } => "StreamOpened",
-            NetworkEvent::Subscribed { .. } => "Subscribed",
-            NetworkEvent::Unsubscribed { .. } => "Unsubscribed",
-            NetworkEvent::ListeningOn { .. } => "ListeningOn",
-            NetworkEvent::BlobRequested { .. } => "BlobRequested",
-            NetworkEvent::BlobProvidersFound { .. } => "BlobProvidersFound",
-            NetworkEvent::BlobDownloaded { .. } => "BlobDownloaded",
-            NetworkEvent::BlobDownloadFailed { .. } => "BlobDownloadFailed",
-            NetworkEvent::SpecializedNodeVerificationRequest { .. } => {
-                "SpecializedNodeVerificationRequest"
-            }
-            NetworkEvent::SpecializedNodeInvitationResponse { .. } => {
-                "SpecializedNodeInvitationResponse"
-            }
-        };
-
+    ///
+    /// Uses `try_send` against NodeManager's bounded mailbox instead of
+    /// `do_send`: `do_send` ignores the mailbox capacity, so draining the
+    /// bounded source channel straight into it let the mailbox grow without
+    /// limit. A short bounded retry rides out transient fullness (and, by not
+    /// pulling the next event, lets the source channel apply its own
+    /// backpressure); a mailbox that stays full means NodeManager is
+    /// overwhelmed, so the event is dropped with a counter rather than buffered
+    /// forever.
+    async fn forward_event(&self, event: NetworkEvent) {
+        let event_type = event_type_str(&event);
         debug!(event_type, "Forwarding network event to NodeManager");
 
-        // Forward to NodeManager - this uses Actix's do_send which is reliable
-        // within the same Actix system
-        self.node_manager.do_send(event);
+        let mut event = event;
+        for _ in 0..MAILBOX_SEND_MAX_RETRIES {
+            match self.node_manager.try_send(event) {
+                Ok(()) => return,
+                Err(actix::dev::SendError::Closed(_)) => {
+                    debug!(event_type, "NodeManager mailbox closed; dropping event");
+                    return;
+                }
+                Err(actix::dev::SendError::Full(returned)) => {
+                    event = returned;
+                    tokio::time::sleep(MAILBOX_SEND_RETRY_BACKOFF).await;
+                }
+            }
+        }
+
+        // Sustained-full mailbox: drop with visibility rather than grow it.
+        self.metrics.events_dropped.inc();
+        warn!(
+            event_type,
+            capacity = NODE_MANAGER_MAILBOX_CAPACITY,
+            "NodeManager mailbox full after retries; dropping network event"
+        );
     }
 
     /// Graceful shutdown: drain and forward remaining events.
@@ -132,8 +182,11 @@ impl NetworkEventBridge {
         if count > 0 {
             info!(count, "Forwarding remaining events before shutdown");
 
+            // Best-effort flush on the way down: the mailbox-bounding concern
+            // does not apply during shutdown, so use `do_send` to hand every
+            // remaining event over without dropping any.
             for event in remaining_events {
-                self.forward_event(event);
+                self.node_manager.do_send(event);
             }
         }
 

@@ -4,7 +4,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use tracing::{debug, error, info};
-use wasmer::{DeserializeError, Instance, SerializeError, Store};
+use wasmer::{Instance, SerializeError, Store};
 
 // Profiling feature: Only compile these imports when profiling feature is enabled
 #[cfg(feature = "profiling")]
@@ -21,7 +21,9 @@ pub mod store;
 
 pub use config::{RuntimeConfig, RuntimeLimitsConfig};
 pub use constraint::Constraint;
-use errors::{FunctionCallError, HostError, Location, PanicContext, VMRuntimeError};
+use errors::{
+    FunctionCallError, HostError, Location, PanicContext, PrecompiledModuleError, VMRuntimeError,
+};
 use logic::{CallbackHandlerGuard, Outcome, VMContext, VMLimits, VMLogic, VMLogicError};
 use memory::WasmerTunables;
 use store::Storage;
@@ -103,6 +105,17 @@ impl Default for Engine {
 impl Engine {
     #[must_use]
     pub fn new(mut engine: wasmer::Engine, limits: VMLimits) -> Self {
+        // A self-contradictory limits config (e.g. a total register budget
+        // smaller than a single register's cap) is a construction-time
+        // programming error: it is never reachable from guest input nor from
+        // operator config (which does not expose these fields), only from a code
+        // change. A debug assertion catches it in dev/CI/tests without a
+        // process-fatal panic in release library code.
+        debug_assert!(
+            limits.validate_invariants().is_ok(),
+            "invalid VMLimits passed to Engine::new: max_registers_capacity must be >= max_register_size"
+        );
+
         // Set tunables if this is a sys engine (native engine)
         if engine.is_sys() {
             use wasmer::sys::NativeEngineExt;
@@ -191,17 +204,9 @@ impl Engine {
             });
         }
 
-        // todo! apply a prepare step
-        // todo! - parse the wasm blob, validate and apply transformations
-        // todo!   - validations:
-        // todo!     - there is no memory import
-        // todo!     - there is no _start function
-        // todo!   - transformations:
-        // todo!     - remove memory export
-        // todo!     - remove memory section
-        // todo! cache the compiled module in storage for later
-
         let module = wasmer::Module::new(&self.engine, bytes)?;
+
+        Self::validate_guest_module(&module)?;
 
         Ok(Module {
             limits: self.limits,
@@ -210,24 +215,113 @@ impl Engine {
         })
     }
 
+    /// Reject untrusted guest modules whose shape would let them escape the
+    /// sandbox contract the runtime relies on. Runs once per compile, after
+    /// wasmer has validated the bytes are well-formed WASM.
+    ///
+    /// Three checks:
+    ///
+    /// * **No imported memory.** A module that *imports* its linear memory
+    ///   expects the host to hand it one, which the runtime never provides; such
+    ///   a module could only be attempting to alias host-supplied memory, so it
+    ///   is rejected outright rather than failing deeper in instantiation.
+    /// * **Exports a memory named `memory`.** The host reads guest state through
+    ///   `instance.exports.get_memory("memory")`, so a guest that exports no such
+    ///   memory cannot be run. Requiring it here turns what would otherwise be a
+    ///   confusing export-not-found failure at instantiation into a clear
+    ///   validation error at compile time.
+    /// * **No `_start` export.** `_start` is the entry point a WASI *command*
+    ///   build emits (`wasm32-wasip1`/`wasm32-wasi` toolchains) — the WASI ABI's
+    ///   equivalent of `main`, meant to run once on start. It is a property of
+    ///   how the guest was *compiled*, independent of wasmer (the engine we run
+    ///   it with). Calimero guests are libraries built for
+    ///   `wasm32-unknown-unknown` and invoked by explicit method name, so a
+    ///   `_start` export means the module was built against the wrong target
+    ///   (and likely expects WASI syscall imports the host does not provide). It
+    ///   is refused up front rather than instantiated in a half-supported shape.
+    #[allow(
+        clippy::result_large_err,
+        reason = "pervasive #[from] error enum; boxing breaks the derive"
+    )]
+    fn validate_guest_module(module: &wasmer::Module) -> Result<(), FunctionCallError> {
+        use wasmer::ExternType;
+
+        for import in module.imports() {
+            if matches!(import.ty(), ExternType::Memory(_)) {
+                return Err(FunctionCallError::ModuleValidationError {
+                    reason: format!(
+                        "guest imports memory `{}::{}`; guests must define and export \
+                         their own memory, not import it from the host",
+                        import.module(),
+                        import.name()
+                    ),
+                });
+            }
+        }
+
+        if module.exports().any(|export| {
+            export.name() == "_start" && matches!(export.ty(), ExternType::Function(_))
+        }) {
+            return Err(FunctionCallError::ModuleValidationError {
+                reason: "guest exports a `_start` function; WASI command entry points are \
+                         not supported (guests are invoked by explicit method name)"
+                    .to_owned(),
+            });
+        }
+
+        let exports_memory = module.exports().any(|export| {
+            export.name() == "memory" && matches!(export.ty(), ExternType::Memory(_))
+        });
+        if !exports_memory {
+            return Err(FunctionCallError::ModuleValidationError {
+                reason: "guest does not export a linear memory named `memory`; the host \
+                         reads guest state through that export"
+                    .to_owned(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Deserialize a precompiled (serialized) module produced by
+    /// [`Module::to_bytes`].
+    ///
     /// # Safety
     ///
-    /// This function deserializes a precompiled WASM module. The caller must ensure
-    /// the bytes come from a trusted source (e.g., previously compiled by this engine).
+    /// `wasmer::Module::deserialize` trusts its input: it maps the bytes
+    /// straight into an executable artifact without re-validating them. Feeding
+    /// it attacker-controlled bytes is undefined behavior. The caller MUST
+    /// ensure `bytes` originate from a trusted source — the only sound
+    /// provenance is bytes this very node produced via [`Module::to_bytes`]
+    /// (e.g. its own on-disk compilation cache). The `unsafe` marker is the
+    /// provenance assertion: every call site must justify, at the point of
+    /// call, why its bytes are trusted.
     ///
-    /// # Security Note
+    /// # Size cap (defense-in-depth)
     ///
-    /// No size limit check is performed here. This is an accepted security trade-off because:
-    /// 1. Precompiled modules have already been validated during their original compilation
-    /// 2. The serialized format may differ significantly in size from the original WASM binary
-    /// 3. The `unsafe` marker already requires callers to ensure the bytes are from a trusted source
-    ///
-    /// **Audit requirement**: All call sites using this method should be reviewed to ensure
-    /// precompiled bytes originate from trusted sources only (e.g., the node's own compilation cache).
-    ///
-    /// If precompiled bytes could come from an untrusted source, callers should implement
-    /// their own size validation before calling this method.
-    pub unsafe fn from_precompiled(&self, bytes: &[u8]) -> Result<Module, DeserializeError> {
+    /// Unlike the original design, this method now enforces a configurable size
+    /// cap ([`VMLimits::max_precompiled_module_size`]) *before* handing the
+    /// bytes to wasmer. Trusted provenance does not preclude a truncated cache
+    /// entry or a corrupt-on-disk artifact, and deserialization allocates
+    /// proportionally to the input; the cap bounds that allocation regardless.
+    /// It is intentionally separate from (and larger than)
+    /// [`VMLimits::max_module_size`], since a serialized artifact is bigger than
+    /// the source WASM it came from.
+    pub unsafe fn from_precompiled(&self, bytes: &[u8]) -> Result<Module, PrecompiledModuleError> {
+        // Note: `as u64` is safe because usize <= u64 on all supported platforms.
+        let size = bytes.len() as u64;
+        if size > self.limits.max_precompiled_module_size {
+            tracing::warn!(
+                size,
+                max = self.limits.max_precompiled_module_size,
+                "precompiled WASM module size limit exceeded"
+            );
+            return Err(PrecompiledModuleError::SizeLimitExceeded {
+                size,
+                max: self.limits.max_precompiled_module_size,
+            });
+        }
+
         let module = wasmer::Module::deserialize(&self.engine, bytes)?;
 
         Ok(Module {
@@ -1197,6 +1291,113 @@ mod wasm_integration_tests {
         );
     }
 
+    /// A guest that imports its linear memory from the host is rejected: guests
+    /// must define and export their own memory, never alias a host-supplied one.
+    #[test]
+    fn guest_importing_memory_is_rejected() {
+        let wat = r#"
+            (module
+                (import "env" "memory" (memory 1))
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::new(wasmer::Engine::default(), VMLimits::default());
+
+        match engine.compile(&wasm) {
+            Err(FunctionCallError::ModuleValidationError { reason }) => {
+                assert!(reason.contains("memory"), "unexpected reason: {reason}");
+            }
+            other => panic!("expected ModuleValidationError for imported memory, got: {other:?}"),
+        }
+    }
+
+    /// A guest exporting a WASI-style `_start` entry point is rejected: Calimero
+    /// guests are libraries invoked by explicit method name, not WASI commands.
+    #[test]
+    fn guest_exporting_start_is_rejected() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "_start"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::new(wasmer::Engine::default(), VMLimits::default());
+
+        match engine.compile(&wasm) {
+            Err(FunctionCallError::ModuleValidationError { reason }) => {
+                assert!(reason.contains("_start"), "unexpected reason: {reason}");
+            }
+            other => panic!("expected ModuleValidationError for `_start`, got: {other:?}"),
+        }
+    }
+
+    /// A guest that exports no linear memory named `memory` is rejected with a
+    /// clear validation error rather than failing later at instantiation.
+    #[test]
+    fn guest_without_memory_export_is_rejected() {
+        let wat = r#"
+            (module
+                (func (export "app_method"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::new(wasmer::Engine::default(), VMLimits::default());
+
+        match engine.compile(&wasm) {
+            Err(FunctionCallError::ModuleValidationError { reason }) => {
+                assert!(reason.contains("memory"), "unexpected reason: {reason}");
+            }
+            other => panic!("expected ModuleValidationError for missing memory, got: {other:?}"),
+        }
+    }
+
+    /// A conforming guest — exports its own memory, no `_start`, no imported
+    /// memory — passes validation and compiles.
+    #[test]
+    fn conforming_guest_passes_validation() {
+        let wat = r#"
+            (module
+                (import "env" "some_host_fn" (func))
+                (memory (export "memory") 1)
+                (func (export "app_method"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::new(wasmer::Engine::default(), VMLimits::default());
+
+        assert!(
+            engine.compile(&wasm).is_ok(),
+            "a conforming guest module must pass validation"
+        );
+    }
+
+    /// The default limits satisfy the registers invariant, and violating it is
+    /// caught loudly at engine construction rather than at execution time.
+    #[test]
+    fn vmlimits_default_satisfies_registers_invariant() {
+        VMLimits::default()
+            .validate_invariants()
+            .expect("default limits must be valid");
+    }
+
+    #[test]
+    #[should_panic(expected = "max_registers_capacity")]
+    fn engine_rejects_registers_capacity_below_register_size() {
+        // A total register budget smaller than a single register's cap is
+        // self-contradictory; Engine::new must refuse it up front.
+        let limits = VMLimits {
+            max_registers_capacity: 1,
+            ..Default::default()
+        };
+        let _ = Engine::new(wasmer::Engine::default(), limits);
+    }
+
     /// Test that modules exactly at the size limit compile successfully (boundary condition)
     #[test]
     fn test_wasm_module_at_exact_size_limit() {
@@ -1298,6 +1499,132 @@ mod wasm_integration_tests {
             }
             Ok(_) => panic!("Empty bytes should not compile successfully"),
             Err(other) => panic!("Expected CompilationError for empty bytes, got: {other:?}"),
+        }
+    }
+
+    /// A precompiled artifact this engine produced round-trips back through
+    /// `from_precompiled` when it is within the configured cap.
+    #[test]
+    fn test_from_precompiled_round_trips_within_cap() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+        let precompiled = module.to_bytes().expect("Failed to serialize module");
+
+        // SAFETY: bytes were just produced by this same engine via `to_bytes`.
+        let restored = unsafe { engine.from_precompiled(&precompiled) };
+        assert!(
+            restored.is_ok(),
+            "Expected precompiled round-trip to succeed, got: {restored:?}"
+        );
+    }
+
+    /// `from_precompiled` enforces `max_precompiled_module_size` before handing
+    /// the bytes to wasmer, independent of the source-WASM `max_module_size`.
+    #[test]
+    fn test_from_precompiled_size_limit_exceeded() {
+        use crate::logic::VMLimits;
+
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "test_func"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+
+        // Compile with a generous engine, then serialize.
+        let precompiled = Engine::default()
+            .compile(&wasm)
+            .expect("Failed to compile module")
+            .to_bytes()
+            .expect("Failed to serialize module");
+
+        // A second engine whose precompiled cap is smaller than the artifact.
+        let limits = VMLimits {
+            max_precompiled_module_size: 1, // 1 byte - far below any artifact
+            ..Default::default()
+        };
+        let engine = Engine::new(wasmer::Engine::default(), limits);
+
+        // SAFETY: bytes came from a trusted compile above; we are exercising the
+        // size cap, which must reject before deserialization is attempted.
+        let result = unsafe { engine.from_precompiled(&precompiled) };
+        match result {
+            Err(PrecompiledModuleError::SizeLimitExceeded { size, max }) => {
+                assert_eq!(max, 1);
+                assert!(size > 1, "artifact should be larger than the cap");
+            }
+            Ok(_) => panic!("Expected SizeLimitExceeded, but deserialization succeeded"),
+            Err(other) => panic!("Expected SizeLimitExceeded, got: {other:?}"),
+        }
+    }
+
+    /// Bytes within the cap but not a valid artifact surface as a `Deserialize`
+    /// error, not a size error — the cap check is separate from validation.
+    #[test]
+    fn test_from_precompiled_invalid_bytes_surface_deserialize_error() {
+        let engine = Engine::default();
+        let garbage = vec![0u8; 1024];
+
+        // SAFETY: test-only bytes; here we assert the error path, not soundness.
+        let result = unsafe { engine.from_precompiled(&garbage) };
+        match result {
+            Err(PrecompiledModuleError::Deserialize(_)) => {
+                // Expected - within cap, but wasmer rejects the bytes.
+            }
+            Err(PrecompiledModuleError::SizeLimitExceeded { .. }) => {
+                panic!("1 KiB is within the default cap; should not be a size error")
+            }
+            Ok(_) => panic!("garbage bytes should not deserialize into a module"),
+        }
+    }
+
+    /// Edge case mirroring `test_wasm_module_size_limit_zero` for the
+    /// precompiled path: with `max_precompiled_module_size = 0`, any non-empty
+    /// slice is rejected by the cap, while an empty slice passes the size check
+    /// (`0 > 0` is false) and surfaces as a deserialization error instead.
+    #[test]
+    fn test_from_precompiled_size_limit_zero() {
+        use crate::logic::VMLimits;
+
+        let limits = VMLimits {
+            max_precompiled_module_size: 0,
+            ..Default::default()
+        };
+        let engine = Engine::new(wasmer::Engine::default(), limits);
+
+        // Any non-empty slice is rejected by the cap before reaching wasmer.
+        // SAFETY: test-only bytes; the cap rejects before deserialization.
+        let non_empty = unsafe { engine.from_precompiled(&[0u8; 8]) };
+        match non_empty {
+            Err(PrecompiledModuleError::SizeLimitExceeded { size, max }) => {
+                assert_eq!(max, 0);
+                assert!(size > 0, "non-empty slice should exceed a cap of 0");
+            }
+            Ok(_) => panic!("Expected SizeLimitExceeded with max_precompiled_module_size=0"),
+            Err(other) => panic!("Expected SizeLimitExceeded, got: {other:?}"),
+        }
+
+        // An empty slice passes the size check (0 is not > 0) and fails in
+        // wasmer's deserialize instead.
+        // SAFETY: test-only bytes; asserting the error path, not soundness.
+        let empty = unsafe { engine.from_precompiled(&[]) };
+        match empty {
+            Err(PrecompiledModuleError::Deserialize(_)) => {
+                // Expected - empty slice passes the cap but cannot deserialize.
+            }
+            Err(PrecompiledModuleError::SizeLimitExceeded { .. }) => {
+                panic!("empty slice should pass the size check (0 is not > 0)")
+            }
+            Ok(_) => panic!("empty slice should not deserialize into a module"),
         }
     }
 }

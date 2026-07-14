@@ -63,7 +63,7 @@ pub(super) fn handle_namespace_governance_delta(
         // cache from a Y subscription. Mirrors the existing `Op` arm
         // check below.
         NamespaceTopicMsg::ReadinessBeacon(beacon) => {
-            if beacon.namespace_id != namespace_id {
+            if beacon.namespace_id != namespace_id.into() {
                 warn!("ReadinessBeacon namespace_id mismatch with topic; dropping");
                 return;
             }
@@ -71,7 +71,7 @@ pub(super) fn handle_namespace_governance_delta(
             return;
         }
         NamespaceTopicMsg::ReadinessProbe(probe) => {
-            if probe.namespace_id != namespace_id {
+            if probe.namespace_id != namespace_id.into() {
                 warn!("ReadinessProbe namespace_id mismatch with topic; dropping");
                 return;
             }
@@ -88,7 +88,7 @@ pub(super) fn handle_namespace_governance_delta(
         // rollup. The heartbeat is ephemeral telemetry, not governance state,
         // so there is no apply / ack / backfill — just the cache upsert.
         NamespaceTopicMsg::MigrationHeartbeat(heartbeat) => {
-            if heartbeat.namespace_id != namespace_id {
+            if heartbeat.namespace_id != namespace_id.into() {
                 warn!("MigrationHeartbeat namespace_id mismatch with topic; dropping");
                 return;
             }
@@ -97,14 +97,14 @@ pub(super) fn handle_namespace_governance_delta(
                 &heartbeat,
             ) {
                 debug!(
-                    namespace_id = %hex::encode(heartbeat.namespace_id),
+                    namespace_id = %hex::encode(heartbeat.namespace_id.as_bytes()),
                     "MigrationHeartbeat failed verification (sig/membership); dropping"
                 );
                 return;
             }
             this.migration_status_cache.insert(&heartbeat);
             debug!(
-                namespace_id = %hex::encode(heartbeat.namespace_id),
+                namespace_id = %hex::encode(heartbeat.namespace_id.as_bytes()),
                 peer = %heartbeat.peer_pubkey,
                 schema_version = heartbeat.schema_version,
                 residue_auto = heartbeat.residue_auto,
@@ -115,7 +115,7 @@ pub(super) fn handle_namespace_governance_delta(
         }
     };
 
-    if op.namespace_id != namespace_id {
+    if op.namespace_id != namespace_id.into() {
         warn!("NamespaceGovernanceDelta namespace_id mismatch with topic");
         return;
     }
@@ -125,236 +125,247 @@ pub(super) fn handle_namespace_governance_delta(
         return;
     }
 
-    let context_client = this.clients.context.clone();
-    let node_client = this.clients.node.clone();
-    let node_state = this.state.clone();
-    let network_client = this.managers.sync.network_client.clone();
-    // Clone of the sync manager used to fire reconcile-via-anchor on
-    // a `MemberRemoved` / `MemberLeft` apply that reports state-hash
-    // divergence. Cloning is cheap (Arc-wrapped fields) and the
-    // spawned task needs an owned handle.
-    let sync_manager = this.managers.sync.clone();
-    let sync_timeout = this.managers.sync.sync_config.timeout;
-    let pull_budget_max_peers = this.managers.sync.sync_config.parent_pull_additional_peers;
-    let pull_budget_duration = this.managers.sync.sync_config.parent_pull_budget;
-    let readiness_addr = this.readiness_addr.clone();
-    // PR-6c Task 6c.8: capture the migration-heartbeat emitter address + a
-    // datastore handle so the apply path can drive an on-change heartbeat once
-    // the governance op applies (mirrors the `readiness_addr` capture). Cloning
-    // is cheap (Arc-wrapped) and the spawned future needs owned handles.
-    let migration_emitter_addr = this.migration_emitter_addr.clone();
-    let migration_datastore = this.datastore.clone();
+    // Bundle the handles the off-actor apply needs into one owned context, so
+    // this function stays a thin decode+route+spawn shell and the apply /
+    // side-effect steps live in named methods rather than a ~200-line future.
+    let apply = NamespaceDeltaApply {
+        context_client: this.clients.context.clone(),
+        node_client: this.clients.node.clone(),
+        node_state: this.state.clone(),
+        network_client: this.managers.sync.network_client.clone(),
+        sync_manager: this.managers.sync.clone(),
+        sync_timeout: this.managers.sync.sync_config.timeout,
+        pull_budget_max_peers: this.managers.sync.sync_config.parent_pull_additional_peers,
+        pull_budget_duration: this.managers.sync.sync_config.parent_pull_budget,
+        readiness_addr: this.readiness_addr.clone(),
+        migration_emitter_addr: this.migration_emitter_addr.clone(),
+        migration_datastore: this.datastore.clone(),
+    };
 
-    let op_for_ack = op.clone();
-    // Capture the signer for the peer-identity cache before `op` is
-    // consumed by `apply_signed_namespace_op` below. Signature was
-    // already verified above, so the identity is real; the recording
-    // itself is gated on `Applied` below to skip relayed duplicates and
-    // pending ops where the delivering peer didn't necessarily originate
-    // the message.
+    // Capture the signer for the peer-identity cache and a clone of the op for
+    // the ack before `op` is consumed by the apply. The signature was already
+    // verified above, so the identity is real; recording it is gated on
+    // `Applied` (see `on_applied`) to skip relayed duplicates and pending ops
+    // where the delivering peer didn't necessarily originate the message.
     let signer = op.signer;
+    let op_for_ack = op.clone();
     let _ignored = ctx.spawn(
         async move {
-            let outcome = match context_client.apply_signed_namespace_op(op).await {
-                Ok(outcome) => outcome,
-                Err(err) => {
-                    warn!(?err, %source, "failed to apply namespace governance delta");
-                    return;
-                }
-            };
-
-            // Notify the ReadinessManager FSM that we've made local
-            // progress on this namespace. Without this signal,
-            // `state_per_namespace` stays empty forever, no beacons emit,
-            // and the readiness subsystem is inert (#2269 cursor[bot]
-            // HIGH-severity finding). `Pending` and `Duplicate` outcomes
-            // do NOT advance our applied count — Pending is waiting on
-            // parents (no real progress yet) and Duplicate is a re-deliver.
-            if let NamespaceApplyOutcome::Applied { divergence } = &outcome {
-                if let Some(addr) = &readiness_addr {
-                    addr.do_send(crate::readiness::NamespaceOpApplied { namespace_id });
-                }
-
-                // PR-6c Task 6c.8: drive the migration-heartbeat emitter on the
-                // same applied edge. Recompute the node's facts from the (now
-                // updated) local governance state and post them — this seeds the
-                // namespace into the emitter (making its periodic keep-alive
-                // tick live) and edge-triggers an on-change heartbeat when the
-                // target schema / residue changed. Best-effort: a `None` address
-                // (emitter not yet mounted) drops the signal; the next applied
-                // op re-drives it.
-                if let Some(addr) = &migration_emitter_addr {
-                    let facts = crate::migration_status::compute_namespace_migration_facts(
-                        &migration_datastore,
-                        namespace_id,
-                    );
-                    addr.do_send(crate::migration_status::MigrationFactsUpdate {
-                        namespace_id,
-                        facts,
-                    });
-                }
-
-                // Record the (peer, identity) pair now that the
-                // signature verified, the nonce was monotonic, and the
-                // op applied successfully. Consumed by anchor-preferred
-                // sync peer selection. See `NodeState::peer_identities`.
-                //
-                // `None`: this path doesn't carry the signer's group +
-                // role cheaply, so the observation updates only the
-                // in-memory reverse view. The durable cache is populated
-                // from the state-delta path (which has both) — the deltas
-                // that follow a member's governance op re-observe them
-                // there, so cold-start coverage is unaffected.
-                node_state.observe_peer_identity(source, signer, None);
-
-                // Governance-pending active drain: a governance op that just applied may
-                // unblock state deltas previously buffered as `Unknown`.
-                // Without this hook the lazy on-state-delta drain
-                // deadlocks when the only state delta in flight is one
-                // waiting for that very governance op (e2e 3-node test
-                // reproduced this).
-                let drain_input = crate::handlers::state_delta::StateDeltaContext {
-                    node_clients: crate::state::NodeClients {
-                        context: context_client.clone(),
-                        node: node_client.clone(),
-                    },
-                    node_state: node_state.clone(),
-                    network_client: network_client.clone(),
-                    sync_timeout,
-                };
-                crate::handlers::state_delta::drain_all_governance_pending(&drain_input).await;
-                // PR-6b Task 6b.5: a cascade-upgrade governance op that just
-                // applied bumps the group's target schema and is the catalyst
-                // for this node's lazy binary advance. Drain any absorbed
-                // straggler deltas the now-loaded reader can read (verbatim
-                // replay); no-op for contexts that haven't advanced.
-                crate::handlers::state_delta::drain_all_absorbed(&drain_input).await;
-
-                // Reconcile-via-anchor: if `MemberRemoved` / `MemberLeft`
-                // apply reported state-hash divergence from the signed
-                // claims, pull canonical state from a trusted anchor.
-                // The sync manager method picks an anchor peer (from
-                // the group's trusted-anchor set, filtered through the
-                // verified peer-identity cache) and verifies the
-                // post-adoption hash against the signed expected.
-                // Best-effort: no anchor connected → logged and
-                // dropped; re-attempted on the next signed op or
-                // sync tick.
-                //
-                // Detached via `actix::spawn` so a multi-second
-                // Snapshot / HashComparison sync doesn't block the
-                // governance-apply task — the actor's mailbox needs
-                // to keep draining (other signed ops, acks, and the
-                // proactive backfill for `Pending`). `actix::spawn`
-                // is the right primitive here: the inner future
-                // touches non-`Send` types via the sync manager, so
-                // `tokio::spawn` (which requires `Send`) can't take
-                // it; `actix::spawn` schedules on the current arbiter
-                // and stays single-threaded with the actor. The
-                // arbiter's task queue runs the detached future
-                // concurrently with the actor's mailbox drain.
-                // Errors are already logged inside
-                // `reconcile_after_divergence`; the spawned task has
-                // no return value to consume.
-                if let Some(report) = divergence {
-                    let sm = sync_manager.clone();
-                    let report = report.clone();
-                    drop(actix::spawn(async move {
-                        sm.reconcile_after_divergence(report).await;
-                    }));
-                }
-
-                // Prompt key recovery on receipt (#2613). A gossiped Group
-                // op we couldn't decrypt is now buffered awaiting its key.
-                // Trigger a direct key pull immediately rather than waiting
-                // for a sync tick — crucially, this is the ONLY recovery
-                // trigger for a namespace/subgroup member that holds no
-                // local context (e.g. a Restricted-subgroup member just
-                // added via `add_group_members`): the per-context interval
-                // recovery never runs for it, and without a prompt pull it
-                // never decrypts the subgroup's ops (membership,
-                // `ContextRegistered`) and so can't see or join the
-                // subgroup. Cheap when nothing is awaiting (one op-log
-                // scan); tries multiple peers. Detached for the same
-                // non-`Send` reason as the reconcile above.
-                {
-                    let sm = sync_manager.clone();
-                    drop(actix::spawn(async move {
-                        sm.recover_missing_group_keys(namespace_id, None).await;
-                    }));
-                }
-            }
-
-            // Phase 4: emit a `SignedAck` on the same topic when we've
-            // newly applied the op. `Pending` (waiting on parents) and
-            // `Duplicate` (we already had it — likely already acked
-            // earlier) deliberately don't ack: Pending would lie about
-            // application, and Duplicate would just inflate gossip with
-            // no observable change to the publisher's dedup-by-signer
-            // counting.
-            if matches!(outcome, NamespaceApplyOutcome::Applied { .. }) {
-                emit_namespace_ack(&context_client, &network_client, namespace_id, &op_for_ack)
-                    .await;
-            }
-
-            // Proactive backfill (#2198) fires ONLY for `Pending` — the
-            // DAG accepted the op but can't apply it until missing parents
-            // arrive. `Applied` is the steady-state happy path; `Duplicate`
-            // means we already have the op (very common on gossip, since
-            // every mesh peer rebroadcasts), and triggering a backfill for
-            // it would open a stream and request the full namespace state
-            // for nothing.
-            //
-            // NOTE: we MUST ask `source` first before handing off to
-            // `resolve_namespace_pending`. That helper seeds its
-            // `ParentPullBudget` with the initial peer marked as already
-            // tried, so passing `source` to it directly without a prior
-            // fetch means `source` never actually gets queried — which in
-            // a 2-node mesh (where no other peers exist) silently does
-            // nothing. Empty `delta_ids` means "give me everything for
-            // this namespace" on the responder side.
-            if matches!(outcome, NamespaceApplyOutcome::Pending) {
-                debug!(
-                    %source,
-                    namespace_id = %hex::encode(namespace_id),
-                    "gossip governance op is pending; triggering proactive backfill"
-                );
-                fetch_and_apply_namespace_backfill(
-                    &context_client,
-                    &node_client,
-                    &network_client,
-                    &sync_manager,
-                    source,
-                    namespace_id,
-                    Vec::new(),
-                    sync_timeout,
-                    &node_state,
-                )
-                .await;
-                resolve_namespace_pending(
-                    &context_client,
-                    &node_client,
-                    &network_client,
-                    &sync_manager,
-                    source,
-                    namespace_id,
-                    sync_timeout,
-                    pull_budget_max_peers,
-                    pull_budget_duration,
-                    &node_state,
-                )
-                .await;
-            }
-
-            // Group-key delivery to a new joiner is no longer pushed from
-            // here onto the namespace governance DAG. The joiner pulls the
-            // key directly from a sync peer when it next syncs the
-            // namespace and finds it lacks the key (see
-            // `SyncManager::recover_missing_group_keys`), which gives it a
-            // durable retry instead of the old single fire-and-forget shot.
+            apply
+                .run(op, op_for_ack, signer, source, namespace_id)
+                .await
         }
         .into_actor(this),
     );
+}
+
+/// Owned handles captured from [`NodeManager`] to apply one verified namespace
+/// governance op off the actor and run its follow-up side effects. All fields
+/// are cheap (Arc-backed) clones.
+struct NamespaceDeltaApply {
+    context_client: calimero_context_client::client::ContextClient,
+    node_client: calimero_node_primitives::client::NodeClient,
+    node_state: crate::NodeState,
+    network_client: NetworkClient,
+    sync_manager: crate::sync::SyncManager,
+    sync_timeout: tokio::time::Duration,
+    pull_budget_max_peers: usize,
+    pull_budget_duration: tokio::time::Duration,
+    readiness_addr: Option<actix::Addr<crate::readiness::ReadinessManager>>,
+    migration_emitter_addr: Option<actix::Addr<crate::migration_status::MigrationEmitter>>,
+    migration_datastore: calimero_store::Store,
+}
+
+impl NamespaceDeltaApply {
+    /// Apply the op and route on its outcome: on `Applied`, run the side
+    /// effects (see [`Self::on_applied`]) then ack; on `Pending`, proactively
+    /// backfill from the sender and parent-pull the rest of the mesh. `Pending`
+    /// and `Duplicate` neither advance our applied count nor ack.
+    async fn run(
+        self,
+        op: SignedNamespaceOp,
+        op_for_ack: SignedNamespaceOp,
+        signer: calimero_primitives::identity::PublicKey,
+        source: libp2p::PeerId,
+        namespace_id: [u8; 32],
+    ) {
+        let outcome = match self.context_client.apply_signed_namespace_op(op).await {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                warn!(?err, %source, "failed to apply namespace governance delta");
+                return;
+            }
+        };
+
+        if let NamespaceApplyOutcome::Applied { divergence } = &outcome {
+            self.on_applied(divergence, source, signer, namespace_id)
+                .await;
+        }
+
+        // Emit a `SignedAck` on the same topic only when we've newly applied the
+        // op. `Pending` (waiting on parents) would lie about application, and
+        // `Duplicate` (already had it) would just inflate gossip with no
+        // observable change to the publisher's dedup-by-signer counting.
+        if matches!(outcome, NamespaceApplyOutcome::Applied { .. }) {
+            emit_namespace_ack(
+                &self.context_client,
+                &self.network_client,
+                namespace_id,
+                &op_for_ack,
+            )
+            .await;
+        }
+
+        // Proactive backfill fires ONLY for `Pending` — the DAG accepted the op
+        // but can't apply it until missing parents arrive. `Applied` is the
+        // happy path; `Duplicate` means we already have the op (common on
+        // gossip rebroadcast) and a backfill for it would pull the whole
+        // namespace for nothing.
+        //
+        // We MUST fetch from `source` first before handing off to
+        // `resolve_namespace_pending`: that helper seeds its `ParentPullBudget`
+        // with the initial peer already marked tried, so passing `source`
+        // straight to it means `source` is never actually queried — which in a
+        // 2-node mesh silently does nothing. Empty `delta_ids` means "give me
+        // everything for this namespace" on the responder side.
+        if matches!(outcome, NamespaceApplyOutcome::Pending) {
+            debug!(
+                %source,
+                namespace_id = %hex::encode(namespace_id),
+                "gossip governance op is pending; triggering proactive backfill"
+            );
+            fetch_and_apply_namespace_backfill(
+                &self.context_client,
+                &self.node_client,
+                &self.network_client,
+                &self.sync_manager,
+                source,
+                namespace_id,
+                Vec::new(),
+                self.sync_timeout,
+                &self.node_state,
+            )
+            .await;
+            resolve_namespace_pending(
+                &self.context_client,
+                &self.node_client,
+                &self.network_client,
+                &self.sync_manager,
+                source,
+                namespace_id,
+                self.sync_timeout,
+                self.pull_budget_max_peers,
+                self.pull_budget_duration,
+                &self.node_state,
+            )
+            .await;
+        }
+
+        // Group-key delivery to a new joiner is no longer pushed from here onto
+        // the namespace governance DAG. The joiner pulls the key directly from a
+        // sync peer when it next syncs the namespace and finds it lacks the key
+        // (see `SyncManager::recover_missing_group_keys`), a durable retry
+        // instead of the old single fire-and-forget shot.
+    }
+
+    /// Side effects that run only when the op *newly* applied: nudge the
+    /// readiness FSM, drive an on-change migration heartbeat, record the
+    /// (peer, identity) pair, drain governance-pending / absorbed state deltas,
+    /// reconcile via a trusted anchor on reported divergence, and prompt group-
+    /// key recovery.
+    async fn on_applied(
+        &self,
+        divergence: &Option<calimero_context_client::messages::DivergenceReport>,
+        source: libp2p::PeerId,
+        signer: calimero_primitives::identity::PublicKey,
+        namespace_id: [u8; 32],
+    ) {
+        // Notify the ReadinessManager FSM that we've made local progress on this
+        // namespace. Without this signal `state_per_namespace` stays empty
+        // forever, no beacons emit, and the readiness subsystem is inert.
+        if let Some(addr) = &self.readiness_addr {
+            addr.do_send(crate::readiness::NamespaceOpApplied { namespace_id });
+        }
+
+        // Drive the migration-heartbeat emitter on the same applied edge:
+        // recompute the node's facts from the now-updated local governance state
+        // and post them — seeding the namespace into the emitter (so its
+        // periodic keep-alive tick goes live) and edge-triggering an on-change
+        // heartbeat when the target schema / residue changed. Best-effort: a
+        // `None` address drops the signal and the next applied op re-drives it.
+        if let Some(addr) = &self.migration_emitter_addr {
+            let facts = crate::migration_status::compute_namespace_migration_facts(
+                &self.migration_datastore,
+                namespace_id,
+            );
+            addr.do_send(crate::migration_status::MigrationFactsUpdate {
+                namespace_id,
+                facts,
+            });
+        }
+
+        // Record the (peer, identity) pair now that the signature verified, the
+        // nonce was monotonic, and the op applied. Consumed by anchor-preferred
+        // sync peer selection. `None`: this path doesn't carry the signer's
+        // group + role cheaply, so it updates only the in-memory reverse view;
+        // the durable cache is populated from the state-delta path that follows.
+        self.node_state.observe_peer_identity(source, signer, None);
+
+        // Governance-pending active drain: a governance op that just applied may
+        // unblock state deltas previously buffered as `Unknown`. Without this
+        // the lazy on-state-delta drain deadlocks when the only in-flight state
+        // delta is one waiting for that very governance op.
+        let drain_input = crate::handlers::state_delta::StateDeltaContext {
+            node_clients: crate::state::NodeClients {
+                context: self.context_client.clone(),
+                node: self.node_client.clone(),
+            },
+            node_state: self.node_state.clone(),
+            network_client: self.network_client.clone(),
+            sync_timeout: self.sync_timeout,
+        };
+        crate::handlers::state_delta::drain_all_governance_pending(&drain_input).await;
+        // A cascade-upgrade governance op that just applied bumps the group's
+        // target schema and is the catalyst for this node's lazy binary advance.
+        // Drain any absorbed straggler deltas the now-loaded reader can read
+        // (verbatim replay); no-op for contexts that haven't advanced.
+        crate::handlers::state_delta::drain_all_absorbed(&drain_input).await;
+
+        // Reconcile-via-anchor: if a `MemberRemoved` / `MemberLeft` apply
+        // reported state-hash divergence from the signed claims, pull canonical
+        // state from a trusted anchor (verifying the post-adoption hash against
+        // the signed expected). Best-effort: no anchor connected → logged and
+        // dropped, re-attempted on the next signed op or sync tick. Detached via
+        // `actix::spawn` so a multi-second Snapshot / HashComparison sync doesn't
+        // block the actor's mailbox drain; the inner future touches non-`Send`
+        // sync-manager types, so `actix::spawn` (same arbiter, single-threaded)
+        // is required over `tokio::spawn`. Errors are logged inside
+        // `reconcile_after_divergence`.
+        if let Some(report) = divergence {
+            let sm = self.sync_manager.clone();
+            let report = report.clone();
+            drop(actix::spawn(async move {
+                sm.reconcile_after_divergence(report).await;
+            }));
+        }
+
+        // Prompt key recovery on receipt: a gossiped Group op we couldn't
+        // decrypt is now buffered awaiting its key. Trigger a direct key pull
+        // immediately rather than waiting for a sync tick — this is the ONLY
+        // recovery trigger for a namespace/subgroup member that holds no local
+        // context (e.g. a Restricted-subgroup member just added via
+        // `add_group_members`): the per-context interval recovery never runs for
+        // it, and without a prompt pull it never decrypts the subgroup's ops and
+        // so can't see or join the subgroup. Cheap when nothing is awaiting;
+        // tries multiple peers. Detached for the same non-`Send` reason as the
+        // reconcile above.
+        {
+            let sm = self.sync_manager.clone();
+            drop(actix::spawn(async move {
+                sm.recover_missing_group_keys(namespace_id, None).await;
+            }));
+        }
+    }
 }
 
 pub(super) fn handle_namespace_state_heartbeat(
@@ -438,6 +449,14 @@ pub(super) fn handle_namespace_state_heartbeat(
         .into_actor(this),
     );
 }
+
+/// Base delay between namespace parent-pull peer attempts; doubled per attempt.
+const PARENT_PULL_BASE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(200);
+/// Upper bound on the per-attempt backoff, regardless of attempt count.
+const PARENT_PULL_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
+/// Cap on the exponential shift so `1 << shift` cannot overflow and the delay
+/// saturates at [`PARENT_PULL_MAX_BACKOFF`].
+const PARENT_PULL_MAX_BACKOFF_SHIFT: u32 = 4;
 
 /// Iterate other namespace-mesh peers asking for backfill until the local
 /// governance DAG has no more pending ops for this namespace, or the retry
@@ -534,6 +553,16 @@ async fn resolve_namespace_pending(
             node_state,
         )
         .await;
+
+        // Back off between peer attempts so a namespace that stays pending does
+        // not spin a tight request loop against the mesh. Exponential with a
+        // cap; the scheduler's wall-clock `budget` still bounds total time (this
+        // sleep counts against it), so backoff only paces the attempts.
+        let shift = (scheduler.attempts() as u32).min(PARENT_PULL_MAX_BACKOFF_SHIFT);
+        let backoff = PARENT_PULL_BASE_BACKOFF
+            .saturating_mul(1_u32 << shift)
+            .min(PARENT_PULL_MAX_BACKOFF);
+        tokio::time::sleep(backoff).await;
     }
 }
 
@@ -571,6 +600,9 @@ async fn fetch_and_apply_namespace_backfill(
             use rand::Rng;
             rand::thread_rng().gen()
         },
+        // Sentinel party id; backfill serves only already-signed deltas, which
+        // the requester re-verifies on receipt — no proof of possession.
+        pop: None,
     };
 
     if let Err(err) = crate::sync::stream::send(&mut stream, &msg, None).await {
@@ -596,7 +628,20 @@ async fn fetch_and_apply_namespace_backfill(
             // so the apply loop is contiguous.
             let mut pending_divergences: Vec<calimero_context_client::messages::DivergenceReport> =
                 Vec::new();
-            for (delta_id, op_bytes) in deltas {
+            // Cap what we apply regardless of what the responder sent. A
+            // cooperating responder already trims to this bound, but a
+            // misbehaving one must not be able to drive unbounded apply work by
+            // overfilling the response.
+            if deltas.len() > crate::sync::MAX_BACKFILL_OPS {
+                warn!(
+                    %peer,
+                    namespace_id = %hex::encode(namespace_id),
+                    received = deltas.len(),
+                    cap = crate::sync::MAX_BACKFILL_OPS,
+                    "namespace backfill response exceeds cap; applying only the first cap ops"
+                );
+            }
+            for (delta_id, op_bytes) in deltas.into_iter().take(crate::sync::MAX_BACKFILL_OPS) {
                 if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(&op_bytes) {
                     match context_client.apply_signed_namespace_op(op).await {
                         Ok(NamespaceApplyOutcome::Applied { divergence }) => {

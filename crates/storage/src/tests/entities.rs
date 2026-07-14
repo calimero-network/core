@@ -511,3 +511,68 @@ mod metadata__needs_owner_convert {
         assert!(!needs_owner_convert(&user_meta(None), 0));
     }
 }
+
+mod op_mask__borsh {
+    use borsh::{from_slice, to_vec, BorshDeserialize};
+
+    use crate::entities::OpMask;
+
+    #[test]
+    fn defined_masks_round_trip() {
+        for mask in [
+            OpMask::NONE,
+            OpMask::WRITE,
+            OpMask::DELETE,
+            OpMask::ADMIN,
+            OpMask::FULL,
+            OpMask::WRITE.union(OpMask::DELETE),
+        ] {
+            let bytes = to_vec(&mask).unwrap();
+            assert_eq!(from_slice::<OpMask>(&bytes).unwrap(), mask);
+        }
+    }
+
+    #[test]
+    fn undefined_high_bits_are_rejected() {
+        // Every encoding with a bit outside FULL must fail to deserialize, so a
+        // peer cannot smuggle a non-canonical byte that is equal under
+        // `contains` but alters the signed authorization payload and id.
+        for bits in (0u8..=u8::MAX).filter(|b| (b & !OpMask::FULL.bits()) != 0) {
+            assert!(
+                OpMask::try_from_slice(&[bits]).is_err(),
+                "byte {bits:#010b} with undefined bits should be rejected"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod updated_at__eq_ord_contract {
+    use crate::entities::UpdatedAt;
+
+    #[test]
+    fn eq_agrees_with_ord() {
+        // `PartialEq` must agree with `Ord`: `a == b` iff `a.cmp(&b) == Equal`.
+        // An always-true `eq` (the previous behaviour) violated this and made
+        // the equal-vs-newer timestamp branch in `save_internal` unreachable.
+        let a = UpdatedAt::from(10);
+        let b = UpdatedAt::from(20);
+        let a2 = UpdatedAt::from(10);
+
+        assert_eq!(a, a2);
+        assert_ne!(a, b);
+        assert!(a < b);
+        assert!(b > a);
+        assert_eq!(a.cmp(&a2), core::cmp::Ordering::Equal);
+
+        for &(x, y) in &[(0u64, 0u64), (0, 1), (5, 5), (7, 3), (u64::MAX, 0)] {
+            let lhs = UpdatedAt::from(x);
+            let rhs = UpdatedAt::from(y);
+            assert_eq!(
+                lhs == rhs,
+                lhs.cmp(&rhs) == core::cmp::Ordering::Equal,
+                "eq must match cmp==Equal for ({x}, {y})"
+            );
+        }
+    }
+}

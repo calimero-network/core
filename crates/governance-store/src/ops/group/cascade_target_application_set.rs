@@ -2,9 +2,9 @@
 //! `apply_group_op_mutations` in #2304.
 
 use super::context::GroupApplyCtx;
-use crate::{GroupSettingsService, PermissionChecker};
+use crate::GroupSettingsService;
 use calimero_primitives::application::ApplicationId;
-use eyre::{bail, Result as EyreResult};
+use eyre::Result as EyreResult;
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
@@ -16,6 +16,23 @@ pub(crate) fn apply(
     let group_id = ctx.group_id();
     let store = ctx.store();
 
+    // Authorize the cascade ONCE, against the ROOT signed group, using the
+    // at-cut apply-auth resolver (`ctx.permissions()`) — the same deterministic,
+    // replicated decision the rest of governance folds. The cascade's authority
+    // is the root admin decision (already enforced at emit via
+    // `MembershipRepository::require_admin`), NOT per-descendant caps.
+    //
+    // The old code instead re-derived `can_manage_application(signer)` per matched
+    // descendant from LIVE store reads. Descendant caps come from `MemberCapabilitySet`
+    // / `DefaultCapabilitiesSet` / `MemberRoleSet` ops concurrent to the cascade,
+    // folded at different times per peer, so a peer that had folded a concurrent
+    // cap-revoke on a matched descendant BAILED the whole op while a peer that
+    // hadn't APPLIED it everywhere — a permanent, non-self-healing divergence on
+    // `target_application_id` / `app_key`. Gating once at the root removes that
+    // per-descendant divergence on BOTH the namespace-envelope and standalone paths.
+    ctx.permissions()
+        .require_manage_application(signer, "cascade target application")?;
+
     // Walk the descendant tree (incl. signed group) and apply the
     // settings mutation to every descendant whose current `app_key`
     // matches `from_app_key`. Heterogeneous descendants (`app_key !=
@@ -26,31 +43,6 @@ pub(crate) fn apply(
     // The walk is read-only and cycle/depth-bounded; see the
     // `crate::cascade::walk_for_predicate` doc-comment.
     let entries = crate::cascade::walk_for_predicate(store, *group_id, *from_app_key)?;
-
-    // Pre-scan: verify the signer would pass the per-descendant
-    // `require_manage_application` check on EVERY matched
-    // descendant before issuing any writes. Without this, a
-    // descendant deep in the cascade with a stricter capability
-    // configuration (e.g. Restricted subgroup where the
-    // namespace-level admin signer is not a direct admin) would
-    // cause the `set_target_application` `?` mid-loop to abort
-    // the whole apply AFTER prior descendants have already been
-    // mutated, leaving the store in a partial-cascade state on
-    // both emitter and receiver paths.
-    for entry in &entries {
-        if !entry.matched {
-            continue;
-        }
-        let entry_permissions = PermissionChecker::new(store, entry.group_id);
-        if !entry_permissions.can_manage_application(signer)? {
-            bail!(
-                "cascade target-application set: signer {} lacks MANAGE_APPLICATION on \
-                 descendant {}; aborting before any writes to keep cascade atomic",
-                signer,
-                hex::encode(entry.group_id.to_bytes())
-            );
-        }
-    }
 
     let mut any_applied = false;
     for entry in entries {
@@ -65,16 +57,13 @@ pub(crate) fn apply(
             continue;
         }
 
-        // Reuse the existing single-group settings mutation, scoped
-        // to each matched descendant. The pre-scan above already
-        // verified `signer` holds `MANAGE_APPLICATION` on every
-        // matched descendant, so the `?` here is unreachable in
-        // production — kept as a defensive backstop in case the
-        // store mutates between the scan and the apply (which
-        // can't happen on the single-threaded namespace actor
-        // path, but is cheap to leave in place).
+        // Reuse the single-group settings mutation, scoped to each matched
+        // descendant, via the UNCHECKED write: the cascade was already
+        // authorized once against the root admin above. Re-deriving live
+        // per-descendant authority here is exactly the cross-replica
+        // divergence this fix removes.
         let entry_settings = GroupSettingsService::new(store, entry.group_id);
-        entry_settings.set_target_application(signer, app_key, target_application_id)?;
+        entry_settings.set_target_application_unchecked(app_key, target_application_id)?;
         // Match-success log. Mirrors the skip-log fields so the
         // emitter (which both applies locally AND publishes the op)
         // and the receivers (which apply on gossip-receive) both

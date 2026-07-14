@@ -182,18 +182,31 @@ pub fn init(_args: TokenStream, input: TokenStream) -> TokenStream {
 /// Marks a method as a cross-context (`xcall`) entry point.
 ///
 /// A marker consumed by `#[app::logic]` and recorded in the ABI as
-/// `Method.xcall_callable`; on its own it does not modify the method. The node
-/// uses the flag to restrict `xcall` dispatch to declared entry points.
+/// `Method.xcall_callable` / `Method.xcall_callers`; on its own it does not
+/// modify the method. The node uses these to restrict `xcall` dispatch to
+/// declared entry points and to enforce who may call them.
 ///
 /// Must be a registered attribute so it resolves at the method site when
 /// `#[app::logic]` re-emits the impl verbatim (as `#[app::view]` also is).
 ///
 /// # Usage
 ///
-/// Apply `#[app::xcall]` to a public logic method to allow other contexts in
-/// the same namespace to invoke it via `env::xcall`. Mutually exclusive with
-/// `#[app::init]` and `#[app::view]` (xcall is fire-and-forget, so a read-only
-/// target's return value would go nowhere).
+/// Apply `#[app::xcall]` to a public logic method to allow other contexts to
+/// invoke it via `env::xcall`. Mutually exclusive with `#[app::init]` and
+/// `#[app::view]` (xcall is fire-and-forget, so a read-only target's return
+/// value would go nowhere).
+///
+/// # Caller policy
+///
+/// By default (`#[app::xcall]`) any context in the same namespace may call.
+/// Tighten it with:
+///
+/// - `#[app::xcall(from_same_app)]` — only contexts running the **same
+///   application id** as this one may call. The node enforces this, so it
+///   does not depend on the target also checking `env::xcall_origin()`.
+///
+/// `env::xcall_origin()` remains available for finer, data-dependent checks the
+/// declarative policy can't express.
 #[proc_macro_attribute]
 pub fn xcall(_args: TokenStream, input: TokenStream) -> TokenStream {
     // this is a no-op, the attribute is just a marker
@@ -353,9 +366,16 @@ pub fn emit(input: TokenStream) -> TokenStream {
             let event = &parsed.elems[0];
             quote!(::calimero_sdk::event::emit(#event)).into()
         } else {
-            // Fallback to regular emit if not 1 or 2 arguments
-            let event = &parsed.elems[0];
-            quote!(::calimero_sdk::event::emit(#event)).into()
+            // Zero elements (`emit!(())`) or three+ — neither is a valid event.
+            // Indexing `elems[0]` here would panic the proc macro ("proc macro
+            // panicked") with no useful span; emit a clear spanned error instead.
+            syn::Error::new_spanned(
+                &parsed,
+                "`app::emit!` expects an event, optionally with a handler: \
+                 `emit!(event)` or `emit!((event, \"handler\"))`",
+            )
+            .to_compile_error()
+            .into()
         }
     } else {
         // Simple case - just the event (not a tuple)

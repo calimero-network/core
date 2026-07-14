@@ -83,6 +83,26 @@ pub enum BlobPermission {
     All,
     Add(AddBlobPermission),
     Remove(ResourceScope),
+    List(ResourceScope),
+    Get(ResourceScope),
+}
+
+/// Namespace-related permissions
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NamespacePermission {
+    All(ResourceScope),
+    Create(ResourceScope),
+    List(ResourceScope),
+    Manage(ResourceScope),
+}
+
+/// Group (governance) permissions
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GroupPermission {
+    All(ResourceScope),
+    Create(ResourceScope),
+    List(ResourceScope),
+    Manage(ResourceScope),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,6 +116,7 @@ pub enum AddBlobPermission {
 /// Context alias permissions
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AliasPermission {
+    All(ResourceScope),
     Create(AliasType, ResourceScope),
     List(AliasType, ResourceScope),
     Lookup(AliasType, ResourceScope),
@@ -146,6 +167,8 @@ pub enum Permission {
     Package(PackagePermission),
     Blob(BlobPermission),
     Context(ContextPermission),
+    Namespace(NamespacePermission),
+    Group(GroupPermission),
     Keys(KeyPermission),
 }
 
@@ -358,8 +381,42 @@ impl FromStr for Permission {
                         let (scope, _, _) = parse_permission_params(params_part);
                         Ok(Permission::Blob(BlobPermission::Remove(scope)))
                     }
+                    "list" => {
+                        let (scope, _, _) = parse_permission_params(params_part);
+                        Ok(Permission::Blob(BlobPermission::List(scope)))
+                    }
+                    "get" => {
+                        let (scope, _, _) = parse_permission_params(params_part);
+                        Ok(Permission::Blob(BlobPermission::Get(scope)))
+                    }
                     "" => Ok(Permission::Blob(BlobPermission::All)),
                     _ => Err(format!("Unknown blob action: {action}")),
+                }
+            }
+
+            "namespace" => {
+                let action = parts.get(1).unwrap_or(&"");
+                let (scope, _, _) = parse_permission_params(params_part);
+
+                match *action {
+                    "create" => Ok(Permission::Namespace(NamespacePermission::Create(scope))),
+                    "list" => Ok(Permission::Namespace(NamespacePermission::List(scope))),
+                    "manage" => Ok(Permission::Namespace(NamespacePermission::Manage(scope))),
+                    "" => Ok(Permission::Namespace(NamespacePermission::All(scope))),
+                    _ => Err(format!("Unknown namespace action: {action}")),
+                }
+            }
+
+            "group" => {
+                let action = parts.get(1).unwrap_or(&"");
+                let (scope, _, _) = parse_permission_params(params_part);
+
+                match *action {
+                    "create" => Ok(Permission::Group(GroupPermission::Create(scope))),
+                    "list" => Ok(Permission::Group(GroupPermission::List(scope))),
+                    "manage" => Ok(Permission::Group(GroupPermission::Manage(scope))),
+                    "" => Ok(Permission::Group(GroupPermission::All(scope))),
+                    _ => Err(format!("Unknown group action: {action}")),
                 }
             }
 
@@ -442,6 +499,9 @@ impl FromStr for Permission {
                                 AliasPermission::Delete(alias_type, scope),
                             )))
                         }
+                        "" => Ok(Permission::Context(ContextPermission::Alias(
+                            AliasPermission::All(scope),
+                        ))),
                         _ => Err(format!("Unknown context alias action: {subaction}")),
                     },
                     "" => Ok(Permission::Context(ContextPermission::All(scope))),
@@ -526,6 +586,50 @@ impl fmt::Display for Permission {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "blob:remove{params}")
                 }
+                BlobPermission::List(scope) => {
+                    let params = format_params(scope, &UserScope::Any, &None);
+                    write!(f, "blob:list{params}")
+                }
+                BlobPermission::Get(scope) => {
+                    let params = format_params(scope, &UserScope::Any, &None);
+                    write!(f, "blob:get{params}")
+                }
+            },
+            Permission::Namespace(ns_perm) => match ns_perm {
+                NamespacePermission::All(scope) => {
+                    let params = format_params(scope, &UserScope::Any, &None);
+                    write!(f, "namespace{params}")
+                }
+                NamespacePermission::Create(scope) => {
+                    let params = format_params(scope, &UserScope::Any, &None);
+                    write!(f, "namespace:create{params}")
+                }
+                NamespacePermission::List(scope) => {
+                    let params = format_params(scope, &UserScope::Any, &None);
+                    write!(f, "namespace:list{params}")
+                }
+                NamespacePermission::Manage(scope) => {
+                    let params = format_params(scope, &UserScope::Any, &None);
+                    write!(f, "namespace:manage{params}")
+                }
+            },
+            Permission::Group(group_perm) => match group_perm {
+                GroupPermission::All(scope) => {
+                    let params = format_params(scope, &UserScope::Any, &None);
+                    write!(f, "group{params}")
+                }
+                GroupPermission::Create(scope) => {
+                    let params = format_params(scope, &UserScope::Any, &None);
+                    write!(f, "group:create{params}")
+                }
+                GroupPermission::List(scope) => {
+                    let params = format_params(scope, &UserScope::Any, &None);
+                    write!(f, "group:list{params}")
+                }
+                GroupPermission::Manage(scope) => {
+                    let params = format_params(scope, &UserScope::Any, &None);
+                    write!(f, "group:manage{params}")
+                }
             },
             Permission::Context(ctx_perm) => match ctx_perm {
                 ContextPermission::All(scope) => {
@@ -557,6 +661,10 @@ impl fmt::Display for Permission {
                     write!(f, "context:execute{params}")
                 }
                 ContextPermission::Alias(alias_perm) => match alias_perm {
+                    AliasPermission::All(scope) => {
+                        let params = format_simple_params(scope);
+                        write!(f, "context:alias{params}")
+                    }
                     AliasPermission::Create(alias_type, scope) => {
                         let type_str = match alias_type {
                             AliasType::Context => "context",
@@ -669,8 +777,22 @@ impl Permission {
                 (BlobPermission::Remove(h_scope), BlobPermission::Remove(r_scope)) => {
                     matches_scope(h_scope, r_scope)
                 }
+                (BlobPermission::List(h_scope), BlobPermission::List(r_scope)) => {
+                    matches_scope(h_scope, r_scope)
+                }
+                (BlobPermission::Get(h_scope), BlobPermission::Get(r_scope)) => {
+                    matches_scope(h_scope, r_scope)
+                }
                 _ => false,
             },
+
+            // Namespace permissions
+            (Permission::Namespace(held), Permission::Namespace(req)) => {
+                matches_namespace(held, req)
+            }
+
+            // Group permissions
+            (Permission::Group(held), Permission::Group(req)) => matches_group(held, req),
 
             // Context permissions
             (Permission::Context(ContextPermission::All(h_scope)), Permission::Context(req)) => {
@@ -762,9 +884,79 @@ fn matches_method(held: Option<&str>, required: Option<&str>) -> bool {
     }
 }
 
+/// Helper function to extract the resource scope of a namespace permission
+fn namespace_scope(perm: &NamespacePermission) -> &ResourceScope {
+    match perm {
+        NamespacePermission::All(scope)
+        | NamespacePermission::Create(scope)
+        | NamespacePermission::List(scope)
+        | NamespacePermission::Manage(scope) => scope,
+    }
+}
+
+/// Helper function to check if one namespace permission satisfies another
+fn matches_namespace(held: &NamespacePermission, required: &NamespacePermission) -> bool {
+    match (held, required) {
+        // `namespace` (All) is an umbrella over every namespace verb.
+        (NamespacePermission::All(h_scope), req) => matches_scope(h_scope, namespace_scope(req)),
+        (NamespacePermission::Create(h_scope), NamespacePermission::Create(r_scope)) => {
+            matches_scope(h_scope, r_scope)
+        }
+        (NamespacePermission::List(h_scope), NamespacePermission::List(r_scope)) => {
+            matches_scope(h_scope, r_scope)
+        }
+        (NamespacePermission::Manage(h_scope), NamespacePermission::Manage(r_scope)) => {
+            matches_scope(h_scope, r_scope)
+        }
+        _ => false,
+    }
+}
+
+/// Helper function to extract the resource scope of a group permission
+fn group_scope(perm: &GroupPermission) -> &ResourceScope {
+    match perm {
+        GroupPermission::All(scope)
+        | GroupPermission::Create(scope)
+        | GroupPermission::List(scope)
+        | GroupPermission::Manage(scope) => scope,
+    }
+}
+
+/// Helper function to check if one group permission satisfies another
+fn matches_group(held: &GroupPermission, required: &GroupPermission) -> bool {
+    match (held, required) {
+        // `group` (All) is an umbrella over every group verb.
+        (GroupPermission::All(h_scope), req) => matches_scope(h_scope, group_scope(req)),
+        (GroupPermission::Create(h_scope), GroupPermission::Create(r_scope)) => {
+            matches_scope(h_scope, r_scope)
+        }
+        (GroupPermission::List(h_scope), GroupPermission::List(r_scope)) => {
+            matches_scope(h_scope, r_scope)
+        }
+        (GroupPermission::Manage(h_scope), GroupPermission::Manage(r_scope)) => {
+            matches_scope(h_scope, r_scope)
+        }
+        _ => false,
+    }
+}
+
+/// Helper function to extract the resource scope of an alias permission
+fn alias_scope(perm: &AliasPermission) -> &ResourceScope {
+    match perm {
+        AliasPermission::All(scope) => scope,
+        AliasPermission::Create(_, scope)
+        | AliasPermission::List(_, scope)
+        | AliasPermission::Lookup(_, scope)
+        | AliasPermission::Delete(_, scope) => scope,
+    }
+}
+
 /// Helper function to check if one alias permission satisfies another
 fn matches_alias(held: &AliasPermission, required: &AliasPermission) -> bool {
     match (held, required) {
+        // `context:alias` (All) is an umbrella over every alias verb and type.
+        // A required All is only satisfied by a held All whose scope covers it.
+        (AliasPermission::All(h_scope), req) => matches_scope(h_scope, alias_scope(req)),
         (
             AliasPermission::Create(held_type, held_scope),
             AliasPermission::Create(req_type, req_scope),
@@ -1057,5 +1249,139 @@ mod tests {
             .parse::<Permission>()
             .unwrap();
         assert!(held.satisfies(&required));
+    }
+
+    #[test]
+    fn test_new_permission_round_trips() {
+        // Unscoped (global) forms must round-trip to the exact same string.
+        for s in [
+            "namespace",
+            "namespace:create",
+            "namespace:list",
+            "namespace:manage",
+            "group",
+            "group:create",
+            "group:list",
+            "group:manage",
+            "blob:list",
+            "blob:get",
+            "context:alias",
+            "context:alias[ctx-1]",
+        ] {
+            let parsed = s.parse::<Permission>().unwrap_or_else(|e| {
+                panic!("{s} must parse: {e}");
+            });
+            assert_eq!(parsed.to_string(), s, "Display must reproduce {s}");
+        }
+
+        // Scoped forms display with the shared `format_params` layout (which
+        // pads a trailing user slot, e.g. `namespace:list[ns-1,]`, exactly
+        // like the existing `context:list` verbs), so pin the semantic round
+        // trip: FromStr → Display → FromStr must be the identity.
+        for s in [
+            "namespace:list[ns-1]",
+            "namespace:manage[ns-1]",
+            "group:list[grp-1]",
+            "group:manage[grp-1]",
+            "blob:list[blob-1]",
+            "blob:get[blob-1]",
+        ] {
+            let parsed = s.parse::<Permission>().unwrap_or_else(|e| {
+                panic!("{s} must parse: {e}");
+            });
+            assert_eq!(
+                parsed.to_string().parse::<Permission>(),
+                Ok(parsed),
+                "{s} must survive a full round trip",
+            );
+        }
+
+        // Unknown verbs in the new families must be rejected.
+        for s in ["namespace:delete", "group:destroy", "blob:read"] {
+            assert!(s.parse::<Permission>().is_err(), "{s} must not parse");
+        }
+    }
+
+    #[test]
+    fn test_namespace_group_umbrella_satisfaction() {
+        // The bare umbrella covers every verb at any scope...
+        for (umbrella, verbs) in [
+            (
+                "namespace",
+                [
+                    "namespace:create",
+                    "namespace:list[ns-1]",
+                    "namespace:manage[ns-1]",
+                ],
+            ),
+            (
+                "group",
+                ["group:create", "group:list[grp-1]", "group:manage[grp-1]"],
+            ),
+        ] {
+            let held = umbrella.parse::<Permission>().unwrap();
+            for verb in verbs {
+                let required = verb.parse::<Permission>().unwrap();
+                assert!(held.satisfies(&required), "{umbrella} must satisfy {verb}");
+            }
+        }
+
+        // ...a verb satisfies the same verb when the scope covers...
+        let held = "namespace:manage".parse::<Permission>().unwrap();
+        let required = "namespace:manage[ns-1]".parse::<Permission>().unwrap();
+        assert!(held.satisfies(&required));
+
+        // ...but not a different verb, a wider scope, or the other family.
+        let held = "namespace:list".parse::<Permission>().unwrap();
+        let required = "namespace:manage[ns-1]".parse::<Permission>().unwrap();
+        assert!(!held.satisfies(&required));
+
+        let held = "group:manage[grp-1]".parse::<Permission>().unwrap();
+        let required = "group:manage".parse::<Permission>().unwrap();
+        assert!(!held.satisfies(&required));
+
+        let held = "namespace".parse::<Permission>().unwrap();
+        let required = "group:list".parse::<Permission>().unwrap();
+        assert!(!held.satisfies(&required));
+    }
+
+    #[test]
+    fn test_blob_list_get_satisfaction() {
+        let all = "blob".parse::<Permission>().unwrap();
+        let list = "blob:list".parse::<Permission>().unwrap();
+        let get_specific = "blob:get[blob-1]".parse::<Permission>().unwrap();
+
+        assert!(all.satisfies(&list));
+        assert!(all.satisfies(&get_specific));
+
+        let held = "blob:get".parse::<Permission>().unwrap();
+        assert!(held.satisfies(&get_specific));
+        assert!(!held.satisfies(&list));
+        assert!(!list.satisfies(&get_specific));
+    }
+
+    #[test]
+    fn test_alias_umbrella_satisfaction() {
+        let umbrella = "context:alias".parse::<Permission>().unwrap();
+        for verb in [
+            "context:alias:create:context",
+            "context:alias:lookup:identity[ctx-123]",
+            "context:alias:list:application",
+            "context:alias:delete:context[alias-name]",
+            "context:alias",
+        ] {
+            let required = verb.parse::<Permission>().unwrap();
+            assert!(
+                umbrella.satisfies(&required),
+                "context:alias must satisfy {verb}"
+            );
+        }
+
+        // A single verb does NOT satisfy a required umbrella.
+        let held = "context:alias:create:context"
+            .parse::<Permission>()
+            .unwrap();
+        let required = "context:alias".parse::<Permission>().unwrap();
+        assert!(!held.satisfies(&required));
     }
 }

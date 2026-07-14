@@ -7,7 +7,7 @@ use core::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io;
 
-use borsh::{to_vec, BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::identity::PublicKey;
 use sha2::{Digest, Sha256};
 
@@ -15,7 +15,6 @@ use crate::action::Action;
 use crate::address::Id;
 use crate::entities::{Metadata, OpMask, SignatureData, StorageType};
 use crate::env;
-use crate::integration::Comparison;
 use crate::logical_clock::HybridTimestamp;
 
 /// A causal delta in the DAG representing a set of CRDT actions.
@@ -101,10 +100,6 @@ impl CausalDelta {
                     // deleted_at excluded - it's a timestamp
                     hash_metadata_storage_type_for_id(&mut hasher, metadata);
                 }
-                Action::Compare { id } => {
-                    let id_bytes: [u8; 32] = (*id).into();
-                    hasher.update(id_bytes);
-                }
             }
         }
 
@@ -132,22 +127,25 @@ impl CausalDelta {
 
 /// Delta produced by storage operations for synchronization.
 ///
-/// Three variants:
+/// Two variants:
 /// - [`StorageDelta::Actions`] — local apply, snapshot leaf push,
 ///   SDK→host commits. The verifier falls back to v2 stored-writers
 ///   semantics for `Shared` actions in this variant.
-/// - [`StorageDelta::Comparisons`] — state-based Merkle tree sync.
 /// - [`StorageDelta::CausalActions`] — DAG-causal sync (#2266). The
 ///   sync layer pre-resolves the writer set per Shared entity using
 ///   the rotation log + DAG ancestry; the receiver's verifier
 ///   validates Shared signatures against that pre-resolved set
 ///   instead of stored writers.
-#[derive(Debug, BorshSerialize)]
+///
+/// Wire tags are assigned by hand (see the [`BorshSerialize`]/
+/// [`BorshDeserialize`] impls below): `Actions` = 0, `CausalActions` = 2.
+/// Tag 1 was the removed state-based-Merkle-sync variant; `CausalActions`
+/// deliberately keeps tag 2 so every persisted and in-flight delta stays
+/// decodable.
+#[derive(Debug)]
 pub enum StorageDelta {
     /// A list of actions from direct operations.
     Actions(Vec<Action>),
-    /// A list of comparisons for Merkle tree sync.
-    Comparisons(Vec<Comparison>),
     /// Actions delivered with DAG-causal context (#2266).
     ///
     /// `effective_writers` carries the pre-resolved writer set for
@@ -175,22 +173,68 @@ pub enum StorageDelta {
     },
 }
 
+impl BorshSerialize for StorageDelta {
+    fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        match self {
+            // Tag 0 — kept byte-identical to `actions_artifact`'s hand-rolled
+            // encode (pinned by `actions_artifact_matches_enum_encoding`).
+            StorageDelta::Actions(actions) => {
+                0u8.serialize(writer)?;
+                actions.serialize(writer)?;
+            }
+            // Tag 2, not 1: tag 1 was the removed state-based-Merkle-sync variant.
+            // Keeping `CausalActions` at its original tag preserves wire and
+            // on-disk compatibility for every persisted and in-flight delta.
+            StorageDelta::CausalActions {
+                actions,
+                delta_id,
+                delta_hlc,
+                effective_writers,
+            } => {
+                2u8.serialize(writer)?;
+                actions.serialize(writer)?;
+                delta_id.serialize(writer)?;
+                delta_hlc.serialize(writer)?;
+                effective_writers.serialize(writer)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl BorshDeserialize for StorageDelta {
     fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
-        let Ok(tag) = u8::deserialize_reader(reader) else {
-            return Ok(StorageDelta::Comparisons(vec![]));
-        };
-
-        match tag {
-            0 => Ok(StorageDelta::Actions(Vec::deserialize_reader(reader)?)),
-            1 => Ok(StorageDelta::Comparisons(Vec::deserialize_reader(reader)?)),
-            2 => Ok(StorageDelta::CausalActions {
+        // A genuinely-empty artifact (zero bytes) is the "no-op" sentinel that
+        // `commit_root` emits when there are no actions. Distinguish it explicitly
+        // from a *truncated* artifact: only a clean EOF on the very first byte maps
+        // to the no-op. Once a tag byte is present the remaining fields must decode
+        // in full — a short read there is an error, never a silently-accepted no-op.
+        let mut tag = [0u8; 1];
+        match read_tag_or_eof(reader, &mut tag)? {
+            None => Ok(StorageDelta::Actions(vec![])), // empty artifact: no-op
+            Some(0) => Ok(StorageDelta::Actions(Vec::deserialize_reader(reader)?)),
+            // Tag 1 was the removed state-based-Merkle-sync variant; reject it.
+            Some(2) => Ok(StorageDelta::CausalActions {
                 actions: Vec::deserialize_reader(reader)?,
                 delta_id: <[u8; 32]>::deserialize_reader(reader)?,
                 delta_hlc: HybridTimestamp::deserialize_reader(reader)?,
                 effective_writers: BTreeMap::deserialize_reader(reader)?,
             }),
-            _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid tag")),
+            Some(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid tag")),
+        }
+    }
+}
+
+/// Read the leading tag byte, distinguishing a truly-empty stream (`Ok(None)`)
+/// from a present tag (`Ok(Some(byte))`). Retries on `Interrupted`. Any other
+/// I/O error propagates, so a partial/short read is never swallowed.
+fn read_tag_or_eof<R: io::Read>(reader: &mut R, buf: &mut [u8; 1]) -> io::Result<Option<u8>> {
+    loop {
+        match reader.read(buf) {
+            Ok(0) => return Ok(None),
+            Ok(_) => return Ok(Some(buf[0])),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
         }
     }
 }
@@ -198,7 +242,6 @@ impl BorshDeserialize for StorageDelta {
 /// Thread-local context for DAG delta creation
 struct DeltaContext {
     actions: Vec<Action>,
-    comparisons: Vec<Comparison>,
     current_heads: Vec<[u8; 32]>,
     /// Maximum HLC timestamp for actions in this delta
     max_hlc: Option<HybridTimestamp>,
@@ -208,7 +251,6 @@ impl DeltaContext {
     const fn new() -> Self {
         Self {
             actions: Vec::new(),
-            comparisons: Vec::new(),
             current_heads: Vec::new(),
             max_hlc: None,
         }
@@ -258,16 +300,6 @@ pub fn push_action(action: Action) {
     });
 }
 
-/// Records a comparison for eventual synchronisation.
-///
-/// # Parameters
-///
-/// * `comparison` - The comparison to record.
-///
-pub fn push_comparison(comparison: Comparison) {
-    DELTA_CONTEXT.with(|ctx| ctx.borrow_mut().comparisons.push(comparison));
-}
-
 /// Sets the current DAG heads for the next delta.
 ///
 /// This should be called when initializing a context or after receiving deltas from peers.
@@ -293,8 +325,8 @@ pub fn commit_causal_delta(root_hash: &[u8; 32]) -> eyre::Result<Option<CausalDe
     DELTA_CONTEXT.with(|ctx| {
         let mut context = ctx.borrow_mut();
 
-        // If no actions or comparisons, nothing to commit
-        if context.actions.is_empty() && context.comparisons.is_empty() {
+        // If no actions, nothing to commit
+        if context.actions.is_empty() {
             return Ok(None);
         }
 
@@ -302,10 +334,13 @@ pub fn commit_causal_delta(root_hash: &[u8; 32]) -> eyre::Result<Option<CausalDe
         let parents = std::mem::take(&mut context.current_heads);
         let actions = std::mem::take(&mut context.actions);
         let hlc = context.get_hlc();
-        let _comparisons = std::mem::take(&mut context.comparisons);
 
         // Compute ID
         let id = CausalDelta::compute_id(&parents, &actions, &hlc);
+
+        // Serialize for the environment directly from a borrow — avoids
+        // cloning every action just to encode the artifact.
+        let artifact = actions_artifact(&actions)?;
 
         let delta = CausalDelta {
             id,
@@ -318,36 +353,44 @@ pub fn commit_causal_delta(root_hash: &[u8; 32]) -> eyre::Result<Option<CausalDe
         // Update heads - this delta is now the new head
         context.current_heads = vec![delta.id];
 
-        // Serialize for environment
-        let artifact = to_vec(&StorageDelta::Actions(delta.actions.clone()))?;
         env::commit(root_hash, &artifact);
 
         Ok(Some(delta))
     })
 }
 
-/// Commits the root hash to the runtime (legacy compatibility).
-/// This will also commit any recorded actions or comparisons.
-/// If both actions and comparisons are present, this function will panic.
+/// Encode the [`StorageDelta::Actions`] artifact directly from a borrowed
+/// slice: variant tag `0` followed by the borsh-encoded list. This is the
+/// same wire format the manual [`BorshSerialize`] produces for the enum (and
+/// that the manual [`BorshDeserialize`] above reads back), without cloning
+/// the actions or round-tripping them through enum construction.
+/// `actions_artifact_matches_enum_encoding` pins the equivalence.
+fn actions_artifact(actions: &[Action]) -> io::Result<Vec<u8>> {
+    let mut artifact = Vec::new();
+    BorshSerialize::serialize(&0u8, &mut artifact)?;
+    BorshSerialize::serialize(actions, &mut artifact)?;
+    Ok(artifact)
+}
+
+/// Commits the root hash to the runtime, flushing any recorded actions as the
+/// sync artifact. An empty action set commits the zero-byte no-op sentinel.
 /// This function must only be called once.
 ///
 /// # Errors
 ///
-/// This function will return an error if there are issues accessing local
-/// data or if there are problems during the comparison process.
-///
+/// This function will return an error if there are issues serializing the
+/// pending actions into the artifact.
 pub fn commit_root(root_hash: &[u8; 32]) -> eyre::Result<()> {
     DELTA_CONTEXT.with(|ctx| {
         let mut context = ctx.borrow_mut();
 
         let actions = std::mem::take(&mut context.actions);
-        let comparisons = std::mem::take(&mut context.comparisons);
 
-        let artifact = match (&*actions, &*comparisons) {
-            (&[], &[]) => vec![],
-            (&[], _) => to_vec(&StorageDelta::Comparisons(comparisons))?,
-            (_, &[]) => to_vec(&StorageDelta::Actions(actions))?,
-            _ => eyre::bail!("both actions and comparison are present"),
+        let artifact = if actions.is_empty() {
+            // Zero-byte no-op sentinel (decodes back to `Actions(vec![])`).
+            vec![]
+        } else {
+            actions_artifact(&actions)?
         };
 
         env::commit(root_hash, &artifact);
@@ -356,7 +399,7 @@ pub fn commit_root(root_hash: &[u8; 32]) -> eyre::Result<()> {
     })
 }
 
-/// Discards pending delta actions/comparisons for the current thread.
+/// Discards pending delta actions for the current thread.
 ///
 /// This is useful for host-side storage flows that intentionally use
 /// `Interface::save_raw()` for index/hash maintenance but do not produce a
@@ -368,15 +411,14 @@ pub fn clear_pending_delta() {
     DELTA_CONTEXT.with(|ctx| {
         let mut context = ctx.borrow_mut();
         context.actions.clear();
-        context.comparisons.clear();
         context.max_hlc = None;
     });
 }
 
 /// Resets the delta context for testing.
 ///
-/// Clears all pending actions, comparisons, and heads. Use this between
-/// test commits to simulate separate execution contexts.
+/// Clears all pending actions and heads. Use this between test commits to
+/// simulate separate execution contexts.
 #[cfg(test)]
 pub fn reset_delta_context() {
     DELTA_CONTEXT.with(|ctx| {
@@ -442,10 +484,11 @@ fn hash_metadata_storage_type_for_id(hasher: &mut Sha256, metadata: &Metadata) {
 
 #[cfg(test)]
 mod borsh_roundtrip_tests {
-    //! `StorageDelta` has a custom `BorshDeserialize` impl that branches
-    //! on a leading u8 tag (0=Actions, 1=Comparisons, 2=CausalActions).
-    //! These tests guard the wire format: a regression here silently
-    //! corrupts every delta sent over the network.
+    //! `StorageDelta` has hand-rolled `BorshSerialize`/`BorshDeserialize` impls
+    //! that branch on a leading u8 tag (0=Actions, 2=CausalActions). Tag 1 was
+    //! the removed state-based-Merkle-sync variant and `CausalActions` keeps tag
+    //! 2 for wire/on-disk compatibility. These tests guard the wire format: a
+    //! regression here silently corrupts every delta sent over the network.
 
     use core::num::NonZeroU128;
 
@@ -492,23 +535,35 @@ mod borsh_roundtrip_tests {
     }
 
     #[test]
-    fn comparisons_variant_roundtrips_and_empty_input_falls_back() {
-        let original = StorageDelta::Comparisons(vec![]);
-        let bytes = to_vec(&original).unwrap();
-        assert_eq!(bytes[0], 1);
-
-        let decoded: StorageDelta = from_slice(&bytes).unwrap();
-        assert!(
-            matches!(&decoded, StorageDelta::Comparisons(v) if v.is_empty()),
-            "expected empty Comparisons, got {decoded:?}"
+    fn actions_artifact_matches_enum_encoding() {
+        let actions = vec![make_action(1), make_action(2)];
+        let direct = actions_artifact(&actions).unwrap();
+        let via_enum = to_vec(&StorageDelta::Actions(actions)).unwrap();
+        assert_eq!(
+            direct, via_enum,
+            "direct artifact encoding diverged from StorageDelta::Actions"
         );
+    }
 
-        // The custom deserializer falls back to `Comparisons(vec![])` on
-        // empty input — exercised by legacy senders that send no artifact.
+    #[test]
+    fn empty_input_falls_back_to_empty_actions_noop() {
+        // The zero-byte no-op sentinel (a commit with no pending actions)
+        // decodes to `Actions(vec![])`, which applies nothing.
         let empty: StorageDelta = from_slice(&[]).unwrap();
         assert!(
-            matches!(&empty, StorageDelta::Comparisons(v) if v.is_empty()),
-            "expected fallback Comparisons(vec![]), got {empty:?}"
+            matches!(&empty, StorageDelta::Actions(v) if v.is_empty()),
+            "expected fallback Actions(vec![]), got {empty:?}"
+        );
+    }
+
+    #[test]
+    fn removed_comparisons_tag_1_is_rejected() {
+        // Tag 1 was the removed state-based-Merkle-sync variant. A stream that
+        // leads with it must error rather than be misinterpreted.
+        let result: Result<StorageDelta, _> = from_slice(&[1_u8]);
+        assert!(
+            result.is_err(),
+            "expected error for removed tag 1, got {result:?}"
         );
     }
 
@@ -575,6 +630,30 @@ mod borsh_roundtrip_tests {
             ),
             "expected CausalActions with empty effective_writers, got {decoded:?}"
         );
+    }
+
+    #[test]
+    fn truncated_actions_artifact_errors_not_noop() {
+        // Tag 0 (Actions) present but the following Vec<Action> is missing: a
+        // truncated artifact must surface as an error, not be silently accepted
+        // as an empty no-op. Only a zero-byte stream is the no-op sentinel.
+        for truncated in [
+            vec![0_u8],          // Actions tag, no length prefix
+            vec![0_u8, 5, 0, 0], // Actions tag, partial (3/4-byte) length prefix
+            vec![2_u8],          // CausalActions tag, no body
+        ] {
+            let result: Result<StorageDelta, _> = from_slice(&truncated);
+            assert!(
+                result.is_err(),
+                "truncated artifact {truncated:?} must error, got {result:?}"
+            );
+        }
+
+        // The zero-byte no-op sentinel still decodes.
+        assert!(matches!(
+            from_slice::<StorageDelta>(&[]).unwrap(),
+            StorageDelta::Actions(v) if v.is_empty()
+        ));
     }
 
     #[test]

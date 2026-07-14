@@ -54,6 +54,19 @@ pub use group::{
     NAMESPACE_GOV_OP_PREFIX, NAMESPACE_IDENTITY_PREFIX, PENDING_SELF_PURGE_PREFIX,
 };
 
+/// A fixed-width storage key: a `GenericArray<u8, T::LEN>` tagged with its
+/// component layout `T`.
+///
+/// # Layout
+///
+/// This struct is `#[repr(transparent)]` over its sole field, and that
+/// attribute is load-bearing: the `&Key<T> <-> &Key<(T,)>` reference casts in
+/// this module rely on `Key<T>` and `Key<(T,)>` having identical layout. Both
+/// are transparent wrappers over the same `GenericArray<u8, T::LEN>` (the
+/// `(T,): KeyComponents<LEN = T::LEN>` bound forces equal lengths), so the casts
+/// are sound. Without `repr(transparent)` a `repr(Rust)` struct's layout is
+/// unspecified and those casts would be undefined behavior.
+#[repr(transparent)]
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
 
 impl<T: KeyComponents> Copy for Key<T> where GenericArray<u8, T::LEN>: Copy {}
@@ -142,6 +155,9 @@ where
     (T,): KeyComponents<LEN = T::LEN>,
 {
     fn from(key: &Key<T>) -> Self {
+        // SAFETY: `Key<T>` and `Key<(T,)>` are both `#[repr(transparent)]` over
+        // `GenericArray<u8, T::LEN>` (the `LEN = T::LEN` bound makes the arrays
+        // identical), so they share layout and this reference cast is sound.
         unsafe { &*ptr::from_ref(key).cast() }
     }
 }
@@ -152,6 +168,8 @@ where
     (T,): KeyComponents<LEN = T::LEN>,
 {
     fn from(key: &Key<(T,)>) -> Self {
+        // SAFETY: see the inverse impl above — identical `repr(transparent)`
+        // layout over `GenericArray<u8, T::LEN>` makes this cast sound.
         unsafe { &*ptr::from_ref(key).cast() }
     }
 }

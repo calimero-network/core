@@ -153,18 +153,30 @@ impl MigrationStatusCache {
     /// Stale-but-within-eviction-window entries are still filtered out of
     /// `fresh_peers` by the per-call `ttl` check.
     pub fn insert(&self, hb: &SignedMigrationHeartbeat) {
-        // Wall-clock sanity bound — reject far-future ts_millis.
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        if hb.ts_millis > now_ms.saturating_add(MAX_HEARTBEAT_CLOCK_DRIFT_MS) {
-            return;
+        // Wall-clock sanity bound — reject far-future ts_millis. Only applied
+        // when the wall clock is readable: an unreadable clock (system time
+        // before the epoch) must fail *open* here, otherwise treating `now` as 0
+        // would reject every heartbeat and stall migration liveness entirely.
+        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(now) => {
+                let now_ms = now.as_millis() as u64;
+                if hb.ts_millis > now_ms.saturating_add(MAX_HEARTBEAT_CLOCK_DRIFT_MS) {
+                    return;
+                }
+            }
+            Err(err) => {
+                // Surface the degraded state: the drift guard is disabled while
+                // the clock is unreadable, so far-future heartbeats are accepted.
+                tracing::warn!(
+                    ?err,
+                    "system clock unreadable; migration heartbeat drift guard disabled"
+                );
+            }
         }
 
         let now = Instant::now();
         let mut g = self.entries_lock();
-        let key = (hb.namespace_id, hb.peer_pubkey);
+        let key = (hb.namespace_id.to_bytes(), hb.peer_pubkey);
         if let Some(existing) = g.get(&key) {
             // Drop the heartbeat if it's older or equal-clock-but-not-fresher.
             if hb.ts_millis < existing.ts_millis
@@ -182,7 +194,8 @@ impl MigrationStatusCache {
         // (filtered by per-call `ttl`) without competing against this prune.
         let evict_window = Duration::from_millis(MAX_HEARTBEAT_CLOCK_DRIFT_MS.saturating_mul(2));
         g.retain(|(ns, _), entry| {
-            *ns != hb.namespace_id || now.duration_since(entry.received_at) <= evict_window
+            *ns != hb.namespace_id.to_bytes()
+                || now.duration_since(entry.received_at) <= evict_window
         });
 
         let _ = g.insert(
@@ -689,7 +702,7 @@ pub fn build_signed_heartbeat(
 ) -> Result<SignedMigrationHeartbeat, calimero_context_client::local_governance::GovernanceError> {
     let peer_pubkey = signer_sk.public_key();
     let mut hb = SignedMigrationHeartbeat {
-        namespace_id,
+        namespace_id: namespace_id.into(),
         peer_pubkey,
         schema_version: facts.schema_version,
         residue_auto: facts.residue_auto,
@@ -845,7 +858,7 @@ impl MigrationEmitter {
             }
         };
 
-        let topic = calimero_context::governance_broadcast::ns_topic(ns_id);
+        let topic = calimero_context::governance_broadcast::ns_topic(ns_id.into());
         // Wrap in the `BroadcastMessage::NamespaceGovernanceDelta` envelope
         // the receiver decodes on `ns/<id>` topics, then borsh the inner
         // `NamespaceTopicMsg::MigrationHeartbeat`. delta_id/parent_ids are
@@ -917,7 +930,7 @@ mod tests {
     ) -> SignedMigrationHeartbeat {
         let peer_pubkey = sk.public_key();
         let body = SignableMigrationHeartbeat {
-            namespace_id: ns,
+            namespace_id: ns.into(),
             peer_pubkey,
             schema_version,
             residue_auto,
@@ -930,7 +943,7 @@ mod tests {
         signable.extend_from_slice(&borsh::to_vec(&body).unwrap());
         let signature = sk.sign(&signable).unwrap().to_bytes();
         SignedMigrationHeartbeat {
-            namespace_id: ns,
+            namespace_id: ns.into(),
             peer_pubkey,
             schema_version,
             residue_auto,

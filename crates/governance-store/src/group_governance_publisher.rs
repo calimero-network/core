@@ -95,7 +95,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         // and both are handed to `sign_and_publish_post_gate`.
         let namespace_id = NamespaceRepository::new(self.store).resolve(&self.group_id)?;
         let namespace_bytes = namespace_id.to_bytes();
-        let topic = ns_topic(namespace_bytes);
+        let topic = ns_topic(namespace_bytes.into());
         let mesh = self
             .node_client
             .mesh_peer_count_for_namespace(namespace_bytes)
@@ -232,10 +232,29 @@ impl<'a> GroupGovernancePublisher<'a> {
         let key_rotation = if let Some(removed) = removed_member {
             if encrypting_group_id == self.group_id {
                 let new_group_key: [u8; 32] = OsRng.gen();
-                let _ = GroupKeyring::new(self.store, self.group_id).store_key(&new_group_key)?;
+                // Stamp the new key with the DAG sequence this op will occupy.
+                // `next_nonce` is strictly greater than the sequence of any
+                // already-applied op — including the one that introduced the key
+                // being superseded — so the fresh key deterministically outranks
+                // it in `load_current_key`, on this node and on every receiver
+                // (which stamps the same op with its own DAG sequence). Without
+                // this the publisher would keep the epoch-0/older key as
+                // "current" and re-encrypt for the removed member.
+                let rotation_epoch = NamespaceGovernance::new(self.store, namespace_bytes.into())
+                    .read_head_record()?
+                    .next_nonce;
+                let _ = GroupKeyring::new(self.store, self.group_id)
+                    .store_key_with_epoch(&new_group_key, rotation_epoch)?;
+                // Wrap with the NAMESPACE identity — the key that signs the
+                // outer namespace op below (`op.signer` on the receiver). The
+                // rotation-apply gate verifies each envelope's authenticated
+                // `sender` against that op signer, so the wrapper and the outer
+                // signer must be the same identity (the local per-group signing
+                // key used elsewhere can differ from the namespace identity).
+                let rotation_sender_sk = PrivateKey::from(namespace_identity.private_key);
                 Some(GroupKeyring::new(self.store, self.group_id).build_rotation(
                     &new_group_key,
-                    signer_sk,
+                    &rotation_sender_sk,
                     Some(removed),
                 )?)
             } else {
@@ -246,8 +265,8 @@ impl<'a> GroupGovernancePublisher<'a> {
         };
 
         let namespace_op = NamespaceOp::Group {
-            group_id: self.group_id.to_bytes(),
-            key_id: stored_key.key_id,
+            group_id: self.group_id.to_bytes().into(),
+            key_id: stored_key.key_id.into(),
             encrypted,
             key_rotation,
         };
@@ -271,7 +290,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         // via sync. `sign_and_publish_post_gate` takes the `mesh` / `known`
         // snapshot directly and never runs `assert_transport_ready`, so
         // there is no gate that could reject after the local apply.
-        let mut report = NamespaceGovernance::new(self.store, namespace_bytes)
+        let mut report = NamespaceGovernance::new(self.store, namespace_bytes.into())
             .sign_and_publish_post_gate(
                 self.node_client,
                 ack_router,
@@ -282,7 +301,8 @@ impl<'a> GroupGovernancePublisher<'a> {
                 true,
             )
             .await?;
-        report.readiness = classify_report_readiness(self.store, namespace_bytes, &report, known);
+        report.readiness =
+            classify_report_readiness(self.store, namespace_bytes.into(), &report, known);
         tracing::debug!(
             op_kind,
             group_id = %hex::encode(self.group_id.to_bytes()),

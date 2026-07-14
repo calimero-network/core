@@ -58,7 +58,7 @@ EOF
 
 cargo run --manifest-path "$REPO_ROOT/Cargo.toml" -p mero-sign --quiet -- \
     sign res/bundle-temp/manifest.json \
-    --key "$REPO_ROOT/scripts/test-signing-key/test-key.json"
+    --dev
 
 LEAF="${PACKAGE##*.}"
 OUT="${LEAF}-${APP_VERSION}.mpk"

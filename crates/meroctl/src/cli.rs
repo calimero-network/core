@@ -43,7 +43,20 @@ use node::NodeCommand;
 use peers::PeersCommand;
 use tee::TeeCommand;
 
-use crate::auth::{authenticate_with_session_cache, check_authentication};
+use crate::auth::{authenticate_and_connect, check_authentication, TokenScope};
+
+/// Dispatch a subcommand enum whose every variant wraps a command type that
+/// exposes `async fn run(self, &mut Environment) -> Result<...>`. Replaces the
+/// repetitive `match { V(cmd) => cmd.run(environment).await, ... }` blocks that
+/// were duplicated across ~10 command modules.
+macro_rules! dispatch_subcommands {
+    ($value:expr, $environment:expr, $( $variant:path ),+ $(,)?) => {
+        match $value {
+            $( $variant(cmd) => cmd.run($environment).await, )+
+        }
+    };
+}
+pub(crate) use dispatch_subcommands;
 
 pub const EXAMPLES: &str = r"
   # List all applications
@@ -146,9 +159,67 @@ impl Environment {
     }
 }
 
+impl SubCommands {
+    /// Least-privilege token scope this command needs at login.
+    ///
+    /// Read-only resource commands request a narrow, non-admin scope so they no
+    /// longer persist a full-`admin` token. Anything that mutates, manages keys
+    /// or the node, or whose required permissions we cannot conservatively
+    /// narrow, requests `Admin`.
+    fn required_scope(&self) -> TokenScope {
+        use crate::cli::app::AppSubCommands;
+        use crate::cli::blob::BlobSubCommands;
+        use crate::cli::context::ContextSubCommands;
+
+        // The App/Blob/Context arms are matched *exhaustively* (no wildcard) so
+        // adding a new subcommand variant is a compile error until its scope is
+        // classified here — a new read-only variant can't silently over-scope to
+        // Admin, nor a new mutating one silently under-scope to Resource.
+        match self {
+            SubCommands::App(c) => match c.subcommand {
+                AppSubCommands::Get(_)
+                | AppSubCommands::List(_)
+                | AppSubCommands::Versions(_)
+                | AppSubCommands::ListPackages(_)
+                | AppSubCommands::ListVersions(_)
+                | AppSubCommands::GetLatestVersion(_) => TokenScope::Resource,
+                AppSubCommands::Install(_)
+                | AppSubCommands::Uninstall(_)
+                | AppSubCommands::Watch(_) => TokenScope::Admin,
+            },
+            SubCommands::Blob(c) => match c.subcommand {
+                BlobSubCommands::List(_)
+                | BlobSubCommands::Info(_)
+                | BlobSubCommands::Download(_) => TokenScope::Resource,
+                BlobSubCommands::Upload(_) | BlobSubCommands::Delete(_) => TokenScope::Admin,
+            },
+            SubCommands::Context(c) => match c.subcommand {
+                ContextSubCommands::List(_) | ContextSubCommands::Get(_) => TokenScope::Resource,
+                ContextSubCommands::Create(_)
+                | ContextSubCommands::InviteSpecializedNode(_)
+                | ContextSubCommands::Delete(_)
+                | ContextSubCommands::Watch(_)
+                | ContextSubCommands::Update(_)
+                | ContextSubCommands::Identity(_)
+                | ContextSubCommands::Alias(_)
+                | ContextSubCommands::Use(_)
+                | ContextSubCommands::Sync(_) => TokenScope::Admin,
+            },
+            // Everything else (mutations, key/node management, call, and the
+            // network/peers/tee reads whose permissions are not in the Resource
+            // set) conservatively requests Admin.
+            _ => TokenScope::Admin,
+        }
+    }
+}
+
 impl RootCommand {
     pub async fn run(self) -> Result<(), CliError> {
         let output = Output::new(self.args.output_format);
+
+        // Record the least-privilege scope this command needs before any
+        // authentication (and token persistence) happens.
+        crate::auth::set_requested_scope(self.action.required_scope());
 
         // Some commands don't require a connection (like node commands)
         let needs_connection = !matches!(&self.action, SubCommands::Node(_));
@@ -210,12 +281,12 @@ impl RootCommand {
             // load_config(path, node) which does path.join(node) — passing home/node here
             // would double-join to home/node/node and break every subsequent invocation.
             let connection =
-                authenticate_with_session_cache(&url, node, Some(&self.args.home), output).await?;
+                authenticate_and_connect(&url, node, Some(&self.args.home), output).await?;
             Ok(connection)
         } else if let Some(api_url) = &self.args.api {
-            // Use specific API URL - check session cache first, then authenticate if needed
+            // Use specific API URL - authenticate if the server requires it.
             let connection =
-                authenticate_with_session_cache(api_url, api_url.as_ref(), None, output).await?;
+                authenticate_and_connect(api_url, api_url.as_ref(), None, output).await?;
             Ok(connection)
         } else {
             // Try to use active node
@@ -235,7 +306,7 @@ impl RootCommand {
             // No active node set - fall back to default localhost server
             let default_url = "http://127.0.0.1:2528".parse()?;
             let connection =
-                authenticate_with_session_cache(&default_url, "default", None, output).await?;
+                authenticate_and_connect(&default_url, "default", None, output).await?;
             Ok(connection)
         }
     }

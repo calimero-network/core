@@ -16,7 +16,7 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let namespace_id = op.namespace_id;
-        let dag = self.get_or_create_namespace_dag(&namespace_id);
+        let dag = self.get_or_create_namespace_dag(namespace_id.as_bytes());
         let datastore = self.datastore.clone();
         // Separate handle for the shadow-compare (the one above is moved into
         // the applier).
@@ -67,8 +67,8 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                         } => calimero_governance_store::decrypt_group_op(
                             &feed_store,
                             namespace_id,
-                            calimero_context_config::types::ContextGroupId::from(*group_id),
-                            key_id,
+                            *group_id,
+                            key_id.as_bytes(),
                             encrypted,
                         )
                         .map_err(|err| {
@@ -77,6 +77,9 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                         .ok()
                         .flatten(),
                         calimero_governance_types::NamespaceOp::Root(_) => None,
+                        // `NamespaceOp` is `#[non_exhaustive]`; an unknown future
+                        // op has nothing to decrypt and folds as `Noop`.
+                        _ => None,
                     };
                     let shadow_op = crate::scope_projection::op_from_namespace_op(
                         &signed_op,
@@ -114,7 +117,7 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                                         &shadow_op.scope,
                                         &g,
                                         &m,
-                                        &[shadow_op.id],
+                                        &[shadow_op.id()],
                                     )
                                 });
                                 (true, role)
@@ -289,14 +292,14 @@ fn apply_auth_requirement(
 
     match &signed.op {
         NamespaceOp::Root(root) => {
-            let ns_root = ContextGroupId::from(signed.namespace_id);
+            let ns_root = ContextGroupId::from(signed.namespace_id.to_bytes());
             match root {
                 RootOp::AdminChanged { .. }
                 | RootOp::PolicyUpdated { .. }
                 | RootOp::GroupReparented { .. } => Some((ns_root, ApplyAuthReq::Admin)),
                 RootOp::GroupCreated { parent_id, .. } => Some((
-                    ContextGroupId::from(*parent_id),
-                    ApplyAuthReq::AdminOrCap(Cap::CAN_CREATE_SUBGROUP),
+                    *parent_id,
+                    ApplyAuthReq::AdminOrCap(Cap::CAN_CREATE_SUBGROUP.bits()),
                 )),
                 // GroupDeleted authorizes the subgroup OWNER or a
                 // `CAN_DELETE_SUBGROUP` holder at the root, NOT only the root
@@ -305,14 +308,15 @@ fn apply_auth_requirement(
             }
         }
         NamespaceOp::Group { group_id, .. } => {
-            let group = ContextGroupId::from(*group_id);
+            let group = *group_id;
             match decrypted? {
                 GroupOp::MemberAdded { .. } | GroupOp::MemberRemoved { .. } => {
-                    Some((group, ApplyAuthReq::AdminOrCap(Cap::MANAGE_MEMBERS)))
+                    Some((group, ApplyAuthReq::AdminOrCap(Cap::MANAGE_MEMBERS.bits())))
                 }
-                GroupOp::SubgroupVisibilitySet { .. } => {
-                    Some((group, ApplyAuthReq::AdminOrCap(Cap::CAN_MANAGE_VISIBILITY)))
-                }
+                GroupOp::SubgroupVisibilitySet { .. } => Some((
+                    group,
+                    ApplyAuthReq::AdminOrCap(Cap::CAN_MANAGE_VISIBILITY.bits()),
+                )),
                 GroupOp::MemberRoleSet { .. }
                 | GroupOp::MemberCapabilitySet { .. }
                 | GroupOp::DefaultCapabilitiesSet { .. } => Some((group, ApplyAuthReq::Admin)),
@@ -321,5 +325,8 @@ fn apply_auth_requirement(
                 _ => None,
             }
         }
+        // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op authorizes
+        // nothing here (secure default — no admin/cap requirement is granted).
+        _ => None,
     }
 }
