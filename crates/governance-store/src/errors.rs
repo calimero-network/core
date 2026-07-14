@@ -529,6 +529,29 @@ pub enum ApplyError {
     #[error("unsupported group op variant")]
     UnsupportedOp,
 
+    /// The apply gate could not decide the signer's authority AT THE OP'S CUT: the
+    /// op cites a real causal cut, but this node has not folded that cut's ancestry,
+    /// so the projection has no authoritative verdict.
+    ///
+    /// This is **not** a rejection — it is "not yet decidable here". The distinction
+    /// is the whole point. Guessing from the live rows instead would make the verdict
+    /// a function of this replica's fold progress: a replica that had folded a
+    /// concurrent capability revoke would reject an op its peers applied, and because
+    /// the reject path never advances the DAG head, everything descending from that op
+    /// would stall on that replica alone. Permanent, silent divergence.
+    ///
+    /// Treated like any other apply error by the DAG: the head is not advanced and the
+    /// nonce is not burned, so the op is re-fetched and re-applied once the missing
+    /// ancestry arrives. A node that keeps hitting this is missing op-log history it
+    /// cannot reconstruct — that is a loud, recoverable stall, which is strictly
+    /// better than a quiet divergence.
+    #[error(
+        "authority undecidable for signer {signer} in group {group_id}: this node has not \
+         folded the ancestry of the op's causal cut, so the op cannot be authorized here \
+         yet — retrying once the missing history arrives"
+    )]
+    AuthorityUndecidable { group_id: String, signer: String },
+
     /// Governance nonce counter overflowed `u64`. Practically
     /// unreachable; documented for completeness.
     #[error("group governance nonce overflow")]
