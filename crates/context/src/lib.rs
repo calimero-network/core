@@ -110,6 +110,7 @@ pub mod group_store {
         NamespaceMembershipService,
         NamespaceOpLogService,
         NamespaceRepository,
+        PendingRotationRepository,
         SigningKeysError,
         SigningKeysRepository,
         UpgradeLadderRepository,

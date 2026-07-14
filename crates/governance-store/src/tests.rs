@@ -8662,3 +8662,92 @@ mod self_leave_rotation_crypto {
         );
     }
 }
+
+// -----------------------------------------------------------------------
+// A parked op must RETRY TO SUCCESS once the missing history arrives.
+//
+// Refusing to decide is only the right answer if the refusal is recoverable. If an
+// `AuthorityUndecidable` left any residue — a burned nonce, a half-applied mutation,
+// an advanced head — then "park" would really mean "drop forever", which is worse
+// than the live guess it replaces: the op would never apply on this replica even
+// after it caught up.
+//
+// So this drives the real local apply path (nonce window and all): the same signed op
+// is applied twice, first against a projection that cannot resolve its cut, then
+// against one that can. The first must leave NOTHING behind; the second must succeed.
+mod parked_op_retries_to_success {
+    use super::*;
+    use crate::test_fixtures::{FixedAuthorizer, UnresolvableAuthorizer};
+    use calimero_context_config::types::AppKey;
+    use calimero_governance_types::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    #[test]
+    fn an_undecidable_op_applies_cleanly_once_the_cut_becomes_resolvable() {
+        let store = test_store();
+        let gid = test_group_id();
+
+        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin = admin_sk.public_key();
+        let mut meta = test_meta();
+        meta.admin_identity = admin;
+        meta.owner_identity = admin;
+        MetaRepository::new(&store).save(&gid, &meta).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
+
+        // A real cut: the op cites a parent, so abstention means "I haven't folded this
+        // op's ancestry", not "there is no ancestry".
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid.to_bytes().into(),
+            vec![[0xAB; 32]],
+            1,
+            GroupOp::TargetApplicationSet {
+                app_key: AppKey::from([0x5A; 32]),
+                target_application_id: ApplicationId::from([0x5B; 32]),
+            },
+        )
+        .expect("sign TargetApplicationSet");
+
+        // --- Arrival 1: this replica is mid-backfill and cannot resolve the cut. ---
+        let err = apply_local_signed_group_op_at_cut(&store, &op, &UnresolvableAuthorizer)
+            .expect_err("an unresolvable cut must not be decided");
+        assert!(
+            format!("{err:#}").contains("authority undecidable"),
+            "expected a park, got: {err:#}"
+        );
+
+        // The park must be inert. Any residue here turns "retry later" into "never".
+        let meta_after_park = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+        assert_ne!(
+            meta_after_park.app_key, [0x5A; 32],
+            "a parked op must not half-apply"
+        );
+        assert_eq!(
+            get_local_gov_nonce(&store, &gid, &admin).unwrap(),
+            None,
+            "a parked op must NOT burn its nonce — if it did, the retry would be rejected \
+             as stale and the op could never apply on this replica"
+        );
+
+        // --- Arrival 2: backfill completed, the cut resolves, the op is re-delivered. ---
+        apply_local_signed_group_op_at_cut(&store, &op, &FixedAuthorizer(true)).expect(
+            "the very same op must apply once the cut is resolvable — otherwise \
+                     parking is just a slower way of dropping it",
+        );
+
+        let meta_after_retry = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+        assert_eq!(
+            meta_after_retry.app_key, [0x5A; 32],
+            "the retried op must actually take effect"
+        );
+        assert_eq!(
+            meta_after_retry.target_application_id,
+            ApplicationId::from([0x5B; 32]),
+            "the retried op's full mutation must land, not just part of it"
+        );
+    }
+}
