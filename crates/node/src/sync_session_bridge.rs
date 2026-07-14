@@ -398,6 +398,54 @@ impl Actor for SyncSessionActor {
     }
 }
 
+/// Acquire a responder concurrency permit, or bail if `concurrency` is
+/// closed. Extracted out of the inline session future so the bail branch
+/// is unit-testable without spinning up a full `SyncSessionActor`.
+///
+/// Nothing today closes `concurrency` (no shutdown-drain exists yet), so
+/// the `Err` arm is currently unreachable — hardening against a future
+/// close() silently lifting the max_concurrent cap via `_permit = None`.
+async fn acquire_responder_permit(
+    concurrency: &Arc<Semaphore>,
+    peer_id: PeerId,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    match Arc::clone(concurrency).acquire_owned().await {
+        Ok(permit) => Some(permit),
+        Err(_closed) => {
+            warn!(
+                %peer_id,
+                "SyncSession responder: concurrency semaphore closed — skipping session"
+            );
+            None
+        }
+    }
+}
+
+/// Same as [`acquire_responder_permit`] for the initiator path. On
+/// closure this returns a synthetic-failure `Err` rather than bailing
+/// with no result: the caller's outcome/result_tx pipeline already
+/// forwards an `Err` as a `SyncSessionResult`, so reusing it here (instead
+/// of separately building one, as the `ContextBusy` drop above does)
+/// keeps every accepted job emitting a result — an accepted job with no
+/// result would leave the context's `last_sync` at `None` forever (#2317).
+async fn acquire_initiator_permit(
+    concurrency: &Arc<Semaphore>,
+    context_id: ContextId,
+) -> eyre::Result<tokio::sync::OwnedSemaphorePermit> {
+    match Arc::clone(concurrency).acquire_owned().await {
+        Ok(permit) => Ok(permit),
+        Err(_closed) => {
+            warn!(
+                %context_id,
+                "SyncSession initiator: concurrency semaphore closed — skipping session"
+            );
+            Err(eyre::eyre!(
+                "initiator skipped — concurrency semaphore closed"
+            ))
+        }
+    }
+}
+
 impl Handler<SyncSessionJob> for SyncSessionActor {
     type Result = ();
 
@@ -432,7 +480,10 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                     // applied and diverged from the peer; a clean completion
                     // keeps them consistent.
                     let mut session = pin!(async move {
-                        let _permit = concurrency.acquire_owned().await.ok();
+                        let Some(_permit) = acquire_responder_permit(&concurrency, peer_id).await
+                        else {
+                            return;
+                        };
                         sync_manager.handle_opened_stream(peer_id, stream).await
                     });
                     let outcome = match tokio::time::timeout(session_timeout, &mut session).await {
@@ -575,7 +626,7 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                     // instead of dropping the in-flight interval-sync future
                     // mid-step (which can leave storage/DAG diverged).
                     let mut session = pin!(async move {
-                        let _permit = concurrency.acquire_owned().await.ok();
+                        let _permit = acquire_initiator_permit(&concurrency, context_id).await?;
                         sync_manager
                             .perform_interval_sync(context_id, peer_id)
                             .await
@@ -756,5 +807,24 @@ mod tests {
                 + m.count(DropReason::ContextBusy)
         );
         assert_eq!(m.dropped_total(), 4);
+    }
+
+    #[tokio::test]
+    async fn responder_permit_bails_on_closed_semaphore() {
+        let concurrency = Arc::new(Semaphore::new(1));
+        concurrency.close();
+        let permit = acquire_responder_permit(&concurrency, PeerId::random()).await;
+        assert!(permit.is_none());
+    }
+
+    #[tokio::test]
+    async fn initiator_permit_emits_synthetic_failure_on_closed_semaphore() {
+        let concurrency = Arc::new(Semaphore::new(1));
+        concurrency.close();
+        let context_id = ContextId::from([7u8; 32]);
+        let err = acquire_initiator_permit(&concurrency, context_id)
+            .await
+            .expect_err("closed semaphore must yield a synthetic failure, not a permit");
+        assert!(err.to_string().contains("concurrency semaphore closed"));
     }
 }
