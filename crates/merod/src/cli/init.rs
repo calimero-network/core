@@ -175,7 +175,6 @@ pub struct InitCommand {
 
     /// Advertise observed address
     #[clap(long, default_value_t = false)]
-    #[clap(overrides_with("no_mdns"))]
     pub advertise_address: bool,
 
     /// Static external multiaddr(s) to advertise (e.g.
@@ -425,5 +424,30 @@ impl InitCommand {
         info!("Initialized a node in {:?}", path);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::InitCommand;
+
+    // `--no-mdns` and `--advertise-address` are independent flags: setting one
+    // must not silently reset the other, in either order. A stray
+    // `overrides_with("no_mdns")` on `advertise_address` used to break this.
+    #[test]
+    fn no_mdns_and_advertise_address_are_independent() {
+        for args in [
+            ["merod", "--no-mdns", "--advertise-address"],
+            ["merod", "--advertise-address", "--no-mdns"],
+        ] {
+            let cmd = InitCommand::try_parse_from(args).unwrap();
+            assert!(cmd.no_mdns, "no_mdns should be set for {args:?}");
+            assert!(
+                cmd.advertise_address,
+                "advertise_address should be set for {args:?}"
+            );
+        }
     }
 }
