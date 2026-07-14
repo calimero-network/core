@@ -23,7 +23,7 @@ runs:
         ref: ${{ github.event.pull_request.head.sha }}
 
     - name: Apply Needs Attention Label
-      uses: hramos/needs-attention@v2.0.0
+      uses: hramos/needs-attention@d0eaa7f961c04d4da86466b1176b56e0d4089022 # v2.0.0
       with:
         repo-token: ${{ inputs.repo-token }}
         response-required-label: ${{ inputs.response-required-label }}

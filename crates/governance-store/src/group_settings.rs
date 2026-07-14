@@ -64,6 +64,23 @@ impl<'a> GroupSettingsService<'a> {
     ) -> EyreResult<()> {
         let permissions = self.permissions();
         permissions.require_manage_application(signer, "set target application")?;
+        self.set_target_application_unchecked(app_key, target_application_id)
+    }
+
+    /// Write the target-application mutation WITHOUT the per-group
+    /// `MANAGE_APPLICATION` check. Used by the cascade arms, which authorize
+    /// the whole op ONCE against the root admin: re-deriving live per-descendant
+    /// authority here would make the apply/bail outcome depend on each replica's
+    /// fold progress and diverge (see the cascade apply arms).
+    ///
+    /// Caller contract: invoke ONLY after a single deterministic root-authority
+    /// check (`ctx.permissions().require_manage_application`). Never from a
+    /// single-group op arm — use the checked [`Self::set_target_application`].
+    pub(crate) fn set_target_application_unchecked(
+        &self,
+        app_key: &[u8; 32],
+        target_application_id: &ApplicationId,
+    ) -> EyreResult<()> {
         let mut meta = self.load_required_meta()?;
         meta.app_key = *app_key;
         meta.target_application_id = *target_application_id;
@@ -101,6 +118,16 @@ impl<'a> GroupSettingsService<'a> {
     ) -> EyreResult<()> {
         let permissions = self.permissions();
         permissions.require_manage_application(signer, "set group migration")?;
+        self.set_group_migration_unchecked(migration)
+    }
+
+    /// Migration analogue of [`set_target_application_unchecked`]: writes the
+    /// mutation without the per-group `MANAGE_APPLICATION` check, for the
+    /// cascade arms that authorize once against the root admin.
+    pub(crate) fn set_group_migration_unchecked(
+        &self,
+        migration: &Option<Vec<u8>>,
+    ) -> EyreResult<()> {
         let mut meta = self.load_required_meta()?;
         meta.migration = migration.clone();
         MetaRepository::new(self.store).save(&self.group_id, &meta)

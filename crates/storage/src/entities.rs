@@ -16,6 +16,7 @@ mod tests;
 use calimero_primitives::identity::PublicKey;
 use core::fmt::{self, Debug, Display, Formatter};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Error as IoError, ErrorKind as IoErrorKind, Read};
 use std::ops::{Deref, DerefMut};
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -456,12 +457,17 @@ pub struct SignatureData {
 /// not a compatibility one), so a single [`WRITE`] bit covers all upserts until
 /// that lands.
 ///
+/// Only the three defined bits may ever be set on the wire: the byte is part
+/// of the signed authorization payload (committed via [`bits`](OpMask::bits)),
+/// so an undefined high bit would be semantically identical under
+/// [`contains`](OpMask::contains) yet change the signed bytes and the derived
+/// id. To keep the encoding canonical, [`BorshDeserialize`] is hand-written to
+/// reject any byte with bits outside [`FULL`] rather than deriving it.
+///
 /// [`WRITE`]: OpMask::WRITE
 /// [`FULL`]: OpMask::FULL
 /// [`contains`]: OpMask::contains
-#[derive(
-    BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash,
-)]
+#[derive(BorshSerialize, Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
 pub struct OpMask(u8);
 
 impl OpMask {
@@ -507,6 +513,24 @@ pub fn full_mask(keys: BTreeSet<PublicKey>) -> BTreeMap<PublicKey, OpMask> {
 impl Default for OpMask {
     fn default() -> Self {
         Self::FULL
+    }
+}
+
+impl BorshDeserialize for OpMask {
+    fn deserialize_reader<R: Read>(reader: &mut R) -> Result<Self, IoError> {
+        let bits = u8::deserialize_reader(reader)?;
+        // Reject any byte carrying bits outside the defined set. Accepting them
+        // would admit multiple encodings that are equal under `contains` but
+        // differ in `bits()`, which feeds the signed authorization payload and
+        // the derived id — a signature-malleability vector. `FULL` is the union
+        // of every defined bit.
+        if (bits & !Self::FULL.0) != 0 {
+            return Err(IoError::new(
+                IoErrorKind::InvalidData,
+                "OpMask has undefined bits set",
+            ));
+        }
+        Ok(Self(bits))
     }
 }
 
@@ -741,15 +765,23 @@ pub fn needs_owner_convert(metadata: &Metadata, target_version: u32) -> bool {
 // Breaking change: Old data without crdt_type/field_name fields will fail to deserialize.
 // This is intentional - we require fresh nodes with the new data format.
 
-/// Update timestamp (PartialEq always true for CRDT semantics).
-#[derive(BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Default, Eq, Ord, PartialOrd)]
+/// Update timestamp.
+///
+/// `PartialEq` compares the inner value like `Ord`/`PartialOrd` do: an
+/// always-true `eq` would violate the `Eq`/`Ord` contract (`a == b` must agree
+/// with `a.cmp(b) == Equal`) and, because it is compared field-wise inside
+/// `Metadata`'s derived `PartialEq`, would make the equal-vs-newer timestamp
+/// distinction in `save_internal` collapse to a single always-taken branch.
+///
+/// Consequence for callers: two `Metadata` values that differ only in
+/// `updated_at` now compare unequal (they previously compared equal under the
+/// always-true `eq`). Metadata equality is not on any production hot path — only
+/// convergence assertions in tests compare it — so this is the intended, safer
+/// behaviour rather than a regression.
+#[derive(
+    BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd,
+)]
 pub struct UpdatedAt(u64);
-
-impl PartialEq for UpdatedAt {
-    fn eq(&self, _other: &Self) -> bool {
-        true
-    }
-}
 
 impl Deref for UpdatedAt {
     type Target = u64;

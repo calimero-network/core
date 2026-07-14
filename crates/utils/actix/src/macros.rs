@@ -18,7 +18,7 @@ pub mod __private {
     };
     pub use futures_util::future::poll_fn;
     pub use futures_util::{FutureExt, Stream, StreamExt};
-    pub use paste::paste;
+    pub use pastey::paste;
     pub use tokio::task;
 
     pub use crate::actor;

@@ -25,6 +25,92 @@ pub enum AuthMode {
     Embedded,
 }
 
+const fn default_allow_private_network() -> bool {
+    // Preserve historical behavior when unset (see `CorsConfig`). Deployments
+    // that don't need public-page → private-node access should set this to
+    // `false` and configure `allowed_origins`.
+    true
+}
+
+/// Cross-origin policy for the HTTP layer.
+///
+/// Defaults preserve the historical permissive behavior (any origin, private
+/// network allowed) so existing browser apps / Tauri webviews keep working.
+/// Production deployments should set an explicit `allowed_origins` list and set
+/// `allow_private_network = false` — a wildcard origin combined with private
+/// network access lets any visited website drive authenticated requests against
+/// a local/private node once a token leaks into a URL (`?token=`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CorsConfig {
+    /// Exact origins permitted to make cross-origin requests. `None` (the
+    /// default) allows **any** origin. `Some(list)` restricts to that list.
+    #[serde(default)]
+    pub allowed_origins: Option<Vec<String>>,
+
+    /// Whether to advertise `Access-Control-Allow-Private-Network`, which lets a
+    /// more-public page reach this (private) node. Defaults to `true` to
+    /// preserve the historical behavior; set to `false` (together with an
+    /// `allowed_origins` list) to remove the wildcard-origin + private-network
+    /// combination that lets any website drive authenticated requests.
+    #[serde(default = "default_allow_private_network")]
+    pub allow_private_network: bool,
+}
+
+impl Default for CorsConfig {
+    fn default() -> Self {
+        Self {
+            allowed_origins: None,
+            allow_private_network: default_allow_private_network(),
+        }
+    }
+}
+
+impl CorsConfig {
+    /// Fail fast on a misconfigured allowlist: every entry in `allowed_origins`
+    /// must be a concrete origin (`scheme://host[:port]`). Called at startup so a
+    /// typo in a security-sensitive origin list is an immediate, actionable error
+    /// rather than a silently-narrowed (or empty) allowlist discovered at runtime.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(origins) = &self.allowed_origins {
+            for origin in origins {
+                if axum::http::HeaderValue::from_str(origin).is_err() {
+                    return Err(format!(
+                        "invalid entry in cors.allowed_origins (not a valid header value): \
+                         {origin:?}"
+                    ));
+                }
+                // tower-http compares allowlist entries against the browser's
+                // `Origin` header by exact string, so entries must be concrete
+                // origins. Reject `*`, `null`, path-bearing, or scheme-less
+                // values — these are almost always operator mistakes and would
+                // silently match nothing.
+                if !is_valid_origin(origin) {
+                    return Err(format!(
+                        "invalid entry in cors.allowed_origins (expected scheme://host[:port]): \
+                         {origin:?}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether `s` is a concrete CORS origin: `http`/`https` scheme, a non-empty
+/// host[:port], and no path/query/fragment (browsers send `Origin` without a
+/// trailing slash). Rejects `*`, `null`, and malformed values.
+fn is_valid_origin(s: &str) -> bool {
+    let Some((scheme, rest)) = s.split_once("://") else {
+        return false;
+    };
+    matches!(scheme, "http" | "https")
+        && !rest.is_empty()
+        && !rest.contains('/')
+        && !rest.contains('?')
+        && !rest.contains('#')
+}
+
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ServerConfig {
@@ -43,6 +129,8 @@ pub struct ServerConfig {
     pub auth_mode: AuthMode,
 
     pub embedded_auth: Option<AuthConfig>,
+
+    pub cors: CorsConfig,
 }
 
 impl ServerConfig {
@@ -64,6 +152,10 @@ impl ServerConfig {
             sse,
             auth_mode: AuthMode::Proxy,
             embedded_auth: None,
+            cors: CorsConfig {
+                allowed_origins: None,
+                allow_private_network: true,
+            },
         }
     }
 
@@ -90,6 +182,10 @@ impl ServerConfig {
             sse,
             auth_mode,
             embedded_auth,
+            cors: CorsConfig {
+                allowed_origins: None,
+                allow_private_network: true,
+            },
         }
     }
 

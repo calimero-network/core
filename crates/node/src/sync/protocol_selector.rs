@@ -29,7 +29,9 @@
 use async_trait::async_trait;
 use calimero_context_client::client::ContextClient;
 use calimero_network_primitives::stream::Stream;
-use calimero_node_primitives::sync::{ProtocolSelection, SyncProtocol, SyncProtocolExecutor};
+use calimero_node_primitives::sync::{
+    InitProof, ProtocolSelection, SyncProtocol, SyncProtocolExecutor,
+};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
@@ -71,6 +73,13 @@ pub(crate) trait ProtocolDispatch {
         our_identity: PublicKey,
         chosen_peer: PeerId,
     ) -> Result<SyncProtocol>;
+
+    /// Build the transport-binding proof of possession for `party_id` in
+    /// `context_id`, to attach to the state-read `Init`s the HashComparison /
+    /// LevelWise initiators send. `None` when this node can't sign for
+    /// `party_id`. See [`InitProof`].
+    async fn build_init_pop(&self, context_id: ContextId, party_id: PublicKey)
+        -> Option<InitProof>;
 }
 
 /// Protocol-dispatch component.
@@ -226,6 +235,7 @@ impl ProtocolSelector {
                     remote_root_hash: root_hash,
                     context_client: Some(self.context_client.clone()),
                     session_peer,
+                    init_pop: dispatch.build_init_pop(context_id, our_identity).await,
                 };
 
                 match HashComparisonProtocol::run_initiator(
@@ -372,6 +382,7 @@ impl ProtocolSelector {
                     max_depth,
                     context_client: Some(self.context_client.clone()),
                     session_peer,
+                    init_pop: dispatch.build_init_pop(context_id, our_identity).await,
                 };
 
                 match LevelWiseProtocol::run_initiator(

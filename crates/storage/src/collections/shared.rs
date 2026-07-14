@@ -298,22 +298,26 @@ where
     /// so a later call does not collide with a still-held `RefCell` borrow.
     /// Sound because storage values are never aliased (each read deserializes a
     /// fresh copy) and execution is single-threaded WASM.
-    #[expect(
-        clippy::mut_from_ref,
-        clippy::expect_used,
-        reason = "lazy cache, mirrors Root::get"
-    )]
-    fn load_value(&self) -> &mut T {
+    #[expect(clippy::mut_from_ref, reason = "lazy cache, mirrors Root::get")]
+    fn load_value(&self) -> Result<&mut T, StoreError> {
         let mut slot = self.value.borrow_mut();
-        let value = slot.get_or_insert_with(|| {
-            self.inner
-                .get(self.value_id())
-                .expect("read WriterSetCell value")
-                .unwrap_or_default()
-        });
+        // The lazy initializer reads storage and is fallible, so this can't use
+        // `Option::get_or_insert_with`. `load_value` runs on *every* `get`, so a
+        // transient store error must propagate as a `Result` rather than panic.
+        if slot.is_none() {
+            let loaded = self.inner.get(self.value_id())?.unwrap_or_default();
+            *slot = Some(loaded);
+        }
+        // The slot is `Some` by the line above, so `get_or_insert_with` never
+        // calls `T::default` — it is just the panic-free way to obtain `&mut T`
+        // from a now-populated slot (a borrow-checker-clean alternative to
+        // `as_mut().unwrap()` that needs no `clippy::expect_used` waiver). A
+        // bare `expect`/`unwrap` would reintroduce a panic on the hot read path
+        // this change exists to remove.
+        let value = slot.get_or_insert_with(T::default);
         #[expect(unsafe_code, reason = "necessary for caching, mirrors Root::get")]
         let value = unsafe { &mut *core::ptr::from_mut(value) };
-        value
+        Ok(value)
     }
 }
 
@@ -334,10 +338,10 @@ where
     /// edited via [`insert`](WriterSetCell::insert) instead.
     ///
     /// # Errors
-    /// Currently infallible; the `Result` is preserved for forward compatibility.
+    /// Returns any underlying storage error from loading the value entry.
     pub fn get_mut(&mut self) -> Result<&mut T, StoreError> {
         let anchor = self.inner.id();
-        let value = self.load_value();
+        let value = self.load_value()?;
         // Stamp the value-collection element as a member anchored to the
         // wrapper. `Collection::insert` clones this element's `storage_type`
         // onto every entry, so all entries (at any depth) inherit the SAME
@@ -361,9 +365,9 @@ where
     /// Get a reference to the current value (anyone can read).
     ///
     /// # Errors
-    /// Currently infallible; the `Result` is preserved for forward compatibility.
+    /// Returns any underlying storage error from loading the value entry.
     pub fn get(&self) -> Result<&T, StoreError> {
-        Ok(self.load_value())
+        self.load_value().map(|value| &*value)
     }
 
     /// Returns the value entry's stamped `schema_version`, or `None` if no value
@@ -613,6 +617,17 @@ where
 // value is a separate entity (merged per-entity), the writer set converges via
 // the rotation log, and `frozen` is genesis-immutable and deliberately not
 // adopted from the peer (so a forged root-state delta can't freeze rotation).
+// RekeyTarget supertrait. The cell's value is a separate, per-entity
+// synced entity and the wrapper id is deterministic at construction, so there
+// is no value-path nested id to re-key — a no-op, like its merge.
+impl<T, S> crate::collections::rekey::RekeyTarget for WriterSetCell<T, S>
+where
+    T: BorshSerialize + BorshDeserialize + Mergeable + 'static,
+    S: StorageAdaptor,
+{
+    fn rekey_relative_to(&mut self, _parent_id: crate::address::Id) {}
+}
+
 #[diagnostic::do_not_recommend]
 impl<T, S> Mergeable for WriterSetCell<T, S>
 where
@@ -672,6 +687,16 @@ mod tests {
     /// Mergeable test value — max-wins on merge so it's a valid CRDT.
     #[derive(BorshSerialize, BorshDeserialize, Default, Debug, PartialEq, Clone, Copy)]
     struct TestVal(u64);
+
+    // RekeyTarget supertrait of Mergeable.
+    impl crate::collections::rekey::RekeyTarget for TestVal {
+        fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.0,
+                crate::collections::rekey::field_child_id(parent_id, "0")
+            );
+        }
+    }
 
     impl Mergeable for TestVal {
         fn merge(&mut self, other: &Self) -> Result<(), MergeError> {

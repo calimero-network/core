@@ -68,6 +68,9 @@ struct MockHost {
     blob_read_handles: BTreeMap<u64, ([u8; 32], Vec<u8>, usize)>,
     /// Next file descriptor to hand out. Starts at 1 so 0 stays "not found".
     next_fd: u64,
+    /// When `true`, `blob_announce_to_context` reports failure so tests can
+    /// exercise the announce-failure branch app code hits under real WASM.
+    blob_announce_should_fail: bool,
 }
 
 impl Default for MockHost {
@@ -85,6 +88,7 @@ impl Default for MockHost {
             blob_write_handles: BTreeMap::new(),
             blob_read_handles: BTreeMap::new(),
             next_fd: 1,
+            blob_announce_should_fail: false,
         }
     }
 }
@@ -137,6 +141,17 @@ pub(crate) fn set_executor_id(id: [u8; 32]) {
 /// Overrides the context identity the mock host reports to app logic.
 pub(crate) fn set_context_id(id: [u8; 32]) {
     with(|h| h.context_id = id);
+}
+
+/// Makes [`crate::env::blob_announce_to_context`] report failure (`false`) so
+/// tests can drive the announce-failure branch.
+pub(crate) fn set_blob_announce_should_fail(fail: bool) {
+    with(|h| h.blob_announce_should_fail = fail);
+}
+
+/// Whether the mock host should report a blob announce as failed.
+pub(crate) fn blob_announce_should_fail() -> bool {
+    with(|h| h.blob_announce_should_fail)
 }
 
 /// Writes `value` directly into the SDK host storage map at `key`.

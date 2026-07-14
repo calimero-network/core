@@ -233,7 +233,11 @@ where
             .expect("failed to read entries for re-key");
 
         // Clear the collection (removes old entries with old IDs).
-        self.inner.clear().expect("failed to clear for re-key");
+        // Uses the re-key clear so `Frozen` entries are relocated (re-inserted
+        // below under their new id) rather than rejected as deletions.
+        self.inner
+            .clear_for_rekey()
+            .expect("failed to clear for re-key");
 
         // Reassign the collection's ID (Collection's `_with_crdt_type` is itself
         // just `_under(None, ..)`, so this single call covers both variants).
@@ -408,6 +412,25 @@ where
         }).fuse())
     }
 
+    /// Entries in a deterministic, replica-independent order: sorted by
+    /// borsh-serialized key.
+    ///
+    /// Raw [`entries`](Self::entries) follows the stored child list, ordered by
+    /// `(created_at, id)`, and `created_at` can differ across replicas for the
+    /// same logical entry (a CRDT merge re-materialises it at each node's own
+    /// HLC time — see `Index::add_child_to`). `Serialize`/`Eq`/`Ord` must be
+    /// replica-stable, or anything hashing a serialized map — or comparing two
+    /// maps — diverges between replicas. Sorting by the borsh key (not the
+    /// entity id) keeps cross-map comparison correct: the same key sorts the
+    /// same regardless of which collection id derived its entity id.
+    fn sorted_entries(&self) -> Result<Vec<(K, V)>, StoreError> {
+        let mut entries: Vec<(K, V)> = self.entries()?.collect();
+        // ponytail: borsh key encode is effectively infallible for in-memory
+        // keys; on the impossible error, `default()` keeps the sort total.
+        entries.sort_by_cached_key(|(k, _)| borsh::to_vec(k).unwrap_or_default());
+        Ok(entries)
+    }
+
     /// Get the number of entries in the map.
     ///
     /// # Errors
@@ -513,6 +536,17 @@ where
         }
     }
 
+    /// The deterministic storage entity id this `key` maps to. Exposed so the RGA
+    /// blob-merge tombstone check (`Index::is_deleted`) addresses the entry without
+    /// re-deriving `compute_id` and drifting from the map's own keying.
+    pub(crate) fn entry_id<Q>(&self, key: &Q) -> Id
+    where
+        K: Borrow<Q>,
+        Q: AsRef<[u8]> + ?Sized,
+    {
+        compute_id(self.inner.id(), key.as_ref())
+    }
+
     /// Check if the map contains a key.
     ///
     /// # Errors
@@ -600,12 +634,11 @@ where
     V: PartialEq + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn eq(&self, other: &Self) -> bool {
-        let l = self.entries().unwrap();
-        let r = other.entries().unwrap();
-
-        l.eq(r)
+        super::fallible_iter_eq(
+            self.sorted_entries().map(IntoIterator::into_iter),
+            other.sorted_entries().map(IntoIterator::into_iter),
+        )
     }
 }
 
@@ -615,12 +648,11 @@ where
     V: Ord + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let l = self.entries().unwrap();
-        let r = other.entries().unwrap();
-
-        l.cmp(r)
+        super::fallible_iter_cmp(
+            self.sorted_entries().map(IntoIterator::into_iter),
+            other.sorted_entries().map(IntoIterator::into_iter),
+        )
     }
 }
 
@@ -631,10 +663,10 @@ where
     S: StorageAdaptor,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        let l = self.entries().ok()?;
-        let r = other.entries().ok()?;
-
-        l.partial_cmp(r)
+        super::fallible_iter_partial_cmp(
+            self.sorted_entries().map(IntoIterator::into_iter),
+            other.sorted_entries().map(IntoIterator::into_iter),
+        )
     }
 }
 
@@ -644,14 +676,20 @@ where
     V: fmt::Debug + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    #[expect(clippy::unwrap_used, clippy::unwrap_in_result, reason = "'tis fine")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {
             f.debug_struct("UnorderedMap")
                 .field("entries", &self.inner)
                 .finish()
         } else {
-            f.debug_map().entries(self.entries().unwrap()).finish()
+            // A store fault while reading must not panic a Debug format.
+            match self.entries() {
+                Ok(entries) => f.debug_map().entries(entries).finish(),
+                Err(e) => f
+                    .debug_struct("UnorderedMap")
+                    .field("read_error", &e)
+                    .finish(),
+            }
         }
     }
 }
@@ -684,12 +722,14 @@ where
     where
         Ser: serde::Serializer,
     {
-        let len = self.len().map_err(serde::ser::Error::custom)?;
+        // Sorted so the serialized bytes are identical across replicas holding
+        // the same logical map (see `sorted_entries`).
+        let entries = self.sorted_entries().map_err(serde::ser::Error::custom)?;
 
-        let mut seq = serializer.serialize_map(Some(len))?;
+        let mut seq = serializer.serialize_map(Some(entries.len()))?;
 
-        for (k, v) in self.entries().map_err(serde::ser::Error::custom)? {
-            seq.serialize_entry(&k, &v)?;
+        for (k, v) in &entries {
+            seq.serialize_entry(k, v)?;
         }
 
         seq.end()

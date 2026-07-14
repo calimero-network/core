@@ -16,8 +16,13 @@ pub trait CastsTo<This> {}
 impl CastsTo<Slice<'_>> for Slice<'_> {}
 
 pub trait InMemoryDBImpl<'a> {
-    type Key: AsRef<[u8]> + CastsTo<Slice<'a>>;
-    type Value: CastsTo<Slice<'a>>;
+    // The `for<'x>` bound makes the cast lifetime-agnostic (it holds for every
+    // `'x` already, via `impl CastsTo<Slice<'_>> for Slice<'_>`). This lets the
+    // database impl recover the value as a `Slice<'static>` when it owns it,
+    // instead of being pinned to `'a`, which is what made `ArcSlice::new`'s
+    // lifetime laundering necessary in the first place.
+    type Key: AsRef<[u8]> + for<'x> CastsTo<Slice<'x>>;
+    type Value: for<'x> CastsTo<Slice<'x>>;
 
     fn db(&self) -> &RwLock<InMemoryDBInner<Self::Key, Self::Value>>;
 
@@ -164,11 +169,20 @@ impl<K: Ord, V> Drop for InMemoryIterInner<'_, K, V> {
             return;
         };
 
+        // Hold the arena write lock across the whole drain so each
+        // `strong_count == 1` check and its matching `remove` are one atomic
+        // step against other arena mutations. The previous per-entry
+        // lock/unlock left a window where a concurrent operation could observe
+        // or resurrect an index between the count check and the removal.
+        let Ok(mut arena) = self.arena.write() else {
+            return;
+        };
         while let Some((_, idx)) = column.pop_first() {
+            // This iterator's clone is the sole remaining holder of the index —
+            // the live column already dropped its copy — so the arena slot is
+            // now unreachable and safe to reclaim.
             if Arc::strong_count(&idx) == 1 {
-                if let Ok(mut value) = self.arena.write() {
-                    drop(value.remove(*idx));
-                }
+                drop(arena.remove(*idx));
             }
         }
     }

@@ -1,10 +1,48 @@
 use libp2p::identify::{Event, Info};
 use libp2p_metrics::Recorder;
-use multiaddr::Protocol;
+use multiaddr::{Multiaddr, Protocol};
 use owo_colors::OwoColorize;
 use tracing::{debug, error};
 
 use super::{EventHandler, NetworkManager};
+
+/// Whether a peer-advertised (identify-pushed) address is worth keeping as a
+/// direct-dial candidate.
+///
+/// Rejects addresses no remote peer can legitimately be reachable at —
+/// loopback, unspecified (`0.0.0.0` / `::`), and link-local — since these are
+/// unverified, peer-controlled input. Private (RFC-1918) and IPv6 unique-local
+/// (`fc00::/7`) ranges are kept: they're valid for same-network / overlay
+/// deployments. Addresses with no IP component (e.g. a DNS multiaddr) pass
+/// through unchanged.
+///
+/// Unlike `is_seedable_external_address` in `lib.rs`, this filter stays silent
+/// on private/unique-local ranges rather than warning. That counterpart vets
+/// *our own* operator-configured external address, where a private range is a
+/// likely misconfiguration worth flagging; here the addresses belong to other
+/// peers, so a per-peer warning would be noise, not an actionable signal.
+fn is_dialable_advertised_addr(addr: &Multiaddr) -> bool {
+    for proto in addr.iter() {
+        match proto {
+            Protocol::Ip4(ip) => {
+                if ip.is_loopback() || ip.is_unspecified() || ip.is_link_local() {
+                    return false;
+                }
+            }
+            Protocol::Ip6(ip) => {
+                if ip.is_loopback() || ip.is_unspecified() {
+                    return false;
+                }
+                // Link-local fe80::/10 — never routable off-link.
+                if (ip.segments()[0] & 0xffc0) == 0xfe80 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
+}
 
 impl EventHandler<Event> for NetworkManager {
     fn handle(&mut self, event: Event) {
@@ -39,9 +77,18 @@ impl EventHandler<Event> for NetworkManager {
             // loop would just waste attempts on them. Filter out our own
             // observed address (sometimes echoed back); it's about us, not
             // the peer.
+            //
+            // Also drop addresses a remote peer can never legitimately be
+            // reachable at — loopback, unspecified, and link-local. These are
+            // peer-controlled, unverified input: without the filter a
+            // malicious or misconfigured peer could push entries that seed our
+            // dial book with wasted attempts, or point dials at our own
+            // loopback/link-local interfaces. Private (RFC-1918) and IPv6
+            // unique-local ranges are kept — they're legitimate for
+            // same-network / overlay deployments.
             for addr in &listen_addrs {
                 let is_relayed = addr.iter().any(|p| matches!(p, Protocol::P2pCircuit));
-                if !is_relayed && addr != &observed_addr {
+                if !is_relayed && addr != &observed_addr && is_dialable_advertised_addr(addr) {
                     self.discovery.state.add_peer_addr(peer_id, addr);
                 }
             }
@@ -93,5 +140,36 @@ impl EventHandler<Event> for NetworkManager {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_dialable_advertised_addr;
+
+    fn dialable(s: &str) -> bool {
+        is_dialable_advertised_addr(&s.parse().expect("valid multiaddr"))
+    }
+
+    #[test]
+    fn keeps_routable_and_overlay_addresses() {
+        assert!(dialable("/ip4/203.0.113.7/tcp/2428"));
+        assert!(dialable("/ip6/2001:db8::1/tcp/2428"));
+        // Private / unique-local are legitimate for overlays.
+        assert!(dialable("/ip4/10.0.0.5/tcp/2428"));
+        assert!(dialable("/ip4/192.168.1.20/udp/2428/quic-v1"));
+        assert!(dialable("/ip6/fd00::1/tcp/2428"));
+        // No IP component (DNS) passes through.
+        assert!(dialable("/dns4/node.example.com/tcp/2428"));
+    }
+
+    #[test]
+    fn drops_unreachable_advertised_addresses() {
+        assert!(!dialable("/ip4/127.0.0.1/tcp/2428"));
+        assert!(!dialable("/ip4/0.0.0.0/tcp/2428"));
+        assert!(!dialable("/ip4/169.254.1.1/tcp/2428"));
+        assert!(!dialable("/ip6/::1/tcp/2428"));
+        assert!(!dialable("/ip6/::/tcp/2428"));
+        assert!(!dialable("/ip6/fe80::1/tcp/2428"));
     }
 }

@@ -72,12 +72,28 @@ description: >
 force_pull_image: false
 near_devnet: false
 
+auth_mode: embedded
+
 nodes:
   count: 2
   image: merod:local
   prefix: e2e-node
 
 steps:
+  # First login on a fresh embedded-auth node bootstraps its root key
+  # and seeds merobox's token cache; every step below runs authenticated.
+  - name: Login on e2e-node-1
+    type: login
+    node: e2e-node-1
+    username: dev
+    password: dev
+
+  - name: Login on e2e-node-2
+    type: login
+    node: e2e-node-2
+    username: dev
+    password: dev
+
   # --- Phase 1: bootstrap; both nodes join the namespace + context
   #     and write a baseline value so both end up with
   #     `has_state = true`. This is the precondition for the

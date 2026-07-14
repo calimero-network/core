@@ -123,6 +123,34 @@ impl MethodIntent {
     }
 }
 
+/// Who may invoke an `#[app::xcall]` entry point, declared by the app author.
+///
+/// The node enforces this at the xcall gate, so the trust boundary is
+/// declarative and fail-closed rather than relying on every target method to
+/// hand-check `env::xcall_origin()`.
+///
+/// Defaults to [`AnyInNamespace`](XCallCallers::AnyInNamespace) — the
+/// pre-policy behaviour — so a bare `#[app::xcall]` and every manifest compiled
+/// before this field existed keep working unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum XCallCallers {
+    /// Any context in the same namespace may call (the historical default).
+    #[default]
+    AnyInNamespace,
+    /// Only contexts running the SAME application id as the target may call
+    /// (`#[app::xcall(from_same_app)]`).
+    SameApp,
+}
+
+impl XCallCallers {
+    /// Returns `true` for the default so `serde` skips the field on manifests
+    /// that don't tighten the policy, keeping them round-trip identical.
+    fn is_any_in_namespace(&self) -> bool {
+        matches!(self, Self::AnyInNamespace)
+    }
+}
+
 /// Method definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Method {
@@ -144,6 +172,11 @@ pub struct Method {
     /// modules with none are not gated. Absent/false on pre-existing manifests.
     #[serde(default, skip_serializing_if = "is_false")]
     pub xcall_callable: bool,
+    /// Who may invoke this entry point (only meaningful when `xcall_callable`).
+    /// Absent on manifests compiled before this field existed; treated as
+    /// [`XCallCallers::AnyInNamespace`] so they keep their prior behaviour.
+    #[serde(default, skip_serializing_if = "XCallCallers::is_any_in_namespace")]
+    pub xcall_callers: XCallCallers,
 }
 
 /// `skip_serializing_if` predicate for a defaulted `bool` field. serde passes
@@ -738,6 +771,7 @@ mod tests {
             errors: Vec::new(),
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
+            xcall_callers: Default::default(),
         });
 
         // Serialize and deserialize
@@ -767,6 +801,7 @@ mod tests {
             errors: Vec::new(),
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
+            xcall_callers: Default::default(),
         });
 
         assert_eq!(manifest.schema_version, "wasm-abi/1");
@@ -786,6 +821,7 @@ mod tests {
             errors: vec![],
             intent: MethodIntent::ReadOnly,
             xcall_callable: false,
+            xcall_callers: Default::default(),
         };
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("read_only"), "expected 'read_only' in {json}");
@@ -801,6 +837,7 @@ mod tests {
             errors: vec![],
             intent: MethodIntent::Mutating,
             xcall_callable: false,
+            xcall_callers: Default::default(),
         };
         let json_mut = serde_json::to_string(&m_mut).unwrap();
         assert!(
@@ -819,6 +856,7 @@ mod tests {
             errors: vec![],
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
+            xcall_callers: Default::default(),
         };
         let json2 = serde_json::to_string(&m2).unwrap();
         assert!(
@@ -843,6 +881,7 @@ mod tests {
             errors: vec![],
             intent: MethodIntent::Unspecified,
             xcall_callable: false,
+            xcall_callers: Default::default(),
         };
         let json = serde_json::to_string(&m).unwrap();
         assert!(
@@ -853,6 +892,7 @@ mod tests {
         // True serialises and round-trips; orthogonal to a Mutating intent.
         let m2 = Method {
             xcall_callable: true,
+            xcall_callers: Default::default(),
             intent: MethodIntent::Mutating,
             ..m.clone()
         };

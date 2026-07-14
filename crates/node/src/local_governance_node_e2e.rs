@@ -310,7 +310,7 @@ async fn apply_signed_group_op_via_context_client() {
 
     let op = SignedGroupOp::sign(
         &admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::MemberAdded {
@@ -567,7 +567,7 @@ fn provision_tee_owner_with_sk(
     calimero_context::group_store::CapabilitiesRepository::new(&node.store)
         .set_default_capabilities(
             gid,
-            calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         )
         .expect("set namespace-root default capabilities");
 
@@ -581,7 +581,7 @@ fn provision_tee_owner_with_sk(
     // Policy lives on the namespace governance op log; admin-signed.
     let policy_op = SignedGroupOp::sign(
         &owner_sk,
-        gid.to_bytes(),
+        gid.to_bytes().into(),
         vec![],
         1,
         GroupOp::TeeAdmissionPolicySet {
@@ -1367,7 +1367,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
         + 1;
     let remove_tee_op = SignedGroupOp::sign(
         &owner_sk,
-        ns_gid.to_bytes(),
+        ns_gid.to_bytes().into(),
         vec![],
         next_owner_nonce,
         GroupOp::MemberRemoved {
@@ -1950,12 +1950,12 @@ async fn restricted_ctx_redriven_after_group_created() {
 
     let ctx_registered_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
-            group_id: sub_gid.to_bytes(),
-            key_id,
+            group_id: sub_gid.to_bytes().into(),
+            key_id: key_id.into(),
             encrypted,
             key_rotation: None,
         },
@@ -1984,16 +1984,17 @@ async fn restricted_ctx_redriven_after_group_created() {
     // ---- Step 2: KeyDelivery → retry fires, fails meta-absent (stranded) -----
     // Wrap the subgroup key for the receiver's namespace identity (member_pk),
     // exactly as `admit_tee_node` / `add_group_members` would.
-    let envelope = GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &subgroup_key)
-        .expect("wrap subgroup key for receiver");
+    let envelope =
+        GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &sub_gid.to_bytes(), &subgroup_key)
+            .expect("wrap subgroup key for receiver");
 
     let key_delivery_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         2,
         NamespaceOp::Root(RootOp::KeyDelivery {
-            group_id: sub_gid.to_bytes(),
+            group_id: sub_gid.to_bytes().into(),
             envelope,
         }),
     )
@@ -2026,12 +2027,12 @@ async fn restricted_ctx_redriven_after_group_created() {
     // GroupCreated re-trigger the buffered-op retry.
     let group_created_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         3,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: sub_gid.to_bytes(),
-            parent_id: namespace_id,
+            group_id: sub_gid.to_bytes().into(),
+            parent_id: namespace_id.into(),
             restricted: true,
         }),
     )
@@ -2178,12 +2179,12 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
 
     let ctx_registered_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
-            group_id: sub_gid.to_bytes(),
-            key_id,
+            group_id: sub_gid.to_bytes().into(),
+            key_id: key_id.into(),
             encrypted,
             key_rotation: None,
         },
@@ -2227,12 +2228,12 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
     // ---- Step 3: GroupCreated{restricted:false} applies → must re-drive ------
     let group_created_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: sub_gid.to_bytes(),
-            parent_id: namespace_id,
+            group_id: sub_gid.to_bytes().into(),
+            parent_id: namespace_id.into(),
             restricted: false,
         }),
     )
@@ -2506,12 +2507,12 @@ async fn tee_matrix_restricted_late_join() {
     // ---- Step 1 (late-join): the subgroup EXISTS first (GroupCreated) -------
     let group_created_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: sub_gid.to_bytes(),
-            parent_id: namespace_id,
+            group_id: sub_gid.to_bytes().into(),
+            parent_id: namespace_id.into(),
             restricted: true,
         }),
     )
@@ -2543,12 +2544,12 @@ async fn tee_matrix_restricted_late_join() {
     let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).expect("encrypt group op");
     let ctx_registered_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         2,
         NamespaceOp::Group {
-            group_id: sub_gid.to_bytes(),
-            key_id,
+            group_id: sub_gid.to_bytes().into(),
+            key_id: key_id.into(),
             encrypted,
             key_rotation: None,
         },
@@ -2568,15 +2569,16 @@ async fn tee_matrix_restricted_late_join() {
     // retry on apply_received_group_key must re-drive the buffered op; because
     // the subgroup meta already exists (GroupCreated applied in step 1), the
     // staleness check passes and the context registers.
-    let envelope = GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &subgroup_key)
-        .expect("wrap subgroup key for receiver");
+    let envelope =
+        GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &sub_gid.to_bytes(), &subgroup_key)
+            .expect("wrap subgroup key for receiver");
     let key_delivery_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         3,
         NamespaceOp::Root(RootOp::KeyDelivery {
-            group_id: sub_gid.to_bytes(),
+            group_id: sub_gid.to_bytes().into(),
             envelope,
         }),
     )

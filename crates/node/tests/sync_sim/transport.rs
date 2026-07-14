@@ -325,6 +325,7 @@ mod tests {
                 context_id: test_context_id(),
             },
             next_nonce: [0; NONCE_LEN],
+            pop: None,
         };
 
         // Alice sends
@@ -351,6 +352,7 @@ mod tests {
                 context_id: test_context_id(),
             },
             next_nonce: [1; NONCE_LEN],
+            pop: None,
         };
 
         let msg_from_bob = StreamMessage::Message {
@@ -407,6 +409,7 @@ mod tests {
                 context_id: test_context_id(),
             },
             next_nonce: [0; NONCE_LEN],
+            pop: None,
         };
         let result = alice.send(&msg).await;
         assert!(result.is_err());

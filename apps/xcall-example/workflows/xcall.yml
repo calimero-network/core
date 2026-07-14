@@ -1,10 +1,13 @@
-name: XCall Authorization (L1 namespace · L3 entry-point · L2a provenance)
+name: XCall Authorization (L1 owning-group · L3 entry-point · L2a provenance)
 description: >
   End-to-end validation of cross-context-call authorization (closes #2130 / #2137).
 
   A node-local xcall is gated by three independent layers, all exercised here:
-    * L1 — namespace boundary: a context may only xcall a target in its OWN
-      namespace. Cross-namespace calls are denied (fail-closed).
+    * L1 — owning-group boundary: a context may only xcall a target in its OWN
+      owning group. Calls to a target in a different group — a different
+      namespace, or a different subgroup of the same namespace — are denied
+      (fail-closed). Gating on the shared namespace root instead would let any
+      sibling context anywhere in the namespace reach into another subgroup.
     * L3 — entry points: only methods declared `#[app::xcall]` are reachable
       via xcall. The non-entry-point `secret` method is denied.
     * L2a — provenance: `env::xcall_origin()` is set by the node from the
@@ -14,9 +17,23 @@ description: >
   Denials are observable: the target counter never moves, and the node logs the
   same "xcall denied: ..." line that drives the `XCall` Denied event.
 
-  Single node: all three contexts are created by node-1, which owns a member of
-  each, so every xcall dispatches locally — the gates are node-local, so one
-  node exercises them fully.
+  Three regression scenarios also run at the end:
+    * Self-xcall (C1 -> C1) must COMPLETE, not hang. xcalls are dispatched
+      out-of-band; awaiting them inline re-entered the actor and deadlocked on
+      the source context's execution lock. A reintroduced inline dispatch hangs
+      this step until wait_timeout.
+    * Cross-subgroup xcall (C1 in N's root group -> C4 in subgroup S under N) is
+      DENIED. This is the owning-group boundary in its own right: same
+      namespace, different owning group — the old namespace-root gate allowed
+      it, the owning-group gate denies it.
+    * Depth cap: `relay` xcalls itself on the same context every hop, so an
+      uncapped node would recurse forever. The node bounds the local cascade at
+      MAX_XCALL_DEPTH, so the counter settles at MAX_XCALL_DEPTH + 1 and a
+      depth-limit denial is logged instead of the run spinning to wait_timeout.
+
+  Single node: all contexts are created by node-1, which owns a member of each,
+  so every xcall dispatches locally — the gates are node-local, so one node
+  exercises them fully.
 
 # Built from this branch; CI overrides with `--image merod:local`. The app
 # imports the `xcall_origin` host function added by this change, so it requires
@@ -24,12 +41,22 @@ description: >
 force_pull_image: false
 near_devnet: false
 
+auth_mode: embedded
+
 nodes:
   count: 1
   image: merod:local
   prefix: xcall-authz
 
 steps:
+  # First login on a fresh embedded-auth node bootstraps its root key
+  # and seeds merobox's token cache; every step below runs authenticated.
+  - name: Login on xcall-authz-1
+    type: login
+    node: xcall-authz-1
+    username: dev
+    password: dev
+
   # ---------------- setup: namespace N ⊃ {C1, C2}, namespace M ⊃ {C3} ----------------
   - name: Install app on Node 1
     type: install_application
@@ -81,9 +108,11 @@ steps:
       c3_key: memberPublicKey
 
   # ============================================================================
-  # POSITIVE — same-namespace xcall to a declared entry point is ALLOWED.
-  # Exercises L1 (C1 and C2 share namespace N), L3 (pong is `#[app::xcall]`),
-  # and L2a (the node-set origin equals C1, which pong verifies before running).
+  # POSITIVE — same-group xcall to a declared entry point is ALLOWED.
+  # C1 and C2 are both created directly in namespace N's root group, so they
+  # share an owning group. Exercises L1 (same owning group), L3 (pong is
+  # `#[app::xcall]`), and L2a (the node-set origin equals C1, which pong
+  # verifies before running).
   # ============================================================================
   - name: C2 pong counter starts at 0
     type: call
@@ -129,9 +158,10 @@ steps:
       - "xcall denied"
 
   # ============================================================================
-  # NEGATIVE L1 — cross-namespace xcall is DENIED (fail-closed).
-  # C1 (namespace N) -> C3 (namespace M): pong must NOT run; the node logs the
-  # namespace-boundary denial.
+  # NEGATIVE L1 — an xcall to a target in a different owning group is DENIED
+  # (fail-closed). C1 (namespace N's root group) -> C3 (namespace M's root
+  # group) do not share an owning group: pong must NOT run and the node logs
+  # the owning-group-boundary denial.
   # ============================================================================
   - name: C3 pong counter starts at 0
     type: call
@@ -164,20 +194,20 @@ steps:
     method: get_counter
     outputs:
       c3_after: result.output
-  - name: Assert pong did NOT run across namespaces (L1 denied)
+  - name: Assert pong did NOT run across owning groups (L1 denied)
     type: json_assert
     statements:
       - "equal({{c3_after}}, 0)"
-  - name: Assert L1 namespace-boundary denial was logged
+  - name: Assert L1 owning-group-boundary denial was logged
     type: assert_log_present
     nodes:
       - xcall-authz-1
     patterns:
-      - "xcall denied: namespace boundary"
+      - "xcall denied: owning group boundary"
     min_matches: 1
 
   # ============================================================================
-  # NEGATIVE L3 — same-namespace xcall to a NON-entry-point method is DENIED.
+  # NEGATIVE L3 — same-group xcall to a NON-entry-point method is DENIED.
   # C1 -> C2 targeting `secret` (not `#[app::xcall]`): secret must NOT run.
   # ============================================================================
   - name: C2 secret counter starts at 0
@@ -252,6 +282,196 @@ steps:
     type: json_assert
     statements:
       - "equal({{c2_final}}, 1)"
+
+  # ============================================================================
+  # DEADLOCK REGRESSION — a self-targeted xcall (C1 -> C1) must COMPLETE, not
+  # hang. Before xcalls were dispatched out-of-band, awaiting execute_with_origin
+  # inline re-entered the actor and deadlocked on C1's own execution lock (still
+  # held by the in-flight source execute), hanging until wait_timeout. C1 and C1
+  # trivially share an owning group, so the call is allowed and pong runs as C1.
+  # If the inline dispatch is ever reintroduced, this step hangs and the run
+  # fails on wait_timeout.
+  # ============================================================================
+  # C1 has only ever been a ping *source* in the steps above (C1->C2, C1->C3,
+  # C1->C2/secret); it has never been a pong *target*, so its counter is still
+  # 0. If a future edit makes C1 a callee before this point, this pre-condition
+  # correctly fails and flags that the regression below is no longer isolated.
+  - name: C1 pong counter starts at 0
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c1}}"
+    method: get_counter
+    outputs:
+      c1_before: result.output
+  - name: Assert C1 counter is 0
+    type: json_assert
+    statements:
+      - "equal({{c1_before}}, 0)"
+
+  - name: Ping C1 -> C1 (self-xcall; pre-fix this deadlocked the actor)
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c1}}"
+    method: ping
+    args:
+      target_context: "{{c1}}"
+
+  - name: Wait for self-xcall dispatch + target execute
+    type: wait
+    seconds: 8
+
+  - name: C1 pong counter after self-xcall
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c1}}"
+    method: get_counter
+    outputs:
+      c1_after: result.output
+  # Exactly 1 (not >=1): with c1_before pinned to 0 immediately above, ==1
+  # proves the self-xcall ran exactly once — it catches BOTH a hang/no-op
+  # (counter stays 0) AND an accidental duplicate dispatch (counter would be 2).
+  - name: Assert self-xcall completed (pong ran on C1 exactly once; no deadlock/hang)
+    type: json_assert
+    statements:
+      - "equal({{c1_after}}, 1)"
+
+  # ============================================================================
+  # SUBGROUP BOUNDARY — an xcall to a target in a DIFFERENT owning group of the
+  # SAME namespace is DENIED. Gating on the namespace root (the old behavior)
+  # would have ALLOWED this, letting a sibling context reach into another
+  # subgroup; gating on the owning group denies it. C1 lives in N's root group;
+  # C4 lives in subgroup S nested under N.
+  # ============================================================================
+  - name: Create subgroup S under namespace N
+    type: create_group_in_namespace
+    node: xcall-authz-1
+    namespace_id: "{{ns_n}}"
+    group_alias: subgroup-s
+    outputs:
+      sub_s: groupId
+
+  - name: Create Context C4 in subgroup S
+    type: create_context
+    node: xcall-authz-1
+    application_id: "{{app_id}}"
+    group_id: "{{sub_s}}"
+    outputs:
+      c4: contextId
+      c4_key: memberPublicKey
+
+  - name: C4 pong counter starts at 0
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c4}}"
+    method: get_counter
+    outputs:
+      c4_before: result.output
+  - name: Assert C4 counter is 0
+    type: json_assert
+    statements:
+      - "equal({{c4_before}}, 0)"
+
+  - name: Ping C1 -> C4 (same namespace, different subgroup — must be denied)
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c1}}"
+    method: ping
+    args:
+      target_context: "{{c4}}"
+
+  - name: Wait for xcall dispatch + log flush
+    type: wait
+    seconds: 8
+
+  - name: C4 pong counter after cross-subgroup xcall
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c4}}"
+    method: get_counter
+    outputs:
+      c4_after: result.output
+  - name: Assert pong did NOT run across subgroups (owning-group denied)
+    type: json_assert
+    statements:
+      - "equal({{c4_after}}, 0)"
+  # The authoritative proof that this cross-subgroup xcall was denied is
+  # `c4_after == 0` above (pong never ran). This log check is a secondary
+  # confirmation that owning-group denials surface in the log at all. It uses
+  # min_matches: 1 deliberately — the log is cumulative over the run (an earlier
+  # C1->C3 cross-namespace denial also matches), so a higher count would be a
+  # fragile, order-dependent coupling to unrelated steps rather than added
+  # signal.
+  - name: Assert an owning-group-boundary denial was logged
+    type: assert_log_present
+    nodes:
+      - xcall-authz-1
+    patterns:
+      - "xcall denied: owning group boundary"
+    min_matches: 1
+
+  # ============================================================================
+  # DEPTH CAP — `relay` xcalls `relay` on its OWN context every hop, so a single
+  # direct call would recurse without bound if the node let it. It doesn't: the
+  # node caps the local xcall cascade at MAX_XCALL_DEPTH (3). The direct call
+  # runs at depth 0, its xcall at depth 1, … and the depth-3 execution's onward
+  # xcall is denied — so executions run at depths 0..=3 (four hops) and the
+  # counter settles at MAX_XCALL_DEPTH + 1 = 4, with one depth-limit denial
+  # logged. Without the cap this step would spin until wait_timeout.
+  # ============================================================================
+  - name: C1 relay counter starts at 0
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c1}}"
+    method: get_relay_counter
+    outputs:
+      c1_relay_before: result.output
+  - name: Assert C1 relay counter is 0
+    type: json_assert
+    statements:
+      - "equal({{c1_relay_before}}, 0)"
+
+  - name: Kick off the self-recursive relay cascade on C1 (direct call, depth 0)
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c1}}"
+    method: relay
+
+  # The cascade is (MAX_XCALL_DEPTH + 1) = 4 sequential hops, each dispatched
+  # out-of-band and re-entering the actor. Single-hop waits above use 8s, so
+  # budget 4 hops × 8s/hop + 8s buffer = 40s to keep real headroom under CI
+  # load. Scale this with the depth cap if it is ever raised.
+  - name: Wait for the depth-capped cascade to fully drain
+    type: wait
+    seconds: 40
+
+  - name: C1 relay counter after the cascade
+    type: call
+    node: xcall-authz-1
+    context_id: "{{c1}}"
+    method: get_relay_counter
+    outputs:
+      c1_relay_after: result.output
+  # Exactly MAX_XCALL_DEPTH + 1 = 4. The `4` tracks MAX_XCALL_DEPTH (defined in
+  # crates/context/src/handlers/execute/mod.rs) — change both together. `== 4`
+  # (not `>= 1`) catches BOTH failure modes: the cap not firing (the counter
+  # would keep climbing / never settle) and the cascade dying early (< 4).
+  - name: Assert the cascade ran exactly depth+1 hops then stopped
+    type: json_assert
+    statements:
+      # 4 = MAX_XCALL_DEPTH (3) + 1 — keep in sync with the cap in
+      # crates/context/src/handlers/execute/mod.rs.
+      - "equal({{c1_relay_after}}, 4)"
+
+  # Secondary confirmation that the stop was the depth cap specifically — the
+  # deepest hop's onward xcall is denied with this reason. min_matches: 1: the
+  # log is cumulative and other denials (group/namespace) also appear above.
+  - name: Assert a depth-limit denial was logged
+    type: assert_log_present
+    nodes:
+      - xcall-authz-1
+    patterns:
+      - "xcall denied: depth limit reached"
+    min_matches: 1
 
 stop_all_nodes: true
 restart: false

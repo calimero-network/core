@@ -138,6 +138,30 @@ impl PeerScoreTier {
 
 /// In-memory member-identity cache: one bucket per group, snapshotted to
 /// disk per group by the node layer.
+/// Per-member peer fan-out cap. Bounds how many distinct peer ids we retain as
+/// hosting one identity (an attacker can claim to host a victim identity from
+/// many peer ids).
+const MAX_PEERS_PER_MEMBER: usize = 32;
+/// Per-group member cap (an attacker can claim many identities in a group).
+const MAX_MEMBERS_PER_GROUP: usize = 4096;
+/// Total tracked groups/namespaces cap (bounds namespace churn).
+const MAX_GROUPS: usize = 1024;
+
+/// Recency of a member = the newest `last_seen` across its hosting peers.
+fn member_recency(member: &MemberHosts) -> u64 {
+    member.peers.values().copied().max().unwrap_or(0)
+}
+
+/// Recency of a group = the newest member recency within it.
+fn group_recency(group: &GroupMembers) -> u64 {
+    group
+        .members
+        .values()
+        .map(member_recency)
+        .max()
+        .unwrap_or(0)
+}
+
 #[derive(Default, Debug)]
 pub(crate) struct PeerIdentityCache {
     groups: BTreeMap<ContextGroupId, GroupMembers>,
@@ -157,18 +181,56 @@ impl PeerIdentityCache {
         role: GroupMemberRole,
         now_secs: u64,
     ) {
-        let member = self
-            .groups
-            .entry(group)
-            .or_default()
-            .members
-            .entry(identity)
-            .or_insert_with(|| MemberHosts {
-                role: role.clone(),
-                peers: BTreeMap::new(),
-            });
-        member.role = role;
-        let _ = member.peers.insert(peer, now_secs);
+        {
+            let group_entry = self.groups.entry(group).or_default();
+            let member = group_entry
+                .members
+                .entry(identity)
+                .or_insert_with(|| MemberHosts {
+                    role: role.clone(),
+                    peers: BTreeMap::new(),
+                });
+            member.role = role;
+            let _ = member.peers.insert(peer, now_secs);
+
+            // Prune-on-insert so an adversarial peer/identity/namespace churn
+            // can't grow these maps without bound (TTL alone only filters on
+            // read, it never reclaims). Evict least-recently-seen entries; the
+            // rows just touched carry `now_secs` recency so they're never the
+            // victims.
+            while member.peers.len() > MAX_PEERS_PER_MEMBER {
+                let Some(oldest) = member.peers.iter().min_by_key(|(_, &t)| t).map(|(p, _)| *p)
+                else {
+                    break;
+                };
+                let _ = member.peers.remove(&oldest);
+            }
+            while group_entry.members.len() > MAX_MEMBERS_PER_GROUP {
+                let Some(victim) = group_entry
+                    .members
+                    .iter()
+                    .filter(|(k, _)| **k != identity)
+                    .min_by_key(|(_, m)| member_recency(m))
+                    .map(|(k, _)| *k)
+                else {
+                    break;
+                };
+                let _ = group_entry.members.remove(&victim);
+            }
+        }
+
+        while self.groups.len() > MAX_GROUPS {
+            let Some(victim) = self
+                .groups
+                .iter()
+                .filter(|(k, _)| **k != group)
+                .min_by_key(|(_, g)| group_recency(g))
+                .map(|(k, _)| *k)
+            else {
+                break;
+            };
+            let _ = self.groups.remove(&victim);
+        }
     }
 
     /// Fresh members of `group` for dial selection: each identity with

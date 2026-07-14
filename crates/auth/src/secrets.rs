@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -20,18 +21,6 @@ const CSRF_SECRET_KEY: &str = "system:secrets:csrf";
 const JWT_AUTH_BACKUP_KEY: &str = "system:secrets:jwt_auth_backup";
 const JWT_CHALLENGE_BACKUP_KEY: &str = "system:secrets:jwt_challenge_backup";
 const CSRF_BACKUP_KEY: &str = "system:secrets:csrf_backup";
-
-/// Current Unix time in whole seconds.
-///
-/// Returns an error instead of panicking when the system clock is set before
-/// the Unix epoch (1970). This keeps every time-dependent path panic-free
-/// (security finding #12).
-fn current_unix_secs() -> Result<u64> {
-    Ok(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| eyre!("system clock is set before the Unix epoch: {e}"))?
-        .as_secs())
-}
 
 /// Secret type enum
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,7 +67,7 @@ impl Default for SecretRotationConfig {
 }
 
 /// A versioned secret with metadata
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct VersionedSecret {
     /// The secret value (base64 encoded)
     pub value: String,
@@ -94,27 +83,56 @@ pub struct VersionedSecret {
     pub secret_type: SecretType,
 }
 
+// Manual `Debug` so the cleartext signing secret in `value` is never dumped by
+// a `{:?}` (e.g. when a containing struct is logged). Everything else is
+// non-sensitive metadata and is shown to keep the impl useful.
+impl fmt::Debug for VersionedSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VersionedSecret")
+            .field("value", &"<redacted>")
+            .field("version", &self.version)
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .field("is_primary", &self.is_primary)
+            .field("secret_type", &self.secret_type)
+            .finish()
+    }
+}
+
+/// Seconds since the UNIX epoch. Degrades to `0` if the system clock is set
+/// before 1970 rather than panicking, so a misconfigured clock can't crash the
+/// auth service. Pairs with the saturating arithmetic on the values it feeds.
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 impl VersionedSecret {
     /// Create a new versioned secret
-    pub fn new(secret_type: SecretType, rotation_config: &SecretRotationConfig) -> Result<Self> {
-        let now = current_unix_secs()?;
+    pub fn new(secret_type: SecretType, rotation_config: &SecretRotationConfig) -> Self {
+        let now = now_secs();
 
         // Generate a secure random secret
         let secret: [u8; 32] = rand::thread_rng().gen();
 
-        Ok(Self {
+        Self {
             value: URL_SAFE_NO_PAD.encode(secret),
             version: format!("v{now}"),
             created_at: now,
-            expires_at: now + rotation_config.grace_period,
+            // Saturate so a far-future clock plus a large grace period can't
+            // overflow the u64 expiry.
+            expires_at: now.saturating_add(rotation_config.grace_period),
             is_primary: true,
             secret_type,
-        })
+        }
     }
 
     /// Check if this secret has expired
-    pub fn is_expired(&self) -> Result<bool> {
-        Ok(self.expires_at < current_unix_secs()?)
+    pub fn is_expired(&self) -> bool {
+        let now = now_secs();
+        self.expires_at < now
     }
 }
 
@@ -154,7 +172,7 @@ impl SecretManager {
             Some(data) => serde_json::from_slice::<VersionedSecret>(&data)?,
             None => {
                 // Generate new secret
-                let new_secret = VersionedSecret::new(secret_type, &self.rotation_config)?;
+                let new_secret = VersionedSecret::new(secret_type, &self.rotation_config);
                 let data = serde_json::to_vec(&new_secret)?;
 
                 // Try to save to primary location
@@ -242,7 +260,7 @@ impl SecretManager {
         }
 
         // Drop expired entries and any duplicate of the incoming version.
-        let now = current_unix_secs().unwrap_or(u64::MAX);
+        let now = now_secs();
         secrets.retain(|s| {
             s.secret_type != secret_type || (s.expires_at >= now && s.version != stored.version)
         });
@@ -268,7 +286,7 @@ impl SecretManager {
         // Backup, if present and still inside its grace window.
         if let Some(data) = self.storage.get(secret_type.backup_key()).await? {
             let backup: VersionedSecret = serde_json::from_slice(&data)?;
-            if !backup.is_expired()? && backup.value != primary {
+            if !backup.is_expired() && backup.value != primary {
                 out.push(backup.value);
             }
         }
@@ -281,7 +299,7 @@ impl SecretManager {
         let mut secrets = self.secrets.write().await;
 
         // Create new primary secret
-        let new_secret = VersionedSecret::new(secret_type, &self.rotation_config)?;
+        let new_secret = VersionedSecret::new(secret_type, &self.rotation_config);
         let data = serde_json::to_vec(&new_secret)?;
 
         // Save to storage
@@ -301,7 +319,7 @@ impl SecretManager {
 
         // Update memory cache: drop expired entries for this type, keep an
         // unexpired backup as a verify fallback, then add the new primary.
-        let now = current_unix_secs()?;
+        let now = now_secs();
         secrets.retain(|s| s.secret_type != secret_type || s.expires_at >= now);
         secrets.push(new_secret);
 
@@ -335,8 +353,11 @@ impl SecretManager {
             .iter()
             .find(|s| s.secret_type == secret_type && s.is_primary)
         {
-            let now = current_unix_secs()?;
-            if now - secret.created_at >= self.rotation_config.rotation_interval {
+            let now = now_secs();
+            // Saturate so a backward wall-clock step (NTP correction) that puts
+            // `now` before `created_at` can't underflow into a spurious early
+            // rotation (or panic in debug builds).
+            if now.saturating_sub(secret.created_at) >= self.rotation_config.rotation_interval {
                 drop(secrets);
                 self.rotate_secret(secret_type).await?;
             }
@@ -372,12 +393,10 @@ mod tests {
 
     #[tokio::test]
     async fn time_helper_and_is_expired_are_ok() {
-        // Fix B: the time path must not panic and must yield Ok.
-        assert!(current_unix_secs().is_ok());
-        let secret = VersionedSecret::new(SecretType::JwtAuth, &SecretRotationConfig::default())
-            .expect("new must not panic on the time path");
+        // The time path must not panic, even on a degraded clock.
+        let secret = VersionedSecret::new(SecretType::JwtAuth, &SecretRotationConfig::default());
         // A freshly minted secret is within its grace window, so not expired.
-        assert!(!secret.is_expired().expect("is_expired must not panic"));
+        assert!(!secret.is_expired());
     }
 
     #[tokio::test]

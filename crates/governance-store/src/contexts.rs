@@ -275,3 +275,79 @@ pub fn find_local_signing_identity(
     ContextTreeService::new(store, ContextGroupId::from([0u8; 32]))
         .find_local_signing_identity(context_id)
 }
+
+/// Scans the ContextIdentity column for the given context and returns EVERY
+/// `PublicKey` for which the node holds a local private key. Used by
+/// `leave_context`, which must tombstone all of the node's identities in a
+/// context, not just the first one.
+pub fn find_local_signing_identities(
+    store: &Store,
+    context_id: &ContextId,
+) -> EyreResult<Vec<PublicKey>> {
+    ContextTreeService::new(store, ContextGroupId::from([0u8; 32]))
+        .find_local_signing_identities(context_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::{key, types, Store};
+
+    use super::{find_local_signing_identities, find_local_signing_identity};
+
+    fn store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    fn put_identity(store: &Store, context: &ContextId, member: &PublicKey, has_private: bool) {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &key::ContextIdentity::new(*context, *member),
+                &types::ContextIdentity {
+                    private_key: has_private.then_some([0x77; 32]),
+                    sender_key: None,
+                },
+            )
+            .expect("put identity");
+    }
+
+    #[test]
+    fn returns_all_identities_holding_a_private_key() {
+        let store = store();
+        let context = ContextId::from([0x11; 32]);
+        let a = PublicKey::from([0x01; 32]);
+        let b = PublicKey::from([0x02; 32]);
+        let keyless = PublicKey::from([0x03; 32]);
+        // Row belonging to a DIFFERENT context — must be excluded.
+        let other_ctx = ContextId::from([0x22; 32]);
+        let other_member = PublicKey::from([0x04; 32]);
+
+        put_identity(&store, &context, &a, true);
+        put_identity(&store, &context, &b, true);
+        put_identity(&store, &context, &keyless, false);
+        put_identity(&store, &other_ctx, &other_member, true);
+
+        let mut got = find_local_signing_identities(&store, &context).expect("enumerate");
+        got.sort();
+        assert_eq!(got, vec![a, b]);
+
+        // The singular helper still returns just one of them (the first).
+        let one = find_local_signing_identity(&store, &context).expect("single");
+        assert!(one == Some(a) || one == Some(b));
+    }
+
+    #[test]
+    fn returns_empty_when_no_local_key() {
+        let store = store();
+        let context = ContextId::from([0x11; 32]);
+        put_identity(&store, &context, &PublicKey::from([0x01; 32]), false);
+        assert!(find_local_signing_identities(&store, &context)
+            .expect("enumerate")
+            .is_empty());
+    }
+}

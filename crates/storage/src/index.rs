@@ -15,7 +15,6 @@ use tracing::info;
 
 use crate::address::Id;
 use crate::entities::{ChildInfo, Metadata, UpdatedAt};
-use crate::env::time_now;
 use crate::interface::StorageError;
 use crate::store::{IterableStorage, Key, StorageAdaptor};
 
@@ -312,6 +311,13 @@ impl<S: StorageAdaptor> Drop for DeferredAncestorScope<S> {
 }
 
 /// Index entry for an entity.
+///
+/// New fields must use borsh-CANONICAL types (no `HashMap`/`HashSet` or other
+/// nondeterministically-ordered containers): the node's tombstone GC tells an
+/// index row apart from opaque entity data by re-serializing a decoded value and
+/// requiring byte-identical output. A non-canonical field would silently break
+/// that guard. `calimero_node::gc`'s `entity_index_borsh_roundtrips` test locks
+/// the invariant and must stay green.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct EntityIndex {
     /// Entity ID.
@@ -454,6 +460,10 @@ impl<S: StorageAdaptor> Index<S> {
         child_index.own_hash = child.merkle_hash();
         child_index.full_hash =
             Self::calculate_full_hash_for_children(child_index.own_hash, &child_index.children)?;
+        // Adding a child means it is live: clear any tombstone, else find_by_id
+        // hides an entity the parent hash now counts (upsert-on-tombstone
+        // divergence). Pairs with the deleted_children.retain below.
+        child_index.deleted_at = None;
         Self::save_index(&child_index)?;
 
         // Insert into parent's children list, keeping it sorted by `ChildInfo`'s
@@ -721,13 +731,60 @@ impl<S: StorageAdaptor> Index<S> {
     pub(crate) fn mark_deleted(id: Id, deleted_at: u64) -> Result<(), StorageError> {
         let _mutation_guard = index_mutation_guard();
         if let Some(mut index) = Self::get_index(id)? {
+            // The tombstone time is a LWW CRDT nonce: never regress it. An
+            // out-of-order, older `DeleteRef` must not roll back a newer
+            // tombstone, which would also weaken replay protection via the
+            // `updated_at` nonce below. Keep the latest of the two.
+            let deleted_at = index
+                .deleted_at
+                .map_or(deleted_at, |existing| existing.max(deleted_at));
             index.deleted_at = Some(deleted_at);
 
-            // Also update the `updated_at` timestamp to this nonce.
-            // This is critical for replay protection on delete actions.
-            *index.metadata.updated_at = deleted_at;
+            // Also advance the `updated_at` timestamp toward this nonce.
+            // This is critical for replay protection on delete actions, and is
+            // likewise monotonic — an older delete never lowers it.
+            *index.metadata.updated_at = (*index.metadata.updated_at).max(deleted_at);
 
             Self::save_index(&index)?;
+        }
+        Ok(())
+    }
+
+    /// Lifts a tombstone when a strictly-newer write outlives it.
+    ///
+    /// This is the counterpart to [`mark_deleted`](Self::mark_deleted). Once an
+    /// entity is tombstoned, [`find_by_id`](crate::Interface::find_by_id) hides
+    /// it regardless of any later value write. A concurrent update that
+    /// causally follows the delete (`at > deleted_at`) must win under LWW, so
+    /// the value write has to clear the tombstone or the freshly-written bytes
+    /// stay invisible — an over-suppression that diverges replicas (the replica
+    /// that saw `delete` before the newer `update` keeps hiding the value while
+    /// the replica that only saw the newer `update` shows it).
+    ///
+    /// The `at > deleted_at` guard is strict and monotonic, mirroring
+    /// `mark_deleted`: an equal-HLC write does NOT resurrect (delete wins ties),
+    /// and an older write never lifts a newer tombstone.
+    ///
+    /// When it clears the tombstone it also advances the `updated_at` replay
+    /// nonce to at least `at` (monotonically, mirroring `mark_deleted`). This
+    /// keeps `clear_deleted` self-defensive regardless of call ordering: after
+    /// a resurrection the nonce is at least `at`, so a replayed older
+    /// `DeleteRef` carrying the original `deleted_at` still loses the
+    /// `apply_delete_ref_action` comparison even if this ever runs before the
+    /// caller's `update_hash_for` has persisted the new `updated_at`.
+    pub(crate) fn clear_deleted(id: Id, at: u64) -> Result<(), StorageError> {
+        let _mutation_guard = index_mutation_guard();
+        if let Some(mut index) = Self::get_index(id)? {
+            if index.deleted_at.is_some_and(|deleted_at| at > deleted_at) {
+                index.deleted_at = None;
+                // Advance the `updated_at` replay nonce alongside the
+                // resurrection, mirroring `mark_deleted`. Monotonic: an older
+                // write never lowers it. Without this, a `clear_deleted` that
+                // ran before `update_hash_for` would leave the nonce below
+                // `at`, reopening a replay window for the original delete.
+                *index.metadata.updated_at = (*index.metadata.updated_at).max(at);
+                Self::save_index(&index)?;
+            }
         }
         Ok(())
     }
@@ -743,18 +800,6 @@ impl<S: StorageAdaptor> Index<S> {
         let index = Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
         Ok(index.children.unwrap_or_default())
-    }
-
-    /// Returns all collection names for an entity.
-    ///
-    /// Legacy function - always returns at most one name (or empty).
-    /// Kept for backwards compatibility with tree comparison logic.
-    pub(crate) fn get_collection_names_for(parent_id: Id) -> Result<Vec<String>, StorageError> {
-        // Return a dummy name if children exist, for tree comparison
-        // The actual name doesn't matter since it's not stored
-        Ok(Self::get_index(parent_id)?
-            .and_then(|index| index.children.as_ref().map(|_| vec!["_".to_owned()]))
-            .unwrap_or_default())
     }
 
     /// Returns (full_hash, own_hash) tuple for an entity.
@@ -898,25 +943,112 @@ impl<S: StorageAdaptor> Index<S> {
 
     /// Removes and deletes a child from a collection.
     ///
-    /// Uses tombstone-based deletion. To move a child to a different parent,
-    /// just add it to the new parent instead.
-    pub(crate) fn remove_child_from(parent_id: Id, child_id: Id) -> Result<(), StorageError> {
+    /// Uses tombstone-based deletion. Deleting a child also tombstones its
+    /// entire subtree (see [`tombstone_descendants_of`](Self::tombstone_descendants_of)):
+    /// a non-recursive delete would leave descendant index rows live, so they
+    /// could never be reclaimed by tombstone GC and would linger as orphans
+    /// under a tombstoned parent.
+    ///
+    /// `deleted_at` is the caller's tombstone nonce — the same value carried on
+    /// the `DeleteRef` wire action — so the child, every descendant, and the
+    /// remote replicas that replay the `DeleteRef` all stamp the subtree with
+    /// one identical timestamp and converge.
+    ///
+    /// To move a child to a different parent, add it to the new parent instead.
+    pub(crate) fn remove_child_from(
+        parent_id: Id,
+        child_id: Id,
+        deleted_at: u64,
+    ) -> Result<(), StorageError> {
         let _mutation_guard = index_mutation_guard();
-        Self::delete_entity_and_create_tombstone(child_id)?;
+        // Tombstone the subtree first (while `child_id`'s `children` are still
+        // readable), then the child itself, then detach it from its parent.
+        Self::tombstone_descendants_of(child_id, deleted_at)?;
+        Self::delete_entity_and_create_tombstone(child_id, deleted_at)?;
         Self::update_parent_after_child_removal(parent_id, child_id)?;
         Self::recalculate_ancestor_hashes_for(parent_id)?;
         Ok(())
     }
 
-    /// Deletes entity data and creates tombstone marker.
+    /// Deletes entity data and creates a tombstone marker for a single entity.
     ///
     /// Step 1 of deletion: Remove actual data, keep index for CRDT sync.
-    fn delete_entity_and_create_tombstone(id: Id) -> Result<(), StorageError> {
-        // Delete the actual entity data immediately (save storage space)
+    fn delete_entity_and_create_tombstone(id: Id, deleted_at: u64) -> Result<(), StorageError> {
+        // Tombstone first, then drop the data: if mark_deleted fails the entry
+        // is left intact and the delete can be retried, instead of leaving the
+        // data gone with no tombstone while the parent still lists it live.
+        Self::mark_deleted(id, deleted_at)?;
         let _ignored = S::storage_remove(Key::Entry(id));
+        Ok(())
+    }
 
-        // Mark child index as deleted (tombstone for CRDT sync)
-        Self::mark_deleted(id, time_now())
+    /// Tombstones every descendant of `root_id` at `deleted_at`.
+    ///
+    /// Deleting an entity detaches its whole subtree from the live Merkle tree
+    /// (the root is dropped from its parent's `children`), but the descendant
+    /// index rows remain. Without tombstoning them they keep `deleted_at =
+    /// None` forever, so tombstone GC can never reclaim them and they leak. This
+    /// walks the subtree via each node's `children` and tombstones the rows.
+    ///
+    /// Each descendant is resolved with the SAME canonical delete-vs-update
+    /// tiebreak that [`apply_delete_ref_action`] uses for a directly-deleted
+    /// entity: a descendant whose own `updated_at` is STRICTLY newer than
+    /// `deleted_at` (a concurrent update that causally follows the delete) keeps
+    /// its data; equal-or-older state is tombstoned — so `deleted_at ==
+    /// updated_at` tombstones the descendant (delete wins on the tie), matching
+    /// the single-level rule. Running the identical rule here and on the
+    /// `DeleteRef` replay path means every replica stamps the subtree the same
+    /// way and converges, including the live-update-wins "zombie" case (a
+    /// surviving entity under a tombstoned ancestor), which is the existing
+    /// single-level concurrent add/update-vs-delete semantics applied
+    /// transitively.
+    ///
+    /// Internal subtree parent-lists and hashes are intentionally NOT
+    /// recomputed: the whole subtree is detached at the root, so none of it
+    /// feeds a live hash. Only the root's removal from its parent (done by the
+    /// caller) touches the live tree.
+    ///
+    /// Acquires the reentrant index-mutation guard internally and holds it for
+    /// the whole walk, so it is safe to call whether or not a caller already
+    /// holds it (`remove_child_from` does; `apply_delete_ref_action` does not).
+    ///
+    /// [`apply_delete_ref_action`]: crate::interface::Interface::apply_delete_ref_action
+    pub(crate) fn tombstone_descendants_of(
+        root_id: Id,
+        deleted_at: u64,
+    ) -> Result<(), StorageError> {
+        let _mutation_guard = index_mutation_guard();
+
+        // Single depth-first pass: read each node's index once, descend via the
+        // `children` read BEFORE tombstoning it, then tombstone the node itself
+        // — except the root, which the caller tombstones. The guard is held for
+        // the whole walk, so a concurrent native writer can't insert a child
+        // that the traversal would miss.
+        let mut stack = vec![root_id];
+        while let Some(id) = stack.pop() {
+            let Some(index) = Self::get_index(id)? else {
+                continue;
+            };
+            if let Some(children) = &index.children {
+                for child in children {
+                    stack.push(child.id());
+                }
+            }
+            // The root is tombstoned by the caller; only its descendants here.
+            if id == root_id {
+                continue;
+            }
+            // Strictly-newer local state wins (a concurrent update that causally
+            // follows this delete); equal-or-older is tombstoned (`deleted_at ==
+            // updated_at` ⇒ delete wins). Same `<` tiebreak as
+            // `apply_delete_ref_action`.
+            if deleted_at < *index.metadata.updated_at {
+                continue;
+            }
+            Self::delete_entity_and_create_tombstone(id, deleted_at)?;
+        }
+
+        Ok(())
     }
 
     /// Removes a child reference from a parent without creating a tombstone.
@@ -1035,69 +1167,6 @@ impl<S: StorageAdaptor> Index<S> {
         Self::save_index(&index)?;
         <Index<S>>::recalculate_ancestor_hashes_for(id)?;
         Ok(index.full_hash)
-    }
-
-    /// Garbage collects tombstones older than the retention period.
-    ///
-    /// Only available for storage backends that implement `IterableStorage`.
-    /// Removes index entries marked as deleted that are older than the specified
-    /// retention period. This reclaims storage space while maintaining CRDT semantics
-    /// for recent deletions.
-    ///
-    /// # Parameters
-    ///
-    /// * `retention_nanos` - Retention period in nanoseconds (e.g., 86_400_000_000_000 for 1 day)
-    ///
-    /// # Returns
-    ///
-    /// Number of tombstones garbage collected
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // GC tombstones older than 1 day (requires IterableStorage)
-    /// type MyStorage = MockedStorage<1>;
-    /// const ONE_DAY_NANOS: u64 = 86_400_000_000_000;
-    /// let collected = Index::<MyStorage>::garbage_collect_tombstones(ONE_DAY_NANOS)?;
-    /// println!("Garbage collected {} tombstones", collected);
-    /// ```
-    ///
-    /// # Future Enhancements
-    ///
-    /// - Add metrics/logging for GC operations
-    /// - Support batched deletion for large tombstone counts
-    /// - [ ] Consider partial GC (limit number of items per run to avoid blocking)
-    /// - [ ] Add GC scheduling mechanism (auto-run periodically)
-    /// - [ ] Add GC configuration (min age, batch size, etc.)
-    ///
-    #[allow(dead_code, reason = "planned feature for tombstone cleanup")]
-    pub(crate) fn garbage_collect_tombstones(retention_nanos: u64) -> Result<usize, StorageError>
-    where
-        S: IterableStorage,
-    {
-        let cutoff_time = time_now().saturating_sub(retention_nanos);
-        let mut collected = 0;
-
-        // Iterate over all keys in storage
-        let all_keys = S::storage_iter_keys();
-
-        for key in all_keys {
-            // Only process Index keys (not Entry keys)
-            if let Key::Index(id) = key {
-                // Check if this index is a tombstone older than cutoff
-                if let Some(index) = Self::get_index(id)? {
-                    if let Some(deleted_at) = index.deleted_at {
-                        if deleted_at < cutoff_time {
-                            // Tombstone is old enough - remove it
-                            let _ignored = S::storage_remove(Key::Index(id));
-                            collected += 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(collected)
     }
 
     /// Residue: a LOCAL DERIVED count of identity-gated entries that still

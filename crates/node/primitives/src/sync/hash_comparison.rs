@@ -36,6 +36,15 @@ pub const MAX_LEAF_VALUE_SIZE: usize = 1_048_576;
 /// extremely deep traversals. Most practical Merkle trees have depth < 32.
 pub const MAX_TREE_DEPTH: usize = 64;
 
+/// Maximum length of the `ancestors` chain carried in a leaf's metadata.
+///
+/// The chain runs from the immediate parent up to (excluding) the system root,
+/// so its natural bound is the tree depth. Each entry embeds a full `Metadata`,
+/// so without a cap a malicious peer could inflate a single leaf into a large
+/// allocation. Bounded to [`MAX_TREE_DEPTH`] for the same reason traversal depth
+/// is.
+pub const MAX_ANCESTORS: usize = MAX_TREE_DEPTH;
+
 // =============================================================================
 // Tree Node Request/Response
 // =============================================================================
@@ -312,10 +321,13 @@ impl TreeLeafData {
 
     /// Check if leaf data is within valid bounds.
     ///
-    /// Call this after deserializing from untrusted sources.
+    /// Call this after deserializing from untrusted sources. Bounds both the
+    /// leaf `value` and the metadata's `ancestors` chain — each ancestor embeds
+    /// a full `Metadata`, so an uncapped chain is its own memory-exhaustion
+    /// vector independent of the value size.
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        self.value.len() <= MAX_LEAF_VALUE_SIZE
+        self.value.len() <= MAX_LEAF_VALUE_SIZE && self.metadata.ancestors.len() <= MAX_ANCESTORS
     }
 }
 
@@ -1279,6 +1291,27 @@ mod tests {
         let over_limit_value = vec![0u8; MAX_LEAF_VALUE_SIZE + 1];
         let over_limit = TreeLeafData::new([1; 32], over_limit_value, metadata);
         assert!(!over_limit.is_valid());
+    }
+
+    #[test]
+    fn test_tree_leaf_data_ancestors_bound() {
+        use calimero_storage::address::Id;
+        use calimero_storage::entities::{ChildInfo, Metadata};
+
+        let ancestor = || ChildInfo::new(Id::from([9u8; 32]), [0u8; 32], Metadata::new(1, 2));
+
+        // A short ancestor chain (within the depth bound) is valid.
+        let ok_meta = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32])
+            .with_ancestors((0..MAX_ANCESTORS).map(|_| ancestor()).collect());
+        let ok = TreeLeafData::new([1; 32], vec![1, 2, 3], ok_meta);
+        assert!(ok.is_valid());
+
+        // An over-long chain (each entry embeds a full Metadata) is rejected even
+        // though the value itself is tiny.
+        let bad_meta = LeafMetadata::new(CrdtType::lww_register("test"), 100, [1; 32])
+            .with_ancestors((0..=MAX_ANCESTORS).map(|_| ancestor()).collect());
+        let bad = TreeLeafData::new([1; 32], vec![1, 2, 3], bad_meta);
+        assert!(!bad.is_valid());
     }
 
     #[test]

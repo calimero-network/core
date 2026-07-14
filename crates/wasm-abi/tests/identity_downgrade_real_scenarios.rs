@@ -4,9 +4,16 @@
 //! by the merobox workflow `21-scenario-identity-downgrade`.
 
 use calimero_wasm_abi::downgrade::identity_downgrades;
-use calimero_wasm_abi::embed::{read_embedded_state_schema, write_embedded_state_schema};
+use calimero_wasm_abi::embed::{
+    read_embedded_state_schema, read_embedded_state_schema_versioned, write_embedded_state_schema,
+    EmbeddedSchema,
+};
 use calimero_wasm_abi::emitter::emit_manifest;
 use calimero_wasm_abi::schema::Manifest;
+
+fn empty_module() -> Vec<u8> {
+    vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]
+}
 
 const V1_SRC: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -27,8 +34,7 @@ fn state_schema(src: &str) -> Manifest {
 /// Embed a schema into a minimal valid module, then read it back — exercising the
 /// real wasm-section round-trip the node uses at upgrade time.
 fn embed_then_read(schema: &Manifest) -> Manifest {
-    let empty_module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
-    let wasm = write_embedded_state_schema(&empty_module, schema).expect("embed");
+    let wasm = write_embedded_state_schema(&empty_module(), schema).expect("embed");
     read_embedded_state_schema(&wasm).expect("calimero_abi_v1 section present after embed")
 }
 
@@ -67,4 +73,24 @@ fn real_carry_through_is_not_a_downgrade() {
         identity_downgrades(&v1, &v1).is_empty(),
         "v1 -> v1 (carry-through) must not be flagged"
     );
+}
+
+/// A module whose embedded schema is from a NEWER toolchain (`wasm-abi/2`) must
+/// read as present-but-opaque, not as "no schema". This is the property the
+/// identity-downgrade gate relies on to fail *closed* instead of waving the
+/// upgrade through. (The gate decision itself is unit-tested in
+/// `calimero-context`; here we pin the wasm-section read that feeds it.)
+#[test]
+fn future_major_schema_reads_as_unsupported_not_absent() {
+    let mut schema = state_schema(V2_SRC);
+    schema.schema_version = "wasm-abi/2".to_owned();
+    let wasm = write_embedded_state_schema(&empty_module(), &schema).expect("embed");
+
+    match read_embedded_state_schema_versioned(&wasm) {
+        EmbeddedSchema::UnsupportedVersion(v) => assert_eq!(v, "wasm-abi/2"),
+        other => panic!("expected UnsupportedVersion, got {other:?}"),
+    }
+    // The convenience Option reader still collapses it to None — exactly the
+    // fail-open trap the gate avoids by using the versioned reader.
+    assert!(read_embedded_state_schema(&wasm).is_none());
 }

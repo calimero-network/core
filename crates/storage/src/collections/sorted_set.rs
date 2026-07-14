@@ -88,7 +88,7 @@ where
             .iter_unordered()
             .expect("read set elements for re-key")
             .collect();
-        self.inner.clear().expect("clear set for re-key");
+        self.inner.clear_for_rekey().expect("clear set for re-key");
         self.inner.reassign_deterministic_id_under(
             Some(parent_id),
             "__sorted_set",
@@ -158,7 +158,9 @@ where
             .iter_unordered()
             .expect("failed to read elements for migration")
             .collect();
-        self.inner.clear().expect("failed to clear for migration");
+        self.inner
+            .clear_for_rekey()
+            .expect("failed to clear for migration");
         self.inner.reassign_deterministic_id_with_crdt_type(
             field_name,
             CrdtType::sorted_set(std::any::type_name::<V>()),
@@ -239,6 +241,17 @@ where
     {
         let id = compute_id(self.inner.id(), value.as_ref());
         self.inner.contains(id)
+    }
+
+    /// The deterministic storage entity id this `value` maps to — lets the
+    /// add-wins merge consult `Index::is_deleted` without re-deriving
+    /// `compute_id`. See [`UnorderedSet::entry_id`](super::UnorderedSet::entry_id).
+    pub(crate) fn entry_id<Q>(&self, value: &Q) -> Id
+    where
+        V: Borrow<Q>,
+        Q: AsRef<[u8]> + ?Sized,
+    {
+        compute_id(self.inner.id(), value.as_ref())
     }
 
     /// Remove `value`, returning `true` if it was present.
@@ -537,9 +550,8 @@ where
     V: Ord + AsRef<[u8]> + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn eq(&self, other: &Self) -> bool {
-        self.iter().unwrap().eq(other.iter().unwrap())
+        super::fallible_iter_eq(self.iter(), other.iter())
     }
 }
 
@@ -548,9 +560,8 @@ where
     V: Ord + AsRef<[u8]> + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.iter().unwrap().cmp(other.iter().unwrap())
+        super::fallible_iter_cmp(self.iter(), other.iter())
     }
 }
 
@@ -569,14 +580,17 @@ where
     V: Ord + AsRef<[u8]> + fmt::Debug + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    #[expect(clippy::unwrap_used, clippy::unwrap_in_result, reason = "'tis fine")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {
             f.debug_struct("SortedSet")
                 .field("items", &self.inner)
                 .finish()
         } else {
-            f.debug_set().entries(self.iter().unwrap()).finish()
+            // A store fault while reading must not panic a Debug format.
+            match self.iter() {
+                Ok(iter) => f.debug_set().entries(iter).finish(),
+                Err(e) => f.debug_struct("SortedSet").field("read_error", &e).finish(),
+            }
         }
     }
 }

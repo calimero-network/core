@@ -28,9 +28,24 @@ impl Handler<AnnounceBlob> for NetworkManager {
             key.as_ref().len(),
         );
 
-        // Create a record with blob metadata (size and peer ID)
-        let peer_id = *self.swarm.local_peer_id();
-        let value = [peer_id.to_bytes().as_slice(), &request.size.to_le_bytes()].concat();
+        // Create a signed record binding (this node, blob, size) to the
+        // record key, so peers resolving it can authenticate that the
+        // announcement was made by the peer it names. See
+        // `crate::blob_provider_record`.
+        let value = match crate::blob_provider_record::BlobProviderRecord::signed_value(
+            key.as_ref(),
+            &self.identity,
+            request.size,
+        ) {
+            Ok(value) => value,
+            Err(err) => {
+                // Log the underlying signing error server-side only; return a
+                // generic error so key/crypto detail can't leak into a caller
+                // response or downstream log.
+                warn!("Failed to sign blob provider record: {:?}", err);
+                return Response::reply(Err(eyre!("failed to sign blob provider record")));
+            }
+        };
 
         let record = Record::new(key, value);
 
