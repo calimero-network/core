@@ -244,7 +244,18 @@ impl UserPasswordProvider {
                 return Err(eyre::eyre!("Invalid username or password"));
             };
 
+            // Defense in depth: an empty presented secret can never bootstrap,
+            // regardless of what the expected secret resolves to. Callers that
+            // omit the field default to "" (`unwrap_or_default`), so without
+            // this guard a future regression that lets an empty *expected*
+            // secret through would make SHA-256("") == SHA-256("") re-enable
+            // the unauthenticated TOFU bootstrap this gate exists to close.
             let provided_secret = bootstrap_secret.unwrap_or_default();
+            if provided_secret.is_empty() {
+                debug!("Bootstrap rejected: empty bootstrap secret presented");
+                return Err(eyre::eyre!("Invalid username or password"));
+            }
+
             if !Self::bootstrap_secret_matches(&expected_secret, provided_secret) {
                 debug!("Bootstrap rejected: bootstrap secret missing or mismatched");
                 return Err(eyre::eyre!("Invalid username or password"));
@@ -650,7 +661,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_config_secret_is_treated_as_unset() {
+    async fn empty_config_bootstrap_secret_keeps_bootstrap_disabled() {
         // `bootstrap_secret = ""` (e.g. a blank env interpolation in config)
         // must behave exactly like no secret at all: bootstrap stays disabled
         // and, critically, a caller omitting the field (which the verifier
@@ -669,6 +680,29 @@ mod tests {
             root_key_count(&provider).await,
             0,
             "an empty configured secret must never mint a root key"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_presented_secret_never_bootstraps() {
+        // An empty *presented* secret is rejected outright, before any
+        // comparison, even when a real secret is configured. Together with the
+        // empty-config filter this guarantees an all-empty pairing can never
+        // authenticate, even if one of the two guards regresses.
+        let provider = test_provider(config_with_secret(Some("s3cr3t-bootstrap")));
+
+        assert!(provider
+            .authenticate_core("admin", "pw", Some(""))
+            .await
+            .is_err());
+        assert!(provider
+            .authenticate_core("admin", "pw", None)
+            .await
+            .is_err());
+        assert_eq!(
+            root_key_count(&provider).await,
+            0,
+            "an empty presented secret must never mint a root key"
         );
     }
 
