@@ -72,7 +72,7 @@ fn test_signed_invitation(
         inviter_identity: SignerId::from(*inviter_sk.public_key().digest()),
         group_id,
         expiration_timestamp,
-        secret_salt: [0x42; 32],
+        invitation_nonce: [0x42; 32],
         invited_role: 1,
     };
     let inv_bytes = borsh::to_vec(&invitation).unwrap();

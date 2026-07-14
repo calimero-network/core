@@ -67,7 +67,7 @@ fn sign_invitation(
         // 0 is the canonical "no expiry" sentinel — MemberJoined carries no
         // joined_at, so any non-zero expiration causes the apply gate to reject it.
         expiration_timestamp: 0,
-        secret_salt: [0x42; 32],
+        invitation_nonce: [0x42; 32],
         invited_role: role,
     };
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");

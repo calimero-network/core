@@ -774,8 +774,10 @@ pub struct InvitationFromMember {
     pub context_id: ContextId,
     /// Unix timestamp (seconds) at which the invitation expires.
     pub expiration_timestamp: ExpirationTimestamp,
-    /// Secret salt.
-    pub secret_salt: [u8; 32],
+    /// Per-invitation uniqueness nonce (folded into the signed bytes; not secret).
+    /// Renamed from `secret_salt`; kept as the wire/JSON key for backward compat.
+    #[serde(rename = "secret_salt")]
+    pub invitation_nonce: [u8; 32],
 }
 
 /// A container for an open invitation and the inviter's signature over it.
@@ -835,8 +837,10 @@ pub struct GroupInvitationFromAdmin {
     pub group_id: ContextGroupId,
     /// Unix timestamp (seconds) at which the invitation expires.
     pub expiration_timestamp: ExpirationTimestamp,
-    /// Secret salt for MEV protection.
-    pub secret_salt: [u8; 32],
+    /// Per-invitation uniqueness nonce (folded into the signed bytes; not secret).
+    /// Renamed from `secret_salt`; kept as the wire/JSON key for backward compat.
+    #[serde(rename = "secret_salt")]
+    pub invitation_nonce: [u8; 32],
     /// The role the invitee should be granted (0 = Admin, 1 = Member,
     /// 2 = ReadOnly). Covered by the admin's signature so the joiner
     /// cannot escalate. Defaults to 1 (Member) for backward compat.
@@ -932,7 +936,7 @@ mod tests {
             inviter_identity: inviter_identity_bytes.into(),
             context_id: context_id_bytes.into(),
             expiration_timestamp: 1000,
-            secret_salt: salt,
+            invitation_nonce: salt,
         };
         let invitation_borsh =
             borsh::to_vec(&invitation).expect("Failed to Borsh serialize the invitation");
@@ -948,7 +952,10 @@ mod tests {
             invitation.expiration_timestamp,
             invitation_deserialized.expiration_timestamp
         );
-        assert_eq!(invitation.secret_salt, invitation_deserialized.secret_salt);
+        assert_eq!(
+            invitation.invitation_nonce,
+            invitation_deserialized.invitation_nonce
+        );
     }
 
     #[test]
@@ -957,7 +964,7 @@ mod tests {
             inviter_identity: [0x11; 32].into(),
             context_id: [0x22; 32].into(),
             expiration_timestamp: 1_700_000_000,
-            secret_salt: [0x33; 32],
+            invitation_nonce: [0x33; 32],
         };
 
         let signed = SignedOpenInvitation {
@@ -1178,7 +1185,7 @@ mod tests {
             inviter_identity: [0; 32].into(),
             context_id: [0; 32].into(),
             expiration_timestamp: 0,
-            secret_salt: [0; 32],
+            invitation_nonce: [0; 32],
         };
 
         let signed = SignedOpenInvitation {
