@@ -124,3 +124,61 @@ pub(super) fn nest_for_test_unchecked(
         .put(&GroupParentRef::new(child.to_bytes()), &parent.to_bytes())
         .unwrap();
 }
+
+/// An [`AtCutAuthorizer`](crate::authorizer::AtCutAuthorizer) that answers every
+/// gate with one fixed verdict, standing in for a projection that HAS folded the
+/// op's cited ancestry.
+///
+/// Its whole purpose is to DISAGREE with the live store rows, so a test can prove
+/// which resolver an apply gate actually consults. A gate that honors this
+/// authorizer decides identically on every replica regardless of fold progress;
+/// a gate that falls through to the live rows does not, which is the divergence
+/// these tests guard.
+///
+/// Tests must pass a NON-EMPTY `parents`: the empty-cut contract requires real
+/// authorizers to abstain (`None`) on an empty cut, and a test that passed `&[]`
+/// would silently be exercising the live path it means to rule out.
+pub(super) struct FixedAuthorizer(pub(super) bool);
+
+impl crate::authorizer::AtCutAuthorizer for FixedAuthorizer {
+    fn is_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        Some(self.0)
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        Some(self.0)
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        Some(false)
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        None
+    }
+}
+
+/// A non-empty causal cut for apply-auth tests. Value is irrelevant — only
+/// non-emptiness matters (see [`FixedAuthorizer`]).
+pub(super) const TEST_CUT: [[u8; 32]; 1] = [[0xAB; 32]];

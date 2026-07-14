@@ -7716,3 +7716,190 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
         );
     }
 }
+
+// -----------------------------------------------------------------------
+// Apply-time authority must resolve at the op's causal cut, not against the
+// receiver's live rows.
+//
+// The settings ops (`TargetApplicationSet`, `GroupMigrationSet`,
+// `UpgradePolicySet`, `DefaultCapabilitiesSet`, `SubgroupVisibilitySet`) run
+// their gates through `GroupSettingsService`, which used to build a LIVE
+// `PermissionChecker` regardless of the apply context. That made the verdict a
+// function of each replica's fold progress: a replica that had folded a
+// concurrent capability revoke rejected the op (and, because the reject path
+// never advances the DAG head, stalled every descendant of it) while a replica
+// that had not folded the revoke applied it. Permanent divergence.
+//
+// These tests pin the fix by making the at-cut source DISAGREE with the live
+// rows in both directions. If the at-cut verdict is the one honored, the live
+// rows are irrelevant — which is exactly the property that makes the decision
+// replica-independent.
+mod apply_auth_at_cut {
+    use super::*;
+    use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
+    use calimero_context_config::types::AppKey;
+    use calimero_context_config::MemberCapabilities;
+    use calimero_governance_types::GroupOp;
+
+    /// Group whose live rows grant `signer` full admin authority.
+    fn store_with_live_admin(signer: &PublicKey) -> (Store, ContextGroupId) {
+        let store = test_store();
+        let gid = test_group_id();
+        let mut meta = test_meta();
+        meta.admin_identity = *signer;
+        meta.owner_identity = *signer;
+        MetaRepository::new(&store).save(&gid, &meta).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, signer, GroupMemberRole::Admin)
+            .unwrap();
+        (store, gid)
+    }
+
+    /// Group whose live rows grant `signer` NOTHING — not even a membership row.
+    fn store_with_live_stranger(signer: &PublicKey) -> (Store, ContextGroupId) {
+        let store = test_store();
+        let gid = test_group_id();
+        let other = PublicKey::from([0x77; 32]);
+        let mut meta = test_meta();
+        meta.admin_identity = other;
+        meta.owner_identity = other;
+        MetaRepository::new(&store).save(&gid, &meta).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &other, GroupMemberRole::Admin)
+            .unwrap();
+        let _ = signer;
+        (store, gid)
+    }
+
+    fn target_application_set_op() -> GroupOp {
+        GroupOp::TargetApplicationSet {
+            app_key: AppKey::from([0x5A; 32]),
+            target_application_id: ApplicationId::from([0x5B; 32]),
+        }
+    }
+
+    #[test]
+    fn target_application_set_honors_at_cut_grant_over_live_denial() {
+        // The catching-up replica: its live rows say the signer has no authority
+        // (it has not yet folded the grant), but the projection at the op's cut
+        // says the signer WAS authorized as of the op's own parents. The op must
+        // apply — otherwise this replica rejects an op its peers accept.
+        let signer = PublicKey::from([0x11; 32]);
+        let (store, gid) = store_with_live_stranger(&signer);
+
+        let (handled, _divergence, _events) = apply_group_op_mutations(
+            &store,
+            &gid,
+            &signer,
+            &target_application_set_op(),
+            &CUT,
+            &FixedAuthorizer(true),
+        )
+        .expect("at-cut grant must authorize the settings op despite live rows denying");
+        assert!(handled, "TargetApplicationSet should be handled");
+
+        let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+        assert_eq!(
+            meta.app_key, [0x5A; 32],
+            "the mutation must actually land, not just be reported handled"
+        );
+    }
+
+    #[test]
+    fn target_application_set_honors_at_cut_denial_over_live_grant() {
+        // The mirror: live rows would grant (this replica has not folded the
+        // revoke), but at the op's cut the signer was NOT authorized. The op must
+        // be rejected — otherwise this replica applies an op its peers reject.
+        let signer = PublicKey::from([0x11; 32]);
+        let (store, gid) = store_with_live_admin(&signer);
+        let before = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+
+        let err = apply_group_op_mutations(
+            &store,
+            &gid,
+            &signer,
+            &target_application_set_op(),
+            &CUT,
+            &FixedAuthorizer(false),
+        )
+        .expect_err("at-cut denial must reject the settings op despite live rows granting");
+        assert!(
+            format!("{err:#}").contains("lacks permission"),
+            "expected an authorization failure, got: {err:#}"
+        );
+
+        let after = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+        assert_eq!(
+            before.app_key, after.app_key,
+            "a rejected settings op must not mutate group meta"
+        );
+    }
+
+    #[test]
+    fn default_capabilities_set_honors_at_cut_verdict() {
+        // `DefaultCapabilitiesSet` gates on `require_admin`, and is itself a
+        // capability op — gating a capability op on LIVE capabilities is the
+        // tightest version of the divergence loop, so pin both directions.
+        let signer = PublicKey::from([0x11; 32]);
+
+        let (store, gid) = store_with_live_stranger(&signer);
+        let op = GroupOp::DefaultCapabilitiesSet {
+            capabilities: MemberCapabilities::MANAGE_MEMBERS,
+        };
+        let (handled, _, _) =
+            apply_group_op_mutations(&store, &gid, &signer, &op, &CUT, &FixedAuthorizer(true))
+                .expect("at-cut admin grant must authorize DefaultCapabilitiesSet");
+        assert!(handled);
+        assert_eq!(
+            CapabilitiesRepository::new(&store)
+                .default_capabilities(&gid)
+                .unwrap(),
+            Some(MemberCapabilities::MANAGE_MEMBERS.bits()),
+            "the default-capability mutation must land"
+        );
+
+        let (store, gid) = store_with_live_admin(&signer);
+        let op = GroupOp::DefaultCapabilitiesSet {
+            capabilities: MemberCapabilities::MANAGE_MEMBERS,
+        };
+        let _ = apply_group_op_mutations(&store, &gid, &signer, &op, &CUT, &FixedAuthorizer(false))
+            .expect_err(
+                "at-cut denial must reject DefaultCapabilitiesSet despite a live admin row",
+            );
+    }
+
+    #[test]
+    fn two_replicas_with_opposite_live_rows_agree_at_the_same_cut() {
+        // The divergence scenario end to end, as two replicas of the SAME op.
+        //
+        // Replica A folded a concurrent capability revoke; replica B has not.
+        // Their live rows therefore disagree. Both resolve the op at its own cut,
+        // so both MUST reach the same verdict and the same resulting state — that
+        // agreement is the whole property, and it is what live-resolution broke.
+        let signer = PublicKey::from([0x11; 32]);
+        let (store_a, gid_a) = store_with_live_stranger(&signer); // revoke folded
+        let (store_b, gid_b) = store_with_live_admin(&signer); // revoke not folded
+
+        for (store, gid, label) in [
+            (&store_a, &gid_a, "revoke-folded replica"),
+            (&store_b, &gid_b, "revoke-unfolded replica"),
+        ] {
+            let (handled, _, _) = apply_group_op_mutations(
+                store,
+                gid,
+                &signer,
+                &target_application_set_op(),
+                &CUT,
+                &FixedAuthorizer(true),
+            )
+            .unwrap_or_else(|e| panic!("{label} must apply the op at the cut, got: {e:#}"));
+            assert!(handled, "{label}: op should be handled");
+
+            let meta = MetaRepository::new(store).load(gid).unwrap().unwrap();
+            assert_eq!(
+                meta.app_key, [0x5A; 32],
+                "{label}: both replicas must converge on the same app_key"
+            );
+        }
+    }
+}

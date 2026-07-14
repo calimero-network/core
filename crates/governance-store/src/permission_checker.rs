@@ -134,6 +134,13 @@ impl<'a> PermissionChecker<'a> {
         self.is_authorized_with_capability(identity, MemberCapabilities::MANAGE_APPLICATION.bits())
     }
 
+    /// Bool analogue of [`require_can_create_subgroup`](Self::require_can_create_subgroup),
+    /// for callers that combine it with the root-level scoping check rather than
+    /// bailing on it directly (the `GroupCreated` apply arm).
+    pub fn can_create_subgroup(&self, identity: &PublicKey) -> EyreResult<bool> {
+        self.is_authorized_with_capability(identity, MemberCapabilities::CAN_CREATE_SUBGROUP.bits())
+    }
+
     pub fn require_can_create_context(&self, identity: &PublicKey) -> EyreResult<()> {
         if self.is_authorized_with_capability(
             identity,
