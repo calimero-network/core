@@ -364,6 +364,18 @@ impl TokenManager {
             .await
             .map_err(|e| AuthError::TokenGenerationFailed(e.into()))?;
 
+        if secrets.is_empty() {
+            // Every deployment must have at least a primary secret; reaching
+            // this point means the secret manager is misconfigured or its
+            // storage is unreadable. Log loudly — otherwise every token verify
+            // fails with a generic "invalid token" and the root cause is
+            // invisible in production.
+            tracing::error!("No JWT verification secrets available; rejecting all tokens");
+            return Err(AuthError::InvalidToken(
+                "No verification secret available".to_string(),
+            ));
+        }
+
         let mut validation = Validation::new(Algorithm::HS256);
         validation.validate_exp = validate_exp;
         validation.set_issuer(&[&self.config.issuer]);
@@ -399,8 +411,8 @@ impl TokenManager {
 
         Err(AuthError::InvalidToken(
             last_signature_err
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "No verification secret available".to_string()),
+                .expect("loop over non-empty secrets always records a signature error")
+                .to_string(),
         ))
     }
 
@@ -438,14 +450,19 @@ impl TokenManager {
         Ok(claims)
     }
 
-    /// Verify the signature and access-token type of a possibly-expired access
-    /// token, returning its claims.
+    /// Decode a signature-valid **access** token, skipping expiry enforcement,
+    /// and return its claims.
     ///
-    /// Used only by the refresh endpoint, which must read the subject of an
-    /// already-expired access token to bind it to the refresh token (finding
-    /// #3). Expiry is intentionally not enforced here; the caller has already
-    /// confirmed the access token is expired before reaching this path.
-    pub async fn verify_expired_access_claims(&self, token: &str) -> Result<Claims, AuthError> {
+    /// **This does NOT assert that the token is expired** — a still-valid access
+    /// token also passes. It only guarantees signature validity (with the
+    /// rotation-safe backup fallback) and the `Access` token type. The refresh
+    /// endpoint uses it to read the subject of an access token regardless of
+    /// expiry, then applies its own "must be expired" policy on the returned
+    /// claims. Any new caller must add its own expiry policy too.
+    pub async fn decode_access_claims_ignore_expiry(
+        &self,
+        token: &str,
+    ) -> Result<Claims, AuthError> {
         let claims = self.decode_with_secrets(token, false).await?;
         Self::ensure_token_type(&claims, TokenType::Access)?;
         Ok(claims)
@@ -502,11 +519,12 @@ impl TokenManager {
         // only as an upper bound: a permission removed from the key after the
         // token was issued must no longer be granted. The result is the
         // intersection of the claimed permissions with the key's current set.
-        let live_permissions: std::collections::HashSet<&String> = key.permissions.iter().collect();
+        // Keys hold a handful of permissions, so a linear scan beats building a
+        // set on every verification.
         let effective_permissions: Vec<String> = claims
             .permissions
             .into_iter()
-            .filter(|perm| live_permissions.contains(perm))
+            .filter(|perm| key.permissions.contains(perm))
             .collect();
 
         Ok(AuthResponse {

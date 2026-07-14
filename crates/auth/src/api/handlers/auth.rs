@@ -19,6 +19,11 @@ use crate::server::AppState;
 use crate::storage::models::Key;
 use crate::AuthError;
 
+/// Expiry leeway applied by the refresh endpoint's "access token must already
+/// be expired" policy. Matches jsonwebtoken's default `Validation::leeway` so
+/// the two notions of "expired" cannot disagree.
+const JWT_EXPIRY_LEEWAY_SECS: u64 = 60;
+
 /// Whether an access token and a refresh token belong to the same subject.
 ///
 /// Enforces finding #3: the refresh endpoint must reject a request that pairs a
@@ -360,34 +365,14 @@ pub async fn refresh_token_handler(
     headers: HeaderMap,
     ValidatedJson(refresh_request): ValidatedJson<RefreshTokenRequest>,
 ) -> impl IntoResponse {
-    // First check if access token is still valid
-    match state
-        .0
-        .token_generator
-        .verify_token(&refresh_request.access_token)
-        .await
-    {
-        Ok(_) => {
-            return error_response(StatusCode::UNAUTHORIZED, "Access token still valid", None);
-        }
-        Err(err) => {
-            if !matches!(err, AuthError::TokenExpired) {
-                return error_response(
-                    StatusCode::UNAUTHORIZED,
-                    format!("Invalid access token: {err}"),
-                    None,
-                );
-            }
-        }
-    };
-
-    // Read the (expired) access token's claims so we can bind it to the refresh
-    // token below. This also re-confirms the access slot really holds an access
-    // token, not a refresh token (finding #1).
+    // Decode the access token exactly once, skipping only expiry enforcement:
+    // the refresh flow must read the claims of an already-expired token.
+    // Signature validity and the Access token type are still enforced
+    // (finding #1), so a refresh token in the access slot is rejected here.
     let access_claims = match state
         .0
         .token_generator
-        .verify_expired_access_claims(&refresh_request.access_token)
+        .decode_access_claims_ignore_expiry(&refresh_request.access_token)
         .await
     {
         Ok(claims) => claims,
@@ -399,6 +384,15 @@ pub async fn refresh_token_handler(
             );
         }
     };
+
+    // Refresh policy: only an expired access token may be exchanged. The leeway
+    // mirrors jsonwebtoken's default `Validation::leeway`, so a token this
+    // service would still accept as a bearer credential cannot simultaneously
+    // be declared expired here.
+    let now = u64::try_from(chrono::Utc::now().timestamp()).unwrap_or_default();
+    if access_claims.exp.saturating_add(JWT_EXPIRY_LEEWAY_SECS) >= now {
+        return error_response(StatusCode::UNAUTHORIZED, "Access token still valid", None);
+    }
 
     // Verify the refresh token and extract claims (must be a refresh token).
     let refresh_claims = match state
