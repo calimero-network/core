@@ -79,10 +79,15 @@ impl KeyManager {
     ///
     /// # Errors
     ///
-    /// Returns an error if the master key is empty.
+    /// Returns an error if the master key is shorter than `AES_KEY_SIZE` bytes.
     pub fn new(master_key: Vec<u8>) -> Result<Self> {
-        if master_key.is_empty() {
-            bail!("Master key cannot be empty");
+        // HKDF does not add entropy, so a master key shorter than the derived
+        // AES-256 DEK would yield a weak DEK. Fail closed instead.
+        if master_key.len() < AES_KEY_SIZE {
+            bail!(
+                "master key must be at least {AES_KEY_SIZE} bytes, got {}",
+                master_key.len()
+            );
         }
 
         let mut manager = Self {
@@ -336,6 +341,15 @@ mod tests {
     fn test_empty_master_key_rejected() {
         let result = KeyManager::new(vec![]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_short_master_key_rejected() {
+        // Anything below AES_KEY_SIZE must be rejected; HKDF would otherwise
+        // stretch it into a weak 32-byte DEK.
+        assert!(KeyManager::new(vec![0x42; 1]).is_err());
+        assert!(KeyManager::new(vec![0x42; AES_KEY_SIZE - 1]).is_err());
+        assert!(KeyManager::new(vec![0x42; AES_KEY_SIZE]).is_ok());
     }
 
     #[test]

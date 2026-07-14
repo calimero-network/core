@@ -21,13 +21,13 @@ use crate::group::{
     LeaveGroupRequest, LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListNamespacesForApplicationRequest, ListNamespacesRequest,
     RemoveGroupMembersRequest, ResyncContextRequest, RetryGroupUpgradeRequest,
-    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
-    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
-    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
-    StoreDefaultCapabilitiesRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
-    StoreGroupMetadataRequest, StoreMemberCapabilityRequest, StoreMemberMetadataRequest,
-    StoreSubgroupVisibilityRequest, SyncGroupRequest, UpdateGroupSettingsRequest,
-    UpdateMemberRoleRequest, UpgradeGroupRequest,
+    RotateGroupKeyRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
+    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
+    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
+    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
+    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -494,6 +494,10 @@ pub enum ContextMessage {
     AdmitTeeNode {
         request: AdmitTeeNodeRequest,
         outcome: oneshot::Sender<<AdmitTeeNodeRequest as Message>::Result>,
+    },
+    RotateGroupKey {
+        request: RotateGroupKeyRequest,
+        outcome: oneshot::Sender<<RotateGroupKeyRequest as Message>::Result>,
     },
     SetSubgroupVisibility {
         request: SetSubgroupVisibilityRequest,
