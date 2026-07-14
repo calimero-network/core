@@ -95,13 +95,13 @@ fn op_store_reconstruction_recovers_late_decrypted_membership_after_key_delivery
     let encrypted = GroupKeyring::encrypt_op(&group_key, &inner).unwrap();
     let signed = SignedNamespaceOp {
         version: 1,
-        namespace_id: ns_bytes,
+        namespace_id: ns_bytes.into(),
         parent_op_hashes: Vec::new(),
         signer: admin,
         nonce: 1,
         op: NamespaceOp::Group {
-            group_id: ns_bytes,
-            key_id,
+            group_id: ns_bytes.into(),
+            key_id: key_id.into(),
             encrypted,
             key_rotation: None,
         },
@@ -112,10 +112,10 @@ fn op_store_reconstruction_recovers_late_decrypted_membership_after_key_delivery
     // (1) The op lands in the governance DAG (op-log + frontier), exactly as a
     // received op does — this is what `collect_namespace_ops` walks. The group key
     // is present, so the read-time re-decrypt recovers the MemberAdded.
-    NamespaceOpLogService::new(&store, ns_bytes)
+    NamespaceOpLogService::new(&store, ns_bytes.into())
         .store_signed_operation(&signed)
         .unwrap();
-    NamespaceDagService::new(&store, ns_bytes)
+    NamespaceDagService::new(&store, ns_bytes.into())
         .advance_dag_head(delta_id, &[], 0)
         .unwrap();
 
@@ -183,13 +183,13 @@ fn completeness_gate_flags_governance_ops_missing_from_the_op_store() {
     let op = |id: u8| {
         let signed = SignedNamespaceOp {
             version: 1,
-            namespace_id: ns_bytes,
+            namespace_id: ns_bytes.into(),
             parent_op_hashes: Vec::new(),
             signer: admin,
             nonce: u64::from(id),
             op: NamespaceOp::Group {
-                group_id: ns_bytes,
-                key_id: [0u8; 32],
+                group_id: ns_bytes.into(),
+                key_id: [0u8; 32].into(),
                 encrypted: EncryptedGroupOp {
                     nonce: [0u8; 12],
                     ciphertext: Vec::new(),
@@ -210,7 +210,7 @@ fn completeness_gate_flags_governance_ops_missing_from_the_op_store() {
 
     assert_eq!(
         ScopeProjections::check_op_store_completeness(&store, ns_bytes, &dag_ops),
-        Some(vec![op3.id]),
+        Some(vec![op3.id()]),
         "the gate must flag exactly the op missing from the op-store"
     );
 
@@ -254,23 +254,23 @@ fn locally_authored_op_lands_in_the_op_store_atomically() {
     let encrypted = GroupKeyring::encrypt_op(&group_key, &inner).unwrap();
     let signed = SignedNamespaceOp {
         version: 1,
-        namespace_id: ns_bytes,
+        namespace_id: ns_bytes.into(),
         parent_op_hashes: Vec::new(),
         signer: admin,
         nonce: 1,
         op: NamespaceOp::Group {
-            group_id: ns_bytes,
-            key_id,
+            group_id: ns_bytes.into(),
+            key_id: key_id.into(),
             encrypted,
             key_rotation: None,
         },
         signature: [0u8; 64],
     };
     let delta_id = signed.content_hash().unwrap();
-    NamespaceOpLogService::new(&store, ns_bytes)
+    NamespaceOpLogService::new(&store, ns_bytes.into())
         .store_signed_operation(&signed)
         .unwrap();
-    NamespaceDagService::new(&store, ns_bytes)
+    NamespaceDagService::new(&store, ns_bytes.into())
         .advance_dag_head(delta_id, &[], 0)
         .unwrap();
 
@@ -283,7 +283,7 @@ fn locally_authored_op_lands_in_the_op_store_atomically() {
         load_scope_ops(&store, &ScopeId::from(ns_bytes))
             .unwrap()
             .iter()
-            .map(|op| op.id)
+            .map(|op| op.id())
             .collect::<Vec<_>>(),
         vec![delta_id],
         "store_signed_operation must persist the op atomically with the gov-DAG write"
@@ -297,7 +297,7 @@ fn locally_authored_op_lands_in_the_op_store_atomically() {
     // of the op-store sees `member` (proves the payload landed, not just the id).
     let store_ops = load_scope_ops(&store, &ScopeId::from(ns_bytes)).unwrap();
     assert_eq!(
-        store_ops.iter().map(|op| op.id).collect::<Vec<_>>(),
+        store_ops.iter().map(|op| op.id()).collect::<Vec<_>>(),
         vec![delta_id],
         "the authored op must now be in the op-store"
     );

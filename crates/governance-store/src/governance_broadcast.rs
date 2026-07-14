@@ -10,6 +10,7 @@
 //! Tasks 3.2 — 3.4 add `verify_ack`, `assert_transport_ready`, and
 //! `publish_and_await_ack` on top of this skeleton.
 use crate::MembershipRepository;
+use calimero_governance_types::NamespaceId;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -52,8 +53,8 @@ pub(crate) fn classify_network_publish_error(e: eyre::Report) -> BroadcastPublis
 /// Mirrors the format used by `NodeClient::publish_signed_namespace_op`
 /// and the receiver-side `network_event::namespace` handler.
 #[must_use]
-pub fn ns_topic(namespace_id: [u8; 32]) -> TopicHash {
-    TopicHash::from_raw(format!("ns/{}", hex::encode(namespace_id)))
+pub fn ns_topic(namespace_id: NamespaceId) -> TopicHash {
+    TopicHash::from_raw(format!("ns/{}", hex::encode(namespace_id.as_bytes())))
 }
 
 /// Per-op publish timeout for "cheap" governance ops — alias / metadata
@@ -106,6 +107,9 @@ pub fn timeout_for_namespace_op(op: &NamespaceOp) -> Duration {
             OP_ACK_HEAVY_TIMEOUT
         }
         NamespaceOp::Group { .. } => OP_ACK_MEMBER_CHANGE_TIMEOUT,
+        // `NamespaceOp` is `#[non_exhaustive]`; a future op type gets the
+        // conservative member-change timeout until classified explicitly.
+        _ => OP_ACK_MEMBER_CHANGE_TIMEOUT,
     }
 }
 
@@ -150,7 +154,7 @@ pub enum GovernanceBroadcastError {
 ///    this node's local DAG view — non-members cannot ack.
 pub fn verify_ack(
     store: &Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     expected_op_hash: [u8; 32],
     ack: &SignedAck,
 ) -> bool {
@@ -523,7 +527,7 @@ pub async fn publish_and_await_ack_namespace(
     store: &Store,
     transport: &dyn BroadcastTransport,
     ack_router: &AckRouter,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     topic: TopicHash,
     op: SignedNamespaceOp,
     op_timeout: Duration,
@@ -576,7 +580,7 @@ pub async fn publish_and_await_ack_namespace(
         )));
     }
     let envelope = BroadcastMessage::NamespaceGovernanceDelta {
-        namespace_id,
+        namespace_id: namespace_id.to_bytes(),
         delta_id,
         parent_ids,
         payload: inner,

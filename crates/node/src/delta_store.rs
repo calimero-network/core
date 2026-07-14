@@ -316,6 +316,28 @@ struct ContextStorageApplier {
     apply_lock_slot: std::sync::Mutex<Option<ContextAtomicKey>>,
 }
 
+impl ContextStorageApplier {
+    /// Lock the apply-lock relay slot, recovering the guard if a prior holder
+    /// panicked.
+    ///
+    /// The slot only ever holds an `Option<ContextAtomicKey>` that every access
+    /// takes or replaces wholesale, so a poisoned guard never exposes a torn
+    /// value. Recovering it (rather than `.expect()`-ing) keeps a transient
+    /// panic in one apply from poisoning the mutex and turning every later
+    /// apply on this context into a crash.
+    ///
+    /// If a holder panicked after `take()`-ing the key but before replacing it,
+    /// the recovered slot is observed empty, so the next apply acquires a fresh
+    /// `ContextAtomic::Lock` instead of reusing a held one. That is safe and
+    /// leaks nothing: the panicked holder's `ContextAtomicKey` is an owned
+    /// `RwLock` guard, so it was dropped during unwind and its lock released.
+    fn lock_apply_slot(&self) -> std::sync::MutexGuard<'_, Option<ContextAtomicKey>> {
+        self.apply_lock_slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 #[async_trait::async_trait]
 impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
     async fn apply(&self, delta: &CausalDelta<Vec<Action>>) -> Result<(), ApplyError> {
@@ -352,7 +374,6 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
                 .payload
                 .iter()
                 .map(|a| match a {
-                    Action::Compare { .. } => "Compare",
                     Action::Add { .. } => "Add",
                     Action::Update { .. } => "Update",
                     Action::DeleteRef { .. } => "DeleteRef",
@@ -425,17 +446,10 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             .retain_apply_lock
             .load(std::sync::atomic::Ordering::Acquire);
         let atomic = if retain_lock {
-            Some(
-                match self
-                    .apply_lock_slot
-                    .lock()
-                    .expect("apply_lock_slot poisoned")
-                    .take()
-                {
-                    Some(key) => ContextAtomic::Held(key),
-                    None => ContextAtomic::Lock,
-                },
-            )
+            Some(match self.lock_apply_slot().take() {
+                Some(key) => ContextAtomic::Held(key),
+                None => ContextAtomic::Lock,
+            })
         } else {
             None
         };
@@ -470,10 +484,7 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         // completed, so the slot stays empty and the caller commits heads
         // unlocked — safe, because a failed apply advances no heads.
         if retain_lock {
-            *self
-                .apply_lock_slot
-                .lock()
-                .expect("apply_lock_slot poisoned") = outcome.atomic.take();
+            *self.lock_apply_slot() = outcome.atomic.take();
         }
 
         let wasm_elapsed_ms = wasm_start.elapsed().as_secs_f64() * 1000.0;
@@ -817,8 +828,11 @@ impl ContextStorageApplier {
     ///
     /// Iterates the action payload, picks out Shared `Add`/`Update`/
     /// `DeleteRef`s, dedups by entity, and resolves each via
-    /// [`rotation_log_reader::writers_at`] against this applier's
-    /// `topology` view of the DAG.
+    /// [`rotation_log_reader::writers_at_authenticated`] against this applier's
+    /// `topology` view of the DAG. The authenticated resolver is mandatory here
+    /// because the rotation log rides ordinary (untrusted) sync — it verifies
+    /// each rotation entry's signature + prior-set ADMIN authority before
+    /// admitting it to the resolved writer set.
     ///
     /// Returns a map keyed by entity id; non-Shared entities are absent.
     /// An empty result is normal — a delta with only User/Frozen/Public
@@ -842,7 +856,6 @@ impl ContextStorageApplier {
                 Action::Add { metadata, .. }
                 | Action::Update { metadata, .. }
                 | Action::DeleteRef { metadata, .. } => metadata,
-                Action::Compare { .. } => continue,
             };
             match metadata.storage_type {
                 StorageType::Shared { .. } => {
@@ -1267,6 +1280,12 @@ impl DeltaStore {
     ///
     /// Deltas are loaded in topological order (parents before children) to properly
     /// reconstruct the DAG topology.
+    ///
+    /// Contract: call once per store at creation/restart, before it serves
+    /// concurrent appliers (all callers are `is_new`-gated). The topological
+    /// restore holds the DAG write lock across all passes, so a concurrent
+    /// `add_delta` would block for the whole restore — safe only under this
+    /// startup-only contract.
     pub async fn load_persisted_deltas(&self) -> Result<LoadPersistedResult> {
         use std::collections::HashMap;
 
@@ -1290,7 +1309,25 @@ impl DeltaStore {
         let mut iter = handle.iter::<calimero_store::key::ContextDagDelta>()?;
         let first_key = iter.seek(start_key)?;
 
-        let mut all_deltas: HashMap<[u8; 32], CausalDelta<Vec<Action>>> = HashMap::new();
+        // Parents-only index of applied deltas awaiting topological restore.
+        // We deliberately do NOT hold each delta's decoded actions here: that
+        // would keep every delta's payload in RAM simultaneously *with* the DAG
+        // being rebuilt (a transient 2x). Instead we keep just the parent links
+        // needed to order the restore, and lazy-load each delta's full payload
+        // from the DB at the moment it's restored (see step 2).
+        let mut applied_parents: HashMap<[u8; 32], Vec<[u8; 32]>> = HashMap::new();
+        // Persisted rows written in Phase 0 (`applied: false`) whose atomic heads
+        // commit never landed — either interrupted by a crash, or a gossip delta
+        // buffered before its parents arrived. Their actions were NEVER committed,
+        // so they must be re-driven through the full `add_delta_internal` path
+        // (which executes actions, persists `applied: true`, and commits the new
+        // heads) rather than restored as already-applied via `restore_applied_delta`
+        // (topology only). Loading them as applied would insert them as DAG heads
+        // without ever running their effects — advertising committed state that was
+        // never written. Re-driving carries the stored author / governance edge /
+        // signature so the receive-time verification the row already passed is
+        // reproduced (never re-applied unverified on a governance-gated context).
+        let mut unapplied_deltas: Vec<BatchDeltaInput> = Vec::new();
         let mut pending_handler_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
         // Process the seek result's (key, value) manually — entries()
@@ -1346,55 +1383,65 @@ impl DeltaStore {
                 continue;
             }
 
-            // Deserialize actions
-            let actions: Vec<Action> = match borsh::from_slice(&stored_delta.actions) {
-                Ok(actions) => actions,
-                Err(e) => {
-                    warn!(
-                        ?e,
-                        context_id = %self.applier.context_id,
-                        delta_id = ?stored_delta.delta_id,
-                        "Failed to deserialize persisted delta actions, skipping"
-                    );
-                    continue;
+            // Only rows that were actually committed (`applied: true`) seed the
+            // root-hash maps and the topology restore. An `applied: false` row's
+            // `expected_root_hash` is a prediction that never committed, so it
+            // must not pre-seed these maps; it is re-driven below, where the
+            // apply path records the real post-apply hash.
+            if stored_delta.applied {
+                {
+                    let mut head_hashes = self.head_root_hashes.write().await;
+                    let _ =
+                        head_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
                 }
-            };
+                {
+                    let mut parent_hashes = self.applier.parent_hashes.write().await;
+                    let _ = parent_hashes
+                        .insert(stored_delta.delta_id, stored_delta.expected_root_hash);
+                }
 
-            // Reconstruct the delta
-            // Infer checkpoint status: checkpoints have genesis as parent and empty payload
-            let is_checkpoint = stored_delta.parents.len() == 1
-                && stored_delta.parents[0] == [0u8; 32]
-                && actions.is_empty();
-
-            let dag_delta = CausalDelta {
-                id: stored_delta.delta_id,
-                parents: stored_delta.parents,
-                payload: actions,
-                hlc: stored_delta.hlc,
-                expected_root_hash: stored_delta.expected_root_hash,
-                kind: if is_checkpoint {
-                    calimero_dag::DeltaKind::Checkpoint
-                } else {
-                    calimero_dag::DeltaKind::Regular
-                },
-            };
-
-            // Store root hash mapping for both head_root_hashes and parent_hashes
-            // Note: For persisted deltas that were already applied, we use expected_root_hash
-            // as the computed hash (they should be the same for non-merge deltas).
-            // For merge deltas, the actual computed hash may have differed, but we don't
-            // persist that - this is a minor approximation that works for most cases.
-            {
-                let mut head_hashes = self.head_root_hashes.write().await;
-                let _ = head_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
+                // Record parents only; the payload is lazy-loaded at restore
+                // time to avoid holding every delta's actions in RAM at once.
+                let _ = applied_parents.insert(stored_delta.delta_id, stored_delta.parents);
+            } else {
+                // Uncommitted (`applied: false`) rows are re-driven through the
+                // full apply path, so they need their decoded payload now. These
+                // are crash/gossip leftovers — a small minority, not the bulk.
+                let actions: Vec<Action> = match borsh::from_slice(&stored_delta.actions) {
+                    Ok(actions) => actions,
+                    Err(e) => {
+                        warn!(
+                            ?e,
+                            context_id = %self.applier.context_id,
+                            delta_id = ?stored_delta.delta_id,
+                            "Failed to deserialize persisted delta actions, skipping"
+                        );
+                        continue;
+                    }
+                };
+                let is_checkpoint = stored_delta.parents.len() == 1
+                    && stored_delta.parents[0] == [0u8; 32]
+                    && actions.is_empty();
+                let dag_delta = CausalDelta {
+                    id: stored_delta.delta_id,
+                    parents: stored_delta.parents,
+                    payload: actions,
+                    hlc: stored_delta.hlc,
+                    expected_root_hash: stored_delta.expected_root_hash,
+                    kind: if is_checkpoint {
+                        calimero_dag::DeltaKind::Checkpoint
+                    } else {
+                        calimero_dag::DeltaKind::Regular
+                    },
+                };
+                unapplied_deltas.push(BatchDeltaInput {
+                    delta: dag_delta,
+                    events: stored_delta.events.clone(),
+                    author_id: stored_delta.author_id,
+                    governance_position_blob: stored_delta.governance_position_blob.clone(),
+                    delta_signature: stored_delta.delta_signature,
+                });
             }
-            {
-                let mut parent_hashes = self.applier.parent_hashes.write().await;
-                let _ =
-                    parent_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
-            }
-
-            drop(all_deltas.insert(stored_delta.delta_id, dag_delta));
         }
 
         // Historically this function bailed early when `all_deltas`
@@ -1411,10 +1458,10 @@ impl DeltaStore {
         // their parents (root-hash stuck at the wrong value until
         // restart). Keep going; step 2's while-loop is a no-op on
         // empty input.
-        if !all_deltas.is_empty() {
+        if !applied_parents.is_empty() {
             debug!(
                 context_id = %self.applier.context_id,
-                total_deltas = all_deltas.len(),
+                total_deltas = applied_parents.len(),
                 "Collected persisted deltas, starting topological restore"
             );
         }
@@ -1423,7 +1470,7 @@ impl DeltaStore {
         // We keep trying to restore deltas whose parents are already in the DAG
         // NOTE: All persisted deltas are already applied, so we just restore topology
         let mut loaded_count = 0;
-        let mut remaining = all_deltas;
+        let mut remaining = applied_parents;
         let mut progress_made = true;
         // #2266: collect (delta_id, parents) for the applier-local
         // topology mirror. Persisted deltas bypass `apply()` (they're
@@ -1432,32 +1479,78 @@ impl DeltaStore {
         // incorrectly return false for any cross-restart ancestry.
         let mut topology_seed: Vec<([u8; 32], Vec<[u8; 32]>)> = Vec::new();
 
-        while progress_made && !remaining.is_empty() {
-            progress_made = false;
-            let mut to_remove = Vec::new();
+        // Hold the DAG write lock once across all restore passes rather than
+        // re-acquiring it per delta (the loop's only await was this lock).
+        // Scoped so it drops before the `restore_topology` await below.
+        // Startup-only path with no concurrent appliers, so no contention
+        // cost — which is also why holding it across the blocking DB
+        // point-lookups below is fine.
+        {
+            let mut dag = self.dag.write().await;
+            while progress_made && !remaining.is_empty() {
+                progress_made = false;
+                let mut to_remove = Vec::new();
 
-            for (delta_id, dag_delta) in &remaining {
-                let mut dag = self.dag.write().await;
+                for (delta_id, parents) in &remaining {
+                    // Check if all parents have been applied before restoring
+                    let can_restore = parents.iter().all(|p| *p == [0u8; 32] || dag.is_applied(p));
 
-                // Check if all parents have been applied before restoring
-                let can_restore = dag_delta
-                    .parents
-                    .iter()
-                    .all(|p| *p == [0u8; 32] || dag.is_applied(p));
+                    if !can_restore {
+                        continue;
+                    }
 
-                if can_restore {
+                    // Lazy-load the full delta only now that it's ready to restore,
+                    // so we never hold all payloads in RAM at once. A row that
+                    // vanished or whose actions won't decode is skipped (it stays
+                    // pending and is retried once its parents/data are available).
+                    let key = calimero_store::key::ContextDagDelta::new(
+                        self.applier.context_id,
+                        *delta_id,
+                    );
+                    let Some(stored_delta) = handle.get(&key)? else {
+                        continue;
+                    };
+                    let actions: Vec<Action> = match borsh::from_slice(&stored_delta.actions) {
+                        Ok(actions) => actions,
+                        Err(e) => {
+                            warn!(
+                                ?e,
+                                context_id = %self.applier.context_id,
+                                delta_id = ?delta_id,
+                                "Failed to deserialize persisted delta actions during restore, skipping"
+                            );
+                            to_remove.push(*delta_id);
+                            continue;
+                        }
+                    };
+                    let is_checkpoint = stored_delta.parents.len() == 1
+                        && stored_delta.parents[0] == [0u8; 32]
+                        && actions.is_empty();
+                    let dag_delta = CausalDelta {
+                        id: stored_delta.delta_id,
+                        parents: stored_delta.parents.clone(),
+                        payload: actions,
+                        hlc: stored_delta.hlc,
+                        expected_root_hash: stored_delta.expected_root_hash,
+                        kind: if is_checkpoint {
+                            calimero_dag::DeltaKind::Checkpoint
+                        } else {
+                            calimero_dag::DeltaKind::Regular
+                        },
+                    };
+
                     // Restore topology WITHOUT re-applying (delta was already applied)
-                    if dag.restore_applied_delta(dag_delta.clone()) {
+                    if dag.restore_applied_delta(dag_delta) {
                         loaded_count += 1;
                         to_remove.push(*delta_id);
-                        topology_seed.push((*delta_id, dag_delta.parents.clone()));
+                        topology_seed.push((*delta_id, stored_delta.parents));
                         progress_made = true;
                     }
                 }
-            }
 
-            for delta_id in to_remove {
-                drop(remaining.remove(&delta_id));
+                for delta_id in to_remove {
+                    drop(remaining.remove(&delta_id));
+                }
             }
         }
 
@@ -1495,6 +1588,54 @@ impl DeltaStore {
                 context_id = %self.applier.context_id,
                 loaded_count,
                 "Loaded persisted deltas into DAG from database"
+            );
+        }
+
+        // Re-drive rows that were persisted but never committed (`applied: false`)
+        // AFTER the applied topology is restored, so their parents are present.
+        // Each goes through the FULL single-delta path (`add_delta_internal`), the
+        // same one a gossip-received delta takes: it executes the actions (or pends
+        // the delta if a parent is still missing), re-verifies with the stored
+        // author/governance/signature, seeds `head_root_hashes`, buffers orphan
+        // `SharedMember` deltas whose anchor hasn't synced, retains the per-context
+        // apply lock across the heads commit, and — on success — atomically flips
+        // the row to `applied: true` and advances `dag_heads`. That last step is
+        // why a re-driven delta is not re-driven again on the next restart, and why
+        // its head/root-hash is visible to concurrent readers.
+        //
+        // Crucially we do NOT hold the `dag` write lock across this loop: each WASM
+        // apply can run for up to the apply timeout, and `add_delta_internal` takes
+        // (and releases) its own locks per delta, so concurrent gossip application
+        // and head lookups are not starved.
+        if !unapplied_deltas.is_empty() {
+            let total = unapplied_deltas.len();
+            let mut redriven = 0;
+            for input in unapplied_deltas {
+                let delta_id = input.delta.id;
+                match self
+                    .add_delta_internal(
+                        input.delta,
+                        input.events,
+                        input.author_id,
+                        input.governance_position_blob,
+                        input.delta_signature,
+                    )
+                    .await
+                {
+                    Ok(_) => redriven += 1,
+                    Err(e) => warn!(
+                        ?e,
+                        context_id = %self.applier.context_id,
+                        delta_id = %Hash::from(delta_id).to_base58(),
+                        "Failed to re-drive a persisted-but-unapplied delta on load"
+                    ),
+                }
+            }
+            debug!(
+                context_id = %self.applier.context_id,
+                redriven,
+                total,
+                "Re-drove persisted-but-unapplied deltas through the apply path"
             );
         }
 
@@ -1700,12 +1841,7 @@ impl DeltaStore {
             .store(false, std::sync::atomic::Ordering::Release);
         // Take the retained guard (if any apply acquired one) to hold across the
         // `dag_heads` commit below; dropped right after the persist.
-        let batch_apply_lock_guard = self
-            .applier
-            .apply_lock_slot
-            .lock()
-            .expect("apply_lock_slot poisoned")
-            .take();
+        let batch_apply_lock_guard = self.applier.lock_apply_slot().take();
 
         let heads = dag.get_heads();
         let heads_count = heads.len();
@@ -2018,7 +2154,6 @@ impl DeltaStore {
                     StorageType::SharedMember { anchor, .. } => anchor,
                     _ => continue,
                 },
-                Action::Compare { .. } => continue,
             };
             if shared_here.contains(&anchor) {
                 continue;
@@ -2097,6 +2232,12 @@ impl DeltaStore {
         let actions_for_db = delta.payload.clone();
         let hlc = delta.hlc;
 
+        // Borsh-serialize the actions at most once. Both the events pre-persist
+        // (below) and the applied-record (further down) write the same bytes;
+        // without this memo, a delta that has events AND applies would re-encode
+        // the identical payload twice.
+        let mut serialized_actions: Option<Vec<u8>> = None;
+
         // Store the mapping before applying
         {
             let mut head_hashes = self.head_root_hashes.write().await;
@@ -2107,8 +2248,9 @@ impl DeltaStore {
         // This ensures events are available if the delta cascades during add_delta()
         if events.is_some() {
             let mut handle = self.applier.context_client.datastore_handle();
-            let serialized_actions = borsh::to_vec(&actions_for_db)
+            let encoded = borsh::to_vec(&actions_for_db)
                 .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?;
+            serialized_actions = Some(encoded.clone());
 
             handle
                 .put(
@@ -2116,7 +2258,7 @@ impl DeltaStore {
                     &calimero_store::types::ContextDagDelta {
                         delta_id,
                         parents: parents.clone(),
-                        actions: serialized_actions,
+                        actions: encoded,
                         hlc,
                         applied: false, // Not applied yet, will update if it applies
                         expected_root_hash,
@@ -2189,12 +2331,7 @@ impl DeltaStore {
         // committed by then, which is all a concurrent local write needs to
         // observe. While held, the only work is the direct-datastore head
         // persist (no executor re-entry), so holding it cannot deadlock.
-        let apply_lock_guard = self
-            .applier
-            .apply_lock_slot
-            .lock()
-            .expect("apply_lock_slot poisoned")
-            .take();
+        let apply_lock_guard = self.applier.lock_apply_slot().take();
         let result = add_outcome?;
 
         // Update context's dag_heads after the DAG has been updated
@@ -2245,8 +2382,13 @@ impl DeltaStore {
             calimero_store::key::ContextDagDelta,
             calimero_store::types::ContextDagDelta,
         )> = if result {
-            let serialized_actions = borsh::to_vec(&actions_for_db)
-                .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?;
+            // Reuse the pre-persist encoding when it ran (events path); only
+            // serialize here if this delta had no events to pre-persist.
+            let serialized_actions = match serialized_actions {
+                Some(bytes) => bytes,
+                None => borsh::to_vec(&actions_for_db)
+                    .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?,
+            };
             Some((
                 calimero_store::key::ContextDagDelta::new(self.applier.context_id, delta_id),
                 calimero_store::types::ContextDagDelta {
@@ -3813,5 +3955,58 @@ mod seed_topology_tests {
         }
         cap_topology(&mut topology);
         assert_eq!(topology.len(), 100);
+    }
+}
+
+#[cfg(test)]
+mod apply_lock_poison_recovery_tests {
+    //! Crash recovery for the per-context apply-lock relay slot.
+    //!
+    //! If an apply panics while holding `apply_lock_slot`, the mutex is poisoned.
+    //! `lock_apply_slot` recovers it via `PoisonError::into_inner` so a single
+    //! transient panic can't turn every later apply on the context into a crash.
+    //! This drives that path: poison the real slot from a panicking thread, then
+    //! assert the recovery accessor still acquires it (and observes an untorn
+    //! `Option`, since every access takes/replaces the value wholesale).
+
+    use std::sync::Arc;
+    use std::thread;
+
+    use crate::test_support::build_delta_store;
+
+    #[tokio::test]
+    async fn lock_apply_slot_recovers_poisoned_relay_mutex() {
+        let (ds, _tmp, _rx) = build_delta_store().await;
+        let applier = Arc::clone(&ds.applier);
+
+        // A thread panics while holding the relay slot — exactly the shape of an
+        // apply unwinding mid-relay — which poisons the mutex.
+        let poisoner = Arc::clone(&applier);
+        let handle = thread::spawn(move || {
+            let _guard = poisoner
+                .apply_lock_slot
+                .lock()
+                .expect("first lock is clean");
+            panic!("simulated apply panic while holding the relay slot");
+        });
+        assert!(
+            handle.join().is_err(),
+            "poisoner thread must have unwound to poison the mutex"
+        );
+
+        // Sanity: a naive `.lock()` now fails — the mutex really is poisoned, so
+        // the recovery below is exercising the poisoned path, not a clean one.
+        assert!(
+            applier.apply_lock_slot.lock().is_err(),
+            "mutex must report poisoned after the holder panicked"
+        );
+
+        // The recovery accessor acquires the slot without panicking and observes
+        // a consistent value (no retained key was stashed before the panic).
+        let guard = applier.lock_apply_slot();
+        assert!(
+            guard.is_none(),
+            "recovered relay slot must hold no retained apply-lock key"
+        );
     }
 }

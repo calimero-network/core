@@ -56,7 +56,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             MembershipRepository::new(&datastore).require_admin_or_capability(
                 &group_id,
                 &requester,
-                MemberCapabilities::CAN_INVITE_MEMBERS,
+                MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
                 "create group invitation",
             )?;
 

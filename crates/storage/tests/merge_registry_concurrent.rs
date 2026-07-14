@@ -38,6 +38,13 @@ impl Mergeable for ConcurrentState {
     }
 }
 
+// `RekeyTarget` is a supertrait of `Mergeable`. `ConcurrentState` holds no
+// nested collection (just a `Vec<u32>` merged by union), so the no-op default
+// `rekey_relative_to` is correct.
+impl calimero_storage::collections::rekey::RekeyTarget for ConcurrentState {
+    fn rekey_relative_to(&mut self, _parent_id: calimero_storage::address::Id) {}
+}
+
 #[test]
 fn concurrent_register_and_dispatch_against_production_registry() {
     const THREADS: usize = 16;

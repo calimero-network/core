@@ -9,8 +9,26 @@ use sha2::{Digest, Sha256};
 use super::*;
 use crate::constants::DRIFT_TOLERANCE_NANOS;
 use crate::entities::{Data, Element, SignatureData, StorageType};
+use crate::env::time_now;
 use crate::store::MockedStorage;
 use crate::tests::common::{Page, Paragraph};
+
+const ONE_SEC_NANOS: u64 = 1_000_000_000;
+
+/// Independently recompute an entity's `full_hash` from its stored `own_hash`
+/// and children, without reading the stored `full_hash` field (mirrors the
+/// helper in the `merkle` test module). If a save site forgot to refresh
+/// `full_hash`, the stored value and this recompute diverge.
+fn recompute_full_hash(id: crate::address::Id) -> [u8; 32] {
+    use crate::index::Index;
+    use crate::store::MainStorage;
+    let index = Index::<MainStorage>::get_index(id).unwrap().unwrap();
+    Index::<MainStorage>::calculate_full_hash_for_children(
+        index.own_hash(),
+        &index.children().map(<[_]>::to_vec),
+    )
+    .unwrap()
+}
 
 #[cfg(test)]
 mod interface__public_methods {
@@ -123,30 +141,124 @@ mod interface__public_methods {
     }
 
     #[test]
-    #[ignore]
+    #[serial]
     fn save__update_merkle_hash() {
-        // TODO: This is best done when there's data
-        todo!()
+        // A leaf entity with no children: mutating its own data must move its
+        // Merkle hash (own_hash feeds full_hash).
+        crate::tests::common::register_test_merge_functions();
+        let base = time_now();
+        let mut page = Page::new_from_element("Original", Element::root());
+        page.element_mut().set_updated_at(base);
+        assert!(MainInterface::save(&mut page).unwrap());
+        // Capture the pre-change hash from the PERSISTED entity, not the
+        // in-memory element, so the assertion doesn't depend on `save`'s
+        // side-effect of refreshing `element().merkle_hash` — a broken save
+        // that left the in-memory hash zeroed would otherwise make the
+        // `assert_ne!` below trivially pass.
+        let hash_before = MainInterface::find_by_id::<Page>(page.id())
+            .unwrap()
+            .unwrap()
+            .element()
+            .merkle_hash;
+
+        page.title = "Changed".to_string();
+        page.element_mut().update();
+        page.element_mut().set_updated_at(base + ONE_SEC_NANOS);
+        // The newer-timestamp write must be accepted (save -> true); otherwise
+        // the hash comparison below would read back the OLD hash and could fail
+        // for the wrong reason (a rejected LWW update rather than a hashing bug).
+        assert!(
+            MainInterface::save(&mut page).unwrap(),
+            "the newer-timestamp update must be accepted as a fresh write"
+        );
+
+        let hash_after = MainInterface::find_by_id::<Page>(page.id())
+            .unwrap()
+            .unwrap()
+            .element()
+            .merkle_hash;
+        assert_ne!(
+            hash_before, hash_after,
+            "changing an entity's own data must move its Merkle hash"
+        );
+        // Cross-check the new hash against an independent recompute, matching
+        // the with-children / with-parents siblings: catches a hash that
+        // changed but to an incorrect value.
+        assert_eq!(
+            hash_after,
+            recompute_full_hash(page.id()),
+            "stored full hash must match recompute after an own-data change"
+        );
     }
 
     #[test]
-    #[ignore]
+    #[serial]
     fn save__update_merkle_hash_with_children() {
-        // TODO: This is best done when there's data
-        todo!()
+        // Adding a child must fold into the parent's full hash, and the stored
+        // full hash must equal an independent recompute over own_hash+children.
+        crate::tests::common::register_test_merge_functions();
+        let mut page = Page::new_from_element("Parent", Element::root());
+        assert!(MainInterface::save(&mut page).unwrap());
+        let hash_no_children = page.element().merkle_hash;
+
+        let mut para = Paragraph::new_from_element("Child", Element::new(None));
+        assert!(MainInterface::add_child_to(page.id(), &mut para).unwrap());
+
+        let parent = MainInterface::find_by_id::<Page>(page.id())
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            hash_no_children,
+            parent.element().merkle_hash,
+            "parent Merkle hash must incorporate its children"
+        );
+        assert_eq!(
+            parent.element().merkle_hash,
+            recompute_full_hash(page.id()),
+            "stored full hash must match recompute over own_hash + children"
+        );
     }
 
     #[test]
-    #[ignore]
+    #[serial]
     fn save__update_merkle_hash_with_parents() {
-        // TODO: This is best done when there's data
-        todo!()
-    }
+        // The inverse direction: updating a CHILD must propagate up into every
+        // parent's full hash, and the propagated value must stay internally
+        // consistent with a fresh recompute.
+        crate::tests::common::register_test_merge_functions();
+        let base = time_now();
+        let mut page = Page::new_from_element("Parent", Element::root());
+        assert!(MainInterface::save(&mut page).unwrap());
 
-    #[test]
-    #[ignore]
-    fn validate() {
-        todo!()
+        let mut para = Paragraph::new_from_element("Original", Element::new(None));
+        assert!(MainInterface::add_child_to(page.id(), &mut para).unwrap());
+
+        let parent_hash_before = MainInterface::find_by_id::<Page>(page.id())
+            .unwrap()
+            .unwrap()
+            .element()
+            .merkle_hash;
+
+        // Update the child with a strictly-newer timestamp so the LWW save
+        // takes it, then confirm the change reached the parent.
+        para.text = "Updated".to_string();
+        para.element_mut().update();
+        para.element_mut().set_updated_at(base + ONE_SEC_NANOS);
+        assert!(MainInterface::save(&mut para).unwrap());
+
+        let parent_after = MainInterface::find_by_id::<Page>(page.id())
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            parent_hash_before,
+            parent_after.element().merkle_hash,
+            "a child update must propagate into the parent's Merkle hash"
+        );
+        assert_eq!(
+            parent_after.element().merkle_hash,
+            recompute_full_hash(page.id()),
+            "parent full hash must match recompute after a child update"
+        );
     }
 }
 
@@ -281,15 +393,6 @@ mod interface__apply_actions {
     }
 
     #[test]
-    fn apply_action__compare() {
-        let page = Page::new_from_element("Test Page", Element::root());
-        let action = Action::Compare { id: page.id() };
-
-        // Compare should fail
-        assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_err());
-    }
-
-    #[test]
     fn apply_action__non_existent_update() {
         let page = Page::new_from_element("Test Page", Element::root());
         let serialized = to_vec(&page).unwrap();
@@ -309,15 +412,13 @@ mod interface__apply_actions {
         assert_eq!(retrieved_page.unwrap().title, "Test Page");
     }
 
-    // Regression for #2356 item 1: a stale-by-HLC apply (incoming.updated_at <
-    // stored.updated_at) hits the `save_internal -> None` short-circuit. The
-    // apply must still enqueue Action::Compare so the receiver's current
-    // Merkle state for this entity propagates to peers — otherwise two nodes
-    // that each hold the locally-newer side of a concurrent CRDT merge keep
-    // dropping each other's deltas, and root-hash convergence stalls until an
-    // unrelated trigger forces a hash-comparison sweep.
+    // A stale-by-HLC apply (incoming.updated_at < stored.updated_at) hits the
+    // `save_internal -> None` short-circuit and contributes nothing to the
+    // causal delta. Merkle-root convergence for concurrently-merged entities is
+    // owned by the HashComparison / level-wise sync protocols instead. This
+    // asserts that contract — the stale apply succeeds but emits no delta.
     #[test]
-    fn apply_action__stale_update_still_emits_compare() {
+    fn apply_action__stale_update_emits_no_delta() {
         use crate::delta::{commit_causal_delta, reset_delta_context};
 
         crate::tests::common::register_test_merge_functions();
@@ -344,296 +445,13 @@ mod interface__apply_actions {
 
         assert!(MainInterface::apply_action(stale_action, &ApplyContext::empty()).is_ok());
 
-        let delta = commit_causal_delta(&[0; 32])
-            .unwrap()
-            .expect("stale apply must still emit a delta (Action::Compare)");
+        // The stale apply enqueues nothing, so there is no causal delta to commit.
+        let delta = commit_causal_delta(&[0; 32]).unwrap();
         assert!(
-            delta
-                .actions
-                .iter()
-                .any(|a| matches!(a, Action::Compare { id: cid } if *cid == id)),
-            "expected Action::Compare for id={id} after stale apply, got: {:?}",
-            delta.actions
+            delta.is_none(),
+            "stale apply must not emit a delta (the apply path enqueues no action \
+             for an entity that lost the LWW tiebreak), got: {delta:?}"
         );
-    }
-}
-
-#[cfg(test)]
-mod interface__comparison {
-    use super::*;
-
-    type ForeignInterface = Interface<MockedStorage<0>>;
-
-    fn compare_trees<D: Data>(
-        foreign: Option<&D>,
-        comparison_data: ComparisonData,
-    ) -> Result<(Vec<Action>, Vec<Action>), StorageError> {
-        MainInterface::compare_trees(
-            foreign
-                .map(to_vec)
-                .transpose()
-                .map_err(StorageError::SerializationError)?,
-            comparison_data,
-        )
-    }
-
-    #[test]
-    fn compare_trees__identical() {
-        let element = Element::root();
-        let mut local = Page::new_from_element("Test Page", element);
-        let mut foreign = local.clone();
-
-        assert!(MainInterface::save(&mut local).unwrap());
-        assert!(ForeignInterface::save(&mut foreign).unwrap());
-        assert_eq!(
-            local.element().merkle_hash(),
-            foreign.element().merkle_hash()
-        );
-
-        let result = compare_trees(
-            Some(&foreign),
-            ForeignInterface::generate_comparison_data(Some(foreign.id())).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(result, (vec![], vec![]));
-    }
-
-    #[test]
-    fn compare_trees__local_newer() {
-        let element = Element::root();
-        let mut local = Page::new_from_element("Test Page", element.clone());
-        let mut foreign = Page::new_from_element("Old Test Page", element);
-
-        assert!(ForeignInterface::save(&mut foreign).unwrap());
-
-        // Make local newer
-        sleep(Duration::from_millis(10));
-        local.element_mut().update();
-        assert!(MainInterface::save(&mut local).unwrap());
-
-        let result = compare_trees(
-            Some(&foreign),
-            ForeignInterface::generate_comparison_data(Some(foreign.id())).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            result,
-            (
-                vec![],
-                vec![Action::Update {
-                    id: local.id(),
-                    data: to_vec(&local).unwrap(),
-                    ancestors: vec![],
-                    metadata: local.element().metadata.clone(),
-                }]
-            )
-        );
-    }
-
-    #[test]
-    fn compare_trees__foreign_newer() {
-        let element = Element::root();
-        let mut local = Page::new_from_element("Old Test Page", element.clone());
-        let mut foreign = Page::new_from_element("Test Page", element);
-
-        assert!(MainInterface::save(&mut local).unwrap());
-
-        // Make foreign newer
-        sleep(Duration::from_millis(10));
-        foreign.element_mut().update();
-        assert!(ForeignInterface::save(&mut foreign).unwrap());
-
-        let result = compare_trees(
-            Some(&foreign),
-            ForeignInterface::generate_comparison_data(Some(foreign.id())).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            result,
-            (
-                vec![Action::Update {
-                    id: foreign.id(),
-                    data: to_vec(&foreign).unwrap(),
-                    ancestors: vec![],
-                    metadata: foreign.element().metadata.clone(),
-                }],
-                vec![]
-            )
-        );
-    }
-
-    #[test]
-    fn compare_trees__with_collections() {
-        let page_element = Element::root();
-        let para1_element = Element::new(None);
-        let para2_element = Element::new(None);
-        let para3_element = Element::new(None);
-
-        let mut local_page = Page::new_from_element("Local Page", page_element.clone());
-        let mut local_para1 =
-            Paragraph::new_from_element("Local Paragraph 1", para1_element.clone());
-        let mut local_para2 = Paragraph::new_from_element("Local Paragraph 2", para2_element);
-
-        let mut foreign_page = Page::new_from_element("Foreign Page", page_element);
-        let mut foreign_para1 = Paragraph::new_from_element("Updated Paragraph 1", para1_element);
-        let mut foreign_para3 = Paragraph::new_from_element("Foreign Paragraph 3", para3_element);
-
-        assert!(MainInterface::save(&mut local_page).unwrap());
-        assert!(MainInterface::add_child_to(local_page.id(), &mut local_para1).unwrap());
-        assert!(MainInterface::add_child_to(local_page.id(), &mut local_para2).unwrap());
-
-        assert!(ForeignInterface::save(&mut foreign_page).unwrap());
-        assert!(ForeignInterface::add_child_to(foreign_page.id(), &mut foreign_para1).unwrap());
-        assert!(ForeignInterface::add_child_to(foreign_page.id(), &mut foreign_para3).unwrap());
-
-        let (local_actions, foreign_actions) = compare_trees(
-            Some(&foreign_page),
-            ForeignInterface::generate_comparison_data(Some(foreign_page.id())).unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(
-            local_actions,
-            vec![
-                // Page needs update due to different child structure
-                Action::Update {
-                    id: foreign_page.id(),
-                    data: to_vec(&foreign_page).unwrap(),
-                    ancestors: vec![],
-                    metadata: foreign_page.element().metadata.clone(),
-                },
-                // Para1 needs comparison due to different hash
-                Action::Compare {
-                    id: local_para1.id()
-                },
-            ]
-        );
-        local_para2.element_mut().is_dirty = true;
-        // Para2 is a local-only child within a collection both sides share, so
-        // it takes the "child missing from foreign" arm. Its Add must carry
-        // para2's *own* ancestor chain — i.e. its immediate parent, the page —
-        // exactly like the "collection entirely missing" arm does for para3
-        // below. Regression guard: this previously asserted `ancestors: vec![]`,
-        // which only held because the parent is the root page (whose ancestors
-        // are empty); the action was being built from the parent's ancestors
-        // instead of the child's, orphaning para2 on the receiver.
-        // Expected ancestor hash, derived independently of the action under
-        // test: the page's own full Merkle hash, which is what
-        // `get_ancestors_of` records for the parent entry.
-        let expected_page_hash = MainInterface::generate_comparison_data(Some(local_page.id()))
-            .unwrap()
-            .full_hash;
-        let local_para2_ancestor_hash = {
-            let Action::Add { ancestors, .. } = foreign_actions[1].clone() else {
-                panic!("Expected para2 to be added to foreign");
-            };
-            assert_eq!(ancestors.len(), 1, "para2 must carry exactly its parent");
-            assert_eq!(
-                ancestors[0].id(),
-                local_page.id(),
-                "para2's ancestor must be its immediate parent (the page)"
-            );
-            assert_eq!(
-                ancestors[0].merkle_hash(),
-                expected_page_hash,
-                "para2's ancestor hash must be the page's full Merkle hash"
-            );
-            ancestors[0].merkle_hash()
-        };
-        assert_eq!(
-            foreign_actions,
-            vec![
-                // Para1 needs comparison due to different hash
-                Action::Compare {
-                    id: local_para1.id()
-                },
-                // Para2 needs to be added to foreign, under its parent page
-                Action::Add {
-                    id: local_para2.id(),
-                    data: to_vec(&local_para2).unwrap(),
-                    ancestors: vec![ChildInfo::new(
-                        local_page.id(),
-                        local_para2_ancestor_hash,
-                        local_page.element().metadata.clone(),
-                    )],
-                    metadata: local_para2.element().metadata.clone(),
-                },
-                // Para3 needs to be added locally, but we don't have the data, so we compare
-                Action::Compare {
-                    id: foreign_para3.id()
-                },
-            ]
-        );
-
-        // Compare the updated para1
-        let (local_para1_actions, foreign_para1_actions) = compare_trees(
-            Some(&foreign_para1),
-            ForeignInterface::generate_comparison_data(Some(foreign_para1.id())).unwrap(),
-        )
-        .unwrap();
-
-        // Here, para1 has been updated, but also para2 is present locally and para3
-        // is present remotely. So the ancestor hashes will not match, and will
-        // trigger a recomparison.
-        let local_para1_ancestor_hash = {
-            let Action::Update { ancestors, .. } = local_para1_actions[0].clone() else {
-                panic!("Expected an update action");
-            };
-            ancestors[0].merkle_hash()
-        };
-        assert_ne!(
-            local_para1_ancestor_hash,
-            foreign_page.element().merkle_hash()
-        );
-        assert_eq!(
-            local_para1_actions,
-            vec![Action::Update {
-                id: foreign_para1.id(),
-                data: to_vec(&foreign_para1).unwrap(),
-                ancestors: vec![ChildInfo::new(
-                    foreign_page.id(),
-                    local_para1_ancestor_hash,
-                    local_page.element().metadata.clone(),
-                )],
-                metadata: foreign_para1.element().metadata.clone(),
-            }]
-        );
-        assert_eq!(foreign_para1_actions, vec![]);
-
-        // Compare para3 which doesn't exist locally
-        let (local_para3_actions, foreign_para3_actions) = compare_trees(
-            Some(&foreign_para3),
-            ForeignInterface::generate_comparison_data(Some(foreign_para3.id())).unwrap(),
-        )
-        .unwrap();
-
-        // Here, para3 is present remotely but not locally, and also para2 is
-        // present locally and not remotely, and para1 has been updated. So the
-        // ancestor hashes will not match, and will trigger a recomparison.
-        let local_para3_ancestor_hash = {
-            let Action::Add { ancestors, .. } = local_para3_actions[0].clone() else {
-                panic!("Expected an update action");
-            };
-            ancestors[0].merkle_hash()
-        };
-        assert_ne!(
-            local_para3_ancestor_hash,
-            foreign_page.element().merkle_hash()
-        );
-        assert_eq!(
-            local_para3_actions,
-            vec![Action::Add {
-                id: foreign_para3.id(),
-                data: to_vec(&foreign_para3).unwrap(),
-                ancestors: vec![ChildInfo::new(
-                    foreign_page.id(),
-                    local_para3_ancestor_hash,
-                    foreign_page.element().metadata.clone(),
-                )],
-                metadata: foreign_para3.element().metadata.clone(),
-            }]
-        );
-        assert_eq!(foreign_para3_actions, vec![]);
     }
 }
 
@@ -1000,9 +818,12 @@ mod user_storage_replay_protection {
         // post-divergence sync convergence.
         //
         // Strict rejection semantics remain for STRICTLY-LOWER
-        // nonces (see `replay_with_lower_nonce_fails` below) and
-        // for `DeleteRef` (where same-nonce delete is destructive
-        // and shouldn't occur in legitimate flows).
+        // nonces (see `replay_with_lower_nonce_fails` below). The
+        // `DeleteRef` arms now reject only strictly-lower nonces too
+        // and let the EQUAL-nonce case fall through to the unified
+        // apply-path tiebreak (`apply_delete_ref_action`: equal-HLC
+        // ⇒ delete wins) so signed types and `Public` resolve the
+        // equal-HLC delete-vs-update tie identically.
         //
         // **Why this test constructs the action manually** instead
         // of using `create_signed_user_add_action`: that helper
@@ -1102,7 +923,10 @@ mod user_storage_replay_protection {
         // nonce)` and verify still runs.
         //
         // The DeleteRef path keeps the strict `Err(NonceReplay)` on
-        // `<=` — see `tombstone_replay_with_lower_nonce_fails`.
+        // STRICTLY-lower nonces (`<`); the equal-nonce case falls
+        // through to the unified apply-path tiebreak — see
+        // `user_delete_replay_protection` (strictly-stale) and
+        // `equal_nonce_delete_wins_like_public` (equal-HLC).
         env::reset_for_testing();
 
         let (signing_key, owner) = create_test_keypair();
@@ -2130,6 +1954,70 @@ mod frozen_storage_verification {
         }
     }
 
+    /// A local delete of a Frozen child must be rejected at
+    /// `remove_child_from`, before any state mutation.
+    ///
+    /// Regression test for the split-brain: previously the local delete
+    /// tombstoned the child and broadcast a `DeleteRef` that every peer
+    /// rejects (see `frozen_delete_is_rejected`), leaving the deleter
+    /// permanently diverged from the rest of the network.
+    #[test]
+    fn remove_child_from_rejects_frozen_child() {
+        use crate::delta::{commit_causal_delta, reset_delta_context};
+
+        env::reset_for_testing();
+
+        // Parent under root.
+        let mut page = Page::new_from_element("Parent", Element::root());
+        assert!(MainInterface::save(&mut page).unwrap());
+
+        // Frozen child registered under the parent.
+        let mut child_element = Element::new(None);
+        child_element.set_frozen_domain();
+        let mut para = Paragraph::new_from_element("Frozen child", child_element);
+        assert!(MainInterface::add_child_to(page.id(), &mut para).unwrap());
+
+        // Discard the actions emitted by the setup above — the assertion
+        // below is only about what the rejected delete contributes.
+        reset_delta_context();
+
+        // Local delete must be refused.
+        let result = MainInterface::remove_child_from(page.id(), para.id());
+        match result {
+            Err(StorageError::ActionNotAllowed(msg)) => {
+                assert!(
+                    msg.contains("Frozen") && msg.contains("deleted"),
+                    "Error should mention Frozen and deleted: {msg}"
+                );
+            }
+            other => panic!("Expected ActionNotAllowed error, got {other:?}"),
+        }
+
+        // The child must still be present — no tombstone, no divergence.
+        assert!(
+            MainInterface::children_of::<Paragraph>(page.id())
+                .unwrap()
+                .iter()
+                .any(|child| child.id() == para.id()),
+            "Frozen child must remain after a rejected delete"
+        );
+
+        // The rejected delete must not have broadcast a `DeleteRef`: that is
+        // the split-brain this guards against — every peer rejects a Frozen
+        // `DeleteRef`, leaving only the deleter diverged. The guard fires
+        // before any state is mutated, so no action should reach the delta.
+        if let Some(delta) = commit_causal_delta(&[0; 32]).unwrap() {
+            assert!(
+                !delta
+                    .actions
+                    .iter()
+                    .any(|a| matches!(a, Action::DeleteRef { id, .. } if *id == para.id())),
+                "rejected Frozen delete must not emit a DeleteRef, got: {:?}",
+                delta.actions
+            );
+        }
+    }
+
     #[test]
     fn frozen_blob_too_small_fails() {
         env::reset_for_testing();
@@ -2700,6 +2588,99 @@ mod storage_type_edge_cases {
         let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
         assert!(retrieved.is_some());
     }
+
+    #[test]
+    fn equal_nonce_delete_wins_like_public() {
+        // Unified equal-HLC delete-vs-update tiebreak: a signed
+        // `DeleteRef` whose nonce EQUALS the stored `updated_at` must
+        // be ACCEPTED and win (delete-wins-on-equal), exactly as a
+        // `Public` delete is. Before unification the signed verify
+        // arms rejected this case with `NonceReplay` (the `<=`
+        // boundary) while the apply path and `Public` (no nonce gate)
+        // both accepted it — so signed types and `Public` diverged on
+        // the equal-HLC tie. The verify arms now reject only
+        // STRICTLY-lower nonces (`<`) and let the equal case fall
+        // through to `apply_delete_ref_action`'s tiebreak
+        // (`deleted_at < updated_at` ⇒ delete loses, so equal ⇒ delete
+        // wins). Contrast `user_delete_replay_protection`, which keeps
+        // the strict `NonceReplay` on a STRICTLY-lower delete nonce.
+        crate::tests::common::register_test_merge_functions();
+        env::reset_for_testing();
+
+        let (signing_key, owner) = create_test_keypair();
+
+        let mut element = Element::root();
+        element.set_user_domain(owner);
+        let page = Page::new_from_element("Page", element);
+        let serialized = to_vec(&page).unwrap();
+
+        let nonce1 = env::time_now();
+        let action1 =
+            create_signed_user_add_action(&signing_key, owner, page.id(), serialized, nonce1);
+        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
+
+        // The stored replay nonce after the add. Build a delete whose
+        // signed nonce AND `deleted_at` both equal it — mirroring the
+        // production invariant that both come from the same HLC — so
+        // the equal-HLC path is exercised in BOTH the verify and apply
+        // stages.
+        let stored = *<Index<MainStorage>>::get_metadata(page.id())
+            .unwrap()
+            .unwrap()
+            .updated_at;
+
+        let metadata = Metadata {
+            created_at: 0,
+            updated_at: stored.into(),
+            storage_type: StorageType::User {
+                owner,
+                signature_data: Some(SignatureData {
+                    signature: [0; 64],
+                    nonce: stored,
+                    signer: None,
+                }),
+            },
+            crdt_type: None,
+            field_name: None,
+            schema_version: None,
+        };
+        let mut delete_action = Action::DeleteRef {
+            id: page.id(),
+            deleted_at: stored,
+            metadata,
+        };
+        let signature = sign_action(&delete_action, &signing_key);
+        if let Action::DeleteRef {
+            metadata: ref mut m,
+            ..
+        } = delete_action
+        {
+            if let StorageType::User {
+                signature_data: ref mut sd,
+                ..
+            } = m.storage_type
+            {
+                *sd = Some(SignatureData {
+                    signature,
+                    nonce: stored,
+                    signer: None,
+                });
+            }
+        }
+
+        // Equal-HLC delete is accepted (not `NonceReplay`) and wins.
+        let result = MainInterface::apply_action(delete_action, &ApplyContext::empty());
+        assert!(
+            result.is_ok(),
+            "equal-HLC signed delete must be accepted (delete-wins), got {result:?}"
+        );
+        assert!(
+            MainInterface::find_by_id::<Page>(page.id())
+                .unwrap()
+                .is_none(),
+            "equal-HLC delete must win, removing the entity"
+        );
+    }
 }
 
 /// PR-6c task 6c.3 — owner-driven convert at write time.
@@ -3153,5 +3134,66 @@ mod owner_driven_convert {
             vec![1, 2, 3],
             "divergent save must union (always-union dispatch), not LWW-overwrite"
         );
+    }
+}
+
+/// Subtree tombstoning must converge: the node that performs a local delete
+/// and a replica that replays the resulting `DeleteRef` must end with the same
+/// tombstone state across the whole subtree — not just the directly-deleted
+/// node. The replica only ever receives ONE `DeleteRef` (for the subtree root);
+/// it reconstructs the descendant tombstones by replaying the same recursion
+/// with the same `deleted_at`.
+#[cfg(test)]
+mod subtree_tombstone_convergence {
+    use super::*;
+    use crate::entities::ChildInfo;
+
+    fn build_chain<S: crate::store::StorageAdaptor>(root: Id, a: Id, b: Id, c: Id) {
+        <Index<S>>::add_root(ChildInfo::new(root, [1; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(root, ChildInfo::new(a, [2; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(b, [3; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(b, ChildInfo::new(c, [4; 32], Metadata::default())).unwrap();
+    }
+
+    #[test]
+    fn local_delete_and_remote_delete_ref_converge_on_whole_subtree() {
+        // Two independent stores with an identical root -> a -> b -> c chain.
+        type Local = MockedStorage<2200>;
+        type Remote = MockedStorage<2201>;
+
+        // Same ids on both stores so the chains are identical.
+        let root = Id::random();
+        let a = Id::random();
+        let b = Id::random();
+        let c = Id::random();
+        build_chain::<Local>(root, a, b, c);
+        build_chain::<Remote>(root, a, b, c);
+
+        // One shared delete nonce — exactly what the originator stamps locally
+        // and carries on the `DeleteRef` wire.
+        let deleted_at = time_now();
+
+        // Originator: local delete of `a`.
+        <Index<Local>>::remove_child_from(root, a, deleted_at).unwrap();
+
+        // Replica: replay the single `DeleteRef` for the subtree root `a`.
+        let action = Action::DeleteRef {
+            id: a,
+            deleted_at,
+            metadata: Metadata::default(),
+        };
+        Interface::<Remote>::apply_action(action, &ApplyContext::empty()).unwrap();
+
+        // Both stores converged to the same tombstone state across the subtree.
+        for id in [a, b, c] {
+            assert!(
+                <Index<Local>>::is_deleted(id).unwrap(),
+                "originator must tombstone {id:?}"
+            );
+            assert!(
+                <Index<Remote>>::is_deleted(id).unwrap(),
+                "replica must tombstone {id:?} after replaying the root DeleteRef"
+            );
+        }
     }
 }

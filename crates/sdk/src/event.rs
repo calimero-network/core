@@ -141,10 +141,27 @@ pub struct EncodedAppEvent<'a> {
     pub data: Cow<'a, [u8]>,
 }
 
+/// Default emitter installed before [`register`] runs.
+///
+/// Emitting before the event system is registered means `emit` was reached
+/// outside the normal app entrypoint — typically a direct unit test or
+/// setup-time code path. Rather than abort the guest with an opaque panic, log
+/// an actionable message and drop the event so the caller keeps running.
+fn unregistered_emitter(_event: Box<dyn AppEventExt>) {
+    env::log(
+        "app event emitted before the event system was registered; the event was dropped. \
+         This usually means `emit` ran outside the app entrypoint (e.g. a unit test or \
+         setup code) before `register` was called.",
+    );
+}
+
 thread_local! {
     /// The event emission function that processes events through the runtime.
     /// This is set during app initialization and used by the `emit` function.
-    static EVENT_EMITTER: RefCell<fn(Box<dyn AppEventExt>)> = panic!("uninitialized event emitter");
+    /// Until [`register`] runs it points at [`unregistered_emitter`], which
+    /// logs and drops the event instead of panicking.
+    static EVENT_EMITTER: RefCell<fn(Box<dyn AppEventExt>)> =
+        RefCell::new(unregistered_emitter);
 
     /// The name of the callback handler method to call when emitting events with handlers.
     /// This is set temporarily by `emit_with_handler` and read by the runtime.

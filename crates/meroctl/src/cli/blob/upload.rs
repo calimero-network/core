@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::PathBuf;
 
 use calimero_primitives::context::ContextId;
@@ -34,8 +33,9 @@ impl UploadCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;
 
-        // Read the file
-        let data = fs::read(&self.file_path)
+        // Read the file (async so we don't block the runtime worker thread).
+        let data = tokio::fs::read(&self.file_path)
+            .await
             .map_err(|e| eyre!("Failed to read file '{}': {}", self.file_path.display(), e))?;
 
         // Upload the blob

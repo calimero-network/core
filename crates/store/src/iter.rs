@@ -2,7 +2,6 @@ use core::convert::Infallible;
 use core::fmt;
 use core::fmt::{Debug, Formatter};
 use core::marker::PhantomData;
-use core::mem::transmute;
 
 use calimero_primitives::reflect::Reflect;
 use eyre::{Report, Result as EyreResult};
@@ -80,10 +79,28 @@ impl<'a, K, V> Iter<'a, K, V> {
         }
     }
 
+    /// Returns an iterator over the keys.
+    ///
+    /// # Allocation
+    ///
+    /// Each yielded key is copied into an owned buffer so it stays valid after
+    /// the iterator advances (the backend hands out slices that borrow its
+    /// internal cursor buffer, which the next step overwrites). This means one
+    /// allocation per item — for backends that yield already-owned buffers the
+    /// copy is elided, but for the RocksDB backend (borrowed slices) it is not.
+    /// Callers that only need each key transiently within a single loop
+    /// iteration still pay this cost; a zero-copy streaming variant would
+    /// require a lending iterator (GAT) and is not currently provided.
     pub const fn keys(&mut self) -> IterKeys<'_, 'a, K, V> {
         IterKeys { iter: self }
     }
 
+    /// Returns an iterator over the key-value entries.
+    ///
+    /// # Allocation
+    ///
+    /// Each yielded key and value is copied into an owned buffer; see
+    /// [`Iter::keys`] for the rationale and cost.
     pub const fn entries(&mut self) -> IterEntries<'_, 'a, K, V> {
         IterEntries { iter: self }
     }
@@ -262,8 +279,13 @@ where
         while !self.iter.done {
             match self.iter.inner.next() {
                 Ok(Some(key)) => {
-                    // safety: key only needs to live as long as the iterator, not it's reference
-                    let key = unsafe { transmute::<Slice<'_>, Slice<'_>>(key) };
+                    // The slice yielded by the underlying iterator borrows its
+                    // internal buffer, which the next `next()` call invalidates.
+                    // `Iterator::next` does not tie the yielded item to the
+                    // `&mut self` borrow, so callers may retain it across
+                    // iterations (e.g. `collect`). Copy into an owned buffer to
+                    // sever that aliasing — see the module note on `Slice`.
+                    let key: Slice<'static> = key.into_boxed().into();
                     match K::try_into_key(key) {
                         Ok(key) => return Some(Ok(key)),
                         // Skip keys with mismatched sizes (different key type in same column)
@@ -292,15 +314,23 @@ where
 /// # Error Handling
 ///
 /// Each item yielded is a tuple of `(EyreResult<K::Key>, EyreResult<V::Value>)`.
-/// Callers should check both results and propagate errors appropriately.
+/// Callers should check both results and propagate errors appropriately —
+/// **the key result first**.
+///
+/// On a key error (decode failure or an I/O error from the underlying iterator)
+/// the iterator fuses and yields `(Err(key_error), Err(sentinel))`: the real
+/// cause is in the key slot, and the value slot carries only a
+/// `"value skipped: …"` sentinel because no value is read for a row whose key
+/// could not be resolved. So inspect (and propagate) the key result first; the
+/// value slot is meaningful only when the key result is `Ok`.
 ///
 /// ## Proper Usage
 ///
 /// ```ignore
 /// let mut iter = handle.iter::<MyKey>()?;
 /// for (key_result, value_result) in iter.entries() {
-///     let key = key_result?;     // Propagate key errors
-///     let value = value_result?; // Propagate value errors
+///     let key = key_result?;     // Propagate key errors FIRST
+///     let value = value_result?; // Only meaningful once the key is Ok
 ///     // ... use key and value
 /// }
 /// ```
@@ -316,35 +346,51 @@ where
     type Item = (EyreResult<K::Key>, EyreResult<V::Value>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let key = 'key: {
-            let key = loop {
-                if self.iter.done {
-                    return None;
-                }
+        // Resolve the key first. Any key error — an I/O failure from the
+        // underlying iterator, or a structured decode error — is terminal: fuse
+        // the iterator and surface the error WITHOUT reading a value. A read
+        // here would either run against an already-errored cursor or pair a
+        // value with a key we could not decode, yielding a misleading
+        // `(Err, Ok(value))` tuple a caller might consume as if the value were
+        // valid. Size-mismatched keys (a different key type sharing the column)
+        // are still skipped rather than treated as errors.
+        let key = loop {
+            if self.iter.done {
+                return None;
+            }
 
-                match self.iter.inner.next() {
-                    Ok(Some(raw_key)) => {
-                        // safety: key only needs to live as long as the iterator, not it's reference
-                        let raw_key = unsafe { transmute::<Slice<'_>, Slice<'_>>(raw_key) };
-                        match K::try_into_key(raw_key) {
-                            Ok(key) => break key,
-                            // Skip keys with mismatched sizes (different key type in same column)
-                            Err(e) if K::is_size_mismatch(&e) => continue,
-                            Err(e) => break 'key Err(e.into()),
+            match self.iter.inner.next() {
+                Ok(Some(raw_key)) => {
+                    // Copy into an owned buffer before yielding: the borrowed
+                    // slice points into the underlying iterator's buffer, which
+                    // is invalidated by the next `next()`/`read()` call. See the
+                    // matching note in `IterKeys::next`.
+                    let raw_key: Slice<'static> = raw_key.into_boxed().into();
+                    match K::try_into_key(raw_key) {
+                        Ok(key) => break key,
+                        // Skip keys with mismatched sizes (different key type in same column)
+                        Err(e) if K::is_size_mismatch(&e) => continue,
+                        Err(e) => {
+                            self.iter.done = true;
+                            return Some((
+                                Err(e.into()),
+                                Err(eyre::eyre!("value skipped: key failed to decode")),
+                            ));
                         }
                     }
-                    Err(e) => {
-                        self.iter.done = true;
-                        break 'key Err(e);
-                    }
-                    Ok(None) => {
-                        self.iter.done = true;
-                        return None;
-                    }
                 }
-            };
-
-            Ok(key)
+                Err(e) => {
+                    self.iter.done = true;
+                    return Some((
+                        Err(e),
+                        Err(eyre::eyre!("value skipped: key iteration failed")),
+                    ));
+                }
+                Ok(None) => {
+                    self.iter.done = true;
+                    return None;
+                }
+            }
         };
 
         let value = 'value: {
@@ -357,13 +403,16 @@ where
                 }
             };
 
-            // safety: value only needs to live as long as the iterator, not it's reference
-            let value = unsafe { transmute::<Slice<'_>, Slice<'_>>(value) };
+            // Copy into an owned buffer before yielding: the borrowed slice
+            // points into the underlying iterator's buffer, which is invalidated
+            // by the next `next()`/`read()` call. See the matching note in
+            // `IterKeys::next`.
+            let value: Slice<'static> = value.into_boxed().into();
 
             V::try_into_value(value).map_err(Into::into)
         };
 
-        Some((key, value))
+        Some((Ok(key), value))
     }
 }
 

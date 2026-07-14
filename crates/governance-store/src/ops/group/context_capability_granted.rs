@@ -2,11 +2,14 @@
 //! `apply_group_op_mutations` in #2304.
 
 use super::context::GroupApplyCtx;
-use crate::CapabilitiesRepository;
+use crate::{
+    get_group_for_context, CapabilitiesRepository, ContextRegistrationError, MembershipError,
+    MembershipRepository,
+};
 use calimero_governance_types::ContextCapabilityBits;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
@@ -20,6 +23,33 @@ pub(crate) fn apply(
 
     ctx.permissions()
         .require_manage_members(signer, "grant context capability")?;
+    // The context must be registered in THIS group, or the grant writes a
+    // per-context capability row scoped to a context owned by a different
+    // group (or none) — the same orphan-row hazard `ContextMetadataSet`
+    // guards against.
+    if get_group_for_context(store, context_id)? != Some(*group_id) {
+        bail!(ContextRegistrationError::NotInGroup {
+            group_id: hex::encode(group_id.to_bytes()),
+            context_id: format!("{context_id:?}"),
+        });
+    }
+    // The grantee must be a DIRECT member of this group (a `GroupMember` row),
+    // mirroring `MemberCapabilitySet`. Without this a `manage_members` signer
+    // could write a per-context capability row for an arbitrary non-member
+    // identity — an orphan row the enumeration/authorization paths never
+    // reconcile. `role_of` is deliberately direct-only: an INHERITED member
+    // (e.g. a parent-group admin who never joined this subgroup) is rejected
+    // here and must be added as a direct member before receiving a per-context
+    // grant.
+    if MembershipRepository::new(store)
+        .role_of(group_id, member)?
+        .is_none()
+    {
+        bail!(MembershipError::NotMember {
+            group_id: hex::encode(group_id.to_bytes()),
+            identity: format!("{member:?}"),
+        });
+    }
     let caps = CapabilitiesRepository::new(store);
     let current = caps
         .context_member_capability(group_id, context_id, member)?

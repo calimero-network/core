@@ -13,7 +13,7 @@ impl<'a> Event<'a> {
     #[inline]
     pub fn kind(&self) -> &str {
         self.kind
-            .try_into()
+            .as_str()
             .expect("this should always be a valid utf8 string") // todo! test if this pulls in format code
     }
 

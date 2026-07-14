@@ -74,11 +74,17 @@ pub struct CreateCommand {
     #[clap(
         long,
         required = true,
+        value_parser = crate::cli::validation::group_id,
         help = "Group ID (hex) to attach this context to"
     )]
     pub group_id: String,
 
-    #[clap(long, help = "Identity secret (hex) for signing group membership")]
+    #[clap(
+        long,
+        help = "Source of the identity secret (hex) for signing group membership: `env:NAME`, \
+                `file:PATH`, `-` (stdin), or the raw value (discouraged — exposed in shell \
+                history / ps / /proc)"
+    )]
     pub identity_secret: Option<String>,
 
     #[clap(
@@ -204,6 +210,11 @@ pub async fn create_context(
         identity_secret,
         group_name,
     } = args;
+
+    // Resolve the identity secret from its source spec (env:/file:/-) so it
+    // never has to be passed verbatim on the command line.
+    let identity_secret = crate::secret::resolve_optional_secret(identity_secret.as_deref())?;
+
     let response: GetApplicationResponse = client.get_application(&application_id).await?;
 
     if response.data.application.is_none() {

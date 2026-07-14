@@ -234,6 +234,13 @@ mod tests {
         HybridTimestamp::zero()
     }
 
+    /// An `HybridTimestamp` at NTP64 time `t` (id fixed at 1), for building
+    /// ordered before/at/after-boundary deltas in the version-skew narrative.
+    fn hlc_at(t: u64) -> HybridTimestamp {
+        let id = ID::from(NonZeroU128::new(1).expect("1 is non-zero"));
+        HybridTimestamp::new(Timestamp::new(NTP64(t), id))
+    }
+
     /// Sanity-check that our test helper actually produces a value > zero().
     #[test]
     fn hlc_after_zero_is_after_zero() {
@@ -332,5 +339,70 @@ mod tests {
     #[test]
     fn does_not_fence_without_boundary() {
         assert!(!should_fence([1; 32], [2; 32], hlc_after_zero(), None));
+    }
+
+    // -- Mixed-version fleet converges via the HLC fence ---------------------
+
+    /// End-to-end version-skew narrative at the fence-decision level, proving a
+    /// mixed v1/v2 fleet converges without ever dropping a delta.
+    ///
+    /// A group is cascading v1 → v2 with a sticky boundary at `hlc_at(10)`.
+    /// Under LazyOnAccess two nodes sit at different loaded readers:
+    ///   * a "fast" node whose binary already swapped to v2, and
+    ///   * a "slow" node still executing its v1 binary.
+    ///
+    /// The narrative walks three deltas and asserts the fence keeps every one
+    /// recoverable (only `Apply`/`Buffer`, never `Drop`):
+    ///   1. The v2 node receives a *pre-cascade* v1-schema delta (produced at
+    ///      `hlc_at(5)`, at-or-before the boundary): legitimate history the v2
+    ///      reader must still `Apply`.
+    ///   2. The v1 node receives a *post-cascade* v2-schema delta (`hlc_at(20)`):
+    ///      it cannot read the new schema yet, so it `Buffer`s (absorbs) it —
+    ///      never `Drop`.
+    ///   3. Buffer-then-replay: once the slow node's binary catches up (loaded
+    ///      reader advances to v2), replaying that SAME buffered v2 delta now
+    ///      matches its reader → `Apply`. Convergence achieved.
+    #[test]
+    fn mixed_version_fleet_converges_via_fence() {
+        const V1: [u8; 32] = [1; 32];
+        const V2: [u8; 32] = [2; 32];
+
+        let boundary = hlc_at(10);
+        let pre_cascade = hlc_at(5); // legitimate history, <= boundary
+        let post_cascade = hlc_at(20); // produced after the migration cut
+
+        // Sanity on the ordering the narrative depends on.
+        assert!(pre_cascade <= boundary);
+        assert!(post_cascade > boundary);
+
+        // 1. v2-reader node, pre-cascade v1 delta: readable history → Apply.
+        let d1 = fence_decision(V1, V2, V2, pre_cascade, Some(boundary));
+        assert_eq!(
+            d1,
+            FenceDecision::Apply,
+            "pre-cascade v1 history must apply on a v2 reader"
+        );
+
+        // 2. v1-reader node, post-cascade v2 delta: cannot read yet → Buffer.
+        let d2 = fence_decision(V2, V1, V2, post_cascade, Some(boundary));
+        assert_eq!(
+            d2,
+            FenceDecision::Buffer,
+            "a future-schema delta must be absorbed for replay, never dropped"
+        );
+
+        // 3. Slow node's binary catches up (loaded reader v1 → v2); replaying the
+        //    SAME buffered post-cascade v2 delta now matches its reader → Apply.
+        let d3 = fence_decision(V2, V2, V2, post_cascade, Some(boundary));
+        assert_eq!(
+            d3,
+            FenceDecision::Apply,
+            "buffered delta replays and applies once the reader catches up"
+        );
+
+        // Absorb-don't-drop invariant across the whole narrative.
+        for d in [d1, d2, d3] {
+            assert_ne!(d, FenceDecision::Drop, "the migration fence never drops");
+        }
     }
 }

@@ -142,6 +142,17 @@ fn increment_prefix(bytes: &mut [u8]) {
     }
 }
 
+/// Approximate on-disk bytes stored for a single context: the sum of its
+/// State, PrivateState, and Delta columns. Governance bytes are namespace-scoped
+/// (not per-context) and therefore excluded. Uses the same sampling probe as the
+/// per-namespace usage report.
+pub(crate) fn context_storage_bytes(store: &Store, context_id: &[u8; 32]) -> u64 {
+    let (start, end) = context_prefix_range(context_id);
+    probe(store, Column::State, &start, &end)
+        .saturating_add(probe(store, Column::PrivateState, &start, &end))
+        .saturating_add(probe(store, Column::Delta, &start, &end))
+}
+
 fn probe(store: &Store, col: Column, start: &[u8], end: &[u8]) -> u64 {
     match store.approximate_size(col, start, end) {
         Ok(n) => n,

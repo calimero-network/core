@@ -25,6 +25,10 @@ impl VMHostFunctions<'_> {
     /// * `HostError::KeyLengthOverflow` if the key size exceeds the configured limit.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn storage_read(&mut self, src_key_ptr: u64, dest_register_id: u64) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
 
         let logic = self.borrow_logic();
@@ -95,6 +99,10 @@ impl VMHostFunctions<'_> {
         src_key_ptr: u64,
         dest_register_id: u64,
     ) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
 
         let logic = self.borrow_logic();
@@ -113,10 +121,13 @@ impl VMHostFunctions<'_> {
             "storage_remove"
         );
 
-        if let Some(value) = logic.storage.get(&key) {
+        // `remove` returns the evicted value, so a single backend write both
+        // deletes the key and yields its prior value — no separate `get` read.
+        let removed = self.with_logic_mut(|logic| logic.storage.remove(&key));
+
+        if let Some(value) = removed {
             let value_len = value.len();
             self.with_logic_mut(|logic| {
-                let _ignored = logic.storage.remove(&key);
                 logic.registers.set(logic.limits, dest_register_id, value)
             })?;
 
@@ -171,7 +182,15 @@ impl VMHostFunctions<'_> {
         src_value_ptr: u64,
         dest_register_id: u64,
     ) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let value = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_value_ptr)? };
 
         let logic = self.borrow_logic();
@@ -198,7 +217,12 @@ impl VMHostFunctions<'_> {
             "storage_write"
         );
 
-        let evicted = self.with_logic_mut(|logic| logic.storage.set(key, value));
+        // Charge the shared per-execution write budget before touching the
+        // backend so a rejected write never lands in the store.
+        let evicted = self.with_logic_mut(|logic| -> VMLogicResult<Option<Vec<u8>>> {
+            logic.charge_storage_write(key_len as u64 + value_len as u64)?;
+            Ok(logic.storage.set(key, value))
+        })?;
 
         if let Some(evicted) = evicted {
             let evicted_len = evicted.len();
@@ -249,6 +273,10 @@ impl VMHostFunctions<'_> {
         src_key_ptr: u64,
         dest_register_id: u64,
     ) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
 
         let logic = self.borrow_logic();
@@ -323,6 +351,10 @@ impl VMHostFunctions<'_> {
         src_key_ptr: u64,
         dest_register_id: u64,
     ) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
 
         let logic = self.borrow_logic();
@@ -394,7 +426,15 @@ impl VMHostFunctions<'_> {
         src_key_ptr: u64,
         src_value_ptr: u64,
     ) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_key_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let value = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_value_ptr)? };
 
         let logic = self.borrow_logic();
@@ -420,13 +460,34 @@ impl VMHostFunctions<'_> {
             "private_storage_write"
         );
 
-        let written = self.with_logic_mut(|logic| {
-            let Some(ref mut private_storage) = logic.private_storage else {
-                return false;
+        // Private storage draws from the same per-execution write budget as the
+        // main store, so a guest can't double its write allowance by splitting
+        // work across the two backends. Only charge when there is a backing
+        // store to write to.
+        let written = self.with_logic_mut(|logic| -> VMLogicResult<bool> {
+            // No private store → nothing to write and nothing to charge.
+            // Charge and write in a single arm on the live borrow. The budget
+            // counters and limits are disjoint fields from `private_storage`, so
+            // `charge_write_counters` can update them while `private_storage` is
+            // borrowed — a `charge_storage_write` method call would borrow all of
+            // `logic` and conflict. Read the limits out first (a `Copy` of two
+            // `u64`s) so nothing borrows `logic.limits` across the write.
+            let write_bytes = key_len as u64 + value_len as u64;
+            let max_writes = logic.limits.max_storage_writes;
+            let max_bytes = logic.limits.max_storage_write_bytes;
+            let Some(private_storage) = logic.private_storage.as_mut() else {
+                return Ok(false);
             };
+            crate::logic::charge_write_counters(
+                &mut logic.storage_writes,
+                &mut logic.storage_write_bytes,
+                max_writes,
+                max_bytes,
+                write_bytes,
+            )?;
             let _evicted = private_storage.set(key, value);
-            true
-        });
+            Ok(true)
+        })?;
 
         if written {
             debug!(
@@ -458,7 +519,15 @@ impl VMHostFunctions<'_> {
     /// write was persisted, `0` otherwise (so the guest can skip stamping its
     /// index-validity marker and rebuild instead).
     pub fn storage_index_set(&mut self, key_ptr: u64, value_ptr: u64) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(key_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let value = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(value_ptr)? };
         // Bound guest-supplied sizes like `storage_write` does, so a buggy/hostile
         // guest can't drive unbounded host allocation through the index path.
@@ -472,12 +541,21 @@ impl VMHostFunctions<'_> {
         let key = self.read_guest_memory_slice(&key)?.to_vec();
         let value = self.read_guest_memory_slice(&value)?.to_vec();
         trace!(target: "runtime::host::storage", op = "index_set", key_len = key.len(), "storage_index_set");
-        let ok = self.with_logic_mut(|logic| logic.storage.index_set(&key, &value));
+        // Ordered-index writes share the same per-execution budget as the
+        // key-value stores, charged before the backend write.
+        let ok = self.with_logic_mut(|logic| -> VMLogicResult<bool> {
+            logic.charge_storage_write(key.len() as u64 + value.len() as u64)?;
+            Ok(logic.storage.index_set(&key, &value))
+        })?;
         Ok(ok.into())
     }
 
     /// Remove `key` from the ordered index. Returns `1` if persisted, else `0`.
     pub fn storage_index_remove(&mut self, key_ptr: u64) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(key_ptr)? };
         if key.len() > self.borrow_logic().limits.max_storage_key_size.get() {
             return Err(HostError::KeyLengthOverflow.into());
@@ -491,6 +569,10 @@ impl VMHostFunctions<'_> {
     /// Remove every ordered-index key beginning with `prefix`. Returns `1` if
     /// persisted, else `0`.
     pub fn storage_index_remove_prefix(&mut self, prefix_ptr: u64) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let prefix = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(prefix_ptr)? };
         if prefix.len() > self.borrow_logic().limits.max_storage_key_size.get() {
             return Err(HostError::KeyLengthOverflow.into());
@@ -515,7 +597,15 @@ impl VMHostFunctions<'_> {
         limit: u64,
         register_id: u64,
     ) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let lo = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(lo_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let hi = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(hi_ptr)? };
         // The bounds are index keys; cap them like any other storage key.
         let max_key = self.borrow_logic().limits.max_storage_key_size.get();
@@ -525,8 +615,18 @@ impl VMHostFunctions<'_> {
         let lo = self.read_guest_memory_slice(&lo)?.to_vec();
         let hi = self.read_guest_memory_slice(&hi)?.to_vec();
 
-        // `n + 1`-encoded: 0 = unbounded, else `limit - 1`.
-        let limit = (limit != 0).then(|| (limit - 1) as usize);
+        // `n + 1`-encoded: 0 = unbounded, else `limit - 1`. Both the unbounded
+        // sentinel and any explicit request are capped at
+        // `max_storage_index_scan_limit` so a scan never reads the whole range
+        // into an owned `Vec` and re-encodes it — two transient allocations
+        // sized by the range — before the register-size cap can apply. A guest
+        // needing more paginates via `offset`.
+        let scan_cap = self.borrow_logic().limits.max_storage_index_scan_limit;
+        let requested = (limit != 0).then(|| limit - 1);
+        let effective = requested.unwrap_or(scan_cap).min(scan_cap);
+        // Saturate rather than silently truncate `u64 -> usize` (usize is 32-bit
+        // on a wasm32 host build).
+        let limit = Some(usize::try_from(effective).unwrap_or(usize::MAX));
         // Saturate rather than silently truncate `u64 -> usize` (usize is 32-bit
         // on a wasm32 host build); a clamp to usize::MAX just means "skip all".
         let offset = usize::try_from(offset).unwrap_or(usize::MAX);
@@ -557,7 +657,15 @@ impl VMHostFunctions<'_> {
         hi_ptr: u64,
         register_id: u64,
     ) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let lo = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(lo_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let hi = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(hi_ptr)? };
         let max_key = self.borrow_logic().limits.max_storage_key_size.get();
         if lo.len() > max_key || hi.len() > max_key {
@@ -1123,5 +1231,79 @@ mod tests {
                 expected_value.as_bytes()
             );
         }
+    }
+
+    /// A write past `max_storage_writes` traps with `StorageWriteCountExceeded`,
+    /// bounding the *count* of direct guest writes per execution.
+    #[test]
+    fn test_storage_write_count_budget() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_storage_writes: 1,
+            ..Default::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let key = "k";
+        let key_ptr = 200u64;
+        write_str(&host, key_ptr, key);
+        let key_buf_ptr = 10u64;
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+        let value = "v";
+        let value_ptr = 300u64;
+        write_str(&host, value_ptr, value);
+        let value_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(&host, value_buf_ptr, value_ptr, value.len() as u64);
+
+        // First write is within budget.
+        host.storage_write(key_buf_ptr, value_buf_ptr, 1).unwrap();
+        // Second write exceeds `max_storage_writes = 1`.
+        let err = host
+            .storage_write(key_buf_ptr, value_buf_ptr, 1)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::logic::VMLogicError::HostError(
+                crate::errors::HostError::StorageWriteCountExceeded { .. }
+            )
+        ));
+    }
+
+    /// A write whose `key + value` bytes exceed the remaining byte budget traps
+    /// with `StorageWriteBytesExceeded`.
+    #[test]
+    fn test_storage_write_bytes_budget() {
+        let mut storage = SimpleMockStorage::new();
+        // Budget of 2 bytes: a 1-byte key + 3-byte value (4 total) trips it.
+        let limits = VMLimits {
+            max_storage_write_bytes: 2,
+            ..Default::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let key = "k";
+        let key_ptr = 200u64;
+        write_str(&host, key_ptr, key);
+        let key_buf_ptr = 10u64;
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, key.len() as u64);
+
+        let value = "vvv";
+        let value_ptr = 300u64;
+        write_str(&host, value_ptr, value);
+        let value_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(&host, value_buf_ptr, value_ptr, value.len() as u64);
+
+        let err = host
+            .storage_write(key_buf_ptr, value_buf_ptr, 1)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::logic::VMLogicError::HostError(
+                crate::errors::HostError::StorageWriteBytesExceeded { .. }
+            )
+        ));
     }
 }

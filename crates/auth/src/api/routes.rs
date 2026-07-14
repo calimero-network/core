@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::middleware::from_fn;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Router};
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::CorsLayer;
 
 use super::handlers::client_keys::generate_client_key_handler;
@@ -125,6 +126,11 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
 
     // 3. Add body size limiting (innermost)
     router = router.layer(create_body_limit_layer(config.security.max_body_size));
+
+    // 4. Catch any handler/middleware panic and turn it into a 500 response
+    //    instead of aborting the connection. This is the outermost layer so it
+    //    guards every inner layer and handler against panic-induced DoS.
+    router = router.layer(CatchPanicLayer::new());
 
     router
 }

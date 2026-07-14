@@ -27,6 +27,14 @@ use calimero_storage::rotation_log::{RotationLog, RotationLogEntry};
 /// causal context is available (snapshot leaf push, local apply).
 ///
 /// Returns `None` if the log has no entries and no snapshot.
+///
+/// # Warning: unauthenticated
+///
+/// This does NOT verify rotation-entry signatures or ADMIN authority. It must
+/// never be used on a path fed by (untrusted) sync — a forged rotation entry
+/// would silently shift the resolved writer set. Sync-fed apply paths must use
+/// [`writers_at_authenticated`]. This variant is for contexts where the log is
+/// already trusted (tests, local apply of self-authored state).
 #[must_use]
 pub fn latest_writers(log: &RotationLog) -> Option<BTreeMap<PublicKey, OpMask>> {
     if let Some(entry) = log.entries.last() {
@@ -36,6 +44,13 @@ pub fn latest_writers(log: &RotationLog) -> Option<BTreeMap<PublicKey, OpMask>> 
 }
 
 /// Returns the writer set as-of a causal point in the DAG.
+///
+/// # Warning: unauthenticated
+///
+/// This resolves the writer set WITHOUT verifying rotation-entry signatures or
+/// ADMIN authority. It must never be used on a path fed by (untrusted) sync;
+/// those paths must use [`writers_at_authenticated`], which verifies each entry
+/// before admitting it. Kept for trusted-log contexts (tests, local apply).
 ///
 /// Implements ADR 0001's merge rule end-to-end:
 /// 1. Filter entries to those reachable from `causal_parents`.

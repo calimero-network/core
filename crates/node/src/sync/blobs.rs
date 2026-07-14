@@ -40,6 +40,9 @@ impl SyncManager {
                 party_id: our_identity,
                 payload: InitPayload::BlobShare { blob_id },
                 next_nonce: our_nonce,
+                // Blob bytes are ECDH-encrypted to `our_identity` on the wire,
+                // so an impersonator can't read them; no read-gating proof here.
+                pop: None,
             },
             None,
         )
@@ -214,6 +217,9 @@ impl SyncManager {
                 party_id: our_identity,
                 payload: InitPayload::BlobShare { blob_id },
                 next_nonce: our_nonce,
+                // Blob bytes are ECDH-encrypted to `our_identity` on the wire,
+                // so an impersonator can't read them; no read-gating proof here.
+                pop: None,
             },
             None,
         )

@@ -7,7 +7,7 @@ use mocked as imp;
 
 use std::cell::Cell;
 
-use crate::logical_clock::HybridTimestamp;
+use crate::logical_clock::{ClockUpdateError, HybridTimestamp};
 use crate::store::Key;
 
 // ============================================================================
@@ -353,14 +353,12 @@ pub fn hlc_timestamp() -> HybridTimestamp {
 ///
 /// # Errors
 ///
-/// Error returned by [`update_hlc`] when a remote timestamp is too far in the
-/// future to accept (drift protection).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HlcDriftError;
-
-/// Returns [`HlcDriftError`] if the remote timestamp is >5s in the future (drift protection).
-pub fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), HlcDriftError> {
-    imp::update_hlc(remote_ts).map_err(|()| HlcDriftError)
+/// Returns a [`ClockUpdateError`] describing why the remote timestamp was
+/// rejected — currently [`ClockUpdateError::Drift`] when it is more than 5s in
+/// the future (drift protection). The typed reason is preserved from the clock
+/// itself rather than being flattened into an opaque failure.
+pub fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ClockUpdateError> {
+    imp::update_hlc(remote_ts)
 }
 
 /// Reset for testing.
@@ -442,7 +440,7 @@ mod calimero_vm {
 
     use calimero_sdk::env;
 
-    use crate::logical_clock::{HybridTimestamp, LogicalClock};
+    use crate::logical_clock::{ClockUpdateError, HybridTimestamp, LogicalClock};
     use crate::store::Key;
 
     thread_local! {
@@ -452,18 +450,15 @@ mod calimero_vm {
     fn ensure_hlc_initialized() {
         WASM_HLC.with(|hlc_cell| {
             if hlc_cell.borrow().is_none() {
-                // Use executor ID (node identity) as deterministic seed for HLC ID
-                // This ensures each node has a unique but deterministic HLC ID
+                // Deterministic per-node HLC seed from the executor id, from all
+                // 32 bytes via SHA-256 — using only the first 16 collapsed
+                // executors sharing a 16-byte prefix to one id → CharId collision
+                // → silent character loss during RGA sync.
                 let executor_id = env::executor_id();
+                let seed = crate::logical_clock::hlc_seed_from_executor_id(&executor_id);
                 *hlc_cell.borrow_mut() = Some(LogicalClock::new(|buf| {
-                    // Use executor ID to deterministically generate HLC ID
-                    for (i, byte) in executor_id.iter().enumerate().take(buf.len()) {
-                        buf[i] = *byte;
-                    }
-                    // Fill remaining bytes if buf is longer than executor_id
-                    for i in executor_id.len()..buf.len() {
-                        buf[i] = executor_id[i % executor_id.len()];
-                    }
+                    let n = buf.len().min(seed.len());
+                    buf[..n].copy_from_slice(&seed[..n]);
                 }));
             }
         });
@@ -581,7 +576,7 @@ mod calimero_vm {
     }
 
     /// Update HLC with remote timestamp
-    pub(super) fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
+    pub(super) fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ClockUpdateError> {
         ensure_hlc_initialized();
         WASM_HLC.with(|hlc_cell| {
             hlc_cell
@@ -610,7 +605,7 @@ mod mocked {
     use rand::RngCore;
 
     use super::RuntimeEnv;
-    use crate::logical_clock::{HybridTimestamp, LogicalClock};
+    use crate::logical_clock::{ClockUpdateError, HybridTimestamp, LogicalClock};
     use crate::store::{Key, MockedStorage, StorageAdaptor};
 
     thread_local! {
@@ -808,9 +803,12 @@ mod mocked {
             .unwrap_or_else(|| EXECUTOR_ID.with(|id| id.get()))
     }
 
-    /// Prints the log
+    /// Routes the log line through `tracing` (this is the host/native build, so
+    /// a subscriber is present) rather than raw stdout, so guest/app logs carry
+    /// the process's structured formatting and can be filtered and redirected
+    /// like every other log instead of bypassing it onto stdout.
     pub(super) fn log(message: &str) {
-        println!("{message}");
+        tracing::info!(target: "calimero_storage::guest", "{message}");
     }
 
     /// Sets the thread-local executor ID. Only callable from this crate
@@ -871,7 +869,7 @@ mod mocked {
     }
 
     /// Update HLC with remote timestamp
-    pub(super) fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
+    pub(super) fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ClockUpdateError> {
         NATIVE_HLC.with(|hlc| hlc.borrow_mut().update(remote_ts, time_now))
     }
 

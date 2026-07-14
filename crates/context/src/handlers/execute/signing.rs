@@ -45,7 +45,6 @@ pub(crate) fn sign_authorized_actions(
                 let nonce = *deleted_at;
                 (metadata, nonce)
             }
-            Action::Compare { .. } => continue,
         };
 
         // STAMP THE NONCE BEFORE COMPUTING THE PAYLOAD.
@@ -105,7 +104,6 @@ pub(crate) fn sign_authorized_actions(
         let metadata = match action {
             Action::Add { metadata, .. } | Action::Update { metadata, .. } => metadata,
             Action::DeleteRef { metadata, .. } => metadata,
-            Action::Compare { .. } => continue,
         };
         let sig_data = match &mut metadata.storage_type {
             StorageType::User {
@@ -201,7 +199,6 @@ pub(crate) fn persist_signed_signatures(
                 Action::DeleteRef { id, metadata, .. } => {
                     (*id, metadata.storage_type.clone(), true)
                 }
-                Action::Compare { .. } => continue,
             };
             // Only Shared/User with a REAL signature need the
             // re-persist. Public/Frozen don't carry signatures.

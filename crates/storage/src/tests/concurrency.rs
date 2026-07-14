@@ -64,8 +64,8 @@ impl StorageAdaptor for SharedStore {
     }
 
     // These tests drive `Index::add_child_to` directly and assert on the index
-    // children list; they don't exercise the delta stream. Opt out of it so a
-    // stray `Action::Compare` push can't touch thread-local delta state.
+    // children list; they don't exercise the delta stream. Opt out of it so no
+    // stray action push can touch thread-local delta state.
     fn participates_in_sync() -> bool {
         false
     }

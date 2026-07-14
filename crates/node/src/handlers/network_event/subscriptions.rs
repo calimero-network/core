@@ -111,18 +111,27 @@ pub(super) fn handle_subscribed(
         return;
     };
 
-    if !manager
-        .clients
-        .context
-        .has_context(&context_id)
-        .unwrap_or_default()
-    {
-        debug!(
-            %context_id,
-            %peer_id,
-            "Observed subscription to unknown context, ignoring.."
-        );
-        return;
+    match manager.clients.context.has_context(&context_id) {
+        Ok(true) => {}
+        Ok(false) => {
+            debug!(
+                %context_id,
+                %peer_id,
+                "Observed subscription to unknown context, ignoring.."
+            );
+            return;
+        }
+        Err(err) => {
+            // A store error is unknown state, not "no such context". Surface it
+            // and bail rather than silently treating the context as absent.
+            warn!(
+                %context_id,
+                %peer_id,
+                %err,
+                "has_context lookup failed while handling subscription; ignoring"
+            );
+            return;
+        }
     }
 
     info!(

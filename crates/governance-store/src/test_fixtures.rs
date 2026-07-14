@@ -5,17 +5,18 @@
 //! without duplicating fixtures. Crate-internal: visible to all
 //! submodules under `group_store/`, invisible outside.
 
-use super::NamespaceRepository;
+use super::{MembershipRepository, MetaRepository, NamespaceRepository};
 use std::sync::Arc;
 
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::UpgradePolicy;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::{GroupMetaValue, GroupParentRef};
 use calimero_store::Store;
+use rand::rngs::OsRng;
 pub(super) fn test_store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }
@@ -64,6 +65,32 @@ pub(super) fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
         migration: None,
         auto_join: true,
     }
+}
+
+/// Bootstrap a namespace root with a freshly-generated admin: writes the
+/// root meta (`admin == owner`), an `Admin` member row, and the admin's
+/// stored identity. Returns the admin's `(PrivateKey, PublicKey)` so the
+/// caller can sign ops and seed subgroup metas. Collapses the
+/// meta-save + add_member + store_identity setup duplicated across the
+/// namespace apply tests.
+pub(super) fn bootstrap_namespace_with_admin(
+    store: &Store,
+    ns_id: [u8; 32],
+) -> (PrivateKey, PublicKey) {
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut OsRng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+    let ns_gid = ContextGroupId::from(ns_id);
+    MetaRepository::new(store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
+    (admin_sk, admin_pk)
 }
 
 /// Shortcut for nesting one group under another inside tests, unwrapping

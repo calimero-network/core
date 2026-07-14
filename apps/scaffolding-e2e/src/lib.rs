@@ -39,23 +39,15 @@ const BASE58_ENCODED_MAX_SIZE: usize = 44;
 
 // HELPER TYPES
 
-/// Nested map type for user storage
-#[derive(Debug, BorshSerialize, BorshDeserialize, Default)]
+/// Nested map type for user storage.
+#[derive(Debug, BorshSerialize, BorshDeserialize, Default, Mergeable)]
 #[borsh(crate = "calimero_sdk::borsh")]
 struct NestedMap {
     map: UnorderedMap<String, LwwRegister<String>>,
 }
 
-impl Mergeable for NestedMap {
-    fn merge(
-        &mut self,
-        other: &Self,
-    ) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
-        self.map.merge(&other.map)
-    }
-}
-
-/// File record for blob metadata
+/// File record for blob metadata. Atomic whole-record LWW by `uploaded_at`
+/// (see `impl_atomic_lww_leaf!`); not a struct of CRDT fields, so no derive.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize, Serialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]
@@ -70,17 +62,7 @@ pub struct FileRecord {
     pub uploaded_at: u64,
 }
 
-impl Mergeable for FileRecord {
-    fn merge(
-        &mut self,
-        other: &Self,
-    ) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
-        if other.uploaded_at > self.uploaded_at {
-            *self = other.clone();
-        }
-        Ok(())
-    }
-}
+calimero_storage::impl_atomic_lww_leaf!(FileRecord, uploaded_at);
 
 // PRIVATE STATE (Node-local, NOT synchronized)
 

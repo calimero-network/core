@@ -28,6 +28,13 @@ pub mod state;
 /// aging out peers that have genuinely left.
 const PEER_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 
+/// Most-recently-seen cached peers to dial in the startup reconnect burst.
+/// The cache can hold thousands of entries; reconnect only needs the few
+/// peers we last collaborated with (rendezvous rediscovers the rest), so this
+/// bounds the startup dial fan-out well below `connection_limits` rather than
+/// emitting a dial storm from a full or poisoned cache.
+const MAX_STARTUP_CACHE_DIALS: usize = 32;
+
 /// Fixed node-local datastore key for the single peer-cache blob. The
 /// whole relevant-peer set is stored as one value under this key in the
 /// `Generic` column (raw-bytes codec).
@@ -265,8 +272,19 @@ impl NetworkManager {
         };
         self.peer_cache = PeerAddrCache::from_persisted(records, now, PEER_CACHE_TTL_SECS);
 
-        let candidates = self.peer_cache.dial_candidates(now, PEER_CACHE_TTL_SECS);
-        let count = candidates.len();
+        // Cap the startup dial burst. The cache holds up to
+        // `MAX_PEER_CACHE_ENTRIES` (4096) peers; firing a dial at every one
+        // at once — e.g. when the cache is full of stale/unreachable
+        // addresses — is a self-inflicted dial storm that can exhaust file
+        // descriptors before `connection_limits` even denies the overflow.
+        // Reconnect only needs the handful of peers we most recently
+        // collaborated with (most-recent-first are the likeliest still
+        // reachable), so dial those and let rendezvous rediscover the rest.
+        let total = self.peer_cache.fresh_count(now, PEER_CACHE_TTL_SECS);
+        let candidates =
+            self.peer_cache
+                .startup_dial_set(now, PEER_CACHE_TTL_SECS, MAX_STARTUP_CACHE_DIALS);
+        let dialed = candidates.len();
         for candidate in candidates {
             let opts = DialOpts::peer_id(candidate.peer_id)
                 .condition(PeerCondition::DisconnectedAndNotDialing)
@@ -276,8 +294,13 @@ impl NetworkManager {
                 debug!(peer_id = %candidate.peer_id, ?err, "peer-cache startup dial skipped");
             }
         }
-        if count > 0 {
-            info!(count, "dialing cached peers on startup for fast reconnect");
+        if total > 0 {
+            info!(
+                dialed,
+                total,
+                dropped = total.saturating_sub(dialed),
+                "dialing cached peers on startup for fast reconnect (most-recent-first, capped)"
+            );
         }
     }
 
@@ -543,6 +566,99 @@ impl NetworkManager {
         }
 
         Ok(())
+    }
+
+    /// Eagerly register a newly-subscribed overlay topic with every
+    /// rendezvous peer that already holds (or is awaiting) a registration.
+    ///
+    /// `rendezvous_register` snapshots the subscribed-topic set at call
+    /// time, so an overlay subscribed *after* the last registration round
+    /// is invisible on the rendezvous server until an unrelated trigger
+    /// re-registers — TTL expiry (hours), a reachability flip, or a
+    /// restart. During that window a peer joining the namespace discovers
+    /// zero registrations under `/calimero/ns/<hex>` and the join stalls
+    /// on "No namespace mesh peer discovered yet" until it gives up.
+    /// Registering the key at subscribe time closes the window.
+    ///
+    /// Deliberately bypasses `is_rendezvous_registration_required`: that
+    /// gate bounds fan-out across rendezvous *peers*; here we only add a
+    /// key to registrations that already occupy a slot.
+    pub(crate) fn register_new_overlay_topic(&mut self, topic: &str) {
+        if self.discovery.reserved_topics.contains(topic) {
+            return;
+        }
+        let Some(key) = rendezvous_key_for_topic(topic) else {
+            return;
+        };
+
+        for peer_id in self.discovery.state.slot_holding_rendezvous_peers() {
+            if !self.swarm.is_connected(&peer_id) {
+                continue;
+            }
+            match self
+                .swarm
+                .behaviour_mut()
+                .rendezvous
+                .register(key.clone(), peer_id, None)
+            {
+                Ok(()) => {
+                    debug!(
+                        %peer_id,
+                        rendezvous_namespace = %key,
+                        "Registered newly-subscribed overlay with rendezvous"
+                    );
+                }
+                Err(RegisterError::NoExternalAddresses) => {
+                    // Nothing to advertise yet. The next
+                    // ExternalAddrConfirmed triggers a full re-register,
+                    // which enumerates subscribed topics at send time and
+                    // will carry this key.
+                    trace!(
+                        %peer_id,
+                        rendezvous_namespace = %key,
+                        "No external addresses; overlay key rides the next full registration"
+                    );
+                }
+                Err(err @ RegisterError::FailedToMakeRecord(_)) => {
+                    error!(
+                        %err,
+                        %peer_id,
+                        rendezvous_namespace = %key,
+                        "Failed to register newly-subscribed overlay with rendezvous"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Mirror of [`Self::register_new_overlay_topic`] for unsubscribe:
+    /// drop the per-overlay key from every slot-holding rendezvous peer so
+    /// departed members stop being discovered under it. Without this the
+    /// stale record lingers until its TTL, steering joiners toward a node
+    /// that no longer follows the overlay. Unregistering a key we never
+    /// registered is a harmless server-side no-op.
+    pub(crate) fn unregister_dropped_overlay_topic(&mut self, topic: &str) {
+        if self.discovery.reserved_topics.contains(topic) {
+            return;
+        }
+        let Some(key) = rendezvous_key_for_topic(topic) else {
+            return;
+        };
+
+        for peer_id in self.discovery.state.slot_holding_rendezvous_peers() {
+            if !self.swarm.is_connected(&peer_id) {
+                continue;
+            }
+            self.swarm
+                .behaviour_mut()
+                .rendezvous
+                .unregister(key.clone(), peer_id);
+            debug!(
+                %peer_id,
+                rendezvous_namespace = %key,
+                "Unregistered dropped overlay from rendezvous"
+            );
+        }
     }
 
     // Requests relay reservation on relay peer if one is required.

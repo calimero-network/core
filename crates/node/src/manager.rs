@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use actix::{Actor, Addr};
 use calimero_blobstore::BlobManager as BlobStore;
@@ -32,7 +32,17 @@ pub(crate) struct DivergenceMark {
     pub(crate) our_hash: calimero_primitives::hash::Hash,
     pub(crate) their_hash: calimero_primitives::hash::Hash,
     pub(crate) count: u32,
+    /// When this entry was last observed. Lets the heartbeat tick evict marks
+    /// for peers that diverged and then went away without ever converging (a
+    /// convergence is what normally removes the entry), so the map can't grow
+    /// without bound on peer churn.
+    pub(crate) last_seen: Instant,
 }
+
+/// Evict divergence / behind-sync bookkeeping for a (context, peer) or context
+/// not seen within this window. Generous relative to the 30s heartbeat cadence:
+/// only genuinely stale churned-away entries are reclaimed.
+pub(crate) const HEARTBEAT_STATE_TTL: Duration = Duration::from_secs(300);
 
 /// Main node orchestrator.
 ///
@@ -98,6 +108,13 @@ pub struct NodeManager {
     /// surfacing a genuinely stuck split-brain. See [`DivergenceMark`].
     pub(crate) divergence_streak:
         HashMap<(calimero_primitives::context::ContextId, libp2p::PeerId), DivergenceMark>,
+    /// Per-context timestamp of the last hash-heartbeat "peer is ahead"
+    /// recovery sync. A context-wide `sync` covers every peer at once, so
+    /// without this every ahead-peer's 30s heartbeat would spawn its own sync
+    /// (N peers → N syncs per cycle). Debounced to one per
+    /// `HEARTBEAT_BEHIND_SYNC_DEBOUNCE` window per context. Touched only
+    /// synchronously on the manager actor, so a plain `HashMap` suffices.
+    pub(crate) behind_sync_at: HashMap<calimero_primitives::context::ContextId, Instant>,
     /// Per-namespace timestamp of the last beacon-*triggered* governance
     /// sync (#2367). Caps beacon-divergence syncs to one per namespace
     /// per `NS_BEACON_SYNC_DEBOUNCE` window — beacons arrive every ~5s
@@ -161,6 +178,7 @@ impl NodeManager {
             sync_session_tx,
             divergence_detected,
             divergence_streak: HashMap::new(),
+            behind_sync_at: HashMap::new(),
             ns_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
             migration_status_cache: Arc::new(MigrationStatusCache::default()),
             migration_emitter_addr: None,
@@ -172,6 +190,10 @@ impl Actor for NodeManager {
     type Context = actix::Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
+        // Bound the mailbox so the network-event bridge's `try_send` sees
+        // backpressure instead of growing it without limit. `do_send` callers
+        // (which ignore capacity) are unaffected.
+        ctx.set_mailbox_capacity(crate::network_event_processor::NODE_MANAGER_MAILBOX_CAPACITY);
         self.setup_startup_subscriptions(ctx);
         self.setup_maintenance_intervals(ctx);
         self.setup_hash_heartbeat_interval(ctx);

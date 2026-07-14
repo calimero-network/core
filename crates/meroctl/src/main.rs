@@ -7,10 +7,12 @@ pub mod cli;
 mod client;
 mod common;
 mod config;
+mod confirm;
 mod connection;
 mod defaults;
 
 mod output;
+mod secret;
 mod storage;
 mod ws;
 
@@ -27,6 +29,9 @@ async fn main() -> ExitCode {
 
     let command = cli::RootCommand::parse();
     match command.run().await {
+        // A command can succeed yet fail to render its output (e.g. a JSON
+        // serialization error); don't mask that with a success exit code.
+        Ok(()) if output::output_failed() => ExitCode::FAILURE,
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => err.into(),
     }
