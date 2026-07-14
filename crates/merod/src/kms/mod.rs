@@ -209,6 +209,7 @@ const MAX_KMS_REPORT_DATA_HEX_LEN: usize = 1024;
 const MAX_KMS_CHALLENGE_ID_LEN: usize = 512;
 const MAX_KMS_NONCE_B64_LEN: usize = 2048;
 const MAX_KMS_KEY_HEX_LEN: usize = 4096;
+const MIN_KMS_KEY_BYTES: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1288,7 +1289,16 @@ fn decode_kms_encryption_key(response: &PhalaGetKeyResponse) -> Result<Vec<u8>> 
         bail!("KMS returned encryption key with invalid odd hex length");
     }
 
-    hex::decode(key_hex).context("Failed to decode key from hex")
+    let key = hex::decode(key_hex).context("Failed to decode key from hex")?;
+    if key.len() < MIN_KMS_KEY_BYTES {
+        bail!(
+            "KMS returned an undersized encryption key: {} bytes, expected at least {}",
+            key.len(),
+            MIN_KMS_KEY_BYTES
+        );
+    }
+
+    Ok(key)
 }
 
 async fn request_kms_attestation(
@@ -2039,6 +2049,24 @@ mod tests {
             .expect_err("oversized reportDataHex must fail")
             .to_string();
         assert!(err.contains("reportDataHex exceeds maximum allowed size"));
+    }
+
+    #[test]
+    fn test_decode_kms_encryption_key_rejects_undersized_key() {
+        let undersized = PhalaGetKeyResponse {
+            key: "00".to_owned(),
+        };
+        let err = decode_kms_encryption_key(&undersized)
+            .expect_err("undersized key must fail")
+            .to_string();
+        assert!(err.contains("undersized encryption key"), "{err}");
+
+        // A full 32-byte key is accepted.
+        let valid = PhalaGetKeyResponse {
+            key: "42".repeat(MIN_KMS_KEY_BYTES),
+        };
+        let decoded = decode_kms_encryption_key(&valid).expect("valid key must decode");
+        assert_eq!(decoded.len(), MIN_KMS_KEY_BYTES);
     }
 
     #[test]

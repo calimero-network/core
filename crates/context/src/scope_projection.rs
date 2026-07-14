@@ -1542,6 +1542,27 @@ impl ScopeProjections {
     /// otherwise, defer to live), build the folded view + the genesis root tuple
     /// (`AclView::is_authorized_admin` prefers the folded root admin, tracking
     /// `AdminChanged`; this is the un-folded base) + the namespace default cap.
+    /// Can this projection decide ANY authority question for `group` at `heads`?
+    ///
+    /// Every `*_at_cut` gate funnels through [`auth_cut_context`](Self::auth_cut_context),
+    /// so `false` here means all of them will abstain — and, crucially, that the
+    /// abstention is one the caller CANNOT paper over by reading the live store: live
+    /// is a different cut (this replica's current one). An apply gate that guessed from
+    /// live would decide the op against a cut its peers never used.
+    ///
+    /// Exposed so the apply gates can tell "no cut to resolve against" (fine — use
+    /// live) apart from "the cut is real but this node hasn't folded its ancestry"
+    /// (not fine — refuse, and retry when the history arrives).
+    #[must_use]
+    pub fn can_resolve_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> bool {
+        self.auth_cut_context(store, group, heads).is_some()
+    }
+
     fn auth_cut_context(
         &self,
         store: &Store,
