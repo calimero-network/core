@@ -393,15 +393,6 @@ mod interface__apply_actions {
     }
 
     #[test]
-    fn apply_action__compare() {
-        let page = Page::new_from_element("Test Page", Element::root());
-        let action = Action::Compare { id: page.id() };
-
-        // Compare should fail
-        assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_err());
-    }
-
-    #[test]
     fn apply_action__non_existent_update() {
         let page = Page::new_from_element("Test Page", Element::root());
         let serialized = to_vec(&page).unwrap();
@@ -421,15 +412,13 @@ mod interface__apply_actions {
         assert_eq!(retrieved_page.unwrap().title, "Test Page");
     }
 
-    // Regression for #2356 item 1: a stale-by-HLC apply (incoming.updated_at <
-    // stored.updated_at) hits the `save_internal -> None` short-circuit. The
-    // apply must still enqueue Action::Compare so the receiver's current
-    // Merkle state for this entity propagates to peers — otherwise two nodes
-    // that each hold the locally-newer side of a concurrent CRDT merge keep
-    // dropping each other's deltas, and root-hash convergence stalls until an
-    // unrelated trigger forces a hash-comparison sweep.
+    // A stale-by-HLC apply (incoming.updated_at < stored.updated_at) hits the
+    // `save_internal -> None` short-circuit and contributes nothing to the
+    // causal delta. Merkle-root convergence for concurrently-merged entities is
+    // owned by the HashComparison / level-wise sync protocols instead. This
+    // asserts that contract — the stale apply succeeds but emits no delta.
     #[test]
-    fn apply_action__stale_update_still_emits_compare() {
+    fn apply_action__stale_update_emits_no_delta() {
         use crate::delta::{commit_causal_delta, reset_delta_context};
 
         crate::tests::common::register_test_merge_functions();
@@ -456,296 +445,13 @@ mod interface__apply_actions {
 
         assert!(MainInterface::apply_action(stale_action, &ApplyContext::empty()).is_ok());
 
-        let delta = commit_causal_delta(&[0; 32])
-            .unwrap()
-            .expect("stale apply must still emit a delta (Action::Compare)");
+        // The stale apply enqueues nothing, so there is no causal delta to commit.
+        let delta = commit_causal_delta(&[0; 32]).unwrap();
         assert!(
-            delta
-                .actions
-                .iter()
-                .any(|a| matches!(a, Action::Compare { id: cid } if *cid == id)),
-            "expected Action::Compare for id={id} after stale apply, got: {:?}",
-            delta.actions
+            delta.is_none(),
+            "stale apply must not emit a delta (the apply path enqueues no action \
+             for an entity that lost the LWW tiebreak), got: {delta:?}"
         );
-    }
-}
-
-#[cfg(test)]
-mod interface__comparison {
-    use super::*;
-
-    type ForeignInterface = Interface<MockedStorage<0>>;
-
-    fn compare_trees<D: Data>(
-        foreign: Option<&D>,
-        comparison_data: ComparisonData,
-    ) -> Result<(Vec<Action>, Vec<Action>), StorageError> {
-        MainInterface::compare_trees(
-            foreign
-                .map(to_vec)
-                .transpose()
-                .map_err(StorageError::SerializationError)?,
-            comparison_data,
-        )
-    }
-
-    #[test]
-    fn compare_trees__identical() {
-        let element = Element::root();
-        let mut local = Page::new_from_element("Test Page", element);
-        let mut foreign = local.clone();
-
-        assert!(MainInterface::save(&mut local).unwrap());
-        assert!(ForeignInterface::save(&mut foreign).unwrap());
-        assert_eq!(
-            local.element().merkle_hash(),
-            foreign.element().merkle_hash()
-        );
-
-        let result = compare_trees(
-            Some(&foreign),
-            ForeignInterface::generate_comparison_data(Some(foreign.id())).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(result, (vec![], vec![]));
-    }
-
-    #[test]
-    fn compare_trees__local_newer() {
-        let element = Element::root();
-        let mut local = Page::new_from_element("Test Page", element.clone());
-        let mut foreign = Page::new_from_element("Old Test Page", element);
-
-        assert!(ForeignInterface::save(&mut foreign).unwrap());
-
-        // Make local newer
-        sleep(Duration::from_millis(10));
-        local.element_mut().update();
-        assert!(MainInterface::save(&mut local).unwrap());
-
-        let result = compare_trees(
-            Some(&foreign),
-            ForeignInterface::generate_comparison_data(Some(foreign.id())).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            result,
-            (
-                vec![],
-                vec![Action::Update {
-                    id: local.id(),
-                    data: to_vec(&local).unwrap(),
-                    ancestors: vec![],
-                    metadata: local.element().metadata.clone(),
-                }]
-            )
-        );
-    }
-
-    #[test]
-    fn compare_trees__foreign_newer() {
-        let element = Element::root();
-        let mut local = Page::new_from_element("Old Test Page", element.clone());
-        let mut foreign = Page::new_from_element("Test Page", element);
-
-        assert!(MainInterface::save(&mut local).unwrap());
-
-        // Make foreign newer
-        sleep(Duration::from_millis(10));
-        foreign.element_mut().update();
-        assert!(ForeignInterface::save(&mut foreign).unwrap());
-
-        let result = compare_trees(
-            Some(&foreign),
-            ForeignInterface::generate_comparison_data(Some(foreign.id())).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            result,
-            (
-                vec![Action::Update {
-                    id: foreign.id(),
-                    data: to_vec(&foreign).unwrap(),
-                    ancestors: vec![],
-                    metadata: foreign.element().metadata.clone(),
-                }],
-                vec![]
-            )
-        );
-    }
-
-    #[test]
-    fn compare_trees__with_collections() {
-        let page_element = Element::root();
-        let para1_element = Element::new(None);
-        let para2_element = Element::new(None);
-        let para3_element = Element::new(None);
-
-        let mut local_page = Page::new_from_element("Local Page", page_element.clone());
-        let mut local_para1 =
-            Paragraph::new_from_element("Local Paragraph 1", para1_element.clone());
-        let mut local_para2 = Paragraph::new_from_element("Local Paragraph 2", para2_element);
-
-        let mut foreign_page = Page::new_from_element("Foreign Page", page_element);
-        let mut foreign_para1 = Paragraph::new_from_element("Updated Paragraph 1", para1_element);
-        let mut foreign_para3 = Paragraph::new_from_element("Foreign Paragraph 3", para3_element);
-
-        assert!(MainInterface::save(&mut local_page).unwrap());
-        assert!(MainInterface::add_child_to(local_page.id(), &mut local_para1).unwrap());
-        assert!(MainInterface::add_child_to(local_page.id(), &mut local_para2).unwrap());
-
-        assert!(ForeignInterface::save(&mut foreign_page).unwrap());
-        assert!(ForeignInterface::add_child_to(foreign_page.id(), &mut foreign_para1).unwrap());
-        assert!(ForeignInterface::add_child_to(foreign_page.id(), &mut foreign_para3).unwrap());
-
-        let (local_actions, foreign_actions) = compare_trees(
-            Some(&foreign_page),
-            ForeignInterface::generate_comparison_data(Some(foreign_page.id())).unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(
-            local_actions,
-            vec![
-                // Page needs update due to different child structure
-                Action::Update {
-                    id: foreign_page.id(),
-                    data: to_vec(&foreign_page).unwrap(),
-                    ancestors: vec![],
-                    metadata: foreign_page.element().metadata.clone(),
-                },
-                // Para1 needs comparison due to different hash
-                Action::Compare {
-                    id: local_para1.id()
-                },
-            ]
-        );
-        local_para2.element_mut().is_dirty = true;
-        // Para2 is a local-only child within a collection both sides share, so
-        // it takes the "child missing from foreign" arm. Its Add must carry
-        // para2's *own* ancestor chain — i.e. its immediate parent, the page —
-        // exactly like the "collection entirely missing" arm does for para3
-        // below. Regression guard: this previously asserted `ancestors: vec![]`,
-        // which only held because the parent is the root page (whose ancestors
-        // are empty); the action was being built from the parent's ancestors
-        // instead of the child's, orphaning para2 on the receiver.
-        // Expected ancestor hash, derived independently of the action under
-        // test: the page's own full Merkle hash, which is what
-        // `get_ancestors_of` records for the parent entry.
-        let expected_page_hash = MainInterface::generate_comparison_data(Some(local_page.id()))
-            .unwrap()
-            .full_hash;
-        let local_para2_ancestor_hash = {
-            let Action::Add { ancestors, .. } = foreign_actions[1].clone() else {
-                panic!("Expected para2 to be added to foreign");
-            };
-            assert_eq!(ancestors.len(), 1, "para2 must carry exactly its parent");
-            assert_eq!(
-                ancestors[0].id(),
-                local_page.id(),
-                "para2's ancestor must be its immediate parent (the page)"
-            );
-            assert_eq!(
-                ancestors[0].merkle_hash(),
-                expected_page_hash,
-                "para2's ancestor hash must be the page's full Merkle hash"
-            );
-            ancestors[0].merkle_hash()
-        };
-        assert_eq!(
-            foreign_actions,
-            vec![
-                // Para1 needs comparison due to different hash
-                Action::Compare {
-                    id: local_para1.id()
-                },
-                // Para2 needs to be added to foreign, under its parent page
-                Action::Add {
-                    id: local_para2.id(),
-                    data: to_vec(&local_para2).unwrap(),
-                    ancestors: vec![ChildInfo::new(
-                        local_page.id(),
-                        local_para2_ancestor_hash,
-                        local_page.element().metadata.clone(),
-                    )],
-                    metadata: local_para2.element().metadata.clone(),
-                },
-                // Para3 needs to be added locally, but we don't have the data, so we compare
-                Action::Compare {
-                    id: foreign_para3.id()
-                },
-            ]
-        );
-
-        // Compare the updated para1
-        let (local_para1_actions, foreign_para1_actions) = compare_trees(
-            Some(&foreign_para1),
-            ForeignInterface::generate_comparison_data(Some(foreign_para1.id())).unwrap(),
-        )
-        .unwrap();
-
-        // Here, para1 has been updated, but also para2 is present locally and para3
-        // is present remotely. So the ancestor hashes will not match, and will
-        // trigger a recomparison.
-        let local_para1_ancestor_hash = {
-            let Action::Update { ancestors, .. } = local_para1_actions[0].clone() else {
-                panic!("Expected an update action");
-            };
-            ancestors[0].merkle_hash()
-        };
-        assert_ne!(
-            local_para1_ancestor_hash,
-            foreign_page.element().merkle_hash()
-        );
-        assert_eq!(
-            local_para1_actions,
-            vec![Action::Update {
-                id: foreign_para1.id(),
-                data: to_vec(&foreign_para1).unwrap(),
-                ancestors: vec![ChildInfo::new(
-                    foreign_page.id(),
-                    local_para1_ancestor_hash,
-                    local_page.element().metadata.clone(),
-                )],
-                metadata: foreign_para1.element().metadata.clone(),
-            }]
-        );
-        assert_eq!(foreign_para1_actions, vec![]);
-
-        // Compare para3 which doesn't exist locally
-        let (local_para3_actions, foreign_para3_actions) = compare_trees(
-            Some(&foreign_para3),
-            ForeignInterface::generate_comparison_data(Some(foreign_para3.id())).unwrap(),
-        )
-        .unwrap();
-
-        // Here, para3 is present remotely but not locally, and also para2 is
-        // present locally and not remotely, and para1 has been updated. So the
-        // ancestor hashes will not match, and will trigger a recomparison.
-        let local_para3_ancestor_hash = {
-            let Action::Add { ancestors, .. } = local_para3_actions[0].clone() else {
-                panic!("Expected an update action");
-            };
-            ancestors[0].merkle_hash()
-        };
-        assert_ne!(
-            local_para3_ancestor_hash,
-            foreign_page.element().merkle_hash()
-        );
-        assert_eq!(
-            local_para3_actions,
-            vec![Action::Add {
-                id: foreign_para3.id(),
-                data: to_vec(&foreign_para3).unwrap(),
-                ancestors: vec![ChildInfo::new(
-                    foreign_page.id(),
-                    local_para3_ancestor_hash,
-                    foreign_page.element().metadata.clone(),
-                )],
-                metadata: foreign_para3.element().metadata.clone(),
-            }]
-        );
-        assert_eq!(foreign_para3_actions, vec![]);
     }
 }
 

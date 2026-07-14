@@ -20,9 +20,8 @@ use std::ops::{Deref, DerefMut};
 
 use super::{Collection, ROOT_ENTRY_ID, ROOT_ID};
 use crate::address::Id;
-use crate::delta::{push_comparison, StorageDelta};
+use crate::delta::StorageDelta;
 use crate::index::DeferredAncestorScope;
-use crate::integration::Comparison;
 use crate::interface::{Action, Interface, StorageError};
 use crate::store::{MainStorage, StorageAdaptor};
 use borsh::{from_slice, BorshDeserialize, BorshSerialize};
@@ -324,7 +323,6 @@ where
         let variant = match &artifact {
             StorageDelta::Actions(_) => "Actions",
             StorageDelta::CausalActions { .. } => "CausalActions",
-            StorageDelta::Comparisons(_) => "Comparisons",
         };
 
         // Observe the remote delta's HLC before applying, so a later local insert
@@ -360,12 +358,6 @@ where
                 delta_id: Some(delta_id),
                 delta_hlc: Some(delta_hlc),
             }),
-            // Extracted to a helper so the `?` operators inside
-            // propagate to a Result that the match arm returns,
-            // which then flows through the `.inspect_err()` below.
-            // Inlining the body here would let the inner `?`
-            // return from `sync` directly, bypassing the trace.
-            StorageDelta::Comparisons(comparisons) => Self::apply_comparisons(comparisons, ctx),
         }
         .inspect_err(|e| {
             tracing::error!(
@@ -383,33 +375,6 @@ where
         );
         Self::commit_headless();
 
-        Ok(())
-    }
-
-    /// Apply a batch of `Comparison` entries from a sync delta.
-    ///
-    /// Extracted to a helper so the inner `?` operators propagate to
-    /// this function's `Result`, which the caller (`Self::sync`) returns
-    /// from its match expression and then runs through `.inspect_err`.
-    /// Inlining the body in the match arm would let `?` skip over the
-    /// trace.
-    fn apply_comparisons(
-        comparisons: Vec<Comparison>,
-        ctx: &crate::interface::ApplyContext,
-    ) -> Result<(), StorageError> {
-        if comparisons.is_empty() {
-            push_comparison(Comparison {
-                data: <Interface<S>>::find_by_id_raw(Id::root()),
-                comparison_data: <Interface<S>>::generate_comparison_data(None)?,
-            });
-        }
-        for Comparison {
-            data,
-            comparison_data,
-        } in comparisons
-        {
-            <Interface<S>>::compare_affective(data, comparison_data, ctx)?;
-        }
         Ok(())
     }
 
@@ -456,12 +421,6 @@ where
             let action_ctx = ctx_for_action(&action);
 
             match action {
-                Action::Compare { id } => {
-                    push_comparison(Comparison {
-                        data: <Interface<S>>::find_by_id_raw(id),
-                        comparison_data: <Interface<S>>::generate_comparison_data(Some(id))?,
-                    });
-                }
                 Action::Add {
                     id,
                     data,

@@ -802,18 +802,6 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(index.children.unwrap_or_default())
     }
 
-    /// Returns all collection names for an entity.
-    ///
-    /// Legacy function - always returns at most one name (or empty).
-    /// Kept for backwards compatibility with tree comparison logic.
-    pub(crate) fn get_collection_names_for(parent_id: Id) -> Result<Vec<String>, StorageError> {
-        // Return a dummy name if children exist, for tree comparison
-        // The actual name doesn't matter since it's not stored
-        Ok(Self::get_index(parent_id)?
-            .and_then(|index| index.children.as_ref().map(|_| vec!["_".to_owned()]))
-            .unwrap_or_default())
-    }
-
     /// Returns (full_hash, own_hash) tuple for an entity.
     ///
     /// # Errors
