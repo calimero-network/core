@@ -1,6 +1,6 @@
 use calimero_config::{
     BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, IdentityConfig, NetworkConfig,
-    NodeMode, ServerConfig, SyncConfig, CONFIG_FILE,
+    NodeMode, ServerConfig, SyncConfig,
 };
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client_config::{ClientConfig, ClientSigner, LocalConfig};
@@ -404,11 +404,9 @@ impl InitCommand {
             },
         );
 
+        // `save` writes config.toml atomically and owner-only (0600); the file
+        // holds the private key, so this keeps it unreadable to other users.
         config.save(&path).await?;
-
-        // The file itself holds the private key; keep it owner-only even if its
-        // parent directory's permissions are ever loosened.
-        restrict_to_owner(path.join(CONFIG_FILE), 0o600).await?;
 
         // `config` is fully consumed below; `datastore_path` is cloned so the
         // store's owned copy is independent.

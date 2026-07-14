@@ -1,13 +1,12 @@
 #![allow(unused_results, reason = "Occurs in macro")]
 
-use std::env::temp_dir;
 use std::str::FromStr;
 
-use calimero_config::{ConfigFile, CONFIG_FILE};
-use camino::Utf8PathBuf;
+use calimero_config::{write_atomic, ConfigFile, CONFIG_FILE};
+use camino::Utf8Path;
 use clap::Parser;
 use eyre::{bail, eyre, Result as EyreResult};
-use tokio::fs::{read_to_string, write};
+use tokio::fs::read_to_string;
 use toml_edit::{Item, Value};
 use tracing::info;
 
@@ -89,8 +88,9 @@ impl ConfigCommand {
 
         self.validate_toml(&doc, &home).await?;
 
-        // Save the updated TOML back to the file
-        write(&config_path, doc.to_string()).await?;
+        // Rewrites a live node's config, which holds its private key: write
+        // atomically and owner-only so a crash mid-write cannot truncate it.
+        write_atomic(&config_path, doc.to_string()).await?;
 
         info!("Node configuration has been updated");
 
@@ -110,14 +110,16 @@ impl ConfigCommand {
         doc: &toml_edit::DocumentMut,
         home: &camino::Utf8Path,
     ) -> EyreResult<()> {
-        let tmp_dir = temp_dir();
-        let tmp_path = tmp_dir.join(CONFIG_FILE);
+        // The candidate config holds the node's private key, so stage it in a
+        // private (0700) temp dir that is removed on drop rather than a shared,
+        // predictably-named file under the system temp dir.
+        let tmp_dir = tempfile::tempdir()?;
+        let tmp_dir_utf8 = Utf8Path::from_path(tmp_dir.path())
+            .ok_or_else(|| eyre!("temp dir path is not valid UTF-8"))?;
 
-        write(&tmp_path, doc.to_string()).await?;
+        write_atomic(&tmp_dir_utf8.join(CONFIG_FILE), doc.to_string()).await?;
 
-        let tmp_path_utf8 = Utf8PathBuf::try_from(tmp_dir)?;
-
-        let config = ConfigFile::load(&tmp_path_utf8).await?;
+        let config = ConfigFile::load(tmp_dir_utf8).await?;
         crate::cli::validation::validate_config(&config, home)?;
 
         Ok(())
