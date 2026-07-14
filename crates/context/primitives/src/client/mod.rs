@@ -1206,7 +1206,7 @@ impl ContextClient {
     /// * `inviter_id` - The public key of the existing member creating the invitation.
     ///   This node must have the corresponding private key for this identity.
     /// * `valid_for_seconds` - How long (in seconds) the invitation remains valid.
-    /// * `_secret_salt` - Unused; a fresh random salt is generated internally.
+    /// * `_invitation_nonce` - Unused; a fresh nonce is generated internally.
     ///
     /// # Returns
     /// * A `Result` containing the `SignedOpenInvitation` if successful, or an error if
@@ -1217,9 +1217,9 @@ impl ContextClient {
         context_id: &ContextId,
         inviter_id: &PublicKey,
         valid_for_seconds: u64,
-        _secret_salt: [u8; DIGEST_SIZE],
+        _invitation_nonce: [u8; DIGEST_SIZE],
     ) -> eyre::Result<Option<SignedOpenInvitation>> {
-        let secret_salt = {
+        let invitation_nonce = {
             let mut rng = rand::thread_rng();
             rng.gen::<[u8; DIGEST_SIZE]>()
         };
@@ -1262,7 +1262,7 @@ impl ContextClient {
             inviter_identity: inviter_identity_context_type,
             context_id: context_id.into(),
             expiration_timestamp,
-            secret_salt,
+            invitation_nonce,
         };
 
         let invitation_bytes =
