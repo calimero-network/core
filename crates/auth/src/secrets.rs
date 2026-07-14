@@ -633,4 +633,43 @@ mod tests {
         let second = SecretManager::new(Arc::clone(&storage));
         assert_eq!(second.get_jwt_auth_secret().await.unwrap(), original);
     }
+
+    /// The production (`with_storage_config`) RocksDB path derives its KEK from a
+    /// sibling `<db-path>.kek` file: generated once with `0600` perms, then
+    /// reloaded verbatim — so a manager built after a restart unseals what a
+    /// previous one sealed, and the key file itself is owner-only.
+    ///
+    /// Assumes `MERO_AUTH_SECRET_KEK` is unset (as in CI); an env KEK would
+    /// legitimately take precedence over the key file.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn keyfile_kek_is_persisted_0600_and_stable_across_managers() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("auth-db");
+        let config = StorageConfig::RocksDB {
+            path: db_path.clone(),
+        };
+
+        // Two independently-constructed managers over the same config and store
+        // must interoperate (node-restart scenario).
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let first = SecretManager::with_storage_config(Arc::clone(&storage), &config);
+        first.initialize().await.unwrap();
+        let original = first.get_jwt_auth_secret().await.unwrap();
+
+        let second = SecretManager::with_storage_config(Arc::clone(&storage), &config);
+        assert_eq!(second.get_jwt_auth_secret().await.unwrap(), original);
+
+        // The KEK sits in a sibling key file with owner-only permissions.
+        let kek_file = keyfile_path(&db_path);
+        let meta = std::fs::metadata(&kek_file).unwrap();
+        assert_eq!(
+            meta.permissions().mode() & 0o777,
+            0o600,
+            "KEK file must be owner-only (0600)"
+        );
+        assert_eq!(meta.len(), 32, "KEK file must hold exactly the 32-byte key");
+    }
 }
