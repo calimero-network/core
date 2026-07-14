@@ -61,6 +61,7 @@ mod ops;
 mod pending_rotation;
 mod pending_self_purge;
 mod permission_checker;
+mod reentry;
 mod signing_keys;
 mod tee;
 pub mod unified_op_decode;
@@ -84,6 +85,7 @@ pub use self::contexts::{
 };
 pub use self::deny_list::DenyListRepository;
 pub use self::pending_rotation::PendingRotationRepository;
+pub use self::reentry::ReentryRepository;
 
 pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;

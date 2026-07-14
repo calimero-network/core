@@ -45,6 +45,13 @@ impl<'a> MembershipRepository<'a> {
         self.add_member_with_keys(group_id, identity, role, None, None)
     }
 
+    /// Write a direct member row for `identity` in `group_id`, seeding the
+    /// group's default capabilities for non-admin roles.
+    ///
+    /// Writing the row also **retracts any deny-list entry** for the pair —
+    /// see the inline comment below. This is the write-side half of the
+    /// invariant `DenyListRepository::mark` asserts from the other side, and
+    /// every direct-row write in the codebase funnels through here.
     pub fn add_member_with_keys(
         &self,
         group_id: &ContextGroupId,
@@ -71,6 +78,28 @@ impl<'a> MembershipRepository<'a> {
             },
         )?;
         drop(handle);
+
+        // A direct member row and a deny-list entry are contradictory answers
+        // to the same question: the row asserts "currently a member of this
+        // group", the deny-list is the derived view of "currently NOT a member"
+        // that silences the identity's state deltas at the receive filter. Both
+        // cannot hold, so writing the row retracts the deny.
+        //
+        // This lives here rather than in the `MemberAdded` apply handler because
+        // several paths materialize a direct row WITHOUT going through an op —
+        // the sync responder pre-registering a joiner, the joiner's own local add
+        // in `join_group`, invitation-accept, TEE backfill. Every one of them
+        // would otherwise leave a re-joined member denied: full capabilities in
+        // governance (the `Direct` arm of `effective_capabilities` does not
+        // consult the deny-list) while every delta they author is dropped at the
+        // receive filter. That split-brain heals on its own only if the re-join
+        // op later lands on the node; on a node that never applies it, it is
+        // permanent. Clearing at the single write choke point makes the state
+        // unreachable instead of merely unlikely.
+        //
+        // Idempotent on an identity who was never denied (delete of an absent
+        // key), so this costs one store delete on every member add.
+        DenyListRepository::new(self.store).clear(group_id, identity)?;
 
         if !is_admin {
             let capabilities = CapabilitiesRepository::new(self.store);
@@ -283,8 +312,33 @@ impl<'a> MembershipRepository<'a> {
 
     /// Returns the capability bitmask `identity` holds as an *effective*
     /// member of `group_id` — direct or inherited — or `None` when they
-    /// are not a member at all. See the original `get_effective_member_capabilities`
-    /// doc for the deny-list-asymmetry rationale.
+    /// are not a member at all.
+    ///
+    /// The two arms mirror, cell-for-cell, the effective member set the
+    /// `list_group_members` handler builds (raw stored rows ∪
+    /// [`Self::enumerate_inherited`]), so the two endpoints cannot contradict
+    /// each other. Whether the deny-list is consulted follows from which half
+    /// of that union the arm corresponds to:
+    ///
+    /// * **`Inherited`** — the deny-list **is** applied, exactly as
+    ///   [`Self::enumerate_inherited`] does. A member kicked from an Open
+    ///   subgroup keeps their ancestor-level inheritance but is deny-listed on
+    ///   the subgroup, and that deny entry *is* the removal — there is no direct
+    ///   row to delete. [`Self::check_path`] deliberately skips the deny-list
+    ///   (it is also run by `MemberJoinedOpen` apply mid-rejoin, while the
+    ///   rejoiner is still denied), so without this arm a kicked inherited
+    ///   member would resolve to `Some(0)` here while the list endpoint omits
+    ///   them.
+    /// * **`Direct`** — the deny-list is **not** consulted, because the raw
+    ///   stored-row half of that union does not filter either. This is sound
+    ///   only because a direct row and a deny entry cannot coexist:
+    ///   [`Self::add_member_with_keys`] retracts the deny entry as part of
+    ///   writing the row, and [`crate::DenyListRepository::mark`] asserts the
+    ///   row is gone before marking. If you ever relax that invariant, this arm
+    ///   becomes a split-brain — full capabilities in governance for an identity
+    ///   the receive filter is silencing — and the fix is to restore the
+    ///   invariant at the write site, not to deny-filter here, which would make
+    ///   this endpoint reject a member `list_group_members` still shows.
     pub fn effective_capabilities(
         &self,
         group_id: &ContextGroupId,

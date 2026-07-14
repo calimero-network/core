@@ -1,6 +1,7 @@
 use crate::{
     CapabilitiesRepository, DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository,
-    MetadataRepository, SigningKeysRepository, UpgradeLadderRepository, UpgradesRepository,
+    MetadataRepository, ReentryRepository, SigningKeysRepository, UpgradeLadderRepository,
+    UpgradesRepository,
 };
 use calimero_context_client::local_governance::SignedGroupOp;
 use calimero_context_config::types::ContextGroupId;
@@ -500,6 +501,10 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     // keyring is gone — and leaving the rows behind would have the rotation listener
     // retry forever against a group that no longer exists.
     crate::PendingRotationRepository::new(store).clear_all_for_group(group_id)?;
+    // Re-entry blocks and consumed invitations describe a group that no longer
+    // exists — drop them with it, so a group later recreated under the same id
+    // doesn't inherit a stale set of people it refuses to admit.
+    ReentryRepository::new(store).clear_all_for_group(group_id)?;
     delete_op_log_and_head(store, group_id)?;
     MetaRepository::new(store).delete(group_id)?;
     Ok(())

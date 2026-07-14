@@ -1,4 +1,4 @@
-use crate::{MembershipRepository, NamespaceRepository};
+use crate::{MembershipRepository, NamespaceRepository, ReentryRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_context_config::MemberCapabilities;
@@ -59,6 +59,22 @@ impl<'a> NamespaceMembershipService<'a> {
         // Do not add joined_at lookups below this point without handling the
         // None case explicitly.
 
+        // Re-entry gate. Rejects two cases: an identity an admin REMOVED (no
+        // invitation readmits them — only an admin `MemberAdded` does), and an
+        // identity replaying an invitation they have already consumed (they
+        // left, and the invitation they joined with is spent for them; they need
+        // a freshly issued one). A first-time joiner has neither row, so this is
+        // a no-op for them.
+        //
+        // Placement is load-bearing on both sides. It must come AFTER
+        // `verify_member_join_signature`, so we never read state on the say-so of
+        // an unauthenticated op — and BEFORE the direct-row dedup below, which
+        // returns `Ok(None)` early and would skip the check entirely for anyone
+        // who already holds a row (which the sync responder's pre-register can
+        // give them).
+        let reentry = ReentryRepository::new(self.store);
+        reentry.require_invitation_admits(&group_id, member, inv.invitation_nonce)?;
+
         let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
         self.require_inviter_permission(&group_id, &inviter_pk)?;
 
@@ -85,6 +101,17 @@ impl<'a> NamespaceMembershipService<'a> {
         }
 
         MembershipRepository::new(self.store).add_member(&group_id, member, role)?;
+        // Spend the invitation for this identity: presenting it again after they
+        // next exit cannot readmit them. Recorded per `(group, identity, nonce)`,
+        // so the same open-invite link still admits everyone else who has not
+        // used it — an invitation is a bearer token with no invitee field, and
+        // burning it globally on first use would break the shared join link.
+        reentry.mark_invitation_consumed(&group_id, member, inv.invitation_nonce)?;
+        // They are a member again, so the block that stopped them re-entering is
+        // spent. Reaching this line means the gate above already established the
+        // block was `Left` and this invitation was fresh — a `Removed` block
+        // bails there and never gets here.
+        reentry.clear_block(&group_id, member)?;
         // #2422 Option 2: synthesize an `AutoFollowSet` so the auto-follow
         // handler backfills any pre-existing contexts in this group. Same
         // rationale as the `GroupOp::MemberAdded` arm in `apply_group_op_

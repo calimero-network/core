@@ -7,10 +7,12 @@ use crate::pending_rotation::group_rotates_on_departure;
 use crate::{
     cascade_remove_member_from_group_tree, DenyListRepository, MembershipError, MembershipPolicy,
     MembershipRepository, MetaRepository, NamespaceRepository, PendingRotationRepository,
+    ReentryRepository,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
+use calimero_store::key::GroupExitReason;
 use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(
@@ -107,6 +109,12 @@ pub(crate) fn apply(
             if group_rotates_on_departure(store, sub)? {
                 PendingRotationRepository::new(store).mark(sub, member)?;
             }
+            // Block re-entry into each descendant they left. A `Left` block, not
+            // `Removed`: walking out is not a kick, so a freshly issued
+            // invitation readmits them. What it does stop is passively flowing
+            // back in — by re-inheriting an Open subgroup, or by replaying the
+            // invitation they joined with.
+            ReentryRepository::new(store).block(sub, member, GroupExitReason::Left)?;
             ctx.queue_event(crate::op_events::OpEvent::MemberRemoved {
                 group_id: sub.to_bytes(),
                 member: *member,
@@ -125,6 +133,12 @@ pub(crate) fn apply(
     // Deny-list the leaver on this group too. See
     // `MemberRemoved` for the same rationale.
     DenyListRepository::new(store).mark(group_id, member)?;
+    // Block re-entry, with `Left` rather than `Removed` — see the descendant
+    // cascade above. Like the deny-list write, this touches a separate,
+    // deliberately unhashed column and so leaves the signed state hash
+    // untouched; the ordering invariant documented on `MemberRemoved` applies
+    // here verbatim.
+    ReentryRepository::new(store).block(group_id, member, GroupExitReason::Left)?;
 
     // Forward secrecy on self-leave: record the debt, don't discharge it here.
     //
