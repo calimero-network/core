@@ -177,7 +177,6 @@ mod tests {
         let mut rng = thread_rng();
         let sender_key = PrivateKey::random(&mut rng);
         let shared_key = SharedKey::from_sk(&sender_key);
-        let nonce = [7u8; NONCE_LEN];
 
         let storage_delta = StorageDelta::Actions(Vec::new());
         let sealed = SealedDeltaPayload {
@@ -186,8 +185,8 @@ mod tests {
             events: Some(b"events-blob".to_vec()),
         };
         let plaintext = borsh::to_vec(&sealed)?;
-        let cipher = shared_key
-            .encrypt(plaintext, nonce)
+        let (nonce, cipher) = shared_key
+            .encrypt(plaintext)
             .ok_or_eyre("encryption failed")?;
 
         // Encrypted payload should decrypt back to empty actions AND the
@@ -218,7 +217,6 @@ mod tests {
         let mut rng = thread_rng();
         let sender_key = PrivateKey::random(&mut rng);
         let shared_key = SharedKey::from_sk(&sender_key);
-        let nonce = [3u8; NONCE_LEN];
 
         // A group-key holder seals a well-formed SealedDeltaPayload whose inner
         // artifact is just past the cap. The `is_valid()` guard must reject it
@@ -229,9 +227,7 @@ mod tests {
             events: None,
         };
         let plaintext = borsh::to_vec(&sealed).expect("serialize");
-        let cipher = shared_key
-            .encrypt(plaintext, nonce)
-            .expect("encryption failed");
+        let (nonce, cipher) = shared_key.encrypt(plaintext).expect("encryption failed");
 
         let err = decrypt_delta_actions(cipher, nonce, sender_key)
             .expect_err("oversized payload must be rejected");

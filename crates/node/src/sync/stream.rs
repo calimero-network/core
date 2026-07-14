@@ -41,8 +41,11 @@ pub async fn send(
     let encoded = borsh::to_vec(message)?;
 
     let message = match shared_key {
-        Some((key, nonce)) => key
-            .encrypt(encoded, nonce)
+        // Dead path: `send` is only ever called with `None`. If enabled, carry
+        // the per-call nonce to the receiver instead of dropping it here.
+        Some((key, _nonce)) => key
+            .encrypt(encoded)
+            .map(|(_nonce, ciphertext)| ciphertext)
             .ok_or_eyre("encryption failed")?,
         None => encoded,
     };
