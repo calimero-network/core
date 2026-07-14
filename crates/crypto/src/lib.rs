@@ -90,16 +90,8 @@ impl SharedKey {
         }
     }
 
-    /// Encrypt `payload` under this key, returning the freshly generated nonce
-    /// alongside the ciphertext.
-    ///
-    /// The nonce is drawn from a CSPRNG internally rather than accepted from the
-    /// caller: reusing a nonce under one key is catastrophic for AES-GCM, and a
-    /// per-call random nonce removes that footgun entirely. The returned nonce
-    /// MUST be transmitted/stored next to the ciphertext so [`decrypt`] can be
-    /// given it back.
-    ///
-    /// [`decrypt`]: SharedKey::decrypt
+    /// Generates a fresh nonce internally (caller-chosen nonces risk catastrophic
+    /// AES-GCM reuse) and returns it for [`decrypt`](SharedKey::decrypt).
     #[must_use]
     pub fn encrypt(&self, payload: Vec<u8>) -> Option<(Nonce, Vec<u8>)> {
         let nonce: Nonce = rand::random();
