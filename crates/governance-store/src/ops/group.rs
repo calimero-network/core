@@ -193,3 +193,6 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
     }
     Ok(true)
 }
+
+// CI baseline probe: no-op comment to trip the app-migration-e2e path filter so the
+// suite runs on unmodified master. See the PR body.
