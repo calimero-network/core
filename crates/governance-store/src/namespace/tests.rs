@@ -5788,3 +5788,143 @@ fn curative_sweep_redrives_stranded_context() {
         "the node's known-namespace enumeration must include the joined namespace"
     );
 }
+
+// -----------------------------------------------------------------------
+// `GroupCreated` must authorize at the op's causal cut.
+//
+// The arm used to read `MembershipRepository` live for BOTH its legs (root-admin,
+// and root-scoped `CAN_CREATE_SUBGROUP`). A replica that had folded a concurrent
+// capability revoke therefore rejected a `GroupCreated` its peers accepted — and
+// since the reject path never advances the DAG head, every op descending from that
+// `GroupCreated` stalled on the rejecting replica. These pin both directions.
+#[test]
+fn group_created_honors_at_cut_grant_over_live_denial() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    use super::super::test_fixtures::{FixedAuthorizer, TEST_CUT};
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner = owner_sk.public_key();
+    // A namespace member with NO admin row and NO capability row: the live
+    // resolver denies them outright. They stand for a signer whose
+    // CAN_CREATE_SUBGROUP grant this replica has not folded yet.
+    let creator_sk = PrivateKey::random(&mut rng);
+    let creator = creator_sk.public_key();
+
+    let namespace_id = [0xE1u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner });
+    let signed_genesis =
+        SignedNamespaceOp::sign(&owner_sk, namespace_id.into(), vec![], 0, genesis)
+            .expect("owner signs genesis");
+    gov.apply_signed_op(&signed_genesis)
+        .expect("genesis must apply");
+
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &creator)
+            .unwrap(),
+        "precondition: the creator must be denied by the LIVE resolver"
+    );
+
+    let head = gov.read_head_record().expect("read head");
+    let subgroup_id = [0xE2u8; 32];
+    let create_op = NamespaceOp::Root(RootOp::GroupCreated {
+        group_id: subgroup_id.into(),
+        parent_id: namespace_id.into(),
+        restricted: true,
+    });
+    let signed = SignedNamespaceOp::sign(
+        &creator_sk,
+        namespace_id.into(),
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        create_op,
+    )
+    .expect("creator signs GroupCreated");
+
+    NamespaceGovernance::new(&store, namespace_id.into())
+        .with_apply_auth(&TEST_CUT, &FixedAuthorizer(true))
+        .apply_signed_op(&signed)
+        .expect("at-cut grant must authorize GroupCreated even though live rows deny");
+
+    assert!(
+        MetaRepository::new(&store)
+            .load(&ContextGroupId::from(subgroup_id))
+            .unwrap()
+            .is_some(),
+        "the subgroup must be created when the cut authorizes the creator"
+    );
+}
+
+#[test]
+fn group_created_honors_at_cut_denial_over_live_grant() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    use super::super::test_fixtures::{FixedAuthorizer, TEST_CUT};
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    // The owner IS a live admin — the live resolver would wave this through.
+    // At the op's cut, though, the signer had no authority, so it must be rejected.
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner = owner_sk.public_key();
+
+    let namespace_id = [0xE3u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner });
+    let signed_genesis =
+        SignedNamespaceOp::sign(&owner_sk, namespace_id.into(), vec![], 0, genesis)
+            .expect("owner signs genesis");
+    gov.apply_signed_op(&signed_genesis)
+        .expect("genesis must apply");
+
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &owner)
+            .unwrap(),
+        "precondition: the owner must be granted by the LIVE resolver"
+    );
+
+    let head = gov.read_head_record().expect("read head");
+    let subgroup_id = [0xE4u8; 32];
+    let create_op = NamespaceOp::Root(RootOp::GroupCreated {
+        group_id: subgroup_id.into(),
+        parent_id: namespace_id.into(),
+        restricted: true,
+    });
+    let signed = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id.into(),
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        create_op,
+    )
+    .expect("owner signs GroupCreated");
+
+    let err = NamespaceGovernance::new(&store, namespace_id.into())
+        .with_apply_auth(&TEST_CUT, &FixedAuthorizer(false))
+        .apply_signed_op(&signed)
+        .expect_err("at-cut denial must reject GroupCreated even though live rows grant");
+    let _ = err;
+
+    assert!(
+        MetaRepository::new(&store)
+            .load(&ContextGroupId::from(subgroup_id))
+            .unwrap()
+            .is_none(),
+        "a rejected GroupCreated must not write the subgroup meta"
+    );
+}

@@ -8,6 +8,7 @@
 //! set of helpers the way the group-op handlers do.
 
 use crate::authorizer::AtCutAuthorizer;
+use crate::permission_checker::PermissionChecker;
 use crate::{MembershipError, MembershipRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::NamespaceId;
@@ -86,7 +87,18 @@ impl<'a> NamespaceApplyCtx<'a> {
             .is_admin_at_cut(&ns_gid, signer, self.parents)
         {
             Some(verdict) => verdict,
-            None => MembershipRepository::new(self.store).is_admin(&ns_gid, signer)?,
+            None => {
+                // Abstained. Live is sound only when there is no cut to resolve
+                // against; if the cut is real but unfolded here, answering from live
+                // would decide this op against a DIFFERENT cut than peers used.
+                if !self.authorizer.can_resolve_cut(&ns_gid, self.parents) {
+                    bail!(crate::ApplyError::AuthorityUndecidable {
+                        group_id: hex::encode(self.namespace_id.as_bytes()),
+                        signer: format!("{signer}"),
+                    });
+                }
+                MembershipRepository::new(self.store).is_admin(&ns_gid, signer)?
+            }
         };
         if !authorized {
             bail!(MembershipError::NotAdmin {
@@ -95,6 +107,15 @@ impl<'a> NamespaceApplyCtx<'a> {
             });
         }
         Ok(())
+    }
+
+    /// A [`PermissionChecker`] for `group`, carrying this op's causal cut and at-cut
+    /// authority source — so capability gates in namespace-op arms resolve as of the
+    /// op's own parents rather than against the receiver's current rows. Arms that
+    /// read `MembershipRepository` directly bypass the cut and can diverge across
+    /// replicas that have folded different sets of concurrent capability ops.
+    pub(crate) fn permissions_for(&self, group: ContextGroupId) -> PermissionChecker<'a> {
+        PermissionChecker::new(self.store, group).with_apply_auth(self.parents, self.authorizer)
     }
 
     /// The PROJECTION's at-cut membership PATH for `member` in `group`, for the

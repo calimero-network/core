@@ -51,6 +51,16 @@ pub enum FunctionCallError {
     ModuleSizeLimitExceeded { size: u64, max: u64 },
     #[error("module rejected by validation: {reason}")]
     ModuleValidationError { reason: String },
+    /// The execution consumed its entire gas budget and was trapped.
+    ///
+    /// Distinct from [`WasmTrap::Unreachable`]: gas exhaustion *is* implemented
+    /// as an injected `unreachable`, but reclassifying it here tells the caller
+    /// the guest hit a resource limit (a runaway or too-heavy computation)
+    /// rather than reaching genuinely unreachable code. `limit` is the budget
+    /// that was exhausted, i.e. [`VMLimits::max_gas`](crate::logic::VMLimits::max_gas)
+    /// for this execution.
+    #[error("execution exhausted its gas limit of {limit} points")]
+    GasExhausted { limit: u64 },
 }
 
 /// Error returned by
