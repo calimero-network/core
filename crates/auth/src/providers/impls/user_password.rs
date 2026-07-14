@@ -605,6 +605,13 @@ mod tests {
     }
 
     #[test]
+    fn test_password_length_boundaries_exclusive() {
+        // Exactly min - 1 and exactly max + 1 are rejected.
+        assert!(validate_password_length(&"x".repeat(7), 8, 128).is_err());
+        assert!(validate_password_length(&"x".repeat(129), 8, 128).is_err());
+    }
+
+    #[test]
     fn test_password_length_counts_unicode_scalars() {
         // 8 multi-byte characters should count as length 8, not byte length.
         let pw = "áéíóúñçü"; // 8 chars, > 8 bytes

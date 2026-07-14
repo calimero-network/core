@@ -428,6 +428,14 @@ mod tests {
         let key: Key = serde_json::from_str(legacy).unwrap();
         assert!(key.metadata.expires_at.is_none());
         assert!(key.is_valid());
+
+        // Full serde round-trip: a legacy key re-serialized and re-loaded must
+        // stay non-expiring and valid.
+        let json = serde_json::to_string(&key).unwrap();
+        let key: Key = serde_json::from_str(&json).unwrap();
+        assert!(key.metadata.expires_at.is_none());
+        assert!(!key.is_expired());
+        assert!(key.is_valid());
     }
 
     // --- #11: node-host binding exact match, fail closed ----------------
