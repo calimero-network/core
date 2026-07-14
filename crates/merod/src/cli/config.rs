@@ -88,8 +88,7 @@ impl ConfigCommand {
 
         self.validate_toml(&doc, &home).await?;
 
-        // Rewrites a live node's config, which holds its private key: write
-        // atomically and owner-only so a crash mid-write cannot truncate it.
+        // Live node's config holds its private key; write atomically.
         write_atomic(&config_path, doc.to_string()).await?;
 
         info!("Node configuration has been updated");
@@ -110,9 +109,8 @@ impl ConfigCommand {
         doc: &toml_edit::DocumentMut,
         home: &camino::Utf8Path,
     ) -> EyreResult<()> {
-        // The candidate config holds the node's private key, so stage it in a
-        // private (0700) temp dir that is removed on drop rather than a shared,
-        // predictably-named file under the system temp dir.
+        // Candidate holds the private key: stage in a private 0700 dir, not
+        // a shared, predictably-named file under the system temp dir.
         let tmp_dir = tempfile::tempdir()?;
         let tmp_dir_utf8 = Utf8Path::from_path(tmp_dir.path())
             .ok_or_else(|| eyre!("temp dir path is not valid UTF-8"))?;

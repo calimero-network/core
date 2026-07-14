@@ -578,20 +578,14 @@ impl ConfigFile {
     }
 }
 
-/// Atomically write `content` to `path`, replacing any existing file.
+/// Atomically write `content` over `path` via a temp-file-and-rename.
 ///
-/// `config.toml` holds the node's only copy of its libp2p private key, so a
-/// partial or truncated write is data loss. We write to a sibling temp file in
-/// the same directory (same filesystem, so the rename is atomic), fsync it,
-/// then rename over the target. On Unix the temp file is created 0600 before
-/// any content is written (via `tempfile`, which does this by default) so the
-/// key never exists on disk world-readable, and the containing directory is
-/// fsynced afterwards so the rename itself is durable across a crash.
+/// `config.toml` is the node's only copy of its private key, so a truncated
+/// write is data loss and the temp file is created 0600 to never expose it.
 pub async fn write_atomic(path: &Utf8Path, content: String) -> EyreResult<()> {
     let path = path.to_owned();
 
-    // tempfile + std fs are sync; config saves are rare, so a blocking task
-    // is simpler than juggling async temp-file handling.
+    // tempfile and std fs are sync; saves are rare, so just block.
     tokio::task::spawn_blocking(move || {
         let dir = path
             .parent()
@@ -603,8 +597,7 @@ pub async fn write_atomic(path: &Utf8Path, content: String) -> EyreResult<()> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            // Explicit even though tempfile already creates 0600, so the intent
-            // survives any future change to that default.
+            // Set explicitly so 0600 holds if tempfile's default ever changes.
             tmp.as_file()
                 .set_permissions(std::fs::Permissions::from_mode(0o600))
                 .wrap_err("failed to set temp file permissions")?;
@@ -619,9 +612,7 @@ pub async fn write_atomic(path: &Utf8Path, content: String) -> EyreResult<()> {
         tmp.persist(&path)
             .map_err(|e| eyre!("failed to persist config to {path:?}: {}", e.error))?;
 
-        // Fsync the directory so the rename survives a crash. Unix-only:
-        // Windows has no directory handle to sync and NamedTempFile::persist
-        // is already crash-safe there.
+        // Fsync the dir so the rename itself survives a crash (Unix-only).
         #[cfg(unix)]
         {
             std::fs::File::open(dir)
