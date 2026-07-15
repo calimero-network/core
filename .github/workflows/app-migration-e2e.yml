@@ -23,6 +23,7 @@ on:
       - "apps/migrations/**"
       - "workflows/app-migration/**"
       - ".github/workflows/app-migration-e2e.yml"
+      - ".github/workflows/build-merod-image.yml"
       - ".github/actions/build-local-merod/**"
       - ".github/actions/setup-merobox/**"
 
@@ -33,6 +34,7 @@ on:
       - "apps/migrations/**"
       - "workflows/app-migration/**"
       - ".github/workflows/app-migration-e2e.yml"
+      - ".github/workflows/build-merod-image.yml"
       - ".github/actions/build-local-merod/**"
       - ".github/actions/setup-merobox/**"
 

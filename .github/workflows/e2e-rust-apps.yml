@@ -19,6 +19,7 @@ on:
       - "apps/components-demo/**"
       - "apps/blobs/**"
       - ".github/workflows/e2e-rust-apps.yml"
+      - ".github/workflows/build-merod-image.yml"
 
   pull_request:
     branches: [master]
@@ -30,6 +31,7 @@ on:
       - "apps/components-demo/**"
       - "apps/blobs/**"
       - ".github/workflows/e2e-rust-apps.yml"
+      - ".github/workflows/build-merod-image.yml"
 
   workflow_dispatch:
 
