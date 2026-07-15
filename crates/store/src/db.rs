@@ -83,6 +83,19 @@ pub enum Column {
     /// legacy delta rows retire (C2.5). Synchronized like the planes it will
     /// subsume. Auto-created from `Column::iter()` at `open_cf` (no DB migration).
     UnifiedOp,
+    /// Node-local durable buffer for namespace governance ops whose apply failed
+    /// only because a semantic PREREQUISITE has not arrived yet (e.g. a
+    /// `MemberJoinedOpen` received before the signer's `MemberJoinedAt`
+    /// membership op). The op is parked here and re-attempted whenever a
+    /// namespace op newly applies, instead of being dropped as permanently
+    /// invalid. Its own column so its `namespace_id ‖ delta_id` key cannot
+    /// collide with the same-shaped `NamespaceGovOp` in the synced `Group`
+    /// column — and, unlike `Group`, it is NOT synchronized: a parked op is
+    /// unvalidated and must never be served to peers. Auto-created from
+    /// `Column::iter()` at `open_cf` (no DB migration). Keys are
+    /// `prefix(1) ‖ namespace_id(32) ‖ delta_id(32)`; values are the borsh'd
+    /// `SignedNamespaceOp`.
+    NamespacePendingGovOp,
 }
 
 pub trait Database<'a>: Debug + Send + Sync + 'static {

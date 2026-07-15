@@ -56,6 +56,7 @@ mod membership;
 mod meta;
 mod metadata;
 mod namespace;
+pub mod namespace_pending;
 pub mod nonce_window;
 mod ops;
 mod pending_rotation;
@@ -115,6 +116,7 @@ pub use self::namespace::{
     NamespaceMembershipService, NamespaceOpLogService, NamespaceRetryService, ReparentOutcome,
     ResolvedNamespaceIdentity,
 };
+pub use self::namespace_pending::{NamespacePendingOpRepository, MAX_PENDING_OPS_PER_NAMESPACE};
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::PermissionChecker;
 pub use self::signing_keys::SigningKeysRepository;

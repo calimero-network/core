@@ -587,3 +587,23 @@ pub enum ApplyError {
     #[error("NamespaceCreated rejected: {0}")]
     NamespaceCreatedRejected(#[source] NamespaceCreatedRejection),
 }
+
+/// Classify an apply error as a PARKABLE dependency failure — an op that is
+/// "not valid yet" (a missing semantic prerequisite a later op can satisfy)
+/// rather than "not valid ever" (genuine invalidity / forgery).
+///
+/// The only such case today is a `MemberJoinedOpen` rejected for
+/// [`MemberJoinedOpenRejection::NoMembershipPath`]: the signer has no
+/// membership path to the target group *yet* because their `MemberJoinedAt`
+/// has not applied here. The other `MemberJoinedOpen` rejection variants
+/// (`SignerMismatch`, `WrongNamespace`, `AlreadyDirectMember`) are genuine
+/// invalidity and MUST NOT be parked — parking them would let a peer buffer
+/// junk that can never become valid.
+pub(crate) fn is_parkable_dependency_error(err: &eyre::Report) -> bool {
+    matches!(
+        err.downcast_ref::<ApplyError>(),
+        Some(ApplyError::MemberJoinedOpenRejected(
+            MemberJoinedOpenRejection::NoMembershipPath { .. }
+        ))
+    )
+}

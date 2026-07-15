@@ -4360,6 +4360,174 @@ fn member_joined_clears_deny_list_for_rejoiner() {
 }
 
 #[test]
+fn member_joined_open_parks_until_membership_prerequisite_applies() {
+    // Causal-buffering regression (the app-migration-e2e sync flake): a
+    // `RootOp::MemberJoinedOpen` received BEFORE the signer's own
+    // `RootOp::MemberJoinedAt` fails the membership-path check. Before the fix
+    // that failure DROPPED the op permanently — every later catch-up round
+    // re-delivered and re-dropped it (`ops_received=8 ops_applied=7` forever),
+    // so the joiner never converged. The fix PARKS the op on this "not valid
+    // yet" dependency failure and re-attempts it once a namespace op newly
+    // applies; when `MemberJoinedAt` lands, the drain re-applies the parked
+    // `MemberJoinedOpen` and it takes effect.
+    //
+    // This test delivers the two ops OUT OF ORDER (MemberJoinedOpen first) and
+    // asserts (a) the early op is parked, not dropped, and (b) once the
+    // prerequisite membership op applies, the parked op applies too — observed
+    // via its unique side effect (clearing the subgroup deny-list).
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::types::{
+        GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+    use sha2::{Digest, Sha256};
+
+    let mut rng = OsRng;
+    let store = test_store();
+
+    // namespace (root) ── Open subgroup. The member first joins the namespace
+    // root (MemberJoinedAt), then self-joins the Open subgroup by inheritance
+    // (MemberJoinedOpen). We deliver them in the reverse (out-of-order) order.
+    let ns_id = [0xB2u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let subgroup = ContextGroupId::from([0xB3u8; 32]);
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+
+    // Namespace root: admin + default CAN_JOIN_OPEN_SUBGROUPS so a member added
+    // to the root inherits the bit `check_path` needs for the Open subgroup.
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_default_capabilities(&ns_gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
+        .unwrap();
+
+    // Open subgroup nested under the root.
+    MetaRepository::new(&store)
+        .save(&subgroup, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+
+    // The joiner. It is NOT yet a namespace member — its MemberJoinedAt has not
+    // arrived. The local node IS this joiner (identity stored) so the
+    // MemberJoinedOpen apply's identity-restore is a real, non-spoof path.
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    let member_sk_bytes: [u8; 32] = *member_sk.as_bytes();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32])
+        .unwrap();
+
+    // Pre-state from a prior leave/kick: deny-listed on the subgroup. Clearing
+    // this is MemberJoinedOpen's observable side effect — the signal that the
+    // parked op actually applied (not merely that membership now exists).
+    DenyListRepository::new(&store)
+        .mark(&subgroup, &member_pk)
+        .unwrap();
+
+    let pending = || NamespacePendingOpRepository::new(&store, ns_id.into());
+
+    // ---- Out-of-order delivery step 1: MemberJoinedOpen arrives first. ----
+    let joined_open = SignedNamespaceOp::sign(
+        &member_sk,
+        ns_id.into(),
+        vec![],
+        2,
+        NamespaceOp::Root(RootOp::MemberJoinedOpen {
+            member: member_pk,
+            group_id: subgroup.to_bytes().into(),
+        }),
+    )
+    .unwrap();
+
+    let early = apply_signed_namespace_op(&store, &joined_open);
+    let err = early.expect_err("MemberJoinedOpen must fail while the signer is not yet a member");
+    assert!(
+        err.to_string().contains("no membership path"),
+        "expected a NoMembershipPath dependency failure, got: {err}"
+    );
+    assert_eq!(
+        pending().count().unwrap(),
+        1,
+        "the missing-prerequisite op must be PARKED, not dropped"
+    );
+    assert!(
+        DenyListRepository::new(&store)
+            .is_denied(&subgroup, &member_pk)
+            .unwrap(),
+        "MemberJoinedOpen must not have taken effect yet (deny-list still set)"
+    );
+
+    // ---- Step 2: the prerequisite MemberJoinedAt applies. ----
+    let invitation = GroupInvitationFromAdmin {
+        inviter_identity: SignerId::from(*admin_pk.digest()),
+        group_id: ns_gid,
+        expiration_timestamp: 0,
+        invitation_nonce: [0x42; 32],
+        invited_role: 1,
+    };
+    let inv_bytes = borsh::to_vec(&invitation).unwrap();
+    let inv_sig = admin_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
+    let signed_invitation = SignedGroupOpenInvitation {
+        invitation,
+        inviter_signature: hex::encode(inv_sig.to_bytes()),
+        application_id: None,
+        app_key: None,
+    };
+    let joined_at = SignedNamespaceOp::sign(
+        &member_sk,
+        ns_id.into(),
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: member_pk,
+            signed_invitation,
+            joined_at: 0,
+        }),
+    )
+    .unwrap();
+    apply_signed_namespace_op(&store, &joined_at)
+        .expect("MemberJoinedAt establishes the signer's namespace membership");
+
+    // ---- Convergence: the parked MemberJoinedOpen was drained and applied. ----
+    assert_eq!(
+        pending().count().unwrap(),
+        0,
+        "the parked op must be drained once its prerequisite applied"
+    );
+    assert!(
+        !DenyListRepository::new(&store)
+            .is_denied(&subgroup, &member_pk)
+            .unwrap(),
+        "the drained MemberJoinedOpen must take effect (deny-list cleared)"
+    );
+    assert!(
+        matches!(
+            MembershipRepository::new(&store)
+                .check_path(&subgroup, &member_pk)
+                .unwrap(),
+            crate::MembershipPath::Inherited { .. }
+        ),
+        "the joiner must now be an inherited member of the Open subgroup"
+    );
+}
+
+#[test]
 fn member_added_does_nothing_for_non_rejoiner_peers() {
     // On peers whose local namespace identity is NOT the rejoiner,
     // applying MemberAdded must NOT create a ContextIdentity row for

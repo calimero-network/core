@@ -154,7 +154,123 @@ impl<'a> NamespaceGovernance<'a> {
             .collect_skeleton_delta_ids_for_group(group_id)
     }
 
+    /// Apply a signed namespace op, with causal buffering of ops that fail only
+    /// because a semantic PREREQUISITE has not arrived yet.
+    ///
+    /// Wraps [`apply_signed_op_core`](Self::apply_signed_op_core):
+    /// * on a successful apply, DRAIN the parked-op buffer — a membership op
+    ///   that just landed (e.g. `MemberJoinedAt`) may unblock a previously
+    ///   parked `MemberJoinedOpen`;
+    /// * on a PARKABLE dependency failure (see
+    ///   [`is_parkable_dependency_error`](crate::errors::is_parkable_dependency_error)),
+    ///   PARK the op durably and still return the error, so the DAG doesn't
+    ///   advance its head for an op that isn't actually applied — the parked op
+    ///   is re-attempted from the buffer, not the DAG, once the prerequisite
+    ///   lands. This turns "not valid yet" back into "retry later" instead of
+    ///   the previous permanent drop.
+    ///
+    /// Both the gossip-receive and the sync catch-up/backfill apply paths route
+    /// through here (via `apply_signed_namespace_op_at_cut`), so one buffer
+    /// covers both.
     pub fn apply_signed_op(&self, op: &SignedNamespaceOp) -> EyreResult<ApplyNamespaceOpResult> {
+        match self.apply_signed_op_core(op) {
+            Ok(result) => {
+                // Best-effort: a drain failure must never fail an already-applied
+                // op. The parked ops stay buffered and are retried on the next
+                // successful apply.
+                if let Err(e) = self.drain_pending_ops() {
+                    tracing::warn!(
+                        namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                        %e,
+                        "namespace pending-op drain failed after apply; parked ops retained"
+                    );
+                }
+                Ok(result)
+            }
+            Err(e) if crate::errors::is_parkable_dependency_error(&e) => {
+                if let Err(park_err) =
+                    crate::NamespacePendingOpRepository::new(self.store, self.namespace_id).park(op)
+                {
+                    tracing::warn!(
+                        namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                        %park_err,
+                        "failed to park namespace op awaiting prerequisite; op will rely on \
+                         re-delivery"
+                    );
+                } else {
+                    tracing::debug!(
+                        namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                        signer = %op.signer,
+                        "parked namespace op awaiting a semantic prerequisite (missing membership \
+                         path); will retry when a namespace op newly applies"
+                    );
+                }
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Re-attempt every parked op for this namespace against current state,
+    /// looping until a pass makes no further progress (so a chain — op A
+    /// unblocks B unblocks C — fully drains). Runs after a successful apply.
+    ///
+    /// Each re-attempt runs against a FRESH `NamespaceGovernance::new` handle —
+    /// the live-fallback authorizer, NOT `self` (which carries the *triggering*
+    /// op's causal cut + projection authorizer). A parked op already failed its
+    /// own at-cut check; the drain asks the different question "is it valid now
+    /// that more state has applied", which must resolve against current live
+    /// state, not the triggering op's parent cut. This mirrors the free-fn
+    /// [`apply_signed_namespace_op`] path. It cannot permanently diverge: the
+    /// op is a self-authored membership proof whose effects are idempotent and
+    /// convergent, and any replica still missing the prerequisite simply keeps
+    /// it parked until its own copy arrives.
+    ///
+    /// Re-attempts call [`apply_signed_op_core`](Self::apply_signed_op_core)
+    /// (NOT the wrapping [`apply_signed_op`](Self::apply_signed_op)) so a
+    /// re-attempt never re-drains or re-parks:
+    /// * `Ok` — the prerequisite landed; the op applied (head advanced, op
+    ///   logged) — remove it from the buffer;
+    /// * still a parkable dependency failure — leave it parked for a later pass;
+    /// * any other error — genuinely invalid now (e.g. the member became a
+    ///   direct member); drop it from the buffer.
+    fn drain_pending_ops(&self) -> EyreResult<()> {
+        let repo = crate::NamespacePendingOpRepository::new(self.store, self.namespace_id);
+        loop {
+            let parked = repo.list()?;
+            if parked.is_empty() {
+                return Ok(());
+            }
+            let mut progressed = false;
+            for (delta_id, op) in parked {
+                let gov = NamespaceGovernance::new(self.store, self.namespace_id);
+                match gov.apply_signed_op_core(&op) {
+                    Ok(_) => {
+                        repo.remove(delta_id)?;
+                        progressed = true;
+                    }
+                    Err(e) if crate::errors::is_parkable_dependency_error(&e) => {
+                        // Prerequisite still missing — keep it parked.
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                            delta_id = %hex::encode(delta_id),
+                            %e,
+                            "dropping parked namespace op: no longer a recoverable dependency \
+                             failure"
+                        );
+                        repo.remove(delta_id)?;
+                    }
+                }
+            }
+            if !progressed {
+                return Ok(());
+            }
+        }
+    }
+
+    fn apply_signed_op_core(&self, op: &SignedNamespaceOp) -> EyreResult<ApplyNamespaceOpResult> {
         // Validate the op's namespace BEFORE any side effects. The op-log write
         // (`store_signed_operation`) already rejects a namespace mismatch, but
         // it runs only *after* `advance_dag_head` and the per-op-kind side
