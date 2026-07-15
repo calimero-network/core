@@ -102,18 +102,31 @@ impl TokenManager {
             .or_else(|| headers.get("host"))
             .and_then(|h| h.to_str().ok());
 
-        // This is only reached for a node-bound token (the caller invokes it
-        // exactly when `node_url` is set). If the request carries no
-        // determinable host, we cannot prove it is addressed to the bound node
-        // — fail closed. Letting a `None` host fall through to `Ok(())` would
-        // let any client strip the `Host`/`X-Forwarded-Host` header and bypass
-        // node binding entirely.
-        let Some(request_host) = request_host else {
-            return Err(
-                "Token is node-bound but the request carries no Host or X-Forwarded-Host \
-                 header to validate against"
-                    .to_owned(),
-            );
+        Self::validate_node_host_match(token_node_url, request_host)
+    }
+
+    /// Pure host-binding comparison, separated for testability.
+    ///
+    /// This is only reached for a node-bound token (the caller invokes it
+    /// exactly when `node_url` is set). If the request carries no determinable
+    /// host, we cannot prove it is addressed to the bound node — fail
+    /// **closed**. Letting a missing (or empty) host fall through to `Ok(())`
+    /// would let any client strip the `Host`/`X-Forwarded-Host` header and
+    /// bypass node binding entirely.
+    fn validate_node_host_match(
+        token_node_url: &str,
+        request_host: Option<&str>,
+    ) -> Result<(), String> {
+        let request_host = match request_host {
+            Some(host) if !host.trim().is_empty() => host,
+            // Fail closed: no host on a node-bound token is not trustworthy.
+            _ => {
+                return Err(
+                    "Token is node-bound but the request carries no Host or X-Forwarded-Host \
+                     header to validate against"
+                        .to_owned(),
+                );
+            }
         };
 
         // Skip validation if request is coming from internal auth service.
@@ -127,16 +140,20 @@ impl TokenManager {
         // URL (it can carry a client name), so an unparseable value is left to
         // fall through rather than rejected here — the missing-request-host case
         // above is the binding-bypass this guards.
-        if let Ok(token_url) = Url::parse(token_node_url) {
-            if let Some(token_host) = token_url.host_str() {
-                // Compare the hosts (handle both with and without port)
-                let request_host_without_port =
-                    request_host.split(':').next().unwrap_or(request_host);
-                if request_host_without_port != token_host && request_host != token_host {
-                    return Err(format!(
-                        "Token is not valid for this host. Token is for '{token_host}' but request is to '{request_host}'"
-                    ));
-                }
+        let token_host = Url::parse(token_node_url)
+            .ok()
+            .and_then(|url| url.host_str().map(|h| h.to_ascii_lowercase()));
+
+        if let Some(token_host) = token_host {
+            // Compare the hosts (handle both with and without port); host
+            // names are case-insensitive, so compare lowercased.
+            let request_host_without_port = request_host.split(':').next().unwrap_or(request_host);
+            let request_host_lc = request_host.to_ascii_lowercase();
+            let request_host_without_port_lc = request_host_without_port.to_ascii_lowercase();
+            if request_host_without_port_lc != token_host && request_host_lc != token_host {
+                return Err(format!(
+                    "Token is not valid for this host. Token is for '{token_host}' but request is to '{request_host}'"
+                ));
             }
         }
 
@@ -743,6 +760,54 @@ mod tests {
         assert!(!TokenManager::is_internal_auth_service("auth:-3001"));
         assert!(!TokenManager::is_internal_auth_service("auth:+3001"));
         assert!(!TokenManager::is_internal_auth_service("auth: 3001"));
+    }
+
+    // --- #11: node-host binding fail-closed -----------------------------
+
+    #[test]
+    fn test_validate_node_host_match_exact_accepted() {
+        assert!(TokenManager::validate_node_host_match(
+            "https://node.example.com",
+            Some("node.example.com"),
+        )
+        .is_ok());
+        assert!(TokenManager::validate_node_host_match(
+            "https://node.example.com",
+            Some("node.example.com:8443"),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_validate_node_host_match_suffix_attack_rejected() {
+        assert!(TokenManager::validate_node_host_match(
+            "https://node.example.com",
+            Some("node.example.com.attacker.com"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_validate_node_host_match_absent_host_fails_closed() {
+        // No host present at all -> reject (previously this passed).
+        assert!(TokenManager::validate_node_host_match("https://node.example.com", None).is_err());
+        // Empty / whitespace host header -> reject.
+        assert!(
+            TokenManager::validate_node_host_match("https://node.example.com", Some("")).is_err()
+        );
+        assert!(
+            TokenManager::validate_node_host_match("https://node.example.com", Some("   "))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_validate_node_host_match_internal_auth_service_allowed() {
+        assert!(TokenManager::validate_node_host_match(
+            "https://node.example.com",
+            Some("auth:3001")
+        )
+        .is_ok());
     }
 
     async fn test_token_manager() -> TokenManager {

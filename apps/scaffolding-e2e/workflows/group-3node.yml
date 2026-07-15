@@ -21,19 +21,19 @@ steps:
     type: login
     node: e2e-node-1
     username: dev
-    password: dev
+    password: dev-password
 
   - name: Login on e2e-node-2
     type: login
     node: e2e-node-2
     username: dev
-    password: dev
+    password: dev-password
 
   - name: Login on e2e-node-3
     type: login
     node: e2e-node-3
     username: dev
-    password: dev
+    password: dev-password
 
   # --- Setup ---
 
