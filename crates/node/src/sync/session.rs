@@ -64,6 +64,16 @@ pub(super) struct SessionTracker {
     /// `SyncSessionResult` arriving; otherwise [`Self::tick_wedge_watchdog`]
     /// synthesises a failure once `session_wedge_grace` has lapsed.
     initiator_dispatched_at: HashMap<ContextId, Instant>,
+    /// Monotonic per-context dispatch generation. Bumped on every
+    /// dispatch ([`Self::begin_dispatch_generation`]) and every
+    /// watchdog-synthesised failure. Stamped onto the dispatched job and
+    /// echoed in its `SyncSessionResult`; [`Self::apply_result`] discards
+    /// any result whose generation isn't the context's current one, so a
+    /// wedged session that recovers late — or an old session whose result
+    /// lands after the context was re-dispatched — can neither
+    /// double-count a failure nor clobber the new session's in-flight
+    /// marker.
+    dispatch_generation: HashMap<ContextId, u64>,
     /// #2319: when each context's mailbox-full warn was last emitted,
     /// for rate-limiting (≤1 per `MAILBOX_FULL_SUMMARY_WINDOW`).
     last_full_warn: HashMap<ContextId, Instant>,
@@ -170,6 +180,7 @@ impl SessionTracker {
             state: HashMap::new(),
             last_dispatch_attempt: HashMap::new(),
             initiator_dispatched_at: HashMap::new(),
+            dispatch_generation: HashMap::new(),
             last_full_warn: HashMap::new(),
             full_drops_in_window: 0,
             drop_contexts_in_window: HashSet::new(),
@@ -341,6 +352,21 @@ impl SessionTracker {
         let _prev = self.last_dispatch_attempt.insert(ctx, Instant::now());
     }
 
+    /// Bump and return the context's dispatch generation. Called right
+    /// before `session_tx.try_send`; the returned value is stamped onto
+    /// the job and echoed back in the `SyncSessionResult`.
+    ///
+    /// Bumping before the send (rather than on a confirmed dispatch) is
+    /// deliberate: a dropped `try_send` leaves a gap in the sequence but
+    /// no in-flight session to mismatch (the dispatch loop only reaches
+    /// here when the context isn't already in progress), and only
+    /// monotonicity matters — never reuse.
+    pub(super) fn begin_dispatch_generation(&mut self, ctx: ContextId) -> u64 {
+        let generation = self.dispatch_generation.entry(ctx).or_insert(0);
+        *generation += 1;
+        *generation
+    }
+
     /// Record a successful dispatch. Inserts the wedge-watchdog timer
     /// and applies the state transition: a fresh `SyncState::new()`
     /// followed by `start()` on first sync, otherwise
@@ -389,6 +415,26 @@ impl SessionTracker {
     /// logged on this path — backtraces and peer-internal error
     /// text don't belong in a defensive observability surface.
     pub(super) fn apply_result(&mut self, result: SyncSessionResult) {
+        // Ignore results from a dispatch the tracker has since superseded
+        // (a watchdog-synthesised failure, or a newer dispatch). Returning
+        // BEFORE the timer clears below is essential: those timers belong
+        // to whatever session is currently in flight, so letting a stale
+        // result clear them would strip the live session's wedge timer.
+        let current_generation = self
+            .dispatch_generation
+            .get(&result.context_id)
+            .copied()
+            .unwrap_or(0);
+        if result.generation != current_generation {
+            debug!(
+                context_id = %result.context_id,
+                result_generation = result.generation,
+                current_generation,
+                "ignoring stale SyncSessionResult from a superseded dispatch generation"
+            );
+            return;
+        }
+
         let _dispatch_attempt_removed = self.last_dispatch_attempt.remove(&result.context_id);
         let _wedge_timer_removed = self.initiator_dispatched_at.remove(&result.context_id);
 
@@ -396,6 +442,7 @@ impl SessionTracker {
             context_id,
             peer_id,
             took,
+            generation: _,
             result,
         } = result;
 
@@ -569,6 +616,11 @@ impl SessionTracker {
                         .to_owned(),
                 );
             }
+            // Supersede the wedged session's generation so its late result,
+            // if it ever arrives, is recognised as stale and ignored —
+            // otherwise `apply_result` would count the same logical attempt
+            // twice (synthetic failure here + the real one later).
+            *self.dispatch_generation.entry(*ctx).or_insert(0) += 1;
             self.publish_status(ctx);
         }
         self.initiator_dispatched_at
@@ -898,11 +950,16 @@ mod tests {
     // apply_result
     // -----------------------------------------------------------------
 
+    // Helpers default to `generation: 0` — these tests drive the tracker
+    // directly (no `begin_dispatch_generation`), so a context's current
+    // generation stays 0 and matches. Generation-guard tests set it
+    // explicitly.
     fn ok_result(context_id: ContextId) -> SyncSessionResult {
         SyncSessionResult {
             context_id,
             peer_id: libp2p::PeerId::random(),
             took: Duration::from_millis(50),
+            generation: 0,
             // The inner-protocol variant doesn't matter for the
             // tracker's apply-path — `on_success` increments
             // `success_count` regardless. `None` is the simplest
@@ -916,6 +973,7 @@ mod tests {
             context_id,
             peer_id: libp2p::PeerId::random(),
             took: Duration::from_millis(50),
+            generation: 0,
             result: Ok(Err(eyre::eyre!("{msg}"))),
         }
     }
@@ -925,6 +983,7 @@ mod tests {
             context_id,
             peer_id: libp2p::PeerId::random(),
             took: Duration::from_millis(10),
+            generation: 0,
             result: Ok(Err(eyre::Report::new(PeerNotMaterialized))),
         }
     }
@@ -934,6 +993,7 @@ mod tests {
             context_id,
             peer_id: libp2p::PeerId::random(),
             took: Duration::from_millis(10),
+            generation: 0,
             result: Ok(Err(eyre::Report::new(NoPeersAvailable { context_id }))),
         }
     }
@@ -1157,6 +1217,113 @@ mod tests {
         // ctx(3) was pruned from the dispatch map but its state was
         // not touched (already settled).
         assert!(!t.initiator_dispatched_at.contains_key(&ctx(3)));
+    }
+
+    // -----------------------------------------------------------------
+    // dispatch-generation guard (stale-result handling)
+    // -----------------------------------------------------------------
+
+    /// Drive the wedge watchdog against `ctx`: force its dispatch past the
+    /// grace and tick. Returns after the synthetic failure + generation
+    /// bump have been applied.
+    fn wedge_out(t: &mut SessionTracker, ctx: ContextId) {
+        let grace = t.session_wedge_grace;
+        let _ = t
+            .initiator_dispatched_at
+            .insert(ctx, Instant::now() - grace - Duration::from_secs(1));
+        let wedged = t.tick_wedge_watchdog();
+        assert_eq!(wedged, vec![ctx], "expected {ctx:?} to be wedged");
+    }
+
+    #[test]
+    fn apply_result_stale_generation_after_watchdog_is_ignored() {
+        // A wedged session that the watchdog already failed must not have
+        // its late result counted a second time.
+        let mut t = tracker();
+        let gen = t.begin_dispatch_generation(ctx(1));
+        assert_eq!(gen, 1);
+        t.record_dispatch_succeeded(ctx(1), true);
+
+        // Watchdog synthesises the failure (count -> 1) and bumps the
+        // generation to 2.
+        wedge_out(&mut t, ctx(1));
+        assert_eq!(t.state.get(&ctx(1)).unwrap().failure_count(), 1);
+
+        // The wedged session finally returns a failure carrying the OLD
+        // generation. It must be ignored — failure_count stays 1.
+        let mut late = err_result(ctx(1), "late failure from wedged session");
+        late.generation = gen;
+        t.apply_result(late);
+        assert_eq!(
+            t.state.get(&ctx(1)).unwrap().failure_count(),
+            1,
+            "stale-generation result must not double-count the wedged failure"
+        );
+    }
+
+    #[test]
+    fn apply_result_stale_generation_does_not_clobber_redispatched_session() {
+        // After the watchdog settles a wedged context and it is re-dispatched,
+        // the OLD session's late result must not touch the NEW session's
+        // in-flight marker or wedge timer.
+        let mut t = tracker();
+        let old_gen = t.begin_dispatch_generation(ctx(1));
+        t.record_dispatch_succeeded(ctx(1), true);
+        wedge_out(&mut t, ctx(1));
+
+        // Re-dispatch: fresh generation, in-progress marker, wedge timer.
+        let new_gen = t.begin_dispatch_generation(ctx(1));
+        assert!(new_gen > old_gen);
+        t.record_dispatch_succeeded(ctx(1), false);
+        assert!(
+            t.state.get(&ctx(1)).unwrap().last_sync().is_none(),
+            "precondition: re-dispatched session is in-progress"
+        );
+        assert!(
+            t.initiator_dispatched_at.contains_key(&ctx(1)),
+            "precondition: fresh wedge timer set"
+        );
+
+        // The old session's late (success) result arrives.
+        let mut stale = ok_result(ctx(1));
+        stale.generation = old_gen;
+        t.apply_result(stale);
+
+        assert!(
+            t.state.get(&ctx(1)).unwrap().last_sync().is_none(),
+            "stale result must not settle the freshly re-dispatched session"
+        );
+        assert!(
+            t.initiator_dispatched_at.contains_key(&ctx(1)),
+            "stale result must not clear the new session's wedge timer"
+        );
+    }
+
+    #[test]
+    fn apply_result_matching_generation_applies_normally() {
+        // The guard is transparent to a result from the current dispatch:
+        // success resets failure_count, a subsequent failure increments it.
+        let mut t = tracker();
+
+        let gen1 = t.begin_dispatch_generation(ctx(1));
+        t.record_dispatch_succeeded(ctx(1), true);
+        let mut ok = ok_result(ctx(1));
+        ok.generation = gen1;
+        t.apply_result(ok);
+        let s = t.state.get(&ctx(1)).unwrap();
+        assert_eq!(s.success_count, 1);
+        assert_eq!(s.failure_count(), 0);
+
+        let gen2 = t.begin_dispatch_generation(ctx(1));
+        t.record_dispatch_succeeded(ctx(1), false);
+        let mut err = err_result(ctx(1), "boom");
+        err.generation = gen2;
+        t.apply_result(err);
+        assert_eq!(
+            t.state.get(&ctx(1)).unwrap().failure_count(),
+            1,
+            "matching-generation failure must increment failure_count"
+        );
     }
 
     // -----------------------------------------------------------------

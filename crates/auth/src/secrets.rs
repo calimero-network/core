@@ -1,32 +1,194 @@
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use eyre::{eyre, Result};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
+use crate::config::StorageConfig;
 use crate::storage::Storage;
+
+// ---------------------------------------------------------------------------
+// At-rest encryption (finding #6: auth-secret-at-rest)
+//
+// The JWT signing secrets must not sit on disk as plaintext/base64 — base64 is
+// encoding, not encryption. Before a `VersionedSecret` blob is handed to the
+// storage layer it is sealed with AES-256-GCM (authenticated encryption, reused
+// from the crate's existing `aes-gcm` dependency — no new dependency added). On
+// read the blob is unsealed back to the exact bytes the rest of the crate
+// expects, so token semantics, rotation and the verify path are untouched.
+//
+// KEK (key-encryption-key) provisioning — REVIEW POINT.
+//
+// The KEK MUST be stable and reproducible across `SecretManager` instances and
+// across process restarts: two managers over the same storage/data-dir have to
+// interoperate, otherwise a fresh manager (e.g. on node restart) cannot unseal
+// the secret a previous one sealed and the node cannot boot. The KEK is resolved
+// in the following precedence order:
+//
+//   1. `MERO_AUTH_SECRET_KEK` env var, if set and non-empty: the strongest path,
+//      the KEK never touches disk. The value is hashed with SHA-256 to derive a
+//      32-byte AES key, so any passphrase length is accepted. Stable by virtue of
+//      being operator-supplied; takes precedence over anything on disk.
+//   2. Otherwise, for path-backed (RocksDB) storage, a 32-byte random KEK is
+//      generated once and persisted to a sibling key file `<db-path>.kek` with
+//      `0600` perms, then reused verbatim on every subsequent start. This is
+//      defense-in-depth: a leaked DB copy (stray SST/backup) is useless without
+//      the separate key file. An attacker who can already read the (now `0700`)
+//      data directory as the owning user can read both — that residual risk is
+//      why operators are encouraged to use option (1). Zero-config deployments
+//      keep working and secrets survive restarts.
+//   3. Otherwise (pathless / in-memory storage, or if the keyfile cannot be
+//      written) the KEK is stored *inside the storage backend itself* under a
+//      reserved key, generated once on first use and reloaded thereafter. This
+//      guarantees that ANY two managers sharing the same storage interoperate
+//      (the KEK is a property of the storage contents, not of the process or the
+//      constructor used) and that a persistent backend survives a restart. The
+//      KEK then sits next to the ciphertext, so a full-store exfiltration
+//      recovers the secrets — this layer still prevents value-level/log/partial
+//      exposure and ensures the signing key is never at rest as decodable base64.
+//      Operators wanting cryptographic separation should use option (1).
+//
+// Resolution is lazy and async (the storage-embedded path needs storage I/O):
+// the KEK is computed on first seal/unseal and memoised in a `OnceCell`.
+// ---------------------------------------------------------------------------
+
+/// Environment variable an operator can set to supply the key-encryption-key.
+const KEK_ENV: &str = "MERO_AUTH_SECRET_KEK";
+
+/// Magic prefix marking a sealed (AES-256-GCM) at-rest blob. Versioned so the
+/// format can evolve; its absence also lets us transparently read pre-encryption
+/// (legacy plaintext-JSON) secrets and re-seal them on next write.
+const SEALED_MAGIC: &[u8; 5] = b"MEAS1";
+
+/// AES-GCM nonce length in bytes.
+const NONCE_LEN: usize = 12;
+
+/// Seal `plaintext` as `MAGIC || nonce || ciphertext+tag` using AES-256-GCM.
+fn seal(kek: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(kek));
+    let nonce_bytes: [u8; NONCE_LEN] = rand::thread_rng().gen();
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce_bytes), plaintext)
+        .map_err(|e| eyre!("failed to seal secret: {e}"))?;
+
+    let mut out = Vec::with_capacity(SEALED_MAGIC.len() + NONCE_LEN + ciphertext.len());
+    out.extend_from_slice(SEALED_MAGIC);
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+/// Reverse [`seal`]. Blobs without the magic prefix are treated as legacy
+/// plaintext and returned unchanged, so an upgrade reads existing secrets.
+fn unseal(kek: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>> {
+    if blob.len() < SEALED_MAGIC.len() + NONCE_LEN || &blob[..SEALED_MAGIC.len()] != SEALED_MAGIC {
+        // Legacy (pre-encryption) plaintext JSON — passed through verbatim.
+        return Ok(blob.to_vec());
+    }
+
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(kek));
+    let nonce = &blob[SEALED_MAGIC.len()..SEALED_MAGIC.len() + NONCE_LEN];
+    let ciphertext = &blob[SEALED_MAGIC.len() + NONCE_LEN..];
+    cipher
+        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .map_err(|e| eyre!("failed to unseal secret: {e}"))
+}
+
+/// Derive a 32-byte KEK from the `MERO_AUTH_SECRET_KEK` env var, if set.
+fn kek_from_env() -> Option<[u8; 32]> {
+    match std::env::var(KEK_ENV) {
+        Ok(value) if !value.is_empty() => Some(Sha256::digest(value.as_bytes()).into()),
+        _ => None,
+    }
+}
+
+/// Sibling key-file path for a RocksDB directory (e.g. `auth-db` -> `auth-db.kek`).
+fn keyfile_path(db_path: &Path) -> PathBuf {
+    let mut os = db_path.as_os_str().to_os_string();
+    os.push(".kek");
+    PathBuf::from(os)
+}
+
+/// Load the KEK from `path`, or generate-and-persist a fresh one (`0600` on unix).
+fn kek_from_keyfile(path: &Path) -> Result<[u8; 32]> {
+    if let Ok(bytes) = std::fs::read(path) {
+        if bytes.len() == 32 {
+            let mut kek = [0u8; 32];
+            kek.copy_from_slice(&bytes);
+            return Ok(kek);
+        }
+        warn!(
+            "KEK file {path:?} has unexpected length {}; regenerating",
+            bytes.len()
+        );
+    }
+
+    let kek: [u8; 32] = rand::thread_rng().gen();
+    std::fs::write(path, kek).map_err(|e| eyre!("failed to write KEK file {:?}: {e}", path))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| eyre!("failed to chmod KEK file {:?}: {e}", path))?;
+    }
+
+    info!("Generated new at-rest KEK file at {path:?}");
+    Ok(kek)
+}
+
+/// Resolve the at-rest KEK for the given storage backend (see module docs).
+fn resolve_secret_kek(config: &StorageConfig) -> [u8; 32] {
+    if let Some(kek) = kek_from_env() {
+        info!("Using {KEK_ENV} for at-rest secret encryption");
+        return kek;
+    }
+
+    match config {
+        StorageConfig::RocksDB { path } => match kek_from_keyfile(&keyfile_path(path)) {
+            Ok(kek) => kek,
+            Err(e) => {
+                warn!("Falling back to ephemeral at-rest KEK: {e}");
+                rand::thread_rng().gen()
+            }
+        },
+        StorageConfig::Memory => {
+            warn!(
+                "No {KEK_ENV} set and storage is in-memory; using an ephemeral at-rest KEK \
+                 (dev/test only — persisted secrets would not survive a restart)"
+            );
+            rand::thread_rng().gen()
+        }
+    }
+}
 
 // Storage keys for different types of secrets
 const JWT_AUTH_SECRET_KEY: &str = "system:secrets:jwt_auth";
-const JWT_CHALLENGE_SECRET_KEY: &str = "system:secrets:jwt_challenge";
 const CSRF_SECRET_KEY: &str = "system:secrets:csrf";
 
 // Backup keys
 const JWT_AUTH_BACKUP_KEY: &str = "system:secrets:jwt_auth_backup";
-const JWT_CHALLENGE_BACKUP_KEY: &str = "system:secrets:jwt_challenge_backup";
 const CSRF_BACKUP_KEY: &str = "system:secrets:csrf_backup";
 
 /// Secret type enum
+///
+/// NOTE: a `JwtChallenge` variant used to exist for the (dead) challenge/response
+/// login surface. It was removed together with that surface; any legacy
+/// `system:secrets:jwt_challenge*` entries persisted in storage are simply never
+/// read again and are harmless to leave in place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SecretType {
     JwtAuth,
-    JwtChallenge,
     Csrf,
 }
 
@@ -34,7 +196,6 @@ impl SecretType {
     fn primary_key(&self) -> &'static str {
         match self {
             SecretType::JwtAuth => JWT_AUTH_SECRET_KEY,
-            SecretType::JwtChallenge => JWT_CHALLENGE_SECRET_KEY,
             SecretType::Csrf => CSRF_SECRET_KEY,
         }
     }
@@ -42,7 +203,6 @@ impl SecretType {
     fn backup_key(&self) -> &'static str {
         match self {
             SecretType::JwtAuth => JWT_AUTH_BACKUP_KEY,
-            SecretType::JwtChallenge => JWT_CHALLENGE_BACKUP_KEY,
             SecretType::Csrf => CSRF_BACKUP_KEY,
         }
     }
@@ -58,10 +218,26 @@ pub struct SecretRotationConfig {
 }
 
 impl Default for SecretRotationConfig {
+    /// Defaults chosen so that **no token can outlive the secret that signed
+    /// it**. Storage keeps exactly one previous generation (a single backup
+    /// slot), and `get_verify_secrets` offers primary + unexpired backup, so a
+    /// token signed by secret S must still verify while S is at most one
+    /// generation old. With `L` = the longest token lifetime (the refresh token,
+    /// 30 days) that gives two constraints:
+    ///
+    /// * `rotation_interval >= L` — otherwise S is evicted from the backup slot
+    ///   while tokens it signed are still alive.
+    /// * `grace_period >= rotation_interval + L` — S must stay *verifiable* for
+    ///   as long as the newest token it signed can live.
+    ///
+    /// 30-day rotation with a 60-day grace satisfies both. The previous
+    /// 24h/48h pair did not: rotation was about to be enabled for the first
+    /// time (finding 13), and every refresh token would have stopped verifying
+    /// within 48h of the first rotation — forcing a re-login every day or two.
     fn default() -> Self {
         Self {
-            rotation_interval: 24 * 3600, // 24 hours
-            grace_period: 48 * 3600,      // 48 hours
+            rotation_interval: 30 * 24 * 3600, // 30 days — >= refresh token lifetime
+            grace_period: 60 * 24 * 3600,      // 60 days — >= interval + refresh lifetime
         }
     }
 }
@@ -141,26 +317,84 @@ pub struct SecretManager {
     storage: Arc<dyn Storage>,
     secrets: RwLock<Vec<VersionedSecret>>,
     rotation_config: SecretRotationConfig,
+    /// At-rest key-encryption-key. `Some` ⇒ secrets are sealed with AES-256-GCM
+    /// before they hit storage; `None` ⇒ the backend has no at-rest surface
+    /// (in-memory) so secrets are kept as plaintext. See module docs.
+    kek: Option<[u8; 32]>,
 }
 
 impl SecretManager {
-    /// Create a new secret manager
+    /// Create a new secret manager, resolving the at-rest KEK from the
+    /// `MERO_AUTH_SECRET_KEK` env var (highest precedence) or, failing that, from
+    /// the storage backend ([`Storage::at_rest_kek`] — a stable sibling-keyfile KEK
+    /// for RocksDB, `None` for the in-memory backend). When neither yields a KEK the
+    /// backend has nothing at rest and secrets are stored unsealed.
     pub fn new(storage: Arc<dyn Storage>) -> Self {
+        let kek = kek_from_env().or_else(|| storage.at_rest_kek());
+        if kek.is_none() {
+            warn!(
+                "No {KEK_ENV} set and the storage backend provides no at-rest KEK; \
+                 secrets are stored unsealed (the in-memory backend has nothing at rest)"
+            );
+        }
+        Self::build(storage, kek)
+    }
+
+    /// Create a secret manager, resolving the at-rest KEK from the storage config.
+    ///
+    /// For RocksDB this persists/loads a sibling `<db-path>.kek` file (`0600`) when
+    /// `MERO_AUTH_SECRET_KEK` is not provided. This is the constructor production
+    /// wiring should use.
+    pub fn with_storage_config(storage: Arc<dyn Storage>, config: &StorageConfig) -> Self {
+        let kek = resolve_secret_kek(config);
+        Self::with_kek(storage, kek)
+    }
+
+    /// Create a secret manager with an explicit at-rest KEK (used by tests).
+    pub fn with_kek(storage: Arc<dyn Storage>, kek: [u8; 32]) -> Self {
+        Self::build(storage, Some(kek))
+    }
+
+    fn build(storage: Arc<dyn Storage>, kek: Option<[u8; 32]>) -> Self {
         Self {
             storage,
             secrets: RwLock::new(Vec::new()),
             rotation_config: SecretRotationConfig::default(),
+            kek,
+        }
+    }
+
+    /// Serialize, seal (when a KEK is present) and persist a secret under `key`.
+    /// With no KEK (in-memory backend) the secret is stored as plaintext — there
+    /// is no disk at rest to protect, and sealing would break interop between two
+    /// managers sharing the store.
+    async fn store_secret(&self, key: &str, secret: &VersionedSecret) -> Result<()> {
+        let plaintext = serde_json::to_vec(secret)?;
+        let blob = match &self.kek {
+            Some(kek) => seal(kek, &plaintext)?,
+            None => plaintext,
+        };
+        self.storage.set(key, &blob).await.map_err(|e| eyre!("{e}"))
+    }
+
+    /// Load and (when a KEK is present) unseal a secret from `key`, if present.
+    async fn load_secret(&self, key: &str) -> Result<Option<VersionedSecret>> {
+        match self.storage.get(key).await? {
+            Some(blob) => {
+                let plaintext = match &self.kek {
+                    Some(kek) => unseal(kek, &blob)?,
+                    None => blob,
+                };
+                Ok(Some(serde_json::from_slice(&plaintext)?))
+            }
+            None => Ok(None),
         }
     }
 
     /// Initialize the secret manager
     pub async fn initialize(&self) -> Result<()> {
         // Initialize all secret types
-        for secret_type in [
-            SecretType::JwtAuth,
-            SecretType::JwtChallenge,
-            SecretType::Csrf,
-        ] {
+        for secret_type in [SecretType::JwtAuth, SecretType::Csrf] {
             self.initialize_secret(secret_type).await?;
         }
         Ok(())
@@ -168,19 +402,22 @@ impl SecretManager {
 
     /// Initialize a specific secret type
     async fn initialize_secret(&self, secret_type: SecretType) -> Result<()> {
-        let secret = match self.storage.get(secret_type.primary_key()).await? {
-            Some(data) => serde_json::from_slice::<VersionedSecret>(&data)?,
+        let secret = match self.load_secret(secret_type.primary_key()).await? {
+            Some(secret) => secret,
             None => {
                 // Generate new secret
                 let new_secret = VersionedSecret::new(secret_type, &self.rotation_config);
-                let data = serde_json::to_vec(&new_secret)?;
 
-                // Try to save to primary location
-                if let Err(e) = self.storage.set(secret_type.primary_key(), &data).await {
+                // Try to save (sealed) to primary location
+                if let Err(e) = self
+                    .store_secret(secret_type.primary_key(), &new_secret)
+                    .await
+                {
                     error!("Failed to save secret to primary storage: {}", e);
 
                     // Try backup location
-                    self.storage.set(secret_type.backup_key(), &data).await?;
+                    self.store_secret(secret_type.backup_key(), &new_secret)
+                        .await?;
                 }
 
                 new_secret
@@ -191,39 +428,106 @@ impl SecretManager {
         Ok(())
     }
 
-    /// Get a secret by type
+    /// Get the current primary secret value for a type.
+    ///
+    /// Backing storage is treated as authoritative: it is read on every call so
+    /// that a rotation performed by another process (which only mutates storage,
+    /// not this process's in-memory cache) is observed. When the stored
+    /// `version` differs from the cached one, the in-memory cache is refreshed
+    /// before returning. This is the staleness half of finding #12 (Fix C):
+    /// without it, replicas keep serving a secret that has already rotated
+    /// elsewhere and diverge.
     pub async fn get_secret(&self, secret_type: SecretType) -> Result<String> {
-        // First try memory cache
-        let secrets = self.secrets.read().await;
-        if let Some(secret) = secrets
+        // Storage is authoritative for the current primary. Unsealed via
+        // `load_secret` so at-rest encryption (finding #6) is preserved.
+        if let Some(stored) = self.load_secret(secret_type.primary_key()).await? {
+            self.refresh_cache_primary(secret_type, &stored).await;
+            return Ok(stored.value);
+        }
+
+        // Primary missing in storage: fall back to the in-memory cache, if any.
+        {
+            let secrets = self.secrets.read().await;
+            if let Some(secret) = secrets
+                .iter()
+                .find(|s| s.secret_type == secret_type && s.is_primary)
+            {
+                return Ok(secret.value.clone());
+            }
+        }
+
+        // Last resort: recover from the backup location and restore it
+        // (re-sealed under the current KEK).
+        match self.load_secret(secret_type.backup_key()).await? {
+            Some(secret) => {
+                if let Err(e) = self.store_secret(secret_type.primary_key(), &secret).await {
+                    error!("Failed to restore secret to primary storage: {}", e);
+                }
+                Ok(secret.value)
+            }
+            None => Err(eyre!("No secret found in storage for {:?}", secret_type)),
+        }
+    }
+
+    /// Refresh the cached primary for a type when the stored version differs.
+    ///
+    /// Keeps the in-memory cache consistent with backing storage after an
+    /// out-of-process rotation (Fix C). The previous primary is demoted to a
+    /// non-primary cache entry so it can still serve as a verification fallback
+    /// until it expires, mirroring [`Self::rotate_secret`].
+    async fn refresh_cache_primary(&self, secret_type: SecretType, stored: &VersionedSecret) {
+        let mut secrets = self.secrets.write().await;
+
+        if let Some(cached) = secrets
             .iter()
             .find(|s| s.secret_type == secret_type && s.is_primary)
         {
-            return Ok(secret.value.clone());
+            if cached.version == stored.version {
+                return; // Cache already up to date.
+            }
         }
-        drop(secrets);
 
-        // If not in memory, try storage
-        match self.storage.get(secret_type.primary_key()).await? {
-            Some(data) => {
-                let secret: VersionedSecret = serde_json::from_slice(&data)?;
-                Ok(secret.value)
-            }
-            None => {
-                // Try backup location
-                match self.storage.get(secret_type.backup_key()).await? {
-                    Some(data) => {
-                        let secret: VersionedSecret = serde_json::from_slice(&data)?;
-                        // Restore to primary location
-                        if let Err(e) = self.storage.set(secret_type.primary_key(), &data).await {
-                            error!("Failed to restore secret to primary storage: {}", e);
-                        }
-                        Ok(secret.value)
-                    }
-                    None => Err(eyre!("No secret found in storage for {:?}", secret_type)),
-                }
+        // Demote any stale primary to a backup so it remains a verify fallback.
+        for s in secrets
+            .iter_mut()
+            .filter(|s| s.secret_type == secret_type && s.is_primary)
+        {
+            s.is_primary = false;
+        }
+
+        // Drop expired entries and any duplicate of the incoming version.
+        let now = now_secs();
+        secrets.retain(|s| {
+            s.secret_type != secret_type || (s.expires_at >= now && s.version != stored.version)
+        });
+
+        secrets.push(stored.clone());
+    }
+
+    /// Get all secrets a token signature may legitimately be verified against.
+    ///
+    /// Returns the current primary plus the backup if it is still within its
+    /// grace (unexpired) window, primary first. This is the verify path for
+    /// finding #5: without consulting the still-valid backup, every outstanding
+    /// token fails the instant a secret rotates (mass logout). The grace concept
+    /// is reused verbatim from [`VersionedSecret::is_expired`] — no new notion of
+    /// expiry is introduced.
+    pub async fn get_verify_secrets(&self, secret_type: SecretType) -> Result<Vec<String>> {
+        let mut out = Vec::with_capacity(2);
+
+        // Primary (this also refreshes the cache on cross-process rotation).
+        let primary = self.get_secret(secret_type).await?;
+        out.push(primary.clone());
+
+        // Backup, if present and still inside its grace window. Unsealed via
+        // `load_secret` so at-rest encryption (finding #6) is preserved.
+        if let Some(backup) = self.load_secret(secret_type.backup_key()).await? {
+            if !backup.is_expired() && backup.value != primary {
+                out.push(backup.value);
             }
         }
+
+        Ok(out)
     }
 
     /// Rotate a secret
@@ -232,10 +536,10 @@ impl SecretManager {
 
         // Create new primary secret
         let new_secret = VersionedSecret::new(secret_type, &self.rotation_config);
-        let data = serde_json::to_vec(&new_secret)?;
 
-        // Save to storage
-        self.storage.set(secret_type.primary_key(), &data).await?;
+        // Save (sealed) to storage
+        self.store_secret(secret_type.primary_key(), &new_secret)
+            .await?;
 
         // Update old secret as backup
         if let Some(old_secret) = secrets
@@ -243,14 +547,14 @@ impl SecretManager {
             .find(|s| s.secret_type == secret_type && s.is_primary)
         {
             old_secret.is_primary = false;
-            let backup_data = serde_json::to_vec(old_secret)?;
-            self.storage
-                .set(secret_type.backup_key(), &backup_data)
+            self.store_secret(secret_type.backup_key(), old_secret)
                 .await?;
         }
 
-        // Update memory cache
-        secrets.retain(|s| s.secret_type != secret_type || !s.is_expired());
+        // Update memory cache: drop expired entries for this type, keep an
+        // unexpired backup as a verify fallback, then add the new primary.
+        let now = now_secs();
+        secrets.retain(|s| s.secret_type != secret_type || s.expires_at >= now);
         secrets.push(new_secret);
 
         info!("Rotated secret for {:?}", secret_type);
@@ -263,11 +567,7 @@ impl SecretManager {
             loop {
                 tokio::time::sleep(Duration::from_secs(3600)).await; // Check every hour
 
-                for secret_type in [
-                    SecretType::JwtAuth,
-                    SecretType::JwtChallenge,
-                    SecretType::Csrf,
-                ] {
+                for secret_type in [SecretType::JwtAuth, SecretType::Csrf] {
                     if let Err(e) = self.rotate_if_needed(secret_type).await {
                         error!("Failed to rotate secret {:?}: {}", secret_type, e);
                     }
@@ -300,13 +600,241 @@ impl SecretManager {
         self.get_secret(SecretType::JwtAuth).await
     }
 
-    /// Get the JWT challenge secret
-    pub async fn get_jwt_challenge_secret(&self) -> Result<String> {
-        self.get_secret(SecretType::JwtChallenge).await
-    }
-
     /// Get the CSRF secret
     pub async fn get_csrf_secret(&self) -> Result<String> {
         self.get_secret(SecretType::Csrf).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::MemoryStorage;
+
+    const TEST_KEK: [u8; 32] = [7u8; 32];
+
+    fn manager() -> Arc<SecretManager> {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        Arc::new(SecretManager::new(storage))
+    }
+
+    #[tokio::test]
+    async fn time_helper_and_is_expired_are_ok() {
+        // The time path must not panic, even on a degraded clock.
+        let secret = VersionedSecret::new(SecretType::JwtAuth, &SecretRotationConfig::default());
+        // A freshly minted secret is within its grace window, so not expired.
+        assert!(!secret.is_expired());
+    }
+
+    #[tokio::test]
+    async fn get_verify_secrets_returns_primary_only_initially() {
+        let mgr = manager();
+        mgr.initialize().await.unwrap();
+
+        let secrets = mgr.get_verify_secrets(SecretType::JwtAuth).await.unwrap();
+        assert_eq!(secrets.len(), 1, "no backup exists before any rotation");
+        let primary = mgr.get_jwt_auth_secret().await.unwrap();
+        assert_eq!(secrets[0], primary);
+    }
+
+    #[tokio::test]
+    async fn get_verify_secrets_includes_unexpired_backup_after_rotation() {
+        let mgr = manager();
+        mgr.initialize().await.unwrap();
+
+        let old_primary = mgr.get_jwt_auth_secret().await.unwrap();
+        mgr.rotate_secret(SecretType::JwtAuth).await.unwrap();
+        let new_primary = mgr.get_jwt_auth_secret().await.unwrap();
+        assert_ne!(old_primary, new_primary);
+
+        let secrets = mgr.get_verify_secrets(SecretType::JwtAuth).await.unwrap();
+        assert_eq!(secrets.len(), 2, "primary + unexpired backup");
+        assert_eq!(secrets[0], new_primary, "primary comes first");
+        assert!(
+            secrets.contains(&old_primary),
+            "previous secret kept as backup during grace window"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_verify_secrets_drops_oldest_after_double_rotation() {
+        let mgr = manager();
+        mgr.initialize().await.unwrap();
+
+        let v1 = mgr.get_jwt_auth_secret().await.unwrap();
+        mgr.rotate_secret(SecretType::JwtAuth).await.unwrap();
+        mgr.rotate_secret(SecretType::JwtAuth).await.unwrap();
+        let v3 = mgr.get_jwt_auth_secret().await.unwrap();
+
+        let secrets = mgr.get_verify_secrets(SecretType::JwtAuth).await.unwrap();
+        assert_eq!(
+            secrets.len(),
+            2,
+            "only the latest backup generation is kept"
+        );
+        assert_eq!(secrets[0], v3);
+        assert!(
+            !secrets.contains(&v1),
+            "the oldest secret is no longer accepted"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_secret_rereads_after_external_rotation() {
+        // Fix C: a manager that did not perform the rotation must still pick up
+        // the new primary written to shared storage by another process.
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let mgr_a = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        let mgr_b = Arc::new(SecretManager::new(Arc::clone(&storage)));
+
+        mgr_a.initialize().await.unwrap();
+        // mgr_b warms its in-memory cache from the same storage.
+        mgr_b.initialize().await.unwrap();
+        let before = mgr_b.get_jwt_auth_secret().await.unwrap();
+
+        // mgr_a rotates; mgr_b's cache is now stale.
+        mgr_a.rotate_secret(SecretType::JwtAuth).await.unwrap();
+        let rotated = mgr_a.get_jwt_auth_secret().await.unwrap();
+        assert_ne!(before, rotated);
+
+        let seen_by_b = mgr_b.get_jwt_auth_secret().await.unwrap();
+        assert_eq!(
+            seen_by_b, rotated,
+            "stale cache must be refreshed from backing storage on version mismatch"
+        );
+    }
+
+    #[test]
+    fn seal_unseal_round_trip() {
+        let plaintext = b"super secret signing key material";
+        let sealed = seal(&TEST_KEK, plaintext).unwrap();
+
+        // Sealed output must be marked, nonce-prefixed and must NOT contain the
+        // plaintext verbatim (i.e. it is encrypted, not encoded).
+        assert_eq!(&sealed[..SEALED_MAGIC.len()], SEALED_MAGIC);
+        assert!(sealed.windows(plaintext.len()).all(|w| w != plaintext));
+
+        let opened = unseal(&TEST_KEK, &sealed).unwrap();
+        assert_eq!(opened, plaintext);
+    }
+
+    #[test]
+    fn unseal_with_wrong_kek_fails() {
+        let sealed = seal(&TEST_KEK, b"secret").unwrap();
+        let wrong = [9u8; 32];
+        assert!(unseal(&wrong, &sealed).is_err());
+    }
+
+    #[test]
+    fn unseal_passes_through_legacy_plaintext() {
+        // Pre-encryption blobs (no magic prefix) are returned verbatim.
+        let legacy = br#"{"value":"abc","version":"v1"}"#;
+        let out = unseal(&TEST_KEK, legacy).unwrap();
+        assert_eq!(out, legacy);
+    }
+
+    /// encrypt -> store -> load -> decrypt -> equals original.
+    #[tokio::test]
+    async fn secret_round_trips_through_storage_encrypted() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let manager = SecretManager::with_kek(Arc::clone(&storage), TEST_KEK);
+        manager.initialize().await.unwrap();
+
+        let original = manager.get_jwt_auth_secret().await.unwrap();
+
+        // The blob actually written to storage must be sealed, not the plaintext
+        // base64 secret value.
+        let raw = storage
+            .get(SecretType::JwtAuth.primary_key())
+            .await
+            .unwrap()
+            .expect("secret should be persisted");
+        assert_eq!(&raw[..SEALED_MAGIC.len()], SEALED_MAGIC);
+        assert!(
+            !String::from_utf8_lossy(&raw).contains(&original),
+            "plaintext secret value must not appear in the stored blob"
+        );
+
+        // A fresh manager (cold cache) with the same KEK must decrypt back to the
+        // identical secret value.
+        let reloaded = SecretManager::with_kek(Arc::clone(&storage), TEST_KEK);
+        let value = reloaded.get_jwt_auth_secret().await.unwrap();
+        assert_eq!(value, original);
+    }
+
+    #[tokio::test]
+    async fn wrong_kek_cannot_load_stored_secret() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        SecretManager::with_kek(Arc::clone(&storage), TEST_KEK)
+            .initialize()
+            .await
+            .unwrap();
+
+        // Cold-cache manager with a different KEK must fail to decrypt.
+        let other = SecretManager::with_kek(Arc::clone(&storage), [1u8; 32]);
+        assert!(other.get_jwt_auth_secret().await.is_err());
+    }
+
+    /// Regression: an in-memory backend has no at-rest surface, so `new()` resolves
+    /// no KEK and stores plaintext. Two managers over the same store MUST interop —
+    /// the prior bug minted a random per-instance KEK and a second manager could not
+    /// unseal the first's secret (which broke node restart / every middleware test).
+    #[tokio::test]
+    async fn memory_backend_stores_plaintext_and_two_managers_interop() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let first = SecretManager::new(Arc::clone(&storage));
+        first.initialize().await.unwrap();
+        let original = first.get_jwt_auth_secret().await.unwrap();
+
+        // No KEK ⇒ no seal magic prefix; the blob is plaintext JSON.
+        let raw = storage
+            .get(SecretType::JwtAuth.primary_key())
+            .await
+            .unwrap()
+            .expect("secret should be persisted");
+        assert_ne!(&raw[..SEALED_MAGIC.len()], SEALED_MAGIC);
+
+        // A second, independently-constructed manager over the same store reads it.
+        let second = SecretManager::new(Arc::clone(&storage));
+        assert_eq!(second.get_jwt_auth_secret().await.unwrap(), original);
+    }
+
+    /// The production (`with_storage_config`) RocksDB path derives its KEK from a
+    /// sibling `<db-path>.kek` file: generated once with `0600` perms, then
+    /// reloaded verbatim — so a manager built after a restart unseals what a
+    /// previous one sealed, and the key file itself is owner-only.
+    ///
+    /// Assumes `MERO_AUTH_SECRET_KEK` is unset (as in CI); an env KEK would
+    /// legitimately take precedence over the key file.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn keyfile_kek_is_persisted_0600_and_stable_across_managers() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("auth-db");
+        let config = StorageConfig::RocksDB {
+            path: db_path.clone(),
+        };
+
+        // Two independently-constructed managers over the same config and store
+        // must interoperate (node-restart scenario).
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let first = SecretManager::with_storage_config(Arc::clone(&storage), &config);
+        first.initialize().await.unwrap();
+        let original = first.get_jwt_auth_secret().await.unwrap();
+
+        let second = SecretManager::with_storage_config(Arc::clone(&storage), &config);
+        assert_eq!(second.get_jwt_auth_secret().await.unwrap(), original);
+
+        // The KEK sits in a sibling key file with owner-only permissions.
+        let kek_file = keyfile_path(&db_path);
+        let meta = std::fs::metadata(&kek_file).unwrap();
+        assert_eq!(
+            meta.permissions().mode() & 0o777,
+            0o600,
+            "KEK file must be owner-only (0600)"
+        );
+        assert_eq!(meta.len(), 32, "KEK file must hold exactly the 32-byte key");
     }
 }

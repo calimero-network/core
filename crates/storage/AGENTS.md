@@ -143,7 +143,7 @@ pub fn is_builtin_crdt(crdt_type: &CrdtType) -> bool {
 | `src/merge.rs`                    | merge_by_crdt_type(), merge_root_state()   |
 | `src/merge/registry.rs`           | Merge registry for Mergeable types         |
 | `src/interface.rs`                | try_merge_non_root(), save_internal()      |
-| `src/collections/crdt_meta.rs`    | CrdtType, Mergeable, CrdtMeta traits       |
+| `src/collections/crdt_meta.rs`    | Mergeable, CrdtMeta traits (re-exports CrdtType from calimero-primitives) |
 | `src/collections/crdt_impls.rs`   | Mergeable implementations for all CRDTs    |
 
 ## File Organization
@@ -158,7 +158,7 @@ src/
 │   └── registry.rs           # Merge registry for Mergeable types
 ├── collections.rs            # Collections re-exports
 ├── collections/
-│   ├── crdt_meta.rs          # CrdtType, Mergeable, CrdtMeta traits
+│   ├── crdt_meta.rs          # Mergeable, CrdtMeta traits (re-exports CrdtType)
 │   ├── crdt_impls.rs         # Mergeable implementations
 │   ├── counter.rs            # GCounter/PnCounter CRDT
 │   ├── lww_register.rs       # Last-write-wins register
@@ -177,7 +177,6 @@ src/
 │   ├── error.rs              # Collection errors
 │   └── ...
 ├── address.rs                # Address types
-├── integration.rs            # Integration utilities
 ├── action.rs                 # Actions
 ├── delta.rs                  # Delta handling
 ├── snapshot.rs               # Snapshots
@@ -300,8 +299,8 @@ rg -n "merge_by_crdt_type" src/
 # Find Mergeable trait implementations
 rg -n "impl.*Mergeable" src/collections/crdt_impls.rs
 
-# Find CrdtType definitions
-rg -n "pub enum CrdtType" src/collections/crdt_meta.rs
+# Find CrdtType definition (enum lives in calimero-primitives)
+rg -n "pub enum CrdtType" ../primitives/src/crdt.rs
 
 # Find non-root merge logic
 rg -n "try_merge_non_root" src/interface.rs

@@ -330,9 +330,11 @@ impl SyncDriver {
             // `Full`/`Closed` outcome leaves the per-context tracking
             // state untouched and the next interval tick (or
             // heartbeat trigger) just retries.
+            let generation = self.tracker.begin_dispatch_generation(context_id);
             let dispatched = match self.session_tx.try_send(SyncSessionJob::Initiator {
                 context_id,
                 peer_id: requested_peer,
+                generation,
             }) {
                 Ok(()) => true,
                 Err(SyncSessionSendError::Full) => {

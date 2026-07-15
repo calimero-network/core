@@ -53,8 +53,16 @@ impl EmbeddedAuthApp {
 pub async fn build_app(config: AuthConfig) -> Result<EmbeddedAuthApp> {
     let storage = create_storage(&config.storage).await?;
 
-    let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
+    let secret_manager = Arc::new(SecretManager::with_storage_config(
+        Arc::clone(&storage),
+        &config.storage,
+    ));
     secret_manager.initialize().await?;
+
+    // Spawn the JWT signing-secret rotation task (finding #4). Safe to enable now
+    // that verification accepts an unexpired backup secret (PR1), so a rotation no
+    // longer mass-invalidates outstanding tokens.
+    Arc::clone(&secret_manager).start_rotation_task().await;
 
     let token_manager = TokenManager::new(
         config.jwt.clone(),

@@ -33,9 +33,11 @@ set -eu
 
 NODE_URL="${1:-http://localhost:4001}"
 USERNAME="${MERO_E2E_USER:-dev}"
-PASSWORD="${MERO_E2E_PASS:-dev}"
-# Out-of-band bootstrap secret for the first root key (empty = not presented;
-# the node then fails the bootstrap login closed, by design).
+# Must satisfy the provider's configured minimum length (default 8) — the
+# bootstrap path enforces it for every NEW credential (finding #17).
+PASSWORD="${MERO_E2E_PASS:-dev-password}"
+# Out-of-band bootstrap secret for the first root key (finding #2; empty = not
+# presented, and the node then fails the bootstrap login closed, by design).
 BOOTSTRAP_SECRET="${MERO_AUTH_BOOTSTRAP_SECRET:-}"
 
 # The exact permission strings mero-react demands for AppMode.MultiContext

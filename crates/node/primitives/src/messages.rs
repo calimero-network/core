@@ -53,6 +53,12 @@ pub enum NodeMessage {
     /// claim "FSM observes every monotonic advance regardless of
     /// origin" only held for the receive path until #2237 follow-up.
     ForwardNamespaceOpApplied { namespace_id: [u8; 32] },
+    /// Forward a `NamespaceSubscribed` signal to the readiness FSM so it
+    /// seeds `subscribed_at` at subscribe time. Routed `NodeClient ->
+    /// NodeManager -> readiness_addr`, mirroring `ForwardNamespaceOpApplied`;
+    /// the subscribe path (`join_namespace`) holds a `NodeClient`, not the
+    /// actor address.
+    ForwardNamespaceSubscribed { namespace_id: [u8; 32] },
     /// Edge-trigger the migration-heartbeat emitter to recompute and re-publish
     /// this node's facts for a namespace, out of band of the periodic tick.
     /// Routed `NodeClient -> NodeManager` (the emitter address lives on

@@ -99,6 +99,14 @@ pub struct RuntimeLimitsConfig {
     /// is not operator-tunable today.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_precompiled_module_size: Option<u64>,
+    /// Override for [`VMLimits::max_gas`]: the maximum gas (roughly, executed
+    /// WASM operators) a single execution may consume before it is trapped.
+    /// This is the only limit that bounds pure computation, so it is what stops
+    /// an untrusted guest from pinning a node thread in a tight loop. Lower it
+    /// to tighten that bound; raise it for compute-heavy applications. Must be
+    /// non-zero — a zero budget would trap every execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_gas: Option<u64>,
 }
 
 impl RuntimeLimitsConfig {
@@ -114,6 +122,9 @@ impl RuntimeLimitsConfig {
         }
         if let Some(max_precompiled_module_size) = self.max_precompiled_module_size {
             base.max_precompiled_module_size = max_precompiled_module_size;
+        }
+        if let Some(max_gas) = self.max_gas {
+            base.max_gas = max_gas;
         }
         base
     }
@@ -148,6 +159,14 @@ impl RuntimeLimitsConfig {
                 );
             }
         }
+        if let Some(max_gas) = self.max_gas {
+            if max_gas == 0 {
+                bail!(
+                    "runtime.limits.max_gas must be non-zero; a zero gas budget would trap \
+                     every execution before it runs"
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -173,6 +192,7 @@ mod tests {
                 max_logs: Some(4096),
                 max_log_size: None,
                 max_precompiled_module_size: None,
+                max_gas: None,
             },
         };
         let resolved = cfg.vm_limits();
@@ -191,12 +211,67 @@ mod tests {
                 max_logs: None,
                 max_log_size: None,
                 max_precompiled_module_size: Some(8 * 1024 * 1024),
+                max_gas: None,
             },
         };
         let resolved = cfg.vm_limits();
         assert_eq!(resolved.max_precompiled_module_size, 8 * 1024 * 1024);
         // The source-WASM cap is independent and stays at its default.
         assert_eq!(resolved.max_module_size, defaults.max_module_size);
+    }
+
+    #[test]
+    fn max_gas_override_applies() {
+        let defaults = VMLimits::default();
+        let cfg = RuntimeConfig {
+            limits: RuntimeLimitsConfig {
+                max_logs: None,
+                max_log_size: None,
+                max_precompiled_module_size: None,
+                max_gas: Some(50_000_000),
+            },
+        };
+        let resolved = cfg.vm_limits();
+        assert_eq!(resolved.max_gas, 50_000_000);
+        // Unrelated limits are untouched.
+        assert_eq!(resolved.max_logs, defaults.max_logs);
+    }
+
+    #[test]
+    fn deserializes_max_gas_from_toml() {
+        let toml = r#"
+            [limits]
+            max_gas = 250000000
+        "#;
+        let cfg: RuntimeConfig = toml::from_str(toml).expect("valid config");
+        assert_eq!(cfg.vm_limits().max_gas, 250_000_000);
+    }
+
+    #[test]
+    fn validate_rejects_zero_max_gas() {
+        let cfg = RuntimeConfig {
+            limits: RuntimeLimitsConfig {
+                max_logs: None,
+                max_log_size: None,
+                max_precompiled_module_size: None,
+                max_gas: Some(0),
+            },
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("max_gas"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_accepts_nonzero_max_gas() {
+        let cfg = RuntimeConfig {
+            limits: RuntimeLimitsConfig {
+                max_logs: None,
+                max_log_size: None,
+                max_precompiled_module_size: None,
+                max_gas: Some(1),
+            },
+        };
+        cfg.validate().expect("a non-zero gas budget is valid");
     }
 
     #[test]
@@ -223,6 +298,7 @@ mod tests {
                 max_logs: Some(4096),
                 max_log_size: Some(64 * 1024),
                 max_precompiled_module_size: Some(64 * 1024 * 1024),
+                max_gas: None,
             },
         };
         cfg.validate().expect("reasonable overrides are valid");
@@ -235,6 +311,7 @@ mod tests {
                 max_logs: Some(u64::MAX),
                 max_log_size: None,
                 max_precompiled_module_size: None,
+                max_gas: None,
             },
         };
         let err = cfg.validate().unwrap_err().to_string();
@@ -245,6 +322,7 @@ mod tests {
                 max_logs: None,
                 max_log_size: Some(u64::MAX),
                 max_precompiled_module_size: None,
+                max_gas: None,
             },
         };
         let err = cfg.validate().unwrap_err().to_string();
@@ -255,6 +333,7 @@ mod tests {
                 max_logs: None,
                 max_log_size: None,
                 max_precompiled_module_size: Some(u64::MAX),
+                max_gas: None,
             },
         };
         let err = cfg.validate().unwrap_err().to_string();

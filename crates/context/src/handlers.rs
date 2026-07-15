@@ -45,6 +45,7 @@ pub mod namespace_pending_op_count;
 pub mod remove_group_members;
 pub mod resync_context;
 pub mod retry_group_upgrade;
+pub mod rotate_group_key;
 pub mod set_context_metadata;
 pub mod set_default_capabilities;
 pub mod set_group_metadata;
@@ -188,6 +189,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::AdmitTeeNode { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::RotateGroupKey { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SetSubgroupVisibility { request, outcome } => {

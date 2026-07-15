@@ -95,7 +95,15 @@ impl SharedKey {
     #[must_use]
     pub fn encrypt(&self, payload: Vec<u8>) -> Option<(Nonce, Vec<u8>)> {
         let nonce: Nonce = rand::random();
+        let cipher_text = self.encrypt_with_nonce(payload, nonce)?;
+        Some((nonce, cipher_text))
+    }
 
+    /// Encrypts with a caller-supplied nonce. The caller MUST guarantee the nonce
+    /// is single-use per key; the sync stream protocol satisfies this via its
+    /// per-message `next_nonce` ratchet (see `node/src/sync/blobs.rs`).
+    #[must_use]
+    pub fn encrypt_with_nonce(&self, payload: Vec<u8>, nonce: Nonce) -> Option<Vec<u8>> {
         let encryption_key =
             aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &*self.key).ok()?);
 
@@ -108,7 +116,7 @@ impl SharedKey {
             )
             .ok()?;
 
-        Some((nonce, cipher_text))
+        Some(cipher_text)
     }
 
     #[must_use]
@@ -272,6 +280,42 @@ mod tests {
                 .ok_or_eyre("decrypt with correct nonce failed")?,
             payload
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_encrypt_with_nonce_roundtrip() -> eyre::Result<()> {
+        // The sync stream ratchet seals with a caller-chosen nonce and the
+        // receiver decrypts with that same nonce; a different nonce must fail.
+        let mut csprng = thread_rng();
+        let signer = PrivateKey::random(&mut csprng);
+        let verifier = PrivateKey::random(&mut csprng);
+        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
+        let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
+
+        let payload = b"privacy is important";
+        let nonce: Nonce = rand::random();
+
+        let encrypted = signer_shared_key
+            .encrypt_with_nonce(payload.to_vec(), nonce)
+            .ok_or_eyre("encryption failed")?;
+
+        assert_eq!(
+            verifier_shared_key
+                .decrypt(encrypted.clone(), nonce)
+                .ok_or_eyre("decryption failed")?,
+            payload
+        );
+
+        let mut wrong_nonce = nonce;
+        wrong_nonce[0] ^= 0x01;
+        assert!(
+            verifier_shared_key
+                .decrypt(encrypted, wrong_nonce)
+                .is_none(),
+            "decrypt must fail under a nonce other than the one used to seal"
+        );
+
         Ok(())
     }
 

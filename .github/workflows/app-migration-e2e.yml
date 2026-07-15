@@ -7,6 +7,10 @@ name: App migration e2e
 # `scenario` matrix fans those artifacts out across one job per workflow
 # under workflows/app-migration/ so every scenario runs in parallel and
 # reports its own pass/fail.
+#
+# Triggers on any crates/** change (like e2e-rust-apps.yml) rather than a
+# narrow subset of paths: the narrow filter previously let master
+# regressions land without running this suite.
 
 permissions:
   contents: read
@@ -15,16 +19,7 @@ on:
   push:
     branches: [master]
     paths:
-      - "crates/context/src/handlers/update_application/**"
-      - "crates/context/src/handlers/upgrade_group.rs"
-      - "crates/context/src/handlers/apply_signed_group_op.rs"
-      - "crates/context/src/handlers/create_group.rs"
-      - "crates/context/src/handlers/get_migration_status.rs"
-      - "crates/node/src/migration_status.rs"
-      - "crates/context/primitives/src/local_governance/**"
-      - "crates/governance-store/src/ops/**"
-      - "crates/storage/src/interface.rs"
-      - "crates/sdk/macros/**"
+      - "crates/**"
       - "apps/migrations/**"
       - "workflows/app-migration/**"
       - ".github/workflows/app-migration-e2e.yml"
@@ -34,16 +29,7 @@ on:
   pull_request:
     branches: [master]
     paths:
-      - "crates/context/src/handlers/update_application/**"
-      - "crates/context/src/handlers/upgrade_group.rs"
-      - "crates/context/src/handlers/apply_signed_group_op.rs"
-      - "crates/context/src/handlers/create_group.rs"
-      - "crates/context/src/handlers/get_migration_status.rs"
-      - "crates/node/src/migration_status.rs"
-      - "crates/context/primitives/src/local_governance/**"
-      - "crates/governance-store/src/ops/**"
-      - "crates/storage/src/interface.rs"
-      - "crates/sdk/macros/**"
+      - "crates/**"
       - "apps/migrations/**"
       - "workflows/app-migration/**"
       - ".github/workflows/app-migration-e2e.yml"

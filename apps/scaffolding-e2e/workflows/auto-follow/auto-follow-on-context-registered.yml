@@ -39,13 +39,13 @@ steps:
     type: login
     node: af-baseline-node-1
     username: dev
-    password: dev
+    password: dev-password
 
   - name: Login on af-baseline-node-2
     type: login
     node: af-baseline-node-2
     username: dev
-    password: dev
+    password: dev-password
 
   # ── Phase 1: Bootstrap two-node namespace + subgroup ────────────────
   - name: Install kv-store-with-handlers on node-1

@@ -62,13 +62,13 @@ steps:
     type: login
     node: sync-autoresync-node-1
     username: dev
-    password: dev
+    password: dev-password
 
   - name: Login on sync-autoresync-node-2
     type: login
     node: sync-autoresync-node-2
     username: dev
-    password: dev
+    password: dev-password
 
   # ---------- Setup: 2-node namespace + context ----------
 

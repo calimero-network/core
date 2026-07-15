@@ -205,6 +205,10 @@ pub async fn join_namespace(
         .subscribe_namespace(namespace_id)
         .await
         .map_err(|e| JoinError::Transport(e.to_string()))?;
+    // Seed the readiness FSM's boot-grace anchor at subscribe time rather
+    // than at the first applied op, so a joiner that subscribes then sits
+    // idle still measures boot_grace from here.
+    node_client.notify_namespace_subscribed(namespace_id);
 
     // step 4: publish a ReadinessProbe. Best-effort — a publish error
     // here (e.g. NoPeersSubscribedToTopic on a solo node) is not fatal:
