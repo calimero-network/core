@@ -139,10 +139,8 @@ impl PredefinedEntry for key::NamespaceGovOp {
     type DataType<'a> = key::NamespaceGovOpValue;
 }
 
-// The parked namespace op is a `SignedNamespaceOp`, whose type lives in a crate
-// that depends on this one — so, like `AbsorbBufferKey`, it is stored as an
-// opaque borsh byte blob and the repository in `calimero-governance-store` owns
-// the encode/decode.
+// Opaque borsh byte blob, like `AbsorbBufferKey`: the `SignedNamespaceOp` type
+// lives in a downstream crate, so the repository there owns the encode/decode.
 impl PredefinedEntry for key::NamespacePendingGovOp {
     type Codec = Borsh;
     type DataType<'a> = Vec<u8>;

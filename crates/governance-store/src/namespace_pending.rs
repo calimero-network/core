@@ -1,21 +1,8 @@
-//! Node-local durable buffer for namespace governance ops parked because a
-//! semantic PREREQUISITE has not arrived yet.
-//!
-//! A `RootOp::MemberJoinedOpen` can be received (via gossip or catch-up) before
-//! the signer's own `RootOp::MemberJoinedAt` membership op — the op that makes
-//! them an inherited member of the Open subgroup. Its apply then fails the
-//! membership-path check and, without this buffer, the DAG drops it as
-//! permanently invalid; every later catch-up round re-delivers and re-drops it,
-//! so the joiner never converges. This buffer parks such an op and the apply
-//! path re-attempts it whenever a namespace op newly applies, turning "not
-//! valid yet" back into "retry once the prerequisite lands".
-//!
-//! Backed by [`Column::NamespacePendingGovOp`](calimero_store::db::Column) — a
-//! node-local, never-synced CF — keyed by `namespace_id ‖ delta_id`, so a
-//! re-park of the same op overwrites rather than duplicates. A parked op is
-//! UNVALIDATED (it may be a genuinely-forged op that never becomes valid), so
-//! the buffer is bounded per namespace and oldest-evicted to deny a malicious
-//! peer an unbounded-memory lever.
+//! Node-local durable buffer for namespace ops parked because a semantic
+//! prerequisite (the signer's membership op) has not applied yet. Backed by the
+//! never-synced [`Column::NamespacePendingGovOp`](calimero_store::db::Column),
+//! keyed `namespace_id ‖ delta_id` so a re-park overwrites. Parked ops are
+//! unvalidated, so the buffer is bounded per namespace and oldest-evicted.
 
 use borsh::BorshDeserialize;
 use calimero_context_client::local_governance::SignedNamespaceOp;
@@ -26,9 +13,8 @@ use eyre::Result as EyreResult;
 
 use crate::collect_keys_with_prefix;
 
-/// Per-namespace cap on parked ops. Bounds the memory a peer flooding forged
-/// (never-valid) `MemberJoinedOpen` ops can consume; a real prerequisite-waiter
-/// evicted under a flood is re-delivered and re-parked on the next catch-up.
+/// Per-namespace cap on parked ops, bounding memory under a flood of
+/// never-valid ops; an evicted real waiter is re-parked on the next catch-up.
 pub const MAX_PENDING_OPS_PER_NAMESPACE: usize = 128;
 
 /// Typed repository over the parked-op buffer for one namespace.
@@ -45,9 +31,8 @@ impl<'a> NamespacePendingOpRepository<'a> {
         }
     }
 
-    /// Park `op` for later re-attempt. Idempotent on the op's content hash: a
-    /// re-park overwrites the same key. Enforces the per-namespace cap before
-    /// admitting a NEW op (a re-park of an already-buffered op never evicts).
+    /// Park `op` for later re-attempt. Idempotent on the op's content hash; only
+    /// a genuinely new op counts against the cap.
     pub fn park(&self, op: &SignedNamespaceOp) -> EyreResult<()> {
         let delta_id = op
             .content_hash()
@@ -85,8 +70,7 @@ impl<'a> NamespacePendingOpRepository<'a> {
             if let Some(bytes) = handle.get(&key)? {
                 match SignedNamespaceOp::try_from_slice(&bytes) {
                     Ok(op) => ops.push((key.delta_id(), op)),
-                    // A corrupt parked entry can never re-apply; drop it so it
-                    // stops occupying a cap slot forever.
+                    // A corrupt entry can never re-apply — drop it, don't leak a cap slot.
                     Err(e) => {
                         tracing::warn!(
                             namespace_id = %hex::encode(ns),
@@ -115,10 +99,8 @@ impl<'a> NamespacePendingOpRepository<'a> {
         .len())
     }
 
-    /// Evict one entry when the namespace is at capacity. Deterministic
-    /// (lowest `delta_id` in the CF's byte order) rather than strictly FIFO —
-    /// content hashes carry no arrival time, and bounded memory is the only
-    /// property that matters here.
+    /// Evict one entry (lowest `delta_id`) when at capacity. Not strictly FIFO —
+    /// content hashes carry no arrival time — but bounding memory is all we need.
     fn evict_if_full(&self) -> EyreResult<()> {
         let ns = self.namespace_id.to_bytes();
         let keys = collect_keys_with_prefix(

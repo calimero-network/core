@@ -4361,20 +4361,10 @@ fn member_joined_clears_deny_list_for_rejoiner() {
 
 #[test]
 fn member_joined_open_parks_until_membership_prerequisite_applies() {
-    // Causal-buffering regression (the app-migration-e2e sync flake): a
-    // `RootOp::MemberJoinedOpen` received BEFORE the signer's own
-    // `RootOp::MemberJoinedAt` fails the membership-path check. Before the fix
-    // that failure DROPPED the op permanently — every later catch-up round
-    // re-delivered and re-dropped it (`ops_received=8 ops_applied=7` forever),
-    // so the joiner never converged. The fix PARKS the op on this "not valid
-    // yet" dependency failure and re-attempts it once a namespace op newly
-    // applies; when `MemberJoinedAt` lands, the drain re-applies the parked
-    // `MemberJoinedOpen` and it takes effect.
-    //
-    // This test delivers the two ops OUT OF ORDER (MemberJoinedOpen first) and
-    // asserts (a) the early op is parked, not dropped, and (b) once the
-    // prerequisite membership op applies, the parked op applies too — observed
-    // via its unique side effect (clearing the subgroup deny-list).
+    // Causal-buffering regression: a MemberJoinedOpen delivered BEFORE the
+    // signer's MemberJoinedAt used to be dropped permanently (the app-migration
+    // sync flake). It must instead be parked and re-applied once the
+    // prerequisite lands — observed here via clearing the subgroup deny-list.
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_context_config::types::{
         GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,

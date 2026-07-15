@@ -1810,20 +1810,12 @@ pub struct NamespaceGovOpValue {
     pub skeleton_bytes: Vec<u8>,
 }
 
-/// Prefix for parked namespace governance ops awaiting a semantic prerequisite.
-///
-/// Lives in its own node-local [`Column::NamespacePendingGovOp`] CF (never
-/// synced), so the byte only has to be distinct within that CF. `0x4B` is kept
-/// for grep-ability, one past the `AbsorbBuffer` prefix (`0x4A`) and clear of
-/// the `Group` CF's `0x20`–`0x39` band.
+/// Prefix for parked namespace governance ops (own CF, so distinct within it).
 pub const NAMESPACE_PENDING_GOV_OP_PREFIX: u8 = 0x4B;
 
-/// Stores a namespace governance op parked because a semantic prerequisite
-/// (e.g. the signer's membership op) has not arrived yet — see
-/// [`Column::NamespacePendingGovOp`]. Same key layout as [`NamespaceGovOp`]
-/// (`prefix(1) + namespace_id(32) + delta_id(32)`) but a distinct column so the
-/// parked (unvalidated) op is never mistaken for, or served alongside, the
-/// canonical op-log.
+/// Stores a namespace governance op parked awaiting a prerequisite — see
+/// [`Column::NamespacePendingGovOp`]. Same layout as [`NamespaceGovOp`]
+/// (`prefix(1) + namespace_id(32) + delta_id(32)`), distinct column.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NamespacePendingGovOp(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
