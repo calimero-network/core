@@ -198,6 +198,11 @@ pub struct SyncSessionResult {
     pub context_id: ContextId,
     pub peer_id: PeerId,
     pub took: Duration,
+    /// Per-context dispatch generation from the initiator-side tracker,
+    /// echoed from the job. `SessionTracker::apply_result` discards
+    /// results whose generation no longer matches the context's current
+    /// one (a wedged session that recovered late, or a superseded dispatch).
+    pub generation: u64,
     /// `Ok(Ok(_))` = sync ran to completion; `Ok(Err(_))` = sync
     /// returned an error; `Err(_)` = session timed out.
     pub result: Result<Result<SyncProtocol, eyre::Error>, tokio::time::error::Elapsed>,
@@ -252,6 +257,10 @@ pub enum SyncSessionJob {
     Initiator {
         context_id: ContextId,
         peer_id: Option<PeerId>,
+        /// Dispatch generation stamped by the initiator-side tracker;
+        /// echoed into the `SyncSessionResult` so stale results (from a
+        /// session the tracker has since superseded) are ignored.
+        generation: u64,
     },
 }
 
@@ -513,6 +522,7 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
             SyncSessionJob::Initiator {
                 context_id,
                 peer_id,
+                generation,
             } => {
                 // #2319: refuse a duplicate initiator for this context.
                 if self.in_flight_initiators.insert(context_id, ()).is_some() {
@@ -534,6 +544,7 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                             context_id,
                             peer_id: peer_id.unwrap_or_else(PeerId::random),
                             took: Duration::ZERO,
+                            generation,
                             result: Ok(Err(eyre::eyre!(
                                 "initiator skipped — a sync session for this context is already in flight on the actor (#2319)"
                             ))),
@@ -660,6 +671,7 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                                 context_id,
                                 peer_id: chosen_peer,
                                 took,
+                                generation,
                                 result,
                             };
                             // Unbounded: the only error is "receiver

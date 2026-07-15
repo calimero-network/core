@@ -39,6 +39,7 @@ pub mod handlers;
 pub mod hlc_fence;
 mod lifecycle;
 pub mod migration_plan;
+pub mod rotation_listener;
 pub mod scope_projection;
 pub mod self_purge;
 pub mod tee_subgroup_admit;
@@ -109,6 +110,7 @@ pub mod group_store {
         NamespaceMembershipService,
         NamespaceOpLogService,
         NamespaceRepository,
+        PendingRotationRepository,
         SigningKeysError,
         SigningKeysRepository,
         UpgradeLadderRepository,
@@ -831,6 +833,15 @@ impl Actor for ContextManager {
         // guarantees we (re)bind to this instance's current store/client.
         tee_subgroup_admit::shutdown();
         tee_subgroup_admit::spawn(self.datastore.clone(), self.context_client.clone());
+
+        // Forward secrecy on self-leave. A leaver cannot rotate the key they are being
+        // cut off from, so `MemberLeft` records the debt and the REMAINING admins pay
+        // it. This listener is that half: it reacts to departures and also drains the
+        // persisted worklist on startup, which is the only thing that covers an admin
+        // that was offline when the leave applied. Same shutdown-then-spawn rebinding
+        // rationale as the TEE-admit listener above.
+        rotation_listener::shutdown();
+        rotation_listener::spawn(self.datastore.clone(), self.context_client.clone());
     }
 }
 

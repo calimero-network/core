@@ -145,6 +145,14 @@ id_newtype! {
 /// Variant ordinal is appended after the v6 variants; v6 ordinals are
 /// preserved.
 ///
+/// `GroupKeyRotated` is appended at the END of the `GroupOp` enum, so every
+/// pre-existing variant keeps its ordinal (Borsh tags variants by source order) and
+/// the schema version deliberately does NOT change: the version is enforced
+/// strictly-equal on decode, so bumping it would make older peers reject every op,
+/// not just the new one. Old peers decode everything they already understood and fail
+/// only on `GroupKeyRotated` itself — the same operator-discipline rollout posture the
+/// cascade variants took: deploy before any node self-leaves a Restricted group.
+///
 /// v8 (cutover C5.S3b): dropped the vestigial `state_hash` field from the
 /// signable/​signed op. It stopped being an apply gate in C5.S3a (`scope_root`
 /// is the authoritative convergence signal now), so it was pure dead weight in
@@ -463,6 +471,27 @@ pub enum GroupOp {
         migration: Option<Vec<u8>>,
         cascade_hlc: HybridTimestamp,
     },
+    /// Carrier for a forward-secrecy key rotation that follows a self-leave.
+    ///
+    /// A rotation rides as a sidecar on the op that triggers it, minted by whoever
+    /// publishes that op. That works for an admin-initiated `MemberRemoved` — the
+    /// publisher stays in the group — but not for `MemberLeft`, where the publisher
+    /// is the departing member: they would have to mint the very key they are being
+    /// cut off from and would retain it, and peers reject a rotation from a non-admin
+    /// regardless. So `MemberLeft` records what is owed
+    /// (`PendingRotationRepository`), and a REMAINING ADMIN later publishes this op to
+    /// carry the new key.
+    ///
+    /// The op mutates no governance state of its own — it exists so the rotation
+    /// sidecar has something to ride on, and its apply discharges the pending row.
+    /// Applying it twice is a no-op, which is what makes a concurrent double-rotation
+    /// by two admins harmless.
+    GroupKeyRotated {
+        /// The member whose departure this rotation is cutting off. Names which
+        /// pending row to discharge, and is the identity every rotation envelope
+        /// excludes.
+        departed: PublicKey,
+    },
 }
 
 impl GroupOp {
@@ -479,6 +508,7 @@ impl GroupOp {
             GroupOp::MemberAdded { .. } => "member_added",
             GroupOp::MemberRemoved { .. } => "member_removed",
             GroupOp::MemberLeft { .. } => "member_left",
+            GroupOp::GroupKeyRotated { .. } => "group_key_rotated",
             GroupOp::MemberRoleSet { .. } => "member_role_set",
             GroupOp::MemberCapabilitySet { .. } => "member_capability_set",
             GroupOp::DefaultCapabilitiesSet { .. } => "default_capabilities_set",

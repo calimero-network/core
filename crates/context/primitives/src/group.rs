@@ -707,6 +707,25 @@ impl Message for AdmitTeeNodeRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Discharge a pending forward-secrecy key rotation left behind by a self-leave.
+///
+/// A leaver cannot rotate for themselves — they would have to mint the very key they
+/// are being cut off from, and peers reject a rotation from a non-admin anyway. So
+/// `MemberLeft` records what is owed and a REMAINING ADMIN sends this to pay it.
+///
+/// Idempotent and safe to send concurrently from several admins: they mint different
+/// keys, but the keyring converges on one and every competing key excludes the leaver.
+#[derive(Debug)]
+pub struct RotateGroupKeyRequest {
+    pub group_id: ContextGroupId,
+    /// The member whose departure this rotation cuts off.
+    pub departed: PublicKey,
+}
+
+impl Message for RotateGroupKeyRequest {
+    type Result = eyre::Result<()>;
+}
+
 #[derive(Debug)]
 pub struct SetSubgroupVisibilityRequest {
     pub group_id: ContextGroupId,

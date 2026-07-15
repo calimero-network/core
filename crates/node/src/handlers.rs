@@ -128,6 +128,21 @@ impl Handler<NodeMessage> for NodeManager {
                 // emitter so its periodic keep-alive tick goes live.
                 self.notify_migration_facts(namespace_id);
             }
+            NodeMessage::ForwardNamespaceSubscribed { namespace_id } => {
+                // Seed the readiness FSM's `subscribed_at` at subscribe time.
+                // Same mount-window caveat as `ForwardNamespaceOpApplied`: a
+                // signal dropped before the actor is wired is harmless — the
+                // first applied op seeds the entry (just later).
+                if let Some(addr) = &self.readiness_addr {
+                    addr.do_send(crate::readiness::NamespaceSubscribed { namespace_id });
+                } else {
+                    debug!(
+                        namespace_id = %hex::encode(namespace_id),
+                        "ForwardNamespaceSubscribed received before ReadinessManager mounted; \
+                         dropping (first applied op will seed the entry)"
+                    );
+                }
+            }
             NodeMessage::RefreshMigrationFacts { namespace_id } => {
                 // Edge-trigger a fact recompute + emit-on-change for this
                 // namespace (resync-heal path). Same seam the governance-apply

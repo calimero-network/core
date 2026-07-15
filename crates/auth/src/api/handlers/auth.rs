@@ -812,40 +812,6 @@ pub async fn callback_handler(
     )
 }
 
-/// Challenge response
-#[derive(Debug, Serialize)]
-pub struct ChallengeResponse {
-    /// Challenge token to be signed
-    pub challenge: String,
-    /// Server-generated nonce (base64 encoded)
-    pub nonce: String,
-}
-
-/// Challenge handler
-///
-/// This endpoint generates a challenge token for authentication.
-///
-/// # Arguments
-///
-/// * `state` - The application state
-///
-/// # Returns
-///
-/// * `impl IntoResponse` - The response containing the challenge token
-pub async fn challenge_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
-    match state.0.token_generator.generate_challenge().await {
-        Ok(response) => success_response(response, None),
-        Err(err) => {
-            error!("Failed to generate challenge: {}", err);
-            error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to generate challenge",
-                None,
-            )
-        }
-    }
-}
-
 /// Revoke token request
 #[derive(Debug, Deserialize, Validate)]
 pub struct RevokeTokenRequest {
