@@ -1,16 +1,13 @@
 use std::sync::Arc;
 
 use axum::http::HeaderMap;
-use base64::Engine;
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use url::Url;
-use {base64, hex, rand, uuid};
+use {hex, uuid};
 
-use crate::api::handlers::auth::ChallengeResponse;
 use crate::config::JwtConfig;
 use crate::secrets::{SecretManager, SecretType};
 use crate::storage::models::KeyType;
@@ -44,21 +41,6 @@ pub struct Claims {
     /// Node URL this token is valid for (optional, for backward compatibility)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_url: Option<String>,
-}
-
-/// Challenge Claims structure
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ChallengeClaims {
-    /// Issuer of the challenge
-    pub iss: String,
-    /// Unique challenge ID
-    pub jti: String,
-    /// Timestamp when the challenge was issued
-    pub iat: u64,
-    /// Expiration time of the challenge
-    pub exp: u64,
-    /// Nonce
-    pub nonce: String,
 }
 
 /// JWT Token Manager
@@ -601,82 +583,6 @@ impl TokenManager {
                 Ok((access_token, refresh_token))
             }
         }
-    }
-
-    /// Generate a challenge token
-    ///
-    /// # Returns
-    ///
-    /// * `Result<ChallengeResponse, AuthError>` - The generated challenge token and nonce
-    pub async fn generate_challenge(&self) -> Result<ChallengeResponse, AuthError> {
-        let now = Utc::now();
-        // Challenges should be short-lived, using a 5-minute expiry
-        let exp = now + Duration::minutes(5);
-
-        // Generate a secure random nonce
-        let mut nonce_bytes = [0u8; 32];
-        rand::thread_rng().try_fill(&mut nonce_bytes).map_err(|e| {
-            AuthError::TokenGenerationFailed(format!("Failed to generate nonce: {e}").into())
-        })?;
-        let nonce = base64::engine::general_purpose::STANDARD.encode(nonce_bytes);
-
-        let claims = ChallengeClaims {
-            iss: self.config.issuer.clone(),
-            jti: uuid::Uuid::new_v4().to_string(),
-            iat: now.timestamp() as u64,
-            exp: exp.timestamp() as u64,
-            nonce: nonce.clone(),
-        };
-
-        let secret = self
-            .secret_manager
-            .get_jwt_challenge_secret()
-            .await
-            .map_err(|e| AuthError::TokenGenerationFailed(e.into()))?;
-
-        let header = Header::new(Algorithm::HS256);
-        let challenge = encode(
-            &header,
-            &claims,
-            &EncodingKey::from_secret(secret.as_bytes()),
-        )
-        .map_err(|e| AuthError::TokenGenerationFailed(e.into()))?;
-
-        Ok(ChallengeResponse { challenge, nonce })
-    }
-
-    /// Verify a challenge token
-    ///
-    /// # Arguments
-    ///
-    /// * `token` - The challenge token to verify
-    ///
-    /// # Returns
-    ///
-    /// * `Result<ChallengeClaims, AuthError>` - The verified challenge claims
-    pub async fn verify_challenge(&self, token: &str) -> Result<ChallengeClaims, AuthError> {
-        let secret = self
-            .secret_manager
-            .get_jwt_challenge_secret()
-            .await
-            .map_err(|e| AuthError::TokenGenerationFailed(e.into()))?;
-
-        let mut validation = Validation::new(Algorithm::HS256);
-        validation.validate_exp = true;
-        validation.set_issuer(&[&self.config.issuer]);
-
-        // NB: a challenge is a short-lived auth nonce, not a Bearer access
-        // token. Its expiry is deliberately NOT mapped to `AuthError::TokenExpired`
-        // — that variant signals access-token expiry and drives the SDK's refresh
-        // flow, which makes no sense for an expired challenge.
-        let token_data = decode::<ChallengeClaims>(
-            token,
-            &DecodingKey::from_secret(secret.as_bytes()),
-            &validation,
-        )
-        .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
-
-        Ok(token_data.claims)
     }
 
     /// Get the key manager

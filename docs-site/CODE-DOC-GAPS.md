@@ -46,5 +46,5 @@ against `src/content/docs/`. Ordered by priority. `file:line` anchors included.
 - `tracing` integration + WARN default + `env::set_log_level`; method-arg JSON contract (`deny_unknown_fields`); reserved `__calimero` prefix; `#[app::view]` post-exec enforcement; state-lint rejects interior mutability; `#[app::private]` alias blind spot (storage internals / sdk).
 - ABI in `calimero_abi_v1` custom section, hashed with bytecode; downgrade lint fail-closed; guarded wrappers normalize to SharedStorage (ABI).
 - Beacon debounce/anti-abuse; wedge-watchdog +10s; targeted `context sync` syncs all; deferred root-merge through WASM; crash-recovery sync marker; `force` resync disables I5+fence (sync internals).
-- Auth secret auto-rotation (24h/48h grace); challenge TTL 300s + client-key rotation; `node_url` bound to Host header (auth).
+- Auth secret auto-rotation (24h/48h grace); client-key rotation; `node_url` bound to Host header (auth).
 - Specialized-node-invite wire protocol; AutoNAT v2 reachability state machine; blob discovery via custom Kad records not providers; `crates/network/PROTOCOLS.md` is stale in several places.

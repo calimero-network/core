@@ -68,7 +68,7 @@ through the core libraries, all converging on `primitives`.
 | Crate | Responsibility |
 | --- | --- |
 | `crates/server` (+ `server/primitives`) | Single Axum HTTP server mounting all public surfaces: Admin REST API, JSON-RPC 2.0, WebSocket, SSE, Prometheus metrics, and the embedded admin dashboard SPA. |
-| `crates/auth` (`mero-auth`) | Forward-auth service: JWT issuing/verification, pluggable providers (NEAR, Ethereum, custom), challenge/nonce wallet auth. Runs embedded in the server or behind a reverse proxy. |
+| `crates/auth` (`mero-auth`) | Forward-auth service: JWT issuing/verification, pluggable providers (`user_password` is the only shipped provider). Runs embedded in the server or behind a reverse proxy. |
 | `crates/client` | Trait-based client library for talking to Calimero APIs (auth, storage abstractions) — used by tooling and integrations. |
 
 ### Node & Context layer

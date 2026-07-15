@@ -3143,3 +3143,133 @@ async fn member_peers_for_context_resolves_cached_members_end_to_end() {
         "unregistered context yields no cached members"
     );
 }
+
+/// End-to-end: a self-leave from a Restricted subgroup drives a REMAINING ADMIN's
+/// node all the way through a real key rotation.
+///
+/// Every other test of this feature stops at the store layer. This one is the only
+/// thing that exercises the chain that actually has to fire in production:
+///
+///   `MemberLeft` apply → `OpEvent::MemberRemoved` → the rotation listener →
+///   `ContextClient::rotate_group_key` → the actor handler → the publisher, which
+///   mints a fresh group key, installs it at a higher epoch, and applies
+///   `GroupKeyRotated` locally to discharge the pending row.
+///
+/// A wiring mistake anywhere in that chain means NO ROTATION EVER HAPPENS — the
+/// leaver silently keeps the subgroup key forever — while every unit test still
+/// passes. So the assertions here are the load-bearing ones: the debt is recorded,
+/// then paid, and the group's current key genuinely changes.
+///
+/// This node holds the namespace identity of the subgroup's admin, so it IS the
+/// eligible rotator. The leaver is a plain member with no node of its own.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn self_leave_drives_a_real_key_rotation_on_a_remaining_admin() {
+    use calimero_context::group_store::{
+        GroupKeyring, MembershipRepository, PendingRotationRepository,
+    };
+
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    let (admin_pk, _admin_sk) = provision_tee_owner_with_sk(&node, &ns_gid, &mut rng);
+
+    // A born-Restricted subgroup: it holds its OWN key, so a departure must rotate it.
+    // Going through the real create path also mints and stores that key locally, which
+    // is what makes this node the key-holder (and so a capable rotator).
+    let sub_gid = create_restricted_subgroup(&node, &ns_gid, &admin_pk, &mut rng).await;
+
+    // The member who will leave. A plain `Member`, so the leave is not blocked by the
+    // owner / last-admin guards.
+    let leaver_sk = PrivateKey::random(&mut rng);
+    let leaver_pk = leaver_sk.public_key();
+    MembershipRepository::new(&node.store)
+        .add_member(&sub_gid, &leaver_pk, GroupMemberRole::Member)
+        .expect("add the leaver to the subgroup");
+
+    let key_before = GroupKeyring::new(&node.store, sub_gid)
+        .load_current_key_record()
+        .expect("read the subgroup key")
+        .expect("the create path must have minted a subgroup key");
+
+    // The leaver self-leaves. This is the op a departing node publishes; applying it
+    // here is exactly what a remaining admin's node does on receipt.
+    let leave = SignedGroupOp::sign(
+        &leaver_sk,
+        sub_gid.to_bytes().into(),
+        vec![],
+        1,
+        GroupOp::MemberLeft {
+            member: leaver_pk,
+            expected_group_state_hash: [0u8; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+    )
+    .expect("sign MemberLeft");
+    apply_local_signed_group_op(&node.store, &leave).expect("apply MemberLeft");
+
+    // The membership row is gone immediately...
+    assert!(
+        MembershipRepository::new(&node.store)
+            .role_of(&sub_gid, &leaver_pk)
+            .expect("role_of")
+            .is_none(),
+        "the leaver's membership row must be removed by the leave itself"
+    );
+
+    // ...and the forward-secrecy debt is recorded, because the leaver could not have
+    // rotated for themselves.
+    assert!(
+        PendingRotationRepository::new(&node.store)
+            .is_pending(&sub_gid, &leaver_pk)
+            .expect("is_pending"),
+        "the leave must record a pending rotation — nothing else will ever prompt one"
+    );
+
+    // Now the part only this test covers: the listener fires on this node (a remaining
+    // admin), publishes the rotation, and the pending row is discharged. Nothing here
+    // is driven by the test — it is the production listener reacting to the op-event.
+    let store = node.store.clone();
+    let cleared = wait_until(|| {
+        // A read error counts as "still pending" so a transient store fault cannot be
+        // mistaken for a successful rotation.
+        !PendingRotationRepository::new(&store)
+            .is_pending(&sub_gid, &leaver_pk)
+            .unwrap_or(true)
+    })
+    .await;
+    assert!(
+        cleared,
+        "the rotation listener never discharged the pending rotation — the chain \
+         (op-event → listener → rotate_group_key handler → publisher) is broken, and the \
+         departed member would keep the subgroup key indefinitely"
+    );
+
+    // The rotation was real: a fresh key, at a strictly higher epoch, is now current.
+    let key_after = GroupKeyring::new(&node.store, sub_gid)
+        .load_current_key_record()
+        .expect("read the subgroup key")
+        .expect("a current key must still exist");
+
+    // `load_current_key_record` selects the highest-epoch key (ties broken by the larger
+    // key id), so a CHANGED current key is itself the proof that the freshly minted key
+    // outranks the one the leaver holds — from here on, this group encrypts under a key
+    // the departed member has never seen.
+    assert_ne!(
+        key_after.group_key, key_before.group_key,
+        "the group's current key must actually CHANGE — a discharged pending row with the \
+         same key would mean the bookkeeping ran but no forward secrecy was gained, and \
+         the group would go on encrypting under the key the leaver still holds"
+    );
+
+    // The OLD key is retained, not deleted: ops written before the rotation must stay
+    // decryptable. Forward secrecy is about what comes next, not about erasing the past.
+    assert!(
+        GroupKeyring::new(&node.store, sub_gid)
+            .load_key_by_id(&key_before.key_id)
+            .expect("load the pre-rotation key")
+            .is_some(),
+        "the pre-rotation key must be retained so already-written ops stay readable"
+    );
+}

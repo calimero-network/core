@@ -7716,3 +7716,1038 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
         );
     }
 }
+
+// -----------------------------------------------------------------------
+// Apply-time authority must resolve at the op's causal cut, not against the
+// receiver's live rows.
+//
+// The settings ops (`TargetApplicationSet`, `GroupMigrationSet`,
+// `UpgradePolicySet`, `DefaultCapabilitiesSet`, `SubgroupVisibilitySet`) run
+// their gates through `GroupSettingsService`, which used to build a LIVE
+// `PermissionChecker` regardless of the apply context. That made the verdict a
+// function of each replica's fold progress: a replica that had folded a
+// concurrent capability revoke rejected the op (and, because the reject path
+// never advances the DAG head, stalled every descendant of it) while a replica
+// that had not folded the revoke applied it. Permanent divergence.
+//
+// These tests pin the fix by making the at-cut source DISAGREE with the live
+// rows in both directions. If the at-cut verdict is the one honored, the live
+// rows are irrelevant — which is exactly the property that makes the decision
+// replica-independent.
+mod apply_auth_at_cut {
+    use super::*;
+    use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
+    use calimero_context_config::types::AppKey;
+    use calimero_context_config::MemberCapabilities;
+    use calimero_governance_types::GroupOp;
+
+    /// Group whose live rows grant `signer` full admin authority.
+    fn store_with_live_admin(signer: &PublicKey) -> (Store, ContextGroupId) {
+        let store = test_store();
+        let gid = test_group_id();
+        let mut meta = test_meta();
+        meta.admin_identity = *signer;
+        meta.owner_identity = *signer;
+        MetaRepository::new(&store).save(&gid, &meta).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, signer, GroupMemberRole::Admin)
+            .unwrap();
+        (store, gid)
+    }
+
+    /// Group whose live rows grant `signer` NOTHING — not even a membership row.
+    fn store_with_live_stranger(signer: &PublicKey) -> (Store, ContextGroupId) {
+        let store = test_store();
+        let gid = test_group_id();
+        let other = PublicKey::from([0x77; 32]);
+        let mut meta = test_meta();
+        meta.admin_identity = other;
+        meta.owner_identity = other;
+        MetaRepository::new(&store).save(&gid, &meta).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &other, GroupMemberRole::Admin)
+            .unwrap();
+        let _ = signer;
+        (store, gid)
+    }
+
+    fn target_application_set_op() -> GroupOp {
+        GroupOp::TargetApplicationSet {
+            app_key: AppKey::from([0x5A; 32]),
+            target_application_id: ApplicationId::from([0x5B; 32]),
+        }
+    }
+
+    #[test]
+    fn target_application_set_honors_at_cut_grant_over_live_denial() {
+        // The catching-up replica: its live rows say the signer has no authority
+        // (it has not yet folded the grant), but the projection at the op's cut
+        // says the signer WAS authorized as of the op's own parents. The op must
+        // apply — otherwise this replica rejects an op its peers accept.
+        let signer = PublicKey::from([0x11; 32]);
+        let (store, gid) = store_with_live_stranger(&signer);
+
+        let (handled, _divergence, _events) = apply_group_op_mutations(
+            &store,
+            &gid,
+            &signer,
+            &target_application_set_op(),
+            &CUT,
+            &FixedAuthorizer(true),
+        )
+        .expect("at-cut grant must authorize the settings op despite live rows denying");
+        assert!(handled, "TargetApplicationSet should be handled");
+
+        let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+        assert_eq!(
+            meta.app_key, [0x5A; 32],
+            "the mutation must actually land, not just be reported handled"
+        );
+    }
+
+    #[test]
+    fn target_application_set_honors_at_cut_denial_over_live_grant() {
+        // The mirror: live rows would grant (this replica has not folded the
+        // revoke), but at the op's cut the signer was NOT authorized. The op must
+        // be rejected — otherwise this replica applies an op its peers reject.
+        let signer = PublicKey::from([0x11; 32]);
+        let (store, gid) = store_with_live_admin(&signer);
+        let before = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+
+        let err = apply_group_op_mutations(
+            &store,
+            &gid,
+            &signer,
+            &target_application_set_op(),
+            &CUT,
+            &FixedAuthorizer(false),
+        )
+        .expect_err("at-cut denial must reject the settings op despite live rows granting");
+        assert!(
+            format!("{err:#}").contains("lacks permission"),
+            "expected an authorization failure, got: {err:#}"
+        );
+
+        let after = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+        assert_eq!(
+            before.app_key, after.app_key,
+            "a rejected settings op must not mutate group meta"
+        );
+    }
+
+    #[test]
+    fn default_capabilities_set_honors_at_cut_verdict() {
+        // `DefaultCapabilitiesSet` gates on `require_admin`, and is itself a
+        // capability op — gating a capability op on LIVE capabilities is the
+        // tightest version of the divergence loop, so pin both directions.
+        let signer = PublicKey::from([0x11; 32]);
+
+        let (store, gid) = store_with_live_stranger(&signer);
+        let op = GroupOp::DefaultCapabilitiesSet {
+            capabilities: MemberCapabilities::MANAGE_MEMBERS,
+        };
+        let (handled, _, _) =
+            apply_group_op_mutations(&store, &gid, &signer, &op, &CUT, &FixedAuthorizer(true))
+                .expect("at-cut admin grant must authorize DefaultCapabilitiesSet");
+        assert!(handled);
+        assert_eq!(
+            CapabilitiesRepository::new(&store)
+                .default_capabilities(&gid)
+                .unwrap(),
+            Some(MemberCapabilities::MANAGE_MEMBERS.bits()),
+            "the default-capability mutation must land"
+        );
+
+        let (store, gid) = store_with_live_admin(&signer);
+        let op = GroupOp::DefaultCapabilitiesSet {
+            capabilities: MemberCapabilities::MANAGE_MEMBERS,
+        };
+        let _ = apply_group_op_mutations(&store, &gid, &signer, &op, &CUT, &FixedAuthorizer(false))
+            .expect_err(
+                "at-cut denial must reject DefaultCapabilitiesSet despite a live admin row",
+            );
+    }
+
+    #[test]
+    fn two_replicas_with_opposite_live_rows_agree_at_the_same_cut() {
+        // The divergence scenario end to end, as two replicas of the SAME op.
+        //
+        // Replica A folded a concurrent capability revoke; replica B has not.
+        // Their live rows therefore disagree. Both resolve the op at its own cut,
+        // so both MUST reach the same verdict and the same resulting state — that
+        // agreement is the whole property, and it is what live-resolution broke.
+        let signer = PublicKey::from([0x11; 32]);
+        let (store_a, gid_a) = store_with_live_stranger(&signer); // revoke folded
+        let (store_b, gid_b) = store_with_live_admin(&signer); // revoke not folded
+
+        for (store, gid, label) in [
+            (&store_a, &gid_a, "revoke-folded replica"),
+            (&store_b, &gid_b, "revoke-unfolded replica"),
+        ] {
+            let (handled, _, _) = apply_group_op_mutations(
+                store,
+                gid,
+                &signer,
+                &target_application_set_op(),
+                &CUT,
+                &FixedAuthorizer(true),
+            )
+            .unwrap_or_else(|e| panic!("{label} must apply the op at the cut, got: {e:#}"));
+            assert!(handled, "{label}: op should be handled");
+
+            let meta = MetaRepository::new(store).load(gid).unwrap().unwrap();
+            assert_eq!(
+                meta.app_key, [0x5A; 32],
+                "{label}: both replicas must converge on the same app_key"
+            );
+        }
+    }
+}
+
+// -----------------------------------------------------------------------
+// A removal must not mint a group key that peers will reject.
+//
+// The publish gate for removal is admin OR `MANAGE_MEMBERS`; the rotation's
+// receive gate is strict admin, checked against the namespace identity that signs
+// the outer op. A non-admin `MANAGE_MEMBERS` holder therefore used to: mint a new
+// key, store it locally at the TOP epoch (making it this node's "current" key),
+// attach a rotation every peer silently rejected, and thereafter encrypt every
+// group op under a key no other node held — peers buffering them as undecryptable
+// forever. A group-wide liveness break, not a skipped rotation.
+//
+// Fail closed instead: refuse the removal. Groups encrypted under the NAMESPACE
+// key never rotate on removal, so a `MANAGE_MEMBERS` holder may still remove there.
+mod rotation_gate_alignment {
+    use super::*;
+    use crate::group_governance_publisher::ensure_rotation_is_publishable;
+    use crate::test_fixtures::bootstrap_namespace_with_admin;
+    use calimero_context_config::VisibilityMode;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    /// Namespace + a subgroup nested under it. The subgroup's visibility is left at
+    /// the default (Restricted), so it encrypts under its OWN key and a removal
+    /// there rotates.
+    fn namespace_with_subgroup() -> (Store, ContextGroupId, ContextGroupId, PublicKey) {
+        let store = test_store();
+        let ns_id = [0xF1u8; 32];
+        let ns_gid = ContextGroupId::from(ns_id);
+        let (_admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
+
+        let sub_gid = ContextGroupId::from([0xF2u8; 32]);
+        MetaRepository::new(&store)
+            .save(&sub_gid, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&sub_gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+        nest_for_test(&store, &ns_gid, &sub_gid);
+
+        (store, ns_gid, sub_gid, admin_pk)
+    }
+
+    /// Repoint this node's namespace identity at a fresh keypair that holds no
+    /// admin row anywhere — the non-admin `MANAGE_MEMBERS` holder's node.
+    fn make_namespace_identity_a_non_admin(store: &Store, ns_gid: &ContextGroupId) -> PublicKey {
+        let sk_bytes: [u8; 32] = rand::Rng::gen(&mut OsRng);
+        let sk = PrivateKey::from(sk_bytes);
+        let pk = sk.public_key();
+        NamespaceRepository::new(store)
+            .store_identity(ns_gid, &pk, &sk_bytes, &[0u8; 32])
+            .unwrap();
+        pk
+    }
+
+    #[test]
+    fn restricted_group_removal_by_non_admin_is_refused() {
+        let (store, ns_gid, sub_gid, _admin) = namespace_with_subgroup();
+        let non_admin = make_namespace_identity_a_non_admin(&store, &ns_gid);
+
+        assert!(
+            !PermissionChecker::new(&store, sub_gid)
+                .is_admin(&non_admin)
+                .unwrap(),
+            "precondition: this node's namespace identity must not be an admin of the subgroup"
+        );
+
+        let err = ensure_rotation_is_publishable(&store, sub_gid).expect_err(
+            "a removal that must rotate, from a node whose rotation peers would reject, \
+             must be refused rather than split the keyring",
+        );
+        assert!(
+            format!("{err:#}").contains("splitting the keyring"),
+            "the error should explain the keyring split it is preventing, got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn restricted_group_removal_by_admin_is_allowed() {
+        // The mirror: the node's namespace identity IS an admin of the subgroup, so
+        // peers will accept its rotation. The removal must go through.
+        let (store, _ns_gid, sub_gid, admin) = namespace_with_subgroup();
+
+        assert!(
+            PermissionChecker::new(&store, sub_gid)
+                .is_admin(&admin)
+                .unwrap(),
+            "precondition: the bootstrapped namespace identity is the subgroup admin"
+        );
+
+        ensure_rotation_is_publishable(&store, sub_gid)
+            .expect("an admin's removal rotates cleanly and must be allowed");
+    }
+
+    #[test]
+    fn open_chain_group_removal_by_non_admin_is_allowed() {
+        // An Open subgroup under an Open chain encrypts with the NAMESPACE key, so a
+        // removal mints no per-subgroup key and there is no rotation to reject. The
+        // MANAGE_MEMBERS holder keeps the ability to remove here — narrowing the gate
+        // must not over-reach into groups that never rotate.
+        let (store, ns_gid, sub_gid, _admin) = namespace_with_subgroup();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&sub_gid, VisibilityMode::Open)
+            .unwrap();
+        let _non_admin = make_namespace_identity_a_non_admin(&store, &ns_gid);
+
+        assert!(
+            CapabilitiesRepository::new(&store)
+                .is_open_chain_to_namespace(&sub_gid, &ns_gid)
+                .unwrap(),
+            "precondition: the subgroup must sit on a fully-Open chain to the namespace"
+        );
+
+        ensure_rotation_is_publishable(&store, sub_gid).expect(
+            "an Open-chain group never rotates on removal, so a non-admin removal must \
+             still be permitted",
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// An unresolvable cut must PARK the op, not guess from live.
+//
+// The projection abstains for two very different reasons, and the apply gates used
+// to collapse them into one "fall back to live" branch:
+//
+//   * no cut to resolve against (a genesis op, or no apply-auth context at all) —
+//     live is correct, nothing contradicts it;
+//   * the cut is real but this node has not folded its ancestry — live is a
+//     DIFFERENT cut (this replica's current one).
+//
+// In the second case the verdict became a function of fold progress. A replica that
+// had folded a concurrent capability revoke rejected an op its peers applied; and
+// since the reject path never advances the DAG head, every op descending from it
+// stalled on that replica alone. Permanent, silent divergence.
+//
+// Now the gate refuses to answer: `AuthorityUndecidable`, which the DAG treats like
+// any other apply error (head not advanced, nonce not burned), so the op is retried
+// once the missing history arrives. A loud stall beats a quiet divergence.
+mod undecidable_authority_parks {
+    use super::*;
+    use crate::test_fixtures::{FixedAuthorizer, UnresolvableAuthorizer, TEST_CUT as CUT};
+    use calimero_context_config::types::AppKey;
+    use calimero_governance_types::GroupOp;
+
+    fn target_application_set_op() -> GroupOp {
+        GroupOp::TargetApplicationSet {
+            app_key: AppKey::from([0x5A; 32]),
+            target_application_id: ApplicationId::from([0x5B; 32]),
+        }
+    }
+
+    fn group_with_live_admin(signer: &PublicKey) -> (Store, ContextGroupId) {
+        let store = test_store();
+        let gid = test_group_id();
+        let mut meta = test_meta();
+        meta.admin_identity = *signer;
+        meta.owner_identity = *signer;
+        MetaRepository::new(&store).save(&gid, &meta).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, signer, GroupMemberRole::Admin)
+            .unwrap();
+        (store, gid)
+    }
+
+    fn group_with_live_stranger() -> (Store, ContextGroupId) {
+        let store = test_store();
+        let gid = test_group_id();
+        let other = PublicKey::from([0x77; 32]);
+        let mut meta = test_meta();
+        meta.admin_identity = other;
+        meta.owner_identity = other;
+        MetaRepository::new(&store).save(&gid, &meta).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &other, GroupMemberRole::Admin)
+            .unwrap();
+        (store, gid)
+    }
+
+    fn assert_undecidable(err: &eyre::Report) {
+        assert!(
+            format!("{err:#}").contains("authority undecidable"),
+            "expected AuthorityUndecidable (a retryable park), got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn unresolvable_cut_refuses_rather_than_granting_from_live() {
+        // Live rows would GRANT. Guessing from them would apply an op the peers
+        // (resolving at the real cut) might reject.
+        let signer = PublicKey::from([0x11; 32]);
+        let (store, gid) = group_with_live_admin(&signer);
+
+        let err = apply_group_op_mutations(
+            &store,
+            &gid,
+            &signer,
+            &target_application_set_op(),
+            &CUT,
+            &UnresolvableAuthorizer,
+        )
+        .expect_err("an unresolvable cut must not be answered from the live rows");
+        assert_undecidable(&err);
+
+        let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+        assert_ne!(
+            meta.app_key, [0x5A; 32],
+            "a parked op must not mutate state — it has not been authorized yet"
+        );
+    }
+
+    #[test]
+    fn unresolvable_cut_refuses_rather_than_denying_from_live() {
+        // The load-bearing direction. Live rows would DENY, and the old code turned
+        // that into a hard rejection — permanent on this replica, because its live
+        // state (with the concurrent revoke folded) never changes back. Peers that
+        // had not folded the revoke applied the op. That is the reported divergence.
+        //
+        // The rejection must instead be an UNDECIDABLE, which is retryable.
+        let signer = PublicKey::from([0x11; 32]);
+        let (store, gid) = group_with_live_stranger();
+
+        let err = apply_group_op_mutations(
+            &store,
+            &gid,
+            &signer,
+            &target_application_set_op(),
+            &CUT,
+            &UnresolvableAuthorizer,
+        )
+        .expect_err("an unresolvable cut must not harden into a permanent rejection");
+        assert_undecidable(&err);
+    }
+
+    #[test]
+    fn both_replicas_park_instead_of_disagreeing() {
+        // The divergence, replayed as two replicas of the SAME op with OPPOSITE live
+        // rows and neither able to resolve the cut.
+        //
+        // Before: replica A (revoke folded) rejected forever, replica B (revoke not
+        // folded) applied. After: both park. They still agree — which is the only
+        // property that matters — and both proceed once the ancestry arrives.
+        let signer = PublicKey::from([0x11; 32]);
+        let (store_a, gid_a) = group_with_live_stranger(); // would have REJECTED
+        let (store_b, gid_b) = group_with_live_admin(&signer); // would have APPLIED
+
+        for (store, gid, label) in [
+            (&store_a, &gid_a, "revoke-folded replica"),
+            (&store_b, &gid_b, "revoke-unfolded replica"),
+        ] {
+            let err = match apply_group_op_mutations(
+                store,
+                gid,
+                &signer,
+                &target_application_set_op(),
+                &CUT,
+                &UnresolvableAuthorizer,
+            ) {
+                Ok(_) => panic!("{label} must park, not reach a verdict of its own"),
+                Err(e) => e,
+            };
+            assert_undecidable(&err);
+
+            let meta = MetaRepository::new(store).load(gid).unwrap().unwrap();
+            assert_ne!(
+                meta.app_key, [0x5A; 32],
+                "{label}: a parked op must leave state untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn resolvable_cut_still_decides_and_a_genesis_op_still_uses_live() {
+        // The guard must not swallow the cases where abstention is legitimate.
+        //
+        // 1. A resolvable cut decides normally (no spurious parking).
+        let signer = PublicKey::from([0x11; 32]);
+        let (store, gid) = group_with_live_stranger();
+        let (handled, _, _) = apply_group_op_mutations(
+            &store,
+            &gid,
+            &signer,
+            &target_application_set_op(),
+            &CUT,
+            &FixedAuthorizer(true),
+        )
+        .expect("a resolvable cut must decide, not park");
+        assert!(handled);
+
+        // 2. No apply-auth context (empty cut + live-fallback authorizer) — the emit
+        //    path, the local apply, tests. Abstention here means "no cut", so live
+        //    decides and a live admin is authorized. This must NOT become undecidable.
+        let (store, gid) = group_with_live_admin(&signer);
+        let (handled, _, _) = apply_group_op_mutations(
+            &store,
+            &gid,
+            &signer,
+            &target_application_set_op(),
+            &[],
+            &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+        )
+        .expect("a construction with no apply-auth context must still resolve live");
+        assert!(handled);
+    }
+}
+
+// -----------------------------------------------------------------------
+// Forward secrecy on self-leave.
+//
+// A rotation is minted by whoever PUBLISHES the op that triggers it. For an
+// admin-initiated removal that works — the publisher stays in the group. For a
+// self-leave it cannot: the publisher IS the leaver, who would have to mint the very
+// key they are being cut off from (and would keep it), and peers reject a rotation
+// from a non-admin anyway. Before this, `MemberLeft` simply did no rotation at all:
+// the leaver kept the namespace key and every Restricted subgroup key, indefinitely.
+//
+// So the leave records the debt and a remaining admin pays it. These tests pin the
+// recording half (which groups owe a rotation, and which correctly owe nothing) and
+// the discharge half (`GroupKeyRotated` clears the row, only for an admin, and
+// idempotently — which is what makes a two-admin race harmless).
+mod self_leave_rotation {
+    use super::*;
+    use crate::pending_rotation::group_rotates_on_departure;
+    use crate::test_fixtures::bootstrap_namespace_with_admin;
+    use crate::PendingRotationRepository;
+    use calimero_context_config::VisibilityMode;
+    use calimero_governance_types::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    /// A namespace root plus a subgroup, with `admin` in charge of both and `leaver` a
+    /// plain member of both. The subgroup's visibility is left at the default
+    /// (Restricted), so it encrypts under its own key.
+    struct Fixture {
+        store: Store,
+        ns_gid: ContextGroupId,
+        sub_gid: ContextGroupId,
+        admin: PublicKey,
+        leaver_sk: PrivateKey,
+        leaver: PublicKey,
+    }
+
+    fn fixture() -> Fixture {
+        let store = test_store();
+        let ns_id = [0xA1u8; 32];
+        let ns_gid = ContextGroupId::from(ns_id);
+        let (_admin_sk, admin) = bootstrap_namespace_with_admin(&store, ns_id);
+
+        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver = leaver_sk.public_key();
+
+        let sub_gid = ContextGroupId::from([0xA2u8; 32]);
+        MetaRepository::new(&store)
+            .save(&sub_gid, &sample_meta_with_admin(admin))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&sub_gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        nest_for_test(&store, &ns_gid, &sub_gid);
+
+        // The leaver is a direct member of both the root and the subgroup.
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &leaver, GroupMemberRole::Member)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&sub_gid, &leaver, GroupMemberRole::Member)
+            .unwrap();
+
+        Fixture {
+            store,
+            ns_gid,
+            sub_gid,
+            admin,
+            leaver_sk,
+            leaver,
+        }
+    }
+
+    fn apply_member_left(f: &Fixture, group: &ContextGroupId) {
+        let op = SignedGroupOp::sign(
+            &f.leaver_sk,
+            group.to_bytes().into(),
+            vec![],
+            1,
+            GroupOp::MemberLeft {
+                member: f.leaver,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        )
+        .expect("sign MemberLeft");
+        apply_local_signed_group_op(&f.store, &op).expect("apply MemberLeft");
+    }
+
+    #[test]
+    fn which_groups_owe_a_rotation_on_departure() {
+        let f = fixture();
+
+        // A Restricted subgroup holds its OWN key, which the leaver has. Rotate.
+        assert!(
+            group_rotates_on_departure(&f.store, &f.sub_gid).unwrap(),
+            "a Restricted subgroup encrypts under its own key — a departure must rotate it"
+        );
+
+        // The namespace ROOT holds the namespace key, which also decrypts every Open
+        // subgroup beneath it. A member who leaves the namespace keeps that key unless
+        // it is rotated — this is the hole that makes a namespace-leave meaningless
+        // without rotation.
+        assert!(
+            group_rotates_on_departure(&f.store, &f.ns_gid).unwrap(),
+            "the namespace root holds the namespace key — leaving it must rotate that key"
+        );
+
+        // An Open subgroup on a fully-Open chain is encrypted with the NAMESPACE key,
+        // which the leaver still holds by virtue of namespace membership. Minting a
+        // per-subgroup key would revoke nothing — it would just go unused.
+        CapabilitiesRepository::new(&f.store)
+            .set_subgroup_visibility(&f.sub_gid, VisibilityMode::Open)
+            .unwrap();
+        assert!(
+            !group_rotates_on_departure(&f.store, &f.sub_gid).unwrap(),
+            "an Open subgroup is encrypted with the namespace key — a per-subgroup rotation \
+             there would revoke nothing, so none is owed"
+        );
+    }
+
+    #[test]
+    fn leaving_a_restricted_subgroup_records_the_rotation_debt() {
+        let f = fixture();
+        let pending = PendingRotationRepository::new(&f.store);
+
+        assert!(
+            !pending.is_pending(&f.sub_gid, &f.leaver).unwrap(),
+            "precondition: nothing owed before the leave"
+        );
+
+        apply_member_left(&f, &f.sub_gid);
+
+        assert!(
+            pending.is_pending(&f.sub_gid, &f.leaver).unwrap(),
+            "a self-leave from a Restricted subgroup must record the forward-secrecy debt — \
+             without it, nobody ever rotates and the leaver keeps the subgroup key"
+        );
+        // The row is written by the deterministic apply, so every node has it. That is
+        // what lets any remaining admin pick the work up with no coordination.
+        assert_eq!(
+            pending.departed_for_group(&f.sub_gid).unwrap(),
+            vec![f.leaver],
+            "the group's worklist must name exactly the departed member"
+        );
+    }
+
+    #[test]
+    fn leaving_an_open_subgroup_records_nothing() {
+        let f = fixture();
+        CapabilitiesRepository::new(&f.store)
+            .set_subgroup_visibility(&f.sub_gid, VisibilityMode::Open)
+            .unwrap();
+
+        apply_member_left(&f, &f.sub_gid);
+
+        assert!(
+            !PendingRotationRepository::new(&f.store)
+                .is_pending(&f.sub_gid, &f.leaver)
+                .unwrap(),
+            "an Open subgroup is encrypted with the namespace key, so a departure owes no \
+             per-subgroup rotation — recording one would queue work that revokes nothing"
+        );
+    }
+
+    #[test]
+    fn leaving_the_namespace_records_debt_for_the_root_and_every_restricted_descendant() {
+        // The namespace-leave cascade. The leaver held a row in the root AND in a
+        // Restricted subgroup, and holds a key for each. Both must be rotated, or they
+        // go on reading whichever one was missed.
+        let f = fixture();
+        let pending = PendingRotationRepository::new(&f.store);
+
+        apply_member_left(&f, &f.ns_gid);
+
+        assert!(
+            pending.is_pending(&f.ns_gid, &f.leaver).unwrap(),
+            "leaving the namespace must rotate the NAMESPACE key — otherwise the leaver keeps \
+             reading the root and every Open subgroup under it"
+        );
+        assert!(
+            pending.is_pending(&f.sub_gid, &f.leaver).unwrap(),
+            "the cascade must also rotate every Restricted descendant the leaver had a row in \
+             — each has its own key, which the leaver holds"
+        );
+
+        let mut backlog = pending.all_pending().unwrap();
+        backlog.sort_by_key(|(g, _)| g.to_bytes());
+        let mut expected = vec![(f.ns_gid, f.leaver), (f.sub_gid, f.leaver)];
+        expected.sort_by_key(|(g, _)| g.to_bytes());
+        assert_eq!(
+            backlog, expected,
+            "the whole backlog is what a restarting admin drains — it must list every group \
+             that still owes a rotation, and nothing else"
+        );
+    }
+
+    #[test]
+    fn group_key_rotated_discharges_the_debt_and_is_idempotent() {
+        let f = fixture();
+        let pending = PendingRotationRepository::new(&f.store);
+        apply_member_left(&f, &f.sub_gid);
+        assert!(pending.is_pending(&f.sub_gid, &f.leaver).unwrap());
+
+        // The admin's rotation carries the new key; applying it discharges the debt.
+        let admin_sk = NamespaceRepository::new(&f.store)
+            .identity_record(&f.ns_gid)
+            .unwrap()
+            .map(|i| PrivateKey::from(i.private_key))
+            .expect("namespace identity");
+        assert_eq!(admin_sk.public_key(), f.admin);
+
+        let rotate = |nonce: u64| {
+            SignedGroupOp::sign(
+                &admin_sk,
+                f.sub_gid.to_bytes().into(),
+                vec![],
+                nonce,
+                GroupOp::GroupKeyRotated { departed: f.leaver },
+            )
+            .expect("sign GroupKeyRotated")
+        };
+
+        apply_local_signed_group_op(&f.store, &rotate(1)).expect("admin's rotation must apply");
+        assert!(
+            !pending.is_pending(&f.sub_gid, &f.leaver).unwrap(),
+            "GroupKeyRotated must discharge the pending row"
+        );
+
+        // Two admins racing both publish a rotation. The second to land finds nothing
+        // left to clear and must simply no-op — if it errored, a perfectly ordinary
+        // race would wedge the group's governance DAG on every replica.
+        apply_local_signed_group_op(&f.store, &rotate(2))
+            .expect("a second, redundant rotation must be a harmless no-op, not an error");
+        assert!(!pending.is_pending(&f.sub_gid, &f.leaver).unwrap());
+    }
+
+    #[test]
+    fn a_non_admin_cannot_discharge_the_debt() {
+        // The pending row says "this group still owes a rotation". Clearing it is a
+        // claim that the rotation happened. Peers accept a rotation only from an admin,
+        // so if a non-admin could clear the row, the group would believe it had rotated
+        // while every peer threw the key away — the debt would vanish unpaid.
+        let f = fixture();
+        let pending = PendingRotationRepository::new(&f.store);
+        apply_member_left(&f, &f.sub_gid);
+
+        let outsider_sk = PrivateKey::random(&mut OsRng);
+        MembershipRepository::new(&f.store)
+            .add_member(
+                &f.sub_gid,
+                &outsider_sk.public_key(),
+                GroupMemberRole::Member,
+            )
+            .unwrap();
+
+        let op = SignedGroupOp::sign(
+            &outsider_sk,
+            f.sub_gid.to_bytes().into(),
+            vec![],
+            1,
+            GroupOp::GroupKeyRotated { departed: f.leaver },
+        )
+        .expect("sign GroupKeyRotated");
+
+        let _ = apply_local_signed_group_op(&f.store, &op)
+            .expect_err("a non-admin's GroupKeyRotated must be rejected");
+        assert!(
+            pending.is_pending(&f.sub_gid, &f.leaver).unwrap(),
+            "the debt must survive a rejected rotation — otherwise it is silently written off \
+             and no admin ever pays it"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// The crypto half of self-leave forward secrecy.
+//
+// Recording the debt and publishing a `GroupKeyRotated` is bookkeeping. What actually
+// revokes the leaver's read access is that the rotation's envelopes are wrapped for
+// everyone who remains and for NOBODY who left. These tests assert that directly, and
+// assert the convergence property that lets several admins rotate concurrently without
+// coordination.
+mod self_leave_rotation_crypto {
+    use super::*;
+    use crate::test_fixtures::bootstrap_namespace_with_admin;
+    use crate::GroupKeyring;
+    use calimero_governance_types::SignedGroupOp;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+    use rand::Rng;
+
+    #[test]
+    fn the_rotation_wraps_the_new_key_for_everyone_except_the_leaver() {
+        let store = test_store();
+        let ns_id = [0xB1u8; 32];
+        let ns_gid = ContextGroupId::from(ns_id);
+        let (admin_sk, admin) = bootstrap_namespace_with_admin(&store, ns_id);
+
+        let stayer_sk = PrivateKey::random(&mut OsRng);
+        let stayer = stayer_sk.public_key();
+        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver = leaver_sk.public_key();
+
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &stayer, GroupMemberRole::Member)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &leaver, GroupMemberRole::Member)
+            .unwrap();
+
+        let new_key: [u8; 32] = OsRng.gen();
+        let rotation = GroupKeyring::new(&store, ns_gid)
+            .build_rotation(&new_key, &admin_sk, Some(&leaver))
+            .expect("build rotation excluding the leaver");
+
+        let recipients: Vec<PublicKey> = rotation.envelopes.iter().map(|e| e.recipient).collect();
+
+        assert!(
+            !recipients.contains(&leaver),
+            "the leaver must get NO envelope — an envelope for them would hand back the very \
+             key the rotation exists to cut them off from"
+        );
+        assert!(
+            recipients.contains(&stayer),
+            "every remaining member must get an envelope, or the rotation locks them out of \
+             their own group"
+        );
+        assert!(
+            recipients.contains(&admin),
+            "the rotating admin must also hold the new key"
+        );
+
+        // The leaver cannot unwrap what was never wrapped for them: even handed the
+        // whole rotation, no envelope decrypts under their key.
+        for envelope in &rotation.envelopes {
+            assert!(
+                GroupKeyring::unwrap_for_recipient(
+                    &leaver_sk,
+                    &ns_gid.to_bytes(),
+                    Some(&admin),
+                    envelope,
+                )
+                .is_err(),
+                "no envelope in the rotation may be unwrappable by the departed member"
+            );
+        }
+
+        // ...while a member who stayed unwraps their envelope and gets the real key.
+        let stayer_envelope = rotation
+            .envelopes
+            .iter()
+            .find(|e| e.recipient == stayer)
+            .expect("the stayer has an envelope");
+        let unwrapped = GroupKeyring::unwrap_for_recipient(
+            &stayer_sk,
+            &ns_gid.to_bytes(),
+            Some(&admin),
+            stayer_envelope,
+        )
+        .expect("a remaining member must be able to unwrap the new key");
+        assert_eq!(
+            unwrapped, new_key,
+            "the unwrapped key must be the key that was minted"
+        );
+    }
+
+    #[test]
+    fn two_admins_rotating_concurrently_converge_on_one_key_and_neither_is_the_leavers() {
+        // This is why the design needs no election. Two admins both react to the same
+        // departure and mint DIFFERENT keys. Every node must still end up agreeing which
+        // key is current — and, whichever wins, the leaver must hold neither.
+        let store_a = test_store();
+        let store_b = test_store();
+        let gid = test_group_id();
+
+        // Two rotations, minted independently, landing at different DAG sequences.
+        let key_from_admin_1: [u8; 32] = OsRng.gen();
+        let key_from_admin_2: [u8; 32] = OsRng.gen();
+
+        // Replica A sees admin 1's rotation first, then admin 2's. Replica B sees them
+        // in the opposite order — the whole point is that arrival order must not matter.
+        let ring_a = GroupKeyring::new(&store_a, gid);
+        ring_a.store_key_with_epoch(&key_from_admin_1, 10).unwrap();
+        ring_a.store_key_with_epoch(&key_from_admin_2, 11).unwrap();
+
+        let ring_b = GroupKeyring::new(&store_b, gid);
+        ring_b.store_key_with_epoch(&key_from_admin_2, 11).unwrap();
+        ring_b.store_key_with_epoch(&key_from_admin_1, 10).unwrap();
+
+        let current_a = ring_a.load_current_key_record().unwrap().unwrap();
+        let current_b = ring_b.load_current_key_record().unwrap().unwrap();
+
+        assert_eq!(
+            current_a.group_key, current_b.group_key,
+            "both replicas must select the SAME current key regardless of the order the two \
+             concurrent rotations arrived in — otherwise the group splits its keyring"
+        );
+        assert_eq!(
+            current_a.group_key, key_from_admin_2,
+            "the higher epoch wins, deterministically"
+        );
+
+        // And the safety property that makes the race benign: both candidate keys were
+        // minted by rotations that excluded the leaver, so whichever wins, the leaver
+        // has neither. Losing the race costs a wasted key, never forward secrecy.
+        assert_ne!(key_from_admin_1, key_from_admin_2);
+    }
+
+    #[test]
+    fn the_leaver_cannot_publish_their_own_rotation() {
+        // Belt-and-braces on the core asymmetry: even if a departing member tried to
+        // rotate, peers reject a rotation whose signer is not an admin of the group. The
+        // leaver is not an admin (their row is gone), so the op is refused — they cannot
+        // mint themselves a fresh key and stay in.
+        let store = test_store();
+        let ns_id = [0xB2u8; 32];
+        let ns_gid = ContextGroupId::from(ns_id);
+        let (_admin_sk, _admin) = bootstrap_namespace_with_admin(&store, ns_id);
+
+        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver = leaver_sk.public_key();
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &leaver, GroupMemberRole::Member)
+            .unwrap();
+
+        let leave = SignedGroupOp::sign(
+            &leaver_sk,
+            ns_gid.to_bytes().into(),
+            vec![],
+            1,
+            calimero_governance_types::GroupOp::MemberLeft {
+                member: leaver,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        )
+        .expect("sign MemberLeft");
+        apply_local_signed_group_op(&store, &leave).expect("apply MemberLeft");
+
+        let self_rotation = SignedGroupOp::sign(
+            &leaver_sk,
+            ns_gid.to_bytes().into(),
+            vec![],
+            2,
+            calimero_governance_types::GroupOp::GroupKeyRotated { departed: leaver },
+        )
+        .expect("sign GroupKeyRotated");
+
+        let _ = apply_local_signed_group_op(&store, &self_rotation).expect_err(
+            "a departed member must not be able to rotate the key they are being cut off from",
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// A parked op must RETRY TO SUCCESS once the missing history arrives.
+//
+// Refusing to decide is only the right answer if the refusal is recoverable. If an
+// `AuthorityUndecidable` left any residue — a burned nonce, a half-applied mutation,
+// an advanced head — then "park" would really mean "drop forever", which is worse
+// than the live guess it replaces: the op would never apply on this replica even
+// after it caught up.
+//
+// So this drives the real local apply path (nonce window and all): the same signed op
+// is applied twice, first against a projection that cannot resolve its cut, then
+// against one that can. The first must leave NOTHING behind; the second must succeed.
+mod parked_op_retries_to_success {
+    use super::*;
+    use crate::test_fixtures::{FixedAuthorizer, UnresolvableAuthorizer};
+    use calimero_context_config::types::AppKey;
+    use calimero_governance_types::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    #[test]
+    fn an_undecidable_op_applies_cleanly_once_the_cut_becomes_resolvable() {
+        let store = test_store();
+        let gid = test_group_id();
+
+        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin = admin_sk.public_key();
+        let mut meta = test_meta();
+        meta.admin_identity = admin;
+        meta.owner_identity = admin;
+        MetaRepository::new(&store).save(&gid, &meta).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
+
+        // A real cut: the op cites a parent, so abstention means "I haven't folded this
+        // op's ancestry", not "there is no ancestry".
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid.to_bytes().into(),
+            vec![[0xAB; 32]],
+            1,
+            GroupOp::TargetApplicationSet {
+                app_key: AppKey::from([0x5A; 32]),
+                target_application_id: ApplicationId::from([0x5B; 32]),
+            },
+        )
+        .expect("sign TargetApplicationSet");
+
+        // --- Arrival 1: this replica is mid-backfill and cannot resolve the cut. ---
+        let err = apply_local_signed_group_op_at_cut(&store, &op, &UnresolvableAuthorizer)
+            .expect_err("an unresolvable cut must not be decided");
+        assert!(
+            format!("{err:#}").contains("authority undecidable"),
+            "expected a park, got: {err:#}"
+        );
+
+        // The park must be inert. Any residue here turns "retry later" into "never".
+        let meta_after_park = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+        assert_ne!(
+            meta_after_park.app_key, [0x5A; 32],
+            "a parked op must not half-apply"
+        );
+        assert_eq!(
+            get_local_gov_nonce(&store, &gid, &admin).unwrap(),
+            None,
+            "a parked op must NOT burn its nonce — if it did, the retry would be rejected \
+             as stale and the op could never apply on this replica"
+        );
+
+        // --- Arrival 2: backfill completed, the cut resolves, the op is re-delivered. ---
+        apply_local_signed_group_op_at_cut(&store, &op, &FixedAuthorizer(true)).expect(
+            "the very same op must apply once the cut is resolvable — otherwise \
+                     parking is just a slower way of dropping it",
+        );
+
+        let meta_after_retry = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+        assert_eq!(
+            meta_after_retry.app_key, [0x5A; 32],
+            "the retried op must actually take effect"
+        );
+        assert_eq!(
+            meta_after_retry.target_application_id,
+            ApplicationId::from([0x5B; 32]),
+            "the retried op's full mutation must land, not just part of it"
+        );
+    }
+}
