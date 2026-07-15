@@ -66,7 +66,8 @@ impl<'a> GroupApplyCtx<'a> {
                 .with_apply_auth(parents, authorizer),
             membership_policy: MembershipPolicy::new(store, *group_id)
                 .with_apply_auth(parents, authorizer),
-            settings: GroupSettingsService::new(store, *group_id),
+            settings: GroupSettingsService::new(store, *group_id)
+                .with_apply_auth(parents, authorizer),
             context_registration: ContextRegistrationService::new(store, *group_id),
             divergence: None,
             pending_events: Vec::new(),

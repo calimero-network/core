@@ -58,6 +58,7 @@ mod metadata;
 mod namespace;
 pub mod nonce_window;
 mod ops;
+mod pending_rotation;
 mod pending_self_purge;
 mod permission_checker;
 mod signing_keys;
@@ -82,6 +83,7 @@ pub use self::contexts::{
     register_context_in_group, restore_member_context_identities, unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
+pub use self::pending_rotation::PendingRotationRepository;
 
 pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;
@@ -1553,6 +1555,28 @@ pub async fn sign_apply_and_publish_removal(
 ) -> EyreResult<Option<crate::governance_broadcast::DeliveryReport>> {
     GroupGovernancePublisher::new(store, node_client, *group_id)
         .sign_apply_and_publish_removal(ack_router, signer_sk, removed_member)
+        .await
+}
+
+/// Pay off a pending forward-secrecy rotation a self-leave left behind: publish a
+/// `GroupKeyRotated` op carrying a fresh group key, wrapped for every remaining
+/// member and for nobody who left.
+///
+/// Callable only by an admin of the group (peers reject any other rotation), and safe
+/// to call concurrently from several admins — see
+/// [`GroupGovernancePublisher::sign_apply_and_publish_rotation`].
+///
+/// `Ok(None)` is a deliberate skip — see [`sign_apply_and_publish`].
+pub async fn sign_apply_and_publish_rotation(
+    store: &Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &calimero_context_client::local_governance::AckRouter,
+    group_id: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    departed: &PublicKey,
+) -> EyreResult<Option<crate::governance_broadcast::DeliveryReport>> {
+    GroupGovernancePublisher::new(store, node_client, *group_id)
+        .sign_apply_and_publish_rotation(ack_router, signer_sk, departed)
         .await
 }
 
