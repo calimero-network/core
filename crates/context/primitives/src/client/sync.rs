@@ -352,10 +352,18 @@ impl ContextClient {
             &types::ContextConfig::new(config.application_revision, config.members_revision),
         )?;
 
-        let (root_hash, dag_heads) = context.map_or_else(
-            || (Hash::default(), vec![]),
-            |meta| (meta.root_hash.into(), meta.dag_heads.clone()),
-        );
+        // Re-read ContextMeta immediately before the write. The `context`
+        // captured at the top of this function is STALE: we `.await`ed through
+        // application / blob installation above, and a concurrent snapshot
+        // finalize may have set this context's `root_hash` + `dag_heads` in the
+        // meantime. Writing back the pre-`await` capture (`root=0`/`heads=[]` on
+        // a fresh bootstrap) would clobber that finalize while its applied
+        // `ContextState` entries persist — the `has_state_keys && root==0`
+        // contradiction that permanently trips the snapshot safety gate (#3252).
+        // Preserve whatever root/heads are on disk NOW; this write only
+        // (re)asserts the resolved `application_id` + `service_name`.
+        let current_meta = handle.get(&key::ContextMeta::new(context_id))?;
+        let (root_hash, dag_heads) = bootstrap_meta_root_heads(current_meta.as_ref());
 
         handle.put(
             &key::ContextMeta::new(context_id),
@@ -391,5 +399,58 @@ impl ContextClient {
             dag_heads,
             config.service_name,
         ))
+    }
+}
+
+/// The `(root_hash, dag_heads)` a bootstrap `ContextMeta` write must persist,
+/// given the context's CURRENT on-disk metadata (re-read immediately before the
+/// write — NOT the stale pre-`await` capture from the top of
+/// [`ContextClient::sync_context_config`]).
+///
+/// Preserves any root/heads a concurrent snapshot finalize wrote; defaults to
+/// the uninitialized `(0, [])` only when no record exists yet (a genuine fresh
+/// bootstrap). Extracted as a pure function so the "never clobber a finalized
+/// context back to `root=0`" invariant (#3252) is unit-testable without the full
+/// async bootstrap path.
+fn bootstrap_meta_root_heads(current: Option<&types::ContextMeta>) -> (Hash, Vec<[u8; 32]>) {
+    current.map_or_else(
+        || (Hash::default(), vec![]),
+        |meta| (meta.root_hash.into(), meta.dag_heads.clone()),
+    )
+}
+
+#[cfg(test)]
+mod bootstrap_meta_tests {
+    use calimero_primitives::application::ApplicationId;
+    use calimero_store::{key, types};
+
+    use super::bootstrap_meta_root_heads;
+
+    // Genuine fresh bootstrap: no ContextMeta on disk yet ⇒ uninitialized.
+    #[test]
+    fn no_meta_yields_uninitialized() {
+        let (root, heads) = bootstrap_meta_root_heads(None);
+        assert_eq!(*root, [0u8; 32]);
+        assert!(heads.is_empty());
+    }
+
+    // #3252 regression: a concurrent snapshot finalize has already published a
+    // non-zero root + heads by the time the bootstrap write runs. The bootstrap
+    // write must PRESERVE them, never clobber back to root=0/heads=[].
+    #[test]
+    fn existing_finalized_meta_is_preserved() {
+        let finalized = types::ContextMeta::new(
+            key::ApplicationMeta::new(ApplicationId::from([0xAA; 32])),
+            [0x11; 32],
+            vec![[0x22; 32]],
+            None,
+        );
+        let (root, heads) = bootstrap_meta_root_heads(Some(&finalized));
+        assert_eq!(*root, [0x11; 32], "snapshot-finalized root preserved");
+        assert_eq!(
+            heads,
+            vec![[0x22; 32]],
+            "snapshot-finalized heads preserved"
+        );
     }
 }
