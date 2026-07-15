@@ -39,14 +39,16 @@ pub(crate) fn apply(
     // because every peer applying this op must be able to verify the
     // creator's authority, and only the root group's capability rows are
     // readable by all namespace members (see the capability's doc).
+    //
+    // Both legs resolve at the op's causal cut. Reading the live membership rows
+    // here instead would let two replicas that folded different sets of concurrent
+    // capability ops reach opposite verdicts on this same op — the rejecting one
+    // drops it and never advances past it.
     let ns_gid = ContextGroupId::from(namespace_id.to_bytes());
-    let authorized = MembershipRepository::new(store).is_admin(&ns_gid, &op.signer)?
+    let ns_permissions = ctx.permissions_for(ns_gid);
+    let authorized = ns_permissions.is_admin(&op.signer)?
         || (parent_id == namespace_id.to_bytes()
-            && MembershipRepository::new(store).is_admin_or_has_capability(
-                &ns_gid,
-                &op.signer,
-                calimero_context_config::MemberCapabilities::CAN_CREATE_SUBGROUP.bits(),
-            )?);
+            && ns_permissions.can_create_subgroup(&op.signer)?);
     if !authorized {
         bail!(ApplyError::GroupCreatedRejected(
             GroupCreatedRejection::Unauthorized {

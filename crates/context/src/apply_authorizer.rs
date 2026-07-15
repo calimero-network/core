@@ -148,4 +148,18 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
             calimero_authz::MemberPathAtCut::Inherited { .. } => AtCutMembershipPath::Inherited,
         })
     }
+
+    fn can_resolve_cut(&self, group: &ContextGroupId, parents: &[[u8; 32]]) -> bool {
+        // An empty cut is a genesis op: there is no causal context, so the gates defer
+        // to live and that IS the right answer. Say `true` — nothing to be undecided
+        // about.
+        if parents.is_empty() {
+            return true;
+        }
+        // A real cut. We can only decide it if the fold exists AND has the cited
+        // ancestry; otherwise the gates must refuse rather than answer from live,
+        // which resolves a different cut entirely.
+        self.folded(group)
+            .is_some_and(|folded| folded.0.can_resolve_cut(self.store, *group, parents))
+    }
 }
