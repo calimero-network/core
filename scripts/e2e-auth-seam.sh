@@ -26,7 +26,9 @@ set -eu
 
 NODE_URL="${1:-http://localhost:4001}"
 USERNAME="${MERO_E2E_USER:-dev}"
-PASSWORD="${MERO_E2E_PASS:-dev}"
+# Must satisfy the provider's configured minimum length (default 8) — the
+# bootstrap path enforces it for every NEW credential.
+PASSWORD="${MERO_E2E_PASS:-dev-password}"
 
 # The exact permission strings mero-react demands for AppMode.MultiContext
 # (getPermissionsForMode) and auth-frontend forwards untouched.

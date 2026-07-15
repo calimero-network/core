@@ -93,6 +93,28 @@ pub trait AtCutAuthorizer: Send + Sync {
         member: &PublicKey,
         parents: &[[u8; 32]],
     ) -> Option<AtCutMembershipPath>;
+
+    /// Could this authorizer decide ANY authority question for `group` at `parents`?
+    ///
+    /// This separates the two very different reasons a method above returns `None`:
+    ///
+    /// - **No cut to resolve against** — an empty `parents` (a genesis op), or an
+    ///   authorizer with no projection at all (the live-fallback one, used by the
+    ///   emit path, the local apply, the read side, and tests). Deferring to the live
+    ///   resolver is correct here: there is no causal context that live could
+    ///   contradict. → `true`.
+    ///
+    /// - **The cut is real but unresolvable here** — the projection has not folded the
+    ///   ancestry the op cites. Deferring to live is NOT correct: live is a different
+    ///   cut (this replica's current one), so the verdict would depend on how much
+    ///   this replica happens to have folded. Two replicas would decide the same op
+    ///   differently. → `false`, and the gate must refuse to guess.
+    ///
+    /// Default `true` — an implementation with no projection abstains for the first
+    /// reason, never the second.
+    fn can_resolve_cut(&self, _group: &ContextGroupId, _parents: &[[u8; 32]]) -> bool {
+        true
+    }
 }
 
 /// How an identity reaches membership of a group at a cut — the at-cut analogue of

@@ -222,6 +222,22 @@ const DEFAULT_MAX_STORAGE_INDEX_SCAN_LIMIT: u64 = 100_000;
 /// itself (~64 MiB). Matches [`DEFAULT_MAX_ARTIFACT_SIZE_MIB`]: both are
 /// copied onto the `Outcome` and share the same reasoning.
 const DEFAULT_MAX_RETURN_VALUE_SIZE_MIB: u64 = 16;
+/// Default gas budget for a single WASM execution (one billion points).
+///
+/// Gas bounds *pure computation*. Every other limit here guards a host call, so
+/// a guest that never calls a host function — the canonical `loop {}` — is
+/// otherwise unbounded: it never returns, never traps, and pins its OS thread
+/// forever. Metering charges [one point per executed WASM operator](crate::metering::gas_cost),
+/// so this budget is, to first order, "at most a billion operators per call".
+///
+/// That is deliberately generous for legitimate contract methods (which are
+/// event-driven and execute far fewer operators) while bounding a runaway loop
+/// to on the order of a second of CPU rather than forever. Compute-heavy
+/// deployments can raise it via `runtime.limits.max_gas`; it can never be 0
+/// (that would trap every execution). Because the charge must be identical on
+/// every node for outcomes to agree, treat both this default and the cost
+/// model as consensus-affecting.
+const DEFAULT_MAX_GAS: u64 = 1_000_000_000;
 /// Fixed capacity, in chunks, of the channel feeding each blob writer task.
 ///
 /// A blob is streamed chunk-by-chunk to the writer task over this channel; a
@@ -331,6 +347,17 @@ pub struct VMLimits {
     /// deserialization error instead, matching the behavior of
     /// [`max_module_size`](Self::max_module_size).
     pub max_precompiled_module_size: u64,
+    /// The maximum amount of gas a single execution may consume before it is
+    /// trapped.
+    ///
+    /// Gas is the only limit that bounds *pure computation*: charged at
+    /// [one point per executed WASM operator](crate::metering::gas_cost), it
+    /// stops an untrusted guest from pinning a node thread in a tight loop that
+    /// calls no host function and so escapes every other limit here. Exhausting
+    /// it traps the execution with
+    /// [`FunctionCallError::GasExhausted`](crate::errors::FunctionCallError::GasExhausted).
+    /// Must be non-zero; the built-in default is one billion points.
+    pub max_gas: u64,
 }
 
 impl VMLimits {
@@ -401,6 +428,7 @@ impl Default for VMLimits {
             max_artifact_size: DEFAULT_MAX_ARTIFACT_SIZE_MIB * u64::from(ONE_MIB),
             max_precompiled_module_size: DEFAULT_MAX_PRECOMPILED_MODULE_SIZE_MIB
                 * u64::from(ONE_MIB),
+            max_gas: DEFAULT_MAX_GAS,
         }
     }
 }
@@ -464,6 +492,10 @@ pub struct VMLogic<'a> {
     storage_write_bytes: u64,
     /// Cumulative bytes streamed into blobs so far across all write handles.
     blob_bytes_written: u64,
+    /// Gas the execution consumed, recorded by the runtime after the guest
+    /// call returns and carried out on the [`Outcome`]. `None` until set (or if
+    /// the module was unmetered).
+    gas_used: Option<u64>,
 }
 
 /// Charges one storage write of `add` bytes against the shared per-execution
@@ -555,7 +587,14 @@ impl<'a> VMLogic<'a> {
             storage_writes: 0,
             storage_write_bytes: 0,
             blob_bytes_written: 0,
+            gas_used: None,
         }
+    }
+
+    /// Record the gas this execution consumed, to be carried out on the
+    /// [`Outcome`]. Called once by the runtime after the guest call returns.
+    pub(crate) fn set_gas_used(&mut self, gas_used: Option<u64>) {
+        self.gas_used = gas_used;
     }
 
     /// Charges one storage write of `bytes` (`key.len() + value.len()`) against
@@ -686,7 +725,13 @@ pub struct Outcome {
     /// Transient migration witness: a borsh blob `#[app::migrate]` emitted for
     /// `#[app::migration_check]`. Carried like logs/events; never persisted.
     pub migration_witness: Option<Vec<u8>>,
-    //TODO: execution runtime (???).
+    /// Gas (metering points) this execution consumed, if the module was
+    /// metered. `None` only when execution never reached a metered instance
+    /// (e.g. an invalid method name or an instantiation failure). On gas
+    /// exhaustion this equals the budget. Node-local telemetry — not part of
+    /// the replicated artifact — surfaced so operators can size
+    /// [`VMLimits::max_gas`] from the distribution of real workloads.
+    pub gas_used: Option<u64>,
     //TODO: current storage usage of the app (???).
 }
 
@@ -781,6 +826,7 @@ impl VMLogic<'_> {
             root_hash: self.root_hash,
             artifact: self.artifact,
             migration_witness: self.migration_witness,
+            gas_used: self.gas_used,
         }
     }
 }

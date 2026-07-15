@@ -40,7 +40,7 @@ use crate::group::{
     LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, MigrationStatus, NamespaceSummary, RemoveGroupMembersRequest,
-    ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest,
+    ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest, RotateGroupKeyRequest,
     SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
     SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
     SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
@@ -2010,6 +2010,12 @@ impl ContextClient {
         admit_tee_node,
         AdmitTeeNode,
         AdmitTeeNodeRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        rotate_group_key,
+        RotateGroupKey,
+        RotateGroupKeyRequest,
         eyre::Result<()>
     );
     forward_to_actor!(
