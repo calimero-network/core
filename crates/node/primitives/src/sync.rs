@@ -85,11 +85,12 @@ pub use wire::{InitPayload, InitProof, MessagePayload, StreamMessage, MAX_TREE_R
 
 // Snapshot types
 pub use snapshot::{
-    check_snapshot_safety, BroadcastMessage, SealedDeltaPayload, SnapshotComplete, SnapshotCursor,
-    SnapshotEntity, SnapshotEntityPage, SnapshotError, SnapshotRequest, SnapshotVerifyResult,
-    DEFAULT_SNAPSHOT_PAGE_SIZE, MAX_COMPRESSED_PAYLOAD_SIZE, MAX_DAG_HEADS, MAX_ENTITIES_PER_PAGE,
-    MAX_ENTITY_DATA_SIZE, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES, MAX_SNAPSHOT_PAGES,
-    MAX_SNAPSHOT_PAGE_SIZE, MAX_STATE_DELTA_PLAINTEXT_BYTES,
+    check_snapshot_safety, snapshot_safety_decision, BroadcastMessage, SealedDeltaPayload,
+    SnapshotComplete, SnapshotCursor, SnapshotEntity, SnapshotEntityPage, SnapshotError,
+    SnapshotRequest, SnapshotSafety, SnapshotVerifyResult, DEFAULT_SNAPSHOT_PAGE_SIZE,
+    MAX_COMPRESSED_PAYLOAD_SIZE, MAX_DAG_HEADS, MAX_ENTITIES_PER_PAGE, MAX_ENTITY_DATA_SIZE,
+    MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES, MAX_SNAPSHOT_PAGES, MAX_SNAPSHOT_PAGE_SIZE,
+    MAX_STATE_DELTA_PLAINTEXT_BYTES,
 };
 
 // Subtree prefetch types

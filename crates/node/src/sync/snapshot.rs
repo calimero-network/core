@@ -340,22 +340,44 @@ impl SyncManager {
         // bypasses this check without a separate marker term — keeping the I5
         // gate a pure function of `force` + crash-recovery.
         if !force && !is_crash_recovery {
-            // Check both state keys and context metadata to determine initialization.
-            // A context is considered initialized if:
-            // 1. It has state keys, OR
-            // 2. It has a non-zero root_hash in metadata (can happen after deletes)
+            // Resolve the safety gate from both signals: whether the context has
+            // applied `ContextState` entries, and whether its `ContextMeta`
+            // carries a non-zero root_hash (can be non-zero with no state keys
+            // after deletes). A non-zero root ⇒ genuinely initialized ⇒ reject
+            // (Invariant I5). The subtle case is state-present-but-root==0: that
+            // is the #3252 contradiction (a snapshot finalize reverted to
+            // uninitialized while its state keys persisted), which must be
+            // ALLOWED to re-bootstrap rather than deadlock the safety gate.
             let handle = self.context_client.datastore_handle();
             let has_state_keys = has_context_state_keys(&handle, context_id)?;
 
-            let has_initialized_metadata = self
+            let has_nonzero_root = self
                 .context_client
                 .get_context(&context_id)?
                 .map(|ctx| *ctx.root_hash != [0u8; 32])
                 .unwrap_or(false);
 
-            let is_initialized = has_state_keys || has_initialized_metadata;
-            calimero_node_primitives::sync::check_snapshot_safety(is_initialized)
-                .map_err(|e| eyre::eyre!("Snapshot safety check failed: {:?}", e))?;
+            match calimero_node_primitives::sync::snapshot_safety_decision(
+                has_state_keys,
+                has_nonzero_root,
+            ) {
+                calimero_node_primitives::sync::SnapshotSafety::Fresh => {}
+                calimero_node_primitives::sync::SnapshotSafety::RecoverContradiction => {
+                    warn!(
+                        %context_id,
+                        "Context in contradictory state (root_hash=0 but ContextState entries \
+                         present): a prior snapshot finalize was reverted while its applied \
+                         state keys persisted (#3252). Allowing a re-bootstrap snapshot to \
+                         recover instead of deadlocking on the I5 safety gate."
+                    );
+                }
+                calimero_node_primitives::sync::SnapshotSafety::Initialized => {
+                    return Err(eyre::eyre!(
+                        "Snapshot safety check failed: {:?}",
+                        SnapshotError::SnapshotOnInitializedNode
+                    ));
+                }
+            }
         }
 
         let mut stream = self.sync_network.open_stream(peer_id).await?;
@@ -409,10 +431,17 @@ impl SyncManager {
             }
         };
 
-        self.context_client
-            .force_root_hash(&context_id, root_to_store.into())?;
-        self.context_client
-            .update_dag_heads(&context_id, boundary.dag_heads.clone())?;
+        // Publish root_hash + dag_heads in one atomic ContextMeta write. Two
+        // separate read-modify-writes (force_root_hash then update_dag_heads)
+        // leave a window where a concurrent whole-record ContextMeta write can
+        // interleave and clobber the finalize back to root=0/heads=[] while the
+        // applied ContextState entries persist — the permanent
+        // SnapshotOnInitializedNode deadlock (#3252).
+        self.context_client.set_root_and_dag_heads(
+            &context_id,
+            root_to_store.into(),
+            boundary.dag_heads.clone(),
+        )?;
         self.clear_sync_in_progress_marker(context_id)?;
         self.finalize_snapshot_activation(context_id, observed_schema)
             .await;

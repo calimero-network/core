@@ -636,6 +636,50 @@ pub fn check_snapshot_safety(has_local_state: bool) -> Result<(), SnapshotError>
     }
 }
 
+/// Outcome of the snapshot safety gate, resolved from the local context's
+/// on-disk state: whether it has any `ContextState` entries (`has_state_keys`)
+/// and whether its `ContextMeta.root_hash` is non-zero (`has_nonzero_root`).
+///
+/// This refines the boolean [`check_snapshot_safety`] to distinguish a
+/// genuinely-initialized node (reject the snapshot — Invariant I5) from a
+/// context stuck in the contradictory `state-present but root==0` state, which
+/// must be *allowed* to re-bootstrap rather than deadlock (#3252).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotSafety {
+    /// No state entries and no root — a fresh node. Snapshot is the normal
+    /// bootstrap path. Proceed.
+    Fresh,
+    /// `ContextState` entries exist but `root_hash == 0`. A prior snapshot
+    /// finalize was reverted to uninitialized while its applied state keys
+    /// persisted (#3252) — the contradiction that otherwise permanently trips
+    /// the safety gate (`root=0` routes only to snapshot, but the state keys
+    /// make it look initialized, so it's refused forever). A re-bootstrap
+    /// snapshot IS the recovery: it re-applies the boundary and
+    /// `cleanup_stale_keys` reconciles the orphaned entries. Proceed.
+    RecoverContradiction,
+    /// A non-zero root (with or without state keys), or state keys the node
+    /// legitimately holds under a live root. A genuinely-initialized context —
+    /// reject the snapshot (Invariant I5) so it syncs via the DAG/delta path.
+    Initialized,
+}
+
+/// Resolve the snapshot safety gate from the local context's state.
+///
+/// See [`SnapshotSafety`] for the three outcomes. The key case is
+/// `(has_state_keys = true, has_nonzero_root = false)`, which the plain
+/// [`check_snapshot_safety`] boolean would (correctly, for I5) treat as
+/// initialized-and-reject — but which is actually the #3252 contradiction that
+/// must self-heal via a re-bootstrap snapshot.
+#[must_use]
+pub fn snapshot_safety_decision(has_state_keys: bool, has_nonzero_root: bool) -> SnapshotSafety {
+    match (has_state_keys, has_nonzero_root) {
+        (false, false) => SnapshotSafety::Fresh,
+        (true, false) => SnapshotSafety::RecoverContradiction,
+        // Non-zero root ⇒ genuinely initialized, regardless of state keys.
+        (_, true) => SnapshotSafety::Initialized,
+    }
+}
+
 // =============================================================================
 // Wire Protocol Messages
 // =============================================================================
@@ -1179,6 +1223,38 @@ mod tests {
             result.unwrap_err(),
             SnapshotError::SnapshotOnInitializedNode
         ));
+    }
+
+    #[test]
+    fn snapshot_safety_decision_fresh_node() {
+        // No state, no root — normal bootstrap.
+        assert_eq!(
+            snapshot_safety_decision(false, false),
+            SnapshotSafety::Fresh
+        );
+    }
+
+    #[test]
+    fn snapshot_safety_decision_recovers_contradiction() {
+        // #3252: state entries present but root_hash == 0 — a reverted finalize.
+        // Must be allowed to re-bootstrap, NOT rejected as initialized.
+        assert_eq!(
+            snapshot_safety_decision(true, false),
+            SnapshotSafety::RecoverContradiction
+        );
+    }
+
+    #[test]
+    fn snapshot_safety_decision_rejects_initialized() {
+        // Non-zero root ⇒ genuinely initialized, with or without state keys.
+        assert_eq!(
+            snapshot_safety_decision(true, true),
+            SnapshotSafety::Initialized
+        );
+        assert_eq!(
+            snapshot_safety_decision(false, true),
+            SnapshotSafety::Initialized
+        );
     }
 
     // =========================================================================
