@@ -204,6 +204,7 @@ mod tests {
             issuer: "test_issuer".to_string(),
             access_token_expiry: 3600,
             refresh_token_expiry: 86400,
+            node_host: None,
         };
 
         let token_manager = TokenManager::new(

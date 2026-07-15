@@ -722,6 +722,7 @@ mod tests {
                 issuer: "calimero-test".to_string(),
                 access_token_expiry: 3600,
                 refresh_token_expiry: 30 * 24 * 3600,
+                node_host: None,
             },
             Arc::clone(&storage),
             secret_manager,
