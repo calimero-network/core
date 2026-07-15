@@ -79,13 +79,13 @@ steps:
     type: login
     node: af-no-spam-node-1
     username: dev
-    password: dev
+    password: dev-password
 
   - name: Login on af-no-spam-node-2
     type: login
     node: af-no-spam-node-2
     username: dev
-    password: dev
+    password: dev-password
 
   - name: Install application on node-1
     type: install_application
