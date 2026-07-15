@@ -185,6 +185,46 @@ rg -n "fn " crates/runtime/src/logic/imports.rs
 rg -n "pub fn " crates/runtime/src/logic/host_functions/
 ```
 
+## Testing & Verifying a Fix
+
+Two layers. Use both - a green `cargo test` does not prove a networked flow works, and a green E2E does not localize a logic bug.
+
+### 1. Unit & integration tests (`cargo test`)
+
+Fast, in-process, no network. Run per crate: `cargo test -p calimero-<crate>`.
+
+- Unit tests live beside the code (`#[cfg(test)]` / `src/**/tests.rs`).
+- `crates/node/tests/` holds heavier integration binaries, including deterministic multi-node simulations (`sync_sim`, `sync_scenarios`, `network_simulation`, `dag_*`) that exercise sync/DAG/readiness convergence in one process without Docker - the fastest way to reproduce a sync or ordering bug.
+
+### 2. merobox E2E (real nodes)
+
+merobox boots **real `merod` nodes as Docker containers** and drives them through declarative YAML scenarios. It exercises the actual built binaries over the network - the layer that validates real product flows: context create, member invite, group-key delivery, state/blob sync, partitions, leave/rejoin.
+
+- Scenarios: `apps/scaffolding-e2e/workflows/*.yml` (~49 - group membership, key delivery, kick/rejoin, subgroups, leave, late-joiner, sync-resilience/partition, mesh-soak, etc.), plus `apps/blobs/workflows/`, `workflows/sync-tests/`, `workflows/app-migration/`.
+- Run one locally: `merobox bootstrap run <scenario.yml>` (then `merobox stop --all`). See [apps/AGENTS.md](apps/AGENTS.md) for the YAML format.
+- Nodes are built **from the PR's own code** (`.github/actions/build-local-merod` → `merod:local`), so a green E2E means your actual code passed.
+
+### What runs in CI (path-filtered)
+
+| Workflow | Triggers on | Runs |
+| --- | --- | --- |
+| `e2e-rust-apps.yml` | any `crates/**` + app dirs | main merobox suite (scaffolding-e2e, xcall, blobs, kv-store) |
+| `sync-regression.yml` | `crates/node/src/sync/**`, storage sync paths | `workflows/sync-tests/` |
+| `app-migration-e2e.yml` | migration paths | v1→v2 app-migration scenarios |
+| `sdk-e2e.yml` | SDK paths | SDK end-to-end |
+| `fuzzy-load-test.yml` | manual / load paths | fuzzy load |
+
+### Critical blind spot - what E2E CANNOT catch
+
+Every node in a merobox run is the **same build against fresh state**. So it validates a **uniform, new-from-scratch network**, but by construction it does NOT test **mixed old/new node interop** or **reading data persisted by an older version**. A green E2E says nothing about backward compatibility or rolling upgrades. Any format / derivation / schema / borsh-layout change that must survive existing data or staggered upgrades needs a dedicated migration path and its own test - merobox will not flag the break.
+
+### How to confirm a fix actually works
+
+1. **Reproduce first, end to end.** Write the failing case at the layer a user hits it - a `sync_sim`/integration test for logic/ordering bugs, a merobox scenario for networked flows - and watch it fail.
+2. Apply the fix.
+3. Confirm the same test now passes, and keep it as the regression test.
+4. For anything touching on-disk formats or wire encoding, also reason about old-data/mixed-version cases explicitly - E2E won't.
+
 ## Definition of Done
 
 Before creating a PR:
