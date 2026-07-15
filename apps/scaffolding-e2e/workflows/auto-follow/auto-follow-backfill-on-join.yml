@@ -54,13 +54,13 @@ steps:
     type: login
     node: af-backfill-node-1
     username: dev
-    password: dev
+    password: dev-password
 
   - name: Login on af-backfill-node-2
     type: login
     node: af-backfill-node-2
     username: dev
-    password: dev
+    password: dev-password
 
   # ── Phase 1: Bootstrap with pre-existing contexts BEFORE node-2 joins ─
   - name: Install application on node-1
