@@ -218,10 +218,26 @@ pub struct SecretRotationConfig {
 }
 
 impl Default for SecretRotationConfig {
+    /// Defaults chosen so that **no token can outlive the secret that signed
+    /// it**. Storage keeps exactly one previous generation (a single backup
+    /// slot), and `get_verify_secrets` offers primary + unexpired backup, so a
+    /// token signed by secret S must still verify while S is at most one
+    /// generation old. With `L` = the longest token lifetime (the refresh token,
+    /// 30 days) that gives two constraints:
+    ///
+    /// * `rotation_interval >= L` — otherwise S is evicted from the backup slot
+    ///   while tokens it signed are still alive.
+    /// * `grace_period >= rotation_interval + L` — S must stay *verifiable* for
+    ///   as long as the newest token it signed can live.
+    ///
+    /// 30-day rotation with a 60-day grace satisfies both. The previous
+    /// 24h/48h pair did not: rotation was about to be enabled for the first
+    /// time (finding 13), and every refresh token would have stopped verifying
+    /// within 48h of the first rotation — forcing a re-login every day or two.
     fn default() -> Self {
         Self {
-            rotation_interval: 24 * 3600, // 24 hours
-            grace_period: 48 * 3600,      // 48 hours
+            rotation_interval: 30 * 24 * 3600, // 30 days — >= refresh token lifetime
+            grace_period: 60 * 24 * 3600,      // 60 days — >= interval + refresh lifetime
         }
     }
 }

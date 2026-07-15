@@ -20,8 +20,8 @@ cargo build -p merod --release
 # Run
 cargo run -p merod -- --node node1 run
 
-# Test (no specific tests, integration via node crate)
-cargo test -p calimero-node
+# Test
+cargo test -p merod
 ```
 
 ## CLI Structure
@@ -29,9 +29,9 @@ cargo test -p calimero-node
 ```
 merod --node <name> <subcommand>
 ├── init          # Initialize node configuration
-├── run           # Start the node daemon
+├── run           # Start the node daemon (alias: up)
 ├── config        # Modify node configuration
-└── version       # Show version info
+└── kms           # Key management service
 ```
 
 ## File Organization
@@ -44,10 +44,12 @@ src/
 │   ├── init.rs       # Node initialization
 │   ├── run.rs        # Start daemon
 │   ├── config.rs     # Config modifications
+│   ├── kms.rs        # KMS subcommand
+│   ├── validation.rs # Validation helpers
 │   └── auth_mode.rs  # Authentication mode handling
 ├── defaults.rs       # Default values
-├── docker.rs         # Docker integration
-├── kms.rs            # Key management service
+├── kms/              # Key management service
+├── kms_policy.rs     # KMS policy
 └── version.rs        # Version checking
 ```
 
