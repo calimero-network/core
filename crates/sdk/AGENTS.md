@@ -140,17 +140,17 @@ pub enum Event<'a> {
 - Use `#[borsh(crate = "calimero_sdk::borsh")]` for borsh derives
 - Define `Event<'a>` enum with `#[app::event]` for event handling
 
-### `#[app::migrate]` — state-migration export
+### `#[app::migrate]` - state-migration export
 
 > **App developers:** the user-facing guide is the Migrations page in the
-> architecture docs (`architecture/migrations.html`) — when to migrate,
+> architecture docs (`architecture/migrations.html`) - when to migrate,
 > `#[derive(Migrate)]`, the convergence rule, testing. This section is the
 > contributor-facing internals.
 
 Marks a stand-alone function as the WASM export the node runtime
 calls during a migration upgrade. The node resolves which migrate to
 run from the target binary's embedded ABI descriptor (there is no
-`migrate_method` argument — it was removed in migrations-v2). The
+`migrate_method` argument - it was removed in migrations-v2). The
 function reads the old state via `calimero_sdk::state::read_raw()`,
 constructs the new state struct, and returns it; the SDK macro
 wraps it in the same `Root::new(...)` context as `#[app::init]` so
@@ -211,8 +211,8 @@ pub fn migrate_v1_to_v2() -> AppV2 {
   macro registers.
 - Read v1 state via `read_raw()` and deserialise into a private
   borsh-only shadow struct of the v1 layout. Don't import the v1
-  crate's `#[app::state]` — it would pull in v1's full SDK surface.
-- Carrying a collection across versions: `items: old.items` —
+  crate's `#[app::state]` - it would pull in v1's full SDK surface.
+- Carrying a collection across versions: `items: old.items` -
   the existing storage handle survives, no re-population needed.
 - Creating a NEW collection in migrate (e.g. archiving a removed
   field into `UnorderedMap`): construct with
@@ -222,12 +222,12 @@ pub fn migrate_v1_to_v2() -> AppV2 {
   `#[app::init]`, so inserts persist to the same storage path a
   later `&self` read computes for the same field.
 - Panic on unrecoverable inputs (corrupted state, deserialise
-  failure) — matches the existing `migration-suite-v{2..5}-add-field`
+  failure) - matches the existing `migration-suite-v{2..5}-add-field`
   pattern. A panic traps the WASM and aborts the upgrade, leaving
   v1 state intact for retry.
 - **Must be deterministic.** In a multi-node context every node runs
   this function independently against its own (already-synced,
-  byte-identical) v1 state — the migrated state is NOT propagated over
+  byte-identical) v1 state - the migrated state is NOT propagated over
   sync (it's a full root replacement, not a CRDT-mergeable delta). Two
   nodes that run the same migrate fn on the same v1 bytes must produce
   byte-identical v2 state, or their roots diverge and subsequent CRDT
@@ -244,19 +244,19 @@ pub fn migrate_v1_to_v2() -> AppV2 {
     deterministic zero `timestamp`/`node_id` instead of this node's
     `hlc_timestamp()`/`executor_id()`. `Element` update timestamps are
     likewise zeroed. This applies to the *whole* body, including any
-    explicit `LwwRegister::set()` you call on a carried-over register —
+    explicit `LwwRegister::set()` you call on a carried-over register -
     and that is intended, not a side effect: each node runs migrate at a
     different wall-clock time (LazyOnAccess), so a real timestamp here
     would diverge across nodes. The migration is a full root *replacement*
     (`write_pre_merged_root_state` + `clear_pending_delta`), not a CRDT
     merge, so a migrate-written value is never LWW-compared at migration
-    time — it simply becomes the new baseline, which a genuine
+    time - it simply becomes the new baseline, which a genuine
     post-migration write (real timestamp > 0) then supersedes as expected.
     If you need a migrate-written value to *win* against later writes,
     encode that in the value/logic, not via timestamps.
   - `__assign_deterministic_ids()` re-keys every top-level collection to
     its field-name id AND re-keys `Vector`/`AuthoredVector` *elements* by
-    append index — live `push` uses `Id::random()` (correct for
+    append index - live `push` uses `Id::random()` (correct for
     concurrent appends, but it would diverge across independent
     migrations).
 
@@ -532,5 +532,5 @@ golden `.stderr` files are toolchain-sensitive; after an intentional
 TRYBUILD=overwrite cargo test -p calimero-sdk --test macros
 ```
 
-then verify the diff only shows rustc wording/cascade noise — never a dropped
+then verify the diff only shows rustc wording/cascade noise - never a dropped
 `(calimero)>` line.

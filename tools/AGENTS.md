@@ -113,7 +113,8 @@ cargo run -p mero-abi -- [command]
 | Command   | Purpose                    |
 | --------- | -------------------------- |
 | `extract` | Extract ABI from WASM file |
-| `state`   | Inspect state schema       |
+| `types`   | Extract only the types schema from a WASM file |
+| `state`   | Extract the state schema (state root + its type dependencies) |
 | `inspect` | Inspect WASM file sections |
 | `embed`   | Embed a state-schema.json into a WASM as the `calimero_abi_v1` section (in place) |
 | `diff`    | Diff two state-schema.json versions; flag breaking + unsafe identity downgrades |

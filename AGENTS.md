@@ -1,10 +1,36 @@
 # Calimero Core - AI Agent Guidance
 
-Decentralized infrastructure platform with WebAssembly runtime, P2P networking, and blockchain integrations.
+Peer-to-peer platform for building collaborative apps with automatic conflict-free (CRDT) sync, encrypted P2P networking, and group-based access control. Apps are written in Rust or JavaScript and compiled to WASM; every node runs the same logic over state that converges automatically. (See [`architecture/`](architecture/index.html) for the authoritative definition.)
 
 - **Type**: Rust monorepo (Cargo workspace)
 - **Stack**: Rust 1.88.0, wasmer (WASM), libp2p (P2P), RocksDB
 - **Sub-package AGENTS.md**: See [crates/](crates/AGENTS.md), [apps/](apps/AGENTS.md), [tools/](tools/AGENTS.md)
+
+## Two layers of docs: WHAT vs WHY
+
+Read them in this order when you land in an unfamiliar area:
+
+1. **`architecture/` - the WHY and how it all connects.** A static HTML reference
+   site explaining the system as a whole: the philosophy, the end-to-end flows,
+   and how the crates interconnect. Start at
+   [`architecture/system-overview.html`](architecture/system-overview.html), then the
+   [protocol reference](architecture/protocol/index.html): the
+   [write path](architecture/protocol/write-path.html),
+   [receive & apply path](architecture/protocol/receive-path.html),
+   [operations & the causal DAG](architecture/protocol/operations.html),
+   [state, projection & the root hash](architecture/protocol/projection.html),
+   [sync & convergence](architecture/protocol/sync.html), and
+   [governance](architecture/protocol/governance.html). The
+   [dependency explorer](architecture/dependency-explorer.html) maps crate edges,
+   and [`unified-causal-log-cutover-plan.html`](architecture/unified-causal-log-cutover-plan.html)
+   is the live migration the `op`/`op-adapter`/`projection`/`authz` crates are
+   building toward. These are plain HTML - read the source directly, or open in a
+   browser. Treat `architecture/` as the source of truth for *intent*; a per-crate
+   `AGENTS.md` explains one crate, `architecture/` explains how they add up.
+2. **Per-directory `AGENTS.md` - the WHAT.** Each crate/tool/app dir has one
+   describing that unit: its types, entry points, commands, and local gotchas.
+   Every `AGENTS.md` has a `CLAUDE.md` symlink beside it so both this tool and
+   AGENTS-aware tools auto-load the same guidance.
 
 ## Setup Commands
 
@@ -29,7 +55,7 @@ cargo clippy -- -A warnings
 ```
 
 A pre-commit hook (`cargo fmt --check` on staged Rust files) installs itself on
-any `cargo build`/`cargo test` via the `calimero-git-hooks` build script — no
+any `cargo build`/`cargo test` via the `calimero-git-hooks` build script - no
 husky/pnpm needed, and it works from git worktrees. Sources live in `.githooks/`.
 
 ## Universal Conventions
@@ -101,19 +127,26 @@ Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `build`, `ci`
 
 ### Package Structure
 
-| Directory         | Purpose                 | AGENTS.md                                            |
-| ----------------- | ----------------------- | ---------------------------------------------------- |
-| `crates/`         | Core library crates     | [crates/AGENTS.md](crates/AGENTS.md)                 |
-| `crates/merod/`   | Node daemon binary      | [crates/merod/AGENTS.md](crates/merod/AGENTS.md)     |
-| `crates/meroctl/` | CLI tool                | [crates/meroctl/AGENTS.md](crates/meroctl/AGENTS.md) |
-| `crates/node/`    | Node orchestration      | [crates/node/AGENTS.md](crates/node/AGENTS.md)       |
-| `crates/runtime/` | WASM execution (wasmer) | [crates/runtime/AGENTS.md](crates/runtime/AGENTS.md) |
-| `crates/storage/` | CRDT collections        | [crates/storage/AGENTS.md](crates/storage/AGENTS.md) |
-| `crates/sdk/`     | App development SDK     | [crates/sdk/AGENTS.md](crates/sdk/AGENTS.md)         |
-| `crates/server/`  | HTTP/WS/SSE server      | [crates/server/AGENTS.md](crates/server/AGENTS.md)   |
-| `crates/network/` | P2P networking (libp2p) | [crates/network/AGENTS.md](crates/network/AGENTS.md) |
-| `apps/`           | Example WASM apps       | [apps/AGENTS.md](apps/AGENTS.md)                     |
-| `tools/`          | Dev tools (merodb, abi) | [tools/AGENTS.md](tools/AGENTS.md)                   |
+Every crate has its own `AGENTS.md`; [crates/AGENTS.md](crates/AGENTS.md) is the full index. The most-opened directories:
+
+| Directory            | Purpose                       | AGENTS.md                                                  |
+| -------------------- | ----------------------------- | ---------------------------------------------------------- |
+| `crates/`            | Core library crates (index)   | [crates/AGENTS.md](crates/AGENTS.md)                       |
+| `crates/merod/`      | Node daemon binary            | [crates/merod/AGENTS.md](crates/merod/AGENTS.md)           |
+| `crates/meroctl/`    | CLI tool                      | [crates/meroctl/AGENTS.md](crates/meroctl/AGENTS.md)       |
+| `crates/node/`       | Node orchestration            | [crates/node/AGENTS.md](crates/node/AGENTS.md)             |
+| `crates/context/`    | Context lifecycle & governance| [crates/context/AGENTS.md](crates/context/AGENTS.md)       |
+| `crates/runtime/`    | WASM execution (wasmer)       | [crates/runtime/AGENTS.md](crates/runtime/AGENTS.md)       |
+| `crates/storage/`    | CRDT collections              | [crates/storage/AGENTS.md](crates/storage/AGENTS.md)       |
+| `crates/store/`      | RocksDB KV store (+enc, blobs)| [crates/store/AGENTS.md](crates/store/AGENTS.md)           |
+| `crates/dag/`        | Causal delta DAG              | [crates/dag/AGENTS.md](crates/dag/AGENTS.md)               |
+| `crates/sdk/`        | App development SDK           | [crates/sdk/AGENTS.md](crates/sdk/AGENTS.md)               |
+| `crates/server/`     | HTTP/WS/SSE server            | [crates/server/AGENTS.md](crates/server/AGENTS.md)         |
+| `crates/network/`    | P2P networking (libp2p)       | [crates/network/AGENTS.md](crates/network/AGENTS.md)       |
+| `crates/primitives/` | Shared types (ids, keys, hash)| [crates/primitives/AGENTS.md](crates/primitives/AGENTS.md) |
+| `crates/crypto/`     | ECDH shared-key encryption    | [crates/crypto/AGENTS.md](crates/crypto/AGENTS.md)         |
+| `apps/`              | Example WASM apps             | [apps/AGENTS.md](apps/AGENTS.md)                           |
+| `tools/`             | Dev tools (merodb, abi)       | [tools/AGENTS.md](tools/AGENTS.md)                         |
 
 ### Quick Find Commands
 
@@ -161,10 +194,14 @@ Client Request → JSON-RPC Server → WASM Runtime → Storage (CRDTs)
 
 ## Core Concepts (Summary)
 
-- **Context**: Application instance with shared synchronized state (32-byte `ContextId`)
-- **CRDTs**: Automatic conflict resolution (`Counter`, `LwwRegister<T>`, `UnorderedMap<K,V>`, `Vector<T>`)
-- **DAG**: Causal ordering of state changes with parent references
-- **Gossipsub**: P2P message broadcasting per context topic
+Grounded in [`architecture/concepts.html`](architecture/concepts.html); read it for the full model.
+
+- **Namespace**: A root group (a group with no parent). The application-instance boundary and identity scope for a node - each namespace has its own Ed25519 keypair, and all its subgroups and contexts share that identity. All groups in a namespace share one governance DAG.
+- **Group**: A governance boundary within a namespace. Has members, an inherited application, and one or more contexts. Membership, access control, and upgrades happen here via signed governance ops that propagate over P2P gossip; every group has at least one Admin.
+- **Context**: A running instance of a WASM application with its own isolated state, kept in sync across context members via CRDT replication. Belongs to exactly one group (32-byte `ContextId`).
+- **CRDTs**: Automatic conflict resolution - `GCounter`, `PnCounter`, `LwwRegister<T>`, `UnorderedMap<K,V>`, `UnorderedSet<T>`, `Vector<T>`, `ReplicatedGrowableArray` (see [crates/storage/AGENTS.md](crates/storage/AGENTS.md)).
+- **DAG**: Causal ordering of governance ops and state deltas via parent references. Governance ops are either cleartext `RootOp`s (group creation, member join, key delivery) or encrypted `GroupOp`s (membership, capabilities).
+- **Gossipsub**: libp2p P2P broadcast; governance ops and deltas propagate per namespace/context topic.
 
 ## Running Local Nodes
 

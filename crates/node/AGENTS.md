@@ -214,10 +214,10 @@ cargo test -p calimero-node --test network_simulation
 - `ReadinessCache` and `ReadinessCacheNotify` use poison-recoverable
   mutex helpers (`entries_lock` / `waiters_lock`); never call `.lock()`
   directly on those fields
-- `ReadinessCache::insert` does NOT verify signatures or membership —
+- `ReadinessCache::insert` does NOT verify signatures or membership -
   the receiver-side gate `verify_readiness_beacon` is the choke point;
   callers from outside the receiver path must verify first
 - `ns/<id>` topic publishes wrap inner `NamespaceTopicMsg` in
   `BroadcastMessage::NamespaceGovernanceDelta { namespace_id, delta_id,
-  parent_ids, payload: borsh(NamespaceTopicMsg) }` — sender-side
+  parent_ids, payload: borsh(NamespaceTopicMsg) }` - sender-side
   envelope skips break receive-side decoding silently
