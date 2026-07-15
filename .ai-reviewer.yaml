@@ -35,6 +35,10 @@ agents:
     model: claude-sonnet-5
     thinking_enabled: false
     max_tool_calls: 20
+  - name: performance-reviewer   # hot paths, allocations, sync/network throughput
+    model: claude-sonnet-5       # 4th slot: not run by default (--agents 3);
+    thinking_enabled: false      # included via workflow_dispatch agents>=4
+    max_tool_calls: 20
 
 # Skip agents on vendored / generated paths (read even without --config).
 ignore:
@@ -42,6 +46,10 @@ ignore:
   - "Cargo.lock"
   - "**/*.lock"
   - "**/snapshots/**"
+  - "**/*.wasm"
+  - "CHANGELOG.md"
+  - "graphify-out/**"
+  - "docs-site/**"
 
 # Doc auto-update — opens a draft PR on merges to master with proposed
 # changes to the architecture site (and any Markdown docs that go stale).
