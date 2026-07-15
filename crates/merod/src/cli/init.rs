@@ -1,6 +1,6 @@
 use calimero_config::{
     BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, IdentityConfig, NetworkConfig,
-    NodeMode, ServerConfig, SyncConfig, CONFIG_FILE,
+    NodeMode, ServerConfig, SyncConfig,
 };
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client_config::{ClientConfig, ClientSigner, LocalConfig};
@@ -175,7 +175,6 @@ pub struct InitCommand {
 
     /// Advertise observed address
     #[clap(long, default_value_t = false)]
-    #[clap(overrides_with("no_mdns"))]
     pub advertise_address: bool,
 
     /// Static external multiaddr(s) to advertise (e.g.
@@ -404,11 +403,9 @@ impl InitCommand {
             },
         );
 
+        // `save` writes config.toml atomically and owner-only (0600); the file
+        // holds the private key, so this keeps it unreadable to other users.
         config.save(&path).await?;
-
-        // The file itself holds the private key; keep it owner-only even if its
-        // parent directory's permissions are ever loosened.
-        restrict_to_owner(path.join(CONFIG_FILE), 0o600).await?;
 
         // `config` is fully consumed below; `datastore_path` is cloned so the
         // store's owned copy is independent.
@@ -427,5 +424,30 @@ impl InitCommand {
         info!("Initialized a node in {:?}", path);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::InitCommand;
+
+    // `--no-mdns` and `--advertise-address` are independent flags: setting one
+    // must not silently reset the other, in either order. A stray
+    // `overrides_with("no_mdns")` on `advertise_address` used to break this.
+    #[test]
+    fn no_mdns_and_advertise_address_are_independent() {
+        for args in [
+            ["merod", "--no-mdns", "--advertise-address"],
+            ["merod", "--advertise-address", "--no-mdns"],
+        ] {
+            let cmd = InitCommand::try_parse_from(args).unwrap();
+            assert!(cmd.no_mdns, "no_mdns should be set for {args:?}");
+            assert!(
+                cmd.advertise_address,
+                "advertise_address should be set for {args:?}"
+            );
+        }
     }
 }

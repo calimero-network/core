@@ -69,6 +69,7 @@ parking_lot.workspace = true
 rand_chacha = "0.3"
 serial_test.workspace = true
 tempfile.workspace = true
+wat.workspace = true
 # `tokio/test-util` is dev-only — provides `tokio::time::pause()` /
 # `#[tokio::test(start_paused)]` for time-controlled tests. Kept out
 # of `[dependencies]` so production binaries don't carry the

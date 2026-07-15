@@ -53,13 +53,13 @@ steps:
     type: login
     node: sync-resil-node-1
     username: dev
-    password: dev
+    password: dev-password
 
   - name: Login on sync-resil-node-2
     type: login
     node: sync-resil-node-2
     username: dev
-    password: dev
+    password: dev-password
 
   # Steps mirror the cone variant exactly. Setup → baseline → fault
   # (restart node-1) → recovery → assert post-restart write

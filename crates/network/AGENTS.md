@@ -57,7 +57,7 @@ cargo test -p calimero-network --test kad_modes
 │  └──────────┼──────────────────────────────────────────────────┘   │
 │             │                                                       │
 │             ▼                                                       │
-│       Behaviour (11 sub-behaviours: gossipsub, kad, mdns, etc.)     │
+│       Behaviour (12 sub-behaviours: gossipsub, kad, mdns, etc.)     │
 │       See ARCHITECTURE.md#behaviour-composition for details         │
 └─────────────────────────────────────────────────────────────────────┘
                               │
@@ -126,7 +126,7 @@ cargo test -p calimero-network --test kad_modes
 ```
 src/
 ├── lib.rs                    # NetworkManager actor, public exports
-├── behaviour.rs              # Composed Behaviour (11 sub-behaviours)
+├── behaviour.rs              # Composed Behaviour (12 sub-behaviours)
 ├── discovery.rs              # Discovery coordination
 ├── discovery/
 │   ├── state.rs              # DiscoveryState (peer tracking, reachability)
@@ -190,9 +190,13 @@ pub struct NetworkManager {
     swarm: Box<Swarm<Behaviour>>,              // libp2p swarm
     event_dispatcher: Arc<dyn NetworkEventDispatcher>, // Event delivery
     discovery: Discovery,                       // Peer discovery state
+    peer_cache: PeerAddrCache,                  // Persistent peer address cache
+    store: Option<Store>,                       // Datastore for peer cache (None = no persistence)
     pending_dial: HashMap<PeerId, oneshot::Sender<...>>,
     pending_bootstrap: HashMap<QueryId, oneshot::Sender<...>>,
     pending_blob_queries: HashMap<QueryId, oneshot::Sender<...>>,
+    ping_failures: HashMap<ConnectionId, u32>,  // Consecutive ping failures per connection
+    identity: Keypair,                          // Node identity
     metrics: Metrics,
 }
 

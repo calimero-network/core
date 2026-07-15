@@ -1203,6 +1203,7 @@ dependencies = [
  "mero-auth",
  "multiaddr",
  "serde",
+ "tempfile",
  "tokio",
  "toml 0.8.23",
  "url",
@@ -1488,6 +1489,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "wat",
  "zeroize",
 ]
 
@@ -1631,6 +1633,7 @@ dependencies = [
  "ureq",
  "wasmer",
  "wasmer-compiler-cranelift",
+ "wasmer-middlewares",
  "wasmer-types",
  "wat",
 ]
@@ -5953,6 +5956,7 @@ dependencies = [
  "regex",
  "reqwest 0.11.27",
  "reqwest 0.12.28",
+ "ring",
  "rocksdb",
  "rust-embed",
  "serde",
@@ -11277,6 +11281,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "wasmer-middlewares"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4fdc1455c09a2b8e3aae9df8e163430d87353a2b467a3c48ceeb3e3bbeeed69"
+dependencies = [
+ "wasmer",
+ "wasmer-types",
+ "wasmer-vm",
 ]
 
 [[package]]

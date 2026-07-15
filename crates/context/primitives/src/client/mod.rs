@@ -40,7 +40,7 @@ use crate::group::{
     LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, MigrationStatus, NamespaceSummary, RemoveGroupMembersRequest,
-    ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest,
+    ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest, RotateGroupKeyRequest,
     SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
     SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
     SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
@@ -854,6 +854,62 @@ impl ContextRegistry {
         Ok(())
     }
 
+    /// Atomically set a context's `root_hash` **and** `dag_heads` in a single
+    /// `ContextMeta` write.
+    ///
+    /// This is the snapshot-finalize counterpart to [`persist_deltas_and_dag_heads`]:
+    /// the snapshot path must publish both fields together. Doing it as two
+    /// separate read-modify-writes ([`force_root_hash`] then [`update_dag_heads`])
+    /// leaves a window where `root_hash` is set but `dag_heads` is still the
+    /// pre-snapshot value (or vice versa), and — worse — a concurrent
+    /// `ContextMeta` read-modify-write can interleave *between* the two puts and
+    /// clobber the first with a stale whole-record write (issue #3252). Folding
+    /// both mutations into one [`Store::apply`] (`WriteBatch`) closes the
+    /// intra-finalize window: a reader observes either the pre- or post-finalize
+    /// `ContextMeta`, never a half-updated one.
+    ///
+    /// As with [`persist_deltas_and_dag_heads`], atomicity covers the *write*
+    /// only — the `meta` read and the commit are not one transaction, so two
+    /// unsynchronised callers racing on the same context can still clobber each
+    /// other (the read-modify-write race documented there). The snapshot finalize
+    /// runs only for uninitialized / crash-recovery / resync contexts, which are
+    /// not being concurrently mutated by the delta path; the remaining external
+    /// racer (`sync_context_config`) is fixed at its source (#3252).
+    ///
+    /// [`force_root_hash`]: Self::force_root_hash
+    /// [`update_dag_heads`]: Self::update_dag_heads
+    /// [`persist_deltas_and_dag_heads`]: Self::persist_deltas_and_dag_heads
+    pub fn set_root_and_dag_heads(
+        &self,
+        context_id: &ContextId,
+        root_hash: Hash,
+        dag_heads: Vec<[u8; 32]>,
+    ) -> eyre::Result<()> {
+        let meta_key = key::ContextMeta::new(*context_id);
+
+        let Some(mut meta) = self.datastore.handle().get(&meta_key)? else {
+            eyre::bail!("Context not found: {}", context_id);
+        };
+
+        meta.root_hash = *root_hash;
+        meta.dag_heads = dag_heads;
+        let dag_heads_count = meta.dag_heads.len();
+
+        let mut tx = Transaction::default();
+        let meta_bytes: Slice<'_> = borsh::to_vec(&meta)?.into();
+        tx.put(&meta_key, meta_bytes);
+        self.datastore.apply(&tx)?;
+
+        tracing::debug!(
+            %context_id,
+            new_root = ?root_hash,
+            dag_heads_count,
+            "Atomically set root_hash and dag_heads (snapshot finalize)"
+        );
+
+        Ok(())
+    }
+
     /// Reads ROOT's index entry + `Key::Entry(ROOT)` bytes in a single
     /// pass and returns both the self-dump (own_hash/full_hash/entry
     /// summary) and the children list — diagnostic for #2319.
@@ -1399,6 +1455,17 @@ impl ContextClient {
     /// Forces the root hash for a context to a specific value.
     pub fn force_root_hash(&self, context_id: &ContextId, root_hash: Hash) -> eyre::Result<()> {
         self.registry.force_root_hash(context_id, root_hash)
+    }
+
+    /// See [`ContextRegistry::set_root_and_dag_heads`].
+    pub fn set_root_and_dag_heads(
+        &self,
+        context_id: &ContextId,
+        root_hash: Hash,
+        dag_heads: Vec<[u8; 32]>,
+    ) -> eyre::Result<()> {
+        self.registry
+            .set_root_and_dag_heads(context_id, root_hash, dag_heads)
     }
 
     /// Diagnostic — dump ROOT's self summary + children list in one read.
@@ -2013,6 +2080,12 @@ impl ContextClient {
         eyre::Result<()>
     );
     forward_to_actor!(
+        rotate_group_key,
+        RotateGroupKey,
+        RotateGroupKeyRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
         set_subgroup_visibility,
         SetSubgroupVisibility,
         SetSubgroupVisibilityRequest,
@@ -2482,6 +2555,80 @@ mod atomic_persist_tests {
         assert!(
             !has_delta(&store, &cid, DELTA_B),
             "dropped (uncommitted) batch must not persist"
+        );
+    }
+
+    fn read_root(store: &Store, context_id: &ContextId) -> [u8; 32] {
+        store
+            .handle()
+            .get(&key::ContextMeta::new(*context_id))
+            .expect("read meta")
+            .expect("meta present")
+            .root_hash
+    }
+
+    // #3252: the snapshot finalize publishes root_hash + dag_heads together.
+    // One call updates both fields of the existing ContextMeta.
+    #[test]
+    fn set_root_and_dag_heads_updates_both_fields() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let cid = ctx();
+        seed_meta(&store, &cid, vec![INITIAL_HEAD]);
+        assert_eq!(
+            read_root(&store, &cid),
+            [0u8; 32],
+            "seed starts uninitialized"
+        );
+
+        let registry = ContextRegistry::new(store.clone());
+        registry
+            .set_root_and_dag_heads(&cid, DELTA_A.into(), vec![DELTA_B])
+            .expect("atomic finalize succeeds");
+
+        assert_eq!(read_root(&store, &cid), DELTA_A, "root_hash published");
+        assert_eq!(
+            read_heads(&store, &cid),
+            vec![DELTA_B],
+            "dag_heads published"
+        );
+    }
+
+    // The finalize must route its write through `apply` (one WriteBatch), never
+    // a direct `put` — so the root+heads update can't be split into a state a
+    // concurrent ContextMeta writer straddles (#3252). A backend armed to panic
+    // on any `put` proves the path is `apply`-only.
+    #[test]
+    fn set_root_and_dag_heads_is_apply_only() {
+        let armed = Arc::new(AtomicBool::new(false));
+        let store = Store::new(Arc::new(FailOnApply {
+            inner: InMemoryDB::owned(),
+            armed: Arc::clone(&armed),
+        }));
+        let cid = ctx();
+        seed_meta(&store, &cid, vec![INITIAL_HEAD]);
+
+        // From here any direct `put` panics; only `apply` may write.
+        armed.store(true, Ordering::SeqCst);
+
+        let registry = ContextRegistry::new(store.clone());
+        let err = registry
+            .set_root_and_dag_heads(&cid, DELTA_A.into(), vec![DELTA_B])
+            .expect_err("armed backend fails the atomic commit");
+        assert!(
+            err.to_string().contains("injected apply failure"),
+            "must fail at apply (proving no stray put), got: {err}"
+        );
+
+        // All-or-nothing: the failed commit left the pre-finalize meta intact.
+        assert_eq!(
+            read_root(&store, &cid),
+            [0u8; 32],
+            "root unchanged on failure"
+        );
+        assert_eq!(
+            read_heads(&store, &cid),
+            vec![INITIAL_HEAD],
+            "heads unchanged on failure"
         );
     }
 }

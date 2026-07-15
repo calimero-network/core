@@ -359,6 +359,25 @@ impl NodeClient {
         }
     }
 
+    /// Notify the readiness FSM that we just subscribed to a namespace
+    /// topic, so it seeds `subscribed_at` at subscribe time (boot-grace
+    /// anchor) instead of at the first applied op. Best-effort, mirroring
+    /// [`notify_namespace_op_applied`]: on a `try_send` failure the first
+    /// applied op still seeds the entry, just with a later `subscribed_at`.
+    pub fn notify_namespace_subscribed(&self, namespace_id: [u8; 32]) {
+        if let Err(err) = self
+            .node_manager
+            .try_send(NodeMessage::ForwardNamespaceSubscribed { namespace_id })
+        {
+            warn!(
+                ?err,
+                namespace_id = %hex::encode(namespace_id),
+                "failed to enqueue NamespaceSubscribed signal — readiness FSM will \
+                 seed subscribed_at at the first applied op instead"
+            );
+        }
+    }
+
     /// Edge-trigger the migration-heartbeat emitter to recompute + re-publish
     /// this node's facts for `namespace_id`, out of band of the periodic tick.
     ///
@@ -552,7 +571,6 @@ impl NodeClient {
         );
 
         let shared_key = SharedKey::from_sk(sender_key);
-        let nonce = rand::thread_rng().gen();
 
         // Seal the expected post-apply root hash and the execution events
         // together with the storage delta so none of them ride the gossip
@@ -571,8 +589,8 @@ impl NodeClient {
             events,
         })?;
 
-        let encrypted = shared_key
-            .encrypt(sealed, nonce)
+        let (nonce, encrypted) = shared_key
+            .encrypt(sealed)
             .ok_or_eyre("failed to encrypt delta payload")?;
 
         let payload = BroadcastMessage::StateDelta {

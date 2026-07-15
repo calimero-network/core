@@ -50,19 +50,19 @@ steps:
     type: login
     node: private-add-node-1
     username: dev
-    password: dev
+    password: dev-password
 
   - name: Login on private-add-node-2
     type: login
     node: private-add-node-2
     username: dev
-    password: dev
+    password: dev-password
 
   - name: Login on private-add-node-3
     type: login
     node: private-add-node-3
     username: dev
-    password: dev
+    password: dev-password
 
   # ── Phase 1: Bootstrap namespace + Restricted subgroup ────────────
 
