@@ -42,8 +42,13 @@ env:
   # and consumed by mero-js's e2e harness (tests/e2e/harness.ts resolveCreds()
   # reads MERO_E2E_USER / MERO_E2E_PASS, defaulting to dev/dev). Pinning them
   # here keeps both sides in lockstep even if the harness defaults change.
+  #
+  # The password MUST satisfy the provider's configured minimum length
+  # (default 8): the "Bootstrap root key" step below creates the root key, and
+  # creation enforces the minimum (a short password → 401 at bootstrap). This
+  # workflow-level value is what that step inherits, so it cannot be `dev`.
   MERO_E2E_USER: dev
-  MERO_E2E_PASS: dev
+  MERO_E2E_PASS: dev-password
 
 jobs:
   sdk-e2e:
@@ -141,12 +146,12 @@ jobs:
           NODE_BASE_URL: "http://localhost:${{ env.SERVER_PORT }}"
           # The e2e coverage recorder writes the endpoints it hit here.
           MERO_COVERAGE_OUT: "${{ github.workspace }}/_mero-js/covered-endpoints.json"
-          # The SDK harness bootstraps the node's first root key, so its password
-          # must satisfy the provider's minimum length (default 8). The harness
-          # would otherwise fall back to its own `dev`/`dev` default and be
-          # rejected at creation.
-          MERO_E2E_USER: dev
-          MERO_E2E_PASS: dev-password
+          # MERO_E2E_USER / MERO_E2E_PASS are inherited from the workflow-level
+          # env (dev / dev-password) so the suite logs in with the exact
+          # credentials the "Bootstrap root key" step provisioned. Do not
+          # re-declare them here — a second, divergent value is what previously
+          # let the bootstrap step mint one password while the suite logged in
+          # with another.
         run: |
           pnpm install --frozen-lockfile
           pnpm test:e2e
