@@ -1483,7 +1483,7 @@ async fn push_deletions<T: SyncTransport>(
 /// key, stamped onto each emitted leaf so a receiver on an older reader can
 /// decline+buffer a future-schema leaf. `None` when the sender can't resolve
 /// its loaded reader (parity with the receiver's no-gate fallback).
-fn get_local_tree_node(
+pub(crate) fn get_local_tree_node(
     context_id: ContextId,
     node_id: &[u8; 32],
     is_root_request: bool,

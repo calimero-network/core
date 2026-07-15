@@ -22,17 +22,15 @@
 use crate::sync::helpers::{handle_entity_delete_push_locked, handle_entity_push_locked};
 use calimero_crypto::Nonce;
 use calimero_node_primitives::sync::{
-    create_runtime_env, InitPayload, LeafMetadata, MessagePayload, StreamMessage, SyncTransport,
-    TreeLeafData, TreeNode, TreeNodeResponse, MAX_NODES_PER_RESPONSE,
+    create_runtime_env, InitPayload, MessagePayload, StreamMessage, SyncTransport,
+    TreeNodeResponse, MAX_NODES_PER_RESPONSE,
 };
 use calimero_primitives::context::ContextId;
-use calimero_primitives::crdt::CrdtType;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::env::{with_runtime_env, RuntimeEnv};
 use calimero_storage::index::Index;
-use calimero_storage::interface::Interface;
 use calimero_storage::store::MainStorage;
 use eyre::Result;
 use tracing::{debug, info, trace, warn};
@@ -366,9 +364,12 @@ impl SyncManager {
         // Determine if this is a root request (node_id matches root_hash)
         let is_root_request = node_id == context.root_hash.as_ref();
 
-        // Get the local node
+        // Get the local node. Delegates to the shared, tombstone-aware builder
+        // in `hash_comparison_protocol` so the production responder advertises
+        // `deleted_children` exactly like the initiator / trait responder do —
+        // see that function's doc and the #3217 regression test below.
         let local_node = with_runtime_env(runtime_env.clone(), || {
-            self.get_local_tree_node_from_index(
+            super::hash_comparison_protocol::get_local_tree_node(
                 context_id,
                 node_id,
                 is_root_request,
@@ -393,7 +394,12 @@ impl SyncManager {
             // Include child nodes
             for child_id in &node.children {
                 let child_node = with_runtime_env(runtime_env.clone(), || {
-                    self.get_local_tree_node_from_index(context_id, child_id, false, schema_app_key)
+                    super::hash_comparison_protocol::get_local_tree_node(
+                        context_id,
+                        child_id,
+                        false,
+                        schema_app_key,
+                    )
                 })?;
 
                 if let Some(child) = child_node {
@@ -416,144 +422,117 @@ impl SyncManager {
 
         Ok(TreeNodeResponse::new(nodes))
     }
+}
 
-    /// Get local tree node from the real Merkle tree Index.
-    ///
-    /// Must be called within `with_runtime_env` context.
-    fn get_local_tree_node_from_index(
-        &self,
-        context_id: ContextId,
-        node_id: &[u8; 32],
-        is_root_request: bool,
-        schema_app_key: Option<[u8; 32]>,
-    ) -> Result<Option<TreeNode>> {
-        // Determine the entity ID to look up
-        let entity_id = if is_root_request {
-            // For root request, look up Id::root() (which equals context_id)
-            Id::new(*context_id.as_ref())
-        } else {
-            // For child requests, node_id IS the entity ID
-            Id::new(*node_id)
-        };
+#[cfg(test)]
+mod deleted_children_tests {
+    use std::sync::Arc;
 
-        // Get the entity's index from the Merkle tree
-        let index = match Index::<MainStorage>::get_index(entity_id) {
-            Ok(Some(idx)) => idx,
-            Ok(None) => return Ok(None),
-            Err(e) => {
-                warn!(
-                    %context_id,
-                    entity_id = %entity_id,
-                    error = %e,
-                    "Failed to get index for entity"
-                );
-                return Ok(None);
-            }
-        };
+    use calimero_node_primitives::sync::create_runtime_env;
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_storage::action::Action;
+    use calimero_storage::address::Id;
+    use calimero_storage::entities::{ChildInfo, Metadata};
+    use calimero_storage::env::{time_now, with_runtime_env};
+    use calimero_storage::index::Index;
+    use calimero_storage::interface::{ApplyContext, Interface};
+    use calimero_storage::store::MainStorage;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
 
-        // Get hashes from the index
-        let full_hash = index.full_hash();
+    use crate::sync::hash_comparison_protocol::get_local_tree_node;
 
-        // Get children from the index
-        let children_ids: Vec<[u8; 32]> = index
-            .children()
-            .map(|children| {
-                children
-                    .iter()
-                    .map(|child| *child.id().as_bytes())
-                    .collect()
-            })
-            .unwrap_or_default();
+    /// The production HashComparison responder MUST advertise a cleared child's
+    /// tombstone in its container's `deleted_children`, so a peer that still
+    /// holds the entry live converges to the deletion (delete-wins) even when
+    /// that peer is the one initiating the sync. Without this, the holder keeps
+    /// redelivering its stale leaf every round while the cleared node silently
+    /// stale-drops it — the permanent AuthoredMap redelivery loop (#3217).
+    #[test]
+    fn responder_ships_deleted_children_for_cleared_container() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let context_id = ContextId::from([7u8; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let env = create_runtime_env(&store, context_id, identity);
 
-        // Determine if this is a leaf or internal node
-        if children_ids.is_empty() {
-            // Leaf node - try to get entity data
-            if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
-                let crdt_type = index.metadata.crdt_type.clone().unwrap_or_else(|| {
-                    // No CRDT type ("opaque" leaf — e.g. the `Root<T>` state entry).
-                    // Emit a real *leaf* (not a malformed empty `internal` node, which
-                    // the peer's `TreeNode::is_valid()` rejects) carrying a synthetic
-                    // LWW wire type — merge-equivalent to `None` and Merkle-hash-neutral.
-                    // Same Model-S fix as `hash_comparison_protocol.rs` (see
-                    // `OPAQUE_LEAF_CRDT_TYPE_NAME` there + opaque-leaf-sync design spec).
-                    trace!(%entity_id, "opaque leaf, synthesised LWW wire type for sync");
-                    CrdtType::lww_register(
-                        super::hash_comparison_protocol::OPAQUE_LEAF_CRDT_TYPE_NAME,
-                    )
-                });
-                // Carry the leaf's Merkle parent_id on the wire so the
-                // initiator can reconstruct the entity at its proper Merkle
-                // position. Pre-fix this field was unconditionally `None`
-                // and the initiator's apply path fell back to "direct child
-                // of context root" — corrupting the topology for any nested-
-                // collection entity (every `Root<T>`-wrapped app, which is
-                // ~all of them). See the design spec for the wire-format
-                // analysis: the field already exists on `LeafMetadata`, just
-                // wasn't populated.
-                let mut metadata =
-                    LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
-                        .with_created_at(index.metadata.created_at());
-                if let Some(parent_id) = index.parent_id() {
-                    metadata = metadata.with_parent(*parent_id.as_bytes());
-                }
-                // Carry the full ancestor chain so the receiver places the
-                // entity at its exact Merkle position. A non-root entity
-                // shipped without its chain forces the receiver's
-                // `apply_leaf_with_crdt_merge` empty-ancestors fallback,
-                // which `add_root`s the missing ancestors — wrong tree
-                // position → divergent Merkle root that HashComparison
-                // cannot heal (the same-DAG-heads / different-root
-                // split-brain). Surface the error loudly instead of
-                // silently shipping a leaf we couldn't resolve a chain for;
-                // the receiver-side guard then declines to guess its
-                // position rather than misplacing it.
-                match Index::<MainStorage>::get_ancestors_of(entity_id) {
-                    Ok(ancestors) => {
-                        metadata = metadata.with_ancestors(ancestors);
-                    }
-                    Err(err) => {
-                        warn!(
-                            %entity_id,
-                            ?err,
-                            "HC sender: could not resolve ancestor chain for leaf; \
-                             shipping with parent_id only (receiver will not guess \
-                             its tree position)"
-                        );
-                    }
-                }
-                if let Some(auth) = crate::sync::helpers::wire_authorization_for(&index.metadata) {
-                    metadata = metadata.with_authorization(auth);
-                }
-                // PR-6b Task 6b.7: stamp the responder's loaded-reader schema so
-                // a receiver on an older reader can decline+buffer this leaf if
-                // it's future-schema.
-                if let Some(schema) = schema_app_key {
-                    metadata = metadata.with_schema_app_key(schema);
-                }
+        let root_id = Id::new(*context_id.as_ref());
+        let container_id = Id::new([1u8; 32]);
+        let child_id = Id::new([2u8; 32]);
 
-                let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
+        // Build: root → container → child, then delete the child so the
+        // container is childless-but-tombstoned (the cleared-entry shape).
+        with_runtime_env(env.clone(), || {
+            let apply = |action| {
+                Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())
+                    .expect("apply_action");
+            };
 
-                Ok(Some(TreeNode::leaf(
-                    *entity_id.as_bytes(),
-                    full_hash,
-                    leaf_data,
-                )))
-            } else {
-                // Index exists but no entry data - treat as internal node with no children
-                // This can happen for collection containers
-                Ok(Some(TreeNode::internal(
-                    *entity_id.as_bytes(),
-                    full_hash,
-                    vec![],
-                )))
-            }
-        } else {
-            // Internal node with children
-            Ok(Some(TreeNode::internal(
-                *entity_id.as_bytes(),
-                full_hash,
-                children_ids,
-            )))
-        }
+            apply(Action::Update {
+                id: root_id,
+                data: vec![],
+                ancestors: vec![],
+                metadata: Metadata::default(),
+            });
+
+            let root_hash = Index::<MainStorage>::get_hashes_for(root_id)
+                .ok()
+                .flatten()
+                .map(|(full, _)| full)
+                .unwrap_or([0; 32]);
+            apply(Action::Update {
+                id: container_id,
+                data: vec![],
+                ancestors: vec![ChildInfo::new(root_id, root_hash, Metadata::default())],
+                metadata: Metadata::default(),
+            });
+
+            let container_hash = Index::<MainStorage>::get_hashes_for(container_id)
+                .ok()
+                .flatten()
+                .map(|(full, _)| full)
+                .unwrap_or([0; 32]);
+            apply(Action::Update {
+                id: child_id,
+                data: b"v1".to_vec(),
+                ancestors: vec![ChildInfo::new(
+                    container_id,
+                    container_hash,
+                    Metadata::default(),
+                )],
+                metadata: Metadata::default(),
+            });
+
+            let child_metadata = Index::<MainStorage>::get_index(child_id)
+                .ok()
+                .flatten()
+                .map(|idx| idx.metadata.clone())
+                .expect("child index");
+            apply(Action::DeleteRef {
+                id: child_id,
+                deleted_at: time_now(),
+                metadata: child_metadata,
+            });
+        });
+
+        // The responder builds the container node for a peer's TreeNodeRequest.
+        let node = with_runtime_env(env, || {
+            get_local_tree_node(context_id, container_id.as_bytes(), false, None)
+        })
+        .expect("build node")
+        .expect("container node present");
+
+        assert!(
+            node.is_internal(),
+            "a childless-but-tombstoned container must be an internal node, not a leaf"
+        );
+        assert!(
+            node.deleted_children
+                .iter()
+                .any(|d| d.id == *child_id.as_bytes()),
+            "HC responder must advertise the cleared child's tombstone in deleted_children; \
+             got {} tombstone(s) — the AuthoredMap redelivery loop (#3217)",
+            node.deleted_children.len()
+        );
     }
 }
