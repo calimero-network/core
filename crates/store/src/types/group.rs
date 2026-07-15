@@ -19,6 +19,11 @@ impl PredefinedEntry for key::GroupDeniedMember {
     type DataType<'a> = ();
 }
 
+impl PredefinedEntry for key::GroupPendingKeyRotation {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
 impl PredefinedEntry for key::GroupContextIndex {
     type Codec = Borsh;
     type DataType<'a> = ();
