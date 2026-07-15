@@ -53,7 +53,10 @@ impl EmbeddedAuthApp {
 pub async fn build_app(config: AuthConfig) -> Result<EmbeddedAuthApp> {
     let storage = create_storage(&config.storage).await?;
 
-    let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
+    let secret_manager = Arc::new(SecretManager::with_storage_config(
+        Arc::clone(&storage),
+        &config.storage,
+    ));
     secret_manager.initialize().await?;
 
     let token_manager = TokenManager::new(

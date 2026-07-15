@@ -102,7 +102,7 @@ External surfaces, auth, attestation, and the binaries.
 | Crate | Audience | What it is | Key facts |
 | --- | --- | --- | --- |
 | `server` (+ `server/primitives`) | operator / internal | Single Axum HTTP server mounting all public surfaces. | Admin REST, JSON-RPC 2.0, WebSocket, SSE, Prometheus metrics, embedded dashboard SPA. Holds no business logic — delegates to clients. |
-| `auth` (`mero-auth`) | operator | Forward-auth service: JWT issue / verify, pluggable providers, wallet challenge auth. | Runs embedded in the server or behind a reverse proxy. NEAR / Ethereum / custom providers. |
+| `auth` (`mero-auth`) | operator | Forward-auth service: JWT issue / verify, pluggable providers. | Runs embedded in the server or behind a reverse proxy. `user_password` is the only shipped provider. |
 | `client` | app-dev | Trait-based client library for talking to Calimero APIs. | Abstract interfaces for auth, token storage, and API comms; used by tooling and integrations. |
 | `meroctl` | operator / app-dev | The operator / developer CLI. | Drives nodes: install contexts, call methods, inspect state. |
 | `merod` | operator | The node daemon binary. | `merod --node <name> init` then `run`. Supports `--no-default-features` for a local-only init build. |
