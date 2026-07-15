@@ -14,6 +14,12 @@ anthropic:
   default_model: claude-sonnet-5
   enable_prompt_caching: true
 
+# Reviews now post via the built-in github-actions token; keep recognizing the
+# reviews the removed MeroReviewer App posted so delta tracking stays continuous.
+github:
+  extra_reviewer_users:
+    - "meroreviewer[bot]"
+
 # Review agents. Only takes effect when the workflow passes --config; the App's
 # webhook uses its own config. Names must match the reviewer's registry exactly.
 # Order matters: --agents N runs the first N. Thinking is ON only for the two
@@ -35,6 +41,10 @@ agents:
     model: claude-sonnet-5
     thinking_enabled: false
     max_tool_calls: 20
+  - name: performance-reviewer   # hot paths, allocations, sync/network throughput
+    model: claude-sonnet-5       # 4th slot: not run by default (--agents 3);
+    thinking_enabled: false      # included via workflow_dispatch agents>=4
+    max_tool_calls: 20
 
 # Skip agents on vendored / generated paths (read even without --config).
 ignore:
@@ -42,6 +52,10 @@ ignore:
   - "Cargo.lock"
   - "**/*.lock"
   - "**/snapshots/**"
+  - "**/*.wasm"
+  - "CHANGELOG.md"
+  - "graphify-out/**"
+  - "docs-site/**"
 
 # Doc auto-update — opens a draft PR on merges to master with proposed
 # changes to the architecture site (and any Markdown docs that go stale).
