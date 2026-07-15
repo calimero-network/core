@@ -2,7 +2,7 @@
 //! prerequisite (the signer's membership op) has not applied yet. Backed by the
 //! never-synced [`Column::NamespacePendingGovOp`](calimero_store::db::Column),
 //! keyed `namespace_id ‖ delta_id` so a re-park overwrites. Parked ops are
-//! unvalidated, so the buffer is bounded per namespace and oldest-evicted.
+//! unvalidated, so the buffer is bounded per namespace and evicts on overflow.
 
 use borsh::BorshDeserialize;
 use calimero_context_client::local_governance::SignedNamespaceOp;
@@ -117,7 +117,7 @@ impl<'a> NamespacePendingOpRepository<'a> {
                     namespace_id = %hex::encode(ns),
                     evicted = %hex::encode(victim.delta_id()),
                     cap = MAX_PENDING_OPS_PER_NAMESPACE,
-                    "namespace pending-op buffer at capacity; evicted oldest parked op"
+                    "namespace pending-op buffer at capacity; evicted a parked op"
                 );
             }
         }

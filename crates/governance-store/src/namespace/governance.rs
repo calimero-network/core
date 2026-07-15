@@ -159,15 +159,25 @@ impl<'a> NamespaceGovernance<'a> {
     /// (so the DAG advances no head for an op that never applied). Both the
     /// gossip and catch-up paths route through here, so one buffer covers both.
     pub fn apply_signed_op(&self, op: &SignedNamespaceOp) -> EyreResult<ApplyNamespaceOpResult> {
+        // A replay of an already-logged op advances no state, so it cannot unblock
+        // a parked op — skip the drain (else every duplicate re-verifies the whole
+        // buffer on the hot receive path).
+        let is_replay = op.content_hash().ok().is_some_and(|id| {
+            NamespaceOpLogService::new(self.store, self.namespace_id)
+                .contains_op(id)
+                .unwrap_or(false)
+        });
         match self.apply_signed_op_core(op) {
             Ok(result) => {
                 // Best-effort: a drain failure must not fail an already-applied op.
-                if let Err(e) = self.drain_pending_ops() {
-                    tracing::warn!(
-                        namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                        %e,
-                        "namespace pending-op drain failed after apply"
-                    );
+                if !is_replay {
+                    if let Err(e) = self.drain_pending_ops() {
+                        tracing::warn!(
+                            namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                            %e,
+                            "namespace pending-op drain failed after apply"
+                        );
+                    }
                 }
                 Ok(result)
             }
