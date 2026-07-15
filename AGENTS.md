@@ -204,6 +204,19 @@ merobox boots **real `merod` nodes as Docker containers** and drives them throug
 - Run one locally: `merobox bootstrap run <scenario.yml>` (then `merobox stop --all`). See [apps/AGENTS.md](apps/AGENTS.md) for the YAML format.
 - Nodes are built **from the PR's own code** (`.github/actions/build-local-merod` → `merod:local`), so a green E2E means your actual code passed.
 
+### Reading logs (to reproduce & validate)
+
+`merod` logs via `tracing` to stdout. Default filter is `merod=info,calimero_=info`; override with `RUST_LOG` and target a subsystem to see the flow you're debugging:
+
+```bash
+RUST_LOG=debug merod --node node1 run
+RUST_LOG=calimero_node::sync=trace,calimero_context=debug merod --node node1 run
+```
+
+- **merobox**: each node is a container, so read its output with `docker logs <container>`; scenarios themselves assert on log signals (grep for an expected line, e.g. the `sync-resilience-*` scenarios count occurrences of a sync marker). To turn up verbosity in a scenario, set `RUST_LOG` on the node in its YAML.
+- Panics are logged with a structured hook (message, thread, location, backtrace) - grep for the panic message, not just `panicked`.
+- When validating a report: reproduce, capture the log window around the failure, and confirm the specific line/marker that proves the bug (or its absence after the fix). That captured before/after is the proof you put in the PR (see Definition of Done).
+
 ### What runs in CI (path-filtered)
 
 | Workflow | Triggers on | Runs |
@@ -234,6 +247,22 @@ Before creating a PR:
 3. `cargo test` passes
 4. `cargo deny check licenses sources` passes (if modifying dependencies)
 5. **Update relevant documentation** at the end of changes – README, AGENTS.md, crate docs, or API docs as needed; docs must be updated no later than one day after merge
+6. **Prove it works.** For a bug fix, the PR description must show the fix works: the reproduction (command / test / merobox scenario), and before→after evidence (the failing log line or test output before, the passing result after). A fix with no reproduction and no regression test is not done.
+
+### Review & merge gate
+
+A PR is mergeable only when all of these hold - this is the closed loop:
+
+- **CI all green** (merobox E2E, sync-regression where triggered, SDK e2e, lint, wire-contract gate).
+- **Automated review addressed**: meroreviewer and Cursor Bugbot comments are either fixed or explicitly answered, and their threads resolved. A clean/LGTM pass with no open threads is the signal.
+- **Human review** approved where required by branch protection.
+
+Working in Claude Code, drive this loop with the skills instead of by hand:
+
+- `systematic-debugging` - reproduce-first before proposing a fix.
+- `resolve-bot-review-comments` - triage/fix/resolve Bugbot / meroreviewer / CodeRabbit threads (filters real findings from nits, then resolves).
+- `babysit` - watch the PR and CI until green and all actionable review is resolved.
+- `security-review` / `code-review` - self-review the diff before requesting review.
 
 ## Data Flow Overview
 
