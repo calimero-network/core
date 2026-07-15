@@ -27,7 +27,7 @@ steps:
     type: login
     node: e2e-node-1
     username: dev
-    password: dev
+    password: dev-password
 
   # --- Setup ---
 
