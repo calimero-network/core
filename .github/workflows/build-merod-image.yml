@@ -49,6 +49,20 @@ jobs:
           shared-key: e2e-rust-apps
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
+      # Faster e2e image: the production [profile.release] uses fat LTO +
+      # codegen-units=1, whose serial whole-program link is the single biggest
+      # slice of this build and cannot be shortcut by any compiler cache. The
+      # e2e image doesn't need the production size-optimization, so override
+      # just those two flags for the merod compile below. Set AFTER the
+      # rust-cache step (via $GITHUB_ENV) on purpose: rust-cache hashes
+      # CARGO_*/RUST_* env into its key, so setting these earlier would fork the
+      # cache key away from the read-only sibling jobs. Output still lands in
+      # target/.../release, so the shared cache stays warm.
+      - name: Configure fast e2e build profile
+        run: |
+          echo "CARGO_PROFILE_RELEASE_LTO=false" >> "$GITHUB_ENV"
+          echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256" >> "$GITHUB_ENV"
+
       - name: Build local merod image
         uses: ./.github/actions/build-local-merod
         env:
