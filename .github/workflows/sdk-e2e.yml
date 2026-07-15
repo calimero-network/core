@@ -31,6 +31,24 @@ on:
 env:
   CARGO_TERM_COLOR: always
   SERVER_PORT: "2428"
+  # Out-of-band secret gating first-root-key bootstrap (fail-closed since the
+  # TOFU removal). The boot step exports it into merod's environment; the
+  # "Bootstrap root key" step presents the same value to mint the dev/dev root
+  # key BEFORE the SDK suite runs, so mero-js's plain username/password logins
+  # authenticate on the existing-user fast path and never need the secret.
+  # CI-only test value for an ephemeral localhost node.
+  MERO_AUTH_BOOTSTRAP_SECRET: sdk-e2e-ci-bootstrap
+  # Root-user credentials, pre-provisioned by the "Bootstrap root key" step
+  # and consumed by mero-js's e2e harness (tests/e2e/harness.ts resolveCreds()
+  # reads MERO_E2E_USER / MERO_E2E_PASS, defaulting to dev/dev). Pinning them
+  # here keeps both sides in lockstep even if the harness defaults change.
+  #
+  # The password MUST satisfy the provider's configured minimum length
+  # (default 8): the "Bootstrap root key" step below creates the root key, and
+  # creation enforces the minimum (a short password → 401 at bootstrap). This
+  # workflow-level value is what that step inherits, so it cannot be `dev`.
+  MERO_E2E_USER: dev
+  MERO_E2E_PASS: dev-password
 
 jobs:
   sdk-e2e:
@@ -99,18 +117,41 @@ jobs:
             if [ "$i" = "60" ]; then echo "merod did not become healthy"; exit 1; fi
           done
 
+      - name: Bootstrap root key (out-of-band secret)
+        # First-root-key bootstrap requires MERO_AUTH_BOOTSTRAP_SECRET (the
+        # node inherited it from the boot step's environment). Mint the root
+        # key for MERO_E2E_USER here so every login the SDK suite performs is
+        # a plain existing-user authentication — including the negative test
+        # that asserts wrong/wrong is rejected (a root key exists, so the
+        # bootstrap path never re-opens).
+        run: |
+          BODY=$(jq -n --arg u "$MERO_E2E_USER" --arg p "$MERO_E2E_PASS" \
+            --arg s "$MERO_AUTH_BOOTSTRAP_SECRET" --argjson ts "$(date +%s)" \
+            '{auth_method: "user_password", public_key: $u,
+              client_name: "sdk-e2e-ci", permissions: ["admin"], timestamp: $ts,
+              provider_data: {username: $u, password: $p, bootstrap_secret: $s}}')
+          RESP=$(curl -fsS -m 10 -X POST "http://localhost:$SERVER_PORT/auth/token" \
+            -H 'Content-Type: application/json' -d "$BODY") || {
+              echo "::error::root-key bootstrap request failed"; exit 1; }
+          TOKEN=$(echo "$RESP" | jq -r '.data.access_token // empty')
+          if [ -z "$TOKEN" ]; then
+            echo "::error::root-key bootstrap did not return a token: $RESP"
+            exit 1
+          fi
+          echo "root key bootstrapped for user $MERO_E2E_USER"
+
       - name: Run mero-js e2e against booted node
         working-directory: _mero-js
         env:
           NODE_BASE_URL: "http://localhost:${{ env.SERVER_PORT }}"
           # The e2e coverage recorder writes the endpoints it hit here.
           MERO_COVERAGE_OUT: "${{ github.workspace }}/_mero-js/covered-endpoints.json"
-          # The SDK harness bootstraps the node's first root key, so its password
-          # must satisfy the provider's minimum length (default 8). The harness
-          # would otherwise fall back to its own `dev`/`dev` default and be
-          # rejected at creation.
-          MERO_E2E_USER: dev
-          MERO_E2E_PASS: dev-password
+          # MERO_E2E_USER / MERO_E2E_PASS are inherited from the workflow-level
+          # env (dev / dev-password) so the suite logs in with the exact
+          # credentials the "Bootstrap root key" step provisioned. Do not
+          # re-declare them here — a second, divergent value is what previously
+          # let the bootstrap step mint one password while the suite logged in
+          # with another.
         run: |
           pnpm install --frozen-lockfile
           pnpm test:e2e
