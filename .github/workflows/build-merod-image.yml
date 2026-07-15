@@ -1,0 +1,81 @@
+name: Build merod image (reusable)
+
+# Reusable workflow: builds the merod:local Docker image once and uploads it
+# as the `merod-image` artifact (zstd tarball). Called as a job by both
+# e2e-rust-apps.yml and app-migration-e2e.yml so the identical merod build is
+# defined in exactly one place. Artifacts are per-run, so each caller's run
+# gets its own copy of the artifact under the same name — no cross-run
+# collision — while the duplicated build code is unified and the second suite's
+# build rides the same warm cache.
+#
+# Cache discipline: this job is the sole master-time writer of the shared
+# `e2e-rust-apps` rust-cache bucket. The read-only sibling jobs in the callers
+# (app-migration's build-wasms / schema-downgrade-guard) use the same
+# shared-key with save-if:false, so single-writer discipline is preserved. The
+# env below deliberately mirrors those callers' build env (including RUST_LOG)
+# so rust-cache computes the SAME env-hash for all of them and they keep
+# sharing this job's cache; do not add cargo/rust-prefixed env here that the
+# sibling jobs don't also set, or the keys diverge and the siblings go cold.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  # Mirrors app-migration-e2e.yml's top-level env for rust-cache env-hash
+  # parity with its read-only build-wasms / schema-guard jobs (see header).
+  RUST_LOG: info,calimero_=debug
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  build-merod-image:
+    name: Build merod image
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          shared-key: e2e-rust-apps
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      # Faster e2e image: the production [profile.release] uses fat LTO +
+      # codegen-units=1, whose serial whole-program link is the single biggest
+      # slice of this build and cannot be shortcut by any compiler cache. The
+      # e2e image doesn't need the production size-optimization, so override
+      # just those two flags for the merod compile below. Set AFTER the
+      # rust-cache step (via $GITHUB_ENV) on purpose: rust-cache hashes
+      # CARGO_*/RUST_* env into its key, so setting these earlier would fork the
+      # cache key away from the read-only sibling jobs. Output still lands in
+      # target/.../release, so the shared cache stays warm.
+      - name: Configure fast e2e build profile
+        run: |
+          echo "CARGO_PROFILE_RELEASE_LTO=false" >> "$GITHUB_ENV"
+          echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256" >> "$GITHUB_ENV"
+
+      - name: Build local merod image
+        uses: ./.github/actions/build-local-merod
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save and upload Docker image
+        run: docker save merod:local | zstd -T0 -3 -o /tmp/merod-local.tar.zst
+
+      - name: Upload Docker image
+        uses: actions/upload-artifact@v7
+        with:
+          name: merod-image
+          path: /tmp/merod-local.tar.zst
+          retention-days: 1
+          compression-level: 0

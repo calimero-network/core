@@ -19,6 +19,7 @@ on:
       - "apps/components-demo/**"
       - "apps/blobs/**"
       - ".github/workflows/e2e-rust-apps.yml"
+      - ".github/workflows/build-merod-image.yml"
 
   pull_request:
     branches: [master]
@@ -30,6 +31,7 @@ on:
       - "apps/components-demo/**"
       - "apps/blobs/**"
       - ".github/workflows/e2e-rust-apps.yml"
+      - ".github/workflows/build-merod-image.yml"
 
   workflow_dispatch:
 
@@ -45,38 +47,13 @@ env:
 
 jobs:
   # ── Build merod Docker image (heaviest step) ──
+  # Reusable build-merod-image.yml, shared verbatim with app-migration-e2e.yml
+  # so the identical merod build lives in one place and both suites ride the
+  # same warm `e2e-rust-apps` cache. Uploads the `merod-image` artifact
+  # (zstd tarball) consumed by the jobs below.
   build-image:
     name: Build Image
-    runs-on: ubuntu-24.04-8cpu
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
-        with:
-          toolchain: stable
-          shared-key: e2e-rust-apps
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-
-      - name: Build local merod image
-        uses: ./.github/actions/build-local-merod
-        env:
-          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Save and upload Docker image
-        run: docker save merod:local | zstd -T0 -3 -o /tmp/merod-local.tar.zst
-
-      - name: Upload Docker image
-        uses: actions/upload-artifact@v7
-        with:
-          name: merod-image
-          path: /tmp/merod-local.tar.zst
-          retention-days: 1
-          compression-level: 0
+    uses: ./.github/workflows/build-merod-image.yml
 
   # ── Auth seam: client-token e2e over real HTTP ──
   # Proves a client token minted the way the auth frontend mints it can call
