@@ -230,7 +230,7 @@ overflow-checks = true
 
 ### Unit Testing Pattern (`TestHost`)
 
-Exercise app logic as plain Rust — no WASM build, no node, no merobox — with
+Exercise app logic as plain Rust - no WASM build, no node, no merobox - with
 the in-process harness `calimero_sdk::testing::TestHost`. It runs your methods
 against an in-memory mock host that records events/logs and serves a
 configurable executor identity, so you get millisecond `#[cfg(test)]`
@@ -268,7 +268,7 @@ mod tests {
 - `view(|s| ...)` reads via `&self` without committing.
 - `call_as(executor, |s| ...)` runs a mutation as a specific identity (multi-author CRDT tests).
 - `events()` / `logs()` return what `app::emit!` / `app::log!` produced.
-- Unsupported in-process: `env::xcall`, networked blobs, `ed25519_verify` (they panic if hit) — test those paths with merobox workflows.
+- Unsupported in-process: `env::xcall`, networked blobs, `ed25519_verify` (they panic if hit) - test those paths with merobox workflows.
 
 ### Build Script Pattern
 
