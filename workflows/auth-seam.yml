@@ -32,6 +32,12 @@ steps:
   # No `login` step needed: the seam script performs the bootstrap login
   # itself (first login on a fresh embedded-auth node creates the root
   # key), and node teardown is process-level, not HTTP.
+  #
+  # First-login bootstrap is gated on an out-of-band secret: export
+  # MERO_AUTH_BOOTSTRAP_SECRET before `merobox bootstrap run`. Binary-mode
+  # merobox starts merod with the inherited environment (the node's
+  # expected secret) and local script steps inherit it too (the script
+  # presents it in provider_data.bootstrap_secret) — one export, both ends.
   - name: "Run the client-token seam assertions"
     type: script
     script: scripts/e2e-auth-seam.sh
@@ -41,5 +47,6 @@ stop_all_nodes: true
 nuke_on_end: true
 
 # How to run (from the repo root):
+#   export MERO_AUTH_BOOTSTRAP_SECRET=<any-test-value>
 #   merobox bootstrap run workflows/auth-seam.yml --no-docker \
 #     --binary-path ./target/debug/merod

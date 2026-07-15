@@ -9,6 +9,7 @@ use ring::pbkdf2;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use tracing::{debug, error, info, warn};
 use validator::Validate;
 
@@ -115,6 +116,10 @@ pub struct UserPasswordAuthData {
     pub username: String,
     /// Password (will be hashed)
     pub password: String,
+    /// Out-of-band bootstrap secret, only consulted when creating the very
+    /// first root key on a fresh node (ignored for existing users).
+    #[serde(default)]
+    pub bootstrap_secret: Option<String>,
 }
 
 /// Username/password auth data type for the registry
@@ -304,12 +309,48 @@ impl UserPasswordProvider {
         Ok((key_id, root_key))
     }
 
+    /// Resolve the effective bootstrap secret.
+    ///
+    /// The `MERO_AUTH_BOOTSTRAP_SECRET` environment variable takes precedence
+    /// (the recommended out-of-band channel); the configured value is used as
+    /// a fallback. Returns `None` when neither is set, which disables
+    /// first-login bootstrap entirely. An empty string in either source is
+    /// treated as unset — otherwise a blank env interpolation or
+    /// `bootstrap_secret = ""` in config would let `""` match a caller that
+    /// omitted the field (`unwrap_or_default`), silently re-enabling the
+    /// unauthenticated TOFU bootstrap this gate exists to close.
+    fn effective_bootstrap_secret(&self) -> Option<String> {
+        std::env::var("MERO_AUTH_BOOTSTRAP_SECRET")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                self.config
+                    .bootstrap_secret
+                    .clone()
+                    .filter(|s| !s.is_empty())
+            })
+    }
+
+    /// Constant-time comparison of a presented bootstrap secret against the
+    /// expected one.
+    ///
+    /// Both values are hashed to fixed-length digests first, so the comparison
+    /// runs in time independent of the secret's length or content and does not
+    /// leak the expected length.
+    fn bootstrap_secret_matches(expected: &str, provided: &str) -> bool {
+        let expected_digest = Sha256::digest(expected.as_bytes());
+        let provided_digest = Sha256::digest(provided.as_bytes());
+        expected_digest.ct_eq(&provided_digest).into()
+    }
+
     /// Core authentication logic for username/password
     ///
     /// # Arguments
     ///
     /// * `username` - The username
     /// * `password` - The password
+    /// * `bootstrap_secret` - The out-of-band secret presented by the caller,
+    ///   only consulted on the first-root-key bootstrap path
     ///
     /// # Returns
     ///
@@ -318,6 +359,7 @@ impl UserPasswordProvider {
         &self,
         username: &str,
         password: &str,
+        bootstrap_secret: Option<&str>,
     ) -> eyre::Result<(String, Vec<String>)> {
         // On the authentication path enforce only the MAXIMUM length (a bound on
         // PBKDF2 work per request). The minimum is a policy for new credentials
@@ -345,7 +387,35 @@ impl UserPasswordProvider {
             .await?;
 
         if existing_keys.is_empty() {
-            // Bootstrap case - create the first root key
+            // Bootstrap case - create the first root key, but only for a caller
+            // that proves possession of the out-of-band bootstrap secret.
+            // Without this gate the first unauthenticated caller to reach a
+            // fresh node is silently granted a ROOT admin key (trust-on-first-
+            // use). We deliberately return the same generic error on every
+            // failure path so a probe cannot distinguish "bootstrap disabled",
+            // "wrong secret", and "already bootstrapped".
+            let Some(expected_secret) = self.effective_bootstrap_secret() else {
+                debug!("Bootstrap rejected: no bootstrap secret configured (bootstrap disabled)");
+                return Err(eyre::eyre!("Invalid username or password"));
+            };
+
+            // Defense in depth: an empty presented secret can never bootstrap,
+            // regardless of what the expected secret resolves to. Callers that
+            // omit the field default to "" (`unwrap_or_default`), so without
+            // this guard a future regression that lets an empty *expected*
+            // secret through would make SHA-256("") == SHA-256("") re-enable
+            // the unauthenticated TOFU bootstrap this gate exists to close.
+            let provided_secret = bootstrap_secret.unwrap_or_default();
+            if provided_secret.is_empty() {
+                debug!("Bootstrap rejected: empty bootstrap secret presented");
+                return Err(eyre::eyre!("Invalid username or password"));
+            }
+
+            if !Self::bootstrap_secret_matches(&expected_secret, provided_secret) {
+                debug!("Bootstrap rejected: bootstrap secret missing or mismatched");
+                return Err(eyre::eyre!("Invalid username or password"));
+            }
+
             let (key_id, root_key) = self.create_root_key(username, password).await?;
             debug!(
                 user = %crate::utils::sanitize_for_log(username),
@@ -373,7 +443,11 @@ impl AuthVerifierFn for UserPasswordVerifier {
         // Authenticate using the core authentication logic
         let (key_id, permissions) = self
             .provider
-            .authenticate_core(&auth_data.username, &auth_data.password)
+            .authenticate_core(
+                &auth_data.username,
+                &auth_data.password,
+                auth_data.bootstrap_secret.as_deref(),
+            )
             .await?;
 
         // Return the authentication response
@@ -407,6 +481,11 @@ pub struct UserPasswordRequest {
     /// Password
     #[validate(length(min = 1, message = "Password is required"))]
     pub password: String,
+
+    /// Optional out-of-band bootstrap secret, only used to create the first
+    /// root key on a fresh node.
+    #[serde(default)]
+    pub bootstrap_secret: Option<String>,
 }
 
 #[async_trait]
@@ -458,7 +537,8 @@ impl AuthProvider for UserPasswordProvider {
         // Create username/password specific auth data JSON
         Ok(serde_json::json!({
             "username": user_pass_data.username,
-            "password": user_pass_data.password
+            "password": user_pass_data.password,
+            "bootstrap_secret": user_pass_data.bootstrap_secret
         }))
     }
 
@@ -512,8 +592,18 @@ impl AuthProvider for UserPasswordProvider {
             .map_err(|_| eyre::eyre!("Invalid password"))?
             .to_string();
 
+        // Optional out-of-band bootstrap secret header.
+        let bootstrap_secret = headers
+            .get("x-bootstrap-secret")
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_string);
+
         // Create auth data
-        let auth_data = UserPasswordAuthData { username, password };
+        let auth_data = UserPasswordAuthData {
+            username,
+            password,
+            bootstrap_secret,
+        };
 
         // Create verifier
         let provider = Arc::new(self.clone());
@@ -616,20 +706,15 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
+    use crate::config::JwtConfig;
+    use crate::secrets::SecretManager;
+    use crate::storage::models::KeyType;
+    use crate::storage::MemoryStorage;
 
-    fn old_unsalted_key_id(username: &str, password: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(format!("user_password:{username}:{password}").as_bytes());
-        hex::encode(hasher.finalize())
-    }
-
-    /// A provider backed by in-memory storage, with the default length policy
-    /// (min 8 / max 128).
-    fn test_provider() -> UserPasswordProvider {
-        use crate::config::JwtConfig;
-        use crate::secrets::SecretManager;
-        use crate::storage::MemoryStorage;
-
+    /// A provider backed by in-memory storage. `config` lets a test set the
+    /// bootstrap secret and length policy; pass `UserPasswordConfig::default()`
+    /// for the default (min 8 / max 128, bootstrap disabled).
+    fn test_provider(config: UserPasswordConfig) -> UserPasswordProvider {
         let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
         let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
         let token_manager = TokenManager::new(
@@ -641,24 +726,176 @@ mod tests {
             Arc::clone(&storage),
             secret_manager,
         );
-        // Constructed directly rather than through `new(ProviderContext, _)`:
-        // `ProviderContext` carries a full `AuthConfig` the provider never keeps.
         UserPasswordProvider {
             storage: Arc::clone(&storage),
             key_manager: KeyManager::new(storage),
             token_manager,
-            config: UserPasswordConfig::default(),
+            config,
         }
     }
 
-    // --- legacy key-id migration (upgrade path) --------------------------
+    fn config_with_secret(secret: Option<&str>) -> UserPasswordConfig {
+        UserPasswordConfig {
+            bootstrap_secret: secret.map(str::to_string),
+            ..UserPasswordConfig::default()
+        }
+    }
+
+    async fn root_key_count(provider: &UserPasswordProvider) -> usize {
+        provider
+            .key_manager
+            .list_keys(KeyType::Root)
+            .await
+            .unwrap()
+            .len()
+    }
+
+    fn old_unsalted_key_id(username: &str, password: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(format!("user_password:{username}:{password}").as_bytes());
+        hex::encode(hasher.finalize())
+    }
+
+    // --- bootstrap secret gate (finding #2) ------------------------------
+
+    #[tokio::test]
+    async fn bootstrap_disabled_by_default_rejects_first_login() {
+        let provider = test_provider(config_with_secret(None));
+        let result = provider
+            .authenticate_core("admin", "correct horse battery staple", None)
+            .await;
+        assert!(
+            result.is_err(),
+            "bootstrap must fail closed when no bootstrap secret is configured"
+        );
+        assert_eq!(
+            root_key_count(&provider).await,
+            0,
+            "no root key should be minted without a bootstrap secret"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_requires_matching_secret() {
+        let provider = test_provider(config_with_secret(Some("s3cr3t-bootstrap")));
+
+        // Missing secret -> rejected, no key created.
+        assert!(provider
+            .authenticate_core("admin", "password-1", None)
+            .await
+            .is_err());
+        assert_eq!(root_key_count(&provider).await, 0);
+
+        // Wrong secret -> rejected, no key created.
+        assert!(provider
+            .authenticate_core("admin", "password-1", Some("wrong"))
+            .await
+            .is_err());
+        assert_eq!(root_key_count(&provider).await, 0);
+
+        // Correct secret -> exactly one admin root key minted.
+        let (_, perms) = provider
+            .authenticate_core("admin", "password-1", Some("s3cr3t-bootstrap"))
+            .await
+            .expect("correct bootstrap secret should succeed");
+        assert!(perms.contains(&"admin".to_string()));
+        assert_eq!(root_key_count(&provider).await, 1);
+    }
+
+    #[tokio::test]
+    async fn existing_user_authenticates_without_bootstrap_secret() {
+        let provider = test_provider(config_with_secret(Some("s3cr3t-bootstrap")));
+
+        // Bootstrap the first key with the secret.
+        provider
+            .authenticate_core("admin", "password-1", Some("s3cr3t-bootstrap"))
+            .await
+            .unwrap();
+        assert_eq!(root_key_count(&provider).await, 1);
+
+        // The now-existing user authenticates on the fast path, no secret needed.
+        let (_, perms) = provider
+            .authenticate_core("admin", "password-1", None)
+            .await
+            .expect("existing user should authenticate without the bootstrap secret");
+        assert!(perms.contains(&"admin".to_string()));
+        assert_eq!(root_key_count(&provider).await, 1, "no duplicate root key");
+
+        // Once a root key exists, a different identity cannot bootstrap a second
+        // one even with the correct secret.
+        assert!(provider
+            .authenticate_core("intruder", "password-2", Some("s3cr3t-bootstrap"))
+            .await
+            .is_err());
+        assert_eq!(root_key_count(&provider).await, 1);
+    }
+
+    #[tokio::test]
+    async fn empty_config_bootstrap_secret_keeps_bootstrap_disabled() {
+        // `bootstrap_secret = ""` (e.g. a blank env interpolation in config)
+        // must behave exactly like no secret at all: bootstrap stays disabled
+        // and, critically, a caller omitting the field (which the verifier
+        // defaults to "") must not match SHA-256("") == SHA-256("").
+        let provider = test_provider(config_with_secret(Some("")));
+
+        assert!(provider
+            .authenticate_core("admin", "password-1", None)
+            .await
+            .is_err());
+        assert!(provider
+            .authenticate_core("admin", "password-1", Some(""))
+            .await
+            .is_err());
+        assert_eq!(
+            root_key_count(&provider).await,
+            0,
+            "an empty configured secret must never mint a root key"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_presented_secret_never_bootstraps() {
+        // An empty *presented* secret is rejected outright, before any
+        // comparison, even when a real secret is configured. Together with the
+        // empty-config filter this guarantees an all-empty pairing can never
+        // authenticate, even if one of the two guards regresses.
+        let provider = test_provider(config_with_secret(Some("s3cr3t-bootstrap")));
+
+        assert!(provider
+            .authenticate_core("admin", "password-1", Some(""))
+            .await
+            .is_err());
+        assert!(provider
+            .authenticate_core("admin", "password-1", None)
+            .await
+            .is_err());
+        assert_eq!(
+            root_key_count(&provider).await,
+            0,
+            "an empty presented secret must never mint a root key"
+        );
+    }
+
+    #[test]
+    fn bootstrap_secret_matches_is_exact() {
+        assert!(UserPasswordProvider::bootstrap_secret_matches("abc", "abc"));
+        assert!(!UserPasswordProvider::bootstrap_secret_matches(
+            "abc", "abcd"
+        ));
+        assert!(!UserPasswordProvider::bootstrap_secret_matches("abc", ""));
+        assert!(!UserPasswordProvider::bootstrap_secret_matches(
+            "abc", "abC"
+        ));
+    }
+
+    // --- legacy key-id migration (upgrade path, finding #4) --------------
 
     #[tokio::test]
     async fn legacy_key_id_is_migrated_in_place_on_login() {
         // An upgraded node stores the root key under the OLD unsalted id.
         // Without migration the salted lookup misses, root keys exist so the
         // bootstrap branch is skipped, and the operator is locked out forever.
-        let provider = test_provider();
+        let provider = test_provider(UserPasswordConfig::default());
         let (user, pass) = ("alice", "correct horse battery staple");
 
         let legacy_id = old_unsalted_key_id(user, pass);
@@ -674,9 +911,10 @@ mod tests {
             .await
             .unwrap();
 
-        // The existing operator can still log in.
+        // The existing operator can still log in (no bootstrap secret needed —
+        // they match on the migration/fast path, not the bootstrap branch).
         let (key_id, permissions) = provider
-            .authenticate_core(user, pass)
+            .authenticate_core(user, pass, None)
             .await
             .expect("an existing user must not be locked out by the key-id change");
 
@@ -704,13 +942,13 @@ mod tests {
         );
 
         // A second login resolves directly via the new id.
-        let (again, _) = provider.authenticate_core(user, pass).await.unwrap();
+        let (again, _) = provider.authenticate_core(user, pass, None).await.unwrap();
         assert_eq!(again, new_id);
     }
 
     #[tokio::test]
     async fn wrong_password_does_not_migrate_or_authenticate() {
-        let provider = test_provider();
+        let provider = test_provider(UserPasswordConfig::default());
         let legacy_id = old_unsalted_key_id("alice", "right-password");
         let key = Key::new_root_key_with_permissions(
             "alice".to_string(),
@@ -726,7 +964,7 @@ mod tests {
 
         // Wrong password: no legacy key exists for THOSE credentials.
         assert!(provider
-            .authenticate_core("alice", "wrong-password")
+            .authenticate_core("alice", "wrong-password", None)
             .await
             .is_err());
         // The real key is untouched.
@@ -744,7 +982,7 @@ mod tests {
     async fn short_legacy_password_still_authenticates_after_upgrade() {
         // The min-length policy must not lock out a user whose password predates
         // it (e.g. the `dev`/`dev` credentials every e2e harness uses).
-        let provider = test_provider();
+        let provider = test_provider(UserPasswordConfig::default());
         let (user, pass) = ("dev", "dev"); // 3 chars, below the min of 8
         let legacy_id = old_unsalted_key_id(user, pass);
         let key = Key::new_root_key_with_permissions(
@@ -760,40 +998,39 @@ mod tests {
             .unwrap();
 
         assert!(
-            provider.authenticate_core(user, pass).await.is_ok(),
+            provider.authenticate_core(user, pass, None).await.is_ok(),
             "an existing short password must still authenticate"
         );
     }
 
     #[tokio::test]
     async fn bootstrap_still_enforces_the_minimum_length() {
-        // Creating a NEW credential is where the policy bites.
-        let provider = test_provider();
+        // Creating a NEW credential is where the min-length policy bites. The
+        // bootstrap-secret gate runs first, so a valid secret must be presented
+        // to REACH the length check (that gate is covered separately above).
+        let provider = test_provider(config_with_secret(Some("s3cr3t-bootstrap")));
         let err = provider
-            .authenticate_core("dev", "dev")
+            .authenticate_core("dev", "dev", Some("s3cr3t-bootstrap"))
             .await
             .expect_err("bootstrap with a too-short password must be rejected");
         assert!(
             err.to_string().contains("at least"),
             "expected a min-length error, got: {err}"
         );
-        assert!(
-            provider
-                .key_manager
-                .list_keys(crate::storage::models::KeyType::Root)
-                .await
-                .unwrap()
-                .is_empty(),
+        assert_eq!(
+            root_key_count(&provider).await,
+            0,
             "no root key may be created when the password violates the policy"
         );
     }
 
     #[tokio::test]
     async fn overlong_password_is_rejected_on_the_auth_path() {
-        // The maximum IS enforced at login: it bounds PBKDF2 work per request.
-        let provider = test_provider();
+        // The maximum IS enforced at login: it bounds PBKDF2 work per request,
+        // so it fires before the bootstrap gate regardless of any secret.
+        let provider = test_provider(UserPasswordConfig::default());
         let err = provider
-            .authenticate_core("alice", &"x".repeat(129))
+            .authenticate_core("alice", &"x".repeat(129), None)
             .await
             .expect_err("an over-long password must be rejected before the KDF runs");
         assert!(
@@ -802,7 +1039,7 @@ mod tests {
         );
     }
 
-    // --- #8: salted KDF key-id derivation -------------------------------
+    // --- salted KDF key-id derivation (finding #4) ----------------------
 
     #[test]
     fn test_derive_key_id_is_deterministic() {
@@ -838,7 +1075,7 @@ mod tests {
         );
     }
 
-    // --- #8: password length enforcement --------------------------------
+    // --- password length enforcement (finding #17) ----------------------
 
     #[test]
     fn test_password_too_short_rejected() {

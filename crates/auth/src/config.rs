@@ -91,6 +91,19 @@ pub struct UserPasswordConfig {
     /// Maximum password length
     #[serde(default = "default_max_password_length")]
     pub max_password_length: usize,
+
+    /// Out-of-band secret required to bootstrap the very first root key on a
+    /// fresh node.
+    ///
+    /// When this is `None` (and the `MERO_AUTH_BOOTSTRAP_SECRET` environment
+    /// variable is unset), first-login bootstrap is **disabled** — the node
+    /// will not mint a root key for an unauthenticated caller, and a root key
+    /// must be provisioned out of band. When set, the bootstrapping client
+    /// must present a matching secret before the first root key is created.
+    /// An empty string is treated the same as `None` (bootstrap disabled), so
+    /// a blank value from env interpolation can never open the gate.
+    #[serde(default)]
+    pub bootstrap_secret: Option<String>,
 }
 
 impl Default for UserPasswordConfig {
@@ -98,6 +111,7 @@ impl Default for UserPasswordConfig {
         Self {
             min_password_length: 8,
             max_password_length: 128,
+            bootstrap_secret: None,
         }
     }
 }
