@@ -174,19 +174,21 @@ fn resolve_secret_kek(config: &StorageConfig) -> [u8; 32] {
 
 // Storage keys for different types of secrets
 const JWT_AUTH_SECRET_KEY: &str = "system:secrets:jwt_auth";
-const JWT_CHALLENGE_SECRET_KEY: &str = "system:secrets:jwt_challenge";
 const CSRF_SECRET_KEY: &str = "system:secrets:csrf";
 
 // Backup keys
 const JWT_AUTH_BACKUP_KEY: &str = "system:secrets:jwt_auth_backup";
-const JWT_CHALLENGE_BACKUP_KEY: &str = "system:secrets:jwt_challenge_backup";
 const CSRF_BACKUP_KEY: &str = "system:secrets:csrf_backup";
 
 /// Secret type enum
+///
+/// NOTE: a `JwtChallenge` variant used to exist for the (dead) challenge/response
+/// login surface. It was removed together with that surface; any legacy
+/// `system:secrets:jwt_challenge*` entries persisted in storage are simply never
+/// read again and are harmless to leave in place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SecretType {
     JwtAuth,
-    JwtChallenge,
     Csrf,
 }
 
@@ -194,7 +196,6 @@ impl SecretType {
     fn primary_key(&self) -> &'static str {
         match self {
             SecretType::JwtAuth => JWT_AUTH_SECRET_KEY,
-            SecretType::JwtChallenge => JWT_CHALLENGE_SECRET_KEY,
             SecretType::Csrf => CSRF_SECRET_KEY,
         }
     }
@@ -202,7 +203,6 @@ impl SecretType {
     fn backup_key(&self) -> &'static str {
         match self {
             SecretType::JwtAuth => JWT_AUTH_BACKUP_KEY,
-            SecretType::JwtChallenge => JWT_CHALLENGE_BACKUP_KEY,
             SecretType::Csrf => CSRF_BACKUP_KEY,
         }
     }
@@ -378,11 +378,7 @@ impl SecretManager {
     /// Initialize the secret manager
     pub async fn initialize(&self) -> Result<()> {
         // Initialize all secret types
-        for secret_type in [
-            SecretType::JwtAuth,
-            SecretType::JwtChallenge,
-            SecretType::Csrf,
-        ] {
+        for secret_type in [SecretType::JwtAuth, SecretType::Csrf] {
             self.initialize_secret(secret_type).await?;
         }
         Ok(())
@@ -483,11 +479,7 @@ impl SecretManager {
             loop {
                 tokio::time::sleep(Duration::from_secs(3600)).await; // Check every hour
 
-                for secret_type in [
-                    SecretType::JwtAuth,
-                    SecretType::JwtChallenge,
-                    SecretType::Csrf,
-                ] {
+                for secret_type in [SecretType::JwtAuth, SecretType::Csrf] {
                     if let Err(e) = self.rotate_if_needed(secret_type).await {
                         error!("Failed to rotate secret {:?}: {}", secret_type, e);
                     }
@@ -518,11 +510,6 @@ impl SecretManager {
     /// Get the JWT auth secret
     pub async fn get_jwt_auth_secret(&self) -> Result<String> {
         self.get_secret(SecretType::JwtAuth).await
-    }
-
-    /// Get the JWT challenge secret
-    pub async fn get_jwt_challenge_secret(&self) -> Result<String> {
-        self.get_secret(SecretType::JwtChallenge).await
     }
 
     /// Get the CSRF secret
