@@ -110,6 +110,10 @@ pub fn default_config() -> AuthConfig {
             issuer: "calimero-auth".to_string(),
             access_token_expiry: 3600,
             refresh_token_expiry: 2592000,
+            // Opt-in (finding #7): unset keeps legacy header-derived node-host
+            // validation. Operators set the node's public host to enforce
+            // node-binding against trusted config instead of request headers.
+            node_host: None,
         },
         storage: StorageConfig::RocksDB {
             path: "auth".into(),
