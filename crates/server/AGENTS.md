@@ -45,13 +45,8 @@ src/
 │   │   │   ├── get_context_storage.rs
 │   │   │   ├── get_contexts_for_application.rs
 │   │   │   ├── get_contexts_with_executors_for_application.rs
-│   │   │   ├── invite_to_context.rs
-│   │   │   ├── invite_to_context.rs
 │   │   │   ├── invite_specialized_node.rs
 │   │   │   ├── join_context.rs
-│   │   │   ├── join_context.rs
-│   │   │   ├── grant_capabilities.rs
-│   │   │   ├── revoke_capabilities.rs
 │   │   │   ├── sync.rs
 │   │   │   └── update_context_application.rs
 │   │   ├── identity.rs       # Identity handlers parent
@@ -65,7 +60,9 @@ src/
 │   │   │   └── lookup_alias.rs
 │   │   ├── blob.rs           # Blob handlers
 │   │   ├── peers.rs           # Peer handlers
-│   │   ├── proposals.rs       # Proposal handlers
+│   │   ├── groups/            # Group management handlers
+│   │   ├── namespaces/        # Namespace handlers
+│   │   ├── network/           # Network status handlers
 │   │   ├── tee.rs             # TEE handlers parent
 │   │   ├── tee/
 │   │   │   ├── attest.rs
@@ -98,7 +95,7 @@ primitives/                   # calimero-server-primitives
 └── src/
     ├── lib.rs                # Shared types
     ├── jsonrpc.rs            # JSON-RPC types
-    └── admin.rs              # Admin API types
+    └── admin/mod.rs          # Admin API types
 ```
 
 ## API Endpoints
@@ -112,10 +109,10 @@ GET  /admin-api/contexts/:id          # Get context
 DELETE /admin-api/contexts/:id        # Delete context
 
 GET  /admin-api/applications          # List apps
-POST /admin-api/applications          # Install app
+POST /admin-api/install-application   # Install app
 GET  /admin-api/applications/:id      # Get app
 
-POST /admin-api/contexts/:id/invite   # Invite member
+POST /admin-api/contexts/invite-specialized-node   # Invite specialized node
 POST /admin-api/contexts/:id/join     # Join context
 ```
 
@@ -191,7 +188,7 @@ pub fn admin_router() -> Router<AppState> {
 | `src/ws/subscribe.rs`                                    | WS subscriptions        |
 | `src/sse/handlers.rs`                                    | SSE handlers            |
 | `primitives/src/jsonrpc.rs`                              | JSON-RPC types          |
-| `primitives/src/admin.rs`                                | Admin API types         |
+| `primitives/src/admin/mod.rs`                            | Admin API types         |
 
 ## JIT Index
 
