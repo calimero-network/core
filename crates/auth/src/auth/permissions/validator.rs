@@ -503,7 +503,13 @@ impl PermissionValidator {
 
             // Admin auth endpoints
             ("/admin/keys", HttpMethod::GET) => vec![Permission::Keys(KeyPermission::List)],
-            ("/admin/keys", HttpMethod::POST) => vec![Permission::Keys(KeyPermission::Create)],
+            // Creating a key here mints a ROOT key with `["admin"]` permissions
+            // (see `create_key_handler` -> `provider.create_root_key`). Gating
+            // it on the strictly-weaker `keys:create` let any key holding only
+            // `keys:create` mint a full admin root key — privilege escalation.
+            // Require `admin`, mirroring the `PUT /admin/keys/:id/permissions`
+            // decision.
+            ("/admin/keys", HttpMethod::POST) => vec![Permission::Admin(AdminPermission)],
             ("/admin/revoke", HttpMethod::POST) => vec![Permission::Keys(KeyPermission::Delete)],
             ("/admin/keys/clients", HttpMethod::GET) => {
                 vec![Permission::Keys(KeyPermission::ListClients)]
@@ -1175,6 +1181,42 @@ mod tests {
         assert!(matches!(
             validator.determine_required_permissions(&get).as_slice(),
             [Permission::Keys(KeyPermission::GetPermissions(_))]
+        ));
+    }
+
+    /// Creating a root key (`POST /admin/keys`) mints an `["admin"]` key, so it
+    /// must require `admin`. A token holding only the strictly-weaker
+    /// `keys:create` must NOT be able to mint an admin root key — that is the
+    /// privilege escalation this guard closes. Listing keys stays scoped.
+    #[test]
+    fn creating_root_key_requires_admin() {
+        let validator = PermissionValidator::new();
+
+        let post = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/keys")
+            .body(Body::empty())
+            .unwrap();
+        let required = validator.determine_required_permissions(&post);
+        assert_eq!(required, vec![Permission::Admin(AdminPermission)]);
+
+        // A token scoped only to keys:create must be denied.
+        let scoped = vec!["keys:create".to_owned()];
+        assert!(
+            !validator.validate_permissions(&scoped, &required),
+            "a non-admin keys:create token must not be able to mint an admin root key",
+        );
+        assert!(validator.validate_permissions(&["admin".to_owned()], &required));
+
+        // Listing keys remains a scoped key permission, not admin-gated.
+        let get = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/keys")
+            .body(Body::empty())
+            .unwrap();
+        assert!(matches!(
+            validator.determine_required_permissions(&get).as_slice(),
+            [Permission::Keys(KeyPermission::List)]
         ));
     }
 
