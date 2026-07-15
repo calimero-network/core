@@ -135,11 +135,21 @@ impl TokenManager {
         }
     }
 
-    /// Validate that a token's node_url matches the request host
+    /// Validate that a token's node_url matches the host this node is reachable
+    /// at.
     ///
-    /// This function compares the host from the token's node_url with the original
-    /// host from the request headers. It skips validation for internal auth service
-    /// requests.
+    /// The host to compare against is chosen as follows (security finding #7):
+    ///
+    /// * If a trusted authoritative host is configured (`jwt.node_host`), it is
+    ///   used and the request headers are **ignored entirely**. `Host` and
+    ///   `X-Forwarded-Host` are both client-controllable, so a caller that
+    ///   reaches the auth service directly (outside the intended reverse-proxy
+    ///   path) could otherwise spoof `X-Forwarded-Host` to replay a token bound
+    ///   to node A against node B. A configured host closes that hole.
+    /// * Otherwise the host is derived from `X-Forwarded-Host` (else `Host`), as
+    ///   before. This preserves the legacy behavior for deployments that have
+    ///   not opted in — a backend cannot reliably auto-discover its own public
+    ///   host, so the trusted-host hardening is opt-in rather than mandatory.
     ///
     /// # Arguments
     ///
@@ -154,10 +164,14 @@ impl TokenManager {
         token_node_url: &str,
         headers: &HeaderMap,
     ) -> Result<(), String> {
-        let request_host = headers
-            .get("X-Forwarded-Host")
-            .or_else(|| headers.get("host"))
-            .and_then(|h| h.to_str().ok());
+        let request_host = if let Some(node_host) = self.config.node_host.as_deref() {
+            Some(node_host)
+        } else {
+            headers
+                .get("X-Forwarded-Host")
+                .or_else(|| headers.get("host"))
+                .and_then(|h| h.to_str().ok())
+        };
 
         Self::validate_node_host_match(token_node_url, request_host)
     }
@@ -1013,6 +1027,7 @@ mod tests {
             issuer: "calimero-test".to_string(),
             access_token_expiry: 3600,
             refresh_token_expiry: 30 * 24 * 3600,
+            node_host: None,
         }
     }
 
@@ -1561,6 +1576,7 @@ mod tests {
                 issuer: "test".to_string(),
                 access_token_expiry: 3600,
                 refresh_token_expiry: 86400,
+                node_host: None,
             },
             storage,
             secret_manager,
@@ -1573,6 +1589,77 @@ mod tests {
         // there is no error to handle here.
         drop(h.insert(name, value.parse().unwrap()));
         h
+    }
+
+    async fn test_token_manager_with_node_host(node_host: &str) -> TokenManager {
+        use crate::storage::providers::memory::MemoryStorage;
+        use crate::storage::Storage;
+
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        secret_manager.initialize().await.unwrap();
+        TokenManager::new(
+            JwtConfig {
+                issuer: "test".to_string(),
+                access_token_expiry: 3600,
+                refresh_token_expiry: 86400,
+                node_host: Some(node_host.to_string()),
+            },
+            storage,
+            secret_manager,
+        )
+    }
+
+    /// With a trusted `node_host` configured (finding #7), node-binding is
+    /// validated against that value and the request headers are ignored — so a
+    /// spoofed `X-Forwarded-Host` can no longer replay a node-A token against a
+    /// node-B service, even though the attacker fully controls the header.
+    #[tokio::test]
+    async fn configured_node_host_ignores_spoofed_header() {
+        // This service is authoritatively node-b.
+        let tm = test_token_manager_with_node_host("node-b.example").await;
+
+        // A token bound to node-b: accepted regardless of what the header says
+        // (attacker sets X-Forwarded-Host to node-a to try to look like node-a).
+        assert!(tm
+            .validate_node_host(
+                "http://node-b.example:2428",
+                &headers_with("X-Forwarded-Host", "node-a.example")
+            )
+            .is_ok());
+
+        // A token bound to node-a replayed against this node-b service: the
+        // spoofed matching header is IGNORED, so it is rejected on the trusted
+        // config host. This is the exact cross-node replay finding #7 describes.
+        assert!(tm
+            .validate_node_host(
+                "http://node-a.example:2428",
+                &headers_with("X-Forwarded-Host", "node-a.example")
+            )
+            .is_err());
+
+        // Missing headers entirely: still validated against the trusted host,
+        // so a node-b token passes even with no Host header (the config, not the
+        // request, is authoritative).
+        assert!(tm
+            .validate_node_host("http://node-b.example:2428", &HeaderMap::new())
+            .is_ok());
+    }
+
+    /// Local-dev topology: node + embedded auth on localhost:2428, app on :5173.
+    /// A token minted with the node's own URL validates against the configured
+    /// localhost host; the app's :5173 origin is a CORS concern and never enters
+    /// node-host binding.
+    #[tokio::test]
+    async fn configured_node_host_accepts_localhost() {
+        let tm = test_token_manager_with_node_host("localhost:2428").await;
+        assert!(tm
+            .validate_node_host("http://localhost:2428", &HeaderMap::new())
+            .is_ok());
+        // A token for a different host is rejected against the configured one.
+        assert!(tm
+            .validate_node_host("http://evil.example:2428", &HeaderMap::new())
+            .is_err());
     }
 
     /// A spoofed `X-Forwarded-Host` for a different node must NOT validate a
