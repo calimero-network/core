@@ -909,9 +909,19 @@ impl Handler<ApplyBeaconLocal> for ReadinessManager {
         // A peer beacon has just been inserted into the cache. Re-evaluate
         // the FSM with the (possibly) updated `peer_summary` and edge-emit
         // if our tier transitions into *Ready.
-        let Some(mut state) = self.state_per_namespace.get(&msg.namespace_id).cloned() else {
-            return;
-        };
+        //
+        // Self-seed if the entry is missing: a beacon can reach this handler
+        // (one hop, sent straight to the readiness addr) before the
+        // subscribe-time `NamespaceSubscribed` seed, which takes an extra hop
+        // via `NodeManager`. `NamespaceOpApplied` only seeds once we apply
+        // locally. Seeding here keeps all three FSM eval entry points
+        // self-sufficient and symmetric; `or_insert_with` is idempotent, so an
+        // earlier `subscribed_at` from a subscribe/op signal is preserved.
+        let mut state = self
+            .state_per_namespace
+            .entry(msg.namespace_id)
+            .or_insert_with(|| ReadinessState::seed(Instant::now()))
+            .clone();
         // Refresh from the store before evaluating — see
         // `Handler<NamespaceOpApplied>` for rationale. Retain the current
         // value on a transient store error rather than regressing to 0.

@@ -333,6 +333,60 @@ fn namespace_subscribed_seeds_entry_and_op_applied_preserves_subscribed_at() {
     );
 }
 
+#[test]
+fn apply_beacon_local_seeds_entry_when_absent_and_preserves_existing() {
+    // Mirrors the `.entry(ns).or_insert_with(ReadinessState::seed)` that
+    // `Handler<ApplyBeaconLocal>` runs on first contact. Before this seed the
+    // handler did `get(...).else { return }`, so a beacon arriving before the
+    // subscribe-time `NamespaceSubscribed` seed (which takes an extra hop via
+    // NodeManager) was silently dropped and the FSM never entered. Seeding
+    // here makes the entry exist so the subsequent evaluation runs.
+    let mut states: HashMap<[u8; 32], ReadinessState> = HashMap::new();
+    let ns = [11u8; 32];
+
+    assert!(!states.contains_key(&ns));
+    let beacon_at = Instant::now() - Duration::from_secs(5);
+    states
+        .entry(ns)
+        .or_insert_with(|| ReadinessState::seed(beacon_at));
+    assert!(
+        states.contains_key(&ns),
+        "a beacon arriving before any subscribe/op signal must seed the entry"
+    );
+    assert_eq!(states[&ns].tier, ReadinessTier::Bootstrapping);
+    assert_eq!(states[&ns].local_applied_through, 0);
+
+    // A later subscribe/op signal reuses the entry (idempotent), so the
+    // earlier `subscribed_at` survives.
+    let seeded_at = states[&ns].subscribed_at;
+    let entry = states
+        .entry(ns)
+        .or_insert_with(|| ReadinessState::seed(Instant::now()));
+    assert_eq!(
+        entry.subscribed_at, seeded_at,
+        "a beacon-seeded entry must not be overwritten by a later signal"
+    );
+}
+
+#[test]
+fn beacon_seeded_empty_dag_entry_evaluates_to_catching_up() {
+    // The point of seeding in ApplyBeaconLocal: once the entry exists, an
+    // empty-DAG node evaluated against a fresh peer beacon enters CatchingUp
+    // (a real target to sync toward) instead of having its beacon dropped.
+    let state = ReadinessState::seed(Instant::now());
+    let peers = PeerSummary {
+        max_applied_through: Some(42),
+        heard_recent_beacon: true,
+    };
+    let tier = evaluate_readiness(&state, &peers, &ReadinessConfig::default(), Instant::now());
+    assert!(matches!(
+        tier,
+        ReadinessTier::CatchingUp {
+            target_applied_through: 42
+        }
+    ));
+}
+
 fn make_beacon(pk: PublicKey, applied_through: u64, strong: bool) -> SignedReadinessBeacon {
     SignedReadinessBeacon {
         namespace_id: [42u8; 32].into(),
