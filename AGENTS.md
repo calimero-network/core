@@ -117,6 +117,19 @@ Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `build`, `ci`
 - Imperative present tense ("add" not "added")
 - No period, no capitalization
 
+### Filing Issues
+
+When you (or an agent) open an engineering issue, follow this structure - it is
+the [`technical_issue`](.github/ISSUE_TEMPLATE/technical_issue.md) template:
+
+1. **Summary** - what is wrong and where (crate/module/flow); observed behavior, not a proposed fix.
+2. **Impact** - who/what is affected and how badly: severity, blast radius, and a concrete real-world consequence.
+3. **Steps to reproduce** - numbered, minimal steps, with actual vs expected result and any log / failing test / merobox scenario.
+4. **Criteria for resolving** - an objective checklist that decides when it is fixed: the specific behavior that must hold, a regression test covering it, and `cargo fmt`/`clippy`/`test` passing.
+
+Keep it scope-focused: one issue per defect, no side investigations. Operator/user
+bug reports (system specs, install method) use the separate `bug_report` template.
+
 ## Security & Secrets
 
 - **NEVER** commit tokens, keys, or credentials
