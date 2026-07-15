@@ -14,6 +14,12 @@ anthropic:
   default_model: claude-sonnet-5
   enable_prompt_caching: true
 
+# Reviews now post via the built-in github-actions token; keep recognizing the
+# reviews the removed MeroReviewer App posted so delta tracking stays continuous.
+github:
+  extra_reviewer_users:
+    - "meroreviewer[bot]"
+
 # Review agents. Only takes effect when the workflow passes --config; the App's
 # webhook uses its own config. Names must match the reviewer's registry exactly.
 # Order matters: --agents N runs the first N. Thinking is ON only for the two
