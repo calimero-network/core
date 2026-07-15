@@ -54,48 +54,14 @@ jobs:
   # wasms) instead of their sum. Each uploads the artifact the `scenario`
   # matrix consumes, so the matrix jobs never re-compile Rust.
   #
-  # Cache: build-merod owns the shared `e2e-rust-apps` bucket (it builds the
-  # native release binary, like that workflow does); build-wasms reads it but
-  # never SAVEs, so the two jobs never race a second writer for one key.
+  # The merod image build is the reusable build-merod-image.yml workflow, shared
+  # verbatim with e2e-rust-apps.yml so the identical build is defined once. That
+  # job remains the sole master-time writer of the shared `e2e-rust-apps`
+  # rust-cache bucket; build-wasms below reads it but never SAVEs, so the two
+  # jobs never race a second writer for one key.
   build-merod:
     name: Build merod image
-    runs-on: ubuntu-24.04-8cpu
-    timeout-minutes: 20
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
-        with:
-          toolchain: stable
-          targets: wasm32-unknown-unknown
-          # Share the e2e-rust-apps cache bucket: this job builds the same
-          # native x86_64 merod release binary, so it rides that workflow's
-          # already-warm dependency cache instead of a private cold one.
-          shared-key: e2e-rust-apps
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-
-      - name: Build local merod image
-        uses: ./.github/actions/build-local-merod
-        env:
-          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Save merod:local Docker image
-        run: |
-          mkdir -p image-artifact
-          docker save merod:local | gzip > image-artifact/merod-local.tar.gz
-          ls -la image-artifact/
-
-      - name: Upload merod image artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: app-migration-merod-image
-          path: image-artifact/merod-local.tar.gz
-          retention-days: 1
+    uses: ./.github/workflows/build-merod-image.yml
 
   build-wasms:
     name: Build WASM fixtures
@@ -249,12 +215,12 @@ jobs:
       - name: Download merod image artifact
         uses: actions/download-artifact@v8
         with:
-          name: app-migration-merod-image
-          path: image-artifact
+          name: merod-image
+          path: /tmp
 
       - name: Load merod:local Docker image
         run: |
-          gunzip -c image-artifact/merod-local.tar.gz | docker load
+          zstd -d /tmp/merod-local.tar.zst --stdout | docker load
           docker images | grep merod || true
 
       - name: Download WASM fixtures
