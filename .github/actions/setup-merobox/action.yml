@@ -45,10 +45,15 @@ runs:
         #   * the `delete_blob` step (admin-API blob delete that cascades
         #     parent+chunks+metadata, merobox#285 — 0.6.39) used by
         #     37-stranded-resync (the old delete_blob_on_disk rm was a no-op for
-        #     chunked blobs, so it could not stage the strand).
+        #     chunked blobs, so it could not stage the strand), and
+        #   * the `login` step forwarding MERO_AUTH_BOOTSTRAP_SECRET into the
+        #     node container and presenting it as provider_data.bootstrap_secret
+        #     (merobox#292 — 0.6.42), required now that first-root-key bootstrap
+        #     demands the out-of-band secret (core#3221). Without it every
+        #     fresh-node scenario login fails "Invalid credentials".
         # Pin the floor so an older build fails loudly rather than skipping
         # steps or collecting empty log artifacts.
-        MIN_MEROBOX="0.6.39"
+        MIN_MEROBOX="0.6.42"
         HAVE_MEROBOX="$(merobox --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
         if [ "$(printf '%s\n%s\n' "$MIN_MEROBOX" "$HAVE_MEROBOX" | sort -V | head -1)" != "$MIN_MEROBOX" ]; then
           echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX} (delete_blob step, merobox#285)"
