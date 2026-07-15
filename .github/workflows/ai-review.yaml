@@ -1,19 +1,11 @@
 name: AI Code Review
 
 on:
-  pull_request:
-    # `synchronize` (re-run on every push) deliberately omitted to control
-    # cost — a review fires on PR open / reopen / draft→ready, not on each
-    # push. Re-trigger a review by toggling draft or via workflow_dispatch.
-    types: [opened, reopened, ready_for_review]
-    # Skipped only when ALL changed files are under docs/architecture/docs-static —
-    # mixed PRs still trigger a review (standard GitHub Actions paths-ignore semantics).
-    # Pure-doc PRs are owned by the `Doc Auto-Update` workflow; this avoids paying
-    # twice for the same diff.
-    paths-ignore:
-      - 'docs/**'
-      - 'architecture/**'
-      - 'docs-static/**'
+  # Automatic reviews are owned by the MeroReviewer App (webhook): it reviews
+  # on PR open AND on every push, with delta tracking and convergence so
+  # repeat passes stay cheap. Running this workflow on pull_request too made
+  # every PR double-reviewed. Kept as manual-only: a deliberate full re-run
+  # lever when the App's verdict needs a second opinion.
   workflow_dispatch:
     inputs:
       pr_number:
@@ -28,21 +20,12 @@ on:
         options: ["1", "2", "3", "4", "5"]
 
 concurrency:
-  group: ai-review-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+  group: ai-review-${{ github.event.inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
   review:
     runs-on: ubuntu-latest
-    # Skip on draft PRs and on PRs from forks (forks don't get repo secrets,
-    # so the run would attempt to call Claude with no key and fail noisily).
-    # Maintainers can review fork PRs manually via workflow_dispatch after
-    # auditing the diff.
-    if: >-
-      (github.event_name == 'workflow_dispatch') ||
-      (github.event.pull_request.draft == false &&
-       github.event.pull_request.head.repo.full_name == github.repository)
-
     permissions:
       contents: read
       pull-requests: write
@@ -76,15 +59,8 @@ jobs:
       - name: Determine PR number and agent count
         id: pr
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "number=${{ github.event.inputs.pr_number }}" >> $GITHUB_OUTPUT
-            echo "agents=${{ github.event.inputs.agents }}"    >> $GITHUB_OUTPUT
-          else
-            echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
-            # 3 agents so the cross-review validation round runs (needs >=3);
-            # the agents block in .ai-reviewer.yaml selects security/logic/patterns.
-            echo "agents=3"                                        >> $GITHUB_OUTPUT
-          fi
+          echo "number=${{ github.event.inputs.pr_number }}" >> $GITHUB_OUTPUT
+          echo "agents=${{ github.event.inputs.agents }}"    >> $GITHUB_OUTPUT
 
       - name: Run AI Code Review
         env:
