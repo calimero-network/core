@@ -10,12 +10,14 @@ mod config;
 mod init;
 mod kms;
 mod run;
+mod tee;
 mod validation;
 
 use config::ConfigCommand;
 use init::InitCommand;
 use kms::KmsCommand;
 use run::RunCommand;
+use tee::TeeCommand;
 
 pub const EXAMPLES: &str = concat!(
     r"
@@ -73,6 +75,7 @@ pub enum SubCommands {
     Kms(KmsCommand),
     #[command(alias = "up")]
     Run(RunCommand),
+    Tee(TeeCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -94,6 +97,7 @@ impl RootCommand {
             SubCommands::Init(init) => init.run(self.args).await,
             SubCommands::Kms(kms) => kms.run(&self.args).await,
             SubCommands::Run(run) => run.run(self.args).await,
+            SubCommands::Tee(tee) => tee.run(&self.args).await,
         }
     }
 }
