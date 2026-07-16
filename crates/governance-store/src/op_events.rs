@@ -15,6 +15,7 @@
 //! specialized for `ContextRegistered`; this module is its general-
 //! purpose peer covering all op variants that downstream handlers care
 //! about.
+use calimero_governance_types::NamespaceId;
 use std::sync::OnceLock;
 
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -39,7 +40,7 @@ pub enum OpEvent {
     /// nested under `parent_group_id`. Replaces the old SubgroupNested event,
     /// fired during create flows.
     SubgroupCreated {
-        namespace_id: [u8; 32],
+        namespace_id: NamespaceId,
         parent_group_id: [u8; 32],
         child_group_id: [u8; 32],
     },
@@ -47,7 +48,7 @@ pub enum OpEvent {
     /// another atomically. Replaces the old SubgroupNested/SubgroupUnnested
     /// pair (orphan state is no longer expressible).
     SubgroupReparented {
-        namespace_id: [u8; 32],
+        namespace_id: NamespaceId,
         old_parent_group_id: [u8; 32],
         new_parent_group_id: [u8; 32],
         child_group_id: [u8; 32],
@@ -113,6 +114,16 @@ pub enum OpEvent {
         group_id: [u8; 32],
         recipient: PublicKey,
     },
+    /// `GroupOp::SubgroupVisibilitySet` applied and changed a subgroup's
+    /// visibility. `open` reflects the post-apply mode (`true` == `Open`).
+    ///
+    /// A root-admitted member (e.g. a `ReadOnlyTee`) inherits membership only
+    /// into `Open` subgroups, so an `Open` flip that applies AFTER a context
+    /// was registered — or after that context's `ContextRegistered` auto-follow
+    /// decision already ran while the subgroup still read `Restricted` — must
+    /// re-trigger the inherited-follow decision for that subgroup's contexts.
+    /// Auto-follow subscribes to this so a late-arriving flip is not a dead end.
+    SubgroupVisibilityChanged { group_id: [u8; 32], open: bool },
 }
 
 /// The process-wide broadcast channel. Tests share this channel, so

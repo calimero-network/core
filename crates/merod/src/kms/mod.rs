@@ -209,6 +209,7 @@ const MAX_KMS_REPORT_DATA_HEX_LEN: usize = 1024;
 const MAX_KMS_CHALLENGE_ID_LEN: usize = 512;
 const MAX_KMS_NONCE_B64_LEN: usize = 2048;
 const MAX_KMS_KEY_HEX_LEN: usize = 4096;
+const MIN_KMS_KEY_BYTES: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -683,86 +684,242 @@ async fn verify_kms_attestation_from_release_policy(
         bail!("KMS attestation verification failed");
     }
 
-    enforce_attestation_policy(policy, &verification_result, is_mock)?;
+    enforce_attestation_policy(
+        &AttestationAllowlists::from_release(policy),
+        &verification_result,
+        PolicyEnforcementMode::ReleaseStrict {
+            allow_missing_tcb_status: is_mock,
+        },
+    )?;
     info!("KMS attestation verified successfully");
     Ok(())
 }
 
-fn enforce_attestation_policy(
-    policy: &KmsAttestationPolicy,
-    verification_result: &calimero_tee_attestation::VerificationResult,
-    allow_missing_tcb_status: bool,
-) -> Result<()> {
-    // Defense in depth: release-policy verification can run on paths that do
-    // not rely on startup config validation, so we re-check required allowlists
-    // here before enforcing measurement and TCB matching.
-    enforce_required_allowlist_non_empty(
-        "policy.allowed_tcb_statuses",
-        &policy.allowed_tcb_statuses,
-    )?;
-    for (field_name, values) in [
-        ("policy.allowed_mrtd", &policy.allowed_mrtd),
-        ("policy.allowed_rtmr0", &policy.allowed_rtmr0),
-        ("policy.allowed_rtmr1", &policy.allowed_rtmr1),
-        ("policy.allowed_rtmr2", &policy.allowed_rtmr2),
-        ("policy.allowed_rtmr3", &policy.allowed_rtmr3),
-    ] {
-        enforce_required_measurement_allowlist_non_empty(field_name, values)?;
+/// How an attestation policy is enforced.
+///
+/// The release-policy and config-policy verifiers share the same measurement and
+/// TCB-status checks but differ in strictness and in the config-key names used in
+/// error messages. Routing both through a single enforcement helper keyed on this
+/// mode keeps the two call sites from silently diverging.
+#[derive(Debug, Clone, Copy)]
+enum PolicyEnforcementMode {
+    /// Release-fetched, Sigstore-verified policy: unconditionally strict.
+    ///
+    /// Required allowlists are always enforced and every measurement must be in
+    /// its allowlist. A missing TCB status is tolerated only when the quote is a
+    /// (development-gated) mock quote.
+    ReleaseStrict { allow_missing_tcb_status: bool },
+    /// Config-derived policy: strict unless `accept_mock` relaxes it
+    /// (development/testing only). When relaxed, empty allowlists are skipped
+    /// instead of being required.
+    Config { accept_mock: bool },
+}
+
+impl PolicyEnforcementMode {
+    /// Whether required allowlists must be non-empty and every measurement must match.
+    fn is_strict(self) -> bool {
+        match self {
+            PolicyEnforcementMode::ReleaseStrict { .. } => true,
+            PolicyEnforcementMode::Config { accept_mock } => !accept_mock,
+        }
     }
 
-    if let Some(actual_tcb_status) = verification_result.tcb_status.as_ref() {
-        let normalized_tcb = actual_tcb_status.to_ascii_lowercase();
-        if !policy
-            .allowed_tcb_statuses
-            .iter()
-            .any(|a| a == &normalized_tcb)
-        {
-            bail!(
-                "KMS TCB status '{}' is not allowed. Allowed: {:?}",
-                actual_tcb_status,
-                policy.allowed_tcb_statuses
-            );
+    /// Config-key prefix used when reporting a missing required allowlist.
+    fn field_prefix(self) -> &'static str {
+        match self {
+            PolicyEnforcementMode::ReleaseStrict { .. } => "policy",
+            PolicyEnforcementMode::Config { .. } => "tee.kms.phala.attestation",
         }
-    } else if allow_missing_tcb_status {
-        warn!("Mock KMS quote did not provide TCB status; skipping TCB status allowlist check");
-    } else {
-        bail!("Quote verification did not provide a TCB status");
     }
+}
+
+/// Borrowed view over the allowlists of either policy representation, so a single
+/// enforcement helper can serve both the release-policy and config-policy paths.
+struct AttestationAllowlists<'a> {
+    tcb_statuses: &'a [String],
+    mrtd: &'a [String],
+    rtmr0: &'a [String],
+    rtmr1: &'a [String],
+    rtmr2: &'a [String],
+    rtmr3: &'a [String],
+}
+
+impl<'a> AttestationAllowlists<'a> {
+    fn from_release(policy: &'a KmsAttestationPolicy) -> Self {
+        Self {
+            tcb_statuses: &policy.allowed_tcb_statuses,
+            mrtd: &policy.allowed_mrtd,
+            rtmr0: &policy.allowed_rtmr0,
+            rtmr1: &policy.allowed_rtmr1,
+            rtmr2: &policy.allowed_rtmr2,
+            rtmr3: &policy.allowed_rtmr3,
+        }
+    }
+
+    fn from_config(policy: &'a NormalizedKmsAttestationPolicy) -> Self {
+        Self {
+            tcb_statuses: &policy.allowed_tcb_statuses,
+            mrtd: &policy.allowed_mrtd,
+            rtmr0: &policy.allowed_rtmr0,
+            rtmr1: &policy.allowed_rtmr1,
+            rtmr2: &policy.allowed_rtmr2,
+            rtmr3: &policy.allowed_rtmr3,
+        }
+    }
+}
+
+/// Enforce the measurement and TCB-status allowlists against a verified KMS quote.
+///
+/// This is the single enforcement point shared by both KMS verification paths:
+/// the release-policy path (always strict) and the config-policy path (strict
+/// unless `accept_mock`). `mode` selects the strictness and the config-key names
+/// used in error messages, so the two call sites can no longer silently diverge.
+///
+/// Defense in depth: release-policy verification can run on paths that do not
+/// rely on startup config validation, so under strict mode we re-check that the
+/// required allowlists are present before enforcing measurement and TCB matching.
+fn enforce_attestation_policy(
+    allowlists: &AttestationAllowlists<'_>,
+    verification_result: &VerificationResult,
+    mode: PolicyEnforcementMode,
+) -> Result<()> {
+    if mode.is_strict() {
+        let prefix = mode.field_prefix();
+        enforce_required_allowlist_non_empty(
+            &format!("{prefix}.allowed_tcb_statuses"),
+            allowlists.tcb_statuses,
+        )?;
+        for (field_suffix, values) in [
+            ("allowed_mrtd", allowlists.mrtd),
+            ("allowed_rtmr0", allowlists.rtmr0),
+            ("allowed_rtmr1", allowlists.rtmr1),
+            ("allowed_rtmr2", allowlists.rtmr2),
+            ("allowed_rtmr3", allowlists.rtmr3),
+        ] {
+            enforce_required_measurement_allowlist_non_empty(
+                &format!("{prefix}.{field_suffix}"),
+                values,
+            )?;
+        }
+    }
+
+    enforce_tcb_status_allowlist(allowlists.tcb_statuses, verification_result, mode)?;
 
     let body = &verification_result.quote.body;
-    enforce_measurement_allowlist_for_release_policy("MRTD", &body.mrtd, &policy.allowed_mrtd)?;
-    enforce_measurement_allowlist_for_release_policy("RTMR0", &body.rtmr0, &policy.allowed_rtmr0)?;
-    enforce_measurement_allowlist_for_release_policy("RTMR1", &body.rtmr1, &policy.allowed_rtmr1)?;
-    enforce_measurement_allowlist_for_release_policy("RTMR2", &body.rtmr2, &policy.allowed_rtmr2)?;
-    enforce_measurement_allowlist_for_release_policy("RTMR3", &body.rtmr3, &policy.allowed_rtmr3)?;
+    enforce_measurement_allowlist("MRTD", &body.mrtd, allowlists.mrtd, mode)?;
+    enforce_measurement_allowlist("RTMR0", &body.rtmr0, allowlists.rtmr0, mode)?;
+    enforce_measurement_allowlist("RTMR1", &body.rtmr1, allowlists.rtmr1, mode)?;
+    enforce_measurement_allowlist("RTMR2", &body.rtmr2, allowlists.rtmr2, mode)?;
+    enforce_measurement_allowlist("RTMR3", &body.rtmr3, allowlists.rtmr3, mode)?;
     Ok(())
 }
 
-fn enforce_measurement_allowlist_for_release_policy(
-    label: &str,
-    actual: &str,
-    allowed: &[String],
+/// Enforce the TCB-status allowlist.
+///
+/// The release path waives a missing TCB status only for (dev-gated) mock quotes;
+/// the config path additionally skips the check entirely when running in relaxed
+/// mock mode with an empty allowlist. The two paths intentionally keep distinct
+/// control flow and error strings, so they are matched per mode.
+fn enforce_tcb_status_allowlist(
+    allowed_tcb_statuses: &[String],
+    verification_result: &VerificationResult,
+    mode: PolicyEnforcementMode,
 ) -> Result<()> {
-    let normalized = normalize_attestation_measurement(actual);
-    if allowed.iter().any(|a| a == &normalized) {
+    match mode {
+        PolicyEnforcementMode::ReleaseStrict {
+            allow_missing_tcb_status,
+        } => {
+            if let Some(actual_tcb_status) = verification_result.tcb_status.as_ref() {
+                let normalized_tcb = actual_tcb_status.to_ascii_lowercase();
+                if !allowed_tcb_statuses.iter().any(|a| a == &normalized_tcb) {
+                    bail!(
+                        "KMS TCB status '{}' is not allowed. Allowed: {:?}",
+                        actual_tcb_status,
+                        allowed_tcb_statuses
+                    );
+                }
+            } else if allow_missing_tcb_status {
+                warn!(
+                    "Mock KMS quote did not provide TCB status; skipping TCB status allowlist check"
+                );
+            } else {
+                bail!("Quote verification did not provide a TCB status");
+            }
+        }
+        PolicyEnforcementMode::Config { accept_mock } => {
+            let strict_policy = !accept_mock;
+            if !strict_policy && allowed_tcb_statuses.is_empty() {
+                debug!("Skipping TCB status allowlist check (allowlist is empty in mock mode)");
+            } else {
+                let actual_tcb_status = verification_result
+                    .tcb_status
+                    .as_deref()
+                    .ok_or_else(|| eyre::eyre!("KMS attestation did not include TCB status"))?;
+                let normalized_tcb_status = actual_tcb_status.to_ascii_lowercase();
+                if !allowed_tcb_statuses
+                    .iter()
+                    .any(|allowed| allowed == &normalized_tcb_status)
+                {
+                    bail!(
+                        "KMS TCB status '{}' is not allowed. Allowed: {}",
+                        actual_tcb_status,
+                        allowed_tcb_statuses.join(", ")
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Enforce a single measurement allowlist.
+///
+/// Empty allowlists are skipped (only reachable in relaxed config mock mode; the
+/// strict paths require them to be non-empty first). The error format differs per
+/// mode to preserve the exact messages each verification path previously produced.
+fn enforce_measurement_allowlist(
+    label: &str,
+    actual_measurement: &str,
+    allowed_measurements: &[String],
+    mode: PolicyEnforcementMode,
+) -> Result<()> {
+    if allowed_measurements.is_empty() {
+        debug!(
+            measurement = label,
+            "Skipping measurement allowlist check (allowlist is empty)"
+        );
         return Ok(());
     }
 
-    let preview_len = 5usize.min(allowed.len());
-    let preview = allowed[..preview_len].join(", ");
-    let suffix = if allowed.len() > preview_len {
-        format!(" ... ({} total)", allowed.len())
-    } else {
-        String::new()
-    };
+    let normalized_actual = normalize_attestation_measurement(actual_measurement);
+    if allowed_measurements
+        .iter()
+        .any(|allowed| allowed == &normalized_actual)
+    {
+        return Ok(());
+    }
 
-    bail!(
-        "KMS {} '{}' is not in allowlist [{}{}]",
-        label,
-        normalized,
-        preview,
-        suffix
-    )
+    match mode {
+        PolicyEnforcementMode::ReleaseStrict { .. } => {
+            let preview_len = 5usize.min(allowed_measurements.len());
+            let preview = allowed_measurements[..preview_len].join(", ");
+            let suffix = if allowed_measurements.len() > preview_len {
+                format!(" ... ({} total)", allowed_measurements.len())
+            } else {
+                String::new()
+            };
+            bail!(
+                "KMS {} '{}' is not in allowlist [{}{}]",
+                label,
+                normalized_actual,
+                preview,
+                suffix
+            )
+        }
+        PolicyEnforcementMode::Config { .. } => {
+            bail!("{label} '{}' is not in allowlist", normalized_actual)
+        }
+    }
 }
 
 fn enforce_required_allowlist_non_empty(field_name: &str, values: &[String]) -> Result<()> {
@@ -1050,7 +1207,13 @@ async fn verify_kms_attestation(
         );
     }
 
-    enforce_kms_attestation_policy(&policy, &verification_result)?;
+    enforce_attestation_policy(
+        &AttestationAllowlists::from_config(&policy),
+        &verification_result,
+        PolicyEnforcementMode::Config {
+            accept_mock: policy.accept_mock,
+        },
+    )?;
     info!("KMS self-attestation verified successfully");
 
     Ok(())
@@ -1288,7 +1451,16 @@ fn decode_kms_encryption_key(response: &PhalaGetKeyResponse) -> Result<Vec<u8>> 
         bail!("KMS returned encryption key with invalid odd hex length");
     }
 
-    hex::decode(key_hex).context("Failed to decode key from hex")
+    let key = hex::decode(key_hex).context("Failed to decode key from hex")?;
+    if key.len() < MIN_KMS_KEY_BYTES {
+        bail!(
+            "KMS returned an undersized encryption key: {} bytes, expected at least {}",
+            key.len(),
+            MIN_KMS_KEY_BYTES
+        );
+    }
+
+    Ok(key)
 }
 
 async fn request_kms_attestation(
@@ -1424,101 +1596,10 @@ fn build_kms_attestation_report_data(nonce: &[u8; 32], binding: &[u8; 32]) -> [u
     report_data
 }
 
-fn enforce_kms_attestation_policy(
-    policy: &NormalizedKmsAttestationPolicy,
-    verification_result: &VerificationResult,
-) -> Result<()> {
-    let strict_policy = !policy.accept_mock;
-    if strict_policy {
-        enforce_required_allowlist_non_empty(
-            "tee.kms.phala.attestation.allowed_tcb_statuses",
-            &policy.allowed_tcb_statuses,
-        )?;
-        for (field_name, values) in [
-            (
-                "tee.kms.phala.attestation.allowed_mrtd",
-                &policy.allowed_mrtd,
-            ),
-            (
-                "tee.kms.phala.attestation.allowed_rtmr0",
-                &policy.allowed_rtmr0,
-            ),
-            (
-                "tee.kms.phala.attestation.allowed_rtmr1",
-                &policy.allowed_rtmr1,
-            ),
-            (
-                "tee.kms.phala.attestation.allowed_rtmr2",
-                &policy.allowed_rtmr2,
-            ),
-            (
-                "tee.kms.phala.attestation.allowed_rtmr3",
-                &policy.allowed_rtmr3,
-            ),
-        ] {
-            enforce_required_measurement_allowlist_non_empty(field_name, values)?;
-        }
-    }
-
-    if !strict_policy && policy.allowed_tcb_statuses.is_empty() {
-        debug!("Skipping TCB status allowlist check (allowlist is empty in mock mode)");
-    } else {
-        let actual_tcb_status = verification_result
-            .tcb_status
-            .as_deref()
-            .ok_or_else(|| eyre::eyre!("KMS attestation did not include TCB status"))?;
-        let normalized_tcb_status = actual_tcb_status.to_ascii_lowercase();
-        if !policy
-            .allowed_tcb_statuses
-            .iter()
-            .any(|allowed| allowed == &normalized_tcb_status)
-        {
-            bail!(
-                "KMS TCB status '{}' is not allowed. Allowed: {}",
-                actual_tcb_status,
-                policy.allowed_tcb_statuses.join(", ")
-            );
-        }
-    }
-
-    let body = &verification_result.quote.body;
-    enforce_measurement_allowlist("MRTD", &body.mrtd, &policy.allowed_mrtd)?;
-    enforce_measurement_allowlist("RTMR0", &body.rtmr0, &policy.allowed_rtmr0)?;
-    enforce_measurement_allowlist("RTMR1", &body.rtmr1, &policy.allowed_rtmr1)?;
-    enforce_measurement_allowlist("RTMR2", &body.rtmr2, &policy.allowed_rtmr2)?;
-    enforce_measurement_allowlist("RTMR3", &body.rtmr3, &policy.allowed_rtmr3)?;
-
-    Ok(())
-}
-
 fn mock_kms_attestation_runtime_opt_in() -> bool {
     std::env::var(MOCK_KMS_ATTESTATION_ENV)
         .map(|value| value.eq_ignore_ascii_case("true") || value == "1")
         .unwrap_or(false)
-}
-
-fn enforce_measurement_allowlist(
-    label: &str,
-    actual_measurement: &str,
-    allowed_measurements: &[String],
-) -> Result<()> {
-    if allowed_measurements.is_empty() {
-        debug!(
-            measurement = label,
-            "Skipping measurement allowlist check (allowlist is empty)"
-        );
-        return Ok(());
-    }
-
-    let normalized_actual = normalize_attestation_measurement(actual_measurement);
-    if allowed_measurements
-        .iter()
-        .any(|allowed| allowed == &normalized_actual)
-    {
-        return Ok(());
-    }
-
-    bail!("{label} '{}' is not in allowlist", normalized_actual);
 }
 
 fn build_signature_payload(
@@ -2042,6 +2123,24 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_kms_encryption_key_rejects_undersized_key() {
+        let undersized = PhalaGetKeyResponse {
+            key: "00".to_owned(),
+        };
+        let err = decode_kms_encryption_key(&undersized)
+            .expect_err("undersized key must fail")
+            .to_string();
+        assert!(err.contains("undersized encryption key"), "{err}");
+
+        // A full 32-byte key is accepted.
+        let valid = PhalaGetKeyResponse {
+            key: "42".repeat(MIN_KMS_KEY_BYTES),
+        };
+        let decoded = decode_kms_encryption_key(&valid).expect("valid key must decode");
+        assert_eq!(decoded.len(), MIN_KMS_KEY_BYTES);
+    }
+
+    #[test]
     fn test_signature_payload_is_deterministic() {
         let challenge_id = "abc123";
         let challenge_nonce = [0x5a; 32];
@@ -2435,6 +2534,33 @@ mod tests {
         assert_eq!(result.code, "KMS_HTTP_INSECURE");
     }
 
+    fn enforce_release_policy(
+        policy: &KmsAttestationPolicy,
+        verification_result: &VerificationResult,
+        allow_missing_tcb_status: bool,
+    ) -> Result<()> {
+        enforce_attestation_policy(
+            &AttestationAllowlists::from_release(policy),
+            verification_result,
+            PolicyEnforcementMode::ReleaseStrict {
+                allow_missing_tcb_status,
+            },
+        )
+    }
+
+    fn enforce_config_policy(
+        policy: &NormalizedKmsAttestationPolicy,
+        verification_result: &VerificationResult,
+    ) -> Result<()> {
+        enforce_attestation_policy(
+            &AttestationAllowlists::from_config(policy),
+            verification_result,
+            PolicyEnforcementMode::Config {
+                accept_mock: policy.accept_mock,
+            },
+        )
+    }
+
     fn make_release_policy(
         verification_result: &VerificationResult,
         allowed_tcb_statuses: Vec<String>,
@@ -2472,7 +2598,7 @@ mod tests {
             )],
         );
 
-        let err = enforce_attestation_policy(&policy, &verification_result, false)
+        let err = enforce_release_policy(&policy, &verification_result, false)
             .expect_err("disallowed TCB status must fail")
             .to_string();
         assert!(err.contains("TCB status"));
@@ -2490,8 +2616,8 @@ mod tests {
             )],
         );
 
-        assert!(enforce_attestation_policy(&policy, &verification_result, true).is_ok());
-        assert!(enforce_attestation_policy(&policy, &verification_result, false).is_err());
+        assert!(enforce_release_policy(&policy, &verification_result, true).is_ok());
+        assert!(enforce_release_policy(&policy, &verification_result, false).is_err());
     }
 
     #[test]
@@ -2503,7 +2629,7 @@ mod tests {
             vec!["ab".repeat(48)],
         );
 
-        let err = enforce_attestation_policy(&policy, &verification_result, true)
+        let err = enforce_release_policy(&policy, &verification_result, true)
             .expect_err("mismatched MRTD must fail")
             .to_string();
         assert!(err.contains("MRTD"));
@@ -2532,7 +2658,7 @@ mod tests {
         let mut policy = make_strict_runtime_policy(&verification_result);
         policy.allowed_tcb_statuses = vec!["uptodate".to_owned()];
 
-        let err = enforce_kms_attestation_policy(&policy, &verification_result)
+        let err = enforce_config_policy(&policy, &verification_result)
             .expect_err("disallowed TCB status must fail")
             .to_string();
         assert!(err.contains("TCB status"));
@@ -2552,7 +2678,7 @@ mod tests {
                 _ => unreachable!(),
             }
 
-            let err = enforce_kms_attestation_policy(&policy, &verification_result)
+            let err = enforce_config_policy(&policy, &verification_result)
                 .expect_err("RTMR mismatch must fail")
                 .to_string();
             assert!(err.contains(lane));
@@ -2565,35 +2691,35 @@ mod tests {
 
         let mut policy = make_strict_runtime_policy(&verification_result);
         policy.allowed_mrtd.clear();
-        let err = enforce_kms_attestation_policy(&policy, &verification_result)
+        let err = enforce_config_policy(&policy, &verification_result)
             .expect_err("empty MRTD allowlist must fail")
             .to_string();
         assert!(err.contains("allowed_mrtd"));
 
         let mut policy = make_strict_runtime_policy(&verification_result);
         policy.allowed_rtmr0.clear();
-        let err = enforce_kms_attestation_policy(&policy, &verification_result)
+        let err = enforce_config_policy(&policy, &verification_result)
             .expect_err("empty RTMR0 allowlist must fail")
             .to_string();
         assert!(err.contains("allowed_rtmr0"));
 
         let mut policy = make_strict_runtime_policy(&verification_result);
         policy.allowed_rtmr1.clear();
-        let err = enforce_kms_attestation_policy(&policy, &verification_result)
+        let err = enforce_config_policy(&policy, &verification_result)
             .expect_err("empty RTMR1 allowlist must fail")
             .to_string();
         assert!(err.contains("allowed_rtmr1"));
 
         let mut policy = make_strict_runtime_policy(&verification_result);
         policy.allowed_rtmr2.clear();
-        let err = enforce_kms_attestation_policy(&policy, &verification_result)
+        let err = enforce_config_policy(&policy, &verification_result)
             .expect_err("empty RTMR2 allowlist must fail")
             .to_string();
         assert!(err.contains("allowed_rtmr2"));
 
         let mut policy = make_strict_runtime_policy(&verification_result);
         policy.allowed_rtmr3.clear();
-        let err = enforce_kms_attestation_policy(&policy, &verification_result)
+        let err = enforce_config_policy(&policy, &verification_result)
             .expect_err("empty RTMR3 allowlist must fail")
             .to_string();
         assert!(err.contains("allowed_rtmr3"));
@@ -2605,14 +2731,14 @@ mod tests {
 
         let mut policy = make_strict_runtime_policy(&verification_result);
         policy.allowed_tcb_statuses = vec!["   ".to_owned()];
-        let err = enforce_kms_attestation_policy(&policy, &verification_result)
+        let err = enforce_config_policy(&policy, &verification_result)
             .expect_err("whitespace-only TCB status allowlist must fail")
             .to_string();
         assert!(err.contains("allowed_tcb_statuses"));
 
         let mut policy = make_strict_runtime_policy(&verification_result);
         policy.allowed_mrtd = vec!["0x".to_owned(), " ".to_owned()];
-        let err = enforce_kms_attestation_policy(&policy, &verification_result)
+        let err = enforce_config_policy(&policy, &verification_result)
             .expect_err("normalized-empty MRTD allowlist must fail")
             .to_string();
         assert!(err.contains("allowed_mrtd"));
@@ -2625,7 +2751,30 @@ mod tests {
         policy.accept_mock = true;
         policy.allowed_tcb_statuses.clear();
 
-        assert!(enforce_kms_attestation_policy(&policy, &verification_result).is_ok());
+        assert!(enforce_config_policy(&policy, &verification_result).is_ok());
+    }
+
+    #[test]
+    fn test_enforce_config_policy_measurement_allowlist_gated_by_mock_mode() {
+        // The same disallowed MRTD is rejected under strict config, but accepted
+        // once accept_mock relaxes the (now-empty) allowlist. This pins the mock
+        // gate to the consolidated enforcement helper.
+        let mut verification_result = make_mock_verification_result();
+        let strict_policy = make_strict_runtime_policy(&verification_result);
+        verification_result.quote.body.mrtd = "ab".repeat(48);
+
+        let err = enforce_config_policy(&strict_policy, &verification_result)
+            .expect_err("strict config must reject a disallowed MRTD")
+            .to_string();
+        assert!(err.contains("MRTD"));
+
+        let mut mock_policy = make_strict_runtime_policy(&verification_result);
+        mock_policy.accept_mock = true;
+        mock_policy.allowed_mrtd.clear();
+        assert!(
+            enforce_config_policy(&mock_policy, &verification_result).is_ok(),
+            "mock mode with an empty MRTD allowlist must skip the measurement check"
+        );
     }
 
     #[test]
@@ -2640,7 +2789,7 @@ mod tests {
         );
         policy.allowed_rtmr0.clear();
 
-        let err = enforce_attestation_policy(&policy, &verification_result, true)
+        let err = enforce_release_policy(&policy, &verification_result, true)
             .expect_err("empty RTMR0 allowlist must fail")
             .to_string();
         assert!(err.contains("policy.allowed_rtmr0"));

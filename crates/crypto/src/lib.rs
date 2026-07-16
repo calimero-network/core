@@ -1,10 +1,14 @@
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use ed25519_dalek::SigningKey;
-use ring::aead;
+use ring::{aead, hkdf};
 use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 pub const NONCE_LEN: usize = 12;
+
+// Domain-separation label for the HKDF that turns the raw ECDH point into the
+// AEAD key. Bump the version suffix if the derivation ever changes.
+const AEAD_KDF_INFO: &[u8] = b"calimero.sharedkey.aead.v2";
 
 pub type Nonce = [u8; NONCE_LEN];
 
@@ -56,26 +60,50 @@ impl SharedKey {
             .decompress()
             .ok_or(SharedKeyError::InvalidPublicKey)?;
 
-        let signing_key = SigningKey::from_bytes(sk);
+        // A small-order/torsion pk collapses the shared point into a tiny
+        // subgroup, so the "secret" no longer depends on our scalar. Reject it.
+        if decompressed.is_small_order() {
+            return Err(SharedKeyError::InvalidPublicKey);
+        }
+
+        let signing_key = SigningKey::from_bytes(sk.as_bytes());
         // curve25519-dalek 4.x Scalar implements Zeroize, so Zeroizing<Scalar>
         // clears the private scalar bytes when it is dropped here.
         let scalar = Zeroizing::new(signing_key.to_scalar());
-        let shared = (*scalar * decompressed).compress().to_bytes();
+        // A raw curve point is not a uniform 256-bit key (NIST SP 800-56C), so
+        // run the ECDH secret through HKDF-SHA256. IKM is secret, so zeroize it.
+        let ikm = Zeroizing::new((*scalar * decompressed).compress().to_bytes());
 
-        Ok(Self {
-            key: Zeroizing::new(shared),
-        })
+        let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(&*ikm);
+        let mut key = Zeroizing::new([0u8; 32]);
+        prk.expand(&[AEAD_KDF_INFO], hkdf::HKDF_SHA256)
+            .and_then(|okm| okm.fill(&mut *key))
+            .expect("HKDF-SHA256 with a 32-byte OKM is infallible");
+
+        Ok(Self { key })
     }
 
     #[must_use]
     pub fn from_sk(sk: &PrivateKey) -> Self {
         Self {
-            key: Zeroizing::new(**sk),
+            key: Zeroizing::new(*sk.as_bytes()),
         }
     }
 
+    /// Generates a fresh nonce internally (caller-chosen nonces risk catastrophic
+    /// AES-GCM reuse) and returns it for [`decrypt`](SharedKey::decrypt).
     #[must_use]
-    pub fn encrypt(&self, payload: Vec<u8>, nonce: Nonce) -> Option<Vec<u8>> {
+    pub fn encrypt(&self, payload: Vec<u8>) -> Option<(Nonce, Vec<u8>)> {
+        let nonce: Nonce = rand::random();
+        let cipher_text = self.encrypt_with_nonce(payload, nonce)?;
+        Some((nonce, cipher_text))
+    }
+
+    /// Encrypts with a caller-supplied nonce. The caller MUST guarantee the nonce
+    /// is single-use per key; the sync stream protocol satisfies this via its
+    /// per-message `next_nonce` ratchet (see `node/src/sync/blobs.rs`).
+    #[must_use]
+    pub fn encrypt_with_nonce(&self, payload: Vec<u8>, nonce: Nonce) -> Option<Vec<u8>> {
         let encryption_key =
             aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &*self.key).ok()?);
 
@@ -130,10 +158,9 @@ mod tests {
         let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
 
         let payload = b"privacy is important";
-        let nonce = [0u8; NONCE_LEN];
 
-        let encrypted_payload = signer_shared_key
-            .encrypt(payload.to_vec(), nonce)
+        let (nonce, encrypted_payload) = signer_shared_key
+            .encrypt(payload.to_vec())
             .ok_or_eyre("encryption failed")?;
 
         let decrypted_payload = verifier_shared_key
@@ -158,15 +185,136 @@ mod tests {
         let invalid_shared_key = SharedKey::new(&invalid, &invalid.public_key())?;
 
         let token = b"privacy is important";
-        let nonce = [0u8; NONCE_LEN];
 
-        let encrypted_token = signer_shared_key
-            .encrypt(token.to_vec(), nonce)
+        let (nonce, encrypted_token) = signer_shared_key
+            .encrypt(token.to_vec())
             .ok_or_eyre("encryption failed")?;
 
         let decrypted_data = invalid_shared_key.decrypt(encrypted_token, nonce);
 
         assert!(decrypted_data.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_decrypt_with_tampered_tag() -> eyre::Result<()> {
+        // AES-GCM appends a 16-byte authentication tag after the ciphertext.
+        // Flipping a bit in that tag must make `open_in_place` reject the
+        // message, so `decrypt` returns `None` rather than garbage plaintext.
+        let mut csprng = thread_rng();
+        let signer = PrivateKey::random(&mut csprng);
+        let verifier = PrivateKey::random(&mut csprng);
+        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
+        let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
+
+        let payload = b"privacy is important";
+        let (nonce, mut encrypted) = signer_shared_key
+            .encrypt(payload.to_vec())
+            .ok_or_eyre("encryption failed")?;
+
+        // The tag is the trailing bytes of the sealed buffer.
+        let last = encrypted.len() - 1;
+        encrypted[last] ^= 0x01;
+
+        assert!(
+            verifier_shared_key.decrypt(encrypted, nonce).is_none(),
+            "decrypt must reject a tampered authentication tag"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_decrypt_with_tampered_ciphertext() -> eyre::Result<()> {
+        // Mutating the ciphertext body (not the tag) must also fail
+        // authentication — the tag covers the whole ciphertext.
+        let mut csprng = thread_rng();
+        let signer = PrivateKey::random(&mut csprng);
+        let verifier = PrivateKey::random(&mut csprng);
+        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
+        let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
+
+        let payload = b"privacy is important";
+        let (nonce, mut encrypted) = signer_shared_key
+            .encrypt(payload.to_vec())
+            .ok_or_eyre("encryption failed")?;
+
+        // Flip the first ciphertext byte (well before the appended tag).
+        encrypted[0] ^= 0x01;
+
+        assert!(
+            verifier_shared_key.decrypt(encrypted, nonce).is_none(),
+            "decrypt must reject tampered ciphertext"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_decrypt_with_mismatched_nonce() -> eyre::Result<()> {
+        // AES-GCM binds the nonce into tag verification. A ciphertext sealed
+        // under nonce A must not open under nonce B, even with the right key.
+        let mut csprng = thread_rng();
+        let signer = PrivateKey::random(&mut csprng);
+        let verifier = PrivateKey::random(&mut csprng);
+        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
+        let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
+
+        let payload = b"privacy is important";
+
+        let (seal_nonce, encrypted) = signer_shared_key
+            .encrypt(payload.to_vec())
+            .ok_or_eyre("encryption failed")?;
+        let mut open_nonce = seal_nonce;
+        open_nonce[0] ^= 0x01;
+
+        assert!(
+            verifier_shared_key
+                .decrypt(encrypted.clone(), open_nonce)
+                .is_none(),
+            "decrypt must fail when the nonce differs from the one used to seal"
+        );
+        // Sanity: the untampered ciphertext still opens under the correct nonce.
+        assert_eq!(
+            verifier_shared_key
+                .decrypt(encrypted, seal_nonce)
+                .ok_or_eyre("decrypt with correct nonce failed")?,
+            payload
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_encrypt_with_nonce_roundtrip() -> eyre::Result<()> {
+        // The sync stream ratchet seals with a caller-chosen nonce and the
+        // receiver decrypts with that same nonce; a different nonce must fail.
+        let mut csprng = thread_rng();
+        let signer = PrivateKey::random(&mut csprng);
+        let verifier = PrivateKey::random(&mut csprng);
+        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
+        let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
+
+        let payload = b"privacy is important";
+        let nonce: Nonce = rand::random();
+
+        let encrypted = signer_shared_key
+            .encrypt_with_nonce(payload.to_vec(), nonce)
+            .ok_or_eyre("encryption failed")?;
+
+        assert_eq!(
+            verifier_shared_key
+                .decrypt(encrypted.clone(), nonce)
+                .ok_or_eyre("decryption failed")?,
+            payload
+        );
+
+        let mut wrong_nonce = nonce;
+        wrong_nonce[0] ^= 0x01;
+        assert!(
+            verifier_shared_key
+                .decrypt(encrypted, wrong_nonce)
+                .is_none(),
+            "decrypt must fail under a nonce other than the one used to seal"
+        );
 
         Ok(())
     }
@@ -187,5 +335,64 @@ mod tests {
         let result = SharedKey::new(&signer, &invalid_pk);
         assert!(result.is_err());
         assert!(matches!(result, Err(SharedKeyError::InvalidPublicKey)));
+    }
+
+    #[test]
+    fn test_new_rejects_small_order_public_key() {
+        // The identity point (Edwards y = 1) decompresses successfully but lies
+        // in the 8-torsion subgroup. This exercises the is_small_order guard,
+        // distinct from the decompress-failure path above.
+        let mut small_order_bytes = [0u8; 32];
+        small_order_bytes[0] = 1;
+
+        // Confirm the bytes really decompress to a small-order point, so this
+        // test can't silently regress into testing the decompress-fail path.
+        let point = curve25519_dalek::edwards::CompressedEdwardsY(small_order_bytes)
+            .decompress()
+            .expect("identity point decompresses");
+        assert!(point.is_small_order());
+
+        let signer = PrivateKey::random(&mut thread_rng());
+        let small_order_pk = PublicKey::from(small_order_bytes);
+
+        let result = SharedKey::new(&signer, &small_order_pk);
+        assert!(matches!(result, Err(SharedKeyError::InvalidPublicKey)));
+    }
+
+    #[test]
+    fn test_kdf_derivation_is_deterministic_and_interoperable() -> eyre::Result<()> {
+        use rand::SeedableRng;
+
+        // Fixed seed: the derivation must be reproducible across runs.
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0xCA1E);
+        let alice = PrivateKey::random(&mut rng);
+        let bob = PrivateKey::random(&mut rng);
+
+        let alice_key = SharedKey::new(&alice, &bob.public_key())?;
+        let bob_key = SharedKey::new(&bob, &alice.public_key())?;
+        // Re-derive alice's side independently; same inputs -> same key.
+        let alice_key_again = SharedKey::new(&alice, &bob.public_key())?;
+
+        let payload = b"kdf regression lock".to_vec();
+        let (nonce, ciphertext) = alice_key
+            .encrypt(payload.clone())
+            .ok_or_eyre("encryption failed")?;
+
+        // Cross-peer decrypt proves both sides derived the same HKDF key.
+        assert_eq!(
+            bob_key
+                .decrypt(ciphertext.clone(), nonce)
+                .ok_or_eyre("cross-peer decrypt failed")?,
+            payload
+        );
+        // Independent re-derivation opens the same ciphertext: deterministic.
+        assert_eq!(
+            alice_key_again
+                .decrypt(ciphertext, nonce)
+                .ok_or_eyre("re-derived decrypt failed")?,
+            payload
+        );
+
+        Ok(())
     }
 }

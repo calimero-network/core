@@ -147,9 +147,249 @@ fn applied_through_grace_prevents_thrashing() {
     assert_eq!(result, ReadinessTier::PeerValidatedReady);
 }
 
+#[test]
+fn prior_catching_up_with_no_peers_degrades_and_stays_sticky() {
+    let cfg = ReadinessConfig::default();
+    // Local data, boot grace elapsed, prior tier CatchingUp, all beacons
+    // expired: a node that knew it was behind must NOT self-promote to
+    // LocallyReady — it goes to Degraded(NoRecentPeers).
+    let state = ReadinessState {
+        tier: ReadinessTier::CatchingUp {
+            target_applied_through: 20,
+        },
+        local_applied_through: 5,
+        subscribed_at: Instant::now() - Duration::from_secs(30),
+        ..base_state()
+    };
+    let no_peers = PeerSummary {
+        max_applied_through: None,
+        heard_recent_beacon: false,
+    };
+    let t1 = evaluate_readiness(&state, &no_peers, &cfg, Instant::now());
+    assert_eq!(
+        t1,
+        ReadinessTier::Degraded {
+            reason: DemotionReason::NoRecentPeers
+        },
+        "a node that was catching up must not self-promote when isolated"
+    );
+
+    // Stickiness: feed the Degraded result back as the prior tier; still no
+    // peers → still Degraded (no time-based escape).
+    let sticky = ReadinessState { tier: t1, ..state };
+    let t2 = evaluate_readiness(&sticky, &no_peers, &cfg, Instant::now());
+    assert_eq!(
+        t2,
+        ReadinessTier::Degraded {
+            reason: DemotionReason::NoRecentPeers
+        }
+    );
+
+    // Escape: a fresh peer beacon runs the normal (Some, true) path and
+    // promotes back out of the sticky Degraded state.
+    let peers = PeerSummary {
+        max_applied_through: Some(5),
+        heard_recent_beacon: true,
+    };
+    let t3 = evaluate_readiness(&sticky, &peers, &cfg, Instant::now());
+    assert_eq!(
+        t3,
+        ReadinessTier::PeerValidatedReady,
+        "a fresh peer beacon must let a sticky-Degraded node rejoin the ready path"
+    );
+}
+
+#[test]
+fn prior_locally_ready_stays_locally_ready_with_no_peers() {
+    // LocallyReady is a self-promoting prior tier: it never knew it was
+    // behind, so it holds LocallyReady when isolated (unlike CatchingUp).
+    let state = ReadinessState {
+        tier: ReadinessTier::LocallyReady,
+        subscribed_at: Instant::now() - Duration::from_secs(11),
+        ..base_state()
+    };
+    let peers = PeerSummary {
+        max_applied_through: None,
+        heard_recent_beacon: false,
+    };
+    let result = evaluate_readiness(&state, &peers, &ReadinessConfig::default(), Instant::now());
+    assert_eq!(result, ReadinessTier::LocallyReady);
+}
+
+#[test]
+fn pvr_hysteresis_holds_between_grace_and_double_grace() {
+    let cfg = ReadinessConfig::default(); // grace = 2
+    let eval = |peer: u64| {
+        let state = ReadinessState {
+            tier: ReadinessTier::PeerValidatedReady,
+            local_applied_through: 5,
+            ..base_state()
+        };
+        let peers = PeerSummary {
+            max_applied_through: Some(peer),
+            heard_recent_beacon: true,
+        };
+        evaluate_readiness(&state, &peers, &cfg, Instant::now())
+    };
+    // local=5, grace=2: demotion threshold is local + 2*grace = 9 (strict >).
+    // peer at local+grace+1 = 8 → inside the hysteresis band, stays PVR.
+    assert_eq!(eval(8), ReadinessTier::PeerValidatedReady);
+    // peer exactly at the 2*grace boundary (9) → still PVR.
+    assert_eq!(eval(9), ReadinessTier::PeerValidatedReady);
+    // peer past 2*grace (10) → finally demote.
+    assert_eq!(
+        eval(10),
+        ReadinessTier::CatchingUp {
+            target_applied_through: 10
+        }
+    );
+}
+
+#[test]
+fn catching_up_promotes_at_tight_grace_boundary() {
+    let cfg = ReadinessConfig::default(); // grace = 2
+    let eval = |peer: u64| {
+        let state = ReadinessState {
+            tier: ReadinessTier::CatchingUp {
+                target_applied_through: peer,
+            },
+            local_applied_through: 8,
+            ..base_state()
+        };
+        let peers = PeerSummary {
+            max_applied_through: Some(peer),
+            heard_recent_beacon: true,
+        };
+        evaluate_readiness(&state, &peers, &cfg, Instant::now())
+    };
+    // Non-PVR promotion uses the tight boundary local + grace >= peer.
+    // local=8, peer=10 → 10 >= 10 → promote.
+    assert_eq!(eval(10), ReadinessTier::PeerValidatedReady);
+    // local=8, peer=11 → 10 >= 11 false → stay CatchingUp.
+    assert_eq!(
+        eval(11),
+        ReadinessTier::CatchingUp {
+            target_applied_through: 11
+        }
+    );
+}
+
+#[test]
+fn should_emit_beacon_fires_on_ready_edges_only() {
+    let catching = ReadinessTier::CatchingUp {
+        target_applied_through: 9,
+    };
+    let degraded = ReadinessTier::Degraded {
+        reason: DemotionReason::NoRecentPeers,
+    };
+    // Demotion out of a ready tier must emit so peers' cached strong=true
+    // entry is overwritten immediately (the beacon is strong=false because
+    // `publish_beacon` derives `strong` from the new, non-PVR tier).
+    assert!(should_emit_beacon(
+        ReadinessTier::PeerValidatedReady,
+        catching
+    ));
+    assert!(should_emit_beacon(ReadinessTier::LocallyReady, degraded));
+    // Promotion into / steady-state within a ready tier emits too.
+    assert!(should_emit_beacon(
+        ReadinessTier::Bootstrapping,
+        ReadinessTier::PeerValidatedReady
+    ));
+    assert!(should_emit_beacon(
+        ReadinessTier::PeerValidatedReady,
+        ReadinessTier::PeerValidatedReady
+    ));
+    // Transitions with no ready endpoint stay silent (no beacon churn).
+    assert!(!should_emit_beacon(catching, ReadinessTier::Bootstrapping));
+    assert!(!should_emit_beacon(ReadinessTier::Bootstrapping, degraded));
+}
+
+#[test]
+fn namespace_subscribed_seeds_entry_and_op_applied_preserves_subscribed_at() {
+    // Mirrors the shared `.entry(ns).or_insert_with(ReadinessState::seed)`
+    // used by both `Handler<NamespaceSubscribed>` and
+    // `Handler<NamespaceOpApplied>`. The subscribe seed creates the entry;
+    // a later op-applied reuses it (or_insert_with is a no-op when present),
+    // so the earlier `subscribed_at` survives.
+    let mut states: HashMap<[u8; 32], ReadinessState> = HashMap::new();
+    let ns = [7u8; 32];
+
+    let subscribe_at = Instant::now() - Duration::from_secs(30);
+    states
+        .entry(ns)
+        .or_insert_with(|| ReadinessState::seed(subscribe_at));
+    assert!(
+        states.contains_key(&ns),
+        "entry must exist right after the subscribe seed"
+    );
+    let seeded_at = states[&ns].subscribed_at;
+
+    let entry = states
+        .entry(ns)
+        .or_insert_with(|| ReadinessState::seed(Instant::now()));
+    assert_eq!(
+        entry.subscribed_at, seeded_at,
+        "a later NamespaceOpApplied must preserve the earlier subscribed_at"
+    );
+}
+
+#[test]
+fn apply_beacon_local_seeds_entry_when_absent_and_preserves_existing() {
+    // Mirrors the `.entry(ns).or_insert_with(ReadinessState::seed)` that
+    // `Handler<ApplyBeaconLocal>` runs on first contact. Before this seed the
+    // handler did `get(...).else { return }`, so a beacon arriving before the
+    // subscribe-time `NamespaceSubscribed` seed (which takes an extra hop via
+    // NodeManager) was silently dropped and the FSM never entered. Seeding
+    // here makes the entry exist so the subsequent evaluation runs.
+    let mut states: HashMap<[u8; 32], ReadinessState> = HashMap::new();
+    let ns = [11u8; 32];
+
+    assert!(!states.contains_key(&ns));
+    let beacon_at = Instant::now() - Duration::from_secs(5);
+    states
+        .entry(ns)
+        .or_insert_with(|| ReadinessState::seed(beacon_at));
+    assert!(
+        states.contains_key(&ns),
+        "a beacon arriving before any subscribe/op signal must seed the entry"
+    );
+    assert_eq!(states[&ns].tier, ReadinessTier::Bootstrapping);
+    assert_eq!(states[&ns].local_applied_through, 0);
+
+    // A later subscribe/op signal reuses the entry (idempotent), so the
+    // earlier `subscribed_at` survives.
+    let seeded_at = states[&ns].subscribed_at;
+    let entry = states
+        .entry(ns)
+        .or_insert_with(|| ReadinessState::seed(Instant::now()));
+    assert_eq!(
+        entry.subscribed_at, seeded_at,
+        "a beacon-seeded entry must not be overwritten by a later signal"
+    );
+}
+
+#[test]
+fn beacon_seeded_empty_dag_entry_evaluates_to_catching_up() {
+    // The point of seeding in ApplyBeaconLocal: once the entry exists, an
+    // empty-DAG node evaluated against a fresh peer beacon enters CatchingUp
+    // (a real target to sync toward) instead of having its beacon dropped.
+    let state = ReadinessState::seed(Instant::now());
+    let peers = PeerSummary {
+        max_applied_through: Some(42),
+        heard_recent_beacon: true,
+    };
+    let tier = evaluate_readiness(&state, &peers, &ReadinessConfig::default(), Instant::now());
+    assert!(matches!(
+        tier,
+        ReadinessTier::CatchingUp {
+            target_applied_through: 42
+        }
+    ));
+}
+
 fn make_beacon(pk: PublicKey, applied_through: u64, strong: bool) -> SignedReadinessBeacon {
     SignedReadinessBeacon {
-        namespace_id: [42u8; 32],
+        namespace_id: [42u8; 32].into(),
         peer_pubkey: pk,
         dag_head: [9u8; 32],
         applied_through,

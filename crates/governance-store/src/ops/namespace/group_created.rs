@@ -5,7 +5,7 @@ use super::context::NamespaceApplyCtx;
 use crate::op_events::OpEvent;
 use crate::{
     ApplyError, CapabilitiesRepository, GroupCreatedRejection, MembershipRepository,
-    MetaRepository, NamespaceError,
+    MetaRepository, NamespaceError, NamespaceRepository,
 };
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
@@ -39,19 +39,21 @@ pub(crate) fn apply(
     // because every peer applying this op must be able to verify the
     // creator's authority, and only the root group's capability rows are
     // readable by all namespace members (see the capability's doc).
-    let ns_gid = ContextGroupId::from(namespace_id);
-    let authorized = MembershipRepository::new(store).is_admin(&ns_gid, &op.signer)?
-        || (parent_id == namespace_id
-            && MembershipRepository::new(store).is_admin_or_has_capability(
-                &ns_gid,
-                &op.signer,
-                calimero_context_config::MemberCapabilities::CAN_CREATE_SUBGROUP,
-            )?);
+    //
+    // Both legs resolve at the op's causal cut. Reading the live membership rows
+    // here instead would let two replicas that folded different sets of concurrent
+    // capability ops reach opposite verdicts on this same op — the rejecting one
+    // drops it and never advances past it.
+    let ns_gid = ContextGroupId::from(namespace_id.to_bytes());
+    let ns_permissions = ctx.permissions_for(ns_gid);
+    let authorized = ns_permissions.is_admin(&op.signer)?
+        || (parent_id == namespace_id.to_bytes()
+            && ns_permissions.can_create_subgroup(&op.signer)?);
     if !authorized {
         bail!(ApplyError::GroupCreatedRejected(
             GroupCreatedRejection::Unauthorized {
                 signer: format!("{}", op.signer),
-                namespace: hex::encode(namespace_id),
+                namespace: hex::encode(namespace_id.as_bytes()),
             }
         ));
     }
@@ -62,6 +64,24 @@ pub(crate) fn apply(
         .ok_or_else(|| {
             eyre::eyre!("GroupCreated rejected: parent_id '{parent_gid:?}' not found in namespace")
         })?;
+
+    // Meta rows are keyed by group id alone, so an existing `parent_meta` proves
+    // only that the parent exists SOMEWHERE — not that it belongs to THIS
+    // namespace. Without this check an admin of namespace A could graft a
+    // subgroup under a group of namespace B, splicing A's crypto/access boundary
+    // into B. Require the parent to resolve to this namespace's root.
+    let parent_ns = NamespaceRepository::new(store)
+        .resolve(&parent_gid)
+        .map_err(|e| eyre::eyre!("GroupCreated rejected: cannot resolve parent namespace: {e}"))?;
+    if parent_ns.to_bytes() != namespace_id.to_bytes() {
+        bail!(ApplyError::GroupCreatedRejected(
+            GroupCreatedRejection::ParentCrossNamespace {
+                parent: format!("{parent_gid:?}"),
+                parent_namespace: hex::encode(parent_ns.to_bytes()),
+                namespace: hex::encode(namespace_id.as_bytes()),
+            }
+        ));
+    }
 
     // The originating node's `create_group` handler pre-populates
     // `GroupMeta` (and related state) BEFORE publishing this op, so a

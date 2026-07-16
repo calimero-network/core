@@ -7,7 +7,7 @@ use syn::{Item, ItemEnum, ItemImpl, ItemStruct, Type};
 use crate::normalize::{normalize_type, ResolvedLocal, TypeResolver};
 use crate::schema::{
     Event, Field, Manifest, Method, MethodIntent, MigrationEdgeAbi, Parameter, ScalarType, TypeDef,
-    TypeRef, Variant,
+    TypeRef, Variant, XCallCallers,
 };
 
 /// ABI emitter that processes Rust source code
@@ -317,14 +317,32 @@ fn has_app_view_attribute(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
-/// Returns `true` when the method carries `#[app::xcall]`, declaring it as a
-/// cross-context entry point — i.e. callable by another context via `xcall`.
-fn has_app_xcall_attribute(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        let path = attr.path();
-        let segments: Vec<_> = path.segments.iter().collect();
-        segments.len() == 2 && segments[0].ident == "app" && segments[1].ident == "xcall"
-    })
+/// Returns the caller policy if the method carries `#[app::xcall]`, declaring
+/// it as a cross-context entry point, or `None` if it is not one.
+///
+/// A bare `#[app::xcall]` yields [`XCallCallers::AnyInNamespace`] (the
+/// historical default); `#[app::xcall(from_same_app)]` yields
+/// [`XCallCallers::SameApp`]. Unknown args are ignored here (the SDK macro
+/// validates them) so a typo can't break ABI emission silently into a
+/// non-xcall method.
+fn app_xcall_policy(attrs: &[syn::Attribute]) -> Option<XCallCallers> {
+    for attr in attrs {
+        let segments: Vec<_> = attr.path().segments.iter().collect();
+        if segments.len() == 2 && segments[0].ident == "app" && segments[1].ident == "xcall" {
+            let mut policy = XCallCallers::AnyInNamespace;
+            // A bare `#[app::xcall]` is a path attribute with no args, so
+            // `parse_nested_meta` errors — ignore that and keep the default.
+            // Only `#[app::xcall(...)]` carries nested meta to inspect.
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("from_same_app") {
+                    policy = XCallCallers::SameApp;
+                }
+                Ok(())
+            });
+            return Some(policy);
+        }
+    }
+    None
 }
 
 /// Parse `version = N` out of `#[app::state(version = N, …)]`. `None` if no version arg.
@@ -635,9 +653,15 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                     };
 
                     // Cross-context entry point from #[app::xcall]; never on
-                    // init (an initializer is not an xcall target).
-                    let xcall_callable =
-                        method_name != "init" && has_app_xcall_attribute(&method.attrs);
+                    // init (an initializer is not an xcall target). The policy
+                    // (who may call) rides alongside the callable flag.
+                    let xcall_policy = if method_name == "init" {
+                        None
+                    } else {
+                        app_xcall_policy(&method.attrs)
+                    };
+                    let xcall_callable = xcall_policy.is_some();
+                    let xcall_callers = xcall_policy.unwrap_or_default();
 
                     // Create and store the method
                     let method = Method {
@@ -648,6 +672,7 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                         errors: Vec::new(),
                         intent,
                         xcall_callable,
+                        xcall_callers,
                     };
 
                     self.methods.push(method);
@@ -910,6 +935,42 @@ mod xcall_tests {
         assert!(
             !plain.xcall_callable,
             "unannotated method must not be xcall_callable"
+        );
+    }
+
+    #[test]
+    fn emits_caller_policy_from_xcall_args() {
+        let lib = r#"
+            #[app::state(version = 1)]
+            pub struct State { x: u32 }
+            #[app::logic]
+            impl State {
+                #[app::init] pub fn init() -> State { State { x: 0 } }
+                #[app::xcall] pub fn open(&mut self) {}
+                #[app::xcall(from_same_app)] pub fn restricted(&mut self) {}
+                pub fn plain(&mut self) {}
+            }
+        "#;
+        let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
+        let policy = |name: &str| {
+            m.methods
+                .iter()
+                .find(|mm| mm.name == name)
+                .map(|mm| mm.xcall_callers.clone())
+        };
+
+        // Bare `#[app::xcall]` keeps the historical open default.
+        assert_eq!(policy("open"), Some(XCallCallers::AnyInNamespace));
+        // `from_same_app` tightens it to same-application callers only.
+        assert_eq!(policy("restricted"), Some(XCallCallers::SameApp));
+        // A non-xcall method carries the default (and isn't callable).
+        assert_eq!(policy("plain"), Some(XCallCallers::AnyInNamespace));
+        assert!(
+            !m.methods
+                .iter()
+                .find(|mm| mm.name == "plain")
+                .unwrap()
+                .xcall_callable
         );
     }
 }

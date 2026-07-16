@@ -1,6 +1,7 @@
 use core::fmt::Debug;
 use std::collections::btree_map::IntoIter;
 use std::collections::BTreeMap;
+use std::ops::Bound;
 
 use tracing::debug;
 
@@ -129,9 +130,11 @@ impl Storage for InMemoryStorage {
         offset: usize,
         limit: Option<usize>,
     ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        // Range directly over the `&[u8]` bounds (`Vec<u8>: Borrow<[u8]>`)
+        // rather than allocating an owned `Vec` for each endpoint per scan.
         let ordered = self
             .index
-            .range(lo.to_vec()..hi.to_vec())
+            .range::<[u8], _>((Bound::Included(lo), Bound::Excluded(hi)))
             .map(|(k, v)| (k.clone(), v.clone()))
             .skip(offset);
         match limit {
@@ -142,7 +145,7 @@ impl Storage for InMemoryStorage {
 
     fn index_last(&self, lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
         self.index
-            .range(lo.to_vec()..hi.to_vec())
+            .range::<[u8], _>((Bound::Included(lo), Bound::Excluded(hi)))
             .next_back()
             .map(|(k, v)| (k.clone(), v.clone()))
     }

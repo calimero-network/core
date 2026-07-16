@@ -8,15 +8,17 @@
 //! set of helpers the way the group-op handlers do.
 
 use crate::authorizer::AtCutAuthorizer;
+use crate::permission_checker::PermissionChecker;
 use crate::{MembershipError, MembershipRepository};
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_types::NamespaceId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
 pub(crate) struct NamespaceApplyCtx<'a> {
     store: &'a Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
     /// The applied op's causal cut (parent op hashes), for at-cut authorization
     /// (F5 #28). Empty outside the live apply path.
     parents: &'a [[u8; 32]],
@@ -34,7 +36,7 @@ pub(crate) struct NamespaceApplyCtx<'a> {
 impl<'a> NamespaceApplyCtx<'a> {
     pub(crate) fn new(
         store: &'a Store,
-        namespace_id: [u8; 32],
+        namespace_id: NamespaceId,
         parents: &'a [[u8; 32]],
         authorizer: &'a dyn AtCutAuthorizer,
     ) -> Self {
@@ -51,7 +53,7 @@ impl<'a> NamespaceApplyCtx<'a> {
         self.store
     }
 
-    pub(crate) fn namespace_id(&self) -> [u8; 32] {
+    pub(crate) fn namespace_id(&self) -> NamespaceId {
         self.namespace_id
     }
 
@@ -79,21 +81,41 @@ impl<'a> NamespaceApplyCtx<'a> {
     /// `None`, so the live path is byte-identical until a projection-backed
     /// authorizer is injected.
     pub(crate) fn require_namespace_admin(&self, signer: &PublicKey) -> EyreResult<()> {
-        let ns_gid = ContextGroupId::from(self.namespace_id);
+        let ns_gid = ContextGroupId::from(self.namespace_id.to_bytes());
         let authorized = match self
             .authorizer
             .is_admin_at_cut(&ns_gid, signer, self.parents)
         {
             Some(verdict) => verdict,
-            None => MembershipRepository::new(self.store).is_admin(&ns_gid, signer)?,
+            None => {
+                // Abstained. Live is sound only when there is no cut to resolve
+                // against; if the cut is real but unfolded here, answering from live
+                // would decide this op against a DIFFERENT cut than peers used.
+                if !self.authorizer.can_resolve_cut(&ns_gid, self.parents) {
+                    bail!(crate::ApplyError::AuthorityUndecidable {
+                        group_id: hex::encode(self.namespace_id.as_bytes()),
+                        signer: format!("{signer}"),
+                    });
+                }
+                MembershipRepository::new(self.store).is_admin(&ns_gid, signer)?
+            }
         };
         if !authorized {
             bail!(MembershipError::NotAdmin {
-                group_id: hex::encode(self.namespace_id),
+                group_id: hex::encode(self.namespace_id.as_bytes()),
                 identity: format!("{signer}"),
             });
         }
         Ok(())
+    }
+
+    /// A [`PermissionChecker`] for `group`, carrying this op's causal cut and at-cut
+    /// authority source — so capability gates in namespace-op arms resolve as of the
+    /// op's own parents rather than against the receiver's current rows. Arms that
+    /// read `MembershipRepository` directly bypass the cut and can diverge across
+    /// replicas that have folded different sets of concurrent capability ops.
+    pub(crate) fn permissions_for(&self, group: ContextGroupId) -> PermissionChecker<'a> {
+        PermissionChecker::new(self.store, group).with_apply_auth(self.parents, self.authorizer)
     }
 
     /// The PROJECTION's at-cut membership PATH for `member` in `group`, for the

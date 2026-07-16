@@ -13,6 +13,7 @@
 
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_types::NamespaceId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_primitives::metadata::MetadataRecord;
@@ -57,6 +58,7 @@ mod metadata;
 mod namespace;
 pub mod nonce_window;
 mod ops;
+mod pending_rotation;
 mod pending_self_purge;
 mod permission_checker;
 mod signing_keys;
@@ -76,11 +78,12 @@ pub use self::capabilities::CapabilitiesRepository;
 pub use self::context_registration::ContextRegistrationService;
 pub use self::context_tree::ContextTreeService;
 pub use self::contexts::{
-    cascade_remove_member_from_group_tree, enumerate_group_contexts, find_local_signing_identity,
-    get_group_for_context, is_currently_authorized_for_context, register_context_in_group,
-    restore_member_context_identities, unregister_context_from_group,
+    cascade_remove_member_from_group_tree, enumerate_group_contexts, find_local_signing_identities,
+    find_local_signing_identity, get_group_for_context, is_currently_authorized_for_context,
+    register_context_in_group, restore_member_context_identities, unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
+pub use self::pending_rotation::PendingRotationRepository;
 
 pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;
@@ -107,7 +110,7 @@ pub use self::namespace::MAX_NAMESPACE_DEPTH;
 pub use self::namespace::{
     apply_received_group_key, apply_signed_namespace_op, apply_signed_namespace_op_at_cut,
     build_group_key_delivery, collect_skeleton_delta_ids_for_group, decrypt_group_op,
-    known_namespace_identities, namespace_groups_awaiting_key,
+    known_namespace_identities, namespace_group_keys_awaiting, namespace_groups_awaiting_key,
     namespace_groups_with_held_key_buffered_ops, redrive_buffered_ops_for_group,
     retry_encrypted_ops_for_group, sign_and_publish_namespace_op,
     sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure,
@@ -655,23 +658,24 @@ impl<'a> GroupHandle<'a> {
 /// A scoped handle for namespace-level operations (identity, DAG heads, governance ops).
 pub struct NamespaceHandle<'a> {
     store: &'a Store,
-    namespace_id: [u8; 32],
+    namespace_id: NamespaceId,
 }
 
 impl<'a> NamespaceHandle<'a> {
-    pub fn new(store: &'a Store, namespace_id: [u8; 32]) -> Self {
+    pub fn new(store: &'a Store, namespace_id: NamespaceId) -> Self {
         Self {
             store,
             namespace_id,
         }
     }
 
-    pub fn namespace_id(&self) -> [u8; 32] {
+    pub fn namespace_id(&self) -> NamespaceId {
         self.namespace_id
     }
 
     pub fn get_identity(&self) -> EyreResult<Option<ResolvedIdentity>> {
-        NamespaceRepository::new(self.store).identity(&ContextGroupId::from(self.namespace_id))
+        NamespaceRepository::new(self.store)
+            .identity(&ContextGroupId::from(self.namespace_id.to_bytes()))
     }
 
     pub fn store_identity(
@@ -681,7 +685,7 @@ impl<'a> NamespaceHandle<'a> {
         sender: &[u8; 32],
     ) -> EyreResult<()> {
         NamespaceRepository::new(self.store).store_identity(
-            &ContextGroupId::from(self.namespace_id),
+            &ContextGroupId::from(self.namespace_id.to_bytes()),
             pk,
             sk,
             sender,
@@ -732,7 +736,7 @@ impl<'a> GroupStoreIndex<'a> {
         GroupHandle::new(self.store, group_id)
     }
 
-    pub fn namespace(&self, namespace_id: [u8; 32]) -> NamespaceHandle<'a> {
+    pub fn namespace(&self, namespace_id: NamespaceId) -> NamespaceHandle<'a> {
         NamespaceHandle::new(self.store, namespace_id)
     }
 
@@ -924,7 +928,30 @@ pub(crate) fn verify_post_apply_state_hashes(
     // signed expected context as divergent (false-positive storm).
     // `None` here means the check was skipped or the snapshot
     // errored; the warn omits the per-context fields in that case.
-    let context_diff: Option<ContextHashDiff> = if check_context_hashes {
+    let context_diff: Option<ContextHashDiff> = if !check_context_hashes {
+        None
+    } else if !expected_context_state_hashes
+        .windows(2)
+        .all(|w| w[0].0 < w[1].0)
+    {
+        // The `diff_sorted_context_hashes` merge-scan is only correct when
+        // `expected` is strictly increasing (and duplicate-free) by ContextId.
+        // `expected` rides on a signed op authored by a possibly-Byzantine peer;
+        // an unsorted or duplicate-keyed vector would make the scan emit
+        // spurious only_in_*/hash_differs entries and trigger a needless
+        // reconcile. A legitimate signer always sorts (it builds this from
+        // `snapshot_context_state_hashes`), so an unsorted claim is malformed —
+        // skip the per-context check rather than trust a bogus diff. The
+        // `debug_assert!` inside the merge-scan does not run in release, so this
+        // runtime guard is what actually protects convergence in production.
+        tracing::warn!(
+            group_id = %hex::encode(group_id.to_bytes()),
+            op_kind,
+            "signed expected context-hash snapshot is not strictly sorted/unique by \
+             ContextId; skipping per-context convergence check (malformed or hostile op)"
+        );
+        None
+    } else {
         match MetaRepository::new(store).snapshot_context_state_hashes(group_id) {
             Ok(actual_context_state_hashes) => Some(diff_sorted_context_hashes(
                 group_id,
@@ -947,8 +974,6 @@ pub(crate) fn verify_post_apply_state_hashes(
                 None
             }
         }
-    } else {
-        None
     };
 
     let group_diverges = matches!(group_outcome, Some((true, _)));
@@ -1315,9 +1340,13 @@ pub fn apply_local_signed_group_op_at_cut(
             MAX_PARENT_OP_HASHES
         );
     }
+    // Anti-amplification: bound the op's variable-length fields (ciphertext,
+    // key-rotation envelopes, cascade/TEE lists, …) before doing crypto or
+    // touching state. Rejects an untrusted peer's egregiously oversized op.
+    op.validate()?;
     op.verify_signature()
         .map_err(|e| eyre::eyre!("signed group op: {e}"))?;
-    let group_id = ContextGroupId::from(op.group_id);
+    let group_id = op.group_id;
 
     // C5.S3b: the op-level `state_hash` staleness check was removed with the field.
     // It stopped being an apply gate in C5.S3a (`scope_root` is the convergence
@@ -1475,7 +1504,7 @@ pub fn sign_apply_local_group_op_borsh(
     let parent_hashes = get_op_head(store, group_id)?
         .map(|h| h.dag_heads.clone())
         .unwrap_or_default();
-    let signed = SignedGroupOp::sign(signer_sk, group_id.to_bytes(), parent_hashes, nonce, op)?;
+    let signed = SignedGroupOp::sign(signer_sk, *group_id, parent_hashes, nonce, op)?;
     let delta_id = signed
         .content_hash()
         .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
@@ -1529,6 +1558,28 @@ pub async fn sign_apply_and_publish_removal(
 ) -> EyreResult<Option<crate::governance_broadcast::DeliveryReport>> {
     GroupGovernancePublisher::new(store, node_client, *group_id)
         .sign_apply_and_publish_removal(ack_router, signer_sk, removed_member)
+        .await
+}
+
+/// Pay off a pending forward-secrecy rotation a self-leave left behind: publish a
+/// `GroupKeyRotated` op carrying a fresh group key, wrapped for every remaining
+/// member and for nobody who left.
+///
+/// Callable only by an admin of the group (peers reject any other rotation), and safe
+/// to call concurrently from several admins — see
+/// [`GroupGovernancePublisher::sign_apply_and_publish_rotation`].
+///
+/// `Ok(None)` is a deliberate skip — see [`sign_apply_and_publish`].
+pub async fn sign_apply_and_publish_rotation(
+    store: &Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &calimero_context_client::local_governance::AckRouter,
+    group_id: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    departed: &PublicKey,
+) -> EyreResult<Option<crate::governance_broadcast::DeliveryReport>> {
+    GroupGovernancePublisher::new(store, node_client, *group_id)
+        .sign_apply_and_publish_rotation(ack_router, signer_sk, departed)
         .await
 }
 

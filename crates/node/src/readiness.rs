@@ -49,11 +49,11 @@ pub enum ReadinessTier {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DemotionReason {
     PendingOps(usize),
-    /// We had a fresh peer beacon for this namespace once, but no
-    /// peer has emitted within `ttl_heartbeat` recently — the spec
-    /// §7.2 "*Ready → Degraded" arm. Surfaced from `evaluate_readiness`
-    /// when `peer_summary` returns the (defensive) `(Some, false)`
-    /// state that should be unreachable under atomic-snapshot reads.
+    /// No peer has emitted within `ttl_heartbeat` recently. Reached when a
+    /// node that knew it was behind (prior tier CatchingUp / PVR / Degraded)
+    /// runs out of fresh peers, and stays sticky until fresh beacons return —
+    /// an isolated node that was behind must never self-declare ready. Also
+    /// the (defensive, atomic-read-unreachable) `(Some, false)` arm's tier.
     NoRecentPeers,
 }
 
@@ -63,6 +63,22 @@ pub struct ReadinessState {
     pub local_applied_through: u64,
     pub local_pending_ops: usize,
     pub subscribed_at: Instant,
+}
+
+impl ReadinessState {
+    /// Fresh per-namespace entry: Bootstrapping, no local progress, boot
+    /// grace anchored at `now`. Used by both the subscribe-time seed
+    /// (`NamespaceSubscribed`) and the first-applied-op `or_insert_with`
+    /// (`NamespaceOpApplied`), so whichever fires first sets `subscribed_at`
+    /// and the other reuses the existing entry.
+    fn seed(now: Instant) -> Self {
+        Self {
+            tier: ReadinessTier::Bootstrapping,
+            local_applied_through: 0,
+            local_pending_ops: 0,
+            subscribed_at: now,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -92,10 +108,12 @@ pub struct PeerSummary {
 
 /// Pure transition function for the readiness FSM.
 ///
-/// Maps `(state, peers, cfg, now)` → next `ReadinessTier`. The function
-/// is total (every input combination has a defined output) and free of
-/// side effects; the actor in Phase 7 calls it on every beacon, every
-/// freshness tick, and on local-state changes.
+/// Maps `(state, peers, cfg, now)` → next `ReadinessTier`. The prior tier
+/// (`state.tier`) is an input: it gates self-promotion (a node that knew
+/// it was behind never self-declares ready) and adds PVR↔CatchingUp
+/// hysteresis. The function is total (every input combination has a
+/// defined output) and free of side effects; the actor in Phase 7 calls
+/// it on every beacon, every freshness tick, and on local-state changes.
 pub fn evaluate_readiness(
     state: &ReadinessState,
     peers: &PeerSummary,
@@ -133,18 +151,23 @@ pub fn evaluate_readiness(
         peers.heard_recent_beacon,
         boot_grace_elapsed,
     ) {
-        // Heard a peer beacon: tip-fresh → PeerValidatedReady; behind → CatchingUp{target}.
+        // Heard a peer beacon: PVR↔CatchingUp with hysteresis so a node
+        // hovering at the boundary doesn't thrash (and doesn't emit a
+        // promotion+demotion beacon pair every tick). saturating ops
+        // guard the (unreachable-in-practice) near-`u64::MAX` case.
         (Some(peer_at), true, _) => {
-            // saturating_add: in debug builds an overflow on
-            // `local_applied_through + applied_through_grace` would
-            // panic if `local_applied_through` were near `u64::MAX` —
-            // an unreachable state in practice, but a defensive
-            // saturating_add costs nothing and silences the audit.
-            if state
-                .local_applied_through
-                .saturating_add(cfg.applied_through_grace)
-                >= peer_at
-            {
+            let local = state.local_applied_through;
+            if matches!(state.tier, ReadinessTier::PeerValidatedReady) {
+                // Demotion: only leave PVR once clearly behind — past
+                // TWICE the promotion grace band.
+                if peer_at > local.saturating_add(cfg.applied_through_grace.saturating_mul(2)) {
+                    ReadinessTier::CatchingUp {
+                        target_applied_through: peer_at,
+                    }
+                } else {
+                    ReadinessTier::PeerValidatedReady
+                }
+            } else if local.saturating_add(cfg.applied_through_grace) >= peer_at {
                 ReadinessTier::PeerValidatedReady
             } else {
                 ReadinessTier::CatchingUp {
@@ -152,8 +175,21 @@ pub fn evaluate_readiness(
                 }
             }
         }
-        // No peer beacons but we've waited BOOT_GRACE: self-promote (LocallyReady).
-        (None, false, true) => ReadinessTier::LocallyReady,
+        // No peer beacons but we've waited BOOT_GRACE. Self-promote to
+        // LocallyReady ONLY from a tier that never knew it was behind
+        // (Bootstrapping / LocallyReady). A node that was CatchingUp,
+        // PeerValidatedReady, or Degraded goes to Degraded(NoRecentPeers)
+        // instead — and stays there (this arm re-runs while isolated,
+        // and Degraded is not a self-promoting prior tier), escaping only
+        // when fresh peer beacons route through the (Some, true) path.
+        (None, false, true) => match state.tier {
+            ReadinessTier::Bootstrapping | ReadinessTier::LocallyReady => {
+                ReadinessTier::LocallyReady
+            }
+            _ => ReadinessTier::Degraded {
+                reason: DemotionReason::NoRecentPeers,
+            },
+        },
         // No peer beacons and still in boot grace: stay Bootstrapping.
         (None, false, false) => ReadinessTier::Bootstrapping,
         // Defensive: with an atomic `ReadinessCache::peer_summary` snapshot, both
@@ -186,6 +222,25 @@ pub fn evaluate_readiness(
             }
         }
     }
+}
+
+/// A tier whose beacons peers cache as a usable sync target.
+fn is_ready_tier(tier: ReadinessTier) -> bool {
+    matches!(
+        tier,
+        ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
+    )
+}
+
+/// Single emission decision shared by all beacon sites: emit when either
+/// side of the transition is a ready tier. `is_ready_tier(new)` covers
+/// steady-state and promotion beacons; `is_ready_tier(old)` covers the
+/// demotion beacon (strong=false, honest applied_through) that overwrites
+/// peers' cached strong=true entry immediately instead of letting it linger
+/// until `ttl_heartbeat`. Steady-state sites (periodic tick, probe response)
+/// call it with `old == new`, reducing it to `is_ready_tier(current)`.
+fn should_emit_beacon(old: ReadinessTier, new: ReadinessTier) -> bool {
+    is_ready_tier(old) || is_ready_tier(new)
 }
 
 /// Per-(namespace, peer) snapshot of the most recent fresh beacon we
@@ -289,7 +344,7 @@ impl ReadinessCache {
 
         let now = Instant::now();
         let mut g = self.entries_lock();
-        let key = (beacon.namespace_id, beacon.peer_pubkey);
+        let key = (beacon.namespace_id.to_bytes(), beacon.peer_pubkey);
         if let Some(existing) = g.get(&key) {
             // Drop the beacon if it's older or equal-clock-but-not-fresher.
             if beacon.ts_millis < existing.ts_millis
@@ -309,7 +364,8 @@ impl ReadinessCache {
         // against this prune.
         let evict_window = Duration::from_millis(MAX_BEACON_CLOCK_DRIFT_MS.saturating_mul(2));
         g.retain(|(ns, _), entry| {
-            *ns != beacon.namespace_id || now.duration_since(entry.received_at) <= evict_window
+            *ns != beacon.namespace_id.to_bytes()
+                || now.duration_since(entry.received_at) <= evict_window
         });
 
         let _ = g.insert(
@@ -423,6 +479,16 @@ pub struct ApplyBeaconLocal {
     pub namespace_id: [u8; 32],
 }
 
+/// We just subscribed to a namespace topic. Seeds the FSM entry so
+/// `subscribed_at` (and thus `boot_grace`) is anchored at subscribe time
+/// rather than at the first applied op. Sent from the join/subscribe path
+/// via `NodeClient::notify_namespace_subscribed`.
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct NamespaceSubscribed {
+    pub namespace_id: [u8; 32],
+}
+
 /// A single namespace governance op was successfully applied locally.
 ///
 /// Sent from BOTH the receiver-side network-event handler (after a
@@ -442,20 +508,24 @@ pub struct NamespaceOpApplied {
 
 /// Read the canonical local-applied sequence for a namespace from the
 /// store. Returns 0 if the head record is missing (legitimate for a
-/// brand-new namespace with no applied ops) or if the read fails
-/// transiently. The two cases are distinguished in the log:
+/// brand-new namespace with no applied ops); on a transient read failure
+/// it returns `fallback` — the caller's last-known sequence. The three
+/// cases are distinguished in the log:
 ///
 ///   - `Ok(None)` is silent — empty-DAG is the well-defined start state.
 ///   - `Err(_)` emits a `warn!` so a transiently broken store layer
 ///     does not silently regress the FSM. With this log present, an
 ///     operator chasing a `*Ready → Bootstrapping` regression has a
-///     clear breadcrumb instead of guessing at a fail-soft `0`.
+///     clear breadcrumb.
 ///
-/// Returning `0` on the error path (rather than propagating) keeps
-/// the FSM evaluation total — `evaluate_readiness` is a pure
-/// transition fn and should not have to handle store I/O errors.
-/// On the next successful read the FSM recovers naturally.
-pub(crate) fn read_local_applied_through(store: &Store, ns_id: [u8; 32]) -> u64 {
+/// Returning `fallback` (rather than `0`) on the error path stops a
+/// single transient store `Err` from collapsing `local_applied_through`
+/// to 0 and demoting a `*Ready` namespace back to `Bootstrapping`; the
+/// sequence is monotonic, so the last-known value is the safe estimate
+/// until the next successful read. Returning a value (rather than
+/// propagating) also keeps `evaluate_readiness` a total pure transition
+/// fn that never has to handle store I/O errors.
+pub(crate) fn read_local_applied_through(store: &Store, ns_id: [u8; 32], fallback: u64) -> u64 {
     let handle = store.handle();
     let key = calimero_store::key::NamespaceGovHead::new(ns_id);
     match handle.get(&key) {
@@ -465,10 +535,11 @@ pub(crate) fn read_local_applied_through(store: &Store, ns_id: [u8; 32]) -> u64 
             tracing::warn!(
                 ?err,
                 namespace_id = %hex::encode(ns_id),
-                "read_local_applied_through: store read failed; treating as 0 — \
-                 FSM may regress until the next successful read"
+                fallback,
+                "read_local_applied_through: store read failed; retaining last-known \
+                 sequence to avoid a spurious readiness regression"
             );
-            0
+            fallback
         }
     }
 }
@@ -490,6 +561,15 @@ impl ReadinessManager {
         // change, and collect the post-recompute `*Ready` snapshots
         // for emission.
         let now = Instant::now();
+
+        // Evict probe rate-limit stamps for (peer, namespace) pairs that have
+        // gone quiet, so this map can't grow without bound on peer churn. The
+        // stamps only gate probe responses within `beacon_interval / 2`, so any
+        // entry older than this TTL is safe to drop — a later probe re-inserts.
+        const PROBE_RESPONSE_TTL: Duration = Duration::from_secs(300);
+        self.last_probe_response_at
+            .retain(|_, at| now.duration_since(*at) < PROBE_RESPONSE_TTL);
+
         let ttl = self.config.ttl_heartbeat;
         let cfg = self.config;
         let mut to_emit: Vec<([u8; 32], ReadinessState)> = Vec::new();
@@ -500,25 +580,32 @@ impl ReadinessManager {
             let peers = self.cache.peer_summary(ns_id, ttl);
             // Refresh canonical sequence from the store before each
             // evaluation so the periodic tick observes publisher-side
-            // applies that don't fire `NamespaceOpApplied`.
-            let applied_through = read_local_applied_through(&self.datastore, ns_id);
+            // applies that don't fire `NamespaceOpApplied`. Fall back to the
+            // last-known sequence on a transient store error so a read blip
+            // can't demote a ready namespace.
+            let fallback = self
+                .state_per_namespace
+                .get(&ns_id)
+                .map_or(0, |e| e.local_applied_through);
+            let applied_through = read_local_applied_through(&self.datastore, ns_id, fallback);
             let snapshot = if let Some(entry) = self.state_per_namespace.get_mut(&ns_id) {
                 entry.local_applied_through = applied_through;
+                let old_tier = entry.tier;
                 let new_tier = evaluate_readiness(entry, &peers, &cfg, now);
-                if new_tier != entry.tier {
+                if new_tier != old_tier {
                     tracing::info!(
                         namespace_id = %hex::encode(ns_id),
-                        old = ?entry.tier,
+                        old = ?old_tier,
                         new = ?new_tier,
                         cause = "periodic_tick",
                         "readiness tier transition"
                     );
                     entry.tier = new_tier;
                 }
-                if matches!(
-                    entry.tier,
-                    ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
-                ) {
+                // No change gate: steady-state ready tiers re-emit every
+                // tick; the demotion edge (old ready, new not) emits once
+                // as the transition happens, then quiesces.
+                if should_emit_beacon(old_tier, new_tier) {
                     Some(entry.clone())
                 } else {
                     None
@@ -601,7 +688,7 @@ impl ReadinessManager {
         // Build with a placeholder signature, sign over the canonical
         // signable_bytes(), then write the real signature back.
         let mut beacon = SignedReadinessBeacon {
-            namespace_id: ns_id,
+            namespace_id: ns_id.into(),
             peer_pubkey,
             dag_head,
             applied_through: state.local_applied_through,
@@ -630,7 +717,7 @@ impl ReadinessManager {
         };
         beacon.signature = signature;
 
-        let topic = calimero_context::governance_broadcast::ns_topic(ns_id);
+        let topic = calimero_context::governance_broadcast::ns_topic(ns_id.into());
         // Wrap the NamespaceTopicMsg in the BroadcastMessage envelope used
         // on `ns/<id>` topics — the receiver-side dispatch in
         // `network_event::handle_namespace_governance_delta` unwraps
@@ -711,32 +798,32 @@ impl Handler<NamespaceOpApplied> for ReadinessManager {
         // scoped-borrow pattern as `Handler<ApplyBeaconLocal>` so
         // `clear_probe_window_for` and `publish_beacon` can re-borrow
         // self after the entry borrow ends.
-        let applied_through = read_local_applied_through(&self.datastore, msg.namespace_id);
+        let fallback = self
+            .state_per_namespace
+            .get(&msg.namespace_id)
+            .map_or(0, |e| e.local_applied_through);
+        let applied_through =
+            read_local_applied_through(&self.datastore, msg.namespace_id, fallback);
         let to_emit = {
             let entry = self
                 .state_per_namespace
                 .entry(msg.namespace_id)
-                .or_insert_with(|| ReadinessState {
-                    tier: ReadinessTier::Bootstrapping,
-                    local_applied_through: 0,
-                    local_pending_ops: 0,
-                    subscribed_at: Instant::now(),
-                });
+                .or_insert_with(|| ReadinessState::seed(Instant::now()));
             entry.local_applied_through = applied_through;
+            let old_tier = entry.tier;
             let new_tier = evaluate_readiness(entry, &peers, &self.config, Instant::now());
-            if new_tier != entry.tier {
+            if new_tier != old_tier {
                 tracing::info!(
                     namespace_id = %hex::encode(msg.namespace_id),
-                    old = ?entry.tier,
+                    old = ?old_tier,
                     new = ?new_tier,
                     cause = "namespace_op_applied",
                     "readiness tier transition"
                 );
                 entry.tier = new_tier;
-                if matches!(
-                    new_tier,
-                    ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
-                ) {
+                // Edge-triggered: emit on any ready-related transition
+                // (promotion into ready, or demotion out of it).
+                if should_emit_beacon(old_tier, new_tier) {
                     Some(entry.clone())
                 } else {
                     None
@@ -789,14 +876,10 @@ impl Handler<EmitOutOfCycleBeacon> for ReadinessManager {
         // `state_per_namespace` across the call (it loads identity from
         // `self.datastore`).
         let snapshot = match self.state_per_namespace.get(&msg.namespace_id) {
-            Some(s)
-                if matches!(
-                    s.tier,
-                    ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
-                ) =>
-            {
-                Some(s.clone())
-            }
+            // Steady-state: no transition, so `should_emit_beacon(t, t)`
+            // reduces to "is this a ready tier". A probe never triggers a
+            // demotion beacon (there is no edge here to demote across).
+            Some(s) if should_emit_beacon(s.tier, s.tier) => Some(s.clone()),
             _ => None,
         };
         // Stamp BEFORE potential publish: the rate-limit budget is
@@ -826,17 +909,33 @@ impl Handler<ApplyBeaconLocal> for ReadinessManager {
         // A peer beacon has just been inserted into the cache. Re-evaluate
         // the FSM with the (possibly) updated `peer_summary` and edge-emit
         // if our tier transitions into *Ready.
-        let Some(mut state) = self.state_per_namespace.get(&msg.namespace_id).cloned() else {
-            return;
-        };
+        //
+        // Self-seed if the entry is missing: a beacon can reach this handler
+        // (one hop, sent straight to the readiness addr) before the
+        // subscribe-time `NamespaceSubscribed` seed, which takes an extra hop
+        // via `NodeManager`. `NamespaceOpApplied` only seeds once we apply
+        // locally. Seeding here keeps all three FSM eval entry points
+        // self-sufficient and symmetric; `or_insert_with` is idempotent, so an
+        // earlier `subscribed_at` from a subscribe/op signal is preserved.
+        let mut state = self
+            .state_per_namespace
+            .entry(msg.namespace_id)
+            .or_insert_with(|| ReadinessState::seed(Instant::now()))
+            .clone();
         // Refresh from the store before evaluating — see
-        // `Handler<NamespaceOpApplied>` for rationale.
-        state.local_applied_through = read_local_applied_through(&self.datastore, msg.namespace_id);
+        // `Handler<NamespaceOpApplied>` for rationale. Retain the current
+        // value on a transient store error rather than regressing to 0.
+        state.local_applied_through = read_local_applied_through(
+            &self.datastore,
+            msg.namespace_id,
+            state.local_applied_through,
+        );
         let peers = self
             .cache
             .peer_summary(msg.namespace_id, self.config.ttl_heartbeat);
+        let old_tier = state.tier;
         let new_tier = evaluate_readiness(&state, &peers, &self.config, Instant::now());
-        let tier_changed = new_tier != state.tier;
+        let tier_changed = new_tier != old_tier;
 
         // Always persist `local_applied_through` back to the map,
         // independent of whether the tier transitioned this tick.
@@ -852,16 +951,15 @@ impl Handler<ApplyBeaconLocal> for ReadinessManager {
             if tier_changed {
                 tracing::info!(
                     namespace_id = %hex::encode(msg.namespace_id),
-                    old = ?state.tier,
+                    old = ?old_tier,
                     new = ?new_tier,
                     cause = "peer_beacon_received",
                     "readiness tier transition"
                 );
                 s.tier = new_tier;
-                if matches!(
-                    new_tier,
-                    ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
-                ) {
+                // Edge-triggered: emit on any ready-related transition
+                // (promotion into ready, or demotion out of it).
+                if should_emit_beacon(old_tier, new_tier) {
                     Some(s.clone())
                 } else {
                     None
@@ -879,6 +977,20 @@ impl Handler<ApplyBeaconLocal> for ReadinessManager {
     }
 }
 
+impl Handler<NamespaceSubscribed> for ReadinessManager {
+    type Result = ();
+
+    fn handle(&mut self, msg: NamespaceSubscribed, _ctx: &mut Self::Context) {
+        // Seed at subscribe so `subscribed_at` (boot-grace anchor) is set
+        // now, not at the first applied op. `or_insert_with` is a no-op if
+        // an entry already exists (idempotent re-subscribe, or an op that
+        // raced ahead), so an earlier `subscribed_at` is preserved.
+        self.state_per_namespace
+            .entry(msg.namespace_id)
+            .or_insert_with(|| ReadinessState::seed(Instant::now()));
+    }
+}
+
 /// Per-namespace `tokio::sync::Notify` registry that wakes waiters
 /// blocked on [`ReadinessCache::await_first_fresh_beacon`] when a
 /// beacon arrives.
@@ -890,35 +1002,108 @@ impl Handler<ApplyBeaconLocal> for ReadinessManager {
 /// going through the actor mailbox.
 #[derive(Debug, Default)]
 pub struct ReadinessCacheNotify {
-    waiters: Mutex<HashMap<[u8; 32], Arc<tokio::sync::Notify>>>,
+    waiters: Mutex<HashMap<[u8; 32], WaiterSlot>>,
+}
+
+/// One namespace's wake handle plus a count of the in-flight
+/// [`ReadinessCache::await_first_fresh_beacon`] calls holding it. The slot is
+/// removed once the count reaches zero, so the map stays bounded by the number
+/// of namespaces with a waiter *right now* rather than every namespace the node
+/// has ever waited on.
+#[derive(Debug)]
+struct WaiterSlot {
+    notify: Arc<tokio::sync::Notify>,
+    refs: usize,
+}
+
+/// RAII handle for an active waiter registration. Holds the namespace's
+/// `Notify` for use across `.await` points, and drops the namespace's refcount
+/// (evicting the slot at zero) when the awaiting call finishes or is cancelled.
+///
+/// Private and only constructed by [`ReadinessCacheNotify::acquire_waiter`],
+/// which releases the `waiters` mutex before handing the guard back. `drop`
+/// re-acquires that same non-reentrant `ReadinessCacheNotify::waiters` mutex,
+/// so a guard must never be dropped while the caller already holds it — none of
+/// the internal call sites do (the guard is only ever held as a local across
+/// `.await`s).
+struct WaiterGuard<'a> {
+    registry: &'a ReadinessCacheNotify,
+    ns: [u8; 32],
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl WaiterGuard<'_> {
+    /// The namespace's shared `Notify`, for creating per-iteration `Notified`
+    /// futures. Named `notifier` (not `notify`) to avoid colliding with
+    /// [`ReadinessCacheNotify::notify`], which *fires* a wake rather than
+    /// returning the primitive.
+    fn notifier(&self) -> &tokio::sync::Notify {
+        &self.notify
+    }
+}
+
+impl Drop for WaiterGuard<'_> {
+    fn drop(&mut self) {
+        let mut g = self.registry.waiters_lock();
+        // A live guard's slot must still be present with refs >= 1: guards are
+        // minted by `acquire_waiter` (refs += 1), aren't Clone, and only the
+        // last guard's drop removes the slot. Assert both invariants in
+        // debug/test builds rather than papering over an accounting bug (a
+        // silent no-op on a missing slot, or a saturating decrement on zero).
+        // Both `debug_assert!`s compile out entirely in release.
+        debug_assert!(
+            g.contains_key(&self.ns),
+            "WaiterGuard dropped but its namespace slot was already gone"
+        );
+        if let std::collections::hash_map::Entry::Occupied(mut e) = g.entry(self.ns) {
+            let slot = e.get_mut();
+            debug_assert!(
+                slot.refs > 0,
+                "WaiterGuard dropped more times than acquired"
+            );
+            slot.refs -= 1;
+            if slot.refs == 0 {
+                let _ = e.remove();
+            }
+        }
+    }
 }
 
 impl ReadinessCacheNotify {
     /// Acquire the waiters map, recovering from a poisoned mutex.
     /// See [`ReadinessCache::entries_lock`] for rationale (mirrors
     /// `AckRouter::lock` from PR #2264).
-    fn waiters_lock(
-        &self,
-    ) -> std::sync::MutexGuard<'_, HashMap<[u8; 32], Arc<tokio::sync::Notify>>> {
+    fn waiters_lock(&self) -> std::sync::MutexGuard<'_, HashMap<[u8; 32], WaiterSlot>> {
         self.waiters
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Get-or-create the per-namespace `Notify`. Cloned so the caller
-    /// holds it across `.await` points without keeping the registry
-    /// lock.
-    pub fn waiter_for(&self, ns: [u8; 32]) -> Arc<tokio::sync::Notify> {
+    /// Register a waiter for `ns`, returning a guard that keeps the namespace's
+    /// `Notify` alive in the map for as long as the guard is held. Because the
+    /// slot exists for the entire lifetime of the guard, any [`Self::notify`]
+    /// fired during that window reaches this waiter; the slot is evicted only
+    /// once no waiters remain.
+    fn acquire_waiter(&self, ns: [u8; 32]) -> WaiterGuard<'_> {
         let mut g = self.waiters_lock();
-        g.entry(ns)
-            .or_insert_with(|| Arc::new(tokio::sync::Notify::new()))
-            .clone()
+        let slot = g.entry(ns).or_insert_with(|| WaiterSlot {
+            notify: Arc::new(tokio::sync::Notify::new()),
+            refs: 0,
+        });
+        slot.refs += 1;
+        let notify = Arc::clone(&slot.notify);
+        drop(g);
+        WaiterGuard {
+            registry: self,
+            ns,
+            notify,
+        }
     }
 
     pub fn notify(&self, ns: [u8; 32]) {
         let g = self.waiters_lock();
-        if let Some(n) = g.get(&ns) {
-            n.notify_waiters();
+        if let Some(slot) = g.get(&ns) {
+            slot.notify.notify_waiters();
         }
     }
 }
@@ -947,12 +1132,16 @@ impl ReadinessCache {
         ttl: Duration,
         deadline: Duration,
     ) -> Option<(PublicKey, CacheEntry)> {
-        let waiter = notify.waiter_for(ns);
+        // Held for the whole call, so the namespace's slot stays in the waiters
+        // map until we return and any `notify()` in between reaches us. Dropping
+        // it (return or cancellation) releases the refcount and evicts the slot
+        // when we were the last waiter, keeping the map bounded.
+        let waiter = notify.acquire_waiter(ns);
         let timeout_fut = tokio::time::sleep(deadline);
         tokio::pin!(timeout_fut);
         loop {
             // 1. Create + pin a fresh Notified for this iteration.
-            let notified = waiter.notified();
+            let notified = waiter.notifier().notified();
             tokio::pin!(notified);
             // 2. Register without polling. From here on, any
             //    `notify_waiters()` is guaranteed to wake us, even if

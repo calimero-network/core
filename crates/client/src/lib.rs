@@ -27,7 +27,7 @@ pub use client::{Client, ResolveResponse, ResolveResponseValue};
 pub use connection::{AuthMode, ConnectionInfo};
 pub use errors::ClientError;
 pub use eyre::Result;
-pub use storage::{get_session_cache, JwtToken};
+pub use storage::JwtToken;
 pub use traits::{ClientAuthenticator, ClientConfig, ClientStorage};
 // Re-export common types
 pub use url::Url;
@@ -36,7 +36,22 @@ pub use url::Url;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(test)]
-mod tests;
+mod test_support {
+    use base64::Engine as _;
+
+    /// Build a minimal JWT (`header.payload.sig`) whose payload carries the
+    /// given `exp` (seconds since the Unix epoch). Only the `exp` claim is read
+    /// by the client, so the header/signature segments are placeholders. Shared
+    /// by the `storage` and `tests` modules to avoid drift.
+    pub(crate) fn jwt_with_exp(exp_unix: i64) -> String {
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(format!("{{\"exp\":{exp_unix}}}"));
+        format!("aGVhZGVy.{payload}.c2ln")
+    }
+}
 
 #[cfg(test)]
 use tokio_test as _;
+
+#[cfg(test)]
+mod tests;

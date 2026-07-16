@@ -1885,6 +1885,18 @@ pub const GROUP_KEY_PREFIX: u8 = 0x3A;
 /// would drop legitimate traffic for groups they still belong to.
 pub const GROUP_DENIED_MEMBER_PREFIX: u8 = 0x3B;
 
+/// Prefix for the pending-key-rotation worklist. A row marks: `group_id` still
+/// owes a forward-secrecy key rotation because `departed` left, and no rotation
+/// has landed yet.
+///
+/// Written by the `MemberLeft` apply — which is deterministic and replicated, so
+/// every node derives the SAME worklist with no coordination — and cleared by the
+/// `GroupKeyRotated` apply that carries the new key. A leaver cannot rotate for
+/// themselves (they would have to mint the key they are being cut off from, and
+/// peers reject a rotation from a non-admin anyway), so the row is the durable
+/// hand-off that lets a remaining admin finish the job, including after a restart.
+pub const GROUP_PENDING_KEY_ROTATION_PREFIX: u8 = 0x3F;
+
 /// Prefix for the durable pending-self-purge marker. A row keyed by
 /// `namespace_id` marks that THIS node was confirmed TEE-self-evicted from
 /// the namespace and the local-state cascade purge is in flight or
@@ -2023,13 +2035,88 @@ impl Debug for GroupDeniedMember {
     }
 }
 
-/// Value for [`GroupKeyEntry`]. The raw 32-byte AES-256 group key plus a
-/// creation timestamp used to determine "current" (latest) key for encryption.
+/// Pending-key-rotation worklist entry. Presence of the key means: `group_id` owes
+/// a forward-secrecy rotation because `departed` left it, and none has landed yet.
+///
+/// The value is `()` — presence of the key IS the marker, like [`GroupDeniedMember`].
+/// Keyed by `(group_id, departed)` rather than `group_id` alone so two members
+/// leaving the same group concurrently each get their own row: one rotation may
+/// discharge both, but neither row is silently lost if only one rotation lands.
+///
+/// Key layout: `prefix(1) + group_id(32) + departed(32)` = 65 bytes — the same shape
+/// as [`GroupMember`] / [`GroupDeniedMember`], so a `(group_id, *)` prefix scan
+/// enumerates every rotation a group owes, and a full-prefix scan enumerates the
+/// node's whole rotation backlog (what the rotator drains at startup).
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupPendingKeyRotation(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupPendingKeyRotation {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], departed: PrimitivePublicKey) -> Self {
+        Self(Key(GenericArray::from([GROUP_PENDING_KEY_ROTATION_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(*departed))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn departed(&self) -> PrimitivePublicKey {
+        let mut pk = [0; 32];
+        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        pk.into()
+    }
+}
+
+impl AsKeyParts for GroupPendingKeyRotation {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupPendingKeyRotation {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupPendingKeyRotation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupPendingKeyRotation")
+            .field("group_id", &self.group_id())
+            .field("departed", &self.departed())
+            .finish()
+    }
+}
+
+/// Value for [`GroupKeyEntry`]. The raw 32-byte AES-256 group key plus its
+/// ordering metadata.
+///
+/// `epoch` is the deterministic, DAG-derived sequence of the governance op that
+/// introduced this key (or `0` for a genesis / bootstrap key). It — not the
+/// wall-clock `created_at` — is what selects the "current" (latest) key for
+/// encryption, so all nodes agree even under clock skew or two rotations within
+/// the same second. `created_at` is retained for diagnostics only.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupKeyValue {
     pub group_key: [u8; 32],
     pub created_at: u64,
+    pub epoch: u64,
 }
 
 /// Durable pending-self-purge marker, keyed by `namespace_id` (the root
@@ -2117,6 +2204,37 @@ mod tests {
         assert_eq!(key.identity(), pk);
         assert_eq!(key.as_key().as_bytes()[0], GROUP_MEMBER_PREFIX);
         assert_eq!(key.as_key().as_bytes().len(), 65);
+    }
+
+    #[test]
+    fn group_context_member_cap_roundtrip() {
+        // 97-byte 4-component key with a field order (group, context, member)
+        // distinct from `GroupMemberContext`'s (group, member, context).
+        // Distinct byte patterns per component prove each accessor reads its
+        // own [1..33]/[33..65]/[65..97] slice, so the two shapes can't alias.
+        let gid = [0x10; 32];
+        let context_id = PrimitiveContextId::from([0x20; 32]);
+        let member = PrimitivePublicKey::from([0x30; 32]);
+        let key = GroupContextMemberCap::new(gid, context_id, member);
+
+        assert_eq!(key.group_id(), gid);
+        assert_eq!(key.context_id(), context_id);
+        assert_eq!(key.member(), member);
+        assert_eq!(key.as_key().as_bytes()[0], GROUP_CONTEXT_MEMBER_CAP_PREFIX);
+        assert_eq!(key.as_key().as_bytes().len(), 97);
+
+        // Full decode round-trip through the exact-length slice.
+        let bytes = key.as_key().as_bytes();
+        let parts = Key::<<GroupContextMemberCap as AsKeyParts>::Components>::try_from_slice(bytes)
+            .expect("exact-length slice must decode");
+        let restored = GroupContextMemberCap::try_from_parts(parts).unwrap();
+        assert_eq!(restored.as_key().as_bytes(), bytes);
+
+        // A mis-sized slice must be rejected (no length framing on the key).
+        assert!(
+            Key::<<GroupContextMemberCap as AsKeyParts>::Components>::try_from_slice(&bytes[..96])
+                .is_none()
+        );
     }
 
     #[test]
@@ -2313,6 +2431,7 @@ mod tests {
             NAMESPACE_GOV_HEAD_PREFIX,
             GROUP_KEY_PREFIX,
             GROUP_DENIED_MEMBER_PREFIX,
+            GROUP_PENDING_KEY_ROTATION_PREFIX,
             PENDING_SELF_PURGE_PREFIX,
         ];
         for i in 0..prefixes.len() {

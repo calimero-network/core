@@ -13,6 +13,16 @@ instructions so we can reproduce. Is it possible to add a test case to our
 end-to-end tests with changes from this PR? Add screenshots or videos for
 changes in the user-interface.
 
+## Proof the fix works
+
+For a bug fix, show it actually works - not just that tests pass:
+
+- **Reproduction**: the exact command / test / merobox scenario that triggers the bug.
+- **Before**: the failing output or log line (the symptom).
+- **After**: the same run now passing, plus the regression test that locks it in.
+
+Skip this section only for pure docs/chore PRs.
+
 ## Wire contract (SDK gate)
 
 If this PR changes an HTTP wire DTO or route, the SDKs mirror it by hand — keep

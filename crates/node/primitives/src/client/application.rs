@@ -448,7 +448,11 @@ impl NodeClient {
                 // Raw-wasm apps carry no manifest; the row's metadata is the
                 // only version identity available.
                 versions.push(ApplicationVersionInfo {
-                    version: app.version.clone(),
+                    version: app
+                        .version
+                        .as_ref()
+                        .map(|v| v.as_str().to_owned())
+                        .unwrap_or_default(),
                     blob_id,
                     size,
                     package: app.package.clone(),

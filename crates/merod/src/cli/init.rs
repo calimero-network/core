@@ -24,12 +24,84 @@ use libp2p::identity::Keypair;
 use mero_auth::config::{AuthConfig as EmbeddedAuthConfig, StorageConfig as AuthStorageConfig};
 use multiaddr::{Multiaddr, Protocol};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
-use tokio::fs::{self, create_dir_all};
+use std::path::{Path, PathBuf};
+use tokio::fs;
 use tracing::{info, warn};
 
 use super::auth_mode::AuthModeArg;
 use crate::cli;
+
+/// Restrict a single path to the given owner-only `mode` (`0700` for
+/// directories, `0600` for files). No-op on non-Unix platforms, which lack
+/// POSIX mode bits.
+#[cfg(unix)]
+async fn restrict_to_owner(path: impl AsRef<Path>, mode: u32) -> EyreResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = path.as_ref();
+    fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .await
+        .wrap_err_with(|| format!("failed to restrict permissions on {path:?}"))
+}
+
+#[cfg(not(unix))]
+async fn restrict_to_owner(_path: impl AsRef<Path>, _mode: u32) -> EyreResult<()> {
+    Ok(())
+}
+
+/// Recursively restrict a directory tree to owner-only access: `0700` for every
+/// directory and `0600` for every file. RocksDB creates the datastore's files
+/// and sub-directories with the process umask (typically world-readable), so
+/// walking the tree after the store is closed makes the raw data — and any
+/// content left by a previous partial init — unreadable to other local users
+/// rather than relying solely on the top-level directory's mode. Symlinks are
+/// left untouched (RocksDB creates none here).
+#[cfg(unix)]
+async fn restrict_tree_to_owner(root: impl AsRef<Path>) -> EyreResult<()> {
+    let mut stack = vec![root.as_ref().to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        restrict_to_owner(&dir, 0o700).await?;
+
+        let mut entries = fs::read_dir(&dir)
+            .await
+            .wrap_err_with(|| format!("failed to read directory {dir:?}"))?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let file_type = entry.file_type().await?;
+            if file_type.is_dir() {
+                stack.push(entry.path());
+            } else if file_type.is_file() {
+                restrict_to_owner(entry.path(), 0o600).await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn restrict_tree_to_owner(_root: impl AsRef<Path>) -> EyreResult<()> {
+    Ok(())
+}
+
+/// Create `path` and any missing parents, with directories created owner-only
+/// (`0700`) on Unix. Using the mode at creation time means the node home is
+/// never momentarily visible to other users with permissive bits — the window a
+/// create-then-`chmod` would leave open. Pre-existing components keep their mode.
+async fn create_dir_owner_only(path: impl AsRef<Path>) -> EyreResult<()> {
+    let path = path.as_ref();
+
+    let mut builder = fs::DirBuilder::new();
+    let _ = builder.recursive(true);
+    #[cfg(unix)]
+    let _ = builder.mode(0o700);
+
+    builder
+        .create(path)
+        .await
+        .wrap_err_with(|| format!("failed to create directory {path:?}"))
+}
 
 // Sync configuration - aggressive defaults for fast CRDT convergence
 const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -103,7 +175,6 @@ pub struct InitCommand {
 
     /// Advertise observed address
     #[clap(long, default_value_t = false)]
-    #[clap(overrides_with("no_mdns"))]
     pub advertise_address: bool,
 
     /// Static external multiaddr(s) to advertise (e.g.
@@ -185,14 +256,43 @@ impl InitCommand {
                 return Ok(());
             }
 
-            fs::remove_dir_all(&path).await?;
+            // Refuse to delete anything but a real directory here. `path` is the
+            // node home we're about to wipe; if it has been replaced by a symlink
+            // (or a plain file) since the checks above, fail loudly with a clear
+            // message rather than silently touching an unexpected target. Re-stat
+            // without following symlinks (lstat) right before the removal.
+            //
+            // This lstat only narrows an attacker's race window, it does not
+            // close it. The hard guarantee comes from `remove_dir_all` itself:
+            // it opens the final component with `O_NOFOLLOW`, so a symlink swapped
+            // in after this check is unlinked in place rather than traversed — the
+            // symlink's target and its contents are never recursed into or deleted.
+            let metadata = fs::symlink_metadata(&path)
+                .await
+                .wrap_err_with(|| format!("failed to stat existing path {path:?}"))?;
+            if !metadata.is_dir() {
+                bail!(
+                    "refusing to remove {path:?}: expected a directory, found {}",
+                    if metadata.is_symlink() {
+                        "a symlink"
+                    } else {
+                        "a non-directory"
+                    }
+                );
+            }
+
+            fs::remove_dir_all(&path)
+                .await
+                .wrap_err_with(|| format!("failed to remove existing node home {path:?}"))?;
         }
 
         if !path.exists() {
-            create_dir_all(&path)
-                .await
-                .wrap_err_with(|| format!("failed to create directory {path:?}"))?;
+            create_dir_owner_only(&path).await?;
         }
+
+        // A freshly created home is already 0700 (above); tighten a pre-existing
+        // one so the private key and datastore land in an owner-only directory.
+        restrict_to_owner(&path, 0o700).await?;
 
         let identity = Keypair::generate_ed25519();
         info!("Generated identity: {:?}", identity.public().to_peer_id());
@@ -289,12 +389,12 @@ impl InitCommand {
                 ),
                 server_config,
             ),
-            SyncConfig {
-                timeout: DEFAULT_SYNC_TIMEOUT,
-                session_deadline: DEFAULT_SYNC_SESSION_DEADLINE,
-                interval: DEFAULT_SYNC_INTERVAL,
-                frequency: DEFAULT_SYNC_FREQUENCY,
-            },
+            SyncConfig::new(
+                DEFAULT_SYNC_TIMEOUT,
+                DEFAULT_SYNC_SESSION_DEADLINE,
+                DEFAULT_SYNC_INTERVAL,
+                DEFAULT_SYNC_FREQUENCY,
+            ),
             StoreConfigFile::new("data".into()),
             BlobStoreConfig::new("blobs".into()),
             ContextConfig {
@@ -303,14 +403,51 @@ impl InitCommand {
             },
         );
 
+        // `save` writes config.toml atomically and owner-only (0600); the file
+        // holds the private key, so this keeps it unreadable to other users.
         config.save(&path).await?;
 
+        // `config` is fully consumed below; `datastore_path` is cloned so the
+        // store's owned copy is independent.
+        let datastore_path = path.join(&config.datastore.path);
         drop(Store::open::<RocksDB>(&StoreConfig::new(
-            path.join(config.datastore.path),
+            datastore_path.clone(),
         ))?);
+
+        // RocksDB creates these files under the process umask, but they live
+        // inside the now-0700 node home, so they were never reachable by other
+        // users. With the store closed (no writer racing us), recursively pin the
+        // datastore and every RocksDB file to owner-only as defense in depth, so
+        // the contents stay private even if the home's mode is later loosened.
+        restrict_tree_to_owner(&datastore_path).await?;
 
         info!("Initialized a node in {:?}", path);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::InitCommand;
+
+    // `--no-mdns` and `--advertise-address` are independent flags: setting one
+    // must not silently reset the other, in either order. A stray
+    // `overrides_with("no_mdns")` on `advertise_address` used to break this.
+    #[test]
+    fn no_mdns_and_advertise_address_are_independent() {
+        for args in [
+            ["merod", "--no-mdns", "--advertise-address"],
+            ["merod", "--advertise-address", "--no-mdns"],
+        ] {
+            let cmd = InitCommand::try_parse_from(args).unwrap();
+            assert!(cmd.no_mdns, "no_mdns should be set for {args:?}");
+            assert!(
+                cmd.advertise_address,
+                "advertise_address should be set for {args:?}"
+            );
+        }
     }
 }

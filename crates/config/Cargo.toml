@@ -17,7 +17,8 @@ eyre.workspace = true
 libp2p-identity = { workspace = true, features = ["peerid", "serde"] }
 multiaddr.workspace = true
 serde = { workspace = true, features = ["derive"] }
-tokio = { workspace = true, features = ["fs"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["fs", "rt"] }
 toml.workspace = true
 url = { workspace = true, features = ["serde"] }
 

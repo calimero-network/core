@@ -55,6 +55,22 @@ pub struct JwtConfig {
     /// Refresh token expiry time in seconds (default: 30 days)
     #[serde(default = "default_refresh_token_expiry")]
     pub refresh_token_expiry: u64,
+
+    /// Trusted authoritative host for node-binding validation (security finding
+    /// #7). When set, a node-bound token is validated against THIS value instead
+    /// of the request's `Host`/`X-Forwarded-Host` header — both of which are
+    /// client-controllable, so an attacker reaching the auth service directly
+    /// (outside the reverse-proxy path) could otherwise spoof `X-Forwarded-Host`
+    /// to replay a node-A token against node-B.
+    ///
+    /// Set it to the node's public host that clients actually reach (e.g.
+    /// `node.example.com` or `localhost:2428`); the scheme/port are compared
+    /// host-only. Leave it unset to preserve the legacy header-based behavior —
+    /// a backend cannot reliably auto-discover its own public host, so this
+    /// hardening is opt-in and non-breaking for local/dev and existing
+    /// deployments.
+    #[serde(default)]
+    pub node_host: Option<String>,
 }
 
 fn default_access_token_expiry() -> u64 {
@@ -91,6 +107,19 @@ pub struct UserPasswordConfig {
     /// Maximum password length
     #[serde(default = "default_max_password_length")]
     pub max_password_length: usize,
+
+    /// Out-of-band secret required to bootstrap the very first root key on a
+    /// fresh node.
+    ///
+    /// When this is `None` (and the `MERO_AUTH_BOOTSTRAP_SECRET` environment
+    /// variable is unset), first-login bootstrap is **disabled** — the node
+    /// will not mint a root key for an unauthenticated caller, and a root key
+    /// must be provisioned out of band. When set, the bootstrapping client
+    /// must present a matching secret before the first root key is created.
+    /// An empty string is treated the same as `None` (bootstrap disabled), so
+    /// a blank value from env interpolation can never open the gate.
+    #[serde(default)]
+    pub bootstrap_secret: Option<String>,
 }
 
 impl Default for UserPasswordConfig {
@@ -98,6 +127,7 @@ impl Default for UserPasswordConfig {
         Self {
             min_password_length: 8,
             max_password_length: 128,
+            bootstrap_secret: None,
         }
     }
 }

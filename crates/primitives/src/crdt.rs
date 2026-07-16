@@ -370,6 +370,7 @@ mod tests {
             CrdtType::FrozenStorage,
             CrdtType::SharedStorage,
             CrdtType::Custom("my_type".to_string()),
+            CrdtType::RotationLog,
         ];
 
         for crdt_type in &types {
@@ -397,6 +398,7 @@ mod tests {
             CrdtType::FrozenStorage,
             CrdtType::SharedStorage,
             CrdtType::Custom("my_type".to_string()),
+            CrdtType::RotationLog,
         ];
 
         for crdt_type in &types {
@@ -404,5 +406,27 @@ mod tests {
             let decoded: CrdtType = borsh::from_slice(&bytes).unwrap();
             assert_eq!(*crdt_type, decoded);
         }
+    }
+
+    #[cfg(feature = "borsh")]
+    #[test]
+    fn test_borsh_discriminant_tags_are_stable() {
+        // #402: pin borsh tags — reordering variants breaks the wire format.
+        let tag = |t: &CrdtType| borsh::to_vec(t).unwrap()[0];
+
+        assert_eq!(tag(&CrdtType::lww_register("x")), 0);
+        assert_eq!(tag(&CrdtType::GCounter), 1);
+        assert_eq!(tag(&CrdtType::PnCounter), 2);
+        assert_eq!(tag(&CrdtType::Rga), 3);
+        assert_eq!(tag(&CrdtType::unordered_map("k", "v")), 4);
+        assert_eq!(tag(&CrdtType::sorted_map("k", "v")), 5);
+        assert_eq!(tag(&CrdtType::unordered_set("e")), 6);
+        assert_eq!(tag(&CrdtType::sorted_set("e")), 7);
+        assert_eq!(tag(&CrdtType::vector("e")), 8);
+        assert_eq!(tag(&CrdtType::UserStorage), 9);
+        assert_eq!(tag(&CrdtType::FrozenStorage), 10);
+        assert_eq!(tag(&CrdtType::SharedStorage), 11);
+        assert_eq!(tag(&CrdtType::Custom("c".into())), 12);
+        assert_eq!(tag(&CrdtType::RotationLog), 13);
     }
 }

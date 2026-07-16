@@ -134,6 +134,17 @@ mod path__public_methods {
         assert!(!Path::new("::root::node")
             .unwrap()
             .is_ancestor_of(&Path::new("::root::another").unwrap()));
+
+        // A strictly-shallower path whose *final* segment differs is not an
+        // ancestor — the deepest segment must be compared, not skipped.
+        assert!(!Path::new("::root::wrong")
+            .unwrap()
+            .is_ancestor_of(&Path::new("::root::node::leaf").unwrap()));
+        // A shallower single-segment path whose only segment differs is not an
+        // ancestor either.
+        assert!(!Path::new("::other")
+            .unwrap()
+            .is_ancestor_of(&Path::new("::root::node").unwrap()));
     }
 
     #[test]
@@ -154,6 +165,11 @@ mod path__public_methods {
         assert!(!Path::new("::root::node")
             .unwrap()
             .is_descendant_of(&Path::new("::root::another").unwrap()));
+
+        // A deeper path is not a descendant of one whose final segment differs.
+        assert!(!Path::new("::root::node::leaf")
+            .unwrap()
+            .is_descendant_of(&Path::new("::root::wrong").unwrap()));
     }
 
     #[test]

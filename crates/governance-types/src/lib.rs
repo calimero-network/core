@@ -21,9 +21,11 @@
 //! group-scoped ops they cannot decrypt.
 
 use std::collections::BTreeMap;
+use std::io;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_context_config::types::SignedGroupOpenInvitation;
+use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
+use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -41,6 +43,60 @@ pub use wire::{
 // `AckRouter` and its pub/sub plumbing stay in `calimero-context-client`
 // (they depend on `tokio::sync::broadcast` and connect actor mailboxes).
 // This crate is pure-data: types, signing, hashing, borsh layout.
+
+/// Define a 32-byte id newtype. Borsh- and serde-transparent (a derived
+/// `[u8; 32]`, no tag or length prefix — a serde newtype struct serializes as
+/// its inner value) so it is byte-compatible with the bare `[u8; 32]` these ids
+/// used to be, while making the distinct id kinds non-interchangeable. Serde
+/// parity with `AppKey`/`ContextGroupId` keeps the ids usable across the JSON
+/// API surface, not just the borsh op wire.
+macro_rules! id_newtype {
+    ($(#[$m:meta])* $name:ident) => {
+        $(#[$m])*
+        #[derive(
+            Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash,
+            BorshSerialize, BorshDeserialize,
+            serde::Serialize, serde::Deserialize,
+        )]
+        pub struct $name([u8; 32]);
+
+        impl $name {
+            #[must_use]
+            pub const fn new(bytes: [u8; 32]) -> Self {
+                Self(bytes)
+            }
+            #[must_use]
+            pub const fn as_bytes(&self) -> &[u8; 32] {
+                &self.0
+            }
+            #[must_use]
+            pub const fn to_bytes(self) -> [u8; 32] {
+                self.0
+            }
+        }
+
+        impl From<[u8; 32]> for $name {
+            fn from(bytes: [u8; 32]) -> Self {
+                Self(bytes)
+            }
+        }
+
+        impl From<$name> for [u8; 32] {
+            fn from(id: $name) -> Self {
+                id.0
+            }
+        }
+    };
+}
+
+id_newtype! {
+    /// Stable id of a namespace (the root governance group of a DAG).
+    NamespaceId
+}
+id_newtype! {
+    /// Stable id of a group/namespace encryption key.
+    KeyId
+}
 
 /// Wire/schema version for [`SignedGroupOp`].
 ///
@@ -89,6 +145,14 @@ pub use wire::{
 /// Variant ordinal is appended after the v6 variants; v6 ordinals are
 /// preserved.
 ///
+/// `GroupKeyRotated` is appended at the END of the `GroupOp` enum, so every
+/// pre-existing variant keeps its ordinal (Borsh tags variants by source order) and
+/// the schema version deliberately does NOT change: the version is enforced
+/// strictly-equal on decode, so bumping it would make older peers reject every op,
+/// not just the new one. Old peers decode everything they already understood and fail
+/// only on `GroupKeyRotated` itself — the same operator-discipline rollout posture the
+/// cascade variants took: deploy before any node self-leaves a Restricted group.
+///
 /// v8 (cutover C5.S3b): dropped the vestigial `state_hash` field from the
 /// signable/​signed op. It stopped being an apply gate in C5.S3a (`scope_root`
 /// is the authoritative convergence signal now), so it was pure dead weight in
@@ -98,6 +162,64 @@ pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 8;
 
 /// Domain separation prefix for Ed25519 signatures over group ops.
 pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
+
+/// A non-zero `u8` bitmask representing per-context member capabilities.
+///
+/// Validated at Borsh deserialization time: a zero value is rejected on the
+/// wire, making it impossible to construct an invalid capability op from
+/// received bytes.
+///
+/// Unknown bits are accepted without error (forward-compatible): nodes
+/// running older software will store ops with bits they do not recognise and
+/// replay them faithfully. Callers must mask against known capability
+/// constants before interpreting the value.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, BorshSerialize)]
+pub struct ContextCapabilityBits(u8);
+
+impl ContextCapabilityBits {
+    /// Construct from a raw bitmask, returning `None` if `bits == 0`.
+    #[must_use]
+    pub fn new(bits: u8) -> Option<Self> {
+        if bits == 0 {
+            None
+        } else {
+            Some(Self(bits))
+        }
+    }
+
+    #[must_use]
+    pub fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl TryFrom<u8> for ContextCapabilityBits {
+    type Error = &'static str;
+
+    fn try_from(bits: u8) -> Result<Self, Self::Error> {
+        Self::new(bits).ok_or("capability bitmask must not be zero")
+    }
+}
+
+impl From<std::num::NonZeroU8> for ContextCapabilityBits {
+    fn from(v: std::num::NonZeroU8) -> Self {
+        Self(v.get())
+    }
+}
+
+impl BorshDeserialize for ContextCapabilityBits {
+    fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
+        let bits = u8::deserialize_reader(reader)?;
+        // Route through the canonical constructor so the zero-rejection
+        // invariant lives in exactly one place.
+        Self::new(bits).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ContextCapabilityBits: capability bitmask must not be zero",
+            )
+        })
+    }
+}
 
 /// Group mutation for local governance (signed, gossip-replicated).
 ///
@@ -179,15 +301,15 @@ pub enum GroupOp {
     /// Per-member capability bitmask (`GroupMemberCapability` store).
     MemberCapabilitySet {
         member: PublicKey,
-        capabilities: u32,
+        capabilities: MemberCapabilities,
     },
     /// Default capability bitmask for new members.
-    DefaultCapabilitiesSet { capabilities: u32 },
+    DefaultCapabilitiesSet { capabilities: MemberCapabilities },
     /// Update group upgrade policy in [`GroupMetaValue`].
     UpgradePolicySet { policy: UpgradePolicy },
     /// Update target application and app key in group metadata.
     TargetApplicationSet {
-        app_key: [u8; 32],
+        app_key: AppKey,
         target_application_id: ApplicationId,
     },
     /// Register a context index under this group (must match `ContextGroupRef` invariants).
@@ -204,10 +326,10 @@ pub enum GroupOp {
     },
     /// Unregister a context from this group.
     ContextDetached { context_id: ContextId },
-    /// Subgroup visibility (`0` = Open, `1` = Restricted). When `Open`,
-    /// parent-group members holding `CAN_JOIN_OPEN_SUBGROUPS` are inherited
-    /// as members of this subgroup. See [`crate::group::SetSubgroupVisibilityRequest`].
-    SubgroupVisibilitySet { mode: u8 },
+    /// Subgroup visibility. When `Open`, parent-group members holding
+    /// `CAN_JOIN_OPEN_SUBGROUPS` are inherited as members of this subgroup.
+    /// See [`crate::group::SetSubgroupVisibilityRequest`].
+    SubgroupVisibilitySet { mode: VisibilityMode },
     /// Wholly replace the metadata record (name + opaque `data`) of the group
     /// itself (a namespace is a root group, so this covers it).
     /// **Signer:** group admin or holder of `CAN_MANAGE_METADATA`.
@@ -238,13 +360,13 @@ pub enum GroupOp {
     ContextCapabilityGranted {
         context_id: ContextId,
         member: PublicKey,
-        capability: u8,
+        capability: ContextCapabilityBits,
     },
     /// Revoke a capability from a member for a specific context.
     ContextCapabilityRevoked {
         context_id: ContextId,
         member: PublicKey,
-        capability: u8,
+        capability: ContextCapabilityBits,
     },
     /// TEE admission policy: defines which TEE nodes can auto-join the group.
     /// Only admins can set this policy.
@@ -314,8 +436,8 @@ pub enum GroupOp {
     /// `#[deprecated]` because the enum's derived borsh/Debug impls reference
     /// every variant and would warn at the derive site.)
     CascadeTargetApplicationSet {
-        from_app_key: [u8; 32],
-        app_key: [u8; 32],
+        from_app_key: AppKey,
+        app_key: AppKey,
         target_application_id: ApplicationId,
     },
     /// Cascade variant of [`Self::GroupMigrationSet`]: emitted alongside
@@ -328,7 +450,7 @@ pub enum GroupOp {
     /// DEPRECATED: superseded by [`Self::CascadeUpgrade`] (see that variant).
     /// Do NOT emit; apply arm retained for one release for wire-compat.
     CascadeGroupMigrationSet {
-        from_app_key: [u8; 32],
+        from_app_key: AppKey,
         migration: Option<Vec<u8>>,
     },
     /// Atomic namespace cascade upgrade. Applies target_application_id, app_key,
@@ -343,11 +465,32 @@ pub enum GroupOp {
     /// timestamp predates this value is rejected post-`Completed` to prevent
     /// offline-writer stale-schema state from overwriting migrated state.
     CascadeUpgrade {
-        from_app_key: [u8; 32],
-        app_key: [u8; 32],
+        from_app_key: AppKey,
+        app_key: AppKey,
         target_application_id: ApplicationId,
         migration: Option<Vec<u8>>,
         cascade_hlc: HybridTimestamp,
+    },
+    /// Carrier for a forward-secrecy key rotation that follows a self-leave.
+    ///
+    /// A rotation rides as a sidecar on the op that triggers it, minted by whoever
+    /// publishes that op. That works for an admin-initiated `MemberRemoved` — the
+    /// publisher stays in the group — but not for `MemberLeft`, where the publisher
+    /// is the departing member: they would have to mint the very key they are being
+    /// cut off from and would retain it, and peers reject a rotation from a non-admin
+    /// regardless. So `MemberLeft` records what is owed
+    /// (`PendingRotationRepository`), and a REMAINING ADMIN later publishes this op to
+    /// carry the new key.
+    ///
+    /// The op mutates no governance state of its own — it exists so the rotation
+    /// sidecar has something to ride on, and its apply discharges the pending row.
+    /// Applying it twice is a no-op, which is what makes a concurrent double-rotation
+    /// by two admins harmless.
+    GroupKeyRotated {
+        /// The member whose departure this rotation is cutting off. Names which
+        /// pending row to discharge, and is the identity every rotation envelope
+        /// excludes.
+        departed: PublicKey,
     },
 }
 
@@ -365,6 +508,7 @@ impl GroupOp {
             GroupOp::MemberAdded { .. } => "member_added",
             GroupOp::MemberRemoved { .. } => "member_removed",
             GroupOp::MemberLeft { .. } => "member_left",
+            GroupOp::GroupKeyRotated { .. } => "group_key_rotated",
             GroupOp::MemberRoleSet { .. } => "member_role_set",
             GroupOp::MemberCapabilitySet { .. } => "member_capability_set",
             GroupOp::DefaultCapabilitiesSet { .. } => "default_capabilities_set",
@@ -402,6 +546,7 @@ impl GroupOp {
 /// - `Group` ops have a cleartext `group_id` tag (for topic routing and
 ///   skeleton storage) but the actual mutation is encrypted.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+#[non_exhaustive]
 pub enum NamespaceOp {
     /// Cleartext namespace-wide administrative operation.
     Root(RootOp),
@@ -409,9 +554,9 @@ pub enum NamespaceOp {
     /// cleartext so non-members can store the skeleton; the payload is only
     /// readable by holders of the group key identified by `key_id`.
     Group {
-        group_id: [u8; 32],
+        group_id: ContextGroupId,
         /// `sha256(group_key)` — identifies which group key encrypted this op.
-        key_id: [u8; 32],
+        key_id: KeyId,
         encrypted: EncryptedGroupOp,
         /// Present only on `MemberRemoved` ops: wraps a NEW group key for
         /// each remaining member. Lives outside the encrypted payload so
@@ -421,6 +566,10 @@ pub enum NamespaceOp {
 }
 
 /// Cleartext administrative operations that affect the entire namespace.
+// Intentionally NOT #[non_exhaustive]: `RootOp` is dispatched by a central
+// exhaustive `match root` (governance op-apply) that must fail to compile when
+// a variant is added so the new op gets a handler, rather than silently
+// hitting a `_` arm and being dropped from application.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub enum RootOp {
     /// A new group was created AND atomically nested under `parent_id`.
@@ -436,8 +585,8 @@ pub enum RootOp {
     /// `ReadOnlyTee` row that the old Restricted-then-flip path produced.
     /// Visibility can still be changed later via `SubgroupVisibilitySet`.
     GroupCreated {
-        group_id: [u8; 32],
-        parent_id: [u8; 32],
+        group_id: ContextGroupId,
+        parent_id: ContextGroupId,
         restricted: bool,
     },
     /// Atomically move `child_group_id` from its current parent to
@@ -449,8 +598,8 @@ pub enum RootOp {
     /// Replaces the old `GroupNested` + `GroupUnnested` two-op pattern;
     /// orphan state is no longer expressible.
     GroupReparented {
-        child_group_id: [u8; 32],
-        new_parent_id: [u8; 32],
+        child_group_id: ContextGroupId,
+        new_parent_id: ContextGroupId,
     },
     /// Delete `root_group_id` AND its entire subtree AND all contained
     /// contexts in one op. The signer pre-computes `cascade_group_ids`
@@ -460,9 +609,9 @@ pub enum RootOp {
     /// with their state — deterministic-application check that catches
     /// silent divergence.
     GroupDeleted {
-        root_group_id: [u8; 32],
-        cascade_group_ids: Vec<[u8; 32]>,
-        cascade_context_ids: Vec<[u8; 32]>,
+        root_group_id: ContextGroupId,
+        cascade_group_ids: Vec<ContextGroupId>,
+        cascade_context_ids: Vec<ContextId>,
     },
     /// The namespace administrator was changed.
     AdminChanged { new_admin: PublicKey },
@@ -505,7 +654,7 @@ pub enum RootOp {
     /// (`recover_missing_group_keys`) is the durable retry that covers a
     /// member who misses this delivery.
     KeyDelivery {
-        group_id: [u8; 32],
+        group_id: ContextGroupId,
         envelope: KeyEnvelope,
     },
     /// A namespace member just self-joined an `Open` subgroup whose
@@ -528,7 +677,7 @@ pub enum RootOp {
     /// it. See `handlers/join_context.rs`.
     MemberJoinedOpen {
         member: PublicKey,
-        group_id: [u8; 32],
+        group_id: ContextGroupId,
     },
     /// Invitation-based join carrying the joiner's claimed redemption
     /// time (`joined_at`, unix seconds, covered by the joiner's
@@ -614,21 +763,62 @@ pub struct EncryptedGroupOp {
     pub ciphertext: Vec<u8>,
 }
 
-/// ECDH-wrapped group key for a specific recipient.
+/// Domain separation prefix for the Ed25519 signature that authenticates a
+/// [`KeyEnvelope`]'s sender. Distinct from the op-signing domains so an
+/// envelope signature can never be replayed as an op signature or vice versa.
+pub const KEY_ENVELOPE_SIGN_DOMAIN: &[u8] = b"calimero.keyenvelope.v1";
+
+/// Authenticated, forward-secret ECDH-wrapped group key for a recipient.
 ///
-/// The sender encrypts the group key using a shared secret derived from
-/// `SharedKey::new(sender_sk, recipient_pk)`. The recipient decrypts with
-/// `SharedKey::new(recipient_sk, ephemeral_pk)`.
+/// The sender generates a fresh ephemeral keypair per envelope and encrypts the
+/// group key under `SharedKey::new(ephemeral_sk, recipient_pk)`; the recipient
+/// decrypts with `SharedKey::new(recipient_sk, ephemeral_pk)`. Because the
+/// ephemeral key is discarded after wrapping, compromising the sender's
+/// long-term key does not retroactively decrypt past envelopes. The `signature`
+/// authenticates `sender` over the whole envelope (bound to a `group_id`), so a
+/// recipient rejects forged or cross-group-replayed envelopes.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct KeyEnvelope {
     /// Recipient's namespace identity public key.
     pub recipient: PublicKey,
-    /// Sender's public key used for ECDH key agreement.
+    /// Identity that wrapped this key, authenticated by `signature`.
+    pub sender: PublicKey,
+    /// Per-envelope ephemeral public key used for ECDH key agreement. Fresh for
+    /// every wrap — this is what gives the wrap forward secrecy.
     pub ephemeral_pk: PublicKey,
     /// 12-byte AES-GCM nonce.
     pub nonce: [u8; 12],
     /// `AES-256-GCM(group_key)` using the ECDH shared secret.
     pub ciphertext: Vec<u8>,
+    /// Ed25519 signature by `sender` over [`KeyEnvelope::signing_payload`].
+    pub signature: [u8; 64],
+}
+
+impl KeyEnvelope {
+    /// Canonical bytes signed by `sender` to authenticate an envelope. Binds
+    /// the wrap to `group_id` (preventing cross-group replay) and every
+    /// envelope field except the signature itself. Callers on both the wrap and
+    /// unwrap sides must build the payload identically.
+    #[must_use]
+    pub fn signing_payload(
+        group_id: &[u8; 32],
+        recipient: &PublicKey,
+        sender: &PublicKey,
+        ephemeral_pk: &PublicKey,
+        nonce: &[u8; 12],
+        ciphertext: &[u8],
+    ) -> Vec<u8> {
+        let mut out =
+            Vec::with_capacity(KEY_ENVELOPE_SIGN_DOMAIN.len() + 32 * 4 + 12 + ciphertext.len());
+        out.extend_from_slice(KEY_ENVELOPE_SIGN_DOMAIN);
+        out.extend_from_slice(group_id);
+        out.extend_from_slice(recipient.as_ref());
+        out.extend_from_slice(sender.as_ref());
+        out.extend_from_slice(ephemeral_pk.as_ref());
+        out.extend_from_slice(nonce);
+        out.extend_from_slice(ciphertext);
+        out
+    }
 }
 
 /// Key rotation bundle attached to a `MemberRemoved` governance op.
@@ -639,7 +829,7 @@ pub struct KeyEnvelope {
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct KeyRotation {
     /// `sha256(new_group_key)` — identifies the new epoch.
-    pub new_key_id: [u8; 32],
+    pub new_key_id: KeyId,
     /// One envelope per remaining member, each wrapping the new group key.
     pub envelopes: Vec<KeyEnvelope>,
 }
@@ -651,7 +841,7 @@ pub struct KeyRotation {
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SignableNamespaceOp {
     pub version: u8,
-    pub namespace_id: [u8; 32],
+    pub namespace_id: NamespaceId,
     pub parent_op_hashes: Vec<[u8; 32]>,
     pub signer: PublicKey,
     pub nonce: u64,
@@ -662,7 +852,7 @@ pub struct SignableNamespaceOp {
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SignedNamespaceOp {
     pub version: u8,
-    pub namespace_id: [u8; 32],
+    pub namespace_id: NamespaceId,
     pub parent_op_hashes: Vec<[u8; 32]>,
     pub signer: PublicKey,
     pub nonce: u64,
@@ -676,7 +866,12 @@ pub struct SignedNamespaceOp {
 /// being an apply gate in C5.S3a (`scope_root` is the convergence signal now);
 /// removing it from the signable/​signed structs changes every op id, hence the
 /// version bump and the flag-day re-bootstrap.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 2;
+///
+/// v3: the `KeyEnvelope` carried in a `NamespaceOp::Group` key rotation gained
+/// authenticated `sender` + `signature` fields (and its `ephemeral_pk` became a
+/// true per-envelope ephemeral). That changes the borsh layout of every group
+/// op that carries a rotation, so every op id changes — another flag-day.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 3;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 pub const NAMESPACE_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.namespace.v1";
@@ -685,8 +880,7 @@ pub const NAMESPACE_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.namespace.v1";
 pub fn namespace_signable_bytes(
     signable: &SignableNamespaceOp,
 ) -> Result<Vec<u8>, GovernanceError> {
-    let mut body =
-        borsh::to_vec(signable).map_err(|e| GovernanceError::BorshSerialize(e.to_string()))?;
+    let mut body = borsh::to_vec(signable)?;
     let mut out = Vec::with_capacity(NAMESPACE_GOVERNANCE_SIGN_DOMAIN.len() + body.len());
     out.extend_from_slice(NAMESPACE_GOVERNANCE_SIGN_DOMAIN);
     out.append(&mut body);
@@ -705,7 +899,7 @@ impl SignedNamespaceOp {
     /// Build and sign a new namespace operation.
     pub fn sign(
         sk: &PrivateKey,
-        namespace_id: [u8; 32],
+        namespace_id: NamespaceId,
         parent_op_hashes: Vec<[u8; 32]>,
         nonce: u64,
         op: NamespaceOp,
@@ -777,7 +971,7 @@ impl SignedNamespaceOp {
 
     /// Extract the group_id if this is a group-scoped op.
     #[must_use]
-    pub fn group_id(&self) -> Option<[u8; 32]> {
+    pub fn group_id(&self) -> Option<ContextGroupId> {
         match &self.op {
             NamespaceOp::Group { group_id, .. } => Some(*group_id),
             NamespaceOp::Root(_) => None,
@@ -791,7 +985,7 @@ impl SignedNamespaceOp {
 pub struct OpaqueSkeleton {
     pub delta_id: [u8; 32],
     pub parent_op_hashes: Vec<[u8; 32]>,
-    pub group_id: [u8; 32],
+    pub group_id: ContextGroupId,
     pub signer: PublicKey,
 }
 
@@ -817,7 +1011,7 @@ pub enum StoredNamespaceEntry {
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SignableGroupOp {
     pub version: u8,
-    pub group_id: [u8; 32],
+    pub group_id: ContextGroupId,
     pub parent_op_hashes: Vec<[u8; 32]>,
     pub signer: PublicKey,
     pub nonce: u64,
@@ -832,7 +1026,7 @@ pub struct SignableGroupOp {
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SignedGroupOp {
     pub version: u8,
-    pub group_id: [u8; 32],
+    pub group_id: ContextGroupId,
     pub parent_op_hashes: Vec<[u8; 32]>,
     pub signer: PublicKey,
     pub nonce: u64,
@@ -847,13 +1041,239 @@ pub enum GovernanceError {
     #[error("signature verification failed: {0}")]
     Signature(#[from] SignatureError),
     #[error("borsh serialization failed: {0}")]
-    BorshSerialize(String),
+    BorshSerialize(#[from] std::io::Error),
+    /// A decoded op's variable-length field exceeded its anti-amplification
+    /// bound (see [`bounds`]). Rejected before it can be applied/stored.
+    #[error("governance op exceeds size bounds: {0}")]
+    Bounds(String),
+}
+
+/// Anti-amplification bounds for variable-length fields in decoded governance
+/// ops. Legit ops are already capped at `MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`
+/// (64 KiB) on the send path, so every bound here sits far above any real op —
+/// they exist only to reject an untrusted peer's egregiously oversized op
+/// (borsh decodes gossip/backfill bytes with no inherent element cap).
+pub mod bounds {
+    /// Max DAG parents referenced by one op.
+    pub const MAX_PARENT_OP_HASHES: usize = 4096;
+    /// Max bytes in an encrypted-op / key-envelope ciphertext.
+    pub const MAX_CIPHERTEXT_BYTES: usize = 1 << 20;
+    /// Max bytes in a policy blob / migration blob.
+    pub const MAX_BLOB_BYTES: usize = 1 << 20;
+    /// Max ECDH envelopes in one key rotation (one per remaining member).
+    pub const MAX_KEY_ENVELOPES: usize = 65_536;
+    /// Max ids in a cascade (group-delete descendants) or per-context hash list.
+    pub const MAX_ID_LIST: usize = 65_536;
+    /// Max entries in a TEE allow-list field.
+    pub const MAX_TEE_ALLOWED_ENTRIES: usize = 1_024;
+    /// Max byte length of each string entry in a TEE allow-list.
+    pub const MAX_TEE_ALLOWED_STRING_LEN: usize = 1_024;
+    /// Max entries in a metadata map (`GroupOp::*MetadataSet.data`).
+    pub const MAX_METADATA_ENTRIES: usize = 1_024;
+    /// Max byte length of a metadata name / key / value string.
+    pub const MAX_METADATA_STRING_LEN: usize = 8_192;
+}
+
+/// Fail with [`GovernanceError::Bounds`] if `len > max`.
+fn check_bound(field: &str, len: usize, max: usize) -> Result<(), GovernanceError> {
+    if len > max {
+        return Err(GovernanceError::Bounds(format!("{field}: {len} > {max}")));
+    }
+    Ok(())
+}
+
+/// Bound a metadata record's optional name plus its key/value map.
+fn check_metadata(
+    field: &str,
+    name: Option<&String>,
+    data: &std::collections::BTreeMap<String, String>,
+) -> Result<(), GovernanceError> {
+    if let Some(name) = name {
+        check_bound(field, name.len(), bounds::MAX_METADATA_STRING_LEN)?;
+    }
+    check_bound(field, data.len(), bounds::MAX_METADATA_ENTRIES)?;
+    for (k, v) in data {
+        check_bound(field, k.len(), bounds::MAX_METADATA_STRING_LEN)?;
+        check_bound(field, v.len(), bounds::MAX_METADATA_STRING_LEN)?;
+    }
+    Ok(())
+}
+
+impl KeyEnvelope {
+    fn validate(&self) -> Result<(), GovernanceError> {
+        check_bound(
+            "key_envelope.ciphertext",
+            self.ciphertext.len(),
+            bounds::MAX_CIPHERTEXT_BYTES,
+        )
+    }
+}
+
+impl KeyRotation {
+    fn validate(&self) -> Result<(), GovernanceError> {
+        check_bound(
+            "key_rotation.envelopes",
+            self.envelopes.len(),
+            bounds::MAX_KEY_ENVELOPES,
+        )?;
+        for env in &self.envelopes {
+            env.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl EncryptedGroupOp {
+    /// Bound the ciphertext of an encrypted group op.
+    pub fn validate(&self) -> Result<(), GovernanceError> {
+        check_bound(
+            "encrypted_group_op.ciphertext",
+            self.ciphertext.len(),
+            bounds::MAX_CIPHERTEXT_BYTES,
+        )
+    }
+}
+
+impl GroupOp {
+    fn validate(&self) -> Result<(), GovernanceError> {
+        match self {
+            Self::MemberRemoved {
+                expected_context_state_hashes,
+                ..
+            }
+            | Self::MemberLeft {
+                expected_context_state_hashes,
+                ..
+            } => check_bound(
+                "group_op.expected_context_state_hashes",
+                expected_context_state_hashes.len(),
+                bounds::MAX_ID_LIST,
+            ),
+            Self::GroupMigrationSet {
+                migration: Some(m), ..
+            }
+            | Self::CascadeGroupMigrationSet {
+                migration: Some(m), ..
+            }
+            | Self::CascadeUpgrade {
+                migration: Some(m), ..
+            } => check_bound("group_op.migration", m.len(), bounds::MAX_BLOB_BYTES),
+            Self::GroupMetadataSet { name, data } => {
+                check_metadata("group_op.group_metadata", name.as_ref(), data)
+            }
+            Self::MemberMetadataSet { name, data, .. } => {
+                check_metadata("group_op.member_metadata", name.as_ref(), data)
+            }
+            Self::ContextMetadataSet { name, data, .. } => {
+                check_metadata("group_op.context_metadata", name.as_ref(), data)
+            }
+            Self::TeeAdmissionPolicySet {
+                allowed_mrtd,
+                allowed_rtmr0,
+                allowed_rtmr1,
+                allowed_rtmr2,
+                allowed_rtmr3,
+                allowed_tcb_statuses,
+                ..
+            } => {
+                for (name, list) in [
+                    ("allowed_mrtd", allowed_mrtd),
+                    ("allowed_rtmr0", allowed_rtmr0),
+                    ("allowed_rtmr1", allowed_rtmr1),
+                    ("allowed_rtmr2", allowed_rtmr2),
+                    ("allowed_rtmr3", allowed_rtmr3),
+                    ("allowed_tcb_statuses", allowed_tcb_statuses),
+                ] {
+                    check_bound(name, list.len(), bounds::MAX_TEE_ALLOWED_ENTRIES)?;
+                    for s in list {
+                        check_bound(name, s.len(), bounds::MAX_TEE_ALLOWED_STRING_LEN)?;
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+impl RootOp {
+    fn validate(&self) -> Result<(), GovernanceError> {
+        match self {
+            Self::GroupDeleted {
+                cascade_group_ids,
+                cascade_context_ids,
+                ..
+            } => {
+                check_bound(
+                    "root_op.cascade_group_ids",
+                    cascade_group_ids.len(),
+                    bounds::MAX_ID_LIST,
+                )?;
+                check_bound(
+                    "root_op.cascade_context_ids",
+                    cascade_context_ids.len(),
+                    bounds::MAX_ID_LIST,
+                )
+            }
+            Self::PolicyUpdated { policy_bytes } => check_bound(
+                "root_op.policy_bytes",
+                policy_bytes.len(),
+                bounds::MAX_BLOB_BYTES,
+            ),
+            Self::KeyDelivery { envelope, .. } => envelope.validate(),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl NamespaceOp {
+    fn validate(&self) -> Result<(), GovernanceError> {
+        match self {
+            Self::Root(root) => root.validate(),
+            Self::Group {
+                encrypted,
+                key_rotation,
+                ..
+            } => {
+                encrypted.validate()?;
+                if let Some(rotation) = key_rotation {
+                    rotation.validate()?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl SignedGroupOp {
+    /// Reject an oversized/over-populated op before it is applied or stored.
+    /// See [`bounds`].
+    pub fn validate(&self) -> Result<(), GovernanceError> {
+        check_bound(
+            "signed_group_op.parent_op_hashes",
+            self.parent_op_hashes.len(),
+            bounds::MAX_PARENT_OP_HASHES,
+        )?;
+        self.op.validate()
+    }
+}
+
+impl SignedNamespaceOp {
+    /// Reject an oversized/over-populated op before it is applied or stored.
+    /// See [`bounds`].
+    pub fn validate(&self) -> Result<(), GovernanceError> {
+        check_bound(
+            "signed_namespace_op.parent_op_hashes",
+            self.parent_op_hashes.len(),
+            bounds::MAX_PARENT_OP_HASHES,
+        )?;
+        self.op.validate()
+    }
 }
 
 /// Bytes that are hashed/signed: `GROUP_GOVERNANCE_SIGN_DOMAIN` || `borsh(SignableGroupOp)`.
 pub fn signable_bytes(signable: &SignableGroupOp) -> Result<Vec<u8>, GovernanceError> {
-    let mut body =
-        borsh::to_vec(signable).map_err(|e| GovernanceError::BorshSerialize(e.to_string()))?;
+    let mut body = borsh::to_vec(signable)?;
     let mut out = Vec::with_capacity(GROUP_GOVERNANCE_SIGN_DOMAIN.len() + body.len());
     out.extend_from_slice(GROUP_GOVERNANCE_SIGN_DOMAIN);
     out.append(&mut body);
@@ -873,7 +1293,7 @@ impl SignedGroupOp {
     /// latest applied ops). Empty vec for the first op in a group (genesis).
     pub fn sign(
         sk: &PrivateKey,
-        group_id: [u8; 32],
+        group_id: ContextGroupId,
         parent_op_hashes: Vec<[u8; 32]>,
         nonce: u64,
         op: GroupOp,

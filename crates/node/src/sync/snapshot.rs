@@ -40,6 +40,12 @@ pub const DEFAULT_PAGE_BYTE_LIMIT: u32 = 64 * 1024;
 /// Maximum pages to send in a single burst.
 pub const DEFAULT_PAGE_LIMIT: u16 = 16;
 
+/// Hard ceiling on the peer-supplied `page_limit`. The responder generates up
+/// to this many pages per request in memory, so an unclamped peer value (up to
+/// `u16::MAX`) would let a caller drive page generation without bound. The
+/// per-page byte budget is separately clamped to `MAX_SNAPSHOT_PAGE_SIZE`.
+pub const MAX_PAGE_LIMIT: u16 = 1024;
+
 /// Leading byte of a **v2** (PR-6b / #2539) snapshot page: records are
 /// length-framed (`u32 LE len ‖ record_bytes`) so the receiver bounds each
 /// record's decode to its own sub-slice. This makes the backward-compatible
@@ -138,6 +144,13 @@ impl SyncManager {
         stream: &mut Stream,
         _nonce: Nonce,
     ) -> Result<()> {
+        // Clamp peer-supplied limits before they drive page generation: a caller
+        // must not be able to request an unbounded number of pages or an
+        // oversized per-page byte budget (OOM). `page_limit` floors at 1 so a
+        // zero value still makes progress.
+        let page_limit = page_limit.clamp(1, MAX_PAGE_LIMIT);
+        let byte_limit = byte_limit.clamp(1, MAX_SNAPSHOT_PAGE_SIZE);
+
         // Verify boundary is still valid
         let context = match self.context_client.get_context(&context_id)? {
             Some(ctx) => ctx,
@@ -327,22 +340,44 @@ impl SyncManager {
         // bypasses this check without a separate marker term — keeping the I5
         // gate a pure function of `force` + crash-recovery.
         if !force && !is_crash_recovery {
-            // Check both state keys and context metadata to determine initialization.
-            // A context is considered initialized if:
-            // 1. It has state keys, OR
-            // 2. It has a non-zero root_hash in metadata (can happen after deletes)
+            // Resolve the safety gate from both signals: whether the context has
+            // applied `ContextState` entries, and whether its `ContextMeta`
+            // carries a non-zero root_hash (can be non-zero with no state keys
+            // after deletes). A non-zero root ⇒ genuinely initialized ⇒ reject
+            // (Invariant I5). The subtle case is state-present-but-root==0: that
+            // is the #3252 contradiction (a snapshot finalize reverted to
+            // uninitialized while its state keys persisted), which must be
+            // ALLOWED to re-bootstrap rather than deadlock the safety gate.
             let handle = self.context_client.datastore_handle();
             let has_state_keys = has_context_state_keys(&handle, context_id)?;
 
-            let has_initialized_metadata = self
+            let has_nonzero_root = self
                 .context_client
                 .get_context(&context_id)?
                 .map(|ctx| *ctx.root_hash != [0u8; 32])
                 .unwrap_or(false);
 
-            let is_initialized = has_state_keys || has_initialized_metadata;
-            calimero_node_primitives::sync::check_snapshot_safety(is_initialized)
-                .map_err(|e| eyre::eyre!("Snapshot safety check failed: {:?}", e))?;
+            match calimero_node_primitives::sync::snapshot_safety_decision(
+                has_state_keys,
+                has_nonzero_root,
+            ) {
+                calimero_node_primitives::sync::SnapshotSafety::Fresh => {}
+                calimero_node_primitives::sync::SnapshotSafety::RecoverContradiction => {
+                    warn!(
+                        %context_id,
+                        "Context in contradictory state (root_hash=0 but ContextState entries \
+                         present): a prior snapshot finalize was reverted while its applied \
+                         state keys persisted (#3252). Allowing a re-bootstrap snapshot to \
+                         recover instead of deadlocking on the I5 safety gate."
+                    );
+                }
+                calimero_node_primitives::sync::SnapshotSafety::Initialized => {
+                    return Err(eyre::eyre!(
+                        "Snapshot safety check failed: {:?}",
+                        SnapshotError::SnapshotOnInitializedNode
+                    ));
+                }
+            }
         }
 
         let mut stream = self.sync_network.open_stream(peer_id).await?;
@@ -357,12 +392,13 @@ impl SyncManager {
             .await?;
 
         // Verify snapshot integrity by computing the actual root hash from storage (I7).
-        // On success we always trust the locally-computed hash because it reflects what
-        // is actually persisted -- storing the peer's claimed hash when it disagrees
-        // with local storage would create a silent divergence.
-        // On failure (deserialization error) we fall back to the peer's claimed hash so
-        // that sync can still proceed; compute_root_hash may fail if the minimal structs
-        // drift from the real storage layout.
+        // We always persist the locally-computed hash because it reflects what is
+        // actually persisted; storing the peer's claimed hash would risk a silent
+        // divergence. If the local compute fails we must NOT fall back to the peer's
+        // claimed root — that would persist an unverified, peer-supplied value on a
+        // purely local error. Instead we fail the sync here; the sync-in-progress
+        // marker is left set (we return before clearing it), so crash-recovery
+        // re-syncs and retries rather than accepting an untrusted root.
         let root_to_store = match self.context_client.compute_root_hash(&context_id) {
             Ok(computed_root) => {
                 if computed_root != *boundary.boundary_root_hash {
@@ -386,16 +422,26 @@ impl SyncManager {
                     %context_id,
                     error = %e,
                     claimed_root = %hex::encode(*boundary.boundary_root_hash),
-                    "Could not compute root hash, trusting peer's claimed hash"
+                    "Could not compute local root hash; refusing to trust peer's claimed \
+                     root, failing sync for retry"
                 );
-                *boundary.boundary_root_hash
+                return Err(eyre::eyre!(
+                    "snapshot verify: could not compute local root hash for {context_id}: {e}"
+                ));
             }
         };
 
-        self.context_client
-            .force_root_hash(&context_id, root_to_store.into())?;
-        self.context_client
-            .update_dag_heads(&context_id, boundary.dag_heads.clone())?;
+        // Publish root_hash + dag_heads in one atomic ContextMeta write. Two
+        // separate read-modify-writes (force_root_hash then update_dag_heads)
+        // leave a window where a concurrent whole-record ContextMeta write can
+        // interleave and clobber the finalize back to root=0/heads=[] while the
+        // applied ContextState entries persist — the permanent
+        // SnapshotOnInitializedNode deadlock (#3252).
+        self.context_client.set_root_and_dag_heads(
+            &context_id,
+            root_to_store.into(),
+            boundary.dag_heads.clone(),
+        )?;
         self.clear_sync_in_progress_marker(context_id)?;
         self.finalize_snapshot_activation(context_id, observed_schema)
             .await;
@@ -437,6 +483,7 @@ impl SyncManager {
                 requested_cutoff_timestamp: None,
             },
             next_nonce: super::helpers::generate_nonce(),
+            pop: self.build_init_pop(context_id, our_identity).await,
         };
         super::stream::send(stream, &msg, None).await?;
 
@@ -591,6 +638,11 @@ impl SyncManager {
         // target instead of the schema the synced entities actually carry).
         let mut deferred_members: DeferredMembers = Vec::new();
 
+        // Sign the transport-binding proof once — it's independent of the
+        // per-page cursor/nonce (see `InitProof`), so every page request in the
+        // burst loop reuses the same signature.
+        let pop = self.build_init_pop(context_id, our_identity).await;
+
         loop {
             let msg = StreamMessage::Init {
                 context_id,
@@ -603,6 +655,7 @@ impl SyncManager {
                     resume_cursor: resume_cursor.clone(),
                 },
                 next_nonce: super::helpers::generate_nonce(),
+                pop,
             };
             super::stream::send(stream, &msg, None).await?;
 

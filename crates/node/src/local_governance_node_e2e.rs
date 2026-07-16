@@ -310,7 +310,7 @@ async fn apply_signed_group_op_via_context_client() {
 
     let op = SignedGroupOp::sign(
         &admin_sk,
-        gid_bytes,
+        gid_bytes.into(),
         vec![],
         1,
         GroupOp::MemberAdded {
@@ -389,7 +389,7 @@ async fn set_member_auto_follow_handler_error_paths() {
     // Admin needs a signing key registered so preflight can resolve one
     // when admin acts as requester.
     calimero_context::group_store::SigningKeysRepository::new(&node.store)
-        .store_key(&gid, &admin_sk.public_key(), &admin_sk)
+        .store_key(&gid, &admin_sk.public_key(), admin_sk.as_bytes())
         .unwrap();
 
     // Case 1: unknown group — preflight bails before the membership
@@ -567,7 +567,7 @@ fn provision_tee_owner_with_sk(
     calimero_context::group_store::CapabilitiesRepository::new(&node.store)
         .set_default_capabilities(
             gid,
-            calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+            calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         )
         .expect("set namespace-root default capabilities");
 
@@ -575,13 +575,13 @@ fn provision_tee_owner_with_sk(
     // identity AND signing key. Without it the handler bails with
     // "node has no configured group identity for TEE admission".
     calimero_context::group_store::NamespaceRepository::new(&node.store)
-        .store_identity(gid, &owner_pk, &owner_sk, &[0u8; 32])
+        .store_identity(gid, &owner_pk, owner_sk.as_bytes(), &[0u8; 32])
         .expect("store_namespace_identity");
 
     // Policy lives on the namespace governance op log; admin-signed.
     let policy_op = SignedGroupOp::sign(
         &owner_sk,
-        gid.to_bytes(),
+        gid.to_bytes().into(),
         vec![],
         1,
         GroupOp::TeeAdmissionPolicySet {
@@ -1026,7 +1026,7 @@ async fn root_admitted_tee_auto_follows_open_subgroup_context() {
     //    `auto_follow.contexts = true` (set by `add_member` at admission), which
     //    the inheritance fall-through must honor via the root anchor.
     calimero_context::group_store::NamespaceRepository::new(&node.store)
-        .store_identity(&ns_gid, &tee_pk, &tee_sk, &[0u8; 32])
+        .store_identity(&ns_gid, &tee_pk, tee_sk.as_bytes(), &[0u8; 32])
         .expect("re-point namespace identity to the TEE");
 
     // 4) Bind the auto-follow handler to THIS node's store/client. Like
@@ -1277,7 +1277,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     // is the inherited-only TEE (root anchor, no open_sub row) — the path Fix B
     // changed. (See `root_admitted_tee_auto_follows_open_subgroup_context`.)
     calimero_context::group_store::NamespaceRepository::new(&node.store)
-        .store_identity(&ns_gid, &tee_pk, &tee_sk, &[0u8; 32])
+        .store_identity(&ns_gid, &tee_pk, tee_sk.as_bytes(), &[0u8; 32])
         .expect("re-point namespace identity to T");
 
     // Rebind the process-global auto-follow handler to this node's store/client.
@@ -1367,7 +1367,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
         + 1;
     let remove_tee_op = SignedGroupOp::sign(
         &owner_sk,
-        ns_gid.to_bytes(),
+        ns_gid.to_bytes().into(),
         vec![],
         next_owner_nonce,
         GroupOp::MemberRemoved {
@@ -1664,7 +1664,7 @@ async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
     //    subgroup), bind the auto-follow handler, register a context in the
     //    born-Open subgroup, and assert the TEE auto-joins it via inheritance.
     calimero_context::group_store::NamespaceRepository::new(&node.store)
-        .store_identity(&ns_gid, &tee_pk, &tee_sk, &[0u8; 32])
+        .store_identity(&ns_gid, &tee_pk, tee_sk.as_bytes(), &[0u8; 32])
         .expect("re-point namespace identity to the TEE");
 
     calimero_context::auto_follow::shutdown();
@@ -1906,7 +1906,7 @@ async fn restricted_ctx_redriven_after_group_created() {
     // unwraps the `KeyDelivery` envelope with THIS key, so the envelope below
     // must be wrapped for `member_pk`.
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, &member_sk, &[0u8; 32])
+        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
         .expect("store receiver namespace identity");
 
     // ---- The Restricted subgroup (NOT yet created on the receiver) -----------
@@ -1950,12 +1950,12 @@ async fn restricted_ctx_redriven_after_group_created() {
 
     let ctx_registered_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
-            group_id: sub_gid.to_bytes(),
-            key_id,
+            group_id: sub_gid.to_bytes().into(),
+            key_id: key_id.into(),
             encrypted,
             key_rotation: None,
         },
@@ -1984,16 +1984,17 @@ async fn restricted_ctx_redriven_after_group_created() {
     // ---- Step 2: KeyDelivery → retry fires, fails meta-absent (stranded) -----
     // Wrap the subgroup key for the receiver's namespace identity (member_pk),
     // exactly as `admit_tee_node` / `add_group_members` would.
-    let envelope = GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &subgroup_key)
-        .expect("wrap subgroup key for receiver");
+    let envelope =
+        GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &sub_gid.to_bytes(), &subgroup_key)
+            .expect("wrap subgroup key for receiver");
 
     let key_delivery_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         2,
         NamespaceOp::Root(RootOp::KeyDelivery {
-            group_id: sub_gid.to_bytes(),
+            group_id: sub_gid.to_bytes().into(),
             envelope,
         }),
     )
@@ -2026,12 +2027,12 @@ async fn restricted_ctx_redriven_after_group_created() {
     // GroupCreated re-trigger the buffered-op retry.
     let group_created_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         3,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: sub_gid.to_bytes(),
-            parent_id: namespace_id,
+            group_id: sub_gid.to_bytes().into(),
+            parent_id: namespace_id.into(),
             restricted: true,
         }),
     )
@@ -2136,7 +2137,7 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
         .add_member(&ns_gid, &owner_pk, GroupMemberRole::Admin)
         .expect("add owner as namespace-root admin");
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, &member_sk, &[0u8; 32])
+        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
         .expect("store receiver namespace identity");
 
     // ---- The namespace key: the receiver HOLDS it (delivered with its join) --
@@ -2178,12 +2179,12 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
 
     let ctx_registered_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Group {
-            group_id: sub_gid.to_bytes(),
-            key_id,
+            group_id: sub_gid.to_bytes().into(),
+            key_id: key_id.into(),
             encrypted,
             key_rotation: None,
         },
@@ -2227,12 +2228,12 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
     // ---- Step 3: GroupCreated{restricted:false} applies → must re-drive ------
     let group_created_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: sub_gid.to_bytes(),
-            parent_id: namespace_id,
+            group_id: sub_gid.to_bytes().into(),
+            parent_id: namespace_id.into(),
             restricted: false,
         }),
     )
@@ -2480,7 +2481,7 @@ async fn tee_matrix_restricted_late_join() {
         .add_member(&ns_gid, &owner_pk, GroupMemberRole::Admin)
         .expect("add owner as namespace-root admin");
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, &member_sk, &[0u8; 32])
+        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
         .expect("store receiver namespace identity");
 
     // The Restricted subgroup: id + key minted owner-side. The receiver does
@@ -2506,12 +2507,12 @@ async fn tee_matrix_restricted_late_join() {
     // ---- Step 1 (late-join): the subgroup EXISTS first (GroupCreated) -------
     let group_created_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
-            group_id: sub_gid.to_bytes(),
-            parent_id: namespace_id,
+            group_id: sub_gid.to_bytes().into(),
+            parent_id: namespace_id.into(),
             restricted: true,
         }),
     )
@@ -2543,12 +2544,12 @@ async fn tee_matrix_restricted_late_join() {
     let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).expect("encrypt group op");
     let ctx_registered_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         2,
         NamespaceOp::Group {
-            group_id: sub_gid.to_bytes(),
-            key_id,
+            group_id: sub_gid.to_bytes().into(),
+            key_id: key_id.into(),
             encrypted,
             key_rotation: None,
         },
@@ -2568,15 +2569,16 @@ async fn tee_matrix_restricted_late_join() {
     // retry on apply_received_group_key must re-drive the buffered op; because
     // the subgroup meta already exists (GroupCreated applied in step 1), the
     // staleness check passes and the context registers.
-    let envelope = GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &subgroup_key)
-        .expect("wrap subgroup key for receiver");
+    let envelope =
+        GroupKeyring::wrap_for_member(&owner_sk, &member_pk, &sub_gid.to_bytes(), &subgroup_key)
+            .expect("wrap subgroup key for receiver");
     let key_delivery_op = SignedNamespaceOp::sign(
         &owner_sk,
-        namespace_id,
+        namespace_id.into(),
         vec![],
         3,
         NamespaceOp::Root(RootOp::KeyDelivery {
-            group_id: sub_gid.to_bytes(),
+            group_id: sub_gid.to_bytes().into(),
             envelope,
         }),
     )
@@ -2774,7 +2776,7 @@ async fn drive_open_auto_follow_replication(
     // node's namespace identity; point it at the inherited-only TEE so the
     // inheritance fall-through (root anchor, no subgroup row) is exercised.
     calimero_context::group_store::NamespaceRepository::new(&node.store)
-        .store_identity(ns_gid, tee_pk, tee_sk, &[0u8; 32])
+        .store_identity(ns_gid, tee_pk, tee_sk.as_bytes(), &[0u8; 32])
         .expect("re-point namespace identity to the TEE");
 
     calimero_context::auto_follow::shutdown();
@@ -3139,5 +3141,135 @@ async fn member_peers_for_context_resolves_cached_members_end_to_end() {
             .member_peers_for_context(&unregistered)
             .is_empty(),
         "unregistered context yields no cached members"
+    );
+}
+
+/// End-to-end: a self-leave from a Restricted subgroup drives a REMAINING ADMIN's
+/// node all the way through a real key rotation.
+///
+/// Every other test of this feature stops at the store layer. This one is the only
+/// thing that exercises the chain that actually has to fire in production:
+///
+///   `MemberLeft` apply → `OpEvent::MemberRemoved` → the rotation listener →
+///   `ContextClient::rotate_group_key` → the actor handler → the publisher, which
+///   mints a fresh group key, installs it at a higher epoch, and applies
+///   `GroupKeyRotated` locally to discharge the pending row.
+///
+/// A wiring mistake anywhere in that chain means NO ROTATION EVER HAPPENS — the
+/// leaver silently keeps the subgroup key forever — while every unit test still
+/// passes. So the assertions here are the load-bearing ones: the debt is recorded,
+/// then paid, and the group's current key genuinely changes.
+///
+/// This node holds the namespace identity of the subgroup's admin, so it IS the
+/// eligible rotator. The leaver is a plain member with no node of its own.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn self_leave_drives_a_real_key_rotation_on_a_remaining_admin() {
+    use calimero_context::group_store::{
+        GroupKeyring, MembershipRepository, PendingRotationRepository,
+    };
+
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    let (admin_pk, _admin_sk) = provision_tee_owner_with_sk(&node, &ns_gid, &mut rng);
+
+    // A born-Restricted subgroup: it holds its OWN key, so a departure must rotate it.
+    // Going through the real create path also mints and stores that key locally, which
+    // is what makes this node the key-holder (and so a capable rotator).
+    let sub_gid = create_restricted_subgroup(&node, &ns_gid, &admin_pk, &mut rng).await;
+
+    // The member who will leave. A plain `Member`, so the leave is not blocked by the
+    // owner / last-admin guards.
+    let leaver_sk = PrivateKey::random(&mut rng);
+    let leaver_pk = leaver_sk.public_key();
+    MembershipRepository::new(&node.store)
+        .add_member(&sub_gid, &leaver_pk, GroupMemberRole::Member)
+        .expect("add the leaver to the subgroup");
+
+    let key_before = GroupKeyring::new(&node.store, sub_gid)
+        .load_current_key_record()
+        .expect("read the subgroup key")
+        .expect("the create path must have minted a subgroup key");
+
+    // The leaver self-leaves. This is the op a departing node publishes; applying it
+    // here is exactly what a remaining admin's node does on receipt.
+    let leave = SignedGroupOp::sign(
+        &leaver_sk,
+        sub_gid.to_bytes().into(),
+        vec![],
+        1,
+        GroupOp::MemberLeft {
+            member: leaver_pk,
+            expected_group_state_hash: [0u8; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+    )
+    .expect("sign MemberLeft");
+    apply_local_signed_group_op(&node.store, &leave).expect("apply MemberLeft");
+
+    // The membership row is gone immediately...
+    assert!(
+        MembershipRepository::new(&node.store)
+            .role_of(&sub_gid, &leaver_pk)
+            .expect("role_of")
+            .is_none(),
+        "the leaver's membership row must be removed by the leave itself"
+    );
+
+    // ...and the forward-secrecy debt is recorded, because the leaver could not have
+    // rotated for themselves.
+    assert!(
+        PendingRotationRepository::new(&node.store)
+            .is_pending(&sub_gid, &leaver_pk)
+            .expect("is_pending"),
+        "the leave must record a pending rotation — nothing else will ever prompt one"
+    );
+
+    // Now the part only this test covers: the listener fires on this node (a remaining
+    // admin), publishes the rotation, and the pending row is discharged. Nothing here
+    // is driven by the test — it is the production listener reacting to the op-event.
+    let store = node.store.clone();
+    let cleared = wait_until(|| {
+        // A read error counts as "still pending" so a transient store fault cannot be
+        // mistaken for a successful rotation.
+        !PendingRotationRepository::new(&store)
+            .is_pending(&sub_gid, &leaver_pk)
+            .unwrap_or(true)
+    })
+    .await;
+    assert!(
+        cleared,
+        "the rotation listener never discharged the pending rotation — the chain \
+         (op-event → listener → rotate_group_key handler → publisher) is broken, and the \
+         departed member would keep the subgroup key indefinitely"
+    );
+
+    // The rotation was real: a fresh key, at a strictly higher epoch, is now current.
+    let key_after = GroupKeyring::new(&node.store, sub_gid)
+        .load_current_key_record()
+        .expect("read the subgroup key")
+        .expect("a current key must still exist");
+
+    // `load_current_key_record` selects the highest-epoch key (ties broken by the larger
+    // key id), so a CHANGED current key is itself the proof that the freshly minted key
+    // outranks the one the leaver holds — from here on, this group encrypts under a key
+    // the departed member has never seen.
+    assert_ne!(
+        key_after.group_key, key_before.group_key,
+        "the group's current key must actually CHANGE — a discharged pending row with the \
+         same key would mean the bookkeeping ran but no forward secrecy was gained, and \
+         the group would go on encrypting under the key the leaver still holds"
+    );
+
+    // The OLD key is retained, not deleted: ops written before the rotation must stay
+    // decryptable. Forward secrecy is about what comes next, not about erasing the past.
+    assert!(
+        GroupKeyring::new(&node.store, sub_gid)
+            .load_key_by_id(&key_before.key_id)
+            .expect("load the pre-rotation key")
+            .is_some(),
+        "the pre-rotation key must be retained so already-written ops stay readable"
     );
 }

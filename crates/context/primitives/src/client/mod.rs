@@ -40,7 +40,7 @@ use crate::group::{
     LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, MigrationStatus, NamespaceSummary, RemoveGroupMembersRequest,
-    ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest,
+    ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest, RotateGroupKeyRequest,
     SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
     SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
     SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
@@ -53,8 +53,8 @@ use crate::local_governance::AckRouter;
 use crate::messages::{
     AcquireContextLockRequest, ApplySignedGroupOpRequest, ApplySignedNamespaceOpRequest,
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
-    DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse, MigrationParams,
-    NamespaceApplyOutcome, UpdateApplicationRequest,
+    DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse, InternalErrorKind,
+    MigrationParams, NamespaceApplyOutcome, UpdateApplicationRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -112,12 +112,14 @@ pub struct RootSelfDump {
 /// and [`ContextRegistry::dump_root`] to decode the index without pulling
 /// in the full `calimero-storage` types (which would force a dep cycle).
 ///
-/// **SYNC NOTE**: When `calimero_storage::index::EntityIndex` or its
-/// transitively-borshed children change, update these mirrors *and*
-/// `calimero-storage/src/tests/index.rs::minimal_struct_layout_compat`.
-/// A missed update produces silent misdeserialization on a diagnostic
-/// path that fires only during rare divergence events — exactly when
-/// correct output matters most.
+/// **SYNC NOTE**: These structs mirror the canonical types by hand. The
+/// [`borsh_layout_round_trip`] test module below serialises the *real*
+/// `calimero_storage` types and decodes them through these mirrors, so a
+/// field-type or field-order drift fails the test run rather than silently
+/// misdeserialising on the rare divergence-diagnostic path (which is exactly
+/// when correct output matters most). When you change `EntityIndex` or its
+/// borshed children, update these mirrors; the test will flag a child layout
+/// that drifted.
 mod borsh_layout {
     use borsh::BorshDeserialize;
     use calimero_primitives::crdt::CrdtType;
@@ -189,6 +191,170 @@ mod borsh_layout {
         pub(super) signature: [u8; 64],
         pub(super) nonce: u64,
         pub(super) signer: Option<[u8; 32]>,
+    }
+}
+
+/// Mechanically guards the hand-written mirrors in [`borsh_layout`] against
+/// silent drift from the canonical `calimero_storage` types. The mirrors decode
+/// `EntityIndex` on a rare diagnostic path, so a layout mismatch would
+/// mis-deserialise precisely during divergence events. Each test serialises a
+/// *real* `ChildInfo` (the drift-prone, previously-broken part: its embedded
+/// `Metadata`/`StorageType`/`SignatureData`) with borsh and decodes it through
+/// the production mirror, asserting the bytes round-trip and are fully consumed.
+#[cfg(test)]
+mod borsh_layout_round_trip {
+    use std::collections::BTreeMap;
+
+    use borsh::BorshDeserialize;
+    use calimero_primitives::crdt::CrdtType;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_storage::address::Id;
+    use calimero_storage::entities::{ChildInfo, Metadata, OpMask, SignatureData, StorageType};
+
+    use super::borsh_layout;
+
+    fn metadata_with(storage_type: StorageType) -> Metadata {
+        let mut md = Metadata::new(1000, 2000);
+        md.storage_type = storage_type;
+        md.crdt_type = Some(CrdtType::LwwRegister {
+            inner_type: "u64".to_owned(),
+        });
+        md.field_name = Some("field".to_owned());
+        md.schema_version = Some(7);
+        md
+    }
+
+    /// Serialise a canonical `ChildInfo` carrying `storage_type` and decode it
+    /// through the production mirror. Asserts the scalar fields survive and the
+    /// whole byte stream is consumed — a width/order drift either errors or
+    /// leaves trailing bytes.
+    fn round_trip(storage_type: StorageType) -> borsh_layout::ChildInfo {
+        let id = [0xAB; 32];
+        let merkle_hash = [0xCD; 32];
+        let child = ChildInfo::new(Id::new(id), merkle_hash, metadata_with(storage_type));
+
+        let bytes = borsh::to_vec(&child).expect("serialize canonical ChildInfo");
+        let mut reader: &[u8] = &bytes;
+        let decoded = borsh_layout::ChildInfo::deserialize_reader(&mut reader)
+            .expect("mirror failed to decode canonical ChildInfo — borsh layout drifted");
+        assert!(
+            reader.is_empty(),
+            "mirror left {} trailing byte(s) — borsh layout drifted",
+            reader.len()
+        );
+
+        assert_eq!(decoded.id, id);
+        assert_eq!(decoded.merkle_hash, merkle_hash);
+        assert_eq!(decoded.metadata.created_at, 1000);
+        assert_eq!(decoded.metadata.updated_at, 2000);
+        assert_eq!(decoded.metadata.field_name.as_deref(), Some("field"));
+        assert_eq!(decoded.metadata.schema_version, Some(7));
+        // The mirror decodes `crdt_type` as the canonical `CrdtType`, so this
+        // also guards the `CrdtType` borsh layout against drift.
+        assert_eq!(
+            decoded.metadata.crdt_type,
+            Some(CrdtType::LwwRegister {
+                inner_type: "u64".to_owned()
+            })
+        );
+        decoded
+    }
+
+    #[test]
+    fn public_round_trips() {
+        let decoded = round_trip(StorageType::Public);
+        assert!(matches!(
+            decoded.metadata.storage_type,
+            borsh_layout::StorageType::Public
+        ));
+    }
+
+    #[test]
+    fn frozen_round_trips() {
+        let decoded = round_trip(StorageType::Frozen);
+        assert!(matches!(
+            decoded.metadata.storage_type,
+            borsh_layout::StorageType::Frozen
+        ));
+    }
+
+    #[test]
+    fn user_round_trips() {
+        let owner = [0x11; 32];
+        let decoded = round_trip(StorageType::User {
+            owner: PublicKey::from(owner),
+            signature_data: Some(SignatureData {
+                signature: [0x22; 64],
+                nonce: 42,
+                signer: Some(PublicKey::from([0x33; 32])),
+            }),
+        });
+        match decoded.metadata.storage_type {
+            borsh_layout::StorageType::User {
+                owner: decoded_owner,
+                signature_data,
+            } => {
+                assert_eq!(decoded_owner, owner);
+                let sig = signature_data.expect("signature_data present");
+                assert_eq!(sig.nonce, 42);
+                assert_eq!(sig.signer, Some([0x33; 32]));
+            }
+            _ => panic!("expected User variant"),
+        }
+    }
+
+    #[test]
+    fn shared_writers_map_round_trips() {
+        // Previously-broken case: `writers` is `BTreeMap<PublicKey, OpMask>`
+        // (32-byte key + 1-byte mask), not `BTreeSet<[u8; 32]>`. A set-shaped
+        // mirror under-reads one byte per writer and misaligns everything after.
+        let mut writers: BTreeMap<PublicKey, OpMask> = BTreeMap::new();
+        let _ = writers.insert(PublicKey::from([0x44; 32]), OpMask::FULL);
+        let _ = writers.insert(PublicKey::from([0x55; 32]), OpMask::WRITE);
+
+        let decoded = round_trip(StorageType::Shared {
+            writers,
+            signature_data: None,
+        });
+        match decoded.metadata.storage_type {
+            borsh_layout::StorageType::Shared {
+                writers: decoded_writers,
+                signature_data,
+            } => {
+                assert_eq!(decoded_writers.len(), 2);
+                assert_eq!(
+                    decoded_writers.get(&[0x44; 32]).copied(),
+                    Some(OpMask::FULL.bits())
+                );
+                assert_eq!(
+                    decoded_writers.get(&[0x55; 32]).copied(),
+                    Some(OpMask::WRITE.bits())
+                );
+                assert!(signature_data.is_none());
+            }
+            _ => panic!("expected Shared variant"),
+        }
+    }
+
+    #[test]
+    fn shared_member_round_trips() {
+        // Previously-broken case: the mirror was missing this variant entirely,
+        // so any root with a member child failed to decode (cold-join failure).
+        let anchor = [0x66; 32];
+        let decoded = round_trip(StorageType::SharedMember {
+            anchor: Id::new(anchor),
+            signature_data: None,
+        });
+        match decoded.metadata.storage_type {
+            borsh_layout::StorageType::SharedMember {
+                anchor: decoded_anchor,
+                signature_data,
+            } => {
+                assert_eq!(decoded_anchor, anchor);
+                assert!(signature_data.is_none());
+            }
+            _ => panic!("expected SharedMember variant"),
+        }
     }
 }
 
@@ -688,39 +854,57 @@ impl ContextRegistry {
         Ok(())
     }
 
-    /// Verifies that the stored root hash matches the actual state.
+    /// Atomically set a context's `root_hash` **and** `dag_heads` in a single
+    /// `ContextMeta` write.
     ///
-    /// Computes the root hash from storage and compares with the claimed hash.
-    /// Returns Ok(()) if they match, or an error describing the mismatch.
+    /// This is the snapshot-finalize counterpart to [`persist_deltas_and_dag_heads`]:
+    /// the snapshot path must publish both fields together. Doing it as two
+    /// separate read-modify-writes ([`force_root_hash`] then [`update_dag_heads`])
+    /// leaves a window where `root_hash` is set but `dag_heads` is still the
+    /// pre-snapshot value (or vice versa), and — worse — a concurrent
+    /// `ContextMeta` read-modify-write can interleave *between* the two puts and
+    /// clobber the first with a stale whole-record write (issue #3252). Folding
+    /// both mutations into one [`Store::apply`] (`WriteBatch`) closes the
+    /// intra-finalize window: a reader observes either the pre- or post-finalize
+    /// `ContextMeta`, never a half-updated one.
     ///
-    /// # Arguments
+    /// As with [`persist_deltas_and_dag_heads`], atomicity covers the *write*
+    /// only — the `meta` read and the commit are not one transaction, so two
+    /// unsynchronised callers racing on the same context can still clobber each
+    /// other (the read-modify-write race documented there). The snapshot finalize
+    /// runs only for uninitialized / crash-recovery / resync contexts, which are
+    /// not being concurrently mutated by the delta path; the remaining external
+    /// racer (`sync_context_config`) is fixed at its source (#3252).
     ///
-    /// * `context_id` - The ID of the context to verify.
-    /// * `claimed_hash` - The hash to verify against.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating success if hashes match, or an error if they don't.
-    pub fn verify_root_hash(
+    /// [`force_root_hash`]: Self::force_root_hash
+    /// [`update_dag_heads`]: Self::update_dag_heads
+    /// [`persist_deltas_and_dag_heads`]: Self::persist_deltas_and_dag_heads
+    pub fn set_root_and_dag_heads(
         &self,
         context_id: &ContextId,
-        claimed_hash: [u8; 32],
+        root_hash: Hash,
+        dag_heads: Vec<[u8; 32]>,
     ) -> eyre::Result<()> {
-        let computed = self.compute_root_hash(context_id)?;
+        let meta_key = key::ContextMeta::new(*context_id);
 
-        if computed != claimed_hash {
-            eyre::bail!(
-                "Root hash verification failed for context {}: computed {} != claimed {}",
-                context_id,
-                hex::encode(computed),
-                hex::encode(claimed_hash)
-            );
-        }
+        let Some(mut meta) = self.datastore.handle().get(&meta_key)? else {
+            eyre::bail!("Context not found: {}", context_id);
+        };
+
+        meta.root_hash = *root_hash;
+        meta.dag_heads = dag_heads;
+        let dag_heads_count = meta.dag_heads.len();
+
+        let mut tx = Transaction::default();
+        let meta_bytes: Slice<'_> = borsh::to_vec(&meta)?.into();
+        tx.put(&meta_key, meta_bytes);
+        self.datastore.apply(&tx)?;
 
         tracing::debug!(
             %context_id,
-            hash = ?Hash::from(computed),
-            "Root hash verified successfully"
+            new_root = ?root_hash,
+            dag_heads_count,
+            "Atomically set root_hash and dag_heads (snapshot finalize)"
         );
 
         Ok(())
@@ -1078,7 +1262,7 @@ impl ContextClient {
     /// * `inviter_id` - The public key of the existing member creating the invitation.
     ///   This node must have the corresponding private key for this identity.
     /// * `valid_for_seconds` - How long (in seconds) the invitation remains valid.
-    /// * `_secret_salt` - Unused; a fresh random salt is generated internally.
+    /// * `_invitation_nonce` - Unused; a fresh nonce is generated internally.
     ///
     /// # Returns
     /// * A `Result` containing the `SignedOpenInvitation` if successful, or an error if
@@ -1089,9 +1273,9 @@ impl ContextClient {
         context_id: &ContextId,
         inviter_id: &PublicKey,
         valid_for_seconds: u64,
-        _secret_salt: [u8; DIGEST_SIZE],
+        _invitation_nonce: [u8; DIGEST_SIZE],
     ) -> eyre::Result<Option<SignedOpenInvitation>> {
-        let secret_salt = {
+        let invitation_nonce = {
             let mut rng = rand::thread_rng();
             rng.gen::<[u8; DIGEST_SIZE]>()
         };
@@ -1107,11 +1291,15 @@ impl ContextClient {
             return Ok(None);
         };
 
+        // Fail loudly on an unreadable clock rather than defaulting to the
+        // epoch, which would silently mint an already-expired invitation.
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock before epoch")
+            .map_err(|_| eyre::eyre!("system clock is before the Unix epoch"))?
             .as_secs();
-        let expiration_timestamp = now_secs + valid_for_seconds;
+        // Saturate so a large `valid_for_seconds` can't overflow into a past
+        // (or wrapped) expiration timestamp.
+        let expiration_timestamp = now_secs.saturating_add(valid_for_seconds);
 
         let inviter_identity = self
             .get_identity(context_id, inviter_id)?
@@ -1130,7 +1318,7 @@ impl ContextClient {
             inviter_identity: inviter_identity_context_type,
             context_id: context_id.into(),
             expiration_timestamp,
-            secret_salt,
+            invitation_nonce,
         };
 
         let invitation_bytes =
@@ -1269,13 +1457,15 @@ impl ContextClient {
         self.registry.force_root_hash(context_id, root_hash)
     }
 
-    /// Verifies that the stored root hash matches the actual state.
-    pub fn verify_root_hash(
+    /// See [`ContextRegistry::set_root_and_dag_heads`].
+    pub fn set_root_and_dag_heads(
         &self,
         context_id: &ContextId,
-        claimed_hash: [u8; 32],
+        root_hash: Hash,
+        dag_heads: Vec<[u8; 32]>,
     ) -> eyre::Result<()> {
-        self.registry.verify_root_hash(context_id, claimed_hash)
+        self.registry
+            .set_root_and_dag_heads(context_id, root_hash, dag_heads)
     }
 
     /// Diagnostic — dump ROOT's self summary + children list in one read.
@@ -1341,13 +1531,16 @@ impl ContextClient {
         aliases: Vec<Alias<PublicKey>>,
         atomic: Option<ContextAtomic>,
     ) -> Result<ExecuteResponse, ExecuteError> {
-        self.execute_with_origin(context_id, executor, method, payload, aliases, atomic, None)
-            .await
+        self.execute_with_origin(
+            context_id, executor, method, payload, aliases, atomic, None, 0,
+        )
+        .await
     }
 
     /// Like [`execute`](Self::execute), but tags the run with the source
     /// context that dispatched it via `xcall`, surfaced to the guest as
-    /// `env::xcall_origin()`. Pass `None` for a direct/RPC call.
+    /// `env::xcall_origin()`. Pass `None`/`0` for a direct/RPC call; the xcall
+    /// dispatch loop passes `Some(source)` and `parent_depth + 1`.
     #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
     pub async fn execute_with_origin(
         &self,
@@ -1358,6 +1551,7 @@ impl ContextClient {
         aliases: Vec<Alias<PublicKey>>,
         atomic: Option<ContextAtomic>,
         xcall_origin: Option<ContextId>,
+        xcall_depth: u32,
     ) -> Result<ExecuteResponse, ExecuteError> {
         let (sender, receiver) = oneshot::channel();
 
@@ -1371,18 +1565,23 @@ impl ContextClient {
                     aliases,
                     atomic,
                     xcall_origin,
+                    xcall_depth,
                 },
                 outcome: sender,
             })
             .await
             .map_err(|err| {
                 tracing::error!(%err, "context manager mailbox closed during execute");
-                ExecuteError::InternalError
+                ExecuteError::InternalError {
+                    kind: InternalErrorKind::Ipc,
+                }
             })?;
 
         receiver.await.map_err(|err| {
             tracing::error!(%err, "context manager dropped the execute response channel");
-            ExecuteError::InternalError
+            ExecuteError::InternalError {
+                kind: InternalErrorKind::Ipc,
+            }
         })?
     }
 
@@ -1457,7 +1656,9 @@ impl ContextClient {
                 %err,
                 "merge_root_state: failed to serialize MergeRootStateRequest"
             );
-            ExecuteError::InternalError
+            ExecuteError::InternalError {
+                kind: InternalErrorKind::Merge,
+            }
         })?;
 
         let response = self
@@ -1478,7 +1679,9 @@ impl ContextClient {
                     %context_id,
                     "merge_root_state: WASM export returned no bytes"
                 );
-                return Err(ExecuteError::InternalError);
+                return Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Merge,
+                });
             }
             Err(err) => {
                 tracing::error!(
@@ -1486,7 +1689,9 @@ impl ContextClient {
                     ?err,
                     "merge_root_state: WASM export reported a function-call error"
                 );
-                return Err(ExecuteError::InternalError);
+                return Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Merge,
+                });
             }
         };
 
@@ -1497,7 +1702,9 @@ impl ContextClient {
                     %err,
                     "merge_root_state: failed to deserialize MergeRootStateResponse"
                 );
-                ExecuteError::InternalError
+                ExecuteError::InternalError {
+                    kind: InternalErrorKind::Merge,
+                }
             })?;
 
         match response {
@@ -1508,7 +1715,9 @@ impl ContextClient {
                     error = %msg,
                     "merge_root_state: WASM Mergeable::merge returned an error"
                 );
-                Err(ExecuteError::InternalError)
+                Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Merge,
+                })
             }
         }
     }
@@ -1871,6 +2080,12 @@ impl ContextClient {
         eyre::Result<()>
     );
     forward_to_actor!(
+        rotate_group_key,
+        RotateGroupKey,
+        RotateGroupKeyRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
         set_subgroup_visibility,
         SetSubgroupVisibility,
         SetSubgroupVisibilityRequest,
@@ -2121,6 +2336,10 @@ mod atomic_persist_tests {
         }
 
         fn delete(&self, col: Column, key: Slice<'_>) -> EyreResult<()> {
+            assert!(
+                !self.armed.load(Ordering::SeqCst),
+                "atomic persist must not write via direct `delete`; all writes go through `apply`"
+            );
             self.inner.delete(col, key)
         }
 
@@ -2210,6 +2429,94 @@ mod atomic_persist_tests {
         );
     }
 
+    // Compaction interrupt safety: `DeltaStore::compact` prunes in-memory first,
+    // then mirrors the prune to durable storage via `prune_delta_records`. That
+    // durable delete is one atomic transaction, so a crash mid-prune can only
+    // leave the delta column fully pruned or fully intact — never a partial
+    // state where an ancestor still reachable from a retained head has been
+    // deleted out from under it. Here DELTA_A stands in for a retained ancestor
+    // batched alongside the prunable DELTA_B: a failed (interrupted) prune must
+    // drop neither.
+    #[test]
+    fn interrupted_prune_deletes_nothing() {
+        let cid = ctx();
+
+        // Happy path: pruning only the prunable delta removes it while the
+        // retained ancestor stays put.
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let registry = ContextRegistry::new(store.clone());
+        registry
+            .persist_delta_records(&[delta_record(&cid, DELTA_A), delta_record(&cid, DELTA_B)])
+            .expect("seed records");
+        registry
+            .prune_delta_records(&[key::ContextDagDelta::new(cid, DELTA_B)])
+            .expect("prune succeeds");
+        assert!(
+            has_delta(&store, &cid, DELTA_A),
+            "retained ancestor must survive a normal prune"
+        );
+        assert!(
+            !has_delta(&store, &cid, DELTA_B),
+            "prunable delta must be deleted on a normal prune"
+        );
+
+        // Interrupt path: a backend whose `apply` fails at commit deletes
+        // nothing, so both the retained ancestor and the prune target remain —
+        // the atomic transaction is the interrupt guarantee.
+        let armed = Arc::new(AtomicBool::new(false));
+        let failing = Store::new(Arc::new(FailOnApply {
+            inner: InMemoryDB::owned(),
+            armed: Arc::clone(&armed),
+        }));
+        let failing_registry = ContextRegistry::new(failing.clone());
+
+        // Seed via direct `put` while disarmed (the failing backend rejects
+        // every `apply`, so records can't be seeded through the atomic path).
+        {
+            let (ka, ra) = delta_record(&cid, DELTA_A);
+            let (kb, rb) = delta_record(&cid, DELTA_B);
+            let mut handle = failing.handle();
+            handle.put(&ka, &ra).expect("seed A");
+            handle.put(&kb, &rb).expect("seed B");
+        }
+
+        // Sanity: the seeded rows are readable before we arm the backend, so the
+        // survival assertions below test a real delete-nothing outcome rather
+        // than rows that were never present.
+        assert!(
+            has_delta(&failing, &cid, DELTA_A),
+            "seeded A must be readable"
+        );
+        assert!(
+            has_delta(&failing, &cid, DELTA_B),
+            "seeded B must be readable"
+        );
+
+        // Arm the backend, then attempt to prune BOTH keys in one batch.
+        armed.store(true, Ordering::SeqCst);
+        let err = failing_registry
+            .prune_delta_records(&[
+                key::ContextDagDelta::new(cid, DELTA_A),
+                key::ContextDagDelta::new(cid, DELTA_B),
+            ])
+            .expect_err("interrupted prune must surface the backend failure");
+        assert!(
+            err.to_string().contains("injected apply failure"),
+            "unexpected error: {err}"
+        );
+
+        // Nothing was deleted — a retained head's ancestor is never dropped by
+        // an interrupted prune.
+        assert!(
+            has_delta(&failing, &cid, DELTA_A),
+            "retained ancestor must survive an interrupted prune"
+        );
+        assert!(
+            has_delta(&failing, &cid, DELTA_B),
+            "prune target must survive an interrupted prune (all-or-nothing)"
+        );
+    }
+
     #[test]
     fn store_batch_stages_until_commit_and_discards_on_drop() {
         use calimero_store::StoreBatch;
@@ -2248,6 +2555,80 @@ mod atomic_persist_tests {
         assert!(
             !has_delta(&store, &cid, DELTA_B),
             "dropped (uncommitted) batch must not persist"
+        );
+    }
+
+    fn read_root(store: &Store, context_id: &ContextId) -> [u8; 32] {
+        store
+            .handle()
+            .get(&key::ContextMeta::new(*context_id))
+            .expect("read meta")
+            .expect("meta present")
+            .root_hash
+    }
+
+    // #3252: the snapshot finalize publishes root_hash + dag_heads together.
+    // One call updates both fields of the existing ContextMeta.
+    #[test]
+    fn set_root_and_dag_heads_updates_both_fields() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let cid = ctx();
+        seed_meta(&store, &cid, vec![INITIAL_HEAD]);
+        assert_eq!(
+            read_root(&store, &cid),
+            [0u8; 32],
+            "seed starts uninitialized"
+        );
+
+        let registry = ContextRegistry::new(store.clone());
+        registry
+            .set_root_and_dag_heads(&cid, DELTA_A.into(), vec![DELTA_B])
+            .expect("atomic finalize succeeds");
+
+        assert_eq!(read_root(&store, &cid), DELTA_A, "root_hash published");
+        assert_eq!(
+            read_heads(&store, &cid),
+            vec![DELTA_B],
+            "dag_heads published"
+        );
+    }
+
+    // The finalize must route its write through `apply` (one WriteBatch), never
+    // a direct `put` — so the root+heads update can't be split into a state a
+    // concurrent ContextMeta writer straddles (#3252). A backend armed to panic
+    // on any `put` proves the path is `apply`-only.
+    #[test]
+    fn set_root_and_dag_heads_is_apply_only() {
+        let armed = Arc::new(AtomicBool::new(false));
+        let store = Store::new(Arc::new(FailOnApply {
+            inner: InMemoryDB::owned(),
+            armed: Arc::clone(&armed),
+        }));
+        let cid = ctx();
+        seed_meta(&store, &cid, vec![INITIAL_HEAD]);
+
+        // From here any direct `put` panics; only `apply` may write.
+        armed.store(true, Ordering::SeqCst);
+
+        let registry = ContextRegistry::new(store.clone());
+        let err = registry
+            .set_root_and_dag_heads(&cid, DELTA_A.into(), vec![DELTA_B])
+            .expect_err("armed backend fails the atomic commit");
+        assert!(
+            err.to_string().contains("injected apply failure"),
+            "must fail at apply (proving no stray put), got: {err}"
+        );
+
+        // All-or-nothing: the failed commit left the pre-finalize meta intact.
+        assert_eq!(
+            read_root(&store, &cid),
+            [0u8; 32],
+            "root unchanged on failure"
+        );
+        assert_eq!(
+            read_heads(&store, &cid),
+            vec![INITIAL_HEAD],
+            "heads unchanged on failure"
         );
     }
 }
@@ -2344,7 +2725,9 @@ mod get_context_version_tests {
                     &key::GroupContextMetadata::new(gid, cid),
                     &calimero_primitives::metadata::MetadataRecord {
                         name: Some("docs-workspace".to_owned()),
-                        ..Default::default()
+                        data: Default::default(),
+                        updated_at: 0,
+                        updated_by: calimero_primitives::identity::PublicKey::from([1_u8; 32]),
                     },
                 )
                 .expect("seed context metadata");

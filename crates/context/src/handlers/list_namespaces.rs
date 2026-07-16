@@ -226,7 +226,7 @@ mod tests {
             .store_identity(
                 &group_id_with_membership,
                 &node_identity_pk,
-                &node_identity_sk,
+                node_identity_sk.as_bytes(),
                 &sender_key,
             )
             .expect("store namespace identity for first namespace");
@@ -234,7 +234,7 @@ mod tests {
             .store_identity(
                 &group_id_without_membership,
                 &node_identity_pk,
-                &node_identity_sk,
+                node_identity_sk.as_bytes(),
                 &sender_key,
             )
             .expect("store namespace identity for second namespace");

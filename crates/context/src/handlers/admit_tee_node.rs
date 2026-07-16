@@ -44,10 +44,11 @@ async fn deliver_group_key_to_member(
         eyre::bail!("verifier has no group key for namespace; cannot deliver to admitted TEE node");
     };
 
-    let envelope = GroupKeyring::wrap_for_member(signer_sk, member, &group_key)?;
+    let envelope =
+        GroupKeyring::wrap_for_member(signer_sk, member, &group_id.to_bytes(), &group_key)?;
 
     let delivery_op = NamespaceOp::Root(RootOp::KeyDelivery {
-        group_id: group_id.to_bytes(),
+        group_id: group_id.to_bytes().into(),
         envelope,
     });
 
@@ -59,7 +60,7 @@ async fn deliver_group_key_to_member(
         store,
         node_client,
         ack_router,
-        namespace_id.to_bytes(),
+        namespace_id.to_bytes().into(),
         signer_sk,
         delivery_op,
         Some(vec![*member]),

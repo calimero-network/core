@@ -6,7 +6,7 @@ use core::panic::Location as PanicLocation;
 
 use serde::Serialize;
 use thiserror::Error as ThisError;
-use wasmer::{ExportError, InstantiationError, LinkError, RuntimeError};
+use wasmer::{DeserializeError, ExportError, InstantiationError, LinkError, RuntimeError};
 use wasmer_types::{CompileError, TrapCode};
 
 #[derive(Debug, ThisError)]
@@ -49,6 +49,44 @@ pub enum FunctionCallError {
     ExecutionError(Vec<u8>),
     #[error("module size limit (max_module_size) exceeded: {size} bytes > {max} bytes limit")]
     ModuleSizeLimitExceeded { size: u64, max: u64 },
+    #[error("module rejected by validation: {reason}")]
+    ModuleValidationError { reason: String },
+    /// The execution consumed its entire gas budget and was trapped.
+    ///
+    /// Distinct from [`WasmTrap::Unreachable`]: gas exhaustion *is* implemented
+    /// as an injected `unreachable`, but reclassifying it here tells the caller
+    /// the guest hit a resource limit (a runaway or too-heavy computation)
+    /// rather than reaching genuinely unreachable code. `limit` is the budget
+    /// that was exhausted, i.e. [`VMLimits::max_gas`](crate::logic::VMLimits::max_gas)
+    /// for this execution.
+    #[error("execution exhausted its gas limit of {limit} points")]
+    GasExhausted { limit: u64 },
+}
+
+/// Error returned by
+/// [`Engine::from_precompiled`](crate::Engine::from_precompiled).
+///
+/// Kept separate from [`FunctionCallError`] because deserializing a
+/// precompiled artifact is a distinct operation from compiling source WASM:
+/// it carries a wasmer [`DeserializeError`] (not a [`CompileError`]) and its
+/// own size cap. Not `Serialize` — it wraps `DeserializeError`, which is not
+/// serializable, and these failures are node-local, not surfaced to guests.
+#[derive(Debug, ThisError)]
+#[non_exhaustive]
+pub enum PrecompiledModuleError {
+    /// The serialized precompiled artifact is larger than the configured
+    /// `max_precompiled_module_size` cap. Checked before handing the bytes to
+    /// wasmer so a corrupt or oversized blob cannot drive unbounded
+    /// allocation during deserialization, even when the caller attests the
+    /// bytes are trusted.
+    #[error(
+        "precompiled module size limit (max_precompiled_module_size) exceeded: \
+         {size} bytes > {max} bytes limit"
+    )]
+    SizeLimitExceeded { size: u64, max: u64 },
+    /// Wasmer rejected the bytes (wrong format, version mismatch, corruption).
+    #[error(transparent)]
+    Deserialize(#[from] DeserializeError),
 }
 
 #[derive(Debug, Serialize, ThisError)]
@@ -112,6 +150,14 @@ pub enum HostError {
     KeyLengthOverflow,
     #[error("value length overflow")]
     ValueLengthOverflow,
+    #[error("storage write count budget exceeded (max: {max})")]
+    StorageWriteCountExceeded { max: u64 },
+    #[error("storage write byte budget exceeded (attempted: {attempted}, max: {max})")]
+    StorageWriteBytesExceeded { attempted: u64, max: u64 },
+    #[error("return value too large (size: {size}, max: {max})")]
+    ReturnValueSizeOverflow { size: u64, max: u64 },
+    #[error("event handler name too large (size: {size}, max: {max})")]
+    EventHandlerSizeOverflow { size: u64, max: u64 },
     #[error("log size overflow")]
     LogLengthOverflow,
     #[error("logs overflow")]
@@ -142,6 +188,8 @@ pub enum HostError {
     TotalBlobMemoryExceeded { current: u64, max: u64 },
     #[error("blob write too large (size: {size}, max: {max})")]
     BlobWriteTooLarge { size: u64, max: u64 },
+    #[error("blob write failed (writer task unavailable)")]
+    BlobWriteFailed,
     #[error("context does not have permission to access this blob handle")]
     BlobContextMismatch,
     #[error("too many blob handles open")]

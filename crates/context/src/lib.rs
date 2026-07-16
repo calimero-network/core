@@ -3,7 +3,7 @@
 use calimero_governance_store::{
     MembershipRepository, MetaRepository, NamespaceRepository, SigningKeysRepository,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -21,6 +21,7 @@ use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_store::Store;
+use calimero_wasm_abi::schema::XCallCallers;
 use either::Either;
 use prometheus_client::registry::Registry;
 use tokio::sync::{Mutex, RwLock};
@@ -38,6 +39,7 @@ pub mod handlers;
 pub mod hlc_fence;
 mod lifecycle;
 pub mod migration_plan;
+pub mod rotation_listener;
 pub mod scope_projection;
 pub mod self_purge;
 pub mod tee_subgroup_admit;
@@ -66,6 +68,7 @@ pub mod group_store {
         get_local_gov_nonce,
         get_op_head,
         is_currently_authorized_for_context,
+        namespace_group_keys_awaiting,
         namespace_groups_awaiting_key,
         now_millis,
         now_secs,
@@ -107,6 +110,7 @@ pub mod group_store {
         NamespaceMembershipService,
         NamespaceOpLogService,
         NamespaceRepository,
+        PendingRotationRepository,
         SigningKeysError,
         SigningKeysRepository,
         UpgradeLadderRepository,
@@ -380,6 +384,14 @@ impl Evictable for calimero_runtime::Module {}
 /// embedded ABI manifest on the next compile cycle.
 impl Evictable for Arc<HashSet<String>> {}
 
+/// Per-method xcall caller policy (method name → who may call it), derived from
+/// a module's embedded ABI.
+pub(crate) type XCallPolicyMap = HashMap<String, XCallCallers>;
+
+/// The xcall caller-policy map has no live handle either; re-derived from the
+/// embedded ABI manifest on the next compile cycle, so always safe to evict.
+impl Evictable for Arc<XCallPolicyMap> {}
+
 /// A per-namespace governance DAG is lock-gated exactly like [`ContextMeta`]:
 /// an in-flight op holds the `Arc<Mutex<DagStore>>`, so the DAG is evictable
 /// only at `strong_count == 1`. Evicting a live DAG would split it across two
@@ -457,14 +469,16 @@ pub struct ContextManager {
     /// Size-capped to `MAX_CACHED_MODULES` (one entry per compiled module).
     read_only_methods: BoundedCache<(BlobId, Option<String>), Arc<HashSet<String>>>,
 
-    /// Per-blob set of method names declared `#[app::xcall]` in the module ABI.
-    /// An xcall to a method outside this set is denied; an absent entry (module
-    /// declares none, or not parsed yet) leaves the method ungated.
+    /// Per-blob map of method names declared `#[app::xcall]` in the module ABI
+    /// to their caller policy (`XCallCallers`). An xcall to a method outside this
+    /// map is denied; a method present is allowed only if the caller satisfies
+    /// its policy. An absent entry (module declares none, or not parsed yet)
+    /// leaves the method ungated.
     ///
     /// Keyed by `(BlobId, Option<String>)` like `modules` / `read_only_methods`
     /// (content-addressed, never stale), populated in `get_module_for_blob`.
     /// Size-capped to `MAX_CACHED_MODULES` (one entry per compiled module).
-    xcall_methods: BoundedCache<(BlobId, Option<String>), Arc<HashSet<String>>>,
+    xcall_methods: BoundedCache<(BlobId, Option<String>), Arc<XCallPolicyMap>>,
 
     /// Cumulative hit/miss counters for the `contexts` hot cache, driving the
     /// periodic effectiveness log (see [`ContextCacheStats`] and
@@ -819,6 +833,15 @@ impl Actor for ContextManager {
         // guarantees we (re)bind to this instance's current store/client.
         tee_subgroup_admit::shutdown();
         tee_subgroup_admit::spawn(self.datastore.clone(), self.context_client.clone());
+
+        // Forward secrecy on self-leave. A leaver cannot rotate the key they are being
+        // cut off from, so `MemberLeft` records the debt and the REMAINING admins pay
+        // it. This listener is that half: it reacts to departures and also drains the
+        // persisted worklist on startup, which is the only thing that covers an admin
+        // that was offline when the leave applied. Same shutdown-then-spawn rebinding
+        // rationale as the TEE-admit listener above.
+        rotation_listener::shutdown();
+        rotation_listener::spawn(self.datastore.clone(), self.context_client.clone());
     }
 }
 

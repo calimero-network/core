@@ -129,6 +129,16 @@ pub async fn join_namespace(
         return Err(JoinError::InvalidInvitation("invitation expired".into()));
     }
 
+    // step 1b: verify the invitation's inviter signature before it seeds any
+    // local trust. The `admin_identity` written in step 2b becomes the local
+    // root of trust for readiness-beacon / ack / heartbeat verification and
+    // `is_admin`, and genesis won't overwrite a seeded non-placeholder admin —
+    // so a forged invitation must never reach the seed.
+    calimero_context::group_store::NamespaceMembershipService::verify_open_invitation_signature(
+        &invitation,
+    )
+    .map_err(|e| JoinError::InvalidInvitation(format!("invalid invitation signature: {e}")))?;
+
     // step 2: provision identity (mark_membership_pending equivalent —
     // the namespace identity row IS the local pending marker until
     // MemberJoined ack arrives).
@@ -154,8 +164,12 @@ pub async fn join_namespace(
     // — `await_first_fresh_beacon` then always times out, defeating the
     // J6 fast path (#2269 review issue #1).
     //
-    // The invitation is admin-signed, so `inviter_identity` is by
-    // definition an authorized namespace member. Writing a minimal
+    // The invitation's inviter signature is verified above (step 1b), which
+    // proves the sender controls `inviter_identity`'s key. Whether that identity
+    // is actually a namespace admin needs DAG state a fresh joiner doesn't have
+    // yet, so that check is deferred to `validate_open_invitation` on the
+    // responder and re-enforced at apply time; seeding it here is a bounded local
+    // trust bootstrap that genesis later reconciles. Writing a minimal
     // `GroupMeta { admin_identity: inviter, ... }` makes
     // `namespace_member_pubkeys` include the inviter (the meta-admin
     // is added by `namespace_member_pubkeys` even without a member row),
@@ -191,13 +205,17 @@ pub async fn join_namespace(
         .subscribe_namespace(namespace_id)
         .await
         .map_err(|e| JoinError::Transport(e.to_string()))?;
+    // Seed the readiness FSM's boot-grace anchor at subscribe time rather
+    // than at the first applied op, so a joiner that subscribes then sits
+    // idle still measures boot_grace from here.
+    node_client.notify_namespace_subscribed(namespace_id);
 
     // step 4: publish a ReadinessProbe. Best-effort — a publish error
     // here (e.g. NoPeersSubscribedToTopic on a solo node) is not fatal:
     // the probe simply doesn't reach anyone, and `await_first_fresh_beacon`
     // below will time out with `NoReadyPeers`.
     let probe = ReadinessProbe {
-        namespace_id,
+        namespace_id: namespace_id.into(),
         nonce: rand::random(),
     };
     let inner = borsh::to_vec(&NamespaceTopicMsg::ReadinessProbe(probe))
@@ -214,7 +232,7 @@ pub async fn join_namespace(
         payload: inner,
     };
     let bytes = borsh::to_vec(&envelope).map_err(|e| JoinError::Transport(e.to_string()))?;
-    let topic = ns_topic(namespace_id);
+    let topic = ns_topic(namespace_id.into());
     if let Err(err) = node_client.network_client().publish(topic, bytes).await {
         debug!(
             ?err,
@@ -323,7 +341,7 @@ pub async fn await_namespace_ready(
         let mesh = node_client
             .mesh_peer_count_for_namespace(namespace_id)
             .await;
-        let topic = ns_topic(namespace_id);
+        let topic = ns_topic(namespace_id.into());
         let known = node_client.known_subscribers(&topic);
         let required = std::cmp::min(mesh_n_low, known);
         if mesh >= required {
@@ -351,6 +369,15 @@ pub async fn await_namespace_ready(
     let signing_key = PrivateKey::from(my_sk_bytes);
     my_sk_bytes.zeroize();
 
+    // Defense-in-depth: verify the invitation signature here too, so this entry
+    // point is self-contained regardless of call order. The `join_namespace`
+    // fast path already verifies before seeding, but a direct/refactored caller
+    // of `await_namespace_ready` must not be able to bypass the check.
+    calimero_context::group_store::NamespaceMembershipService::verify_open_invitation_signature(
+        &invitation,
+    )
+    .map_err(|e| ReadyError::InvalidInvitation(format!("invalid invitation signature: {e}")))?;
+
     // step 3: publish MemberJoined via three-phase contract.
     // Local fast-fail on an already-expired invitation; the
     // authoritative deterministic expiry gate runs on apply.
@@ -366,7 +393,7 @@ pub async fn await_namespace_ready(
         signed_invitation: invitation,
         joined_at: now_secs,
     });
-    let report = NamespaceGovernance::new(store, namespace_id)
+    let report = NamespaceGovernance::new(store, namespace_id.into())
         .sign_and_publish_without_apply(node_client, ack_router, &signing_key, op, None)
         .await
         .map_err(|e| ReadyError::PublishMemberJoined(e.to_string()))?;
@@ -376,7 +403,7 @@ pub async fn await_namespace_ready(
     // store read fails we substitute defaults rather than fail the
     // whole join, since the caller's primary signal is `acked_by`.
     let members_learned = MembershipRepository::new(store)
-        .namespace_pubkeys(namespace_id)
+        .namespace_pubkeys(namespace_id.into())
         .map(|m| m.len())
         .unwrap_or(0);
 
@@ -451,6 +478,37 @@ const ATTEMPT_DEADLINE: Duration = Duration::from_secs(10);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const INITIAL_BACKOFF: Duration = Duration::from_secs(3);
 
+/// Next backoff delay: double the current delay, capped at [`MAX_BACKOFF`].
+fn next_backoff(delay: Duration) -> Duration {
+    std::cmp::min(delay * 2, MAX_BACKOFF)
+}
+
+/// Upper bound (exclusive, in milliseconds) for the retry jitter draw: a
+/// quarter of the current delay. Returns 0 when the delay is too small to
+/// jitter, in which case the caller must skip jittering (a `gen_range(0..0)`
+/// would panic).
+fn jitter_bound_millis(delay: Duration) -> u64 {
+    delay.as_millis() as u64 / 4
+}
+
+/// Per-attempt deadline: the fixed [`ATTEMPT_DEADLINE`] cap, clamped by the
+/// remaining total budget so a small `max_total` never blocks on a single
+/// full-length attempt.
+fn attempt_deadline(remaining: Duration) -> Duration {
+    std::cmp::min(ATTEMPT_DEADLINE, remaining)
+}
+
+/// Whether sleeping for `delay + jitter` right now would overshoot the total
+/// budget. The jitter is included so the loop never sleeps past `max_total`.
+fn would_exceed_budget(
+    elapsed: Duration,
+    delay: Duration,
+    jitter: Duration,
+    max_total: Duration,
+) -> bool {
+    elapsed + delay + jitter > max_total
+}
+
 /// Retry [`join_namespace`] with exponential backoff + jitter.
 ///
 /// Each attempt's deadline is clamped by the remaining total budget,
@@ -477,7 +535,7 @@ pub async fn join_namespace_with_retry(
                 waited_ms: start.elapsed().as_millis() as u64,
             });
         }
-        let attempt_deadline = std::cmp::min(ATTEMPT_DEADLINE, remaining);
+        let deadline = attempt_deadline(remaining);
         match join_namespace(
             store,
             node_client,
@@ -485,7 +543,7 @@ pub async fn join_namespace_with_retry(
             readiness_notify,
             config,
             invitation.clone(),
-            attempt_deadline,
+            deadline,
         )
         .await
         {
@@ -498,22 +556,97 @@ pub async fn join_namespace_with_retry(
                 // up to that much per iteration, violating the documented
                 // "clamped by remaining total budget" contract.
                 let jitter = {
-                    let bound = delay.as_millis() as u64 / 4;
+                    let bound = jitter_bound_millis(delay);
                     if bound == 0 {
                         Duration::ZERO
                     } else {
                         Duration::from_millis(rand::thread_rng().gen_range(0..bound))
                     }
                 };
-                if start.elapsed() + delay + jitter > max_total {
+                if would_exceed_budget(start.elapsed(), delay, jitter, max_total) {
                     return Err(JoinError::NoReadyPeers {
                         waited_ms: start.elapsed().as_millis() as u64,
                     });
                 }
                 tokio::time::sleep(delay + jitter).await;
-                delay = std::cmp::min(delay * 2, MAX_BACKOFF);
+                delay = next_backoff(delay);
             }
             Err(other) => return Err(other),
         }
+    }
+}
+
+#[cfg(test)]
+mod retry_backoff_tests {
+    use super::*;
+
+    #[test]
+    fn next_backoff_doubles_then_saturates_at_cap() {
+        assert_eq!(next_backoff(INITIAL_BACKOFF), INITIAL_BACKOFF * 2);
+        // At and beyond the cap, doubling never exceeds MAX_BACKOFF.
+        assert_eq!(next_backoff(MAX_BACKOFF), MAX_BACKOFF);
+        assert_eq!(next_backoff(Duration::from_secs(20)), MAX_BACKOFF);
+
+        // A full doubling sequence from the initial delay is monotonic and
+        // converges to exactly MAX_BACKOFF (never above).
+        let mut delay = INITIAL_BACKOFF;
+        for _ in 0..10 {
+            let next = next_backoff(delay);
+            assert!(next >= delay, "backoff must be non-decreasing");
+            assert!(next <= MAX_BACKOFF, "backoff must never exceed the cap");
+            delay = next;
+        }
+        assert_eq!(delay, MAX_BACKOFF);
+    }
+
+    #[test]
+    fn jitter_bound_is_a_quarter_of_delay_and_zero_when_tiny() {
+        assert_eq!(jitter_bound_millis(Duration::from_millis(4000)), 1000);
+        assert_eq!(jitter_bound_millis(INITIAL_BACKOFF), 750); // 3000ms / 4
+        assert_eq!(jitter_bound_millis(MAX_BACKOFF), 7500); // 30000ms / 4
+
+        // Below 4ms the bound collapses to 0, signalling "no jitter" so the
+        // loop avoids a `gen_range(0..0)` panic.
+        assert_eq!(jitter_bound_millis(Duration::from_millis(3)), 0);
+        assert_eq!(jitter_bound_millis(Duration::ZERO), 0);
+    }
+
+    #[test]
+    fn attempt_deadline_clamps_to_remaining_budget() {
+        // Ample budget → the full per-attempt cap.
+        assert_eq!(attempt_deadline(Duration::from_secs(60)), ATTEMPT_DEADLINE);
+        // A budget smaller than the cap → the remaining time, so a tight
+        // `max_total` never blocks on a single full-length attempt.
+        assert_eq!(
+            attempt_deadline(Duration::from_secs(2)),
+            Duration::from_secs(2)
+        );
+        assert_eq!(attempt_deadline(Duration::ZERO), Duration::ZERO);
+    }
+
+    #[test]
+    fn would_exceed_budget_includes_jitter_and_is_strict() {
+        let max = Duration::from_secs(10);
+        // delay alone fits within budget.
+        assert!(!would_exceed_budget(
+            Duration::from_secs(6),
+            Duration::from_secs(3),
+            Duration::ZERO,
+            max
+        ));
+        // delay + jitter pushes past budget → must report exceed.
+        assert!(would_exceed_budget(
+            Duration::from_secs(6),
+            Duration::from_secs(3),
+            Duration::from_secs(2),
+            max
+        ));
+        // Landing exactly on the budget is NOT an overshoot (strict `>`).
+        assert!(!would_exceed_budget(
+            Duration::from_secs(5),
+            Duration::from_secs(3),
+            Duration::from_secs(2),
+            max
+        ));
     }
 }

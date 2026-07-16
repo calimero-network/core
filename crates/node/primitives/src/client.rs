@@ -1,6 +1,5 @@
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -30,12 +29,13 @@ use crate::messages::{
     MigrationStatusReport, NodeMessage, RegisterPendingSpecializedNodeInvite,
     RemovePendingSpecializedNodeInvite,
 };
-use crate::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
+use crate::sync::{BroadcastMessage, SealedDeltaPayload, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
 use crate::TopicManager;
 
 pub use crate::join_bundle::JoinBundle;
 
 mod alias;
+pub use alias::AliasExists;
 mod application;
 mod blob;
 
@@ -359,6 +359,25 @@ impl NodeClient {
         }
     }
 
+    /// Notify the readiness FSM that we just subscribed to a namespace
+    /// topic, so it seeds `subscribed_at` at subscribe time (boot-grace
+    /// anchor) instead of at the first applied op. Best-effort, mirroring
+    /// [`notify_namespace_op_applied`]: on a `try_send` failure the first
+    /// applied op still seeds the entry, just with a later `subscribed_at`.
+    pub fn notify_namespace_subscribed(&self, namespace_id: [u8; 32]) {
+        if let Err(err) = self
+            .node_manager
+            .try_send(NodeMessage::ForwardNamespaceSubscribed { namespace_id })
+        {
+            warn!(
+                ?err,
+                namespace_id = %hex::encode(namespace_id),
+                "failed to enqueue NamespaceSubscribed signal — readiness FSM will \
+                 seed subscribed_at at the first applied op instead"
+            );
+        }
+    }
+
     /// Edge-trigger the migration-heartbeat emitter to recompute + re-publish
     /// this node's facts for `namespace_id`, out of band of the periodic tick.
     ///
@@ -552,11 +571,27 @@ impl NodeClient {
         );
 
         let shared_key = SharedKey::from_sk(sender_key);
-        let nonce = rand::thread_rng().gen();
 
-        let encrypted = shared_key
-            .encrypt(artifact, nonce)
-            .ok_or_eyre("failed to encrypt artifact")?;
+        // Seal the expected post-apply root hash and the execution events
+        // together with the storage delta so none of them ride the gossip
+        // topic in cleartext. The root hash is a state fingerprint and the
+        // events are application activity; encrypting them under the group key
+        // keeps them readable only by members, who get them back on decrypt.
+        //
+        // A serialization failure here returns via `?` before any publish, so
+        // the delta is NOT gossiped at all. Treat it as a hard failure rather
+        // than a recoverable drop — unlike the cold-start "no peers" case
+        // below, there is no sync-pull path that recovers a delta we never put
+        // on the wire.
+        let sealed = borsh::to_vec(&SealedDeltaPayload {
+            root_hash: context.root_hash,
+            artifact,
+            events,
+        })?;
+
+        let (nonce, encrypted) = shared_key
+            .encrypt(sealed)
+            .ok_or_eyre("failed to encrypt delta payload")?;
 
         let payload = BroadcastMessage::StateDelta {
             context_id: context.id,
@@ -564,10 +599,8 @@ impl NodeClient {
             delta_id,
             parent_ids,
             hlc,
-            root_hash: context.root_hash,
             artifact: encrypted.into(),
             nonce,
-            events: events.map(Cow::from),
             governance_position,
             key_id,
             delta_signature,

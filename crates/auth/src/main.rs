@@ -75,12 +75,22 @@ async fn main() -> Result<()> {
         .await
         .expect("Failed to create storage");
 
-    // Create the secret manager with the storage trait
-    let secret_manager = Arc::new(SecretManager::new(storage.clone() as Arc<dyn Storage>));
+    // Create the secret manager with the storage trait. `with_storage_config`
+    // resolves the at-rest KEK (env-provided, or a 0600 sibling key file for
+    // RocksDB) so the JWT signing secrets are sealed on disk.
+    let secret_manager = Arc::new(SecretManager::with_storage_config(
+        storage.clone() as Arc<dyn Storage>,
+        &config.storage,
+    ));
     secret_manager
         .initialize()
         .await
         .expect("Failed to initialize secret manager");
+
+    // Spawn the JWT signing-secret rotation task (finding #4). Safe now that
+    // verification accepts an unexpired backup secret (PR1), so a rotation no
+    // longer mass-invalidates outstanding tokens.
+    Arc::clone(&secret_manager).start_rotation_task().await;
 
     // Create JWT token manager
     let token_manager = TokenManager::new(config.jwt.clone(), storage.clone(), secret_manager);

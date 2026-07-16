@@ -28,6 +28,11 @@ env:
   RUST_BACKTRACE: 1
   CALIMERO_CONTRACTS_VERSION: "latest"
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
+  # Out-of-band secret gating first-root-key bootstrap (fail-closed since the
+  # TOFU removal). Requires merobox pass-through support (forward into node
+  # containers + present in the `login` step); inert on older merobox. See
+  # the matching comment in e2e-rust-apps.yml.
+  MERO_AUTH_BOOTSTRAP_SECRET: merobox-e2e-bootstrap
 
 jobs:
   build-apps:
@@ -38,7 +43,7 @@ jobs:
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
@@ -65,7 +70,7 @@ jobs:
           ./build.sh
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-rust-apps-release-build-artifacts
           path: |
@@ -82,12 +87,12 @@ jobs:
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: e2e-rust-apps-release-build-artifacts
           path: apps
@@ -366,7 +371,7 @@ jobs:
 
       - name: Upload Workflow Data Artifacts
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-rust-apps-release-data-${{ github.sha }}
           path: |
@@ -382,7 +387,7 @@ jobs:
 
       - name: Upload Docker Logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-rust-apps-release-docker-logs-${{ github.sha }}
           path: docker-logs/

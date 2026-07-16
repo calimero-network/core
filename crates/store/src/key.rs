@@ -40,20 +40,34 @@ pub use group::{
     GroupLocalGovNonceWindow, GroupLocalGovNonceWindowValue, GroupMember, GroupMemberCapability,
     GroupMemberCapabilityValue, GroupMemberContext, GroupMemberMetadata, GroupMemberValue,
     GroupMeta, GroupMetaValue, GroupMetadata, GroupOpHead, GroupOpHeadValue, GroupOpLog,
-    GroupParentRef, GroupSigningKey, GroupSigningKeyValue, GroupSubgroupVis, GroupSubgroupVisValue,
-    GroupUpgradeKey, GroupUpgradeLadder, GroupUpgradeStatus, GroupUpgradeValue, LadderRung,
-    NamespaceGovHead, NamespaceGovHeadValue, NamespaceGovOp, NamespaceGovOpValue,
-    NamespaceIdentity, NamespaceIdentityValue, PendingSelfPurge, UpgradeLadderValue,
-    GROUP_CHILD_INDEX_PREFIX, GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_MEMBER_CAP_PREFIX,
-    GROUP_CONTEXT_METADATA_PREFIX, GROUP_DEFAULT_CAPS_PREFIX, GROUP_DENIED_MEMBER_PREFIX,
-    GROUP_KEY_PREFIX, GROUP_LOCAL_GOV_NONCE_PREFIX, GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX,
-    GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_CONTEXT_PREFIX, GROUP_MEMBER_METADATA_PREFIX,
-    GROUP_MEMBER_PREFIX, GROUP_METADATA_PREFIX, GROUP_META_PREFIX, GROUP_OP_HEAD_PREFIX,
-    GROUP_OP_LOG_PREFIX, GROUP_PARENT_REF_PREFIX, GROUP_SIGNING_KEY_PREFIX,
+    GroupParentRef, GroupPendingKeyRotation, GroupSigningKey, GroupSigningKeyValue,
+    GroupSubgroupVis, GroupSubgroupVisValue, GroupUpgradeKey, GroupUpgradeLadder,
+    GroupUpgradeStatus, GroupUpgradeValue, LadderRung, NamespaceGovHead, NamespaceGovHeadValue,
+    NamespaceGovOp, NamespaceGovOpValue, NamespaceIdentity, NamespaceIdentityValue,
+    PendingSelfPurge, UpgradeLadderValue, GROUP_CHILD_INDEX_PREFIX, GROUP_CONTEXT_INDEX_PREFIX,
+    GROUP_CONTEXT_MEMBER_CAP_PREFIX, GROUP_CONTEXT_METADATA_PREFIX, GROUP_DEFAULT_CAPS_PREFIX,
+    GROUP_DENIED_MEMBER_PREFIX, GROUP_KEY_PREFIX, GROUP_LOCAL_GOV_NONCE_PREFIX,
+    GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX,
+    GROUP_MEMBER_CONTEXT_PREFIX, GROUP_MEMBER_METADATA_PREFIX, GROUP_MEMBER_PREFIX,
+    GROUP_METADATA_PREFIX, GROUP_META_PREFIX, GROUP_OP_HEAD_PREFIX, GROUP_OP_LOG_PREFIX,
+    GROUP_PARENT_REF_PREFIX, GROUP_PENDING_KEY_ROTATION_PREFIX, GROUP_SIGNING_KEY_PREFIX,
     GROUP_SUBGROUP_VIS_PREFIX, GROUP_UPGRADE_PREFIX, NAMESPACE_GOV_HEAD_PREFIX,
     NAMESPACE_GOV_OP_PREFIX, NAMESPACE_IDENTITY_PREFIX, PENDING_SELF_PURGE_PREFIX,
 };
 
+/// A fixed-width storage key: a `GenericArray<u8, T::LEN>` tagged with its
+/// component layout `T`.
+///
+/// # Layout
+///
+/// This struct is `#[repr(transparent)]` over its sole field, and that
+/// attribute is load-bearing: the `&Key<T> <-> &Key<(T,)>` reference casts in
+/// this module rely on `Key<T>` and `Key<(T,)>` having identical layout. Both
+/// are transparent wrappers over the same `GenericArray<u8, T::LEN>` (the
+/// `(T,): KeyComponents<LEN = T::LEN>` bound forces equal lengths), so the casts
+/// are sound. Without `repr(transparent)` a `repr(Rust)` struct's layout is
+/// unspecified and those casts would be undefined behavior.
+#[repr(transparent)]
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
 
 impl<T: KeyComponents> Copy for Key<T> where GenericArray<u8, T::LEN>: Copy {}
@@ -142,6 +156,9 @@ where
     (T,): KeyComponents<LEN = T::LEN>,
 {
     fn from(key: &Key<T>) -> Self {
+        // SAFETY: `Key<T>` and `Key<(T,)>` are both `#[repr(transparent)]` over
+        // `GenericArray<u8, T::LEN>` (the `LEN = T::LEN` bound makes the arrays
+        // identical), so they share layout and this reference cast is sound.
         unsafe { &*ptr::from_ref(key).cast() }
     }
 }
@@ -152,6 +169,8 @@ where
     (T,): KeyComponents<LEN = T::LEN>,
 {
     fn from(key: &Key<(T,)>) -> Self {
+        // SAFETY: see the inverse impl above — identical `repr(transparent)`
+        // layout over `GenericArray<u8, T::LEN>` makes this cast sound.
         unsafe { &*ptr::from_ref(key).cast() }
     }
 }

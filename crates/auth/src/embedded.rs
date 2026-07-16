@@ -53,8 +53,16 @@ impl EmbeddedAuthApp {
 pub async fn build_app(config: AuthConfig) -> Result<EmbeddedAuthApp> {
     let storage = create_storage(&config.storage).await?;
 
-    let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
+    let secret_manager = Arc::new(SecretManager::with_storage_config(
+        Arc::clone(&storage),
+        &config.storage,
+    ));
     secret_manager.initialize().await?;
+
+    // Spawn the JWT signing-secret rotation task (finding #4). Safe to enable now
+    // that verification accepts an unexpired backup secret (PR1), so a rotation no
+    // longer mass-invalidates outstanding tokens.
+    Arc::clone(&secret_manager).start_rotation_task().await;
 
     let token_manager = TokenManager::new(
         config.jwt.clone(),
@@ -82,6 +90,7 @@ pub async fn build_app(config: AuthConfig) -> Result<EmbeddedAuthApp> {
         token_generator: token_manager,
         config: config.clone(),
         metrics,
+        login_rate_limiter: Arc::new(crate::auth::rate_limit::LoginRateLimiter::default()),
     });
 
     let router = create_router(Arc::clone(&state), &config);
@@ -101,6 +110,10 @@ pub fn default_config() -> AuthConfig {
             issuer: "calimero-auth".to_string(),
             access_token_expiry: 3600,
             refresh_token_expiry: 2592000,
+            // Opt-in (finding #7): unset keeps legacy header-derived node-host
+            // validation. Operators set the node's public host to enforce
+            // node-binding against trusted config instead of request headers.
+            node_host: None,
         },
         storage: StorageConfig::RocksDB {
             path: "auth".into(),

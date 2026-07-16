@@ -22,6 +22,16 @@ use calimero_governance_store::op_events::OpEvent;
 
 const NAMESPACE_MESH_GRACE: Duration = Duration::from_secs(2);
 
+/// Upper bound on how long the background re-publisher keeps trying to announce
+/// membership when the joiner's namespace mesh is too thin at join time (e.g. it
+/// joined while another member was down). Generous enough to span a downed
+/// peer restarting and the mesh reforming; bounded so a genuinely partitioned
+/// joiner's task still exits.
+const MEMBER_JOINED_REPUBLISH_WINDOW: Duration = Duration::from_secs(120);
+
+/// Poll cadence while waiting for namespace mesh readiness.
+const MEMBER_JOINED_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
 // Maximum time `join_group` waits on the gossip-fallback path for a
 // `KeyDelivery` op addressed to the joiner now lives on
 // [`ContextManagerConfig::key_delivery_fallback_wait`] so operators can
@@ -71,6 +81,15 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     2 => GroupMemberRole::ReadOnly,
                     _ => GroupMemberRole::Member,
                 };
+
+                // Verify the invitation's inviter signature before it seeds any
+                // local trust. `admin_identity` written in Phase 1 becomes the
+                // local root of trust for this namespace's beacon / ack /
+                // heartbeat verification and `is_admin`, so a forged invitation
+                // must not reach the seed below.
+                calimero_governance_store::NamespaceMembershipService::verify_open_invitation_signature(
+                    &invitation,
+                )?;
 
                 // -------------------------------------------------------
                 // Phase 1: Set up local state.
@@ -169,7 +188,12 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         borsh::from_slice(&join_result.key_envelope_bytes)
                             .map_err(|e| eyre::eyre!("failed to deserialize key envelope: {e}"))?;
 
-                    let group_key = GroupKeyring::unwrap_for_recipient(&sk, &envelope)?;
+                    let group_key = GroupKeyring::unwrap_for_recipient(
+                        &sk,
+                        &group_id.to_bytes(),
+                        None,
+                        &envelope,
+                    )?;
                     GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
                     info!("received group key via direct join response");
                 }
@@ -300,29 +324,126 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     None
                 };
 
-                // Publish MemberJoined so other namespace members learn
-                // about us. Joiner can't ack their own op (they're not yet
-                // a recognised member from the receiver's view until the
-                // op applies), so `required_signers = None` here — any
-                // ack from any current member is fine.
-                let member_joined_op = NamespaceOp::Root(RootOp::MemberJoinedAt {
-                    member: joiner_identity,
-                    signed_invitation: invitation.clone(),
-                    joined_at: now_secs,
-                });
-                match calimero_governance_store::sign_and_publish_namespace_op(
-                    &datastore,
-                    &node_client,
-                    &ack_router,
-                    namespace_id,
-                    &sk,
-                    member_joined_op,
-                    None,
-                )
-                .await
+                // Announce membership so other namespace members learn about
+                // us. The joiner can't ack its own op (it isn't a recognised
+                // member from the receiver's view until the op applies), so
+                // `required_signers = None` — any ack from any current member
+                // is fine.
+                //
+                // `sign_and_publish_namespace_op` hard-fails its transport gate
+                // (`assert_transport_ready`) when the mesh is too thin. That
+                // happens when we join while another member is down: our mesh
+                // only reaches the one peer that is up, yet the down member
+                // still counts as a known subscriber and inflates the required
+                // quorum. The announce is otherwise fire-and-forget, so a
+                // gated-out publish silently strands us — current members never
+                // learn we joined, and when we later sync the authoritative
+                // group state (which excludes us) we reconcile our own
+                // locally-added membership away and are stuck "not a member".
+                //
+                // If the transport is ready now, publish inline (one shot — the
+                // op is written to our local log and reaches peers via sync even
+                // if the immediate acks are thin). If it is NOT ready, hand off
+                // to a bounded background task that waits for the mesh to reform
+                // (e.g. once the down member restarts) and then publishes, so
+                // membership propagates without blocking the join.
                 {
-                    Ok(_report) => {}
-                    Err(e) => warn!(?e, "failed to publish MemberJoined (non-fatal)"),
+                    use calimero_governance_store::governance_broadcast::{
+                        assert_transport_ready, ns_topic,
+                    };
+                    let topic = ns_topic(namespace_id.into());
+                    let n_low = node_client.gossipsub_mesh_n_low();
+                    let mesh = node_client
+                        .mesh_peer_count_for_namespace(namespace_id)
+                        .await;
+                    let known = node_client.known_subscribers(&topic);
+
+                    if assert_transport_ready(mesh, known, n_low).is_ok() {
+                        let member_joined_op = NamespaceOp::Root(RootOp::MemberJoinedAt {
+                            member: joiner_identity,
+                            signed_invitation: invitation.clone(),
+                            joined_at: now_secs,
+                        });
+                        if let Err(e) = calimero_governance_store::sign_and_publish_namespace_op(
+                            &datastore,
+                            &node_client,
+                            &ack_router,
+                            namespace_id.into(),
+                            &sk,
+                            member_joined_op,
+                            None,
+                        )
+                        .await
+                        {
+                            warn!(?e, "failed to publish MemberJoined (non-fatal)");
+                        }
+                    } else {
+                        warn!(
+                            mesh,
+                            known,
+                            n_low,
+                            "MemberJoined transport not ready (likely joined with a peer down); \
+                             scheduling durable background re-publish"
+                        );
+                        // Owned captures for the detached re-publisher. `sk_bytes`
+                        // is a copy of the signing key so we can re-sign off-task;
+                        // it is rebuilt into a `ZeroizeOnDrop` `PrivateKey` inside
+                        // the task and dropped when the task ends.
+                        let datastore = datastore.clone();
+                        let node_client = node_client.clone();
+                        let ack_router = Arc::clone(&ack_router);
+                        let invitation = invitation.clone();
+                        actix::spawn(async move {
+                            let topic = ns_topic(namespace_id.into());
+                            let n_low = node_client.gossipsub_mesh_n_low();
+                            let deadline = Instant::now() + MEMBER_JOINED_REPUBLISH_WINDOW;
+                            loop {
+                                if Instant::now() >= deadline {
+                                    warn!(
+                                        "MemberJoined durable re-publish window elapsed; \
+                                         membership may not have propagated"
+                                    );
+                                    break;
+                                }
+                                let mesh = node_client
+                                    .mesh_peer_count_for_namespace(namespace_id)
+                                    .await;
+                                let known = node_client.known_subscribers(&topic);
+                                if assert_transport_ready(mesh, known, n_low).is_ok() {
+                                    let sk = PrivateKey::from(sk_bytes);
+                                    let member_joined_op =
+                                        NamespaceOp::Root(RootOp::MemberJoinedAt {
+                                            member: joiner_identity,
+                                            signed_invitation: invitation.clone(),
+                                            joined_at: now_secs,
+                                        });
+                                    match calimero_governance_store::sign_and_publish_namespace_op(
+                                        &datastore,
+                                        &node_client,
+                                        &ack_router,
+                                        namespace_id.into(),
+                                        &sk,
+                                        member_joined_op,
+                                        None,
+                                    )
+                                    .await
+                                    {
+                                        Ok(_) => info!("MemberJoined durable re-publish succeeded"),
+                                        // The op is written to our local log and
+                                        // reaches peers via sync even if acks were
+                                        // thin; stop either way so we don't sign a
+                                        // duplicate at the next nonce.
+                                        Err(e) => warn!(
+                                            ?e,
+                                            "MemberJoined re-publish produced no acks; relying on sync"
+                                        ),
+                                    }
+                                    break;
+                                }
+                                tokio::time::sleep(MEMBER_JOINED_POLL_INTERVAL).await;
+                            }
+                        });
+                    }
                 }
 
                 if let Some(rx) = op_event_rx.as_mut() {
@@ -447,7 +568,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     && MetadataRepository::new(&datastore).group_metadata(&group_id)?.is_none()
                 {
                     MetadataRepository::new(&datastore).set_group(&group_id, &calimero_primitives::metadata::MetadataRecord {
-                            name: group_name.clone(), updated_at: calimero_governance_store::now_millis(), updated_by: joiner_identity, ..Default::default()
+                            name: group_name.clone(), data: std::collections::BTreeMap::new(), updated_at: calimero_governance_store::now_millis(), updated_by: joiner_identity,
                         }, )?;
                 }
 
@@ -471,7 +592,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                     handle.put(
                                         &ci_key,
                                         &calimero_store::types::ContextIdentity {
-                                            private_key: Some(*sk),
+                                            private_key: Some(sk_bytes),
                                             sender_key: None,
                                         },
                                     )?;

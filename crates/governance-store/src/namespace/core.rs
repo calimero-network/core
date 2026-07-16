@@ -288,17 +288,19 @@ impl<'a> NamespaceRepository<'a> {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let expiration = now_secs + expiration_secs;
+        // Saturate to avoid overflowing into a past/wrapped expiration when a
+        // caller passes a very large `expiration_secs`.
+        let expiration = now_secs.saturating_add(expiration_secs);
 
         let mut result = Vec::with_capacity(groups.len());
         for gid in groups {
-            let secret_salt: [u8; 32] = OsRng.gen();
+            let invitation_nonce: [u8; 32] = OsRng.gen();
 
             let invitation = GroupInvitationFromAdmin {
                 inviter_identity: inviter_signer_id,
                 group_id: gid,
                 expiration_timestamp: expiration,
-                secret_salt,
+                invitation_nonce,
                 invited_role,
             };
 
@@ -366,7 +368,10 @@ impl<'a> NamespaceRepository<'a> {
     /// Walk the parent chain to find the root group (namespace).
     pub fn resolve(&self, group_id: &ContextGroupId) -> EyreResult<ContextGroupId> {
         let mut current = *group_id;
-        for _ in 0..MAX_NAMESPACE_DEPTH {
+        // Inclusive bound (mirrors `check_path`): reaching the root at depth D
+        // requires D+1 iterations to observe the root's `None` parent, so the
+        // deepest legal subgroup (depth MAX) needs MAX+1 walk steps.
+        for _ in 0..=MAX_NAMESPACE_DEPTH {
             match self.parent(&current)? {
                 Some(parent) => current = parent,
                 None => return Ok(current),
@@ -432,6 +437,17 @@ impl<'a> NamespaceRepository<'a> {
             eyre::bail!(NamespaceError::ReparentTargetMissing(format!(
                 "{new_parent:?}"
             )));
+        }
+
+        // Both must live in the same namespace. Meta rows are keyed by group id
+        // alone, so the target-exists check above does not prove same-namespace;
+        // without this an admin of namespace A could reparent an A-group under a
+        // B-group, grafting A's crypto/access boundary into B.
+        if self.resolve(child)? != self.resolve(new_parent)? {
+            eyre::bail!(NamespaceError::ReparentCrossNamespace {
+                child: format!("{child:?}"),
+                new_parent: format!("{new_parent:?}"),
+            });
         }
 
         if self.is_descendant_of(new_parent, child)? {
@@ -602,14 +618,19 @@ impl<'a> NamespaceRepository<'a> {
         let public_key = private_key.public_key();
         let sender_key = PrivateKey::random(&mut OsRng);
 
-        self.store_identity(&ns_id, &public_key, &private_key, &sender_key)?;
+        self.store_identity(
+            &ns_id,
+            &public_key,
+            private_key.as_bytes(),
+            sender_key.as_bytes(),
+        )?;
 
         Ok(ResolvedNamespaceIdentity {
             namespace_id: ns_id,
             identity: NamespaceIdentityRecord {
                 public_key,
-                private_key: *private_key,
-                sender_key: *sender_key,
+                private_key: *private_key.as_bytes(),
+                sender_key: *sender_key.as_bytes(),
             },
         })
     }

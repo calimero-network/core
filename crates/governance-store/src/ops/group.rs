@@ -24,6 +24,7 @@ mod context_metadata_set;
 mod context_registered;
 mod default_capabilities_set;
 mod group_delete;
+mod group_key_rotated;
 mod group_metadata_set;
 mod group_migration_set;
 mod member_added;
@@ -77,19 +78,20 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             expected_group_state_hash,
             expected_context_state_hashes,
         )?,
+        GroupOp::GroupKeyRotated { departed } => group_key_rotated::apply(ctx, departed)?,
         GroupOp::MemberRoleSet { member, role } => member_role_set::apply(ctx, member, role)?,
         GroupOp::MemberCapabilitySet {
             member,
             capabilities,
-        } => member_capability_set::apply(ctx, member, capabilities)?,
+        } => member_capability_set::apply(ctx, member, &capabilities.bits())?,
         GroupOp::DefaultCapabilitiesSet { capabilities } => {
-            default_capabilities_set::apply(ctx, capabilities)?
+            default_capabilities_set::apply(ctx, &capabilities.bits())?
         }
         GroupOp::UpgradePolicySet { policy } => upgrade_policy_set::apply(ctx, policy)?,
         GroupOp::TargetApplicationSet {
             app_key,
             target_application_id,
-        } => target_application_set::apply(ctx, app_key, target_application_id)?,
+        } => target_application_set::apply(ctx, &app_key.to_bytes(), target_application_id)?,
         GroupOp::ContextRegistered {
             context_id,
             application_id,
@@ -160,14 +162,14 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             target_application_id,
         } => cascade_target_application_set::apply(
             ctx,
-            from_app_key,
-            app_key,
+            &from_app_key.to_bytes(),
+            &app_key.to_bytes(),
             target_application_id,
         )?,
         GroupOp::CascadeGroupMigrationSet {
             from_app_key,
             migration,
-        } => cascade_group_migration_set::apply(ctx, from_app_key, migration)?,
+        } => cascade_group_migration_set::apply(ctx, &from_app_key.to_bytes(), migration)?,
         GroupOp::CascadeUpgrade {
             from_app_key,
             app_key,
@@ -176,8 +178,8 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             cascade_hlc,
         } => cascade_upgrade::apply(
             ctx,
-            from_app_key,
-            app_key,
+            &from_app_key.to_bytes(),
+            &app_key.to_bytes(),
             target_application_id,
             migration,
             *cascade_hlc,

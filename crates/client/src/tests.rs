@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use eyre::Result;
 use url::Url;
-use wiremock::matchers::{body_json, method, path};
+use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::client::Client;
@@ -1016,4 +1016,456 @@ async fn create_namespace_returns_err_on_server_error() {
         .await;
 
     assert!(result.is_err());
+}
+
+// ---- Auth retry & query handling ----
+//
+// These exercise the connection's 401 handling with a real (in-memory) storage
+// and authenticator, using `node_name = Some(..)` so the auth path runs.
+
+use std::sync::{Arc, Mutex as StdMutex};
+
+use wiremock::matchers::query_param;
+
+use crate::connection::ConnectionInfo as Conn;
+
+/// In-memory token storage seeded with an initial token.
+#[derive(Clone)]
+struct MemStorage {
+    token: Arc<StdMutex<Option<JwtToken>>>,
+}
+
+#[async_trait]
+impl ClientStorage for MemStorage {
+    async fn load_tokens(&self, _: &str) -> Result<Option<JwtToken>> {
+        Ok(self.token.lock().unwrap().clone())
+    }
+
+    async fn save_tokens(&self, _: &str, tokens: &JwtToken) -> Result<()> {
+        *self.token.lock().unwrap() = Some(tokens.clone());
+        Ok(())
+    }
+}
+
+/// Authenticator that mints a fresh opaque token on demand. `authenticate` is
+/// the fallback the connection uses when no refresh token is available.
+#[derive(Clone)]
+struct MemAuth {
+    calls: Arc<StdMutex<u32>>,
+}
+
+#[async_trait]
+impl ClientAuthenticator for MemAuth {
+    async fn authenticate(&self, _: &Url) -> Result<JwtToken> {
+        *self.calls.lock().unwrap() += 1;
+        Ok(JwtToken::new("reauth-token".to_owned()))
+    }
+
+    async fn refresh_tokens(&self, _: &str) -> Result<JwtToken> {
+        unimplemented!("not exercised")
+    }
+
+    async fn handle_auth_failure(&self, _: &Url) -> Result<JwtToken> {
+        unimplemented!("not exercised")
+    }
+
+    async fn check_auth_required(&self, _: &Url) -> Result<bool> {
+        Ok(true)
+    }
+
+    fn get_auth_method(&self) -> &'static str {
+        "mem"
+    }
+}
+
+fn make_auth_client(base_url: &Url) -> (Client<MemAuth, MemStorage>, Arc<StdMutex<u32>>) {
+    // Seed an opaque (non-JWT, no refresh) token so a 401 forces the fallback
+    // re-authentication path via `MemAuth::authenticate`.
+    let storage = MemStorage {
+        token: Arc::new(StdMutex::new(Some(JwtToken::new(
+            "initial-token".to_owned(),
+        )))),
+    };
+    let calls = Arc::new(StdMutex::new(0));
+    let auth = MemAuth {
+        calls: Arc::clone(&calls),
+    };
+    let conn = Conn::new(base_url.clone(), Some("node".to_owned()), auth, storage);
+    (Client::new(conn).unwrap(), calls)
+}
+
+#[tokio::test]
+async fn get_retries_on_401_and_reauthenticates() {
+    let server = MockServer::start().await;
+
+    // First GET → 401 (highest priority, only once), then 200.
+    Mock::given(method("GET"))
+        .and(path("/admin-api/contexts"))
+        .respond_with(ResponseTemplate::new(401))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/admin-api/contexts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+        .with_priority(2)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (client, auth_calls) = make_auth_client(&Url::parse(&server.uri()).unwrap());
+    let resp: serde_json::Value = client.connection().get("admin-api/contexts").await.unwrap();
+
+    assert_eq!(resp["ok"], serde_json::Value::Bool(true));
+    // Idempotent GET was retried after re-authenticating exactly once.
+    assert_eq!(*auth_calls.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn post_is_not_replayed_on_401() {
+    let server = MockServer::start().await;
+
+    // The POST endpoint always 401s. It must be hit exactly once — the client
+    // must NOT replay a non-idempotent body after re-authenticating.
+    Mock::given(method("POST"))
+        .and(path("/admin-api/contexts"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (client, auth_calls) = make_auth_client(&Url::parse(&server.uri()).unwrap());
+    let result: Result<serde_json::Value> = client
+        .connection()
+        .post("admin-api/contexts", serde_json::json!({"name": "x"}))
+        .await;
+
+    assert!(
+        result.is_err(),
+        "non-idempotent 401 should surface an error"
+    );
+    // The session was still re-authenticated so a manual retry would work.
+    assert_eq!(*auth_calls.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn request_forwards_query_string() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/admin-api/blobs"))
+        .and(query_param("context_id", "ctx-123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // node_name=None keeps auth out of the picture; this isolates the
+    // path/query split in `request()`.
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let _resp: serde_json::Value = client
+        .connection()
+        .get("admin-api/blobs?context_id=ctx-123")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn traversal_path_is_rejected_before_send() {
+    // No server needed: the path guard rejects `..` before any request is built.
+    let client = make_client(&Url::parse("https://unused.example/").unwrap());
+    let result: Result<serde_json::Value> =
+        client.connection().get("admin-api/groups/../evil").await;
+    assert!(result.is_err());
+}
+
+// ---- Reverse-proxy base-path preservation ----
+//
+// When `api_url` carries a mount path (a node behind a reverse proxy), every
+// endpoint the connection reaches — requests, token refresh, and the auth-mode
+// probe — must stay under that base path rather than resetting to the host root.
+
+#[tokio::test]
+async fn detect_auth_mode_preserves_base_path() {
+    let server = MockServer::start().await;
+    // Only the base-path-prefixed probe is mocked → 200 = AuthMode::None. If the
+    // base path were dropped the probe would hit `/admin-api/contexts`, which is
+    // unmocked — wiremock answers unmatched routes with 404, and `detect_auth_mode`
+    // maps a non-401 non-2xx status to AuthMode::Required. So asserting `None`
+    // (not `Required`) proves the prefixed path was hit and returned 200.
+    Mock::given(method("GET"))
+        .and(path("/proxy/base/admin-api/contexts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let base = Url::parse(&format!("{}/proxy/base/", server.uri())).unwrap();
+    let client = make_client(&base);
+    let mode = client.connection().detect_auth_mode().await.unwrap();
+    assert!(matches!(mode, crate::connection::AuthMode::None));
+}
+
+#[tokio::test]
+async fn token_refresh_preserves_base_path() {
+    let server = MockServer::start().await;
+
+    // Protected endpoint under the base path: 401 once, then 200.
+    Mock::given(method("GET"))
+        .and(path("/proxy/base/admin-api/contexts"))
+        .respond_with(ResponseTemplate::new(401))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/proxy/base/admin-api/contexts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+        .with_priority(2)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // The refresh endpoint is mocked ONLY at the base-path-prefixed URL. If the
+    // refresh used an absolute `/auth/refresh` it would miss this mock, the
+    // refresh would fail, and the flow would fall back to interactive auth —
+    // so `expect(1)` here (plus `authenticate` never being called) proves the
+    // base path was preserved for the refresh POST.
+    Mock::given(method("POST"))
+        .and(path("/proxy/base/auth/refresh"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": { "access_token": "new-access", "refresh_token": "new-refresh" }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Seed a token that carries a refresh token so the 401 drives the refresh
+    // path (not the interactive-auth fallback).
+    let storage = MemStorage {
+        token: Arc::new(StdMutex::new(Some(JwtToken::with_refresh(
+            "initial-access".to_owned(),
+            "refresh-tok".to_owned(),
+        )))),
+    };
+    let auth_calls = Arc::new(StdMutex::new(0));
+    let auth = MemAuth {
+        calls: Arc::clone(&auth_calls),
+    };
+    let base = Url::parse(&format!("{}/proxy/base/", server.uri())).unwrap();
+    let conn = Conn::new(base, Some("node".to_owned()), auth, storage);
+    let client = Client::new(conn).unwrap();
+
+    let resp: serde_json::Value = client.connection().get("admin-api/contexts").await.unwrap();
+
+    assert_eq!(resp["ok"], serde_json::Value::Bool(true));
+    // Refresh succeeded via the base-path URL, so interactive auth was not used.
+    assert_eq!(*auth_calls.lock().unwrap(), 0);
+}
+
+// ---- Proactive-expiry refresh & single-flight ----
+//
+// End-to-end exercises of the auth state machine's expiry handling: a stored
+// token whose JWT `exp` is in the past (or imminent) is refreshed *before* the
+// request is sent, and concurrent expired requests collapse into a single
+// `/auth/refresh`. These drive the real `ConnectionInfo` — `ensure_auth_header`
+// → `refresh_or_reauth` (single-flight) → request — against a mock server.
+
+use std::time::Duration;
+
+use crate::test_support::jwt_with_exp;
+
+/// Mount a `/auth/refresh` mock that returns `new_access` (+ a rotated refresh
+/// token) and, separately, a protected GET that only matches when the request
+/// carries `new_access` as its bearer. Together they prove the client refreshed
+/// *before* issuing the GET: if it had sent the stale token, the GET would miss
+/// the header-filtered mock and 404.
+///
+/// Both mocks assert their exact hit counts on server drop: `refresh_hits`
+/// `/auth/refresh` POSTs and `get_hits` successful GETs carrying the fresh bearer.
+/// `refresh_delay` holds the refresh response open, which (for the concurrent
+/// test) keeps the single-flight lock held long enough that the other tasks are
+/// guaranteed to queue behind it rather than each racing an instant refresh.
+async fn mount_refresh_and_guarded_get(
+    server: &MockServer,
+    new_access: &str,
+    refresh_hits: u64,
+    get_hits: u64,
+    refresh_delay: Duration,
+) {
+    Mock::given(method("POST"))
+        .and(path("/auth/refresh"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(refresh_delay)
+                .set_body_json(serde_json::json!({
+                    "data": { "access_token": new_access, "refresh_token": "rotated-refresh" }
+                })),
+        )
+        .expect(refresh_hits)
+        .mount(server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/admin-api/contexts"))
+        .and(header(
+            "authorization",
+            format!("Bearer {new_access}").as_str(),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+        .with_priority(1)
+        .expect(get_hits)
+        .mount(server)
+        .await;
+
+    // Any GET to the endpoint NOT carrying the fresh bearer means a stale token
+    // was sent — exactly the regression these tests guard against. Match it with
+    // a lower priority and `expect(0)` so it fails loudly with a descriptive body
+    // instead of a bare unmatched-route 404.
+    Mock::given(method("GET"))
+        .and(path("/admin-api/contexts"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": "stale bearer sent — proactive refresh / single-flight regressed"
+        })))
+        .with_priority(2)
+        .expect(0)
+        .mount(server)
+        .await;
+}
+
+/// Build an auth-enabled client seeded with `token`, returning the `MemAuth`
+/// call counter so a test can assert the interactive-auth fallback was **not**
+/// used (i.e. the refresh path succeeded rather than falling back to
+/// `authenticate`, which would otherwise mint a valid token and mask the bug).
+fn auth_client_with_token(
+    base_url: &Url,
+    token: JwtToken,
+) -> (Client<MemAuth, MemStorage>, Arc<StdMutex<u32>>) {
+    let storage = MemStorage {
+        token: Arc::new(StdMutex::new(Some(token))),
+    };
+    let calls = Arc::new(StdMutex::new(0));
+    let auth = MemAuth {
+        calls: Arc::clone(&calls),
+    };
+    let conn = Conn::new(base_url.clone(), Some("node".to_owned()), auth, storage);
+    (Client::new(conn).unwrap(), calls)
+}
+
+#[tokio::test]
+async fn expired_token_is_refreshed_before_request() {
+    let now = chrono::Utc::now().timestamp();
+    let expired = jwt_with_exp(now - 3600);
+    let fresh = jwt_with_exp(now + 3600);
+
+    let server = MockServer::start().await;
+    // No 401 is mocked: a proactive refresh must happen *before* the GET, so the
+    // only GET carries the fresh bearer. Exactly one `/auth/refresh`, one GET.
+    mount_refresh_and_guarded_get(&server, &fresh, 1, 1, Duration::ZERO).await;
+
+    let (client, auth_calls) = auth_client_with_token(
+        &Url::parse(&server.uri()).unwrap(),
+        JwtToken::with_refresh(expired, "refresh-tok".to_owned()),
+    );
+
+    let resp: serde_json::Value = client
+        .connection()
+        .get("admin-api/contexts")
+        .await
+        .unwrap_or_else(|e| panic!("stale bearer sent (proactive refresh regressed): {e}"));
+    assert_eq!(resp["ok"], serde_json::Value::Bool(true));
+    // Refresh path succeeded — no interactive-auth fallback.
+    assert_eq!(*auth_calls.lock().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn token_expiring_soon_is_refreshed_proactively() {
+    let now = chrono::Utc::now().timestamp();
+    // Not yet expired, but comfortably inside the proactive-refresh skew window.
+    // Derived from the real constant so the test can't silently stop exercising
+    // the `expires_soon` branch if the window is retuned.
+    let expiring = jwt_with_exp(now + crate::connection::TOKEN_REFRESH_SKEW_SECS / 2);
+    let fresh = jwt_with_exp(now + 3600);
+
+    let server = MockServer::start().await;
+    mount_refresh_and_guarded_get(&server, &fresh, 1, 1, Duration::ZERO).await;
+
+    let (client, auth_calls) = auth_client_with_token(
+        &Url::parse(&server.uri()).unwrap(),
+        JwtToken::with_refresh(expiring, "refresh-tok".to_owned()),
+    );
+
+    let resp: serde_json::Value = client
+        .connection()
+        .get("admin-api/contexts")
+        .await
+        .unwrap_or_else(|e| panic!("stale bearer sent (proactive refresh regressed): {e}"));
+    assert_eq!(resp["ok"], serde_json::Value::Bool(true));
+    assert_eq!(*auth_calls.lock().unwrap(), 0);
+}
+
+// Pinned to the current-thread runtime so the cooperative-scheduling guarantee
+// the body relies on is structural, not a default: on one thread the first task
+// cannot complete its refresh without yielding at the network await (while
+// holding `auth_lock`), which forces the other seven to block on the lock.
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_expired_requests_refresh_once() {
+    let now = chrono::Utc::now().timestamp();
+    let expired = jwt_with_exp(now - 3600);
+    let fresh = jwt_with_exp(now + 3600);
+
+    let server = MockServer::start().await;
+    // Single-flight: 8 concurrent expired requests must produce exactly ONE
+    // `/auth/refresh` (a rotating refresh token would be spent 8 times
+    // otherwise) and 8 successful GETs carrying the fresh bearer.
+    //
+    // Contention is exercised, not assumed. On the pinned current-thread runtime
+    // (see the attribute above): a `Barrier` releases all 8 tasks together, then the
+    // first to run acquires `auth_lock` and parks on the refresh's network await
+    // (held open 50 ms) while still holding the lock. Cooperative scheduling then
+    // polls the other 7, which all block on `lock().await` before the refresh can
+    // complete — so they hit the single-flight path rather than an already-done
+    // early-exit. Structural backstops make a regression fail loudly regardless:
+    // `expect(1)` on `/auth/refresh`, `expect(0)` on the stale-bearer GET.
+    mount_refresh_and_guarded_get(&server, &fresh, 1, 8, Duration::from_millis(50)).await;
+
+    let (client, auth_calls) = auth_client_with_token(
+        &Url::parse(&server.uri()).unwrap(),
+        JwtToken::with_refresh(expired, "refresh-tok".to_owned()),
+    );
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(8));
+    let mut set = tokio::task::JoinSet::new();
+    for i in 0..8 {
+        let client = client.clone();
+        let barrier = Arc::clone(&barrier);
+        set.spawn(async move {
+            // Rendezvous so all 8 enter `ensure_auth_header` together.
+            barrier.wait().await;
+            let result = client
+                .connection()
+                .get::<serde_json::Value>("admin-api/contexts")
+                .await;
+            (i, result)
+        });
+    }
+
+    let mut successes = 0;
+    while let Some(joined) = set.join_next().await {
+        let (i, result) = joined.expect("task should not panic");
+        // A stale bearer (broken single-flight) hits the `expect(0)` catch-all →
+        // 400 → Err; name the offending task in the failure.
+        let body = result.unwrap_or_else(|e| {
+            panic!("task {i} sent a stale bearer (single-flight regressed): {e}")
+        });
+        assert_eq!(body["ok"], serde_json::Value::Bool(true));
+        successes += 1;
+    }
+    assert_eq!(successes, 8);
+    assert_eq!(*auth_calls.lock().unwrap(), 0);
+    // The refresh mock's `.expect(1)` and the fresh-bearer GET's `.expect(8)` are
+    // verified on server drop, proving the eight concurrent 401-avoiding
+    // refreshes collapsed into one while all eight requests succeeded.
 }

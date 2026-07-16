@@ -51,12 +51,34 @@ description: >
 force_pull_image: false
 near_devnet: false
 
+auth_mode: embedded
+
 nodes:
   count: 3
   image: merod:local
   prefix: revoke-inherit-node
 
 steps:
+  # First login on a fresh embedded-auth node bootstraps its root key
+  # and seeds merobox's token cache; every step below runs authenticated.
+  - name: Login on revoke-inherit-node-1
+    type: login
+    node: revoke-inherit-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on revoke-inherit-node-2
+    type: login
+    node: revoke-inherit-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on revoke-inherit-node-3
+    type: login
+    node: revoke-inherit-node-3
+    username: dev
+    password: dev-password
+
   # ── Phase 1: Bootstrap namespace + Open subgroup + context ────────
 
   - name: Install application on node-1

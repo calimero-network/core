@@ -236,6 +236,12 @@ pub enum NamespaceError {
     #[error("new parent group {0} not found in this namespace")]
     ReparentTargetMissing(String),
 
+    /// Reparent target exists but resolves to a DIFFERENT namespace than the
+    /// child. Reparenting across namespaces would splice the child's
+    /// crypto/access boundary into a foreign namespace.
+    #[error("reparent across namespaces: child {child} and new parent {new_parent} resolve to different namespaces")]
+    ReparentCrossNamespace { child: String, new_parent: String },
+
     /// Namespace root group not found at all.
     #[error("namespace root group not found")]
     RootMissing,
@@ -327,6 +333,12 @@ pub enum KeyringError {
     /// schema-mismatch between sender and receiver.
     #[error("borsh decode inner GroupOp: {0}")]
     InnerOpDecodeFailed(String),
+
+    /// A key envelope's authenticating signature did not verify against its
+    /// stated `sender`, or the sender is not the identity the caller required.
+    /// The envelope is forged, tampered, or replayed and MUST be rejected.
+    #[error("key envelope sender authentication failed: {0}")]
+    EnvelopeAuthFailed(String),
 }
 
 /// Errors raised by `MetaRepository` and the meta-row-touching
@@ -376,6 +388,20 @@ pub enum GroupCreatedRejection {
          holding CAN_CREATE_SUBGROUP at the namespace root"
     )]
     Unauthorized { signer: String, namespace: String },
+
+    /// The named parent group exists but resolves to a DIFFERENT namespace.
+    /// Meta rows are keyed by group id alone, so mere existence of the parent
+    /// does not prove same-namespace membership — grafting a subgroup under a
+    /// foreign namespace's group would splice this namespace's crypto/access
+    /// boundary into it.
+    #[error(
+        "parent {parent} belongs to namespace {parent_namespace}, not this namespace {namespace}"
+    )]
+    ParentCrossNamespace {
+        parent: String,
+        parent_namespace: String,
+        namespace: String,
+    },
 }
 
 /// Reasons `RootOp::NamespaceCreated` (the namespace GENESIS op, #2474) apply
@@ -502,6 +528,29 @@ pub enum ApplyError {
     /// remote-only op delivered to the local-apply handler).
     #[error("unsupported group op variant")]
     UnsupportedOp,
+
+    /// The apply gate could not decide the signer's authority AT THE OP'S CUT: the
+    /// op cites a real causal cut, but this node has not folded that cut's ancestry,
+    /// so the projection has no authoritative verdict.
+    ///
+    /// This is **not** a rejection — it is "not yet decidable here". The distinction
+    /// is the whole point. Guessing from the live rows instead would make the verdict
+    /// a function of this replica's fold progress: a replica that had folded a
+    /// concurrent capability revoke would reject an op its peers applied, and because
+    /// the reject path never advances the DAG head, everything descending from that op
+    /// would stall on that replica alone. Permanent, silent divergence.
+    ///
+    /// Treated like any other apply error by the DAG: the head is not advanced and the
+    /// nonce is not burned, so the op is re-fetched and re-applied once the missing
+    /// ancestry arrives. A node that keeps hitting this is missing op-log history it
+    /// cannot reconstruct — that is a loud, recoverable stall, which is strictly
+    /// better than a quiet divergence.
+    #[error(
+        "authority undecidable for signer {signer} in group {group_id}: this node has not \
+         folded the ancestry of the op's causal cut, so the op cannot be authorized here \
+         yet — retrying once the missing history arrives"
+    )]
+    AuthorityUndecidable { group_id: String, signer: String },
 
     /// Governance nonce counter overflowed `u64`. Practically
     /// unreachable; documented for completeness.

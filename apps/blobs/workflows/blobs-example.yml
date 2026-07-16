@@ -5,6 +5,8 @@ result_dir: results/download-blobs
 force_pull_image: true
 
 # Node configuration
+auth_mode: embedded
+
 nodes:
   chain_id: calimero-testnet
   count: 2
@@ -13,6 +15,20 @@ nodes:
 
 # Test workflow steps
 steps:
+  # First login on a fresh embedded-auth node bootstraps its root key
+  # and seeds merobox's token cache; every step below runs authenticated.
+  - name: Login on node-blob-1
+    type: login
+    node: node-blob-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-blob-2
+    type: login
+    node: node-blob-2
+    username: dev
+    password: dev-password
+
   # ============================================================================
   # SETUP: Install Application & Create Context
   # ============================================================================

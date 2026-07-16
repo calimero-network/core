@@ -27,12 +27,34 @@ description: >
 force_pull_image: false
 near_devnet: false
 
+auth_mode: embedded
+
 nodes:
   count: 3
   image: ghcr.io/calimero-network/merod:edge
   prefix: e2e-node
 
 steps:
+  # First login on a fresh embedded-auth node bootstraps its root key
+  # and seeds merobox's token cache; every step below runs authenticated.
+  - name: Login on e2e-node-1
+    type: login
+    node: e2e-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on e2e-node-2
+    type: login
+    node: e2e-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on e2e-node-3
+    type: login
+    node: e2e-node-3
+    username: dev
+    password: dev-password
+
   # --- Setup: app + namespace owned by node-1 ---
 
   - name: Install application on node-1

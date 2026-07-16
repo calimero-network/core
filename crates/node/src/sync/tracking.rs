@@ -230,10 +230,7 @@ mod tests {
     /// Test that BloomFilter maps to SnapshotSync (fallback category)
     #[test]
     fn test_from_primitives_bloom_filter() {
-        let primitive = PrimitivesSyncProtocol::BloomFilter {
-            filter_size: 1000,
-            false_positive_rate: 0.01,
-        };
+        let primitive = PrimitivesSyncProtocol::BloomFilter { filter_size: 1000 };
         let tracking: SyncProtocol = (&primitive).into();
         assert!(matches!(tracking, SyncProtocol::SnapshotSync));
     }
@@ -271,10 +268,7 @@ mod tests {
                 compressed: false,
                 verified: false,
             },
-            PrimitivesSyncProtocol::BloomFilter {
-                filter_size: 0,
-                false_positive_rate: 0.0,
-            },
+            PrimitivesSyncProtocol::BloomFilter { filter_size: 0 },
             PrimitivesSyncProtocol::SubtreePrefetch {
                 subtree_roots: vec![],
             },

@@ -1,0 +1,52 @@
+name: "Auth seam — client-token e2e"
+description: >
+  Proves a client token minted the way the auth frontend mints it (root
+  login -> POST /admin/client-key with the permission strings mero-react
+  demands) can call the routes the SDK uses. This is the seam that was
+  untested when 0.11.0-rc.9 shipped scope enforcement: minted tokens 403'd
+  on every route and every app looped back to login
+  (calimero-network/auth-frontend#33).
+
+  The assertions live in scripts/e2e-auth-seam.sh (login, mint, per-route
+  status checks with the client token, the pinned namespace-403 gap, and
+  the app-id-scoped regression shape). The script needs raw HTTP with a
+  specific token per request, which the step vocabulary doesn't cover —
+  hence a script step. Companion in-process pin:
+  crates/auth/tests/client_token_contract.rs.
+
+# Embedded auth is binary-mode only (the auth router is mounted inside
+# merod itself; docker-mode `auth_service` boots a prebuilt mero-auth
+# image — the wrong artifact for a PR gate).
+no_docker: true
+auth_mode: embedded
+
+nuke_on_start: true
+
+nodes:
+  count: 1
+  prefix: auth-seam
+  base_port: 4002
+  base_rpc_port: 4001
+
+steps:
+  # No `login` step needed: the seam script performs the bootstrap login
+  # itself (first login on a fresh embedded-auth node creates the root
+  # key), and node teardown is process-level, not HTTP.
+  #
+  # First-login bootstrap is gated on an out-of-band secret: export
+  # MERO_AUTH_BOOTSTRAP_SECRET before `merobox bootstrap run`. Binary-mode
+  # merobox starts merod with the inherited environment (the node's
+  # expected secret) and local script steps inherit it too (the script
+  # presents it in provider_data.bootstrap_secret) — one export, both ends.
+  - name: "Run the client-token seam assertions"
+    type: script
+    script: scripts/e2e-auth-seam.sh
+    target: local
+
+stop_all_nodes: true
+nuke_on_end: true
+
+# How to run (from the repo root):
+#   export MERO_AUTH_BOOTSTRAP_SECRET=<any-test-value>
+#   merobox bootstrap run workflows/auth-seam.yml --no-docker \
+#     --binary-path ./target/debug/merod

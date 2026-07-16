@@ -299,8 +299,15 @@ impl<T> EntryRef<T> {
         let data = borsh::to_vec(&self.data)
             .map_err(|e| crate::types::Error::msg(format!("Failed to serialize state: {e}")))?;
 
-        // Use private storage functions (node-local, NOT synchronized)
-        let _ = env::private_storage_write(self.key, &data);
+        // Use private storage functions (node-local, NOT synchronized).
+        // A `false` return means the write did not land (private storage
+        // unavailable on this node); surface it instead of silently
+        // reporting success.
+        if !env::private_storage_write(self.key, &data) {
+            return Err(crate::types::Error::msg(
+                "Failed to write private storage state",
+            ));
+        }
         Ok(())
     }
 }

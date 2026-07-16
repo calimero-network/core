@@ -636,12 +636,122 @@ pub fn check_snapshot_safety(has_local_state: bool) -> Result<(), SnapshotError>
     }
 }
 
+/// Outcome of the snapshot safety gate, resolved from the local context's
+/// on-disk state: whether it has any `ContextState` entries (`has_state_keys`)
+/// and whether its `ContextMeta.root_hash` is non-zero (`has_nonzero_root`).
+///
+/// This refines the boolean [`check_snapshot_safety`] to distinguish a
+/// genuinely-initialized node (reject the snapshot — Invariant I5) from a
+/// context stuck in the contradictory `state-present but root==0` state, which
+/// must be *allowed* to re-bootstrap rather than deadlock (#3252).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotSafety {
+    /// No state entries and no root — a fresh node. Snapshot is the normal
+    /// bootstrap path. Proceed.
+    Fresh,
+    /// `ContextState` entries exist but `root_hash == 0`. A prior snapshot
+    /// finalize was reverted to uninitialized while its applied state keys
+    /// persisted (#3252) — the contradiction that otherwise permanently trips
+    /// the safety gate (`root=0` routes only to snapshot, but the state keys
+    /// make it look initialized, so it's refused forever). A re-bootstrap
+    /// snapshot IS the recovery: it re-applies the boundary and
+    /// `cleanup_stale_keys` reconciles the orphaned entries. Proceed.
+    RecoverContradiction,
+    /// A non-zero root (with or without state keys), or state keys the node
+    /// legitimately holds under a live root. A genuinely-initialized context —
+    /// reject the snapshot (Invariant I5) so it syncs via the DAG/delta path.
+    Initialized,
+}
+
+/// Resolve the snapshot safety gate from the local context's state.
+///
+/// See [`SnapshotSafety`] for the three outcomes. The key case is
+/// `(has_state_keys = true, has_nonzero_root = false)`, which the plain
+/// [`check_snapshot_safety`] boolean would (correctly, for I5) treat as
+/// initialized-and-reject — but which is actually the #3252 contradiction that
+/// must self-heal via a re-bootstrap snapshot.
+#[must_use]
+pub fn snapshot_safety_decision(has_state_keys: bool, has_nonzero_root: bool) -> SnapshotSafety {
+    match (has_state_keys, has_nonzero_root) {
+        (false, false) => SnapshotSafety::Fresh,
+        (true, false) => SnapshotSafety::RecoverContradiction,
+        // Non-zero root ⇒ genuinely initialized, regardless of state keys.
+        (_, true) => SnapshotSafety::Initialized,
+    }
+}
+
 // =============================================================================
 // Wire Protocol Messages
 // =============================================================================
 
 /// Maximum byte length for governance op payloads in [`BroadcastMessage::NamespaceGovernanceDelta`].
 pub const MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES: usize = 64 * 1024;
+
+/// Upper bound on a decrypted [`SealedDeltaPayload`]'s `artifact` (the
+/// borsh-encoded storage delta).
+///
+/// This is a defense-in-depth backstop, NOT the primary limit: an inbound
+/// gossip message is already capped at gossipsub's default
+/// `max_transmit_size` (64 KiB), so a network-delivered delta's plaintext is
+/// bounded well below this before it reaches decryption. The cap matters for
+/// the buffered-replay path (which decrypts payloads loaded from local
+/// storage) and as a hard ceiling against a malicious group-key holder, who
+/// can seal an arbitrarily large payload that still passes AEAD.
+///
+/// Deliberately distinct from [`MAX_COMPRESSED_PAYLOAD_SIZE`], which bounds
+/// *compressed* snapshot pages and is intentionally looser to absorb
+/// compression expansion. A state-delta plaintext is uncompressed, so it gets
+/// its own, tighter, named bound. Sized generously above any legitimate delta
+/// (16× the gossip transmit cap) but far below a memory-exhaustion payload.
+pub const MAX_STATE_DELTA_PLAINTEXT_BYTES: usize = 1024 * 1024;
+
+/// Plaintext that gets encrypted into the `artifact` field of a
+/// [`BroadcastMessage::StateDelta`].
+///
+/// Bundling the expected post-apply `root_hash` and the execution `events`
+/// together with the storage-delta bytes means all three are sealed under the
+/// group key instead of riding on the wire in cleartext. Only key holders
+/// (members) can read them, which is the point: the root hash is a state
+/// fingerprint and the events are the application's emitted activity —
+/// broadcasting either openly would leak how a context's state evolves to
+/// non-members subscribed to the gossip topic.
+///
+/// All three share the delta's single nonce because they are sealed together
+/// in one AEAD operation; encrypting `events` as a separate field would have
+/// required a second nonce to avoid GCM nonce reuse.
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+pub struct SealedDeltaPayload {
+    /// Expected state root after the receiver applies `artifact`. Becomes the
+    /// `expected_root_hash` of the reconstructed causal delta and is verified
+    /// against the locally recomputed root once the delta is applied.
+    pub root_hash: Hash,
+
+    /// Borsh-encoded `calimero_storage::delta::StorageDelta` — the actual
+    /// state mutation. Kept as opaque bytes here so this type doesn't need a
+    /// dependency on the storage-delta layout; the receiver deserializes it
+    /// after decryption.
+    pub artifact: Vec<u8>,
+
+    /// Execution events emitted during the state change, as the serialized
+    /// `Vec<ExecutionEvent>` the receiver replays handlers from. `None` when
+    /// the delta emitted no events. Sealed alongside `artifact` rather than
+    /// sent in cleartext.
+    pub events: Option<Vec<u8>>,
+}
+
+impl SealedDeltaPayload {
+    /// Size guard for the wrapped `artifact` plus `events`, mirroring the
+    /// `is_valid()` convention the other wire types in this module follow.
+    /// Callers that deserialize a `SealedDeltaPayload` from untrusted
+    /// (post-decryption) bytes should reject it when this returns `false`
+    /// before deserializing the inner storage delta or replaying events.
+    /// See [`MAX_STATE_DELTA_PLAINTEXT_BYTES`].
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        let events_len = self.events.as_ref().map_or(0, Vec::len);
+        self.artifact.len().saturating_add(events_len) <= MAX_STATE_DELTA_PLAINTEXT_BYTES
+    }
+}
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
@@ -660,13 +770,16 @@ pub enum BroadcastMessage<'a> {
         /// Hybrid Logical Clock timestamp for causal ordering
         hlc: calimero_storage::logical_clock::HybridTimestamp,
 
-        root_hash: Hash, // todo! shouldn't be cleartext
+        /// Encrypted delta payload — a borsh-encoded [`SealedDeltaPayload`]
+        /// holding the storage-delta actions, the expected post-apply
+        /// `root_hash`, AND the execution `events`. All three travel inside
+        /// the ciphertext (not as cleartext fields) so they cannot be read
+        /// off the gossip topic by non-members: the root hash is a state
+        /// fingerprint and the events are application activity, both of which
+        /// would otherwise leak how state evolves to peers who hold no group
+        /// key.
         artifact: Cow<'a, [u8]>,
         nonce: Nonce,
-
-        /// Execution events that were emitted during the state change.
-        /// This field is encrypted along with the artifact.
-        events: Option<Cow<'a, [u8]>>,
 
         /// Cross-DAG reference: names the exact governance DAG cut the
         /// author relied on when producing this delta. Receivers use it
@@ -1110,6 +1223,38 @@ mod tests {
             result.unwrap_err(),
             SnapshotError::SnapshotOnInitializedNode
         ));
+    }
+
+    #[test]
+    fn snapshot_safety_decision_fresh_node() {
+        // No state, no root — normal bootstrap.
+        assert_eq!(
+            snapshot_safety_decision(false, false),
+            SnapshotSafety::Fresh
+        );
+    }
+
+    #[test]
+    fn snapshot_safety_decision_recovers_contradiction() {
+        // #3252: state entries present but root_hash == 0 — a reverted finalize.
+        // Must be allowed to re-bootstrap, NOT rejected as initialized.
+        assert_eq!(
+            snapshot_safety_decision(true, false),
+            SnapshotSafety::RecoverContradiction
+        );
+    }
+
+    #[test]
+    fn snapshot_safety_decision_rejects_initialized() {
+        // Non-zero root ⇒ genuinely initialized, with or without state keys.
+        assert_eq!(
+            snapshot_safety_decision(true, true),
+            SnapshotSafety::Initialized
+        );
+        assert_eq!(
+            snapshot_safety_decision(false, true),
+            SnapshotSafety::Initialized
+        );
     }
 
     // =========================================================================

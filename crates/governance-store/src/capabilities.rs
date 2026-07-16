@@ -184,6 +184,19 @@ impl<'a> CapabilitiesRepository<'a> {
         Ok(())
     }
 
+    /// Delete a single member's per-member capability row. Idempotent on a
+    /// member who has no row. Mirrors `set_member_capability`'s key.
+    pub fn delete_member_capability(
+        &self,
+        group_id: &ContextGroupId,
+        member: &PublicKey,
+    ) -> EyreResult<()> {
+        let mut handle = self.store.handle();
+        let key = GroupMemberCapability::new(group_id.to_bytes(), *member);
+        handle.delete(&key)?;
+        Ok(())
+    }
+
     pub fn delete_all_member_caps(&self, group_id: &ContextGroupId) -> EyreResult<()> {
         let gid = group_id.to_bytes();
         let keys = collect_keys_with_prefix(
@@ -196,6 +209,18 @@ impl<'a> CapabilitiesRepository<'a> {
         for key in keys {
             handle.delete(&key)?;
         }
+        Ok(())
+    }
+
+    pub fn delete_context_member(
+        &self,
+        group_id: &ContextGroupId,
+        context_id: &ContextId,
+        member: &PublicKey,
+    ) -> EyreResult<()> {
+        let mut handle = self.store.handle();
+        let key = GroupContextMemberCap::new(group_id.to_bytes(), *context_id, *member);
+        handle.delete(&key)?;
         Ok(())
     }
 

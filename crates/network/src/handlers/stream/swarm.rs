@@ -1,7 +1,6 @@
 use actix::{AsyncContext, StreamHandler};
 use calimero_network_primitives::messages::NetworkEvent;
 use eyre::eyre;
-use libp2p::core::ConnectedPoint;
 use libp2p::swarm::{DialError, SwarmEvent};
 use libp2p::PeerId;
 use multiaddr::{Multiaddr, Protocol};
@@ -35,6 +34,31 @@ impl From<SwarmEvent<BehaviourEvent>> for FromSwarm {
 #[derive(Debug)]
 pub struct FromSwarm(SwarmEvent<BehaviourEvent>);
 
+impl NetworkManager {
+    /// Route a behaviour-level swarm event to its `EventHandler` impl.
+    ///
+    /// Split out of the actix `StreamHandler` so tests can pump real swarm
+    /// events through the production handlers without an actor context —
+    /// every behaviour arm is context-free by construction (only the
+    /// connection-lifecycle arms below schedule actix timers). See
+    /// `manager_discovery_tests` for the loop that drives this.
+    pub(crate) fn dispatch_behaviour_event(&mut self, event: BehaviourEvent) {
+        match event {
+            BehaviourEvent::Autonat(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Dcutr(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Gossipsub(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Identify(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Kad(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Mdns(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Ping(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Relay(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Rendezvous(event) => EventHandler::handle(self, event),
+            BehaviourEvent::Stream(()) => {}
+            BehaviourEvent::SpecializedNodeInvite(event) => EventHandler::handle(self, event),
+        }
+    }
+}
+
 impl StreamHandler<FromSwarm> for NetworkManager {
     fn started(&mut self, _ctx: &mut Self::Context) {
         debug!("started receiving swarm messages");
@@ -44,19 +68,7 @@ impl StreamHandler<FromSwarm> for NetworkManager {
     fn handle(&mut self, FromSwarm(event): FromSwarm, ctx: &mut Self::Context) {
         #[expect(clippy::wildcard_enum_match_arm, reason = "This is reasonable here")]
         match event {
-            SwarmEvent::Behaviour(event) => match event {
-                BehaviourEvent::Autonat(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Dcutr(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Gossipsub(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Identify(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Kad(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Mdns(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Ping(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Relay(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Rendezvous(event) => EventHandler::handle(self, event),
-                BehaviourEvent::Stream(()) => {}
-                BehaviourEvent::SpecializedNodeInvite(event) => EventHandler::handle(self, event),
-            },
+            SwarmEvent::Behaviour(event) => self.dispatch_behaviour_event(event),
             SwarmEvent::NewListenAddr {
                 listener_id,
                 address,
@@ -110,10 +122,22 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 let cache_addr = remote.clone();
                 self.record_connected_addr(peer_id, cache_addr);
 
-                if let ConnectedPoint::Dialer { .. } = endpoint {
-                    if let Some(sender) = self.pending_dial.remove(&peer_id) {
-                        let _ignored = sender.send(Ok(()));
-                    }
+                // Resolve any pending dial for this peer on *any* established
+                // connection, not just the `Dialer` endpoint. `pending_dial`
+                // is only ever populated by the `Dial` handler when we call
+                // `swarm.dial()`, so resolving on any endpoint is safe: a
+                // purely inbound connection cannot carry a `pending_dial`
+                // entry unless we also initiated a dial to that peer (the
+                // simultaneous-open case this fix targets). A dial we
+                // initiated can complete as a `Listener` endpoint (e.g. a
+                // simultaneous-open / hole-punched connection where the peer's
+                // SYN wins the race), in which case scoping the clear to
+                // `Dialer` would strand the `pending_dial` entry — and its
+                // oneshot sender — until shutdown. That leak both wedges the
+                // awaiting `Dial` future indefinitely and, when the swarm is
+                // finally torn down, drops the sender and surfaces as a panic.
+                if let Some(sender) = self.pending_dial.remove(&peer_id) {
+                    let _ignored = sender.send(Ok(()));
                 }
             }
             SwarmEvent::ConnectionClosed {

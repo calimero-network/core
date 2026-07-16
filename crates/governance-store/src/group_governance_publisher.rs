@@ -1,9 +1,11 @@
-use crate::{CapabilitiesRepository, GroupKeyring, MetaRepository, NamespaceRepository};
+use crate::{
+    CapabilitiesRepository, GroupKeyring, MetaRepository, NamespaceRepository, PermissionChecker,
+};
 use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 use rand::{rngs::OsRng, Rng};
 
 use super::namespace::classify_report_readiness;
@@ -46,6 +48,35 @@ impl<'a> GroupGovernancePublisher<'a> {
             .await
     }
 
+    /// Refuse a removal this node cannot also ROTATE for.
+    ///
+    /// A removal from a group that encrypts under its OWN key mints a fresh group
+    /// key and distributes it to the remaining members — the forward-secrecy
+    /// rotation. Receivers accept that rotation only from an ADMIN of the group,
+    /// authenticated against the namespace identity that signs the outer op
+    /// (see the authorized-rotator gate in the namespace apply path). But the gate
+    /// to remove a member is broader: admin OR the `MANAGE_MEMBERS` capability. The
+    /// two disagree for a non-admin capability holder.
+    ///
+    /// When they disagreed, the publisher minted the new key and stored it locally
+    /// at the top epoch anyway — making it this node's "current" key — while every
+    /// peer rejected the rotation and kept the old one. This node then encrypted
+    /// every subsequent group op under a key no other node held, and peers buffered
+    /// them as undecryptable indefinitely. That is a group-wide liveness break, not
+    /// merely a skipped rotation.
+    ///
+    /// So fail closed: refuse the removal rather than perform one that silently
+    /// cannot rotate. Groups encrypted under the NAMESPACE key (an Open subgroup
+    /// beneath a fully-Open chain) never rotate on removal — removing there revokes
+    /// authorization, not read access — so a `MANAGE_MEMBERS` holder may still
+    /// remove from those.
+    ///
+    /// Runs BEFORE the local apply: bailing afterwards would leave the removal
+    /// committed locally but never published.
+    fn ensure_rotation_is_publishable(&self) -> EyreResult<()> {
+        ensure_rotation_is_publishable(self.store, self.group_id)
+    }
+
     /// See [`sign_apply_and_publish`](Self::sign_apply_and_publish) for
     /// the meaning of `Ok(None)`.
     pub async fn sign_apply_and_publish_removal(
@@ -54,6 +85,9 @@ impl<'a> GroupGovernancePublisher<'a> {
         signer_sk: &PrivateKey,
         removed_member: &PublicKey,
     ) -> EyreResult<Option<DeliveryReport>> {
+        // Before ANY mutation: refuse a removal whose rotation peers would reject.
+        self.ensure_rotation_is_publishable()?;
+
         // Sign-time hash precomputation: simulate the post-apply state
         // before the apply runs, so the signed op carries the admin's
         // canonical view that receivers can verify against. Apply order
@@ -78,6 +112,42 @@ impl<'a> GroupGovernancePublisher<'a> {
         .await
     }
 
+    /// Discharge a pending forward-secrecy rotation left behind by a self-leave.
+    ///
+    /// A leaver cannot rotate for themselves — they would mint the key they are being
+    /// cut off from, and peers reject a rotation from a non-admin anyway. So
+    /// `MemberLeft` records the debt and a REMAINING ADMIN calls this to pay it.
+    ///
+    /// `GroupOp::GroupKeyRotated` carries no state of its own; it exists so the
+    /// rotation sidecar has an op to ride on. Passing `departed` as the excluded
+    /// member reuses the removal path's machinery exactly: mint a fresh key, stamp it
+    /// with the DAG sequence this op will occupy, wrap it for every remaining member,
+    /// and wrap it for nobody who left.
+    ///
+    /// Safe to call concurrently from several admins. They mint different keys, but
+    /// the keyring converges on one (highest epoch, ties broken by the larger key id),
+    /// and every competing key excludes the leaver — so whichever wins, forward
+    /// secrecy holds. The only cost of a race is redundant envelopes on the wire.
+    pub async fn sign_apply_and_publish_rotation(
+        &self,
+        ack_router: &AckRouter,
+        signer_sk: &PrivateKey,
+        departed: &PublicKey,
+    ) -> EyreResult<Option<DeliveryReport>> {
+        // Same fail-closed gate as a removal: never mint a key peers would reject.
+        self.ensure_rotation_is_publishable()?;
+
+        self.sign_apply_and_publish_inner(
+            ack_router,
+            signer_sk,
+            GroupOp::GroupKeyRotated {
+                departed: *departed,
+            },
+            Some(departed),
+        )
+        .await
+    }
+
     async fn sign_apply_and_publish_inner(
         &self,
         ack_router: &AckRouter,
@@ -95,7 +165,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         // and both are handed to `sign_and_publish_post_gate`.
         let namespace_id = NamespaceRepository::new(self.store).resolve(&self.group_id)?;
         let namespace_bytes = namespace_id.to_bytes();
-        let topic = ns_topic(namespace_bytes);
+        let topic = ns_topic(namespace_bytes.into());
         let mesh = self
             .node_client
             .mesh_peer_count_for_namespace(namespace_bytes)
@@ -231,11 +301,48 @@ impl<'a> GroupGovernancePublisher<'a> {
         //   itself will mint a fresh subgroup key at flip time).
         let key_rotation = if let Some(removed) = removed_member {
             if encrypting_group_id == self.group_id {
+                // Invariant: never STORE a key peers would reject. The rotation is
+                // accepted only from an admin of the group, checked against the
+                // namespace identity that signs the outer op. `ensure_rotation_is_
+                // publishable` already refused this removal if that identity is not
+                // an admin, so this is unreachable — but the local `store_key_with_
+                // epoch` below is what makes a rejected rotation catastrophic rather
+                // than merely useless (it becomes this node's current key and nobody
+                // else can decrypt what it publishes next), so re-assert it here
+                // rather than trust a caller to have gone through the checked path.
+                let rotation_signer = PrivateKey::from(namespace_identity.private_key).public_key();
+                if !PermissionChecker::new(self.store, self.group_id).is_admin(&rotation_signer)? {
+                    bail!(
+                        "refusing to mint a group key for {:?}: rotation signer {rotation_signer} \
+                         is not an admin, so peers would reject the rotation while this node \
+                         adopted the key — splitting the keyring",
+                        self.group_id
+                    );
+                }
                 let new_group_key: [u8; 32] = OsRng.gen();
-                let _ = GroupKeyring::new(self.store, self.group_id).store_key(&new_group_key)?;
+                // Stamp the new key with the DAG sequence this op will occupy.
+                // `next_nonce` is strictly greater than the sequence of any
+                // already-applied op — including the one that introduced the key
+                // being superseded — so the fresh key deterministically outranks
+                // it in `load_current_key`, on this node and on every receiver
+                // (which stamps the same op with its own DAG sequence). Without
+                // this the publisher would keep the epoch-0/older key as
+                // "current" and re-encrypt for the removed member.
+                let rotation_epoch = NamespaceGovernance::new(self.store, namespace_bytes.into())
+                    .read_head_record()?
+                    .next_nonce;
+                let _ = GroupKeyring::new(self.store, self.group_id)
+                    .store_key_with_epoch(&new_group_key, rotation_epoch)?;
+                // Wrap with the NAMESPACE identity — the key that signs the
+                // outer namespace op below (`op.signer` on the receiver). The
+                // rotation-apply gate verifies each envelope's authenticated
+                // `sender` against that op signer, so the wrapper and the outer
+                // signer must be the same identity (the local per-group signing
+                // key used elsewhere can differ from the namespace identity).
+                let rotation_sender_sk = PrivateKey::from(namespace_identity.private_key);
                 Some(GroupKeyring::new(self.store, self.group_id).build_rotation(
                     &new_group_key,
-                    signer_sk,
+                    &rotation_sender_sk,
                     Some(removed),
                 )?)
             } else {
@@ -246,8 +353,8 @@ impl<'a> GroupGovernancePublisher<'a> {
         };
 
         let namespace_op = NamespaceOp::Group {
-            group_id: self.group_id.to_bytes(),
-            key_id: stored_key.key_id,
+            group_id: self.group_id.to_bytes().into(),
+            key_id: stored_key.key_id.into(),
             encrypted,
             key_rotation,
         };
@@ -271,7 +378,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         // via sync. `sign_and_publish_post_gate` takes the `mesh` / `known`
         // snapshot directly and never runs `assert_transport_ready`, so
         // there is no gate that could reject after the local apply.
-        let mut report = NamespaceGovernance::new(self.store, namespace_bytes)
+        let mut report = NamespaceGovernance::new(self.store, namespace_bytes.into())
             .sign_and_publish_post_gate(
                 self.node_client,
                 ack_router,
@@ -282,7 +389,8 @@ impl<'a> GroupGovernancePublisher<'a> {
                 true,
             )
             .await?;
-        report.readiness = classify_report_readiness(self.store, namespace_bytes, &report, known);
+        report.readiness =
+            classify_report_readiness(self.store, namespace_bytes.into(), &report, known);
         tracing::debug!(
             op_kind,
             group_id = %hex::encode(self.group_id.to_bytes()),
@@ -294,4 +402,45 @@ impl<'a> GroupGovernancePublisher<'a> {
         );
         Ok(Some(report))
     }
+}
+
+/// Would a removal from `group_id` mint a fresh group key, and if so, may THIS node
+/// publish that rotation? See
+/// [`GroupGovernancePublisher::ensure_rotation_is_publishable`] for the full
+/// rationale; this is the free-function core so it can be exercised without a
+/// `NodeClient`.
+pub(crate) fn ensure_rotation_is_publishable(
+    store: &Store,
+    group_id: ContextGroupId,
+) -> EyreResult<()> {
+    let namespace_id = NamespaceRepository::new(store).resolve(&group_id)?;
+
+    // Encrypted under the namespace key ⇒ removal mints no per-subgroup key, so
+    // there is no rotation to authorize. Removing here revokes authorization but
+    // not read access, and that trade-off is deliberate and unchanged.
+    if !crate::pending_rotation::group_rotates_on_departure(store, &group_id)? {
+        return Ok(());
+    }
+
+    // No namespace identity ⇒ this node publishes nothing at all (the publish path
+    // returns `Ok(None)` before minting), so no key is stored and nothing can split.
+    let Some(identity) = NamespaceRepository::new(store).identity_record(&namespace_id)? else {
+        return Ok(());
+    };
+
+    // The receive gate checks the OUTER op's signer, which is this node's namespace
+    // identity — not the requester's per-group signing key. Check that same identity
+    // here, or the mirror is not a mirror.
+    let rotator = PrivateKey::from(identity.private_key).public_key();
+    if !PermissionChecker::new(store, group_id).is_admin(&rotator)? {
+        bail!(
+            "cannot remove a member from group {group_id:?}: the removal must rotate the group \
+             key, and peers accept a rotation only from an admin of the group. This node's \
+             namespace identity ({rotator}) is not an admin there, so every peer would reject \
+             the rotation while this node adopted the new key locally — splitting the keyring \
+             and leaving peers unable to decrypt anything this node publishes next. An admin of \
+             the group must perform this removal."
+        );
+    }
+    Ok(())
 }

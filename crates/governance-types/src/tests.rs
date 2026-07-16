@@ -87,7 +87,7 @@ const GOLDEN_GROUP_OP_UPGRADE_POLICY_SET: &[u8] = &[
     1, // UpgradePolicy::LazyOnAccess (ordinal 1, the Default)
 ];
 
-/// GroupOp ordinal 8 — TargetApplicationSet { app_key: [0;32], target: [0;32] }
+/// GroupOp ordinal 8 — TargetApplicationSet { app_key: [0;32].into(), target: [0;32] }
 const GOLDEN_GROUP_OP_TARGET_APPLICATION_SET: &[u8] = &[
     8, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -156,14 +156,14 @@ const GOLDEN_GROUP_OP_GROUP_MIGRATION_SET: &[u8] = &[
     0,  // migration = None
 ];
 
-/// GroupOp ordinal 17 — ContextCapabilityGranted { context_id: [0;32], member: [0;32], capability: 0 }
+/// GroupOp ordinal 17 — ContextCapabilityGranted { context_id: [0;32], member: [0;32], capability: 1 }
 const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_GRANTED: &[u8] = &[
     17, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // context_id
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // member
-    0, // capability
+    1, // capability (must be non-zero: ContextCapabilityBits rejects 0 on the wire)
 ];
 
 /// GroupOp ordinal 18 — ContextCapabilityRevoked (same shape as Granted)
@@ -173,7 +173,7 @@ const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_REVOKED: &[u8] = &[
     0, // context_id
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // member
-    0, // capability
+    1, // capability (must be non-zero: ContextCapabilityBits rejects 0 on the wire)
 ];
 
 /// GroupOp ordinal 19 — TeeAdmissionPolicySet (6 empty Vec<String> + accept_mock=false)
@@ -220,7 +220,7 @@ const GOLDEN_GROUP_OP_TRANSFER_OWNERSHIP: &[u8] = &[
     0, // new_owner
 ];
 
-/// GroupOp ordinal 23 — CascadeTargetApplicationSet { from_app_key: [0;32], app_key: [0;32], target: [0;32] }
+/// GroupOp ordinal 23 — CascadeTargetApplicationSet { from_app_key: [0;32].into(), app_key: [0;32].into(), target: [0;32] }
 const GOLDEN_GROUP_OP_CASCADE_TARGET_APPLICATION_SET: &[u8] = &[
     23, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -231,7 +231,7 @@ const GOLDEN_GROUP_OP_CASCADE_TARGET_APPLICATION_SET: &[u8] = &[
     0, // target_application_id
 ];
 
-/// GroupOp ordinal 24 — CascadeGroupMigrationSet { from_app_key: [0;32], migration: None }
+/// GroupOp ordinal 24 — CascadeGroupMigrationSet { from_app_key: [0;32].into(), migration: None }
 const GOLDEN_GROUP_OP_CASCADE_GROUP_MIGRATION_SET: &[u8] = &[
     24, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -272,6 +272,14 @@ fn hlc_zero_golden_bytes_are_self_consistent() {
 }
 
 /// GroupOp ordinal 25 — CascadeUpgrade (all zero fields; HybridTimestamp::zero() via GOLDEN_HLC_ZERO)
+/// `GroupKeyRotated { departed }` — appended at the END of `GroupOp`, so every
+/// pre-existing ordinal is preserved. Discriminant 26 + a 32-byte `departed` key.
+const GOLDEN_GROUP_OP_GROUP_KEY_ROTATED: &[u8] = &[
+    26, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // departed
+];
+
 const GOLDEN_GROUP_OP_CASCADE_UPGRADE: &[u8] = &[
     25, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -434,6 +442,11 @@ fn group_op_discriminants_are_golden() {
         GroupOp::CascadeUpgrade { .. },
         25
     );
+    check_group_op!(
+        GOLDEN_GROUP_OP_GROUP_KEY_ROTATED,
+        GroupOp::GroupKeyRotated { .. },
+        26
+    );
 
     assert!(
         failures.is_empty(),
@@ -499,7 +512,7 @@ const GOLDEN_ROOT_OP_POLICY_UPDATED: &[u8] = &[
 ///
 /// Encoding: member (32 bytes) + SignedGroupOpenInvitation with a minimal
 /// GroupInvitationFromAdmin (inviter_identity[0;32] + group_id[0;32] +
-/// expiration_timestamp 0 (u64) + secret_salt[0;32] + invited_role 1 (u8))
+/// expiration_timestamp 0 (u64) + invitation_nonce[0;32] + invited_role 1 (u8))
 /// + inviter_signature "" + application_id None + app_key None.
 const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
     0, // NamespaceOp::Root
@@ -511,7 +524,7 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
     0, // signed_invitation.invitation.group_id [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // signed_invitation.invitation.expiration_timestamp u64 = 0:
-    0, 0, 0, 0, 0, 0, 0, 0, // signed_invitation.invitation.secret_salt [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, // signed_invitation.invitation.invitation_nonce [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // signed_invitation.invitation.invited_role u8 = 1:
     1, // signed_invitation.inviter_signature String len = 0:
@@ -521,6 +534,9 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
 ];
 
 /// NamespaceOp::Root(RootOp::KeyDelivery) — RootOp ordinal 6
+///
+/// `KeyEnvelope` field order: recipient, sender, ephemeral_pk, nonce,
+/// ciphertext, signature (the authenticated + forward-secret envelope).
 const GOLDEN_ROOT_OP_KEY_DELIVERY: &[u8] = &[
     0, // NamespaceOp::Root
     6, // RootOp::KeyDelivery discriminant
@@ -528,11 +544,15 @@ const GOLDEN_ROOT_OP_KEY_DELIVERY: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // envelope.recipient [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // envelope.sender [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // envelope.ephemeral_pk [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // envelope.nonce [0u8;12]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // envelope.ciphertext vec len = 0:
-    0, 0, 0, 0,
+    0, 0, 0, 0, // envelope.signature [0u8;64]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
 /// NamespaceOp::Root(RootOp::MemberJoinedOpen) — RootOp ordinal 7
@@ -560,7 +580,7 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_AT: &[u8] = &[
     0, // group_id
     0, 0, 0, 0, 0, 0, 0, 0, // expiration_timestamp
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // secret_salt
+    0, // invitation_nonce
     1, // invited_role = 1
     0, 0, 0, 0, // inviter_signature len = 0
     0, // application_id = None
@@ -651,11 +671,11 @@ fn root_op_discriminants_are_golden() {
     );
 }
 
-fn sample_group_id() -> [u8; 32] {
+fn sample_group_id() -> ContextGroupId {
     let mut g = [0u8; 32];
     g[0] = 7;
     g[31] = 3;
-    g
+    g.into()
 }
 
 #[test]
@@ -771,7 +791,7 @@ fn signable_bytes_deterministic() {
     let pk = sk.public_key();
     let s = SignableGroupOp {
         version: SIGNED_GROUP_OP_SCHEMA_VERSION,
-        group_id: [1u8; 32],
+        group_id: [1u8; 32].into(),
         parent_op_hashes: vec![],
         signer: pk,
         nonce: 42,
@@ -785,11 +805,11 @@ fn signable_bytes_deterministic() {
 
 // --- Namespace op tests ---
 
-fn sample_namespace_id() -> [u8; 32] {
+fn sample_namespace_id() -> NamespaceId {
     let mut ns = [0u8; 32];
     ns[0] = 0xAA;
     ns[31] = 0xBB;
-    ns
+    ns.into()
 }
 
 #[test]
@@ -804,7 +824,7 @@ fn namespace_op_sign_verify_root() {
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
-            parent_id: sample_namespace_id(),
+            parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
         }),
     )
@@ -831,7 +851,7 @@ fn namespace_op_sign_verify_group() {
         1,
         NamespaceOp::Group {
             group_id: sample_group_id(),
-            key_id: [0u8; 32],
+            key_id: [0u8; 32].into(),
             encrypted,
             key_rotation: None,
         },
@@ -874,7 +894,7 @@ fn namespace_op_content_hash_distinct() {
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
-            parent_id: sample_namespace_id(),
+            parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
         }),
     )
@@ -887,7 +907,7 @@ fn namespace_op_content_hash_distinct() {
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
-            parent_id: sample_namespace_id(),
+            parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
         }),
     )
@@ -913,7 +933,7 @@ fn namespace_signable_bytes_deterministic() {
         nonce: 42,
         op: NamespaceOp::Root(RootOp::GroupCreated {
             group_id: sample_group_id(),
-            parent_id: sample_namespace_id(),
+            parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
         }),
     };
@@ -943,8 +963,8 @@ fn cascade_target_application_set_sign_verify() {
         vec![],
         1,
         GroupOp::CascadeTargetApplicationSet {
-            from_app_key: [9u8; 32],
-            app_key: [10u8; 32],
+            from_app_key: [9u8; 32].into(),
+            app_key: [10u8; 32].into(),
             target_application_id: sample_application_id(0x42),
         },
     )
@@ -969,7 +989,7 @@ fn cascade_group_migration_set_sign_verify() {
         vec![],
         1,
         GroupOp::CascadeGroupMigrationSet {
-            from_app_key: [9u8; 32],
+            from_app_key: [9u8; 32].into(),
             migration: Some(b"migrate_v1_to_v2".to_vec()),
         },
     )
@@ -999,7 +1019,7 @@ fn cascade_target_distinct_from_single_group_target() {
         vec![],
         1,
         GroupOp::TargetApplicationSet {
-            app_key: new_app_key,
+            app_key: new_app_key.into(),
             target_application_id: target,
         },
     )
@@ -1011,8 +1031,8 @@ fn cascade_target_distinct_from_single_group_target() {
         vec![],
         1,
         GroupOp::CascadeTargetApplicationSet {
-            from_app_key: [9u8; 32],
-            app_key: new_app_key,
+            from_app_key: [9u8; 32].into(),
+            app_key: new_app_key.into(),
             target_application_id: target,
         },
     )
@@ -1047,8 +1067,8 @@ fn cascade_target_from_app_key_changes_hash() {
         vec![],
         1,
         GroupOp::CascadeTargetApplicationSet {
-            from_app_key: [9u8; 32],
-            app_key: new_app_key,
+            from_app_key: [9u8; 32].into(),
+            app_key: new_app_key.into(),
             target_application_id: target,
         },
     )
@@ -1060,8 +1080,8 @@ fn cascade_target_from_app_key_changes_hash() {
         vec![],
         1,
         GroupOp::CascadeTargetApplicationSet {
-            from_app_key: [8u8; 32], // only this differs
-            app_key: new_app_key,
+            from_app_key: [8u8; 32].into(), // only this differs
+            app_key: new_app_key.into(),
             target_application_id: target,
         },
     )
@@ -1085,8 +1105,8 @@ fn cascade_target_application_set_borsh_round_trip() {
     // op decodes as; this guards against that by asserting field
     // equality after a round trip.
     let original = GroupOp::CascadeTargetApplicationSet {
-        from_app_key: [9u8; 32],
-        app_key: [10u8; 32],
+        from_app_key: [9u8; 32].into(),
+        app_key: [10u8; 32].into(),
         target_application_id: sample_application_id(0x42),
     };
 
@@ -1099,8 +1119,8 @@ fn cascade_target_application_set_borsh_round_trip() {
             app_key,
             target_application_id,
         } => {
-            assert_eq!(from_app_key, [9u8; 32]);
-            assert_eq!(app_key, [10u8; 32]);
+            assert_eq!(from_app_key.to_bytes(), [9u8; 32]);
+            assert_eq!(app_key.to_bytes(), [10u8; 32]);
             assert_eq!(target_application_id, sample_application_id(0x42));
         }
         other => panic!("expected CascadeTargetApplicationSet, got {other:?}"),
@@ -1111,7 +1131,7 @@ fn cascade_target_application_set_borsh_round_trip() {
 fn cascade_group_migration_set_borsh_round_trip() {
     // Symmetric round-trip guard for the migration variant.
     let original = GroupOp::CascadeGroupMigrationSet {
-        from_app_key: [9u8; 32],
+        from_app_key: [9u8; 32].into(),
         migration: Some(b"migrate_v1_to_v2".to_vec()),
     };
 
@@ -1123,7 +1143,7 @@ fn cascade_group_migration_set_borsh_round_trip() {
             from_app_key,
             migration,
         } => {
-            assert_eq!(from_app_key, [9u8; 32]);
+            assert_eq!(from_app_key.to_bytes(), [9u8; 32]);
             assert_eq!(migration.as_deref(), Some(b"migrate_v1_to_v2".as_ref()));
         }
         other => panic!("expected CascadeGroupMigrationSet, got {other:?}"),
@@ -1131,7 +1151,7 @@ fn cascade_group_migration_set_borsh_round_trip() {
 
     // Also cover migration = None.
     let original_none = GroupOp::CascadeGroupMigrationSet {
-        from_app_key: [0u8; 32],
+        from_app_key: [0u8; 32].into(),
         migration: None,
     };
     let bytes_none = borsh::to_vec(&original_none).expect("serialize none");
@@ -1141,7 +1161,7 @@ fn cascade_group_migration_set_borsh_round_trip() {
             from_app_key,
             migration,
         } => {
-            assert_eq!(from_app_key, [0u8; 32]);
+            assert_eq!(from_app_key.to_bytes(), [0u8; 32]);
             assert!(migration.is_none());
         }
         other => panic!("expected CascadeGroupMigrationSet, got {other:?}"),
@@ -1166,8 +1186,8 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
     //
     // Golden encoding of:
     //   GroupOp::CascadeUpgrade {
-    //       from_app_key: [3u8; 32],
-    //       app_key: [4u8; 32],
+    //       from_app_key: [3u8; 32].into(),
+    //       app_key: [4u8; 32].into(),
     //       target_application_id: sample_application_id(5),
     //       migration: Some(b"migrate".to_vec()),
     //       cascade_hlc: HybridTimestamp::zero(),
@@ -1203,8 +1223,8 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
             migration,
             cascade_hlc,
         } => {
-            assert_eq!(from_app_key, [3u8; 32]);
-            assert_eq!(app_key, [4u8; 32]);
+            assert_eq!(from_app_key.to_bytes(), [3u8; 32]);
+            assert_eq!(app_key.to_bytes(), [4u8; 32]);
             assert_eq!(target_application_id, sample_application_id(5));
             assert_eq!(migration, Some(b"migrate".to_vec()));
             assert_eq!(cascade_hlc, HybridTimestamp::zero());
@@ -1251,7 +1271,7 @@ fn pre_flag_day_namespace_op_version_is_rejected() {
     let signer = PrivateKey::random(&mut OsRng).public_key();
     let stale = SignedNamespaceOp {
         version: SIGNED_NAMESPACE_OP_SCHEMA_VERSION - 1,
-        namespace_id: sample_group_id(),
+        namespace_id: sample_group_id().to_bytes().into(),
         parent_op_hashes: vec![],
         signer,
         nonce: 1,
@@ -1295,7 +1315,7 @@ fn v7_borsh_layout_group_op_is_rejected_not_misparsed() {
     let signer = PrivateKey::random(&mut OsRng).public_key();
     let v7 = V7SignedGroupOp {
         version: SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
-        group_id: sample_group_id(),
+        group_id: sample_group_id().to_bytes(),
         parent_op_hashes: vec![],
         state_hash: [0xAB; 32],
         signer,
@@ -1329,5 +1349,195 @@ fn v7_borsh_layout_group_op_is_rejected_not_misparsed() {
             "a v7-decoded op must be rejected on the version check, got {:?}",
             op.verify_signature()
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Namespace governance op storage encoding
+//
+// The op-log persists each op as a `StoredNamespaceEntry::Signed(op)`, borsh-
+// encoded into the `skeleton_bytes` of its store value; the serving, retry, and
+// projection-backfill paths read it back with the equivalent of
+// `decode_signed_namespace_op`. A silent encode/decode asymmetry in any op
+// variant (e.g. an ill-considered field type or a hand-rolled codec) would make
+// the affected op un-servable: a peer that needs it as a causal ancestor could
+// never fold the cut, stranding every state delta authored against it. These
+// tests pin the round-trip so such a regression fails here, in isolation,
+// rather than as an opaque convergence stall.
+// ---------------------------------------------------------------------------
+mod governance_op_storage_roundtrip {
+    use super::*;
+    use calimero_context_config::types::{
+        ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+
+    fn sample_invitation() -> SignedGroupOpenInvitation {
+        SignedGroupOpenInvitation {
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: SignerId::from([0xA1; 32]),
+                group_id: ContextGroupId::from([0x22; 32]),
+                expiration_timestamp: 1_900_000_000,
+                invitation_nonce: [0x33; 32],
+                invited_role: 1,
+            },
+            inviter_signature: "deadbeef".to_string(),
+            application_id: Some([0x44; 32]),
+            app_key: Some([0x55; 32]),
+        }
+    }
+
+    fn signed(op: NamespaceOp) -> SignedNamespaceOp {
+        let sk = PrivateKey::random(&mut OsRng);
+        SignedNamespaceOp::sign(&sk, [0x77; 32].into(), vec![[0x01; 32], [0x02; 32]], 7, op)
+            .expect("sign namespace op")
+    }
+
+    /// Mirror of `decode_signed_namespace_op` in
+    /// `calimero-governance-store::namespace::op_log` (the read-back used by the
+    /// serving / retry / opaque walks): try the tagged wrapper first, then the
+    /// legacy raw fallback.
+    fn decode_signed_namespace_op(bytes: &[u8]) -> Option<SignedNamespaceOp> {
+        if let Ok(StoredNamespaceEntry::Signed(op)) =
+            ::borsh::from_slice::<StoredNamespaceEntry>(bytes)
+        {
+            return Some(op);
+        }
+        ::borsh::from_slice::<SignedNamespaceOp>(bytes).ok()
+    }
+
+    fn assert_roundtrips(op: &SignedNamespaceOp) {
+        // `SignedNamespaceOp` has no `PartialEq`; compare canonical bytes.
+        let skeleton_bytes =
+            ::borsh::to_vec(&StoredNamespaceEntry::Signed(op.clone())).expect("encode entry");
+        let decoded = decode_signed_namespace_op(&skeleton_bytes)
+            .expect("entry must decode back from StoredNamespaceEntry::Signed");
+        assert_eq!(
+            ::borsh::to_vec(&decoded).unwrap(),
+            ::borsh::to_vec(op).unwrap(),
+            "round-trip through StoredNamespaceEntry::Signed must be lossless"
+        );
+    }
+
+    #[test]
+    fn member_joined_at_roundtrips_through_stored_signed_entry() {
+        // The invitation join carries a nested `SignedGroupOpenInvitation`, the
+        // largest and most field-rich op payload — the one most exposed to a
+        // codec asymmetry.
+        assert_roundtrips(&signed(NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: PrivateKey::random(&mut OsRng).public_key(),
+            signed_invitation: sample_invitation(),
+            joined_at: 1_800_000_000,
+        })));
+    }
+
+    #[test]
+    fn every_root_op_roundtrips_through_stored_signed_entry() {
+        let ops = [
+            RootOp::GroupCreated {
+                group_id: [1; 32].into(),
+                parent_id: [2; 32].into(),
+                restricted: true,
+            },
+            RootOp::GroupReparented {
+                child_group_id: [1; 32].into(),
+                new_parent_id: [2; 32].into(),
+            },
+            RootOp::GroupDeleted {
+                root_group_id: [1; 32].into(),
+                cascade_group_ids: vec![[3; 32].into()],
+                cascade_context_ids: vec![[4; 32].into()],
+            },
+            RootOp::AdminChanged {
+                new_admin: PrivateKey::random(&mut OsRng).public_key(),
+            },
+            RootOp::PolicyUpdated {
+                policy_bytes: vec![9, 8, 7],
+            },
+            RootOp::MemberJoined {
+                member: PrivateKey::random(&mut OsRng).public_key(),
+                signed_invitation: sample_invitation(),
+            },
+            RootOp::MemberJoinedOpen {
+                member: PrivateKey::random(&mut OsRng).public_key(),
+                group_id: [7; 32].into(),
+            },
+            RootOp::MemberJoinedAt {
+                member: PrivateKey::random(&mut OsRng).public_key(),
+                signed_invitation: sample_invitation(),
+                joined_at: 42,
+            },
+        ];
+        for root in ops {
+            assert_roundtrips(&signed(NamespaceOp::Root(root)));
+        }
+    }
+
+    /// The op-log shares a column family with other key types, so its walk can
+    /// read a foreign value under a colliding key. The store value wraps the
+    /// entry in a length-prefixed `Vec<u8>` (`NamespaceGovOpValue.skeleton_bytes`),
+    /// so a raw 32-byte id read as that wrapper has its first 4 bytes misread as
+    /// an enormous length — borsh rejects it with "Unexpected length of input"
+    /// rather than silently producing a bogus op. Pin that loud-failure
+    /// behaviour so the walk's skip-and-continue stays correct.
+    #[test]
+    fn foreign_column_value_is_rejected_not_misdecoded() {
+        // Structural stand-in for `calimero_store::key::NamespaceGovOpValue`
+        // (a single length-prefixed `Vec<u8>` field); that type lives in
+        // `calimero-store`, which is not a dependency here.
+        #[derive(Debug, ::borsh::BorshDeserialize)]
+        struct GovOpValueShape {
+            #[allow(dead_code)]
+            skeleton_bytes: Vec<u8>,
+        }
+
+        // A raw 32-byte id (e.g. a group key_id) whose leading bytes form a
+        // length far beyond the 28 trailing bytes.
+        let foreign = [0xFEu8; 32];
+        let err = ::borsh::from_slice::<GovOpValueShape>(&foreign)
+            .expect_err("a foreign shared-column value must not decode as the op-log wrapper");
+        assert!(
+            err.to_string().contains("Unexpected length of input"),
+            "expected a borsh length error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_bounds_encrypted_ciphertext() {
+        let oversized = EncryptedGroupOp {
+            nonce: [0u8; 12],
+            ciphertext: vec![0u8; bounds::MAX_CIPHERTEXT_BYTES + 1],
+        };
+        assert!(
+            oversized.validate().is_err(),
+            "ciphertext over the bound must be rejected"
+        );
+
+        let ok = EncryptedGroupOp {
+            nonce: [0u8; 12],
+            ciphertext: vec![0u8; 64],
+        };
+        assert!(ok.validate().is_ok(), "a normal ciphertext must pass");
+    }
+
+    #[test]
+    fn validate_bounds_parent_op_hashes() {
+        let mut op = SignedNamespaceOp {
+            version: SIGNED_NAMESPACE_OP_SCHEMA_VERSION,
+            namespace_id: NamespaceId::from([0u8; 32]),
+            parent_op_hashes: vec![[0u8; 32]; bounds::MAX_PARENT_OP_HASHES + 1],
+            signer: PublicKey::from([0u8; 32]),
+            nonce: 1,
+            op: NamespaceOp::Root(RootOp::AdminChanged {
+                new_admin: PublicKey::from([1u8; 32]),
+            }),
+            signature: [0u8; 64],
+        };
+        assert!(
+            op.validate().is_err(),
+            "too many parent_op_hashes must be rejected"
+        );
+
+        op.parent_op_hashes = vec![[0u8; 32]; 2];
+        assert!(op.validate().is_ok(), "a small parent set must pass");
     }
 }

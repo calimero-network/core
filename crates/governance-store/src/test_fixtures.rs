@@ -5,17 +5,18 @@
 //! without duplicating fixtures. Crate-internal: visible to all
 //! submodules under `group_store/`, invisible outside.
 
-use super::NamespaceRepository;
+use super::{MembershipRepository, MetaRepository, NamespaceRepository};
 use std::sync::Arc;
 
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::UpgradePolicy;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::{GroupMetaValue, GroupParentRef};
 use calimero_store::Store;
+use rand::rngs::OsRng;
 pub(super) fn test_store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }
@@ -66,6 +67,32 @@ pub(super) fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
     }
 }
 
+/// Bootstrap a namespace root with a freshly-generated admin: writes the
+/// root meta (`admin == owner`), an `Admin` member row, and the admin's
+/// stored identity. Returns the admin's `(PrivateKey, PublicKey)` so the
+/// caller can sign ops and seed subgroup metas. Collapses the
+/// meta-save + add_member + store_identity setup duplicated across the
+/// namespace apply tests.
+pub(super) fn bootstrap_namespace_with_admin(
+    store: &Store,
+    ns_id: [u8; 32],
+) -> (PrivateKey, PublicKey) {
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut OsRng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+    let ns_gid = ContextGroupId::from(ns_id);
+    MetaRepository::new(store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
+    (admin_sk, admin_pk)
+}
+
 /// Shortcut for nesting one group under another inside tests, unwrapping
 /// the result. Used by membership-path tests across both `tests.rs` and
 /// `membership/tests.rs`.
@@ -96,4 +123,116 @@ pub(super) fn nest_for_test_unchecked(
     handle
         .put(&GroupParentRef::new(child.to_bytes()), &parent.to_bytes())
         .unwrap();
+}
+
+/// An [`AtCutAuthorizer`](crate::authorizer::AtCutAuthorizer) that answers every
+/// gate with one fixed verdict, standing in for a projection that HAS folded the
+/// op's cited ancestry.
+///
+/// Its whole purpose is to DISAGREE with the live store rows, so a test can prove
+/// which resolver an apply gate actually consults. A gate that honors this
+/// authorizer decides identically on every replica regardless of fold progress;
+/// a gate that falls through to the live rows does not, which is the divergence
+/// these tests guard.
+///
+/// Tests must pass a NON-EMPTY `parents`: the empty-cut contract requires real
+/// authorizers to abstain (`None`) on an empty cut, and a test that passed `&[]`
+/// would silently be exercising the live path it means to rule out.
+pub(super) struct FixedAuthorizer(pub(super) bool);
+
+impl crate::authorizer::AtCutAuthorizer for FixedAuthorizer {
+    fn is_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        Some(self.0)
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        Some(self.0)
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        Some(false)
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        None
+    }
+}
+
+/// A non-empty causal cut for apply-auth tests. Value is irrelevant — only
+/// non-emptiness matters (see [`FixedAuthorizer`]).
+pub(super) const TEST_CUT: [[u8; 32]; 1] = [[0xAB; 32]];
+
+/// An [`AtCutAuthorizer`](crate::authorizer::AtCutAuthorizer) standing in for a
+/// projection that has NOT folded the ancestry the op's cut cites — the
+/// catching-up replica, mid-backfill.
+///
+/// It abstains from every gate (`None`) AND reports the cut as unresolvable. That
+/// pairing is the whole point: an abstention alone used to be indistinguishable
+/// from "no apply-auth context", so the gate quietly answered from the live rows —
+/// a different cut — and two replicas decided the same op differently. A gate that
+/// honors `can_resolve_cut` refuses to answer instead.
+pub(super) struct UnresolvableAuthorizer;
+
+impl crate::authorizer::AtCutAuthorizer for UnresolvableAuthorizer {
+    fn is_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        None
+    }
+
+    fn can_resolve_cut(&self, _group: &ContextGroupId, _parents: &[[u8; 32]]) -> bool {
+        false
+    }
 }

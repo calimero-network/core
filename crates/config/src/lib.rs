@@ -9,10 +9,10 @@ use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::sse::SseConfig;
 use calimero_server::ws::WsConfig;
 use camino::{Utf8Path, Utf8PathBuf};
-use eyre::{bail, Result as EyreResult, WrapErr};
+use eyre::{bail, eyre, Result as EyreResult, WrapErr};
 use multiaddr::Multiaddr;
 use serde::{Deserialize, Serialize};
-use tokio::fs::{read_to_string, write};
+use tokio::fs::read_to_string;
 use url::Url;
 
 use mero_auth::config::AuthConfig;
@@ -94,12 +94,17 @@ impl TeeConfig {
     /// must be mutually exclusive on a single node.
     ///
     /// Returns `false` when no KMS provider is configured (e.g. `kms.phala`
-    /// absent), which permits `--mock-tee`. If a second KMS provider is added,
-    /// extend this predicate to cover it.
+    /// absent), which permits `--mock-tee`.
+    ///
+    /// The `KmsConfig` is destructured field-by-field with no `..` rest pattern
+    /// on purpose: adding a new provider field to `KmsConfig` will fail to
+    /// compile here until it is folded into this predicate. That keeps the
+    /// `--mock-tee` deny-guard exhaustive across every provider rather than
+    /// silently ignoring a newly-added one.
     #[must_use]
     pub fn has_real_attestation(&self) -> bool {
-        self.kms
-            .phala
+        let KmsConfig { phala } = &self.kms;
+        phala
             .as_ref()
             .is_some_and(|phala| phala.attestation.enabled && !phala.attestation.accept_mock)
     }
@@ -295,6 +300,7 @@ fn default_kms_attestation_tcb_statuses() -> Vec<String> {
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SyncConfig {
     #[serde(rename = "timeout_ms", with = "serde_duration")]
     pub timeout: Duration,
@@ -314,6 +320,26 @@ pub struct SyncConfig {
     pub interval: Duration,
     #[serde(rename = "frequency_ms", with = "serde_duration")]
     pub frequency: Duration,
+}
+
+impl SyncConfig {
+    /// Construct a [`SyncConfig`]. `SyncConfig` is `#[non_exhaustive]`, so
+    /// external crates build it through this constructor rather than a struct
+    /// literal — adding a field then stays source-compatible here.
+    #[must_use]
+    pub const fn new(
+        timeout: Duration,
+        session_deadline: Duration,
+        interval: Duration,
+        frequency: Duration,
+    ) -> Self {
+        Self {
+            timeout,
+            session_deadline,
+            interval,
+            frequency,
+        }
+    }
 }
 
 fn default_sync_session_deadline() -> Duration {
@@ -546,15 +572,58 @@ impl ConfigFile {
         let path = dir.join(CONFIG_FILE);
         let content = toml::to_string_pretty(self)?;
 
-        write(&path, content).await.wrap_err_with(|| {
-            format!(
-                "failed to write configuration to {:?}",
-                dir.join(CONFIG_FILE)
-            )
-        })?;
+        write_atomic(&path, content)
+            .await
+            .wrap_err_with(|| format!("failed to write configuration to {path:?}"))
+    }
+}
+
+/// Atomically write `content` over `path` via a temp-file-and-rename.
+///
+/// `config.toml` is the node's only copy of its private key, so a truncated
+/// write is data loss and the temp file is created 0600 to never expose it.
+pub async fn write_atomic(path: &Utf8Path, content: String) -> EyreResult<()> {
+    let path = path.to_owned();
+
+    // tempfile and std fs are sync; saves are rare, so just block.
+    tokio::task::spawn_blocking(move || {
+        let dir = path
+            .parent()
+            .ok_or_else(|| eyre!("config path has no parent directory: {path:?}"))?;
+
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)
+            .wrap_err_with(|| format!("failed to create temp file in {dir:?}"))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Set explicitly so 0600 holds if tempfile's default ever changes.
+            tmp.as_file()
+                .set_permissions(std::fs::Permissions::from_mode(0o600))
+                .wrap_err("failed to set temp file permissions")?;
+        }
+
+        std::io::Write::write_all(&mut tmp, content.as_bytes())
+            .wrap_err("failed to write config contents")?;
+        tmp.as_file()
+            .sync_all()
+            .wrap_err("failed to fsync config contents")?;
+
+        tmp.persist(&path)
+            .map_err(|e| eyre!("failed to persist config to {path:?}: {}", e.error))?;
+
+        // Fsync the dir so the rename itself survives a crash (Unix-only).
+        #[cfg(unix)]
+        {
+            std::fs::File::open(dir)
+                .and_then(|d| d.sync_all())
+                .wrap_err_with(|| format!("failed to fsync directory {dir:?}"))?;
+        }
 
         Ok(())
-    }
+    })
+    .await
+    .wrap_err("config write task panicked")?
 }
 
 mod serde_duration {
@@ -660,7 +729,7 @@ pub mod serde_identity {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_attestation_measurement, KmsAttestationConfig};
+    use super::{normalize_attestation_measurement, write_atomic, KmsAttestationConfig};
 
     fn make_strict_production_config() -> KmsAttestationConfig {
         KmsAttestationConfig {
@@ -750,5 +819,46 @@ mod tests {
             normalize_attestation_measurement(" 0XABCD "),
             "abcd".to_owned()
         );
+    }
+
+    #[tokio::test]
+    async fn write_atomic_writes_intact_and_replaces_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("config.toml");
+
+        write_atomic(&path, "first = 1\n".to_owned()).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first = 1\n");
+
+        // Replacing an existing target leaves the new content, not a mix.
+        write_atomic(&path, "second = 2\n".to_owned())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second = 2\n");
+
+        // No temp files left behind.
+        let leftover = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name() != "config.toml")
+            .count();
+        assert_eq!(leftover, 0, "temp file left behind");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_atomic_creates_file_mode_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("config.toml");
+
+        write_atomic(&path, "x = 1\n".to_owned()).await.unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "config file must be owner-only");
     }
 }

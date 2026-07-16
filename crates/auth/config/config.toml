@@ -8,6 +8,15 @@ listen_addr = "0.0.0.0:3001"
 issuer = "calimero-auth"
 access_token_expiry = 1800          # 30 minutes
 refresh_token_expiry = 2592000    # 30 days
+# Trusted authoritative host for node-binding validation (security finding #7).
+# When set, node-bound tokens are validated against THIS host instead of the
+# client-controllable Host/X-Forwarded-Host request headers, preventing a caller
+# that reaches the auth service directly from spoofing X-Forwarded-Host to replay
+# a token bound to another node. Set it to the public host clients reach this
+# node at (e.g. "node.example.com" or "localhost:2428"); host-only comparison.
+# Leave it unset (default) to keep legacy header-based behavior — a backend
+# cannot auto-discover its public host, so this hardening is opt-in.
+# node_host = "node.example.com"
 
 # Storage configuration
 [storage]
@@ -55,9 +64,14 @@ max_password_length = 128
 
 # Development/testing configuration
 [development]
-# Enable mock token endpoint for CI/testing (SECURITY: disabled by default)
-enable_mock_auth = true
+# Mock token endpoint that mints tokens without real authentication. The handler
+# and its route are additionally compiled out of release builds (see the
+# `#[cfg(debug_assertions)]` gates in the auth crate), so this must never be true
+# in a shipped image. Left false; enable it only in a local dev config and set
+# your own `mock_auth_header_value`.
+enable_mock_auth = false
 # Require authorization header for mock endpoint
 mock_auth_require_header = true
-# Authorization header value required for mock endpoint (set to enable)
-mock_auth_header_value = "Bearer test-auth-token" 
+# Authorization header value required for the mock endpoint. Empty by default so
+# no usable token is baked into the image; set it alongside enable_mock_auth.
+mock_auth_header_value = ""
