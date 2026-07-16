@@ -637,6 +637,76 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
 }
 
 #[test]
+fn namespace_retry_service_skips_the_nodes_own_ops() {
+    // A node's own group op is applied through the local authoring path at
+    // publish time (recording the GROUP nonce), but the KeyDelivery retry
+    // replays from the namespace op-log and the receive apply dedups on the
+    // NAMESPACE nonce — a separate sequence the local path never wrote. So a
+    // node's own op would slip past the nonce guard and re-run its mutation. For
+    // a removal replayed out of causal order after a re-add, that re-deletes the
+    // membership / identity / deny state the re-add restored (the "re-added
+    // leaver can't author" bug). A node's own op is never buffered-awaiting-key,
+    // so it must never appear as a retry candidate.
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let namespace_id = [0x84; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let group = ContextGroupId::from([0x85; 32]);
+
+    let own_sk = PrivateKey::random(&mut rng);
+    let own_pk = own_sk.public_key();
+    let peer_sk = PrivateKey::random(&mut rng);
+
+    // This node holds the namespace identity `own_pk`.
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &own_pk, own_sk.as_bytes(), &[0u8; 32])
+        .unwrap();
+
+    let group_key = [0x92; 32];
+    let key_id = GroupKeyring::new(&store, group)
+        .store_key(&group_key)
+        .unwrap();
+    let mk = |sk: &PrivateKey, nonce: u64| {
+        SignedNamespaceOp::sign(
+            sk,
+            namespace_id.into(),
+            vec![],
+            nonce,
+            NamespaceOp::Group {
+                group_id: group.to_bytes().into(),
+                key_id: key_id.into(),
+                encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
+                key_rotation: None,
+            },
+        )
+        .unwrap()
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    gov.store_operation(&mk(&own_sk, 1)).unwrap();
+    gov.store_operation(&mk(&peer_sk, 1)).unwrap();
+
+    let candidates = NamespaceRetryService::new(&store, namespace_id.into())
+        .collect_retry_candidates_for_group(group.to_bytes())
+        .unwrap();
+
+    assert_eq!(
+        candidates.len(),
+        1,
+        "the node's own op must be skipped; only the peer op is retryable"
+    );
+    assert_eq!(
+        candidates[0].signed_op.signer,
+        peer_sk.public_key(),
+        "the surviving candidate is the peer op, not the node's own"
+    );
+}
+
+#[test]
 fn namespace_retry_service_orders_candidates_by_signer_nonce() {
     // Regression test for #2349: when a peer buffers several
     // `NamespaceOp::Group` ops from the same signer pending
