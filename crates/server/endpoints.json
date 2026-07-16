@@ -51,7 +51,6 @@
   "POST /admin-api/contexts/:context_id/join",
   "POST /admin-api/contexts/:context_id/leave",
   "POST /admin-api/contexts/:context_id/resync",
-  "POST /admin-api/contexts/invite-specialized-node",
   "POST /admin-api/contexts/sync",
   "POST /admin-api/contexts/sync/:context_id",
   "POST /admin-api/groups",

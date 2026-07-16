@@ -235,8 +235,7 @@ mod tests {
             node_manager,
             event_sender,
             sync_client,
-            String::new(), // Not used in tests
-            None,          // Not used in tests
+            None, // Not used in tests
         );
 
         // 5. Construct the final ContextClient.

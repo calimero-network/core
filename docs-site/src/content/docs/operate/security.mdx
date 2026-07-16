@@ -125,9 +125,8 @@ all (likely a misconfiguration).
 :::caution[Mock TEE is insecure]
 `--mock-tee` bypasses real attestation guarantees entirely. Never set it (or the
 `MEROD_MOCK_TEE` environment variable) on a production node. The related
-config-level switches `specialized_node.accept_mock_tee` and
-`tee.kms.phala.attestation.accept_mock` carry the same warning — they exist for
-testing and must stay `false` in production.
+config-level switch `tee.kms.phala.attestation.accept_mock` carries the same
+warning — it exists for testing and must stay `false` in production.
 :::
 
 ## KMS release-policy verification
@@ -224,10 +223,9 @@ hostnames and key handling to your environment.
    JWT signing secret. Restrict the home directory to the service user, store
    backups encrypted, and never commit either to version control.
 
-7. **No dev switches.** Confirm `--mock-tee` / `MEROD_MOCK_TEE`,
-   `specialized_node.accept_mock_tee`, and `attestation.accept_mock` are all off.
-   A node with a real KMS attestation configured refuses to start with
-   `--mock-tee` at all.
+7. **No dev switches.** Confirm `--mock-tee` / `MEROD_MOCK_TEE` and
+   `attestation.accept_mock` are all off. A node with a real KMS attestation
+   configured refuses to start with `--mock-tee` at all.
 
 </Steps>
 
@@ -260,7 +258,7 @@ hostnames and key handling to your environment.
 6. **Don't** bind `server.listen` to `0.0.0.0` to expose the admin API or
    dashboard remotely.
 
-7. **Don't** run `--mock-tee` / `MEROD_MOCK_TEE`, `accept_mock_tee`, or
+7. **Don't** run `--mock-tee` / `MEROD_MOCK_TEE` or
    `attestation.accept_mock` outside development.
 
 8. **Don't** enable the auth service's mock-token endpoint in production (see

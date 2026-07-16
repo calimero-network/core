@@ -38,8 +38,7 @@ src/
 │   ├── state_delta/          # State delta handler (mod.rs, buffering.rs, crypto.rs, events.rs, store_setup.rs, verify.rs)
 │   ├── stream_opened.rs      # Stream opened handler
 │   ├── blob_protocol.rs      # Blob protocol handler
-│   ├── get_blob_bytes.rs     # Get blob bytes handler
-│   └── specialized_node_invite.rs  # Specialized node invitation handler
+│   └── get_blob_bytes.rs     # Get blob bytes handler
 ├── readiness.rs              # ReadinessTier FSM + ReadinessCache + ReadinessManager actor
 ├── readiness/
 │   └── tests.rs              # FSM transition tests + cache picker / atomicity tests
@@ -58,7 +57,6 @@ src/
 ├── gc.rs                     # Garbage collection
 ├── constants.rs              # Constants
 ├── arbiter_pool.rs           # Actix arbiter pool
-├── specialized_node_invite_state.rs  # Specialized node invite state
 └── utils.rs                  # Utilities
 primitives/                   # calimero-node-primitives
 ├── src/

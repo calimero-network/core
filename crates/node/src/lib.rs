@@ -29,7 +29,6 @@ mod peer_identity_cache;
 mod peer_identity_persist;
 pub mod readiness;
 mod run;
-mod specialized_node_invite_state;
 mod state;
 pub(crate) mod state_delta_bridge;
 pub mod sync;
@@ -41,7 +40,7 @@ pub use network_event_channel::{
     channel as network_event_channel, NetworkEventChannelConfig, NetworkEventSender,
 };
 pub use network_event_processor::NetworkEventBridge;
-pub use run::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
+pub use run::{start, NodeConfig, NodeMode};
 pub(crate) use state::{CachedBlob, NodeClients, NodeManagers, NodeState};
 pub use sync::SyncManager;
 

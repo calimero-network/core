@@ -460,7 +460,7 @@ mod tests {
     fn node_state_with_peer_identities(
         entries: impl IntoIterator<Item = (PeerId, BTreeSet<PublicKey>)>,
     ) -> crate::state::NodeState {
-        let node_state = crate::state::NodeState::new(false, crate::run::NodeMode::Standard);
+        let node_state = crate::state::NodeState::new();
         for (peer, ids) in entries {
             let _replaced = node_state.peer_identities.insert(peer, ids);
         }

@@ -147,9 +147,7 @@ src/
 │   │   ├── mesh_peers.rs     # Get mesh peers for topic
 │   │   ├── announce_blob.rs  # Announce blob availability (DHT)
 │   │   ├── query_blob.rs     # Query blob providers (DHT)
-│   │   ├── request_blob.rs   # Request blob from peer
-│   │   ├── send_specialized_node_invitation_response.rs
-│   │   └── send_specialized_node_verification_request.rs
+│   │   └── request_blob.rs   # Request blob from peer
 │   ├── stream.rs             # Stream handler exports
 │   └── stream/
 │       ├── incoming.rs       # Incoming stream handler
@@ -164,8 +162,7 @@ src/
 │           ├── autonat.rs    # AutoNAT events
 │           ├── dcutr.rs      # DCUtR (hole punching) events
 │           ├── relay.rs      # Relay events
-│           ├── rendezvous.rs # Rendezvous events
-│           └── specialized_node_invite.rs
+│           └── rendezvous.rs # Rendezvous events
 primitives/                   # calimero-network-primitives
 └── src/
     ├── lib.rs                # Module exports
@@ -176,7 +173,7 @@ primitives/                   # calimero-network-primitives
     ├── stream/
     │   └── codec.rs          # MessageCodec (length-delimited framing)
     ├── blob_types.rs         # Blob-related types
-    ├── specialized_node_invite.rs  # Invite protocol types
+    ├── specialized_node_invite.rs  # SpecializedNodeType (fleet TEE classification)
     └── autonat_v2/           # AutoNAT v2 behaviour
 ```
 
@@ -251,8 +248,6 @@ pub enum NetworkEvent {
     BlobProvidersFound { blob_id, context_id, providers },
     BlobDownloaded { blob_id, context_id, data, from_peer },
     BlobDownloadFailed { blob_id, context_id, from_peer, error },
-    SpecializedNodeVerificationRequest { ... },
-    SpecializedNodeInvitationResponse { ... },
 }
 ```
 

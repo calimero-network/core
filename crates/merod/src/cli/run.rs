@@ -2,7 +2,7 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_config::ConfigFile;
 use calimero_network_primitives::config::NetworkConfig;
 use calimero_node::sync::SyncConfig;
-use calimero_node::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
+use calimero_node::{start, NodeConfig, NodeMode};
 use calimero_server::config::{AuthMode, ServerConfig};
 use calimero_store::config::StoreConfig;
 use clap::Parser;
@@ -228,10 +228,6 @@ impl RunCommand {
             gc_interval_secs: None, // Use default (12 hours)
             dag_compaction: config.dag_compaction,
             mode: node_mode,
-            specialized_node: SpecializedNodeConfig {
-                invite_topic: network.specialized_node.invite_topic,
-                accept_mock_tee: network.specialized_node.accept_mock_tee,
-            },
             vm_limits: config.runtime.vm_limits(),
             mock_tee: self.mock_tee,
         })

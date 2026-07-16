@@ -196,7 +196,6 @@ impl SubCommands {
             SubCommands::Context(c) => match c.subcommand {
                 ContextSubCommands::List(_) | ContextSubCommands::Get(_) => TokenScope::Resource,
                 ContextSubCommands::Create(_)
-                | ContextSubCommands::InviteSpecializedNode(_)
                 | ContextSubCommands::Delete(_)
                 | ContextSubCommands::Watch(_)
                 | ContextSubCommands::Update(_)

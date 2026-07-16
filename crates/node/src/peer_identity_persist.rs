@@ -320,7 +320,6 @@ mod tests {
 
     use super::*;
     use crate::peer_identity_cache::ObservedMembership;
-    use crate::run::NodeMode;
 
     fn store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
@@ -386,7 +385,7 @@ mod tests {
         let identity = PublicKey::from([9u8; 32]);
         let peer = PeerId::random();
 
-        let state = NodeState::new(false, NodeMode::Standard);
+        let state = NodeState::new();
         state.observe_peer_identity(
             peer,
             identity,
@@ -398,7 +397,7 @@ mod tests {
         persist(&state, &store);
 
         // A fresh node starts with empty caches, then hydrates from disk.
-        let restored = NodeState::new(false, NodeMode::Standard);
+        let restored = NodeState::new();
         assert!(restored.peer_identities.is_empty(), "starts empty");
         hydrate(&restored, &store);
 
@@ -429,7 +428,7 @@ mod tests {
     // test isolated. Prefer this pattern for invalidation-logic tests.
     #[test]
     fn member_removed_event_drops_cached_member() {
-        let state = NodeState::new(false, NodeMode::Standard);
+        let state = NodeState::new();
         let group = ContextGroupId::from([7u8; 32]);
         let member = PublicKey::from([9u8; 32]);
         let peer = PeerId::random();
@@ -473,7 +472,7 @@ mod tests {
     #[test]
     fn hydrate_with_no_blob_is_a_noop() {
         let store = store();
-        let state = NodeState::new(false, NodeMode::Standard);
+        let state = NodeState::new();
         hydrate(&state, &store);
         assert!(state.peer_identities.is_empty());
         assert_eq!(state.lock_peer_identity_cache().groups().count(), 0);
@@ -482,14 +481,14 @@ mod tests {
     #[test]
     fn observation_without_membership_does_not_persist() {
         let store = store();
-        let state = NodeState::new(false, NodeMode::Standard);
+        let state = NodeState::new();
         // Namespace-path style: in-memory only, no durable record.
         state.observe_peer_identity(PeerId::random(), PublicKey::from([1u8; 32]), None);
         persist(&state, &store);
 
         // Nothing was written (empty cache → skipped), so a fresh node
         // hydrates to empty.
-        let restored = NodeState::new(false, NodeMode::Standard);
+        let restored = NodeState::new();
         hydrate(&restored, &store);
         assert_eq!(restored.lock_peer_identity_cache().groups().count(), 0);
         assert!(restored.peer_identities.is_empty());

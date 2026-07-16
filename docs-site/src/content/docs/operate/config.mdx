@@ -142,15 +142,6 @@ current node reads the fields documented above; regenerate or update old files
 to match.
 </Aside>
 
-### `[specialized_node]`
-
-Settings for specialized (e.g. read-only / observer) nodes.
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `invite_topic` | string | `"mero_specialized_node_invites"` | Gossip topic used for specialized-node invite discovery. |
-| `accept_mock_tee` | bool | `false` | Accept mock TEE attestation. Testing only — never enable in production. |
-
 ## `[sync]`
 
 State-sync timing. Durations are expressed in milliseconds via the `_ms`

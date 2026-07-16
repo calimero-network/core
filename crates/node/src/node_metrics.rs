@@ -90,7 +90,6 @@ pub(crate) struct NodeMetrics {
     pub(crate) sync_sessions_active: Gauge,
     pub(crate) governance_pending_contexts: Gauge,
     pub(crate) governance_pending_queue_depth: Gauge,
-    pub(crate) specialized_node_pending_invites: Gauge,
 
     // Blob cache eviction counters — recorded on the eviction hot path
     // (state.rs::evict_old_blobs).
@@ -177,13 +176,6 @@ impl NodeMetrics {
              monotonic growth indicates B2 buffer cannot drain",
             governance_pending_queue_depth.clone(),
         );
-        let specialized_node_pending_invites = Gauge::default();
-        registry.register(
-            "specialized_node_pending_invites",
-            "Number of in-flight specialized-node invite verifications",
-            specialized_node_pending_invites.clone(),
-        );
-
         let blob_cache_evictions_age_total = Counter::default();
         registry.register(
             "blob_cache_evictions_age_total",
@@ -316,7 +308,6 @@ impl NodeMetrics {
             sync_sessions_active,
             governance_pending_contexts,
             governance_pending_queue_depth,
-            specialized_node_pending_invites,
             blob_cache_evictions_age_total,
             blob_cache_evictions_count_total,
             blob_cache_evictions_memory_total,
@@ -361,7 +352,6 @@ pub(crate) struct NodeStateSnapshot {
     pub sync_sessions_active: usize,
     pub governance_pending_contexts: usize,
     pub governance_pending_queue_depth: usize,
-    pub specialized_node_pending_invites: usize,
 }
 
 impl NodeStateSnapshot {
@@ -387,7 +377,6 @@ impl NodeStateSnapshot {
             governance_pending_contexts += 1;
             governance_pending_queue_depth += entry.value().len();
         }
-        let specialized_node_pending_invites = state.pending_specialized_node_invites.len();
         Self {
             blob_cache_entries,
             blob_cache_size_bytes,
@@ -395,7 +384,6 @@ impl NodeStateSnapshot {
             sync_sessions_active,
             governance_pending_contexts,
             governance_pending_queue_depth,
-            specialized_node_pending_invites,
         }
     }
 
@@ -420,9 +408,6 @@ impl NodeStateSnapshot {
         metrics
             .governance_pending_queue_depth
             .set(self.governance_pending_queue_depth as i64);
-        metrics
-            .specialized_node_pending_invites
-            .set(self.specialized_node_pending_invites as i64);
     }
 }
 
