@@ -143,6 +143,26 @@ jobs:
             exit 1
           fi
 
+      # Keep a moving `latest` tag on the released commit so downstream
+      # contract repos can depend on the newest release without editing
+      # their Cargo.toml every cut:
+      #   calimero-sdk = { git = ".../core", tag = "latest" }
+      # `cargo update` then re-resolves the tag to the current release.
+      # Force-move via the git-data API (update with force=true, create on
+      # first run); no workflow triggers on tag pushes, so this is inert.
+      - name: Move `latest` tag to this release
+        if: github.event_name == 'push' && steps.version_info.outputs.binary_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version_info.outputs.version }}
+        run: |
+          if ! gh api -X PATCH "repos/${{ github.repository }}/git/refs/tags/latest" \
+              -f sha="${{ github.sha }}" -F force=true >/dev/null 2>&1; then
+            gh api -X POST "repos/${{ github.repository }}/git/refs" \
+              -f ref="refs/tags/latest" -f sha="${{ github.sha }}"
+          fi
+          echo "latest -> ${{ github.sha }} ($VERSION)"
+
       # Match the file set that defines the profiling image's content:
       # the entrypoint + helper scripts baked into the image, the
       # Dockerfile itself, and the fuzzy workflow that exercises it.
