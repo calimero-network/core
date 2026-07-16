@@ -358,10 +358,80 @@ mod borsh_layout_round_trip {
     }
 }
 
+/// Inclusive walk bound for group → namespace-root resolution. Mirrors
+/// `calimero_governance_store::MAX_NAMESPACE_DEPTH` (16); duplicated as a literal
+/// because this crate cannot depend on governance-store (that dependency runs
+/// the other way).
+const NAMESPACE_DEPTH_BOUND: usize = 16;
+
+/// Resolve the node's authoritative signing identity for `context_id` — its
+/// namespace identity — when that identity is a current member of the context's
+/// group.
+///
+/// For a namespace-backed context, the node signs state deltas with its one
+/// namespace identity. The per-context [`key::ContextIdentity`] row used to
+/// carry a copy of that private key, but the copy was redundant (and fragile —
+/// an out-of-order removal could delete it). This resolver derives the signer
+/// live from the namespace identity + membership, so no per-context copy is
+/// needed. Standalone / `new_identity` contexts have no `NamespaceIdentity` and
+/// keep their own stored key — callers must prefer a stored key first and only
+/// fall back here.
+///
+/// Free function (rather than a `&self` method) so `get_context_members` can
+/// call it from inside its `try_stream!` with a moved `Store` clone.
+fn resolve_owned_namespace_signer(
+    store: &Store,
+    context_id: &ContextId,
+) -> eyre::Result<Option<(PublicKey, [u8; 32])>> {
+    let handle = store.handle();
+
+    let Some(group_id) = handle.get(&key::ContextGroupRef::new(*context_id))? else {
+        return Ok(None);
+    };
+
+    // The namespace identity is keyed at the namespace root; walk up to it.
+    let mut ns_root = group_id;
+    for _ in 0..=NAMESPACE_DEPTH_BOUND {
+        match handle.get(&key::GroupParentRef::new(ns_root))? {
+            Some(parent) => ns_root = parent,
+            None => break,
+        }
+    }
+
+    let Some(identity) = handle.get(&key::NamespaceIdentity::new(ns_root))? else {
+        return Ok(None); // this node holds no identity for the namespace
+    };
+    let identity: key::NamespaceIdentityValue = identity;
+    let pk = PublicKey::from(identity.public_key);
+
+    // Only a current member may sign. Same rule as `has_member`: a direct
+    // `GroupMember` row, or being the group's `admin_identity` (the creator, for
+    // whom no MemberJoined op is ever published).
+    let is_member = handle.has(&key::GroupMember::new(group_id, pk))?
+        || handle
+            .get(&key::GroupMeta::new(group_id))?
+            .is_some_and(|meta: key::GroupMetaValue| meta.admin_identity == pk);
+
+    if is_member {
+        Ok(Some((pk, identity.private_key)))
+    } else {
+        Ok(None)
+    }
+}
+
 impl ContextRegistry {
     #[must_use]
     pub const fn new(datastore: Store) -> Self {
         Self { datastore }
+    }
+
+    /// See [`resolve_owned_namespace_signer`]. The node's namespace signing
+    /// identity for `context_id` when it is a current member, or `None`.
+    pub fn owned_namespace_signer(
+        &self,
+        context_id: &ContextId,
+    ) -> eyre::Result<Option<(PublicKey, [u8; 32])>> {
+        resolve_owned_namespace_signer(&self.datastore, context_id)
     }
 
     /// Returns a handle to the datastore for direct access.
@@ -1079,6 +1149,10 @@ impl ContextRegistry {
         owned: Option<bool>,
     ) -> impl Stream<Item = eyre::Result<(PublicKey, bool)>> {
         let handle = self.datastore.handle();
+        // Moved into the stream so the namespace-identity fallback can run
+        // without borrowing `self` across the stream's lifetime (cheap: `Store`
+        // is Arc-backed).
+        let store = self.datastore.clone();
         let context_id = *context_id;
         let only_owned = owned.unwrap_or(false);
 
@@ -1090,6 +1164,9 @@ impl ContextRegistry {
                 .transpose()
                 .map(|k| (k, iter.read()));
 
+            let mut yielded_owned = false;
+            let mut ns_signer_seen = false;
+            let ns_signer = resolve_owned_namespace_signer(&store, &context_id)?.map(|(pk, _)| pk);
             for (k, v) in first.into_iter().chain(iter.entries()) {
                 let (k, v) = (k?, v?);
 
@@ -1097,9 +1174,30 @@ impl ContextRegistry {
                     break;
                 }
 
-                let is_owned = v.private_key.is_some();
+                // The node's namespace identity is owned even when the stored
+                // row carries no private key (post-refactor, group contexts stop
+                // storing it — the signer is resolved live from the namespace
+                // identity). So treat that pk as owned regardless of the row.
+                let is_ns_signer = ns_signer == Some(k.public_key());
+                let is_owned = v.private_key.is_some() || is_ns_signer;
+                if is_ns_signer {
+                    ns_signer_seen = true;
+                }
+                if is_owned {
+                    yielded_owned = true;
+                }
                 if !only_owned || is_owned {
                     yield (k.public_key(), is_owned);
+                }
+            }
+            drop(iter);
+
+            // Fallback: the namespace signer may not have a ContextIdentity row
+            // at all (e.g. it was cascaded away, or never written post-refactor).
+            // It is still the owned signer for a member, so surface it.
+            if only_owned && !yielded_owned && !ns_signer_seen {
+                if let Some(pk) = ns_signer {
+                    yield (pk, true);
                 }
             }
         }

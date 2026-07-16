@@ -99,14 +99,32 @@ impl ContextClient {
 
         let key = key::ContextIdentity::new(*context_id, *public_key);
 
-        let Some(identity) = handle.get(&key)? else {
-            return Ok(None);
+        let row = handle.get(&key)?;
+
+        // Resolve the signing key. A stored `private_key` wins (standalone /
+        // `new_identity` contexts keep their own key). Otherwise, for a
+        // namespace-backed context, derive it live from the node's namespace
+        // identity when `public_key` is that identity and a current member — so
+        // group contexts need not store a per-context copy at all. `sender_key`
+        // (used only by non-group contexts) is read from the row unchanged.
+        let private_key = match row.as_ref().and_then(|r| r.private_key) {
+            Some(sk) => Some(sk),
+            None => match self.registry.owned_namespace_signer(context_id)? {
+                Some((ns_pk, ns_sk)) if ns_pk == *public_key => Some(ns_sk),
+                _ => None,
+            },
         };
+
+        // No stored row and no namespace-identity fallback → not an identity
+        // this node knows here.
+        if row.is_none() && private_key.is_none() {
+            return Ok(None);
+        }
 
         let identity = ContextIdentity {
             public_key: *public_key,
-            private_key: identity.private_key.map(PrivateKey::from),
-            sender_key: identity.sender_key.map(PrivateKey::from),
+            private_key: private_key.map(PrivateKey::from),
+            sender_key: row.and_then(|r| r.sender_key).map(PrivateKey::from),
         };
 
         Ok(Some(identity))
