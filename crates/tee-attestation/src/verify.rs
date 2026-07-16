@@ -4,9 +4,12 @@ use calimero_server_primitives::admin::Quote;
 use dcap_qvl::collateral::get_collateral_from_pcs;
 use dcap_qvl::verify::verify;
 use tdx_quote::Quote as TdxQuote;
-use tracing::{error, info, warn};
+#[cfg(feature = "mock-attestation")]
+use tracing::warn;
+use tracing::{error, info};
 
 use crate::error::AttestationError;
+#[cfg(feature = "mock-attestation")]
 use crate::generate::{is_mock_quote, MOCK_QUOTE_HEADER};
 
 /// Result of verifying a TEE attestation.
@@ -169,6 +172,7 @@ pub async fn verify_attestation(
 /// # Security Warning
 /// This function bypasses all cryptographic verification. It should ONLY be used
 /// for development and testing purposes.
+#[cfg(feature = "mock-attestation")]
 pub fn verify_mock_attestation(
     quote_bytes: &[u8],
     nonce: &[u8; 32],

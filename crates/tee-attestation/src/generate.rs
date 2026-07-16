@@ -1,8 +1,11 @@
 //! TDX quote generation (Linux) and mock attestation for non-Linux platforms.
 
+#[cfg(any(target_os = "linux", feature = "mock-attestation"))]
 use base64::{engine::general_purpose::STANDARD as base64_engine, Engine};
+use calimero_server_primitives::admin::Quote;
+#[cfg(feature = "mock-attestation")]
 use calimero_server_primitives::admin::{
-    CertificationData, QeReportCertificationDataInfo, Quote, QuoteBody, QuoteHeader,
+    CertificationData, QeReportCertificationDataInfo, QuoteBody, QuoteHeader,
 };
 #[cfg(target_os = "linux")]
 use configfs_tsm::create_tdx_quote;
@@ -10,12 +13,13 @@ use configfs_tsm::create_tdx_quote;
 use tdx_quote::Quote as TdxQuote;
 #[cfg(target_os = "linux")]
 use tracing::error;
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), feature = "mock-attestation"))]
 use tracing::warn;
 
 use crate::error::AttestationError;
 
 /// Magic header for mock quotes - used to identify mock attestations.
+#[cfg(feature = "mock-attestation")]
 pub const MOCK_QUOTE_HEADER: &[u8] = b"MOCK_TDX_QUOTE_V1";
 
 /// Result of generating a TEE attestation.
@@ -86,15 +90,28 @@ pub fn generate_attestation(report_data: [u8; 64]) -> Result<AttestationResult, 
 /// Mock attestations bypass all TEE security guarantees. The quote signature is
 /// invalid and will fail cryptographic verification. This is only suitable for
 /// testing attestation protocol flow on non-TEE platforms.
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), feature = "mock-attestation"))]
 pub fn generate_attestation(report_data: [u8; 64]) -> Result<AttestationResult, AttestationError> {
     warn!("Generating MOCK attestation on non-Linux platform - NOT FOR PRODUCTION USE");
     Ok(generate_mock_attestation(report_data))
 }
 
+/// Non-Linux platforms without the `mock-attestation` feature have no way to
+/// produce a quote: real TDX generation is Linux-only and the mock fallback is
+/// compiled out. Fail explicitly rather than silently returning an unverifiable
+/// quote.
+#[cfg(all(not(target_os = "linux"), not(feature = "mock-attestation")))]
+pub fn generate_attestation(_report_data: [u8; 64]) -> Result<AttestationResult, AttestationError> {
+    Err(AttestationError::QuoteGenerationFailed(
+        "mock attestation not compiled in; build with --features mock-attestation on non-TDX platforms"
+            .to_owned(),
+    ))
+}
+
 /// Build a mock attestation result on ANY platform. Dev/test only — the quote
 /// is cryptographically invalid and must only be accepted by an `accept_mock`
 /// policy. Used by `merod --mock-tee`.
+#[cfg(feature = "mock-attestation")]
 pub fn generate_mock_attestation(report_data: [u8; 64]) -> AttestationResult {
     let quote = create_mock_quote(&report_data);
     let mut quote_bytes = Vec::with_capacity(256);
@@ -111,12 +128,14 @@ pub fn generate_mock_attestation(report_data: [u8; 64]) -> AttestationResult {
 }
 
 /// Check if the given quote bytes represent a mock attestation.
+#[cfg(feature = "mock-attestation")]
 pub fn is_mock_quote(quote_bytes: &[u8]) -> bool {
     quote_bytes.len() >= MOCK_QUOTE_HEADER.len()
         && &quote_bytes[..MOCK_QUOTE_HEADER.len()] == MOCK_QUOTE_HEADER
 }
 
 /// Create a mock Quote structure with the given report data.
+#[cfg(feature = "mock-attestation")]
 pub fn create_mock_quote(report_data: &[u8; 64]) -> Quote {
     // Standard mock values - 48-byte measurements as hex (96 chars)
     let mock_measurement_48 =

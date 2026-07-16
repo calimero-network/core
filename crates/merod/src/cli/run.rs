@@ -26,12 +26,28 @@ pub struct RunCommand {
 
     /// DEV/TEST ONLY. Produce and accept MOCK TEE attestation quotes (no real TDX).
     /// Insecure — never use in production. Refuses to start alongside a real KMS.
-    #[clap(long, env = "MEROD_MOCK_TEE", default_value_t = false)]
+    /// CLI-only flag (no env inheritance); the mock path is compiled in only under
+    /// the default-off `mock-attestation` build feature.
+    #[clap(long, default_value_t = false)]
     pub mock_tee: bool,
 }
 
 impl RunCommand {
     pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
+        // The flag is declared unconditionally so that a binary built without
+        // `mock-attestation` rejects it with an actionable message instead of a
+        // bare clap "unexpected argument". Checked before anything else (node
+        // init, the deny-guard below): without the feature there is no mock path
+        // to guard in the first place, so the flag can never be honoured.
+        #[cfg(not(feature = "mock-attestation"))]
+        if self.mock_tee {
+            bail!(
+                "--mock-tee: this merod binary was built without mock-attestation support. \
+                 Rebuild with `cargo build -p merod --features mock-attestation` (dev/test only); \
+                 release binaries intentionally contain no mock attestation code."
+            );
+        }
+
         let path = root_args.home.join(root_args.node_name);
 
         if !ConfigFile::exists(&path) {
@@ -233,6 +249,7 @@ impl RunCommand {
                 accept_mock_tee: network.specialized_node.accept_mock_tee,
             },
             vm_limits: config.runtime.vm_limits(),
+            #[cfg(feature = "mock-attestation")]
             mock_tee: self.mock_tee,
         })
         .await

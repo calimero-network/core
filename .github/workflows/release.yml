@@ -203,6 +203,19 @@ jobs:
         if: ${{ matrix.runner == 'macos-13' || matrix.runner == 'macos-latest' }}
         run: brew install bash
 
+      # The mock TEE attestation path must never be compiled into a released
+      # binary: with `mock-attestation` off, `is_mock_quote` /
+      # `verify_mock_attestation` / `generate_mock_attestation` do not exist, so a
+      # MOCK_TDX_QUOTE_V1 blob just fails real DCAP parsing and is rejected. Fail
+      # the release if anything pulls the feature into the production build.
+      - name: Guard - mock-attestation must not leak into the release build
+        run: |
+          if cargo tree -e features -i calimero-tee-attestation -p merod | grep -q 'mock-attestation'; then
+            echo "::error::mock-attestation leaked into production build"
+            exit 1
+          fi
+          echo "OK: mock-attestation is not enabled in the production merod build"
+
       - name: Build binaries
         run: |
           readarray -t binaries <<< "$BINARIES"

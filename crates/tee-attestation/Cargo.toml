@@ -8,6 +8,12 @@ license.workspace = true
 description = "TEE attestation generation and verification for Calimero"
 publish = true
 
+[features]
+# DEV/TEST ONLY. Compiles the mock attestation path (mock quote
+# generation/detection/verification). Default OFF so production builds contain
+# no mock-attestation code. See crate docs.
+mock-attestation = []
+
 [dependencies]
 eyre.workspace = true
 hex.workspace = true
