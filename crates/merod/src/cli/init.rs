@@ -21,7 +21,9 @@ use core::net::IpAddr;
 use core::time::Duration;
 use eyre::{bail, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
-use mero_auth::config::{AuthConfig as EmbeddedAuthConfig, StorageConfig as AuthStorageConfig};
+use mero_auth::config::{
+    AuthConfig as EmbeddedAuthConfig, StorageConfig as AuthStorageConfig, UserPasswordConfig,
+};
 use multiaddr::{Multiaddr, Protocol};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -333,6 +335,17 @@ impl InitCommand {
         let auth_mode = self.auth_mode.map(Into::into).unwrap_or(AuthMode::Proxy);
         let embedded_auth = if matches!(auth_mode, AuthMode::Embedded) {
             let mut auth_cfg: EmbeddedAuthConfig = mero_auth::embedded::default_config();
+
+            // Fresh embedded-auth nodes get an auto-generated first-login
+            // setup code (bootstrap secret, core#3221) so the very first
+            // login can mint the root key without manual provisioning. It
+            // lives in config.toml (0600, alongside the node's private key),
+            // so only the node's owner can read it; deployments that
+            // provision out of band (MERO_AUTH_BOOTSTRAP_SECRET or their own
+            // config value) simply overwrite or ignore it.
+            auth_cfg.user_password.bootstrap_secret =
+                Some(UserPasswordConfig::generate_bootstrap_secret());
+
             let storage_choice = self.auth_storage.unwrap_or(AuthStorageArg::Persistent);
             let storage_path = self.auth_storage_path.clone();
 
