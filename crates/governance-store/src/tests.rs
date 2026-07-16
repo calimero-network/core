@@ -3734,6 +3734,88 @@ fn preflight_fails_for_nonexistent_group() {
 // -----------------------------------------------------------------------
 
 #[test]
+fn resolve_local_signing_key_covers_keyed_marker_and_absent() {
+    let store = test_store();
+    let gid = test_group_id();
+    let ns_member = PublicKey::from([0x31; 32]);
+    let ns_sk = [0x99u8; 32];
+    let standalone = PublicKey::from([0x32; 32]);
+    let standalone_sk = [0x88u8; 32];
+    let stranger = PublicKey::from([0x33; 32]);
+    let ctx = ContextId::from([0xE1; 32]);
+    register_context_in_group(&store, &gid, &ctx).unwrap();
+
+    // This node's namespace identity (`gid` resolves to itself — no parent).
+    NamespaceRepository::new(&store)
+        .store_identity(&gid, &ns_member, &ns_sk, &[0u8; 32])
+        .unwrap();
+
+    // No row at all → not a local identity here.
+    assert_eq!(
+        resolve_local_signing_key(&store, &ctx, &ns_member).unwrap(),
+        None,
+        "no marker row → None"
+    );
+
+    // Keyless marker for the namespace identity → key resolved live.
+    {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::ContextIdentity::new(ctx, ns_member),
+                &calimero_store::types::ContextIdentity {
+                    private_key: None,
+                    sender_key: None,
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        resolve_local_signing_key(&store, &ctx, &ns_member).unwrap(),
+        Some(ns_sk),
+        "keyless marker for the namespace identity resolves its key live"
+    );
+
+    // A standalone keyed row → its own stored key wins.
+    {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::ContextIdentity::new(ctx, standalone),
+                &calimero_store::types::ContextIdentity {
+                    private_key: Some(standalone_sk),
+                    sender_key: None,
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        resolve_local_signing_key(&store, &ctx, &standalone).unwrap(),
+        Some(standalone_sk),
+        "a stored key wins"
+    );
+
+    // A keyless marker for a NON-namespace identity → not signable here.
+    {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::ContextIdentity::new(ctx, stranger),
+                &calimero_store::types::ContextIdentity {
+                    private_key: None,
+                    sender_key: None,
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        resolve_local_signing_key(&store, &ctx, &stranger).unwrap(),
+        None,
+        "a keyless marker that is not the namespace identity resolves no key"
+    );
+}
+
+#[test]
 fn restore_member_context_identities_writes_missing_marker_rows() {
     let store = test_store();
     let gid = test_group_id();
