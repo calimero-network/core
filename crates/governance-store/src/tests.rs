@@ -5121,6 +5121,133 @@ fn deny_list_member_removed_op_marks_entry() {
 }
 
 #[test]
+fn leave_then_admin_readd_restores_a_signable_context_identity() {
+    // Follow-up to the re-entry work: a voluntary leaver whom an admin re-adds
+    // must be able to AUTHOR again. Authoring needs a `ContextIdentity` row with
+    // `private_key: Some(_)` for the context (that is what `get_context_members(
+    // owned)` / `choose_owned_identity` look for). `MemberLeft` cascades those
+    // rows away; the admin's `MemberAdded` apply must restore them via
+    // `restore_member_context_identities`. The e2e observed the re-added leaver
+    // stuck on `no owned identities found for context` — this pins the apply-path
+    // half of that end to end.
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_context_config::VisibilityMode;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+
+    // namespace (root) ── Open subgroup ── context, matching the e2e.
+    let ns_id = [0xD0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let subgroup = ContextGroupId::from([0xD1u8; 32]);
+    let ctx = ContextId::from([0xDCu8; 32]);
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+    register_context_in_group(&store, &subgroup, &ctx).unwrap();
+
+    // The leaver: a direct subgroup member. The local node IS the leaver, so its
+    // namespace identity matches `member_pk` — required for the restore's
+    // anti-spoof gate to write a real private key.
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    let member_sk_bytes: [u8; 32] = *member_sk.as_bytes();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32])
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &member_pk, GroupMemberRole::Member)
+        .unwrap();
+    // As `join_context` would: a signable ContextIdentity row.
+    let id_key = calimero_store::key::ContextIdentity::new(ctx, member_pk);
+    store
+        .handle()
+        .put(
+            &id_key,
+            &calimero_store::types::ContextIdentity {
+                private_key: Some(member_sk_bytes),
+                sender_key: Some([0x11; 32]),
+            },
+        )
+        .unwrap();
+    assert!(
+        store
+            .handle()
+            .get(&id_key)
+            .unwrap()
+            .unwrap()
+            .private_key
+            .is_some(),
+        "precondition: the member can author before leaving"
+    );
+
+    // Leave the subgroup: MemberLeft cascades the ContextIdentity away.
+    let left = SignedGroupOp::sign(
+        &member_sk,
+        subgroup.to_bytes().into(),
+        vec![],
+        1,
+        GroupOp::MemberLeft {
+            member: member_pk,
+            expected_group_state_hash: [0u8; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+    )
+    .expect("sign MemberLeft");
+    apply_local_signed_group_op(&store, &left).expect("apply MemberLeft");
+    assert!(
+        store.handle().get(&id_key).unwrap().is_none(),
+        "MemberLeft must cascade the leaver's ContextIdentity row away"
+    );
+
+    // Admin re-adds via `add_group_members` (GroupOp::MemberAdded).
+    let add = SignedGroupOp::sign(
+        &admin_sk,
+        subgroup.to_bytes().into(),
+        vec![left.content_hash().unwrap()],
+        1,
+        GroupOp::MemberAdded {
+            member: member_pk,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .expect("sign MemberAdded");
+    apply_local_signed_group_op(&store, &add).expect("apply MemberAdded");
+
+    // THE ASSERTION: the re-added leaver can author again.
+    let row = store
+        .handle()
+        .get(&id_key)
+        .unwrap()
+        .expect("MemberAdded apply must restore the ContextIdentity row");
+    assert_eq!(
+        row.private_key,
+        Some(member_sk_bytes),
+        "the re-added leaver must hold a signable private key for the context — \
+         without it, sync loops forever on 'no owned identities found for context'"
+    );
+}
+
+#[test]
 fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
     use rand::rngs::OsRng;
     let store = test_store();
