@@ -402,28 +402,56 @@ steps:
       - "contains({{members_after_rejoin}}, {{identity_node2}})"
       - "contains({{members_after_rejoin}}, {{identity_node3}})"
 
-  # Deliberately NOT asserted here: that node-2 can WRITE again after the
-  # re-add. It cannot today — and that is a pre-existing gap unrelated to
-  # re-entry control, not something this flow should pretend passes.
-  #
-  # `leave_group` purges the leaver's own `ContextIdentity` rows, private key
-  # included. `MemberAdded` apply calls `restore_member_context_identities`,
-  # which does rewrite the row from the node's namespace identity — the log
-  # line confirms it fires — yet the node still resolves zero *owned*
-  # identities for the context (`get_context_members(owned: true)` filters on
-  # `private_key.is_some()`), so every sync attempt dies with "no owned
-  # identities found for context" and it never converges.
-  #
-  # A member an admin REMOVED does not hit this: `group-kick-and-rejoin-keyshare`
-  # and `group-kick-and-readd-deny-list` both re-add and then write
-  # successfully. It is specific to a VOLUNTARY leaver, and nothing exercised
-  # it before, because the old version of this flow had node-2 rejoin via
-  # `join_subgroup_inheritance` — an active call that re-establishes the
-  # identity as a side effect, masking it.
-  #
-  # The write-after-re-add property is already covered by the two kick flows.
-  # What this flow uniquely pins is that leaving blocks passive re-inheritance,
-  # which is asserted in full above.
+  # ── Phase 8: the re-added leaver must be able to AUTHOR again ──────
+  # This is the property the flow previously left unasserted (a
+  # documented gap). The chain that has to complete for node-2 to write:
+  #   * MemberLeft rotated the group key (forward secrecy), so the
+  #     admin's MemberAdded is encrypted under a key epoch node-2 lost;
+  #   * node-2 buffers that MemberAdded as undecryptable until KeyDelivery
+  #     lands, then re-drives it (#3264) — which runs
+  #     `restore_member_context_identities`, rewriting node-2's
+  #     ContextIdentity row with a signable private key;
+  #   * only then does `get_context_members(owned)` see an owned identity
+  #     and sync stop failing with "no owned identities found for context".
+  # The generous sync timeout below is deliberate: a genuine convergence
+  # failure fails even with a long wait, while a mere key-delivery delay
+  # converges — so this cleanly tells the two apart.
+
+  - name: Post-re-add — node-2 writes
+    type: call
+    node: leave-rejoin-node-2
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "post_readd"
+      value: "node2_msg_after_readd"
+    executor_public_key: '{{node2_key}}'
+
+  - name: Post-re-add sync
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - leave-rejoin-node-1
+      - leave-rejoin-node-2
+      - leave-rejoin-node-3
+    timeout: 90
+    check_interval: 2
+
+  - name: Post-re-add — node-3 reads node-2's write
+    type: call
+    node: leave-rejoin-node-3
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "post_readd"
+    executor_public_key: '{{node3_key}}'
+    outputs:
+      post_readd_read: result
+
+  - name: Assert the re-added leaver's write reached node-3
+    type: json_assert
+    statements:
+      - 'json_equal({{post_readd_read}}, {"output": "node2_msg_after_readd"})'
 
 stop_all_nodes: false
 restart: false
