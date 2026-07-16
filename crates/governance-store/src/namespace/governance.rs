@@ -1291,6 +1291,51 @@ impl<'a> NamespaceGovernance<'a> {
             record_namespace_retry_event("none");
         }
 
+        // #2256/#3198: an `Open` subgroup encrypts its governance ops with the
+        // *namespace* key (see `GroupGovernancePublisher`), not its own. A
+        // root-admitted member (e.g. a `ReadOnlyTee`) that receives an
+        // Open-subgroup op BEFORE the namespace key was delivered parks it
+        // undecryptable. The per-group retry above only re-drives the group
+        // whose key just arrived — here the namespace root — so nothing
+        // re-drives the *subgroup's* own buffered ops. A `SubgroupVisibilitySet
+        // -> Open` that arrived early then stays applied-at-DAG-but-effect-
+        // skipped forever: the subgroup keeps reading `Restricted`, and
+        // inherited auto-follow refuses to join contexts registered under it.
+        //
+        // When the delivered/rotated key IS the namespace key, also re-drive
+        // every OTHER group in this namespace that now holds a decryptable
+        // buffered op — exactly the held-key buffered-op set the #2848 Part C
+        // startup sweep re-drives, applied here at delivery time so recovery
+        // does not have to wait for a node restart. Each re-drive runs through
+        // the normal signature/nonce/authorizer apply path (no security bypass),
+        // is idempotent (nonce-window deduped), and the set is self-limiting to
+        // groups with pending decryptable ops.
+        if group_id == self.namespace_id.to_bytes() {
+            match retry_service.groups_with_held_key_buffered_ops() {
+                Ok(groups) => {
+                    for sub in groups {
+                        if sub == group_id {
+                            continue;
+                        }
+                        if let Err(e) = self.redrive_encrypted_ops_for_group_counted(sub) {
+                            tracing::warn!(
+                                group_id = %hex::encode(sub),
+                                error = %format!("{e:#}"),
+                                "failed to re-drive Open-subgroup buffered ops after \
+                                 namespace key delivery"
+                            );
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    namespace_id = %hex::encode(self.namespace_id.to_bytes()),
+                    error = %format!("{e:#}"),
+                    "failed to enumerate held-key buffered-op groups after namespace \
+                     key delivery"
+                ),
+            }
+        }
+
         Ok(retry_divergence)
     }
 

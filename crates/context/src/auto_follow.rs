@@ -327,11 +327,61 @@ async fn run(
                     });
                 }
             }
+            OpEvent::SubgroupVisibilityChanged {
+                group_id,
+                open: true,
+            } => {
+                let store = store.clone();
+                let context_client = context_client.clone();
+                let limiter = Arc::clone(&limiter);
+                let _ = tasks.spawn(async move {
+                    handle_subgroup_opened(&store, &context_client, &limiter, group_id).await;
+                });
+            }
             // Subgroup auto-follow (SubgroupNested) and other variants
-            // are handled in a separate pass — see module docs.
+            // (including a Subgroup flip to `Restricted`) are handled in a
+            // separate pass — see module docs.
             _ => {}
         }
     }
+}
+
+/// A subgroup just flipped to `Open`. A root-admitted member (e.g. a
+/// `ReadOnlyTee`) inherits membership into `Open` subgroups, so contexts
+/// registered under it whose `ContextRegistered` auto-follow decision ran while
+/// the subgroup still read `Restricted` were never joined. Re-run the follow
+/// decision for every context in the now-`Open` subgroup.
+///
+/// This is the event-driven complement to the `SubgroupVisibilitySet` re-drive
+/// on the governance side: the re-drive makes the subgroup read `Open` locally,
+/// and this makes auto-follow act on it without waiting for a fresh
+/// `ContextRegistered` (which, for contexts registered before the flip applied,
+/// will never come again).
+async fn handle_subgroup_opened(
+    store: &Store,
+    context_client: &ContextClient,
+    limiter: &Arc<RateLimiter>,
+    group_id: [u8; 32],
+) {
+    let gid = ContextGroupId::from(group_id);
+    let Some(self_pk) = self_pk_for_group(store, &gid) else {
+        return;
+    };
+    // Respect the member's opt-in. `should_auto_follow_contexts` is
+    // inheritance-aware: for a member with no direct row (the root-admitted TEE)
+    // it resolves the Open-chain anchor row's `auto_follow.contexts` flag.
+    if !should_auto_follow_contexts(store, &gid, &self_pk) {
+        return;
+    }
+    info!(
+        group_id = %hex::encode(group_id),
+        "auto-follow: subgroup flipped to Open — re-evaluating its contexts for inherited join"
+    );
+    // Reuse the flag-enabled backfill path: enumerate the subgroup's contexts
+    // and (idempotently) join each. `join_context` is inheritance-aware, so a
+    // non-inherited member is refused there and an already-joined context is a
+    // no-op.
+    handle_auto_follow_enabled(store, context_client, limiter, group_id, self_pk).await;
 }
 
 /// Decision produced by inspecting store state for a
