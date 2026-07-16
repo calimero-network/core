@@ -633,7 +633,7 @@ fn policy_fetch_backoff(attempt: usize) -> std::time::Duration {
 /// Resolve policy: fetch from release when version is set, else None.
 pub async fn resolve_policy() -> EyreResult<Option<KmsAttestationPolicy>> {
     if use_env_policy() {
-        info!("USE_ENV_POLICY=true: skipping release fetch, using config.toml policy");
+        warn!("USE_ENV_POLICY=true: skipping release fetch, using config.toml policy");
         return Ok(None);
     }
     let Some(version) = release_version_from_env()? else {
