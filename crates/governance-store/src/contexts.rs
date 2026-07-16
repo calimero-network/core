@@ -297,7 +297,16 @@ mod tests {
     use calimero_store::db::InMemoryDB;
     use calimero_store::{key, types, Store};
 
-    use super::{find_local_signing_identities, find_local_signing_identity};
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use calimero_primitives::context::GroupMemberRole;
+
+    use super::{
+        find_local_signing_identities, find_local_signing_identity,
+        is_currently_authorized_for_context, register_context_in_group,
+    };
+    use crate::test_fixtures::{nest_for_test, sample_meta_with_admin};
+    use crate::{CapabilitiesRepository, MembershipRepository, MetaRepository};
 
     fn store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
@@ -349,5 +358,105 @@ mod tests {
         assert!(find_local_signing_identities(&store, &context)
             .expect("enumerate")
             .is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // Open -> Restricted flip-back at the *authorization* surface
+    // (PR #3267 review comments 3593200482 / 3593200484).
+    //
+    // `membership::tests::flip_back_*` pin that `check_path` stops
+    // resolving an inherited-only member. These pin what actually gates
+    // apply: `is_currently_authorized_for_context`, which HC/LevelWise
+    // reach through `is_leaf_currently_authorized`.
+    // -----------------------------------------------------------------
+
+    /// Root-admitted inherited-only member with a context registered
+    /// under an `Open` subgroup. Returns (root, sub, context, member).
+    fn seed_inherited_context_open(
+        store: &Store,
+    ) -> (ContextGroupId, ContextGroupId, ContextId, PublicKey) {
+        let root = ContextGroupId::from([0xB0; 32]);
+        let sub = ContextGroupId::from([0xB1; 32]);
+        let context = ContextId::from([0xB2; 32]);
+        let admin = PublicKey::from([0xEE; 32]);
+        let tee = PublicKey::from([0x01; 32]);
+
+        // Distinct admin so the member is never short-circuited by the
+        // `is_admin` creator carve-out in the function under test.
+        MetaRepository::new(store)
+            .save(&root, &sample_meta_with_admin(admin))
+            .expect("save root meta");
+        MetaRepository::new(store)
+            .save(&sub, &sample_meta_with_admin(admin))
+            .expect("save sub meta");
+        nest_for_test(store, &root, &sub);
+        MembershipRepository::new(store)
+            .add_member(&root, &tee, GroupMemberRole::Member)
+            .expect("add root member");
+        CapabilitiesRepository::new(store)
+            .set_member_capability(
+                &root,
+                &tee,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )
+            .expect("grant join cap");
+        CapabilitiesRepository::new(store)
+            .set_subgroup_visibility(&sub, VisibilityMode::Open)
+            .expect("open sub");
+        register_context_in_group(store, &sub, &context).expect("register context");
+        (root, sub, context, tee)
+    }
+
+    /// The authorization surface that actually gates apply must deny an
+    /// inherited-only member once the subgroup walls back off.
+    #[test]
+    fn flip_back_to_restricted_revokes_context_authorization() {
+        let store = store();
+        let (_root, sub, context, tee) = seed_inherited_context_open(&store);
+
+        assert!(
+            is_currently_authorized_for_context(&store, &context, &tee).unwrap(),
+            "precondition: an Open subgroup authorizes the inherited member"
+        );
+
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+            .unwrap();
+
+        assert!(
+            !is_currently_authorized_for_context(&store, &context, &tee).unwrap(),
+            "flip-back must deny the inherited member at the apply gate"
+        );
+    }
+
+    /// The residue the TODO is really about: the flip-back revokes
+    /// *authorization* but leaves the local `ContextIdentity` join row
+    /// behind. Nothing prunes it — this is the documented gap, and it is
+    /// a cleanup concern, NOT an authorization bypass, because the gate
+    /// above denies regardless of the row's presence.
+    #[test]
+    fn flip_back_to_restricted_leaves_stale_context_identity_row() {
+        let store = store();
+        let (_root, sub, context, tee) = seed_inherited_context_open(&store);
+        // The join that happened while the subgroup was Open.
+        put_identity(&store, &context, &tee, true);
+
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+            .unwrap();
+
+        // The row survives...
+        assert!(
+            store
+                .handle()
+                .has(&key::ContextIdentity::new(context, tee))
+                .unwrap(),
+            "the join row is not pruned on flip-back — the real gap"
+        );
+        // ...but it confers nothing: authorization is resolved live.
+        assert!(
+            !is_currently_authorized_for_context(&store, &context, &tee).unwrap(),
+            "a surviving join row must not confer authorization after the wall is back up"
+        );
     }
 }

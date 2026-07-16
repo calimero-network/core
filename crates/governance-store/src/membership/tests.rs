@@ -2216,3 +2216,222 @@ fn is_authoritative_namespace_identity_recognizes_owner_admin_tee() {
         .is_authoritative_namespace_identity(namespace_id.into(), &stranger)
         .unwrap());
 }
+
+// ---------------------------------------------------------------------
+// Open -> Restricted flip-back semantics (PR #3267 review comments
+// 3593200482 / 3593200484).
+//
+// The AI reviewer asserted that an inherited-only member "keeps its
+// already-granted inherited access" after a subgroup reverts from Open
+// to Restricted, because nothing re-evaluates existing joins on the
+// flip-back. These tests pin the actual resolution semantics rather
+// than arguing from a reading of `check_path`.
+// ---------------------------------------------------------------------
+
+/// Seed a root-admitted inherited-only member: a direct row at `root`
+/// carrying `CAN_JOIN_OPEN_SUBGROUPS`, no direct row at `sub`, and `sub`
+/// nested under `root` and flipped `Open`. This is the `ReadOnlyTee`
+/// shape the flip-back findings are about.
+fn seed_inherited_only_member_open(
+    store: &Store,
+    root: &ContextGroupId,
+    sub: &ContextGroupId,
+    member: &PublicKey,
+) {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    nest_for_test(store, root, sub);
+    MembershipRepository::new(store)
+        .add_member(root, member, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(store)
+        .set_member_capability(
+            root,
+            member,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+    CapabilitiesRepository::new(store)
+        .set_subgroup_visibility(sub, VisibilityMode::Open)
+        .unwrap();
+}
+
+/// The contested claim, stated as a test: an inherited-only member does
+/// NOT retain membership across an Open -> Restricted flip-back. The
+/// wall closes on the very next resolution — there is no cached grant
+/// and therefore no "already-granted access" to revoke.
+#[test]
+fn flip_back_to_restricted_revokes_inherited_membership() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let root = ContextGroupId::from([0xA0; 32]);
+    let sub = ContextGroupId::from([0xA1; 32]);
+    let tee = PublicKey::from([0x01; 32]);
+
+    seed_inherited_only_member_open(&store, &root, &sub, &tee);
+
+    // While Open: inherited membership resolves.
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&sub, &tee)
+            .unwrap(),
+        "precondition: an Open subgroup grants inherited membership"
+    );
+    assert!(matches!(
+        MembershipRepository::new(&store)
+            .check_path(&sub, &tee)
+            .unwrap(),
+        MembershipPath::Inherited {
+            via_admin: false,
+            ..
+        }
+    ));
+
+    // The flip back, exactly as `SubgroupVisibilitySet -> Restricted` applies it.
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+        .unwrap();
+
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&sub, &tee)
+            .unwrap(),
+        "flip-back to Restricted must revoke inherited membership immediately"
+    );
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .check_path(&sub, &tee)
+            .unwrap(),
+        MembershipPath::None,
+        "an inherited-only member resolves to None once the wall is back up"
+    );
+}
+
+/// Membership is not the only surface: the capability bitmask an
+/// inherited member holds must lapse on the same flip, otherwise a
+/// caller gating on `effective_capabilities` would still see a grant.
+#[test]
+fn flip_back_to_restricted_revokes_inherited_capabilities() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let root = ContextGroupId::from([0xA2; 32]);
+    let sub = ContextGroupId::from([0xA3; 32]);
+    let tee = PublicKey::from([0x02; 32]);
+
+    seed_inherited_only_member_open(&store, &root, &sub, &tee);
+    assert!(
+        MembershipRepository::new(&store)
+            .effective_capabilities(&sub, &tee)
+            .unwrap()
+            .is_some(),
+        "precondition: an Open subgroup yields inherited capabilities"
+    );
+
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+        .unwrap();
+
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .effective_capabilities(&sub, &tee)
+            .unwrap(),
+        None,
+        "flip-back must lapse the inherited capability bitmask, not just is_member"
+    );
+}
+
+/// Control: the flip-back must revoke ONLY inherited access. A member
+/// with a direct row in the subgroup is unaffected — this is what makes
+/// the revocation attributable to the visibility wall rather than to
+/// some unrelated teardown.
+#[test]
+fn flip_back_to_restricted_leaves_direct_membership_intact() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let root = ContextGroupId::from([0xA4; 32]);
+    let sub = ContextGroupId::from([0xA5; 32]);
+    let inherited_only = PublicKey::from([0x03; 32]);
+    let direct = PublicKey::from([0x04; 32]);
+
+    seed_inherited_only_member_open(&store, &root, &sub, &inherited_only);
+    // `direct` additionally holds a real row in the subgroup itself.
+    MembershipRepository::new(&store)
+        .add_member(&sub, &direct, GroupMemberRole::Member)
+        .unwrap();
+
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+        .unwrap();
+
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&sub, &inherited_only)
+            .unwrap(),
+        "inherited-only access lapses"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&sub, &direct)
+            .unwrap(),
+        "a direct row survives the flip-back — the wall gates inheritance only"
+    );
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .check_path(&sub, &direct)
+            .unwrap(),
+        MembershipPath::Direct,
+    );
+}
+
+/// Depth-independence: the wall closes at ANY hop of the Open chain, not
+/// just the leaf the member is resolving. A mid-chain flip-back cuts a
+/// member inheriting from further up.
+#[test]
+fn flip_back_at_mid_chain_revokes_inheritance_from_root() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let root = ContextGroupId::from([0xA6; 32]);
+    let mid = ContextGroupId::from([0xA7; 32]);
+    let leaf = ContextGroupId::from([0xA8; 32]);
+    let tee = PublicKey::from([0x05; 32]);
+
+    nest_for_test(&store, &root, &mid);
+    nest_for_test(&store, &mid, &leaf);
+    MembershipRepository::new(&store)
+        .add_member(&root, &tee, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &root,
+            &tee,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+    for gid in [&mid, &leaf] {
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(gid, VisibilityMode::Open)
+            .unwrap();
+    }
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&leaf, &tee)
+            .unwrap(),
+        "precondition: a fully-Open chain grants inherited membership at the leaf"
+    );
+
+    // `leaf` itself stays Open; the wall goes back up at `mid`.
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&mid, VisibilityMode::Restricted)
+        .unwrap();
+
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&leaf, &tee)
+            .unwrap(),
+        "a Restricted hop anywhere on the chain cuts inheritance at the leaf"
+    );
+}
