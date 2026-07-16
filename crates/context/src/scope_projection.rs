@@ -495,6 +495,16 @@ impl ScopeProjections {
             .is_some_and(|log| ScopeState::cut_ancestry_complete(log, parents))
     }
 
+    /// Whether the cut's ancestry is both present AND fully decoded (no `Noop`
+    /// placeholders for ops this node can't yet decrypt). See
+    /// [`ScopeState::cut_ancestry_decoded`]. `false` for an unknown scope.
+    #[must_use]
+    pub fn cut_ancestry_decoded(&self, scope: &ScopeId, parents: &[[u8; 32]]) -> bool {
+        self.logs
+            .get(scope)
+            .is_some_and(|log| ScopeState::cut_ancestry_decoded(log, parents))
+    }
+
     /// Rebuild this namespace's governance scopes from **persisted** source
     /// state — the startup/backfill path, so a just-restarted node's projection
     /// isn't empty (an empty projection can't be authoritative). The projection
