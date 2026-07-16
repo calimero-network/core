@@ -44,7 +44,9 @@ async fn main() -> EyreResult<()> {
 fn setup() -> EyreResult<()> {
     let directives = match var("RUST_LOG") {
         Ok(value) if !value.trim().is_empty() => value,
-        _ => "merod=info,calimero_=info".to_owned(),
+        // mero_auth is included so embedded-auth startup messages (notably
+        // the first-login setup code on a fresh node) are visible by default.
+        _ => "merod=info,calimero_=info,mero_auth=info".to_owned(),
     };
 
     registry()

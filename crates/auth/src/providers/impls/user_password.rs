@@ -309,26 +309,11 @@ impl UserPasswordProvider {
         Ok((key_id, root_key))
     }
 
-    /// Resolve the effective bootstrap secret.
-    ///
-    /// The `MERO_AUTH_BOOTSTRAP_SECRET` environment variable takes precedence
-    /// (the recommended out-of-band channel); the configured value is used as
-    /// a fallback. Returns `None` when neither is set, which disables
-    /// first-login bootstrap entirely. An empty string in either source is
-    /// treated as unset — otherwise a blank env interpolation or
-    /// `bootstrap_secret = ""` in config would let `""` match a caller that
-    /// omitted the field (`unwrap_or_default`), silently re-enabling the
-    /// unauthenticated TOFU bootstrap this gate exists to close.
+    /// Resolve the effective bootstrap secret (env over config; empty =
+    /// unset). Shared with the startup setup-code banner — see
+    /// [`UserPasswordConfig::effective_bootstrap_secret`].
     fn effective_bootstrap_secret(&self) -> Option<String> {
-        std::env::var("MERO_AUTH_BOOTSTRAP_SECRET")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .or_else(|| {
-                self.config
-                    .bootstrap_secret
-                    .clone()
-                    .filter(|s| !s.is_empty())
-            })
+        self.config.effective_bootstrap_secret()
     }
 
     /// Constant-time comparison of a presented bootstrap secret against the
