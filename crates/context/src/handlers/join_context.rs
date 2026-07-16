@@ -262,14 +262,13 @@ impl Handler<JoinContextRequest> for ContextManager {
                 // Inherited members (Open subgroup, joined via the
                 // CAN_JOIN_OPEN_SUBGROUPS parent-walk) don't get a
                 // `KeyDelivery` from any admin — admin never called
-                // `add_group_members` for them. Without the group key
-                // their `sender_key` stays None on the ContextIdentity
-                // row above, which means they can't decrypt state-DAG
-                // messages and others can't decrypt theirs. Publish
-                // `RootOp::MemberJoinedOpen` signed by us so any peer
-                // holding the key responds with a `KeyDelivery` (same
-                // mechanism `MemberJoined` uses for invitation-based
-                // joins).
+                // `add_group_members` for them. Without it they never
+                // receive the group key (into their GroupKeyring), which
+                // means they can't decrypt state-DAG messages and others
+                // can't decrypt theirs. Publish `RootOp::MemberJoinedOpen`
+                // signed by us so any peer holding the key responds with a
+                // `KeyDelivery` (same mechanism `MemberJoined` uses for
+                // invitation-based joins).
                 //
                 // Direct members are explicit-add via
                 // `add_group_members` and already get a `KeyDelivery`
