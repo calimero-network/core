@@ -1310,6 +1310,12 @@ impl<'a> NamespaceGovernance<'a> {
         // the normal signature/nonce/authorizer apply path (no security bypass),
         // is idempotent (nonce-window deduped), and the set is self-limiting to
         // groups with pending decryptable ops.
+        //
+        // This runs on EVERY namespace-key delivery/rotation, but once a
+        // subgroup's buffered ops have applied their nonces are windowed, so
+        // subsequent passes are cheap no-ops (`redrive_..._counted` returns 0) —
+        // bounded and idempotent, so no extra "already re-driven" filtering is
+        // needed here.
         if group_id == self.namespace_id.to_bytes() {
             match retry_service.groups_with_held_key_buffered_ops() {
                 Ok(groups) => {
@@ -1317,6 +1323,13 @@ impl<'a> NamespaceGovernance<'a> {
                         if sub == group_id {
                             continue;
                         }
+                        // Intentional: unlike the namespace-root `retry` above
+                        // (which threads `retry_divergence` back to the caller),
+                        // this fan-out uses the counted re-drive and DROPS the
+                        // divergence signal. A re-driven Open-subgroup
+                        // MemberRemoved/MemberLeft divergence is instead surfaced
+                        // by that subgroup's own key-delivery path or the #2848
+                        // startup sweep — not reported from here.
                         if let Err(e) = self.redrive_encrypted_ops_for_group_counted(sub) {
                             tracing::warn!(
                                 group_id = %hex::encode(sub),
