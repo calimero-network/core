@@ -284,8 +284,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     // re-enter this group. This is the last writer of a direct row
                     // that isn't already gated, and the apply path leans on that:
                     // `apply_member_joined` checks re-entry only for identities
-                    // WITHOUT a row (so a re-published `MemberJoinedAt` stays
-                    // replay-safe), which is sound precisely because no blocked
+                    // WITHOUT a row (so re-applying the `MemberJoinedAt` op — via
+                    // gossip re-delivery, sync backfill, or replay — stays
+                    // idempotent), which is sound precisely because no blocked
                     // identity can obtain a row out of band.
                     //
                     // A voluntary leaver returning with a freshly issued

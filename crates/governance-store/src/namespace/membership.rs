@@ -82,14 +82,16 @@ impl<'a> NamespaceMembershipService<'a> {
         // Placement is load-bearing, and it belongs AFTER the direct-row dedup
         // above, not before it. The block governs RE-ENTRY; someone who already
         // holds a member row is not re-entering, so the gate has nothing to say
-        // about them. Put it ahead of the dedup and it fires on its own
-        // bookkeeping: this op is re-applied whenever `join_group` re-publishes
-        // `MemberJoinedAt` (the durable re-publish that survives a peer being
-        // down), and a re-publish is a fresh op with a fresh content hash, so the
-        // op-log dedup does not absorb it. The second apply would then see the
-        // consumption row the first apply wrote and bail — a failing apply does
-        // not advance the namespace governance head, so every later governance op
-        // stalls behind it and the whole namespace stops converging.
+        // about them — and this handler MUST be idempotent on re-apply, which the
+        // whole apply pipeline relies on (the mutation re-runs on every gossip
+        // re-delivery, sync backfill, and post-restart DAG replay, before the
+        // op-log dedup fires; a handler that bails on a second run leaves the
+        // nonce unpersisted and wedges the node). Put the gate ahead of the dedup
+        // and the first apply consumes the invitation, then the second apply sees
+        // that consumption row and bails — a failing apply does not advance the
+        // namespace governance head, so every later governance op stalls behind it
+        // and the namespace stops converging. Behind the dedup, a re-apply hits
+        // `has_direct_member` and returns early, so the gate runs exactly once.
         //
         // It must still come after `verify_member_join_signature`, so we never
         // read state on the say-so of an unauthenticated op.
