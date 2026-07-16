@@ -66,8 +66,7 @@ src/
 │   │   ├── tee.rs             # TEE handlers parent
 │   │   ├── tee/
 │   │   │   ├── attest.rs
-│   │   │   ├── info.rs
-│   │   │   └── verify_quote.rs
+│   │   │   └── info.rs
 │   │   ├── packages.rs        # Package handlers
 │   │   ├── list_packages.rs   # List packages
 │   │   ├── list_versions.rs   # List versions
