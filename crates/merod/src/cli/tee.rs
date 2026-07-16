@@ -189,6 +189,38 @@ async fn verify_quote(
     }
 }
 
+/// Classify a verify error for the tampered-quote check.
+///
+/// Returns `true` only when the error is a cryptographic/parse rejection of the
+/// quote itself — meaning the tamper was genuinely detected. This covers a
+/// corrupted real quote (`QuoteParsingFailed` / `QuoteConversionFailed` /
+/// `QuoteVerificationFailed`), the mock verifier's "missing MOCK_TDX_QUOTE_V1
+/// header" rejection (surfaced as `QuoteParsingFailed`), and binding mismatches.
+///
+/// Returns `false` for infrastructure/transient failures — most importantly
+/// `CollateralFetchFailed` (an Intel PCS network/DCAP flake) — which say nothing
+/// about tamper detection and must therefore fail the probe as inconclusive
+/// rather than be miscounted as a successful rejection.
+///
+/// The match is exhaustive on purpose: a new `AttestationError` variant will fail
+/// to compile here until it is explicitly classified as rejection or infra.
+fn is_quote_rejection_error(err: &AttestationError) -> bool {
+    match err {
+        AttestationError::QuoteParsingFailed(_)
+        | AttestationError::QuoteConversionFailed(_)
+        | AttestationError::QuoteVerificationFailed(_)
+        | AttestationError::NonceMismatch { .. }
+        | AttestationError::ApplicationHashMismatch { .. } => true,
+        AttestationError::CollateralFetchFailed(_)
+        | AttestationError::NotSupported
+        | AttestationError::SystemTimeError(_)
+        | AttestationError::QuoteGenerationFailed(_)
+        | AttestationError::InvalidNonce(_)
+        | AttestationError::InvalidApplicationHash(_)
+        | AttestationError::InfoRetrievalFailed(_) => false,
+    }
+}
+
 /// Corrupt one byte of the quote so verification must reject it.
 fn tamper_quote(quote_bytes: &[u8], is_mock: bool) -> Vec<u8> {
     let mut tampered = quote_bytes.to_vec();
@@ -250,7 +282,12 @@ async fn run_probe_checks(
         },
     };
 
-    // tampered_quote: a mutated quote must be rejected (error or not valid).
+    // tampered_quote: a mutated quote must be rejected. A rejection is either
+    // `Ok(result)` that is not valid, or an `Err` whose variant is a
+    // cryptographic/parse rejection of the quote itself. An infrastructure or
+    // transient error (e.g. Intel PCS collateral fetch) is INCONCLUSIVE — it
+    // cannot confirm tamper detection, so it must fail the probe rather than be
+    // counted as a pass (otherwise a network flake masks a real regression).
     let tampered_bytes = tamper_quote(quote_bytes, is_mock);
     let tampered_quote = match verify_quote(&tampered_bytes, &nonce, &app_hash, is_mock).await {
         Ok(res) => {
@@ -261,11 +298,14 @@ async fn run_probe_checks(
                 error: None,
             }
         }
-        Err(err) => TamperedQuoteCheck {
-            passed: true,
-            rejected: true,
-            error: Some(err.to_string()),
-        },
+        Err(err) => {
+            let rejected = is_quote_rejection_error(&err);
+            TamperedQuoteCheck {
+                passed: rejected,
+                rejected,
+                error: Some(err.to_string()),
+            }
+        }
     };
 
     let outcome = if positive.passed && wrong_nonce.passed && tampered_quote.passed {
@@ -372,6 +412,42 @@ mod tests {
         assert_eq!(result.outcome, "failure");
         assert!(!result.checks.positive.passed);
         assert!(!result.checks.positive.application_hash_verified);
+    }
+
+    #[test]
+    fn infra_errors_are_not_counted_as_tamper_rejections() {
+        // A collateral fetch flake (or any other non-rejection variant) must not
+        // be classified as "tamper detected" — it is inconclusive.
+        assert!(!is_quote_rejection_error(
+            &AttestationError::CollateralFetchFailed("Intel PCS unreachable".to_owned())
+        ));
+        assert!(!is_quote_rejection_error(&AttestationError::NotSupported));
+        assert!(!is_quote_rejection_error(
+            &AttestationError::SystemTimeError("clock skew".to_owned())
+        ));
+        assert!(!is_quote_rejection_error(
+            &AttestationError::QuoteGenerationFailed("tsm busy".to_owned())
+        ));
+    }
+
+    #[test]
+    fn parse_and_crypto_errors_are_tamper_rejections() {
+        // A corrupted mock quote surfaces as QuoteParsingFailed.
+        assert!(is_quote_rejection_error(
+            &AttestationError::QuoteParsingFailed(
+                "Not a valid mock quote - missing MOCK_TDX_QUOTE_V1 header".to_owned()
+            )
+        ));
+        assert!(is_quote_rejection_error(
+            &AttestationError::QuoteVerificationFailed("bad signature".to_owned())
+        ));
+        assert!(is_quote_rejection_error(
+            &AttestationError::QuoteConversionFailed("malformed body".to_owned())
+        ));
+        assert!(is_quote_rejection_error(&AttestationError::NonceMismatch {
+            expected: "aa".to_owned(),
+            actual: "bb".to_owned(),
+        }));
     }
 
     #[test]
