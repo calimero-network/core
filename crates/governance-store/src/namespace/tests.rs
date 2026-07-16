@@ -5789,6 +5789,124 @@ fn curative_sweep_redrives_stranded_context() {
     );
 }
 
+/// #3198 regression: delivering the NAMESPACE key must re-drive an `Open`
+/// subgroup's buffered ops, not only the namespace root's own ops.
+///
+/// An `Open` subgroup encrypts its governance ops with the *namespace* key (see
+/// `GroupGovernancePublisher`). A root-admitted member (e.g. a `ReadOnlyTee`)
+/// that receives a `SubgroupVisibilitySet -> Open` op BEFORE the namespace key
+/// arrived parks it undecryptable, and the subgroup keeps reading `Restricted`.
+/// Before the fix, the key-delivery retry (`retry_encrypted_ops_for_group`) only
+/// re-drove the group whose key just arrived — the namespace root — so the
+/// parked subgroup op stayed effect-skipped forever, and inherited auto-follow
+/// never joined contexts registered under the subgroup (`meroctl context ls`
+/// empty on the replica). The fix fans the namespace-key delivery out to every
+/// group that now holds a decryptable buffered op.
+#[test]
+fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_context_config::VisibilityMode;
+    use rand::rngs::OsRng;
+    use rand::RngCore;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    // ---- Namespace root + this (receiver) node's identity ------------------
+    let ns_gid = ContextGroupId::from([0xA7u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(owner_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &owner_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
+        .unwrap();
+
+    // ---- The Open subgroup: born Restricted, owner is its admin ------------
+    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    nest_for_test(&store, &ns_gid, &sub_gid);
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(owner_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&sub_gid, &owner_pk, GroupMemberRole::Admin)
+        .unwrap();
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&sub_gid)
+            .unwrap(),
+        VisibilityMode::Restricted,
+        "precondition: the subgroup is born Restricted"
+    );
+
+    // ---- Mint the NAMESPACE key (Open subgroups encrypt under it) ----------
+    let ns_key: [u8; 32] = {
+        let mut k = [0u8; 32];
+        rng.fill_bytes(&mut k);
+        k
+    };
+    let ns_key_id = GroupKeyring::key_id_for(&ns_key);
+
+    // ---- Buffer the namespace-key-encrypted SubgroupVisibilitySet(Open) ----
+    let inner_op = GroupOp::SubgroupVisibilitySet {
+        mode: VisibilityMode::Open,
+    };
+    let encrypted = GroupKeyring::encrypt_op(&ns_key, &inner_op).unwrap();
+    let flip_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id.into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: sub_gid.to_bytes().into(),
+            key_id: ns_key_id.into(),
+            encrypted,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    // Applied WITHOUT the namespace key present → DAG-applied but effect-skipped.
+    apply_signed_namespace_op(&store, &flip_op)
+        .expect("apply buffered SubgroupVisibilitySet (effect-skipped: no namespace key)");
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&sub_gid)
+            .unwrap(),
+        VisibilityMode::Restricted,
+        "the flip must be effect-skipped while the namespace key is absent"
+    );
+
+    // ---- Namespace key arrives; drive the key-delivery retry entry point ---
+    let stored_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&ns_key)
+        .unwrap();
+    assert_eq!(stored_id, ns_key_id, "stored namespace key id must match");
+
+    // This is exactly what `apply_received_group_key` calls after storing a
+    // delivered key. Pre-fix it only re-drove the namespace root's own ops and
+    // left the subgroup Restricted; post-fix it fans out to the Open subgroup.
+    retry_encrypted_ops_for_group(&store, namespace_id.into(), namespace_id)
+        .expect("namespace-key delivery retry must not error");
+
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&sub_gid)
+            .unwrap(),
+        VisibilityMode::Open,
+        "#3198: delivering the namespace key must re-drive the Open subgroup's \
+         buffered SubgroupVisibilitySet so it reads Open (enabling inherited follow)"
+    );
+}
+
 // -----------------------------------------------------------------------
 // `GroupCreated` must authorize at the op's causal cut.
 //
