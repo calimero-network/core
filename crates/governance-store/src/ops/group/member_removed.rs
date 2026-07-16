@@ -5,10 +5,11 @@ use super::super::super::verify_post_apply_state_hashes;
 use super::context::GroupApplyCtx;
 use crate::{
     cascade_remove_member_from_group_tree, DenyListRepository, MembershipError,
-    MembershipRepository, MetaRepository, NamespaceRepository,
+    MembershipRepository, MetaRepository, NamespaceRepository, ReentryRepository,
 };
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
+use calimero_store::key::GroupExitReason;
 use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(
@@ -97,6 +98,7 @@ pub(crate) fn apply(
         if is_namespace_root {
             let membership = MembershipRepository::new(store);
             let deny_list = DenyListRepository::new(store);
+            let reentry = ReentryRepository::new(store);
             // `collect_descendants` returns the FULL subtree (every level, not
             // just direct children) and excludes the root itself, so one pass
             // covers each descendant group's own directly-registered contexts.
@@ -158,6 +160,10 @@ pub(crate) fn apply(
                 // is safe to run namespace-wide precisely because it is
                 // re-created on the next join/auto-follow; the deny-list is not.
                 deny_list.mark(sub, member)?;
+                // Block re-entry into this descendant too, on the same
+                // direct-row gate as the deny-list above. An eviction the member
+                // could undo by re-joining the subgroup would not be an eviction.
+                reentry.block(sub, member, GroupExitReason::Removed)?;
                 ctx.queue_event(crate::op_events::OpEvent::MemberRemoved {
                     group_id: sub.to_bytes(),
                     member: *member,
@@ -177,11 +183,19 @@ pub(crate) fn apply(
     // dropped at the receive entry point before the cross-DAG
     // check runs. Cleared if/when the member is re-added.
     DenyListRepository::new(store).mark(group_id, member)?;
+    // Block re-entry. Distinct from the deny-list above in both purpose and
+    // lifetime: the deny-list silences their traffic and is retracted the moment
+    // any member row is written, while this block is authorization state that
+    // deliberately SURVIVES a member-row write so a re-join attempt fails. Only
+    // an admin `MemberAdded` lifts a `Removed` block — no invitation does,
+    // however freshly issued, or a kick from a group with a live open invitation
+    // would mean nothing.
+    ReentryRepository::new(store).block(group_id, member, GroupExitReason::Removed)?;
     // Ordering invariant: `verify_post_apply_state_hashes`
     // must run AFTER the last mutation that touches inputs
     // to `compute_group_state_hash` (i.e. `GroupMeta` rows
     // and `GroupMember` rows for this `group_id`). Of the
-    // three preceding steps here only `remove_group_member`
+    // four preceding steps here only `remove_group_member`
     // touches those inputs:
     //
     // * `cascade_remove_member_from_group_tree` deletes
@@ -190,6 +204,13 @@ pub(crate) fn apply(
     //   affect the hash.
     // * `mark_denied` writes a `GroupDeniedMember` row — a
     //   separate column. Does not affect the hash.
+    // * the re-entry `block` writes a `GroupReentryBlock`
+    //   row — also a separate column, and deliberately kept
+    //   out of the hash. Were it hashed, the sign-time
+    //   simulation in `compute_state_hash_after_remove`
+    //   would have to model this write too, and every
+    //   honest removal would otherwise report a false
+    //   divergence and trigger a state re-fetch.
     // * `remove_group_member` deletes the `GroupMember`
     //   row — this is the step the pre-apply simulation
     //   in `compute_group_state_hash_after_remove` mirrors.

@@ -2185,6 +2185,100 @@ fn get_effective_member_capabilities_none_for_denied_inherited_member() {
 }
 
 #[test]
+fn add_member_retracts_a_stale_deny_list_entry() {
+    // A direct member row and a deny entry are contradictory answers to "is
+    // this identity currently a member". Writing the row must retract the deny,
+    // at the write choke point — not only in the `MemberAdded` apply handler,
+    // because several paths materialize a row without going through an op.
+    let store = test_store();
+    let group = test_group_id();
+    let bob = PublicKey::from([0x02; 32]);
+
+    // Removal: the row is deleted, then the identity is deny-listed.
+    MembershipRepository::new(&store)
+        .add_member(&group, &bob, GroupMemberRole::Member)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .remove_member(&group, &bob)
+        .unwrap();
+    DenyListRepository::new(&store).mark(&group, &bob).unwrap();
+    assert!(DenyListRepository::new(&store)
+        .is_denied(&group, &bob)
+        .unwrap());
+
+    // Re-add through the choke point every direct-row writer funnels through.
+    MembershipRepository::new(&store)
+        .add_member(&group, &bob, GroupMemberRole::Member)
+        .unwrap();
+
+    assert!(
+        !DenyListRepository::new(&store)
+            .is_denied(&group, &bob)
+            .unwrap(),
+        "writing a direct member row must retract the deny entry — otherwise the \
+         member holds capabilities in governance while the receive filter silences them"
+    );
+}
+
+#[test]
+fn pre_registered_rejoiner_is_never_denied_and_capable_at_once() {
+    use calimero_context_config::MemberCapabilities;
+
+    // The split-brain this guards against: a kicked member re-joins, and a peer
+    // materializes their direct row OUTSIDE the op-apply path — the sync
+    // responder pre-registering a joiner on a join stream, or the joiner's own
+    // local add in `join_group`. Both call `add_member` directly, so before the
+    // invariant was enforced at that choke point the peer ended up with a direct
+    // row AND a live deny entry. In that state `effective_capabilities` takes the
+    // `Direct` arm (which does not consult the deny-list) and hands back the
+    // group's re-seeded default capabilities, while the state-delta receive
+    // filter drops every delta the member authors. The two views must agree.
+    let store = test_store();
+    let group = test_group_id();
+    let bob = PublicKey::from([0x02; 32]);
+
+    CapabilitiesRepository::new(&store)
+        .set_default_capabilities(&group, MemberCapabilities::CAN_CREATE_CONTEXT.bits())
+        .unwrap();
+
+    // Kick: row deleted (which also drops the capability row), identity denied.
+    MembershipRepository::new(&store)
+        .add_member(&group, &bob, GroupMemberRole::Member)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .remove_member(&group, &bob)
+        .unwrap();
+    DenyListRepository::new(&store).mark(&group, &bob).unwrap();
+
+    // Re-join, materialized by a peer ahead of the governance op landing.
+    MembershipRepository::new(&store)
+        .add_member(&group, &bob, GroupMemberRole::Member)
+        .unwrap();
+
+    let denied = DenyListRepository::new(&store)
+        .is_denied(&group, &bob)
+        .unwrap();
+    let caps = MembershipRepository::new(&store)
+        .effective_capabilities(&group, &bob)
+        .unwrap();
+
+    assert!(
+        !denied,
+        "pre-registering a re-joiner must lift the network-level silence"
+    );
+    assert_eq!(
+        caps,
+        Some(MemberCapabilities::CAN_CREATE_CONTEXT.bits()),
+        "re-add re-seeds the group defaults"
+    );
+    // The actual invariant: governance and the receive filter cannot disagree.
+    assert!(
+        !(denied && caps.is_some()),
+        "split-brain: capable in governance while silenced on the network"
+    );
+}
+
+#[test]
 fn subgroup_visible_to_open_child_is_public_to_everyone() {
     use calimero_context_config::VisibilityMode;
 

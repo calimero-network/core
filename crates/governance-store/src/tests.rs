@@ -5176,6 +5176,403 @@ fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
 }
 
 // ---------------------------------------------------------------------------
+// Re-entry control, exercised through the real op-apply path.
+//
+// The pre-existing deny-list rejoin tests above stamp `DenyListRepository::mark`
+// directly rather than applying a `MemberRemoved` / `MemberLeft` op, so they
+// never produce a re-entry block and say nothing about whether a kick actually
+// sticks. These do: every exit here is a signed op, and every re-join attempt is
+// a signed op, so the whole gate is under test end to end.
+// ---------------------------------------------------------------------------
+
+/// namespace root ── subgroup, with `admin` administering the subgroup.
+/// Returns `(ns_id, ns_gid, subgroup)`.
+fn reentry_fixture(
+    store: &Store,
+    admin_pk: PublicKey,
+) -> ([u8; 32], ContextGroupId, ContextGroupId) {
+    let ns_id = [0xE0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let subgroup = ContextGroupId::from([0xE1u8; 32]);
+
+    MetaRepository::new(store)
+        .save(&subgroup, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(store)
+        .add_member(&subgroup, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(store)
+        .nest(&ns_gid, &subgroup)
+        .unwrap();
+
+    (ns_id, ns_gid, subgroup)
+}
+
+/// An admin-signed, non-expiring open invitation to `group_id` bearing `nonce`.
+fn signed_invitation_for(
+    admin_sk: &PrivateKey,
+    group_id: ContextGroupId,
+    nonce: [u8; 32],
+) -> calimero_context_config::types::SignedGroupOpenInvitation {
+    use calimero_context_config::types::{
+        GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+    use sha2::{Digest, Sha256};
+
+    let invitation = GroupInvitationFromAdmin {
+        inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
+        group_id,
+        expiration_timestamp: 0,
+        invitation_nonce: nonce,
+        invited_role: 1,
+    };
+    let inv_bytes = borsh::to_vec(&invitation).unwrap();
+    let inv_sig = admin_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
+    SignedGroupOpenInvitation {
+        invitation,
+        inviter_signature: hex::encode(inv_sig.to_bytes()),
+        application_id: None,
+        app_key: None,
+    }
+}
+
+/// Apply a `RootOp::MemberJoined` signed by the joiner themselves.
+fn apply_member_joined(
+    store: &Store,
+    ns_id: [u8; 32],
+    member_sk: &PrivateKey,
+    signed_invitation: calimero_context_config::types::SignedGroupOpenInvitation,
+    nonce: u64,
+) -> EyreResult<()> {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let signed = SignedNamespaceOp::sign(
+        member_sk,
+        ns_id.into(),
+        vec![],
+        nonce,
+        NamespaceOp::Root(RootOp::MemberJoined {
+            member: member_sk.public_key(),
+            signed_invitation,
+        }),
+    )
+    .unwrap();
+    apply_signed_namespace_op(store, &signed).map(|_result| ())
+}
+
+#[test]
+fn a_removed_member_cannot_rejoin_even_with_a_freshly_issued_invitation() {
+    use rand::rngs::OsRng;
+
+    // The whole point of the ban: an open invitation is a bearer token that
+    // anyone can present, so if a kick only invalidated the invitation the
+    // kicked member USED, the admin could never keep them out of a group with a
+    // live join link. A removal has to outrank every invitation, including ones
+    // minted after the removal.
+    let mut rng = OsRng;
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let (ns_id, _ns_gid, subgroup) = reentry_fixture(&store, admin_pk);
+
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &member_pk, GroupMemberRole::Member)
+        .unwrap();
+
+    // The admin kicks them.
+    let rm = SignedGroupOp::sign(
+        &admin_sk,
+        subgroup.to_bytes().into(),
+        vec![],
+        1,
+        dummy_member_removed_op(member_pk),
+    )
+    .expect("sign MemberRemoved");
+    apply_local_signed_group_op(&store, &rm).expect("apply MemberRemoved");
+
+    // A brand-new invitation, minted after the kick, with a nonce they have
+    // never seen.
+    let fresh = signed_invitation_for(&admin_sk, subgroup, [0x77; 32]);
+    let err = apply_member_joined(&store, ns_id, &member_sk, fresh, 1)
+        .expect_err("a removed member must not be able to rejoin by invitation");
+
+    assert!(
+        format!("{err:#}").contains("cannot rejoin"),
+        "expected a removal rejection, got: {err:#}"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .has_direct_member(&subgroup, &member_pk)
+            .unwrap(),
+        "the rejected join must not have materialized a member row"
+    );
+}
+
+#[test]
+fn an_admin_re_add_is_the_way_back_in_for_a_removed_member() {
+    use rand::rngs::OsRng;
+
+    // The ban is not a tombstone — an admin can undo it, and `MemberAdded` is
+    // the only thing that does. This is the counterpart to the test above: it
+    // pins that the block is lifted by the admin-gated op and nothing else.
+    let mut rng = OsRng;
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let (_ns_id, _ns_gid, subgroup) = reentry_fixture(&store, admin_pk);
+
+    let member_pk = PublicKey::from([0xC7; 32]);
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &member_pk, GroupMemberRole::Member)
+        .unwrap();
+
+    let rm = SignedGroupOp::sign(
+        &admin_sk,
+        subgroup.to_bytes().into(),
+        vec![],
+        1,
+        dummy_member_removed_op(member_pk),
+    )
+    .expect("sign MemberRemoved");
+    apply_local_signed_group_op(&store, &rm).expect("apply MemberRemoved");
+    assert_eq!(
+        ReentryRepository::new(&store)
+            .block_of(&subgroup, &member_pk)
+            .unwrap(),
+        Some(calimero_store::key::GroupExitReason::Removed)
+    );
+
+    let add = SignedGroupOp::sign(
+        &admin_sk,
+        subgroup.to_bytes().into(),
+        vec![rm.content_hash().unwrap()],
+        2,
+        GroupOp::MemberAdded {
+            member: member_pk,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .expect("sign MemberAdded");
+    apply_local_signed_group_op(&store, &add).expect("apply MemberAdded");
+
+    assert!(
+        ReentryRepository::new(&store)
+            .block_of(&subgroup, &member_pk)
+            .unwrap()
+            .is_none(),
+        "an admin re-adding a removed member must lift the ban"
+    );
+    assert!(MembershipRepository::new(&store)
+        .has_direct_member(&subgroup, &member_pk)
+        .unwrap());
+}
+
+#[test]
+fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
+    use rand::rngs::OsRng;
+
+    // Leaving is not a ban — they can come back. What they cannot do is walk
+    // back in on the invitation they walked out on; that one is spent for them,
+    // so re-entry has to be an explicit re-invite.
+    let mut rng = OsRng;
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let (ns_id, _ns_gid, subgroup) = reentry_fixture(&store, admin_pk);
+
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+
+    // Join with invitation A.
+    let invite_a = signed_invitation_for(&admin_sk, subgroup, [0xA1; 32]);
+    apply_member_joined(&store, ns_id, &member_sk, invite_a.clone(), 1)
+        .expect("first join with a fresh invitation must succeed");
+    assert!(MembershipRepository::new(&store)
+        .has_direct_member(&subgroup, &member_pk)
+        .unwrap());
+
+    // Walk out.
+    let left = SignedGroupOp::sign(
+        &member_sk,
+        subgroup.to_bytes().into(),
+        vec![],
+        1,
+        GroupOp::MemberLeft {
+            member: member_pk,
+            expected_group_state_hash: [0u8; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+    )
+    .expect("sign MemberLeft");
+    apply_local_signed_group_op(&store, &left).expect("apply MemberLeft");
+    assert!(!MembershipRepository::new(&store)
+        .has_direct_member(&subgroup, &member_pk)
+        .unwrap());
+
+    // Replaying invitation A must not readmit them.
+    let err = apply_member_joined(&store, ns_id, &member_sk, invite_a, 2)
+        .expect_err("replaying the invitation they left with must be rejected");
+    assert!(
+        format!("{err:#}").contains("already used this invitation"),
+        "expected a consumed-invitation rejection, got: {err:#}"
+    );
+    assert!(!MembershipRepository::new(&store)
+        .has_direct_member(&subgroup, &member_pk)
+        .unwrap());
+
+    // A freshly issued invitation does.
+    let invite_b = signed_invitation_for(&admin_sk, subgroup, [0xB2; 32]);
+    apply_member_joined(&store, ns_id, &member_sk, invite_b, 3)
+        .expect("a re-invited leaver must be able to rejoin");
+    assert!(
+        MembershipRepository::new(&store)
+            .has_direct_member(&subgroup, &member_pk)
+            .unwrap(),
+        "being re-invited is exactly how a voluntary leaver comes back"
+    );
+}
+
+#[test]
+fn a_shared_open_invitation_still_admits_others_after_one_member_burns_it() {
+    use rand::rngs::OsRng;
+
+    // Consumption is per-identity, not global. An open invitation is a bearer
+    // token with no invitee field — a link in a channel that many people join
+    // with — so burning it globally on first use would break the shared link for
+    // everyone else. Only the identity that used it is barred from replaying it.
+    let mut rng = OsRng;
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let (ns_id, _ns_gid, subgroup) = reentry_fixture(&store, admin_pk);
+
+    let bob_sk = PrivateKey::random(&mut rng);
+    let carol_sk = PrivateKey::random(&mut rng);
+    let shared = signed_invitation_for(&admin_sk, subgroup, [0x5A; 32]);
+
+    // Bob joins with the shared link, then leaves — spending it for himself.
+    apply_member_joined(&store, ns_id, &bob_sk, shared.clone(), 1).expect("bob joins");
+    let left = SignedGroupOp::sign(
+        &bob_sk,
+        subgroup.to_bytes().into(),
+        vec![],
+        1,
+        GroupOp::MemberLeft {
+            member: bob_sk.public_key(),
+            expected_group_state_hash: [0u8; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+    )
+    .expect("sign MemberLeft");
+    apply_local_signed_group_op(&store, &left).expect("bob leaves");
+
+    // Carol has never used it, so the same link still lets her in.
+    apply_member_joined(&store, ns_id, &carol_sk, shared, 1)
+        .expect("the shared invitation must still admit an identity that never used it");
+    assert!(MembershipRepository::new(&store)
+        .has_direct_member(&subgroup, &carol_sk.public_key())
+        .unwrap());
+}
+
+#[test]
+fn a_kicked_member_cannot_re_inherit_into_the_open_subgroup_they_were_kicked_from() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use rand::rngs::OsRng;
+
+    // Inheritance is the back door that makes a subgroup kick meaningless: an
+    // Open subgroup admits any parent member holding CAN_JOIN_OPEN_SUBGROUPS
+    // automatically, so the kicked member simply re-inherits. That is exactly
+    // what `group-kick-and-rejoin-keyshare` exercised as the SUCCESS path, and
+    // it is now a rejection.
+    let mut rng = OsRng;
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xE0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let subgroup = ContextGroupId::from([0xE1u8; 32]);
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+
+    // Bob is a namespace member who may join Open subgroups, and holds a direct
+    // row in the subgroup.
+    let bob_sk = PrivateKey::random(&mut rng);
+    let bob_pk = bob_sk.public_key();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &bob_pk, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &ns_gid,
+            &bob_pk,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &bob_pk, GroupMemberRole::Member)
+        .unwrap();
+
+    // The admin kicks Bob from the subgroup. He keeps his namespace membership
+    // and his join capability, so his inheritance path into the Open subgroup is
+    // fully intact — only the block stands in his way.
+    let rm = SignedGroupOp::sign(
+        &admin_sk,
+        subgroup.to_bytes().into(),
+        vec![],
+        1,
+        dummy_member_removed_op(bob_pk),
+    )
+    .expect("sign MemberRemoved");
+    apply_local_signed_group_op(&store, &rm).expect("apply MemberRemoved");
+
+    let signed = SignedNamespaceOp::sign(
+        &bob_sk,
+        ns_id.into(),
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedOpen {
+            member: bob_pk,
+            group_id: subgroup,
+        }),
+    )
+    .unwrap();
+    let err = apply_signed_namespace_op(&store, &signed)
+        .expect_err("a kicked member must not re-inherit back into the subgroup");
+
+    assert!(
+        format!("{err:#}").contains("cannot re-enter by inheritance"),
+        "expected a re-entry rejection, got: {err:#}"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .has_direct_member(&subgroup, &bob_pk)
+            .unwrap(),
+        "the rejected inheritance join must not have materialized a member row"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Metadata records: CAN_MANAGE_METADATA gate + state-hash exclusion.
 // ---------------------------------------------------------------------------
 

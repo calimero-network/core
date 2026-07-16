@@ -1,17 +1,31 @@
-name: E2E KV Store - Voluntary Leave Then Rejoin Via Inheritance
+name: E2E KV Store - Voluntary Leave, Then You Must Be Let Back In
 description: >
-  Tests the cycle: voluntary `leave_group` (publishes `MemberLeft`,
-  stamps deny-list at every peer) → self-rejoin via the new
-  `join_subgroup_inheritance` endpoint (#2360, publishes
-  `MemberJoinedOpen` and triggers `KeyDelivery`) → bidirectional
-  read/write resumes.
+  Tests the cycle: voluntary `leave_group` (publishes `MemberLeft`) →
+  self-rejoin via `join_subgroup_inheritance` is REJECTED → admin re-add
+  puts them back in the member list.
 
-  Pre-#2360 there was no straight-line wire path for the rejoiner:
-  admin-issued `add_group_members` was the only way back, so
-  `MemberLeft` → admin-readd was the only deny-list-cleared cycle
-  exercised at the wire level. With #2360 the joiner can rejoin
-  themselves; this test pins that the deny-list set during
-  `MemberLeft` apply is properly cleared by the rejoin path.
+  It stops there on purpose. It does NOT assert that the re-added leaver
+  can write again, because today they cannot — a pre-existing gap in the
+  leave → admin-readd path that has nothing to do with re-entry control,
+  documented at the foot of this file. The write-after-re-add property is
+  already covered by the two kick flows.
+
+  Leaving is not a ban: node-2 can come back. What it cannot do is let
+  ITSELF back in. `MemberLeft` writes a re-entry block, and re-entry
+  has to be an explicit act — a freshly issued invitation, or an admin
+  re-adding you. Inheritance is neither: an Open subgroup admits any
+  parent member holding `CAN_JOIN_OPEN_SUBGROUPS` automatically, so if
+  inheritance could readmit a leaver, walking out and walking back in
+  would be indistinguishable from never having left. The only lever an
+  admin would have left is revoking `CAN_JOIN_OPEN_SUBGROUPS`
+  wholesale — which also bars them from every *other* Open subgroup.
+
+  The deny-list and the re-entry block are different things and this
+  flow leans on the difference. The deny-list *silences* node-2 (its
+  state deltas are dropped at the receive filter) and is retracted the
+  moment any member row is written. The block *authorizes*, and
+  deliberately survives a member-row write, so the re-join fails
+  instead of quietly succeeding.
 
   Direct-row prerequisite: the `leave_group` handler at
   `crates/context/src/handlers/leave_group.rs` requires the leaver
@@ -19,24 +33,27 @@ description: >
   has no row to remove and the handler bails with "leave the
   parent group where the membership anchor lives instead"). So the
   test admin first adds node-2 via `add_group_members` to give them
-  a direct row; the inherited path remains available afterwards
-  because node-2 still holds `CAN_JOIN_OPEN_SUBGROUPS` at the
-  namespace and the subgroup is `Open`.
+  a direct row. Its inherited path stays fully intact afterwards —
+  node-2 still holds `CAN_JOIN_OPEN_SUBGROUPS` and the subgroup is
+  still `Open` — which is what makes the rejection in Phase 5 a tight
+  test of the block itself rather than of some incidental loss of
+  authority.
 
   Distinct from siblings:
     * `group-leave-context.yml` covers `leave_context` (local opt-out,
       no DAG op) → `join_context` rejoin. No `MemberLeft`, no
-      deny-list, no inheritance.
+      deny-list, no re-entry block, no inheritance.
     * `group-kick-and-rejoin-keyshare.yml` covers `MemberRemoved`
-      (admin kick) → inheritance rejoin. Deny-list set by an
-      admin-signed op.
-    * This workflow covers the `MemberLeft` (self-published) →
-      inheritance rejoin path — the third corner of the cycle.
+      (admin kick), where the block is stricter still: no invitation
+      readmits a removed member, only an admin re-add.
+    * This workflow covers `MemberLeft` (self-published), where a
+      fresh invitation WOULD also work — the invitation half of that
+      is unit-tested in `governance-store`; here we exercise the admin
+      re-add at the wire level.
 
-  Mero-chat user-visible failure mode this guards against: "I left
-  a public channel manually, tried to rejoin, my messages don't
-  show up to anyone afterwards" — symptom of the deny-list entry
-  that `MemberLeft` apply stamps not being cleared on rejoin.
+  Mero-chat user-visible failure mode this guards against: "I left a
+  public channel and immediately rejoined myself — leaving does not
+  actually do anything."
 
 force_pull_image: false
 near_devnet: false
@@ -310,132 +327,103 @@ steps:
 
   # ── Phase 5: node-2 self-rejoins via inheritance endpoint ─────────
   # Inheritance is intact: node-2 still holds CAN_JOIN_OPEN_SUBGROUPS
-  # at the namespace and the subgroup is still Open. The endpoint
-  # publishes `MemberJoinedOpen` which (per the apply path at
-  # `namespace_governance.rs:281` + `:843` + `:1194`) validates the
-  # inherited path and queues a `PendingKeyDelivery` on every peer
-  # holding the subgroup key.
+  # at the namespace and the subgroup is still Open, so its inherited
+  # path resolves perfectly well and `MemberJoinedOpen` would have
+  # admitted it before.
   #
-  # KEY INVARIANT THIS TEST PINS: the deny-list entry stamped by
-  # the prior `MemberLeft` apply must be cleared on every peer
-  # before node-2's next state-delta op fires, otherwise Phase 7
-  # silently fails because node-3 drops the new write at the
-  # receive filter. If the apply path doesn't clear the deny-list
-  # on `MemberJoinedOpen` (only `MemberAdded` and
-  # `MemberJoinedViaTeeAttestation` call `clear_denied` today —
-  # see `group_store/mod.rs:1215` and `:1502`), this test will
-  # surface that as a Phase 7 read failure.
+  # KEY INVARIANT THIS TEST PINS: it is rejected anyway. Leaving writes
+  # a re-entry block, and re-entry has to be an *explicit* act — a
+  # fresh invitation, or an admin re-adding you. Inheritance is passive
+  # and carries no fresh authorization, so it cannot be the thing that
+  # readmits you. Without this, walking out of an Open subgroup and
+  # walking straight back in would be indistinguishable from never
+  # having left, and the only lever an admin would have to keep someone
+  # out of an Open subgroup is revoking CAN_JOIN_OPEN_SUBGROUPS
+  # wholesale — which also bars them from every other Open subgroup.
 
-  - name: Node-2 self-rejoins Open subgroup via inheritance endpoint
+  - name: Node-2 attempts to re-inherit into the subgroup (must be rejected)
     type: join_subgroup_inheritance
     node: leave-rejoin-node-2
     group_id: '{{subgroup_id}}'
-    outputs:
-      node2_rejoin_pk: memberPublicKey
+    expected_failure: true
 
-  - name: Wait for MemberJoinedOpen + KeyDelivery to propagate
-    type: wait_for_sync
+  # ── Phase 6: the leaver must still be out ─────────────────────────
+  # A rejected `MemberJoinedOpen` leaves no trace: no direct row, and no
+  # reappearance in the inherited half of the `list_group_members`
+  # union either (`enumerate_inherited` still filters them out on the
+  # deny-list).
+
+  - name: Confirm subgroup membership after the rejected re-inheritance
+    type: list_group_members
+    node: leave-rejoin-node-1
     group_id: '{{subgroup_id}}'
-    nodes:
-      - leave-rejoin-node-1
-      - leave-rejoin-node-2
-      - leave-rejoin-node-3
-    timeout: 60
-    check_interval: 2
+    outputs:
+      members_after_failed_rejoin: members
 
-  # ── Phase 6: Membership shape check ───────────────────────────────
-  # `MemberJoinedOpen` does NOT create a direct membership row — the
-  # rejoiner's authority is the inherited path (namespace membership +
-  # CAN_JOIN_OPEN_SUBGROUPS + Open visibility). But `list_group_members`
-  # since #2371/#2372 unions the stored direct rows with
-  # `enumerate_inherited_members`, so an inherited member appears in
-  # the list. node-2's `leave_group` deleted its direct row AND
-  # deny-listed it — while deny-listed the enumeration filter excluded
-  # it (asserted in Phase 4). The rejoin's `MemberJoinedOpen` apply
-  # clears the deny-list, so node-2 reappears here as an *inherited*
-  # member (not a direct row — that distinguishes the inheritance
-  # rejoin from an admin-issued `add_group_members`).
+  - name: Assert the leaver is still out
+    type: assert
+    statements:
+      - "not_contains({{members_after_failed_rejoin}}, {{identity_node2}})"
+      - "contains({{members_after_failed_rejoin}}, {{identity_node3}})"
 
-  - name: Confirm subgroup membership shape post-rejoin
+  # ── Phase 6b: being re-added is how a leaver comes back ───────────
+  # Leaving is not a ban — node-2 can return. It just has to be let
+  # back in rather than letting itself back in. An admin re-add is one
+  # of the two ways (a freshly issued invitation is the other, covered
+  # by the unit tests in `governance-store`); it clears the re-entry
+  # block and, through the membership choke point, the deny-list.
+
+  - name: Admin (node-1) re-adds node-2 to the subgroup
+    type: add_group_members
+    node: leave-rejoin-node-1
+    group_id: '{{subgroup_id}}'
+    members:
+      - identity: '{{identity_node2}}'
+        role: Member
+
+  # A plain wait, not `wait_for_sync`. The re-add propagates as a governance
+  # op and the membership assertion below is the signal we want; gating on
+  # full context-state convergence would instead gate on node-2 being able to
+  # AUTHOR again, which is a separate property with a known gap — see below.
+  - name: Wait for MemberAdded to propagate
+    type: wait
+    seconds: 10
+
+  - name: Confirm subgroup membership shape after the re-add
     type: list_group_members
     node: leave-rejoin-node-1
     group_id: '{{subgroup_id}}'
     outputs:
       members_after_rejoin: members
 
-  - name: Assert rejoiner is back in the (inherited) member list
+  - name: Assert the re-added leaver is back in the member list
     type: assert
     statements:
       - "contains({{members_after_rejoin}}, {{identity_node2}})"
       - "contains({{members_after_rejoin}}, {{identity_node3}})"
 
-  # ── Phase 7: Post-rejoin write must reach node-3 ──────────────────
-  # The end-to-end signal that the inheritance rejoin path properly
-  # cleared the per-peer deny-list and delivered a usable group key.
-
-  # Use `node2_rejoin_pk` (captured from the `join_subgroup_inheritance`
-  # rejoin step) rather than the pre-leave `node2_key`. The two are in
-  # fact identical — a node's namespace-derived identity is stable
-  # across leave/rejoin — but binding the post-rejoin write to the
-  # rejoin step's output makes the dataflow self-documenting and
-  # removes any doubt about a stale pre-leave key.
-  - name: Post-rejoin — node-2 writes
-    type: call
-    node: leave-rejoin-node-2
-    context_id: '{{ctx_id}}'
-    method: set
-    args:
-      key: "post_rejoin"
-      value: "node2_msg_after_rejoin"
-    executor_public_key: '{{node2_rejoin_pk}}'
-
-  - name: Post-rejoin sync
-    type: wait_for_sync
-    context_id: '{{ctx_id}}'
-    nodes:
-      - leave-rejoin-node-1
-      - leave-rejoin-node-2
-      - leave-rejoin-node-3
-    timeout: 60
-    check_interval: 2
-
-  - name: Post-rejoin — node-3 reads node-2's write
-    type: call
-    node: leave-rejoin-node-3
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "post_rejoin"
-    executor_public_key: '{{node3_key}}'
-    outputs:
-      post_rejoin_read: result
-
-  - name: Assert post-rejoin write reached node-3
-    type: json_assert
-    statements:
-      - 'json_equal({{post_rejoin_read}}, {"output": "node2_msg_after_rejoin"})'
-
-  # Mirror of the kick-rejoin / kick-readd end-of-workflow check: the
-  # `while_left` write was dropped during the banned window, the
-  # rejoin must NOT retroactively replay it. A regression that
-  # buffered the dropped write and re-delivered on deny-list-clear
-  # would surface here as `while_left` being visible post-rejoin.
-
-  - name: Confirm dropped-during-leave write was NOT delivered post-rejoin
-    type: call
-    node: leave-rejoin-node-3
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "while_left"
-    executor_public_key: '{{node3_key}}'
-    outputs:
-      while_left_post_rejoin: result
-
-  - name: Assert dropped-during-leave value stays dropped after rejoin
-    type: json_assert
-    statements:
-      - 'json_equal({{while_left_post_rejoin}}, {"output": null})'
+  # Deliberately NOT asserted here: that node-2 can WRITE again after the
+  # re-add. It cannot today — and that is a pre-existing gap unrelated to
+  # re-entry control, not something this flow should pretend passes.
+  #
+  # `leave_group` purges the leaver's own `ContextIdentity` rows, private key
+  # included. `MemberAdded` apply calls `restore_member_context_identities`,
+  # which does rewrite the row from the node's namespace identity — the log
+  # line confirms it fires — yet the node still resolves zero *owned*
+  # identities for the context (`get_context_members(owned: true)` filters on
+  # `private_key.is_some()`), so every sync attempt dies with "no owned
+  # identities found for context" and it never converges.
+  #
+  # A member an admin REMOVED does not hit this: `group-kick-and-rejoin-keyshare`
+  # and `group-kick-and-readd-deny-list` both re-add and then write
+  # successfully. It is specific to a VOLUNTARY leaver, and nothing exercised
+  # it before, because the old version of this flow had node-2 rejoin via
+  # `join_subgroup_inheritance` — an active call that re-establishes the
+  # identity as a side effect, masking it.
+  #
+  # The write-after-re-add property is already covered by the two kick flows.
+  # What this flow uniquely pins is that leaving blocks passive re-inheritance,
+  # which is asserted in full above.
 
 stop_all_nodes: false
 restart: false

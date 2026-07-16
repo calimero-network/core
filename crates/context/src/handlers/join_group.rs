@@ -1,6 +1,6 @@
 use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, MetadataRepository,
-    SigningKeysRepository,
+    ReentryRepository, SigningKeysRepository,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -280,6 +280,26 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // without the direct row that subsequent direct lookups
                 // (removal, capability writes, list_group_members) need.
                 if !MembershipRepository::new(&datastore).has_direct_member(&group_id, &joiner_identity)? {
+                    // Do not materialize a local row for an identity that may not
+                    // re-enter this group. This is the last writer of a direct row
+                    // that isn't already gated, and the apply path leans on that:
+                    // `apply_member_joined` checks re-entry only for identities
+                    // WITHOUT a row (so re-applying the `MemberJoinedAt` op — via
+                    // gossip re-delivery, sync backfill, or replay — stays
+                    // idempotent), which is sound precisely because no blocked
+                    // identity can obtain a row out of band.
+                    //
+                    // A voluntary leaver returning with a freshly issued
+                    // invitation passes here, which is the point — it is the same
+                    // check `MemberJoined` apply will make in a moment. Someone an
+                    // admin removed does not, and their join fails locally with a
+                    // clear reason rather than stalling on peers that reject the
+                    // op they were about to publish.
+                    ReentryRepository::new(&datastore).require_invitation_admits(
+                        &group_id,
+                        &joiner_identity,
+                        invitation.invitation.invitation_nonce,
+                    )?;
                     MembershipRepository::new(&datastore).add_member(&group_id, &joiner_identity, role)?;
                 } else {
                     info!(
