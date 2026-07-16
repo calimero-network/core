@@ -13,6 +13,13 @@ use crate::error::AttestationError;
 use crate::generate::{is_mock_quote, MOCK_QUOTE_HEADER};
 
 /// Result of verifying a TEE attestation.
+///
+/// This is a *report* of the crypto/structural checks the verifier performed
+/// plus the raw material a caller needs to make a policy decision. It is NOT an
+/// authorization verdict on its own. In particular, `tcb_status`, `advisory_ids`
+/// and the measurement registers in `quote.body` (`mrtd` / `rtmr0..3` /
+/// `mrsigner`) are surfaced here precisely *because* the caller — not this crate
+/// — is expected to enforce a policy over them. See [`Self::is_valid`].
 #[derive(Debug, Clone)]
 pub struct VerificationResult {
     /// Whether the quote's cryptographic signature is valid.
@@ -22,15 +29,59 @@ pub struct VerificationResult {
     /// Whether the application hash matches the expected (mandatory) value.
     pub application_hash_verified: bool,
     /// TCB status reported by DCAP verification (for policy decisions).
+    ///
+    /// NOT consulted by [`Self::is_valid`]. A crypto-valid quote from an
+    /// `OutOfDate`, `SWHardeningNeeded`, or `Revoked` platform still reports
+    /// `quote_verified == true`; the caller must gate on this field.
     pub tcb_status: Option<String>,
     /// Advisory IDs reported by DCAP verification.
+    ///
+    /// NOT consulted by [`Self::is_valid`]; provided for caller-side policy.
     pub advisory_ids: Vec<String>,
     /// The parsed quote structure.
+    ///
+    /// Its `body` carries the measurement registers (`mrtd` / `rtmr0..3` /
+    /// `mrsigner`). These are parsed but NOT compared against anything by this
+    /// crate — matching them to an allowlist is the caller's responsibility.
     pub quote: Quote,
 }
 
 impl VerificationResult {
-    /// Check if all verification checks passed.
+    /// Crypto/structural validity ONLY — this is **not** an authorization
+    /// decision.
+    ///
+    /// Returns `true` iff all three built-in checks passed:
+    /// - `quote_verified` — DCAP signature + certificate chain verified against
+    ///   Intel PCS collateral (for a mock quote this is unconditionally `true`);
+    /// - `nonce_verified` — `report_data[0..32]` matched the challenge nonce
+    ///   (anti-replay);
+    /// - `application_hash_verified` — `report_data[32..64]` matched the
+    ///   mandatory app/identity binding.
+    ///
+    /// It deliberately does **not** consider, and a caller therefore MUST
+    /// enforce on top of it:
+    /// - **`tcb_status` / `advisory_ids`** — a cryptographically valid quote
+    ///   from an `OutOfDate`, `SWHardeningNeeded`, or even `Revoked` platform
+    ///   still returns `quote_verified == true`, so `is_valid()` returns `true`.
+    ///   Gate on `tcb_status` against an allowlist, failing closed on an empty
+    ///   allowlist and on `Revoked`.
+    /// - **Measurement registers `mrtd` / `rtmr0..3` / `mrsigner`** (in
+    ///   `self.quote.body`) — parsed but never compared here. Check them against
+    ///   a measurement allowlist to establish *which* workload was attested; a
+    ///   valid signature only proves *some* genuine TDX platform produced the
+    ///   quote, not that it is the approved one.
+    ///
+    /// # Never admit on `is_valid()` alone
+    /// Admitting a peer, releasing a key, or granting any capability on
+    /// `is_valid()` without the TCB + measurement gate trusts *any* well-formed
+    /// TDX platform rather than a specific approved one. The enforcement layer
+    /// that must wrap this call lives in the callers, not here:
+    /// - `crates/context/src/handlers/admit_tee_node.rs` — per-group
+    ///   `TeeAdmissionPolicy` (MRTD/RTMR allowlists + `tcb_status_allowed`);
+    /// - `crates/merod/src/kms/mod.rs` — `enforce_attestation_policy`
+    ///   (measurement + TCB allowlists for KMS self-attestation);
+    /// - the mero-tee KMS `get_key.rs` `enforce_attestation_policy` on the
+    ///   key-release side (external consumer of this crate).
     pub fn is_valid(&self) -> bool {
         self.quote_verified && self.nonce_verified && self.application_hash_verified
     }
@@ -38,12 +89,31 @@ impl VerificationResult {
 
 /// Verify a TDX attestation quote.
 ///
+/// This performs **crypto/structural verification only**: it checks the DCAP
+/// signature/collateral, matches the nonce, and matches the mandatory app-hash
+/// binding. It does **not** make an authorization decision. The returned
+/// [`VerificationResult`] carries `tcb_status`, `advisory_ids`, and the parsed
+/// measurement registers (`quote.body.mrtd` / `rtmr0..3`) so the caller can
+/// apply its own policy — see [`VerificationResult::is_valid`] for the full
+/// contract and the list of enforcement call sites.
+///
+/// # Caller contract
+/// A successful (`is_valid() == true`) result means only that *some* genuine TDX
+/// platform produced a fresh quote bound to `expected_app_hash`. Callers MUST
+/// additionally enforce:
+/// - a `tcb_status` allowlist (fail closed on empty allowlist and on `Revoked`);
+/// - a measurement allowlist over `mrtd` / `rtmr0..3` to pin *which* workload;
+/// - the mock-vs-real acceptance policy (`is_mock_quote` routes here vs.
+///   `verify_mock_attestation`; this function never runs for mock quotes).
+///
 /// # Arguments
 /// * `quote_bytes` - Raw quote bytes to verify.
 /// * `nonce` - Expected 32-byte nonce that should be in report_data[0..32].
 /// * `expected_app_hash` - Mandatory expected 32-byte app hash that must be in report_data[32..64].
 ///   Binding the attestation to an application/identity is required; there is no
 ///   "skip" path that would otherwise leave the quote unbound yet considered valid.
+///   (An earlier `Option`-based signature that defaulted the check open via
+///   `unwrap_or(true)` has been removed — the binding is now unconditional.)
 ///
 /// # Returns
 /// A `VerificationResult` with the verification status for each check.
