@@ -387,9 +387,11 @@ fn app_version_changed_event(
 ///
 /// `update_application` runs new bytecode and can migrate the whole context's
 /// state, so — like `execute` — it is restricted to a *provisioned local
-/// identity* of this context: a stored `ContextIdentity` that carries a private
-/// key on this node. A key that is unknown here, or a known-but-remote identity
-/// with no private key, is refused before any state is read or written.
+/// identity* of this context: one this node can sign as. That is either a
+/// standalone stored key or a keyless membership marker whose key resolves live
+/// from the node's namespace identity. A key that is unknown here, or a
+/// known-but-remote identity this node cannot sign as, is refused before any
+/// state is read or written.
 ///
 /// This gates only the external `Handler<UpdateApplicationRequest>` entry. The
 /// in-WASM callers of `update_application_id` (the execute path) are already
@@ -407,13 +409,19 @@ fn authorize_update_application(
     // the migration task is what actually closes the check-then-use window; the
     // no-migration path performs only a code-only application-id swap gated by the
     // entry check.
-    let handle = datastore.handle();
-    let key = calimero_store::key::ContextIdentity::new(*context_id, *caller);
+    // Resolve the signing key this node holds for `caller` in this context. This
+    // covers both a standalone stored key and a keyless membership marker whose
+    // key is resolved live from the node's namespace identity — the same
+    // resolution `execute` sees, so the two authorization gates agree.
+    //
     // Map a store read failure to a generic infra error rather than letting the
     // raw store error text propagate to the caller (`?`). It's distinct from the
     // authz rejection below so a genuine I/O failure isn't mislabeled as
     // "unauthorized", but it still leaks no store internals.
-    let identity = handle.get(&key).map_err(|e| {
+    let signing_key = calimero_governance_store::resolve_local_signing_key(
+        datastore, context_id, caller,
+    )
+    .map_err(|e| {
         // Log the real store error for operators (so a persistently-broken
         // store is distinguishable from an authz rejection), but hand the
         // caller only the generic message. The caller key is deliberately
@@ -422,19 +430,19 @@ fn authorize_update_application(
         debug!(%e, %context_id, "store read failed during update_application authorization");
         eyre::eyre!("failed to verify caller authorization")
     })?;
-    match identity {
-        Some(identity) if identity.private_key.is_some() => Ok(()),
-        // This arm deliberately collapses two distinct rejections — an entirely
-        // unknown key (`None`) and a known-but-remote identity that carries no
-        // private key here (`Some` without `private_key`) — into one identical
-        // message. Distinguishing them is exactly the membership-enumeration
-        // oracle we must not expose: a differing reply would let a (possibly
-        // unauthorized) caller confirm whether a given key is a known member of
-        // this context. For the same reason the message interpolates neither the
-        // caller key nor the context id. Operators still get the full, specific
-        // diagnostic from the `warn!` log at the call site.
-        _ => bail!("unauthorized: caller is not a permitted identity for this context"),
+    if signing_key.is_some() {
+        // This node can sign as `caller` here — authorized.
+        return Ok(());
     }
+    // A `None` deliberately collapses two distinct rejections — an entirely
+    // unknown key and a known-but-remote identity this node cannot sign as — into
+    // one identical message. Distinguishing them is exactly the membership-
+    // enumeration oracle we must not expose: a differing reply would let a
+    // (possibly unauthorized) caller confirm whether a given key is a known member
+    // of this context. For the same reason the message interpolates neither the
+    // caller key nor the context id. Operators still get the full, specific
+    // diagnostic from the `warn!` log at the call site.
+    bail!("unauthorized: caller is not a permitted identity for this context")
 }
 
 #[allow(

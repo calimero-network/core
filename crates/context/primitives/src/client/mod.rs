@@ -364,18 +364,23 @@ mod borsh_layout_round_trip {
 /// the other way).
 const NAMESPACE_DEPTH_BOUND: usize = 16;
 
-/// Resolve the node's authoritative signing identity for `context_id` — its
-/// namespace identity — when that identity is a current member of the context's
-/// group.
+/// Resolve the node's namespace signing identity (public key + private key) for
+/// `context_id`'s namespace, if this node holds one.
 ///
-/// For a namespace-backed context, the node signs state deltas with its one
+/// For a namespace-backed context the node signs state deltas with its one
 /// namespace identity. The per-context [`key::ContextIdentity`] row used to
-/// carry a copy of that private key, but the copy was redundant (and fragile —
-/// an out-of-order removal could delete it). This resolver derives the signer
-/// live from the namespace identity + membership, so no per-context copy is
-/// needed. Standalone / `new_identity` contexts have no `NamespaceIdentity` and
-/// keep their own stored key — callers must prefer a stored key first and only
-/// fall back here.
+/// carry a *copy* of that private key, but the copy was redundant (and fragile —
+/// an out-of-order removal could delete it). Namespace-backed contexts now store
+/// only a **keyless marker row** per membership; this resolver derives the actual
+/// key live from the namespace identity. Standalone / `new_identity` contexts
+/// have no `NamespaceIdentity` and keep their own stored key — callers must
+/// prefer a stored key and only fall back here.
+///
+/// This does **not** check membership: whether the node is a member here is
+/// conveyed by the presence of a `ContextIdentity` marker row (governance-store
+/// writes it on join and deletes it on removal), which the callers gate on. This
+/// keeps effective-membership logic in governance-store — the layer that owns it —
+/// rather than duplicating the inheritance/deny-list walk in this lower layer.
 ///
 /// Free function (rather than a `&self` method) so `get_context_members` can
 /// call it from inside its `try_stream!` with a moved `Store` clone.
@@ -402,21 +407,10 @@ fn resolve_owned_namespace_signer(
         return Ok(None); // this node holds no identity for the namespace
     };
     let identity: key::NamespaceIdentityValue = identity;
-    let pk = PublicKey::from(identity.public_key);
-
-    // Only a current member may sign. Same rule as `has_member`: a direct
-    // `GroupMember` row, or being the group's `admin_identity` (the creator, for
-    // whom no MemberJoined op is ever published).
-    let is_member = handle.has(&key::GroupMember::new(group_id, pk))?
-        || handle
-            .get(&key::GroupMeta::new(group_id))?
-            .is_some_and(|meta: key::GroupMetaValue| meta.admin_identity == pk);
-
-    if is_member {
-        Ok(Some((pk, identity.private_key)))
-    } else {
-        Ok(None)
-    }
+    Ok(Some((
+        PublicKey::from(identity.public_key),
+        identity.private_key,
+    )))
 }
 
 impl ContextRegistry {
@@ -426,7 +420,8 @@ impl ContextRegistry {
     }
 
     /// See [`resolve_owned_namespace_signer`]. The node's namespace signing
-    /// identity for `context_id` when it is a current member, or `None`.
+    /// identity (public + private key) for `context_id`'s namespace, or `None`
+    /// if this node holds no namespace identity there. Does not check membership.
     pub fn owned_namespace_signer(
         &self,
         context_id: &ContextId,
@@ -1164,8 +1159,12 @@ impl ContextRegistry {
                 .transpose()
                 .map(|k| (k, iter.read()));
 
-            let mut yielded_owned = false;
-            let mut ns_signer_seen = false;
+            // The node's namespace identity pk for this context. A member of a
+            // namespace-backed context has a *keyless* marker row; the node owns
+            // that identity because it can resolve the key live from its one
+            // namespace identity. The marker row's presence is the membership
+            // signal (governance-store deletes it on removal), so no separate
+            // membership check is needed here.
             let ns_signer = resolve_owned_namespace_signer(&store, &context_id)?.map(|(pk, _)| pk);
             for (k, v) in first.into_iter().chain(iter.entries()) {
                 let (k, v) = (k?, v?);
@@ -1174,30 +1173,11 @@ impl ContextRegistry {
                     break;
                 }
 
-                // The node's namespace identity is owned even when the stored
-                // row carries no private key (post-refactor, group contexts stop
-                // storing it — the signer is resolved live from the namespace
-                // identity). So treat that pk as owned regardless of the row.
-                let is_ns_signer = ns_signer == Some(k.public_key());
-                let is_owned = v.private_key.is_some() || is_ns_signer;
-                if is_ns_signer {
-                    ns_signer_seen = true;
-                }
-                if is_owned {
-                    yielded_owned = true;
-                }
+                // Owned if we hold a stored key (standalone / `new_identity`) or
+                // this row is the keyless marker for our namespace identity.
+                let is_owned = v.private_key.is_some() || ns_signer == Some(k.public_key());
                 if !only_owned || is_owned {
                     yield (k.public_key(), is_owned);
-                }
-            }
-            drop(iter);
-
-            // Fallback: the namespace signer may not have a ContextIdentity row
-            // at all (e.g. it was cascaded away, or never written post-refactor).
-            // It is still the owned signer for a member, so surface it.
-            if only_owned && !yielded_owned && !ns_signer_seen {
-                if let Some(pk) = ns_signer {
-                    yield (pk, true);
                 }
             }
         }

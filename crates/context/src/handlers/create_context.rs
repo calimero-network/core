@@ -568,10 +568,23 @@ async fn create_context(
     // deadlines. Writing the identity first closes the race; the
     // identity is purely local state with no dependency on
     // `ContextRegistered` being applied first.
+    // Store a keyless marker when the creator's identity IS the node's namespace
+    // identity (the common case — its key is resolved live from the namespace
+    // identity, no per-context copy). An app-provided `identity_secret` distinct
+    // from the namespace identity is a sole copy that must be stored so the node
+    // can sign as it. `sender_key` is written unchanged either way.
+    let ns_pk = calimero_governance_store::NamespaceRepository::new(&datastore)
+        .resolve_identity(&group_id)?
+        .map(|(pk, _sk, _sender)| pk);
+    let stored_private_key = if ns_pk == Some(identity) {
+        None
+    } else {
+        Some(*identity_secret.as_bytes())
+    };
     handle.put(
         &key::ContextIdentity::new(context.id, identity),
         &types::ContextIdentity {
-            private_key: Some(*identity_secret.as_bytes()),
+            private_key: stored_private_key,
             sender_key: Some(*sender_key.as_bytes()),
         },
     )?;

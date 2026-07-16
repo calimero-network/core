@@ -218,10 +218,15 @@ impl Handler<JoinContextRequest> for ContextManager {
 
                 {
                     let mut handle = datastore.handle();
+                    // Keyless membership marker. `joiner_identity` is the node's
+                    // namespace identity, so its private key is resolved live from
+                    // the namespace identity at read time rather than copied here
+                    // (see `resolve_owned_namespace_signer`). Peers already write
+                    // keyless marker rows for members; this makes the owner match.
                     handle.put(
                         &calimero_store::key::ContextIdentity::new(context_id, joiner_identity),
                         &calimero_store::types::ContextIdentity {
-                            private_key: Some(sk_bytes),
+                            private_key: None,
                             sender_key: None,
                         },
                     )?;

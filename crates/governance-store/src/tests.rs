@@ -3724,17 +3724,17 @@ fn preflight_fails_for_nonexistent_group() {
 
 // -----------------------------------------------------------------------
 // restore_member_context_identities — local rejoiner ContextIdentity
-// recovery on `MemberAdded` / `MemberJoinedOpen` apply. The cascade
-// helper at `cascade_remove_member_from_group_tree` deletes per-context
-// `ContextIdentity` rows for the leaver/removed member; the rejoin
-// arms must invert that on the local rejoiner's node so the rejoiner
-// can author state-DAG ops again. Other peers don't hold a row for
-// the rejoiner (only the rejoiner's own store does), so this restore
-// is a no-op everywhere except on the local rejoiner.
+// marker recovery on `MemberAdded` / `MemberJoinedOpen` apply. The
+// cascade helper at `cascade_remove_member_from_group_tree` deletes the
+// per-context `ContextIdentity` marker for the leaver/removed member;
+// the rejoin arms must invert that on the local rejoiner's node so the
+// rejoiner can author again. The marker is keyless — the signing key is
+// resolved live from the namespace identity — so this only re-creates a
+// presence bit, scoped to the local rejoiner (a no-op on other peers).
 // -----------------------------------------------------------------------
 
 #[test]
-fn restore_member_context_identities_writes_missing_rows() {
+fn restore_member_context_identities_writes_missing_marker_rows() {
     let store = test_store();
     let gid = test_group_id();
     let member = PublicKey::from([0x21; 32]);
@@ -3745,10 +3745,9 @@ fn restore_member_context_identities_writes_missing_rows() {
     register_context_in_group(&store, &gid, &ctx_a).unwrap();
     register_context_in_group(&store, &gid, &ctx_b).unwrap();
 
-    // The internal anti-spoof gate reads THIS node's namespace identity
-    // (via `NamespaceRepository::new(gid).resolve()` → `gid` itself, since the test gid
-    // has no parent). Storing it for `member` makes this node the
-    // local rejoiner; the function then derives `private_key` from it.
+    // The scope gate reads THIS node's namespace identity (`gid` resolves to
+    // itself — no parent). Storing it for `member` makes this node the local
+    // rejoiner; the function re-creates its keyless membership markers.
     NamespaceRepository::new(&store)
         .store_identity(&gid, &member, &sk_bytes, &[0u8; 32])
         .unwrap();
@@ -3758,26 +3757,24 @@ fn restore_member_context_identities_writes_missing_rows() {
     let handle = store.handle();
     for ctx in [&ctx_a, &ctx_b] {
         let key = calimero_store::key::ContextIdentity::new(*ctx, member);
-        let row = handle.get(&key).unwrap().expect("row should be created");
+        let row = handle
+            .get(&key)
+            .unwrap()
+            .expect("marker row should be created");
         assert_eq!(
-            row.private_key,
-            Some(sk_bytes),
-            "private_key must be derived from the local rejoiner's namespace identity"
+            row.private_key, None,
+            "the marker is keyless — the signing key is resolved live from the namespace identity"
         );
-        assert_eq!(
-            row.sender_key, None,
-            "sender_key starts None; KeyDelivery populates it"
-        );
+        assert_eq!(row.sender_key, None, "marker carries no sender_key");
     }
 }
 
 #[test]
 fn restore_member_context_identities_no_op_when_not_local_rejoiner() {
-    // The internal anti-spoof gate: a node whose stored namespace
-    // identity is NOT `member` must not write a `private_key: Some(_)`
-    // row for `member` — that would let it spoof state-DAG ops as the
-    // rejoiner. With no namespace identity stored at all, the function
-    // is likewise a no-op.
+    // The scope gate: a node whose stored namespace identity is NOT
+    // `member` must not write a marker row for `member` — marker recovery
+    // is scoped to the local rejoiner. With no namespace identity stored
+    // at all, the function is likewise a no-op.
     let store = test_store();
     let gid = test_group_id();
     let member = PublicKey::from([0x21; 32]);
@@ -3816,7 +3813,7 @@ fn restore_member_context_identities_is_idempotent() {
     register_context_in_group(&store, &gid, &ctx).unwrap();
 
     // This node is the local rejoiner — namespace identity stored for
-    // `member`. The function will derive `original_sk` from it.
+    // `member`.
     NamespaceRepository::new(&store)
         .store_identity(&gid, &member, &original_sk, &[0u8; 32])
         .unwrap();
@@ -3857,11 +3854,10 @@ fn restore_member_context_identities_is_idempotent() {
 }
 
 #[test]
-fn restore_member_context_identities_repairs_keyless_row() {
-    // A pre-existing row with `private_key: None` leaves the rejoiner
-    // unable to sign. The restore must REPAIR it (fill `private_key`)
-    // rather than skip it on the `has` check — while preserving any
-    // `sender_key` already delivered onto that row.
+fn restore_member_context_identities_leaves_existing_rows_untouched() {
+    // Restore only fills in a MISSING marker; any pre-existing row is left
+    // exactly as-is. In particular a standalone context's keyed row (with a
+    // delivered sender_key) must not be clobbered into a keyless marker.
     let store = test_store();
     let gid = test_group_id();
     let member = PublicKey::from([0x23; 32]);
@@ -3873,15 +3869,14 @@ fn restore_member_context_identities_repairs_keyless_row() {
         .store_identity(&gid, &member, &sk_bytes, &[0u8; 32])
         .unwrap();
 
-    // Keyless row with a delivered sender_key — the shape a restore
-    // must repair without clobbering the sender_key.
+    // Pre-existing keyed row with a delivered sender_key.
     {
         let mut handle = store.handle();
         handle
             .put(
                 &calimero_store::key::ContextIdentity::new(ctx, member),
                 &calimero_store::types::ContextIdentity {
-                    private_key: None,
+                    private_key: Some(sk_bytes),
                     sender_key: Some(delivered_sender),
                 },
             )
@@ -3898,12 +3893,12 @@ fn restore_member_context_identities_repairs_keyless_row() {
     assert_eq!(
         row.private_key,
         Some(sk_bytes),
-        "keyless row must be repaired with the rejoiner's namespace sk"
+        "existing keyed row must be left untouched"
     );
     assert_eq!(
         row.sender_key,
         Some(delivered_sender),
-        "an already-delivered sender_key must survive the repair"
+        "an already-delivered sender_key must survive"
     );
 }
 
@@ -3987,8 +3982,8 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
         );
     }
 
-    // Re-add via signed MemberAdded — the apply arm must invoke the
-    // restore on the local rejoiner.
+    // Re-add via signed MemberAdded — the apply arm re-creates the local
+    // rejoiner's keyless membership marker.
     let readded = SignedGroupOp::sign(
         &admin_sk,
         gid_bytes.into(),
@@ -4002,20 +3997,22 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
     .unwrap();
     apply_local_signed_group_op(&store, &readded).unwrap();
 
-    let handle = store.handle();
+    // A keyless marker is written back (the key is resolved live), and the
+    // signer-finder resolves it to the rejoiner's namespace identity.
     let key = calimero_store::key::ContextIdentity::new(ctx, member_pk);
-    let row = handle
+    let row = store
+        .handle()
         .get(&key)
         .unwrap()
-        .expect("MemberAdded apply must restore ContextIdentity for local rejoiner");
+        .expect("MemberAdded apply must re-create the rejoiner's marker row");
     assert_eq!(
-        row.private_key,
-        Some(member_sk_bytes),
-        "row must carry the rejoiner's namespace sk so they can sign again"
+        row.private_key, None,
+        "the re-created marker is keyless — key resolved live from the namespace identity"
     );
     assert_eq!(
-        row.sender_key, None,
-        "sender_key starts None — KeyDelivery will populate"
+        find_local_signing_identity(&store, &ctx).unwrap(),
+        Some(member_pk),
+        "the rejoiner's signer must resolve to their namespace identity"
     );
 }
 
@@ -4105,10 +4102,10 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
         "cascade must have deleted the ContextIdentity row before the rejoin test"
     );
 
-    // Re-add via signed MemberAdded targeting the SUBGROUP. The apply
-    // arm must resolve the namespace from `subgroup` (yielding
-    // `ns_gid`), look up the namespace identity there, and find a
-    // match — only then does the restore run.
+    // Re-add via signed MemberAdded targeting the SUBGROUP. The apply arm
+    // must resolve the namespace from `subgroup` (yielding `ns_gid`), look up
+    // the namespace identity there, find a match, and re-create the keyless
+    // marker. The signer-finder must then resolve it via the same parent walk.
     let readded = SignedGroupOp::sign(
         &admin_sk,
         subgroup.to_bytes().into(),
@@ -4126,22 +4123,29 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
         .handle()
         .get(&id_key)
         .unwrap()
-        .expect("ContextIdentity row must be restored when group_id ≠ namespace_id");
-    assert_eq!(row.private_key, Some(member_sk_bytes));
-    assert_eq!(row.sender_key, None);
+        .expect("marker row must be re-created when group_id ≠ namespace_id");
+    assert_eq!(
+        row.private_key, None,
+        "the re-created marker is keyless — key resolved live from the namespace identity"
+    );
+    assert_eq!(
+        find_local_signing_identity(&store, &ctx).unwrap(),
+        Some(member_pk),
+        "signer must resolve via the subgroup → namespace parent walk"
+    );
 }
 
 #[test]
-fn member_joined_open_clears_deny_list_and_restores_context_identity() {
+fn member_joined_open_clears_deny_list_and_resolves_signer() {
     // The cursor[bot] HIGH-SEVERITY finding pinned by an integration
     // test: when `MemberJoinedOpen` applies, it must (a) `clear_denied`
     // for the rejoiner on the subgroup so peers stop dropping their
-    // state-deltas, and (b) restore the rejoiner's `ContextIdentity`
-    // row on the local rejoiner so they can author state-deltas at
-    // all. Pre-fix the apply arm did neither — the kick→inheritance-
-    // rejoin and leave→inheritance-rejoin e2e flows hung in
-    // post-rejoin sync because the rejoiner's writes were dropped at
-    // every peer's deny-list filter.
+    // state-deltas, and (b) re-create the rejoiner's keyless membership
+    // marker on the local rejoiner so the signer-finder resolves their
+    // namespace identity and they can author again. Pre-fix the apply arm
+    // did neither — the kick→inheritance-rejoin and leave→inheritance-
+    // rejoin e2e flows hung in post-rejoin sync because the rejoiner's
+    // writes were dropped at every peer's deny-list filter.
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
     use calimero_primitives::identity::PrivateKey;
@@ -4241,22 +4245,22 @@ fn member_joined_open_clears_deny_list_and_restores_context_identity() {
          entry so peers stop dropping the rejoiner's state-deltas"
     );
 
-    // Assertion 2: ContextIdentity row restored with the rejoiner's
-    // namespace sk. Without this the local apply path cannot author
-    // state-DAG ops for any context under the subgroup.
+    // Assertion 2: the keyless membership marker is re-created, and the
+    // signer-finder resolves it to the rejoiner's namespace identity — that
+    // is what lets the local apply path author state-DAG ops again.
     let row = store
         .handle()
         .get(&id_key)
         .unwrap()
-        .expect("ContextIdentity row must be restored on the local rejoiner");
+        .expect("marker row must be re-created on the local rejoiner");
     assert_eq!(
-        row.private_key,
-        Some(member_sk_bytes),
-        "row must carry the rejoiner's namespace sk"
+        row.private_key, None,
+        "the re-created marker is keyless — key resolved live from the namespace identity"
     );
     assert_eq!(
-        row.sender_key, None,
-        "sender_key starts None — populated later by KeyDelivery"
+        find_local_signing_identity(&store, &ctx).unwrap(),
+        Some(member_pk),
+        "the rejoiner's signer must resolve to their namespace identity"
     );
 }
 
@@ -5233,16 +5237,22 @@ fn leave_then_admin_readd_restores_a_signable_context_identity() {
     .expect("sign MemberAdded");
     apply_local_signed_group_op(&store, &add).expect("apply MemberAdded");
 
-    // THE ASSERTION: the re-added leaver can author again.
+    // THE ASSERTION: the re-added leaver can author again. A keyless marker is
+    // re-created and the signer-finder resolves it to their namespace identity —
+    // that is what unblocks 'no owned identities found for context'.
     let row = store
         .handle()
         .get(&id_key)
         .unwrap()
-        .expect("MemberAdded apply must restore the ContextIdentity row");
+        .expect("MemberAdded apply must re-create the marker row");
     assert_eq!(
-        row.private_key,
-        Some(member_sk_bytes),
-        "the re-added leaver must hold a signable private key for the context — \
+        row.private_key, None,
+        "the re-created marker is keyless — key resolved live from the namespace identity"
+    );
+    assert_eq!(
+        find_local_signing_identity(&store, &ctx).unwrap(),
+        Some(member_pk),
+        "the re-added leaver's signer must resolve to their namespace identity — \
          without it, sync loops forever on 'no owned identities found for context'"
     );
 }

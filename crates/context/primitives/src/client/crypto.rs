@@ -99,15 +99,21 @@ impl ContextClient {
 
         let key = key::ContextIdentity::new(*context_id, *public_key);
 
-        let row = handle.get(&key)?;
+        // The row's presence is the membership signal. For a namespace-backed
+        // context it is a keyless marker (governance-store writes it on join,
+        // deletes it on removal); its absence means this node is not a member
+        // here, so there is no identity to return.
+        let Some(row) = handle.get(&key)? else {
+            return Ok(None);
+        };
 
         // Resolve the signing key. A stored `private_key` wins (standalone /
         // `new_identity` contexts keep their own key). Otherwise, for a
         // namespace-backed context, derive it live from the node's namespace
-        // identity when `public_key` is that identity and a current member — so
-        // group contexts need not store a per-context copy at all. `sender_key`
-        // (used only by non-group contexts) is read from the row unchanged.
-        let private_key = match row.as_ref().and_then(|r| r.private_key) {
+        // identity when `public_key` is that identity — so the row need not carry
+        // a per-context copy. `sender_key` (used only by non-group contexts) is
+        // read from the row unchanged.
+        let private_key = match row.private_key {
             Some(sk) => Some(sk),
             None => match self.registry.owned_namespace_signer(context_id)? {
                 Some((ns_pk, ns_sk)) if ns_pk == *public_key => Some(ns_sk),
@@ -115,16 +121,10 @@ impl ContextClient {
             },
         };
 
-        // No stored row and no namespace-identity fallback → not an identity
-        // this node knows here.
-        if row.is_none() && private_key.is_none() {
-            return Ok(None);
-        }
-
         let identity = ContextIdentity {
             public_key: *public_key,
             private_key: private_key.map(PrivateKey::from),
-            sender_key: row.and_then(|r| r.sender_key).map(PrivateKey::from),
+            sender_key: row.sender_key.map(PrivateKey::from),
         };
 
         Ok(Some(identity))

@@ -1212,26 +1212,30 @@ async fn request_missing_deltas(
     // owned key / lookup failure) leaves the requests unproven, which a
     // proof-requiring responder rejects.
     let delta_pop: Option<InitProof> = {
-        let key = calimero_store::key::ContextIdentity::new(context_id, our_identity);
-        match datastore.handle().get(&key) {
-            Ok(Some(identity)) => match identity.private_key {
-                Some(mut sk_bytes) => {
-                    use zeroize::Zeroize;
-                    let private_key = calimero_primitives::identity::PrivateKey::from(sk_bytes);
-                    // `PrivateKey::from` copies into its own zeroizing wrapper,
-                    // but the bare `[u8; 32]` read out of the store value is a
-                    // `Copy` that lingers on the stack — wipe it now (mirrors the
-                    // discipline in `join_namespace` / `emit_namespace_ack`).
-                    sk_bytes.zeroize();
-                    let peer_id = network_client.network_status().await.local_peer_id;
-                    let message =
-                        InitProof::message(&context_id, &our_identity, &peer_id.to_bytes());
-                    private_key.sign(&message).ok().map(|signature| InitProof {
-                        signature: signature.to_bytes(),
-                    })
-                }
-                None => None,
-            },
+        // Resolve the signing key for `our_identity`. For a namespace-backed
+        // context this is a keyless marker whose key comes from the node's
+        // namespace identity; `resolve_local_signing_key` handles both that and a
+        // standalone stored key. `None` (not a local identity here / lookup
+        // failure) leaves the requests unproven.
+        match calimero_governance_store::resolve_local_signing_key(
+            &datastore,
+            &context_id,
+            &our_identity,
+        ) {
+            Ok(Some(mut sk_bytes)) => {
+                use zeroize::Zeroize;
+                let private_key = calimero_primitives::identity::PrivateKey::from(sk_bytes);
+                // `PrivateKey::from` copies into its own zeroizing wrapper, but the
+                // bare `[u8; 32]` is a `Copy` that lingers on the stack — wipe it
+                // now (mirrors the discipline in `join_namespace` /
+                // `emit_namespace_ack`).
+                sk_bytes.zeroize();
+                let peer_id = network_client.network_status().await.local_peer_id;
+                let message = InitProof::message(&context_id, &our_identity, &peer_id.to_bytes());
+                private_key.sign(&message).ok().map(|signature| InitProof {
+                    signature: signature.to_bytes(),
+                })
+            }
             _ => None,
         }
     };
