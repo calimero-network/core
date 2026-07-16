@@ -114,6 +114,16 @@ pub enum OpEvent {
         group_id: [u8; 32],
         recipient: PublicKey,
     },
+    /// `GroupOp::SubgroupVisibilitySet` applied and changed a subgroup's
+    /// visibility. `open` reflects the post-apply mode (`true` == `Open`).
+    ///
+    /// A root-admitted member (e.g. a `ReadOnlyTee`) inherits membership only
+    /// into `Open` subgroups, so an `Open` flip that applies AFTER a context
+    /// was registered — or after that context's `ContextRegistered` auto-follow
+    /// decision already ran while the subgroup still read `Restricted` — must
+    /// re-trigger the inherited-follow decision for that subgroup's contexts.
+    /// Auto-follow subscribes to this so a late-arriving flip is not a dead end.
+    SubgroupVisibilityChanged { group_id: [u8; 32], open: bool },
 }
 
 /// The process-wide broadcast channel. Tests share this channel, so
