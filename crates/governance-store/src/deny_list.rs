@@ -218,6 +218,15 @@ impl<'a> DenyListRepository<'a> {
         if self.is_denied(&group_id, author)? {
             return Ok(true);
         }
+        // A current DIRECT member of the owning group is never inherited-denied:
+        // e.g. someone directly (re-)added to a subgroup after a root eviction is
+        // a legitimate member THERE, even while the root-keyed inherited-deny that
+        // covers the subgroups they only *inherit* still stands. Skip the
+        // inherited check for them — otherwise the namespace-wide root entry would
+        // wrongly drop traffic to the very group they were just admitted to.
+        if MembershipRepository::new(self.store).has_direct_member(&group_id, author)? {
+            return Ok(false);
+        }
         let root = NamespaceRepository::new(self.store).resolve(&group_id)?;
         self.is_inherited_denied(&root, author)
     }

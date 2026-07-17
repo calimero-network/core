@@ -5472,6 +5472,77 @@ fn inherited_deny_fast_drops_evicted_inherited_member_and_clears_on_readmit() {
     );
 }
 
+/// Regression for the MeroReviewer finding: a member directly (re-)added at a
+/// SUBGROUP after a root eviction must not be fast-dropped there, even though the
+/// root-keyed inherited-deny still stands (they never rejoined the root). The
+/// receive filter skips the inherited-deny for a current direct member — while
+/// a subgroup they hold no direct row in stays fast-dropped.
+#[test]
+fn inherited_deny_does_not_drop_a_direct_member_of_the_owning_subgroup() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xF3u8; 32]);
+    let subgroup = ContextGroupId::from([0xF4u8; 32]);
+    let ctx = ContextId::from([0xFDu8; 32]);
+    let admin_pk = PublicKey::from([0xA2; 32]);
+    let member_pk = PublicKey::from([0xE8; 32]);
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+    register_context_in_group(&store, &subgroup, &ctx).unwrap();
+
+    // The member was evicted from the root → root-keyed inherited-deny stands.
+    DenyListRepository::new(&store)
+        .mark_inherited(&ns_gid, &member_pk)
+        .unwrap();
+    assert!(
+        DenyListRepository::new(&store)
+            .is_author_denied_for_context(&ctx, &member_pk)
+            .unwrap(),
+        "precondition: with no direct row, the inherited-deny fast-drops subgroup traffic"
+    );
+
+    // Now the member is added DIRECTLY to the subgroup (not re-added at the root).
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &member_pk, GroupMemberRole::Member)
+        .unwrap();
+    assert!(
+        !DenyListRepository::new(&store)
+            .is_author_denied_for_context(&ctx, &member_pk)
+            .unwrap(),
+        "a direct member of the owning subgroup must not be dropped by the root inherited-deny"
+    );
+
+    // The root entry still stands (they never rejoined the root), so a subgroup
+    // they hold no direct row in stays fast-dropped.
+    let other_sub = ContextGroupId::from([0xF5u8; 32]);
+    let other_ctx = ContextId::from([0xFEu8; 32]);
+    MetaRepository::new(&store)
+        .save(&other_sub, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &other_sub)
+        .unwrap();
+    register_context_in_group(&store, &other_sub, &other_ctx).unwrap();
+    assert!(
+        DenyListRepository::new(&store)
+            .is_author_denied_for_context(&other_ctx, &member_pk)
+            .unwrap(),
+        "a subgroup they hold no direct row in stays fast-dropped by the root inherited-deny"
+    );
+}
+
 /// The inherited-deny column must be hash-neutral, like the direct deny-list —
 /// writing it must not perturb the group state hash (which reads only the
 /// GroupMeta and GroupMember rows). Otherwise the sign-time
