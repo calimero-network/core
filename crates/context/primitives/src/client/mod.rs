@@ -358,12 +358,6 @@ mod borsh_layout_round_trip {
     }
 }
 
-/// Inclusive walk bound for group → namespace-root resolution. Mirrors
-/// `calimero_governance_store::MAX_NAMESPACE_DEPTH` (16); duplicated as a literal
-/// because this crate cannot depend on governance-store (that dependency runs
-/// the other way).
-const NAMESPACE_DEPTH_BOUND: usize = 16;
-
 /// Resolve the node's namespace signing identity (public key + private key) for
 /// `context_id`'s namespace, if this node holds one.
 ///
@@ -395,12 +389,26 @@ fn resolve_owned_namespace_signer(
     };
 
     // The namespace identity is keyed at the namespace root; walk up to it.
+    // Bound and semantics mirror `NamespaceRepository::resolve` exactly (shared
+    // `MAX_NAMESPACE_DEPTH`, inclusive loop). Fail loud on an over-deep or cyclic
+    // chain rather than silently resolving against a non-root ancestor — the
+    // canonical resolver bails `DepthExceeded` in the same case.
     let mut ns_root = group_id;
-    for _ in 0..=NAMESPACE_DEPTH_BOUND {
+    let mut reached_root = false;
+    for _ in 0..=calimero_context_config::MAX_NAMESPACE_DEPTH {
         match handle.get(&key::GroupParentRef::new(ns_root))? {
             Some(parent) => ns_root = parent,
-            None => break,
+            None => {
+                reached_root = true;
+                break;
+            }
         }
+    }
+    if !reached_root {
+        eyre::bail!(
+            "namespace parent chain for context {context_id} exceeds \
+             MAX_NAMESPACE_DEPTH (too deep or cyclic GroupParentRef data)"
+        );
     }
 
     let Some(identity) = handle.get(&key::NamespaceIdentity::new(ns_root))? else {
