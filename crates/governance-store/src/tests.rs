@@ -7912,6 +7912,109 @@ mod tee_member_removed_event_tests {
         );
     }
 
+    /// The symmetric guard for the SELF-LEAVE path (#2816 Part 1): a
+    /// namespace-root `ReadOnlyTee` self-leave must purge its stranded
+    /// `ContextIdentity` markers in inherited Open subgroups — the same leak
+    /// `member_removed_root_readonly_tee_purges_inherited_open_subgroup_identity`
+    /// guards on the eviction path — while the per-subgroup membership events
+    /// stay gated to direct rows. Red without the all-descendants cascade in
+    /// `member_left.rs` (it previously iterated only `direct_descendants`).
+    #[test]
+    #[serial_test::serial]
+    fn member_left_root_readonly_tee_purges_inherited_open_subgroup_identity() {
+        use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+        use calimero_context_config::VisibilityMode;
+
+        let store = test_store();
+
+        // namespace (root) ── Open subgroup (TEE has NO direct row here)
+        let ns_gid = ContextGroupId::from([0xD6; 32]);
+        let subgroup = ContextGroupId::from([0xD7; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ns_gid, &subgroup)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+            .unwrap();
+
+        let admin_sk = PrivateKey::random(&mut OsRng);
+        let admin_pk = admin_sk.public_key();
+        // The leaver signs its own MemberLeft, so it needs a real keypair.
+        let tee_sk = PrivateKey::random(&mut OsRng);
+        let tee_pk = tee_sk.public_key();
+
+        MetaRepository::new(&store)
+            .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MetaRepository::new(&store)
+            .save(&subgroup, &sample_meta_with_admin(admin_pk))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+        // TEE has a direct row ONLY at the root — inherited into the Open
+        // subgroup, so there is no `GroupMember` row there.
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &tee_pk, GroupMemberRole::ReadOnlyTee)
+            .unwrap();
+
+        // Auto-follow gave the inherited TEE a `ContextIdentity` marker under a
+        // context registered in the Open subgroup, despite no direct row.
+        let context = ContextId::from([0xC6; 32]);
+        register_context_in_group(&store, &subgroup, &context).unwrap();
+        let identity_key = calimero_store::key::ContextIdentity::new(context, tee_pk);
+        {
+            let mut handle = store.handle();
+            handle
+                .put(
+                    &identity_key,
+                    &calimero_store::types::ContextIdentity { private_key: None },
+                )
+                .unwrap();
+        }
+        assert!(
+            store.handle().has(&identity_key).unwrap(),
+            "test precondition: inherited ContextIdentity marker exists"
+        );
+
+        let mut rx = op_events::subscribe();
+
+        let op = SignedGroupOp::sign(
+            &tee_sk,
+            ns_gid.to_bytes().into(),
+            vec![],
+            1,
+            GroupOp::MemberLeft {
+                member: tee_pk,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        )
+        .expect("sign MemberLeft");
+        apply_local_signed_group_op(&store, &op).expect("apply MemberLeft");
+
+        // The stranded inherited marker is purged …
+        assert!(
+            !store.handle().has(&identity_key).unwrap(),
+            "root TEE self-leave MUST purge inherited Open-subgroup ContextIdentity markers"
+        );
+
+        // … but no per-subgroup membership event fires (no direct row), while
+        // the root still emits its pair.
+        let (root_pair, sub_pair) =
+            count_removed_events_for_two(&mut rx, ns_gid.to_bytes(), subgroup.to_bytes(), tee_pk);
+        assert_eq!(
+            sub_pair,
+            (0, 0),
+            "inherited subgroup (no direct row) must NOT emit cascade membership events"
+        );
+        assert_eq!(
+            root_pair,
+            (1, 1),
+            "root must see one MemberRemoved + one TeeMemberRemoved"
+        );
+    }
+
     /// The mirror-image guard: a namespace-root `MemberRemoved` of a
     /// regular `Member` must NOT cascade. The root row is removed
     /// (today's behavior) but the `Restricted` subgroup row is
