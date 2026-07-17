@@ -1,13 +1,45 @@
+use std::path::Path;
+
 use calimero_config::ConfigFile;
 use clap::{Parser, Subcommand};
 use eyre::{bail, Result as EyreResult};
-use mero_auth::config::StorageConfig as AuthStorageConfig;
+use mero_auth::config::{StorageConfig as AuthStorageConfig, UserPasswordConfig};
 use mero_auth::provisioning;
 use mero_auth::storage::create_storage;
 use tracing::info;
 
 use super::admin_creds::AdminCredArgs;
 use crate::cli::RootArgs;
+
+/// Open the auth RocksDB at `auth_db_path`, mint the admin root key, close
+/// the store, and pin the database tree to owner-only (same defense in depth
+/// as the datastore). Shared by `merod init` and `merod auth set-admin` so
+/// the two provisioning paths cannot drift.
+pub(crate) async fn provision_admin_into_storage(
+    auth_db_path: &Path,
+    policy: &UserPasswordConfig,
+    username: &str,
+    password: &str,
+) -> EyreResult<()> {
+    // RocksDB takes an exclusive lock, so this fails while a node holds the
+    // database open — for `set-admin` that is exactly the offline contract.
+    let auth_storage = create_storage(&AuthStorageConfig::RocksDB {
+        path: auth_db_path.to_path_buf(),
+    })
+    .await
+    .map_err(|err| {
+        eyre::eyre!(
+            "failed to open auth storage at {auth_db_path:?} (is the node still \
+             running? stop it first): {err}"
+        )
+    })?;
+
+    let _key_id =
+        provisioning::provision_admin_key(&auth_storage, policy, username, password).await?;
+    drop(auth_storage);
+
+    super::init::restrict_tree_to_owner(auth_db_path).await
+}
 
 /// Manage embedded-auth accounts of an initialized node
 #[derive(Debug, Parser)]
@@ -84,32 +116,13 @@ impl SetAdminCommand {
             );
         };
 
-        // RocksDB takes an exclusive lock, so this fails while the node is
-        // up — which is exactly the contract: set-admin is an offline tool.
-        let auth_storage = create_storage(&AuthStorageConfig::RocksDB {
-            path: auth_db_path.clone(),
-        })
-        .await
-        .map_err(|err| {
-            eyre::eyre!(
-                "failed to open auth storage at {auth_db_path:?} (is the node still \
-                 running? stop it first): {err}"
-            )
-        })?;
-
-        let _key_id = provisioning::provision_admin_key(
-            &auth_storage,
+        provision_admin_into_storage(
+            &auth_db_path,
             &auth_config.user_password,
             &username,
             &password,
         )
         .await?;
-        drop(auth_storage);
-
-        // Same defense-in-depth as init: with the store closed, pin the auth
-        // database files to owner-only (the storage provider already creates
-        // the directory 0700; this normalizes files written after open too).
-        super::init::restrict_tree_to_owner(&auth_db_path).await?;
 
         info!("Admin account provisioned (user: {username}); start the node and log in");
 

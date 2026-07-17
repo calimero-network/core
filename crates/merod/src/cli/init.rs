@@ -25,7 +25,6 @@ use mero_auth::config::{
     AuthConfig as EmbeddedAuthConfig, StorageConfig as AuthStorageConfig, UserPasswordConfig,
 };
 use mero_auth::provisioning;
-use mero_auth::storage::create_storage;
 use multiaddr::{Multiaddr, Protocol};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -327,7 +326,7 @@ impl InitCommand {
                 None
             }
             (_, _) => {
-                if self.admin.provided() {
+                if admin_creds.is_some() || self.admin.provided() {
                     warn!("Admin credentials are only used with --auth-mode embedded; ignoring");
                 }
                 None
@@ -390,6 +389,35 @@ impl InitCommand {
         // one so the private key and datastore land in an owner-only directory.
         restrict_to_owner(&path, 0o700).await?;
 
+        // The configured auth-storage location (possibly relative); the
+        // embedded-auth config below stores it as-is, while minting resolves
+        // it against the node home — the same rule `merod run` applies.
+        let auth_storage_rel = self
+            .auth_storage_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("auth"));
+
+        // Mint the admin root key BEFORE config.toml is written: config.toml
+        // is what marks a node "initialized" (the idempotent short-circuit
+        // above keys on it), so a failure here cannot leave a node that
+        // reports "already initialized" yet has no account — a re-run starts
+        // over and re-mints (provisioning is idempotent). `admin_to_mint` is
+        // only Some for embedded auth with persistent storage. The policy is
+        // `UserPasswordConfig::default()`, the same one
+        // `mero_auth::embedded::default_config()` embeds below.
+        if let Some((username, password)) = &admin_to_mint {
+            let auth_db_path =
+                cli::resolve_node_relative_path(path.as_std_path(), auth_storage_rel.clone());
+            super::auth::provision_admin_into_storage(
+                &auth_db_path,
+                &UserPasswordConfig::default(),
+                username,
+                password,
+            )
+            .await?;
+            info!("Created the admin account (user: {username})");
+        }
+
         let identity = Keypair::generate_ed25519();
         info!("Generated identity: {:?}", identity.public().to_peer_id());
 
@@ -426,28 +454,17 @@ impl InitCommand {
             },
         };
 
-        // Captures what the post-init admin-key minting below needs: the auth
-        // database path (relative paths resolve against the node home, same as
-        // `merod run`) and the creation-time password policy.
-        let mut admin_provision: Option<(PathBuf, UserPasswordConfig)> = None;
-
         let embedded_auth = if matches!(auth_mode, AuthMode::Embedded) {
             let mut auth_cfg: EmbeddedAuthConfig = mero_auth::embedded::default_config();
 
-            let storage_path = self.auth_storage_path.clone();
-
             match auth_storage_choice {
                 AuthStorageArg::Persistent => {
-                    let auth_path = storage_path.unwrap_or_else(|| PathBuf::from("auth"));
-                    if admin_to_mint.is_some() {
-                        let resolved =
-                            cli::resolve_node_relative_path(path.as_std_path(), auth_path.clone());
-                        admin_provision = Some((resolved, auth_cfg.user_password.clone()));
-                    }
-                    auth_cfg.storage = AuthStorageConfig::RocksDB { path: auth_path };
+                    auth_cfg.storage = AuthStorageConfig::RocksDB {
+                        path: auth_storage_rel.clone(),
+                    };
                 }
                 AuthStorageArg::Memory => {
-                    if let Some(path) = storage_path {
+                    if let Some(path) = self.auth_storage_path {
                         warn!(
                             "Ignoring --auth-storage-path={} because in-memory storage is selected",
                             path.display()
@@ -525,35 +542,6 @@ impl InitCommand {
         // datastore and every RocksDB file to owner-only as defense in depth, so
         // the contents stay private even if the home's mode is later loosened.
         restrict_tree_to_owner(&datastore_path).await?;
-
-        // Mint the admin root key into the auth storage so the account exists
-        // before the node ever listens — the login path never mints keys, so
-        // there is no first-login bootstrap window to protect. The password
-        // was consumed above to derive the key; nothing secret is at rest.
-        if let (Some((auth_db_path, user_password_cfg)), Some((username, password))) =
-            (admin_provision, admin_to_mint)
-        {
-            let auth_storage = create_storage(&AuthStorageConfig::RocksDB {
-                path: auth_db_path.clone(),
-            })
-            .await
-            .wrap_err_with(|| format!("failed to open auth storage at {auth_db_path:?}"))?;
-
-            let _key_id = provisioning::provision_admin_key(
-                &auth_storage,
-                &user_password_cfg,
-                &username,
-                &password,
-            )
-            .await?;
-            drop(auth_storage);
-
-            // Same defense-in-depth as the datastore: pin the auth database
-            // files to owner-only now that the store is closed.
-            restrict_tree_to_owner(&auth_db_path).await?;
-
-            info!("Created the admin account (user: {username})");
-        }
 
         info!("Initialized a node in {:?}", path);
 
