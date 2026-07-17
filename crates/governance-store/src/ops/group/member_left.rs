@@ -96,13 +96,40 @@ pub(crate) fn apply(
             }
         }
 
-        for (sub, role) in &direct_descendants {
+        for sub in &descendants {
+            // Defensive: `collect_descendants` excludes the root, but were it
+            // ever to return `group_id` itself, the direct-row teardown below
+            // would mutate the ROOT's `GroupMember` rows before
+            // `verify_post_apply_state_hashes` runs and diverge the signed root
+            // hash on every honest receiver. The single intended root teardown
+            // happens after this block. Mirrors `member_removed.rs`.
+            if *sub == *group_id {
+                continue;
+            }
+            // `ContextIdentity` hygiene runs for EVERY descendant — including
+            // Open subgroups the leaver only *inherited* into (no direct
+            // `GroupMember` row) yet auto-followed contexts of. Skipping those
+            // would strand the leaver's per-context membership markers there
+            // (#2816 Part 1 — the symmetric leak the eviction path closed in
+            // #2809). `cascade_remove_member` is an idempotent no-op where the
+            // leaver holds no rows and touches only `ContextIdentity` (disjoint
+            // from `GroupMember`), so it is group-state-hash-neutral.
             cascade_remove_member_from_group_tree(store, sub, member)?;
+            // Membership teardown + deny-list + re-entry block + role-scoped
+            // events fire only where the leaver holds a DIRECT row (gathered
+            // with its owner / last-admin checks above). Inherited rows have no
+            // per-subgroup `GroupMember` to remove and never emitted a join
+            // event; deny-listing them would strand a stale entry with no
+            // subgroup-level re-join op to clear it (re-inheritance is
+            // re-evaluated from the ancestor row). See `member_removed.rs` for
+            // the full rationale.
+            let Some(role) = direct_descendants
+                .iter()
+                .find_map(|(g, r)| (*g == *sub).then_some(r))
+            else {
+                continue;
+            };
             MembershipRepository::new(store).remove_member(sub, member)?;
-            // Self-leave cascade: deny-list every descendant
-            // group where the leaver had a row, so their
-            // state-delta traffic on those topics is dropped
-            // until they re-join.
             DenyListRepository::new(store).mark(sub, member)?;
             // ...and record the forward-secrecy debt for each descendant that
             // encrypts under its own key. See the rotation note below.

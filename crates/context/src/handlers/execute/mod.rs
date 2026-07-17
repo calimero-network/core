@@ -471,15 +471,18 @@ impl Handler<ExecuteRequest> for ContextManager {
                     }
                 }
                 Ok(None) => {
-                    // Non-group context: legitimately falls back to the
-                    // identity's own sender_key.
-                    if let Some(sk) = identity.sender_key {
-                        (sk, [0u8; 32])
-                    } else {
-                        return ActorResponse::reply(Err(ExecuteError::InternalError {
-                            kind: InternalErrorKind::Encryption,
-                        }));
-                    }
+                    // Every context is created group-registered (create/join
+                    // both guarantee a `ContextGroupRef`), so a context with no
+                    // group here is an invariant violation — there is no
+                    // per-identity encryption key to fall back to. Fail loud
+                    // rather than mis-encrypt.
+                    error!(
+                        ?context_id,
+                        "state-delta encryption: context is not registered to any group",
+                    );
+                    return ActorResponse::reply(Err(ExecuteError::InternalError {
+                        kind: InternalErrorKind::Encryption,
+                    }));
                 }
                 Err(err) => {
                     error!(

@@ -75,7 +75,6 @@ impl Handler<CreateContextRequest> for ContextManager {
             context_secret,
             identity,
             identity_secret,
-            sender_key,
             group_id,
             name,
         } = prepared;
@@ -138,7 +137,6 @@ impl Handler<CreateContextRequest> for ContextManager {
                         application,
                         identity,
                         identity_secret,
-                        sender_key,
                         init_params,
                         guard,
                         group_id_for_response,
@@ -184,7 +182,6 @@ struct Prepared<'a> {
     context_secret: PrivateKey,
     identity: PublicKey,
     identity_secret: PrivateKey,
-    sender_key: PrivateKey,
     group_id: ContextGroupId,
     name: Option<String>,
 }
@@ -248,8 +245,6 @@ impl Prepared<'_> {
         }
 
         let mut rng = rand::thread_rng();
-
-        let sender_key = PrivateKey::random(&mut rng);
 
         let identity_secret = identity_secret.unwrap_or_else(|| PrivateKey::random(&mut rng));
 
@@ -328,7 +323,6 @@ impl Prepared<'_> {
             context_secret,
             identity,
             identity_secret,
-            sender_key,
             group_id,
             name,
         })
@@ -351,7 +345,6 @@ async fn create_context(
     application: Application,
     identity: PublicKey,
     identity_secret: PrivateKey,
-    sender_key: PrivateKey,
     init_params: Vec<u8>,
     guard: ContextGuard,
     group_id: ContextGroupId,
@@ -568,11 +561,23 @@ async fn create_context(
     // deadlines. Writing the identity first closes the race; the
     // identity is purely local state with no dependency on
     // `ContextRegistered` being applied first.
+    // Store a keyless marker when the creator's identity IS the node's namespace
+    // identity (the common case — its key is resolved live from the namespace
+    // identity, no per-context copy). An app-provided `identity_secret` distinct
+    // from the namespace identity is a sole copy that must be stored so the node
+    // can sign as it.
+    let ns_pk = calimero_governance_store::NamespaceRepository::new(&datastore)
+        .resolve_identity(&group_id)?
+        .map(|(pk, _sk, _sender)| pk);
+    let stored_private_key = if ns_pk == Some(identity) {
+        None
+    } else {
+        Some(*identity_secret.as_bytes())
+    };
     handle.put(
         &key::ContextIdentity::new(context.id, identity),
         &types::ContextIdentity {
-            private_key: Some(*identity_secret.as_bytes()),
-            sender_key: Some(*sender_key.as_bytes()),
+            private_key: stored_private_key,
         },
     )?;
 

@@ -218,12 +218,14 @@ impl Handler<JoinContextRequest> for ContextManager {
 
                 {
                     let mut handle = datastore.handle();
+                    // Keyless membership marker. `joiner_identity` is the node's
+                    // namespace identity, so its private key is resolved live from
+                    // the namespace identity at read time rather than copied here
+                    // (see `resolve_owned_namespace_signer`). Peers already write
+                    // keyless marker rows for members; this makes the owner match.
                     handle.put(
                         &calimero_store::key::ContextIdentity::new(context_id, joiner_identity),
-                        &calimero_store::types::ContextIdentity {
-                            private_key: Some(sk_bytes),
-                            sender_key: None,
-                        },
+                        &calimero_store::types::ContextIdentity { private_key: None },
                     )?;
 
                     // Clear any leave-tombstone written by a previous
@@ -257,14 +259,13 @@ impl Handler<JoinContextRequest> for ContextManager {
                 // Inherited members (Open subgroup, joined via the
                 // CAN_JOIN_OPEN_SUBGROUPS parent-walk) don't get a
                 // `KeyDelivery` from any admin — admin never called
-                // `add_group_members` for them. Without the group key
-                // their `sender_key` stays None on the ContextIdentity
-                // row above, which means they can't decrypt state-DAG
-                // messages and others can't decrypt theirs. Publish
-                // `RootOp::MemberJoinedOpen` signed by us so any peer
-                // holding the key responds with a `KeyDelivery` (same
-                // mechanism `MemberJoined` uses for invitation-based
-                // joins).
+                // `add_group_members` for them. Without it they never
+                // receive the group key (into their GroupKeyring), which
+                // means they can't decrypt state-DAG messages and others
+                // can't decrypt theirs. Publish `RootOp::MemberJoinedOpen`
+                // signed by us so any peer holding the key responds with a
+                // `KeyDelivery` (same mechanism `MemberJoined` uses for
+                // invitation-based joins).
                 //
                 // Direct members are explicit-add via
                 // `add_group_members` and already get a `KeyDelivery`

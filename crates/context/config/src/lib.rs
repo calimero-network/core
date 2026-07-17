@@ -16,6 +16,15 @@ use types::{
 
 pub type Timestamp = u64;
 
+/// Inclusive bound on the namespace/subgroup parent-chain walk (group →
+/// namespace root, and the subgroup-inheritance walk). The deepest legal
+/// subgroup sits at depth `MAX_NAMESPACE_DEPTH`; a walk that observes the root's
+/// `None` parent needs `MAX_NAMESPACE_DEPTH + 1` steps, so loops bound it with
+/// `for _ in 0..=MAX_NAMESPACE_DEPTH`. Single source of truth shared by
+/// `calimero-governance-store`, `calimero-context-client`, and `calimero-authz`,
+/// which all walk the same parent chain.
+pub const MAX_NAMESPACE_DEPTH: usize = 16;
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]

@@ -1613,10 +1613,7 @@ fn cascade_removal_on_member_kick() {
         handle
             .put(
                 &key,
-                &calimero_store::types::ContextIdentity {
-                    private_key: None,
-                    sender_key: None,
-                },
+                &calimero_store::types::ContextIdentity { private_key: None },
             )
             .unwrap();
     }
@@ -1694,10 +1691,7 @@ fn cascade_removal_deterministic_across_nodes() {
             handle
                 .put(
                     &key,
-                    &calimero_store::types::ContextIdentity {
-                        private_key: None,
-                        sender_key: None,
-                    },
+                    &calimero_store::types::ContextIdentity { private_key: None },
                 )
                 .unwrap();
         }
