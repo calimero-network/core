@@ -24,12 +24,15 @@ use libp2p::identity::Keypair;
 use mero_auth::config::{
     AuthConfig as EmbeddedAuthConfig, StorageConfig as AuthStorageConfig, UserPasswordConfig,
 };
+use mero_auth::provisioning;
+use mero_auth::storage::create_storage;
 use multiaddr::{Multiaddr, Protocol};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{info, warn};
 
+use super::admin_creds::AdminCredArgs;
 use super::auth_mode::AuthModeArg;
 use crate::cli;
 
@@ -162,6 +165,19 @@ pub struct InitCommand {
     #[clap(long, value_name = "PATH")]
     pub auth_storage_path: Option<PathBuf>,
 
+    /// Admin-account credentials, required for `--auth-mode embedded` with
+    /// persistent storage: the admin root key is minted at init, before the
+    /// node ever listens. The password is consumed on the spot (only the
+    /// derived key is stored) — nothing secret lands in config.toml or logs.
+    #[clap(flatten)]
+    pub admin: AdminCredArgs,
+
+    /// Skip creating the admin account at init (embedded auth only). Login
+    /// stays disabled until one is provisioned — via `merod auth set-admin`,
+    /// or MERO_AUTH_ADMIN_USER/MERO_AUTH_ADMIN_PASSWORD at node startup.
+    #[clap(long)]
+    pub no_admin: bool,
+
     /// Enable mDNS discovery
     #[clap(long, default_value_t = true)]
     #[clap(overrides_with("no_mdns"))]
@@ -240,6 +256,58 @@ impl InitCommand {
     )]
     pub async fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
         let mdns = self.mdns && !self.no_mdns;
+
+        // Resolve the admin credentials up front, before anything destructive
+        // below: a `--force` re-init must not wipe an existing node home only
+        // to then fail on missing or unreadable credentials.
+        let auth_mode = self.auth_mode.map(Into::into).unwrap_or(AuthMode::Proxy);
+        let auth_storage_choice = self.auth_storage.unwrap_or(AuthStorageArg::Persistent);
+        let admin_creds = self.admin.resolve()?;
+
+        let admin_to_mint = match (auth_mode, auth_storage_choice) {
+            (AuthMode::Embedded, AuthStorageArg::Persistent) => {
+                if self.no_admin {
+                    if admin_creds.is_some() {
+                        warn!(
+                            "Ignoring the provided admin credentials because --no-admin was passed"
+                        );
+                    }
+                    warn!(
+                        "No admin account will be created: login stays disabled until one is \
+                         provisioned via `merod auth set-admin` or MERO_AUTH_ADMIN_USER/\
+                         MERO_AUTH_ADMIN_PASSWORD at node startup"
+                    );
+                    None
+                } else if admin_creds.is_none() {
+                    bail!(
+                        "--auth-mode embedded requires admin credentials so the admin account \
+                         exists before the node ever listens. Provide --admin-user with \
+                         --admin-password-file or --admin-password-stdin (or set \
+                         MERO_AUTH_ADMIN_USER and MERO_AUTH_ADMIN_PASSWORD), or pass \
+                         --no-admin to explicitly defer provisioning."
+                    );
+                } else {
+                    admin_creds
+                }
+            }
+            (AuthMode::Embedded, AuthStorageArg::Memory) => {
+                if admin_creds.is_some() || self.admin.provided() {
+                    warn!(
+                        "In-memory auth storage holds no persistent accounts — ignoring the \
+                         admin credentials. Set MERO_AUTH_ADMIN_USER and \
+                         MERO_AUTH_ADMIN_PASSWORD when running the node instead; the account \
+                         is then minted at every startup."
+                    );
+                }
+                None
+            }
+            (_, _) => {
+                if self.admin.provided() {
+                    warn!("Admin credentials are only used with --auth-mode embedded; ignoring");
+                }
+                None
+            }
+        };
 
         let path = root_args.home.join(root_args.node_name);
 
@@ -332,27 +400,28 @@ impl InitCommand {
             },
         };
 
-        let auth_mode = self.auth_mode.map(Into::into).unwrap_or(AuthMode::Proxy);
+        // Captures what the post-init admin-key minting below needs: the auth
+        // database path (relative paths resolve against the node home, same as
+        // `merod run`) and the creation-time password policy.
+        let mut admin_provision: Option<(PathBuf, UserPasswordConfig)> = None;
+
         let embedded_auth = if matches!(auth_mode, AuthMode::Embedded) {
             let mut auth_cfg: EmbeddedAuthConfig = mero_auth::embedded::default_config();
 
-            // Fresh embedded-auth nodes get an auto-generated first-login
-            // setup code (bootstrap secret, core#3221) so the very first
-            // login can mint the root key without manual provisioning. It
-            // lives in config.toml (0600, alongside the node's private key),
-            // so only the node's owner can read it; deployments that
-            // provision out of band (MERO_AUTH_BOOTSTRAP_SECRET or their own
-            // config value) simply overwrite or ignore it.
-            auth_cfg.user_password.bootstrap_secret =
-                Some(UserPasswordConfig::generate_bootstrap_secret());
-
-            let storage_choice = self.auth_storage.unwrap_or(AuthStorageArg::Persistent);
             let storage_path = self.auth_storage_path.clone();
 
-            match storage_choice {
+            match auth_storage_choice {
                 AuthStorageArg::Persistent => {
-                    let path = storage_path.unwrap_or_else(|| PathBuf::from("auth"));
-                    auth_cfg.storage = AuthStorageConfig::RocksDB { path };
+                    let auth_path = storage_path.unwrap_or_else(|| PathBuf::from("auth"));
+                    if admin_to_mint.is_some() {
+                        let resolved = if auth_path.is_relative() {
+                            path.as_std_path().join(&auth_path)
+                        } else {
+                            auth_path.clone()
+                        };
+                        admin_provision = Some((resolved, auth_cfg.user_password.clone()));
+                    }
+                    auth_cfg.storage = AuthStorageConfig::RocksDB { path: auth_path };
                 }
                 AuthStorageArg::Memory => {
                     if let Some(path) = storage_path {
@@ -433,6 +502,35 @@ impl InitCommand {
         // datastore and every RocksDB file to owner-only as defense in depth, so
         // the contents stay private even if the home's mode is later loosened.
         restrict_tree_to_owner(&datastore_path).await?;
+
+        // Mint the admin root key into the auth storage so the account exists
+        // before the node ever listens — the login path never mints keys, so
+        // there is no first-login bootstrap window to protect. The password
+        // was consumed above to derive the key; nothing secret is at rest.
+        if let (Some((auth_db_path, user_password_cfg)), Some((username, password))) =
+            (admin_provision, admin_to_mint)
+        {
+            let auth_storage = create_storage(&AuthStorageConfig::RocksDB {
+                path: auth_db_path.clone(),
+            })
+            .await
+            .wrap_err_with(|| format!("failed to open auth storage at {auth_db_path:?}"))?;
+
+            let _key_id = provisioning::provision_admin_key(
+                &auth_storage,
+                &user_password_cfg,
+                &username,
+                &password,
+            )
+            .await?;
+            drop(auth_storage);
+
+            // Same defense-in-depth as the datastore: pin the auth database
+            // files to owner-only now that the store is closed.
+            restrict_tree_to_owner(&auth_db_path).await?;
+
+            info!("Created the admin account (user: {username})");
+        }
 
         info!("Initialized a node in {:?}", path);
 

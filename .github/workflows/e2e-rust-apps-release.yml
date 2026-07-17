@@ -28,10 +28,15 @@ env:
   RUST_BACKTRACE: 1
   CALIMERO_CONTRACTS_VERSION: "latest"
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
-  # Out-of-band secret gating first-root-key bootstrap (fail-closed since the
-  # TOFU removal). Requires merobox pass-through support (forward into node
-  # containers + present in the `login` step); inert on older merobox. See
-  # the matching comment in e2e-rust-apps.yml.
+  # Admin credentials for embedded-auth scenarios, matching the
+  # dev/dev-password `login` steps in the workflow YAMLs. merobox ≥0.6.43
+  # forwards these into node containers so `merod init` mints the admin root
+  # key up front. See the matching comment in e2e-rust-apps.yml.
+  MERO_AUTH_ADMIN_USER: dev
+  MERO_AUTH_ADMIN_PASSWORD: dev-password
+  # Transitional (remove after 0.11.0-rc.17 ships): this workflow runs
+  # against RELEASED binaries, and releases up to rc.16 still gate the first
+  # login on the bootstrap secret. Inert on rc.17+ (the field is ignored).
   MERO_AUTH_BOOTSTRAP_SECRET: merobox-e2e-bootstrap
 
 jobs:

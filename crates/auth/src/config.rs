@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 /// Authentication service configuration
@@ -99,6 +98,11 @@ pub enum StorageConfig {
 }
 
 /// Username/password configuration
+///
+/// Configs written by older releases may still carry a `bootstrap_secret`
+/// key (the removed first-login setup-code flow); serde ignores unknown
+/// fields, so those files keep parsing and the value is inert. The admin
+/// account is provisioned out of band instead — see [`crate::provisioning`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserPasswordConfig {
     /// Minimum password length
@@ -108,49 +112,6 @@ pub struct UserPasswordConfig {
     /// Maximum password length
     #[serde(default = "default_max_password_length")]
     pub max_password_length: usize,
-
-    /// Out-of-band secret required to bootstrap the very first root key on a
-    /// fresh node.
-    ///
-    /// When this is `None` (and the `MERO_AUTH_BOOTSTRAP_SECRET` environment
-    /// variable is unset), first-login bootstrap is **disabled** — the node
-    /// will not mint a root key for an unauthenticated caller, and a root key
-    /// must be provisioned out of band. When set, the bootstrapping client
-    /// must present a matching secret before the first root key is created.
-    /// An empty string is treated the same as `None` (bootstrap disabled), so
-    /// a blank value from env interpolation can never open the gate.
-    #[serde(default)]
-    pub bootstrap_secret: Option<String>,
-}
-
-impl UserPasswordConfig {
-    /// Generate a fresh first-login bootstrap secret (setup code).
-    ///
-    /// 128 bits from the process CSPRNG, hex-encoded (32 chars) — unguessable,
-    /// yet short enough to paste from the merod console into a login form.
-    #[must_use]
-    pub fn generate_bootstrap_secret() -> String {
-        let bytes: [u8; 16] = rand::thread_rng().gen();
-        hex::encode(bytes)
-    }
-
-    /// Resolve the effective bootstrap secret.
-    ///
-    /// The `MERO_AUTH_BOOTSTRAP_SECRET` environment variable takes precedence
-    /// (the recommended out-of-band channel); the configured value is used as
-    /// a fallback. Returns `None` when neither is set, which disables
-    /// first-login bootstrap entirely. An empty string in either source is
-    /// treated as unset — otherwise a blank env interpolation or
-    /// `bootstrap_secret = ""` in config would let `""` match a caller that
-    /// omitted the field, silently re-enabling the unauthenticated TOFU
-    /// bootstrap this gate exists to close.
-    #[must_use]
-    pub fn effective_bootstrap_secret(&self) -> Option<String> {
-        std::env::var("MERO_AUTH_BOOTSTRAP_SECRET")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .or_else(|| self.bootstrap_secret.clone().filter(|s| !s.is_empty()))
-    }
 }
 
 impl Default for UserPasswordConfig {
@@ -158,7 +119,6 @@ impl Default for UserPasswordConfig {
         Self {
             min_password_length: 8,
             max_password_length: 128,
-            bootstrap_secret: None,
         }
     }
 }
@@ -422,32 +382,16 @@ mod tests {
     use super::UserPasswordConfig;
 
     #[test]
-    fn generated_bootstrap_secret_is_32_hex_chars_and_unique() {
-        let a = UserPasswordConfig::generate_bootstrap_secret();
-        let b = UserPasswordConfig::generate_bootstrap_secret();
-        assert_eq!(a.len(), 32);
-        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(a, b, "two generated setup codes must not collide");
-    }
-
-    // Relies on MERO_AUTH_BOOTSTRAP_SECRET being unset in the test
-    // environment, same as the bootstrap-gate tests in user_password.rs.
-    #[test]
-    fn effective_bootstrap_secret_uses_config_and_treats_empty_as_unset() {
-        let mut cfg = UserPasswordConfig::default();
-        assert_eq!(cfg.effective_bootstrap_secret(), None);
-
-        cfg.bootstrap_secret = Some(String::new());
-        assert_eq!(
-            cfg.effective_bootstrap_secret(),
-            None,
-            "empty string must not open the bootstrap gate"
-        );
-
-        cfg.bootstrap_secret = Some("s3cret-code".to_owned());
-        assert_eq!(
-            cfg.effective_bootstrap_secret().as_deref(),
-            Some("s3cret-code")
-        );
+    fn stale_bootstrap_secret_key_in_config_is_ignored() {
+        // Configs written by pre-cutover releases carry a `bootstrap_secret`
+        // key; it must parse (serde ignores unknown fields) and stay inert.
+        let cfg: UserPasswordConfig = toml::from_str(
+            "min_password_length = 8\n\
+             max_password_length = 128\n\
+             bootstrap_secret = \"stale-setup-code\"\n",
+        )
+        .expect("a config with the removed key must still parse");
+        assert_eq!(cfg.min_password_length, 8);
+        assert_eq!(cfg.max_password_length, 128);
     }
 }

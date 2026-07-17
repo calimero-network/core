@@ -5,6 +5,8 @@ use eyre::Result as EyreResult;
 
 use crate::defaults;
 
+mod admin_creds;
+mod auth;
 mod auth_mode;
 mod config;
 mod init;
@@ -13,6 +15,7 @@ mod run;
 mod tee;
 mod validation;
 
+use auth::AuthCommand;
 use config::ConfigCommand;
 use init::InitCommand;
 use kms::KmsCommand;
@@ -70,6 +73,7 @@ pub struct RootCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SubCommands {
+    Auth(AuthCommand),
     Config(ConfigCommand),
     Init(InitCommand),
     Kms(KmsCommand),
@@ -93,6 +97,7 @@ pub struct RootArgs {
 impl RootCommand {
     pub async fn run(self) -> EyreResult<()> {
         match self.action {
+            SubCommands::Auth(auth) => auth.run(&self.args).await,
             SubCommands::Config(config) => config.run(&self.args).await,
             SubCommands::Init(init) => init.run(self.args).await,
             SubCommands::Kms(kms) => kms.run(&self.args).await,

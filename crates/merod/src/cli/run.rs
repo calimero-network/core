@@ -7,7 +7,7 @@ use calimero_server::config::{AuthMode, ServerConfig};
 use calimero_store::config::StoreConfig;
 use clap::Parser;
 use eyre::{bail, Result as EyreResult, WrapErr};
-use mero_auth::config::{StorageConfig as AuthStorageConfig, UserPasswordConfig};
+use mero_auth::config::StorageConfig as AuthStorageConfig;
 use mero_auth::embedded::default_config;
 use multiaddr::{Multiaddr, Protocol};
 use tracing::{info, warn};
@@ -56,10 +56,7 @@ impl RunCommand {
 
         let mut config = ConfigFile::load(&path).await?;
 
-        // Apply CLI auth_mode override before validation. The configured mode
-        // is kept around so the setup-code backfill below can persist config
-        // changes without also freezing a per-run CLI override into the file.
-        let configured_auth_mode = config.network.server.auth_mode;
+        // Apply CLI auth_mode override before validation.
         if let Some(mode) = self.auth_mode {
             config.network.server.auth_mode = mode.into();
         }
@@ -164,44 +161,6 @@ impl RunCommand {
         if node_mode == NodeMode::ReadOnly {
             info!("Starting node in read-only mode - JSON-RPC execution disabled");
             config.network.server.jsonrpc = None;
-        }
-
-        // Nodes initialized before setup codes existed have embedded auth but
-        // no bootstrap secret, which makes the very first login fail with an
-        // opaque 401 (core#3221). Backfill a generated one on startup so an
-        // upgraded-but-fresh node keeps the "just log in" UX. Provisioned
-        // deployments are untouched: an env secret skips generation entirely
-        // (and is never persisted), a configured secret is kept, and a node
-        // that already has a root key never consults the value again.
-        // Only an existing embedded_auth section is backfilled — a missing
-        // section is rejected by validate_config above, same as before.
-        let needs_setup_code = matches!(config.network.server.auth_mode, AuthMode::Embedded)
-            && std::env::var("MERO_AUTH_BOOTSTRAP_SECRET").map_or(true, |s| s.is_empty())
-            && config
-                .network
-                .server
-                .embedded_auth
-                .as_ref()
-                .is_some_and(|auth_config| {
-                    auth_config
-                        .user_password
-                        .bootstrap_secret
-                        .as_deref()
-                        .is_none_or(str::is_empty)
-                });
-        if needs_setup_code {
-            if let Some(auth_config) = config.network.server.embedded_auth.as_mut() {
-                auth_config.user_password.bootstrap_secret =
-                    Some(UserPasswordConfig::generate_bootstrap_secret());
-            }
-            // Persist with the *configured* auth mode so a per-run
-            // `--auth-mode` override doesn't get frozen into config.toml
-            // as a side effect of saving the generated secret.
-            let effective_auth_mode = config.network.server.auth_mode;
-            config.network.server.auth_mode = configured_auth_mode;
-            config.save(&path).await?;
-            config.network.server.auth_mode = effective_auth_mode;
-            info!("Generated a first-login setup code and saved it to config.toml");
         }
 
         let network = config.network;

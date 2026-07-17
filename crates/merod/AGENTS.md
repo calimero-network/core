@@ -28,9 +28,12 @@ cargo test -p merod
 
 ```
 merod --node <name> <subcommand>
-├── init          # Initialize node configuration
+├── init          # Initialize node configuration (mints the embedded-auth
+│                 # admin root key from --admin-user + password via
+│                 # file/stdin/env; --no-admin defers)
 ├── run           # Start the node daemon (alias: up)
 ├── config        # Modify node configuration
+├── auth          # Embedded-auth accounts (set-admin: offline admin-key mint)
 └── kms           # Key management service
 ```
 
@@ -44,6 +47,8 @@ src/
 │   ├── init.rs       # Node initialization
 │   ├── run.rs        # Start daemon
 │   ├── config.rs     # Config modifications
+│   ├── auth.rs       # `merod auth set-admin` (offline admin-key mint)
+│   ├── admin_creds.rs# Shared --admin-user/password-file/stdin resolution
 │   ├── kms.rs        # KMS subcommand
 │   ├── validation.rs # Validation helpers
 │   └── auth_mode.rs  # Authentication mode handling
