@@ -74,8 +74,17 @@ impl VerificationResult {
     /// # Never admit on `is_valid()` alone
     /// Admitting a peer, releasing a key, or granting any capability on
     /// `is_valid()` without the TCB + measurement gate trusts *any* well-formed
-    /// TDX platform rather than a specific approved one. The enforcement layer
-    /// that must wrap this call lives in the callers, not here:
+    /// TDX platform rather than a specific approved one.
+    ///
+    /// New callers should use [`Self::policy_valid`] instead: it is the
+    /// safe-by-construction gate that folds these crypto checks together with a
+    /// fail-closed TCB allowlist, the mock decision, the measurement
+    /// allowlists, and the app-hash binding, and returns a typed
+    /// [`crate::PolicyRejection`].
+    ///
+    /// The existing enforcement layers below keep their own equivalent
+    /// enforcement by design (mode-specific errors `policy_valid` cannot
+    /// express), and `is_valid()` stays crypto-only for them:
     /// - `crates/context/src/handlers/admit_tee_node.rs` — per-group
     ///   `TeeAdmissionPolicy` (MRTD/RTMR allowlists + `tcb_status_allowed`);
     /// - `crates/merod/src/kms/mod.rs` — `enforce_attestation_policy`

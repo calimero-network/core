@@ -55,6 +55,7 @@
 mod error;
 mod generate;
 mod info;
+mod policy;
 mod verify;
 
 pub use error::AttestationError;
@@ -62,6 +63,10 @@ pub use generate::{build_report_data, generate_attestation, AttestationResult};
 #[cfg(feature = "mock-attestation")]
 pub use generate::{generate_mock_attestation, is_mock_quote};
 pub use info::{get_tee_info, TeeInfo};
+pub use policy::{
+    MeasurementRegister, PolicyRejection, VerifierPolicy, DEFAULT_ALLOWED_TCB_STATUS,
+    TCB_STATUS_MOCK, TCB_STATUS_REVOKED,
+};
 #[cfg(feature = "mock-attestation")]
 pub use verify::verify_mock_attestation;
 pub use verify::{verify_attestation, VerificationResult};
