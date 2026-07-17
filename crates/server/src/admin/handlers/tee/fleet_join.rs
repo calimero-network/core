@@ -9,9 +9,9 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_server_primitives::admin::FleetJoinRequest;
-use calimero_tee_attestation::{
-    build_report_data, generate_attestation, generate_mock_attestation,
-};
+#[cfg(feature = "mock-attestation")]
+use calimero_tee_attestation::generate_mock_attestation;
+use calimero_tee_attestation::{build_report_data, generate_attestation};
 use reqwest::StatusCode;
 use sha2::{Digest, Sha256};
 use tracing::{error, info, warn};
@@ -73,6 +73,7 @@ pub async fn handler(
     // Under --mock-tee, deliberately produce a mock quote (any OS, no TDX
     // hardware) and accept it below. The real path is unchanged: it generates a
     // hardware attestation and still rejects any mock result.
+    #[cfg(feature = "mock-attestation")]
     let attestation = if state.mock_tee {
         generate_mock_attestation(report_data)
     } else {
@@ -88,11 +89,28 @@ pub async fn handler(
             }
         }
     };
+    #[cfg(not(feature = "mock-attestation"))]
+    let attestation = match generate_attestation(report_data) {
+        Ok(result) => result,
+        Err(err) => {
+            error!(error=?err, "Failed to generate TDX attestation");
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to generate attestation".to_owned(),
+            }
+            .into_response();
+        }
+    };
 
     // Reject mock attestations only when NOT in mock-tee mode. In mock-tee mode
     // the mock quote above is produced on purpose and accepted by the verifier's
-    // namespace policy.
-    if attestation.is_mock && !state.mock_tee {
+    // namespace policy. Without the `mock-attestation` feature there is no
+    // mock-tee mode, so any mock result is always rejected.
+    #[cfg(feature = "mock-attestation")]
+    let reject_mock = attestation.is_mock && !state.mock_tee;
+    #[cfg(not(feature = "mock-attestation"))]
+    let reject_mock = attestation.is_mock;
+    if reject_mock {
         error!("Mock attestation generated -- fleet-join requires real TDX hardware");
         return ApiError {
             status_code: StatusCode::NOT_IMPLEMENTED,

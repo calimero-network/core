@@ -34,10 +34,9 @@ use calimero_network_primitives::specialized_node_invite::{
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_tee_attestation::{
-    build_report_data, generate_attestation, is_mock_quote, verify_attestation,
-    verify_mock_attestation,
-};
+use calimero_tee_attestation::{build_report_data, generate_attestation, verify_attestation};
+#[cfg(feature = "mock-attestation")]
+use calimero_tee_attestation::{is_mock_quote, verify_mock_attestation};
 use libp2p::PeerId;
 use tracing::{debug, error, info, warn};
 
@@ -167,7 +166,12 @@ pub async fn handle_verification_request(
             quote_bytes,
             public_key,
         } => {
+            // Without the `mock-attestation` feature there is no mock path: the
+            // quote is always verified with the real DCAP verifier.
+            #[cfg(feature = "mock-attestation")]
             let is_mock = is_mock_quote(&quote_bytes);
+            #[cfg(not(feature = "mock-attestation"))]
+            let is_mock = false;
 
             if is_mock && !accept_mock_tee {
                 warn!("Received mock TEE attestation but accept_mock_tee is disabled");
@@ -181,6 +185,7 @@ pub async fn handle_verification_request(
             // The attestation must be bound to the requester's public key.
             let pk_hash = public_key_binding_hash(&public_key);
 
+            #[cfg(feature = "mock-attestation")]
             let verification_result = if is_mock {
                 warn!("Verifying MOCK attestation - NOT FOR PRODUCTION USE");
                 match verify_mock_attestation(&quote_bytes, &nonce, &pk_hash) {
@@ -205,6 +210,19 @@ pub async fn handle_verification_request(
                             format!("Attestation verification failed: {err}"),
                         );
                     }
+                }
+            };
+            #[cfg(not(feature = "mock-attestation"))]
+            let verification_result = match verify_attestation(&quote_bytes, &nonce, &pk_hash).await
+            {
+                Ok(result) => result,
+                Err(err) => {
+                    error!(error = %err, "Failed to verify TEE attestation");
+                    reset_to_pending(pending_invites, &nonce);
+                    return SpecializedNodeInvitationResponse::error(
+                        nonce,
+                        format!("Attestation verification failed: {err}"),
+                    );
                 }
             };
 

@@ -11,10 +11,9 @@ use base64::Engine;
 use calimero_config::{
     normalize_attestation_measurement, KmsAttestationConfig, KmsConfig, PhalaKmsConfig,
 };
-use calimero_tee_attestation::{
-    generate_attestation, is_mock_quote, verify_attestation, verify_mock_attestation,
-    VerificationResult,
-};
+use calimero_tee_attestation::{generate_attestation, verify_attestation, VerificationResult};
+#[cfg(feature = "mock-attestation")]
+use calimero_tee_attestation::{is_mock_quote, verify_mock_attestation};
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{bail, Context, Result};
 use libp2p::identity::Keypair;
@@ -203,6 +202,7 @@ struct ExternalKmsAttestationPolicyKms {
 }
 
 const EXTERNAL_POLICY_ALLOWED_DIRS: &[&str] = &["/etc/calimero", "/run/calimero"];
+#[cfg(feature = "mock-attestation")]
 const MOCK_KMS_ATTESTATION_ENV: &str = "MEROD_ALLOW_MOCK_KMS_ATTESTATION";
 const MAX_KMS_ATTEST_QUOTE_B64_LEN: usize = 128 * 1024;
 const MAX_KMS_REPORT_DATA_HEX_LEN: usize = 1024;
@@ -309,14 +309,25 @@ fn map_probe_attestation_failure(err: eyre::Report) -> KmsProbeFailure {
     }
 
     let details = err.to_string();
+
+    // The mock-runtime-not-allowed classification only exists when the mock
+    // attestation path is compiled in.
+    #[cfg(feature = "mock-attestation")]
+    if details.contains(MOCK_KMS_ATTESTATION_ENV) {
+        return probe_failure(
+            KmsProbeStage::Attest,
+            "KMS_ATTEST_MOCK_RUNTIME_NOT_ALLOWED",
+            None,
+            details,
+        );
+    }
+
     let code = if details.contains("reportData mismatch") {
         "KMS_ATTEST_REPORT_DATA_MISMATCH"
     } else if details.contains("mock attestation quote")
         && details.contains("accept_mock is disabled")
     {
         "KMS_ATTEST_MOCK_QUOTE_REJECTED"
-    } else if details.contains(MOCK_KMS_ATTESTATION_ENV) {
-        "KMS_ATTEST_MOCK_RUNTIME_NOT_ALLOWED"
     } else if details.contains("Policy JSON")
         || details.contains("allowed_")
         || details.contains("allowlist")
@@ -653,7 +664,14 @@ async fn verify_kms_attestation_from_release_policy(
         );
     }
 
+    // Without the `mock-attestation` feature there is no mock path: every quote
+    // is verified with the real DCAP verifier.
+    #[cfg(feature = "mock-attestation")]
     let is_mock = is_mock_quote(&quote_bytes);
+    #[cfg(not(feature = "mock-attestation"))]
+    let is_mock = false;
+
+    #[cfg(feature = "mock-attestation")]
     let verification_result = if is_mock {
         if !mock_kms_attestation_runtime_opt_in() {
             bail!(
@@ -674,6 +692,10 @@ async fn verify_kms_attestation_from_release_policy(
             .await
             .context("KMS attestation verification failed")?
     };
+    #[cfg(not(feature = "mock-attestation"))]
+    let verification_result = verify_attestation(&quote_bytes, &nonce, &binding)
+        .await
+        .context("KMS attestation verification failed")?;
 
     if !verification_result.is_valid() {
         error!(
@@ -1176,6 +1198,9 @@ async fn verify_kms_attestation(
         );
     }
 
+    // Without the `mock-attestation` feature there is no mock path: every quote
+    // is verified with the real DCAP verifier.
+    #[cfg(feature = "mock-attestation")]
     let verification_result = if is_mock_quote(&quote_bytes) {
         if !policy.accept_mock {
             bail!("KMS returned mock attestation quote, but attestation.accept_mock is disabled");
@@ -1197,6 +1222,10 @@ async fn verify_kms_attestation(
             .await
             .context("Failed to verify KMS attestation quote")?
     };
+    #[cfg(not(feature = "mock-attestation"))]
+    let verification_result = verify_attestation(&quote_bytes, &nonce, &policy.binding)
+        .await
+        .context("Failed to verify KMS attestation quote")?;
 
     if !verification_result.is_valid() {
         bail!(
@@ -1596,6 +1625,7 @@ fn build_kms_attestation_report_data(nonce: &[u8; 32], binding: &[u8; 32]) -> [u
     report_data
 }
 
+#[cfg(feature = "mock-attestation")]
 fn mock_kms_attestation_runtime_opt_in() -> bool {
     std::env::var(MOCK_KMS_ATTESTATION_ENV)
         .map(|value| value.eq_ignore_ascii_case("true") || value == "1")
@@ -1679,19 +1709,28 @@ fn is_loopback_kms_host(kms_url: &Url) -> bool {
 mod tests {
     use super::*;
     use std::io::Write;
+    // Only the mock HTTP test servers use these; gated with the mock tests.
+    #[cfg(feature = "mock-attestation")]
     use std::sync::atomic::{AtomicUsize, Ordering};
+    #[cfg(feature = "mock-attestation")]
     use std::sync::Arc;
 
+    #[cfg(feature = "mock-attestation")]
     use axum::extract::State;
+    #[cfg(feature = "mock-attestation")]
     use axum::http::StatusCode;
+    #[cfg(feature = "mock-attestation")]
     use axum::routing::post;
+    #[cfg(feature = "mock-attestation")]
     use axum::{Json, Router};
     use camino::Utf8PathBuf;
+    #[cfg(feature = "mock-attestation")]
     use serde::Deserialize;
     use serde_json::json;
     use tempfile::NamedTempFile;
 
     #[derive(Clone, Copy)]
+    #[cfg(feature = "mock-attestation")]
     enum AttestResponseMode {
         Valid,
         ReportDataMismatch,
@@ -1699,12 +1738,14 @@ mod tests {
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
+    #[cfg(feature = "mock-attestation")]
     struct AttestRequestBody {
         nonce_b64: String,
         #[serde(default)]
         binding_b64: Option<String>,
     }
 
+    #[cfg(feature = "mock-attestation")]
     fn mock_quote_bytes_with_report_data(report_data: &[u8; 64]) -> Vec<u8> {
         let mut quote_bytes = b"MOCK_TDX_QUOTE_V1".to_vec();
         quote_bytes.extend_from_slice(report_data);
@@ -1712,6 +1753,7 @@ mod tests {
         quote_bytes
     }
 
+    #[cfg(feature = "mock-attestation")]
     async fn attest_handler(
         State(mode): State<AttestResponseMode>,
         Json(request): Json<AttestRequestBody>,
@@ -1749,6 +1791,7 @@ mod tests {
         }))
     }
 
+    #[cfg(feature = "mock-attestation")]
     async fn spawn_attest_server(mode: AttestResponseMode) -> Url {
         let app = Router::new()
             .route("/attest", post(attest_handler))
@@ -1770,6 +1813,7 @@ mod tests {
     }
 
     #[derive(Clone, Copy)]
+    #[cfg(feature = "mock-attestation")]
     enum ProbeChallengeMode {
         Valid,
         MalformedNonce,
@@ -1777,12 +1821,14 @@ mod tests {
     }
 
     #[derive(Clone, Copy)]
+    #[cfg(feature = "mock-attestation")]
     enum ProbeGetKeyMode {
         Success,
         MeasurementPolicyRejected,
     }
 
     #[derive(Clone, Copy)]
+    #[cfg(feature = "mock-attestation")]
     struct ProbeServerMode {
         attest: AttestResponseMode,
         challenge: ProbeChallengeMode,
@@ -1790,6 +1836,7 @@ mod tests {
     }
 
     #[derive(Clone)]
+    #[cfg(feature = "mock-attestation")]
     struct ProbeServerState {
         mode: ProbeServerMode,
         get_key_hits: Arc<AtomicUsize>,
@@ -1797,12 +1844,14 @@ mod tests {
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
+    #[cfg(feature = "mock-attestation")]
     struct ChallengeRequestBody {
         peer_id: String,
     }
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
+    #[cfg(feature = "mock-attestation")]
     struct GetKeyRequestBody {
         challenge_id: String,
         quote_b64: String,
@@ -1811,6 +1860,7 @@ mod tests {
         signature_b64: String,
     }
 
+    #[cfg(feature = "mock-attestation")]
     async fn probe_attest_handler(
         State(state): State<ProbeServerState>,
         Json(request): Json<AttestRequestBody>,
@@ -1851,6 +1901,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "mock-attestation")]
     async fn probe_challenge_handler(
         State(state): State<ProbeServerState>,
         Json(request): Json<ChallengeRequestBody>,
@@ -1874,6 +1925,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "mock-attestation")]
     async fn probe_get_key_handler(
         State(state): State<ProbeServerState>,
         Json(request): Json<GetKeyRequestBody>,
@@ -1912,6 +1964,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mock-attestation")]
     async fn spawn_probe_server(mode: ProbeServerMode) -> (Url, Arc<AtomicUsize>) {
         let get_key_hits = Arc::new(AtomicUsize::new(0));
         let state = ProbeServerState {
@@ -1944,6 +1997,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "mock-attestation")]
     fn make_probe_phala_config(url: &Url, attestation_enabled: bool) -> PhalaKmsConfig {
         if attestation_enabled {
             return parse_phala_config(json!({
@@ -1969,6 +2023,7 @@ mod tests {
         }))
     }
 
+    #[cfg(feature = "mock-attestation")]
     fn mock_probe_attestor(report_data: [u8; 64]) -> std::result::Result<ProbeAttestation, String> {
         let quote_bytes = mock_quote_bytes_with_report_data(&report_data);
         let quote_b64 = base64::engine::general_purpose::STANDARD.encode(&quote_bytes);
@@ -1990,6 +2045,7 @@ mod tests {
         file
     }
 
+    #[cfg(feature = "mock-attestation")]
     fn enable_mock_kms_attestation_env() {
         // Tests that exercise mock quote acceptance must explicitly opt in to
         // mirror production behavior.
@@ -2284,6 +2340,7 @@ mod tests {
         assert!(error_text.contains("must be under one of"));
     }
 
+    #[cfg(feature = "mock-attestation")]
     fn make_runtime_attestation_config(accept_mock: bool) -> KmsAttestationConfig {
         let mut cfg = KmsAttestationConfig::default();
         cfg.enabled = true;
@@ -2298,6 +2355,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
     async fn test_verify_kms_attestation_accepts_external_policy_json() {
         enable_mock_kms_attestation_env();
 
@@ -2326,6 +2384,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
     async fn test_verify_kms_attestation_rejects_report_data_mismatch() {
         enable_mock_kms_attestation_env();
 
@@ -2341,6 +2400,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
     async fn test_verify_kms_attestation_rejects_disallowed_measurement() {
         enable_mock_kms_attestation_env();
 
@@ -2357,6 +2417,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
     async fn test_verify_kms_attestation_rejects_mock_quote_when_accept_mock_disabled() {
         enable_mock_kms_attestation_env();
 
@@ -2372,6 +2433,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
     async fn test_probe_phala_flow_succeeds() {
         enable_mock_kms_attestation_env();
         let (base_url, get_key_hits) = spawn_probe_server(ProbeServerMode {
@@ -2398,6 +2460,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
     async fn test_probe_phala_flow_rejects_spoofed_attest_before_key_fetch() {
         enable_mock_kms_attestation_env();
         let (base_url, get_key_hits) = spawn_probe_server(ProbeServerMode {
@@ -2425,6 +2488,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
     async fn test_probe_phala_flow_propagates_measurement_policy_rejection_with_stable_code() {
         enable_mock_kms_attestation_env();
         let (base_url, _get_key_hits) = spawn_probe_server(ProbeServerMode {
@@ -2455,6 +2519,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
     async fn test_probe_phala_flow_rejects_malformed_challenge_nonce() {
         enable_mock_kms_attestation_env();
         let (base_url, _get_key_hits) = spawn_probe_server(ProbeServerMode {
@@ -2481,6 +2546,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
     async fn test_probe_phala_flow_rejects_oversized_challenge_nonce() {
         enable_mock_kms_attestation_env();
         let (base_url, _get_key_hits) = spawn_probe_server(ProbeServerMode {
@@ -2534,6 +2600,7 @@ mod tests {
         assert_eq!(result.code, "KMS_HTTP_INSECURE");
     }
 
+    #[cfg(feature = "mock-attestation")]
     fn enforce_release_policy(
         policy: &KmsAttestationPolicy,
         verification_result: &VerificationResult,
@@ -2548,6 +2615,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "mock-attestation")]
     fn enforce_config_policy(
         policy: &NormalizedKmsAttestationPolicy,
         verification_result: &VerificationResult,
@@ -2561,6 +2629,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "mock-attestation")]
     fn make_release_policy(
         verification_result: &VerificationResult,
         allowed_tcb_statuses: Vec<String>,
@@ -2578,6 +2647,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mock-attestation")]
     fn make_mock_verification_result() -> VerificationResult {
         let nonce = [0x11u8; 32];
         let binding = [0x22u8; 32];
@@ -2588,6 +2658,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mock-attestation")]
     fn test_enforce_attestation_policy_rejects_disallowed_tcb_status() {
         let verification_result = make_mock_verification_result();
         let policy = make_release_policy(
@@ -2605,6 +2676,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mock-attestation")]
     fn test_enforce_attestation_policy_handles_missing_tcb_status_for_mock_quotes() {
         let mut verification_result = make_mock_verification_result();
         verification_result.tcb_status = None;
@@ -2621,6 +2693,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mock-attestation")]
     fn test_enforce_attestation_policy_rejects_measurement_mismatch() {
         let verification_result = make_mock_verification_result();
         let policy = make_release_policy(
@@ -2635,6 +2708,7 @@ mod tests {
         assert!(err.contains("MRTD"));
     }
 
+    #[cfg(feature = "mock-attestation")]
     fn make_strict_runtime_policy(
         verification_result: &VerificationResult,
     ) -> NormalizedKmsAttestationPolicy {
@@ -2653,6 +2727,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mock-attestation")]
     fn test_enforce_kms_attestation_policy_rejects_disallowed_tcb_status() {
         let verification_result = make_mock_verification_result();
         let mut policy = make_strict_runtime_policy(&verification_result);
@@ -2665,6 +2740,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mock-attestation")]
     fn test_enforce_kms_attestation_policy_rejects_rtmr_mismatch_for_each_lane() {
         for lane in ["RTMR0", "RTMR1", "RTMR2", "RTMR3"] {
             let mut verification_result = make_mock_verification_result();
@@ -2686,6 +2762,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mock-attestation")]
     fn test_enforce_kms_attestation_policy_rejects_empty_required_allowlists_in_strict_mode() {
         let verification_result = make_mock_verification_result();
 
@@ -2726,6 +2803,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mock-attestation")]
     fn test_enforce_kms_attestation_policy_rejects_effectively_empty_allowlists_in_strict_mode() {
         let verification_result = make_mock_verification_result();
 
@@ -2745,6 +2823,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mock-attestation")]
     fn test_enforce_kms_attestation_policy_allows_empty_tcb_allowlist_in_mock_mode() {
         let verification_result = make_mock_verification_result();
         let mut policy = make_strict_runtime_policy(&verification_result);
@@ -2755,6 +2834,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mock-attestation")]
     fn test_enforce_config_policy_measurement_allowlist_gated_by_mock_mode() {
         // The same disallowed MRTD is rejected under strict config, but accepted
         // once accept_mock relaxes the (now-empty) allowlist. This pins the mock
@@ -2778,6 +2858,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mock-attestation")]
     fn test_enforce_attestation_policy_rejects_empty_required_allowlists() {
         let verification_result = make_mock_verification_result();
         let mut policy = make_release_policy(

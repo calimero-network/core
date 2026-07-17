@@ -3,9 +3,9 @@ use std::sync::Arc;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_server_primitives::admin::{TeeAttestRequest, TeeAttestResponse};
-use calimero_tee_attestation::{
-    build_report_data, generate_attestation, generate_mock_attestation, AttestationError,
-};
+#[cfg(feature = "mock-attestation")]
+use calimero_tee_attestation::generate_mock_attestation;
+use calimero_tee_attestation::{build_report_data, generate_attestation, AttestationError};
 use reqwest::StatusCode;
 use tracing::{error, info};
 
@@ -83,6 +83,7 @@ pub async fn handler(
     // Under --mock-tee, deliberately produce a mock quote (any OS, no TDX
     // hardware) and accept it below. The real path is unchanged: it generates a
     // hardware attestation and still rejects any mock result.
+    #[cfg(feature = "mock-attestation")]
     let result = if state.mock_tee {
         generate_mock_attestation(report_data)
     } else {
@@ -106,10 +107,35 @@ pub async fn handler(
             }
         }
     };
+    #[cfg(not(feature = "mock-attestation"))]
+    let result = match generate_attestation(report_data) {
+        Ok(result) => result,
+        Err(err) => {
+            let (status_code, message) = match &err {
+                AttestationError::NotSupported => (
+                    StatusCode::NOT_IMPLEMENTED,
+                    "TDX attestation generation is only supported on Linux with TDX hardware"
+                        .to_owned(),
+                ),
+                _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+            };
+            error!(error=%err, "Failed to generate attestation");
+            return ApiError {
+                status_code,
+                message,
+            }
+            .into_response();
+        }
+    };
 
     // Reject mock attestations only when NOT in mock-tee mode - they otherwise
-    // indicate an unsupported platform.
-    if result.is_mock && !state.mock_tee {
+    // indicate an unsupported platform. Without the `mock-attestation` feature
+    // there is no mock-tee mode, so any mock result is always rejected.
+    #[cfg(feature = "mock-attestation")]
+    let reject_mock = result.is_mock && !state.mock_tee;
+    #[cfg(not(feature = "mock-attestation"))]
+    let reject_mock = result.is_mock;
+    if reject_mock {
         error!("Mock attestation generated - platform does not support TDX");
         return ApiError {
             status_code: StatusCode::NOT_IMPLEMENTED,

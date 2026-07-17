@@ -108,8 +108,9 @@ pub struct AdminState {
     pub readiness: Arc<NodeReadiness>,
     /// DEV/TEST ONLY. When true, the TEE admin handlers produce and accept mock
     /// attestation quotes instead of requiring real TDX hardware. Insecure —
-    /// never enable in production. Sourced from `merod run --mock-tee`
-    /// (`MEROD_MOCK_TEE`).
+    /// never enable in production. Sourced from `merod run --mock-tee`. Only
+    /// present under the default-off `mock-attestation` feature.
+    #[cfg(feature = "mock-attestation")]
     pub mock_tee: bool,
 }
 
@@ -120,13 +121,14 @@ impl AdminState {
         ctx_client: ContextClient,
         node_client: NodeClient,
         readiness: Arc<NodeReadiness>,
-        mock_tee: bool,
+        #[cfg(feature = "mock-attestation")] mock_tee: bool,
     ) -> Self {
         Self {
             store,
             ctx_client,
             node_client,
             readiness,
+            #[cfg(feature = "mock-attestation")]
             mock_tee,
         }
     }
@@ -144,7 +146,7 @@ pub async fn start(
     mut prom_registry: Registry,
     readiness: Arc<NodeReadiness>,
     shutdown: CancellationToken,
-    mock_tee: bool,
+    #[cfg(feature = "mock-attestation")] mock_tee: bool,
 ) -> EyreResult<()> {
     let mut config = config;
 
@@ -211,6 +213,7 @@ pub async fn start(
         ctx_client.clone(),
         node_client.clone(),
         readiness,
+        #[cfg(feature = "mock-attestation")]
         mock_tee,
     ));
     let mounted = mount_runtime_services(
