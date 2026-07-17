@@ -5473,9 +5473,10 @@ fn inherited_deny_fast_drops_evicted_inherited_member_and_clears_on_readmit() {
 }
 
 /// The inherited-deny column must be hash-neutral, like the direct deny-list —
-/// writing it must not perturb the group state hash (which reads only GroupMeta
-/// + GroupMember). Otherwise the sign-time `compute_state_hash_after_remove`
-/// simulation would have to model it and every honest removal would false-diverge.
+/// writing it must not perturb the group state hash (which reads only the
+/// GroupMeta and GroupMember rows). Otherwise the sign-time
+/// `compute_state_hash_after_remove` simulation would have to model it and every
+/// honest removal would false-diverge.
 #[test]
 fn inherited_deny_write_is_hash_neutral() {
     let store = test_store();
