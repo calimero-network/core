@@ -18,7 +18,7 @@ use crate::generate::{is_mock_quote, MOCK_QUOTE_HEADER};
 /// plus the raw material a caller needs to make a policy decision. It is NOT an
 /// authorization verdict on its own. In particular, `tcb_status`, `advisory_ids`
 /// and the measurement registers in `quote.body` (`mrtd` / `rtmr0..3` /
-/// `mrsigner`) are surfaced here precisely *because* the caller — not this crate
+/// `mrsignerseam`) are surfaced here precisely *because* the caller — not this crate
 /// — is expected to enforce a policy over them. See [`Self::is_valid`].
 #[derive(Debug, Clone)]
 pub struct VerificationResult {
@@ -41,7 +41,7 @@ pub struct VerificationResult {
     /// The parsed quote structure.
     ///
     /// Its `body` carries the measurement registers (`mrtd` / `rtmr0..3` /
-    /// `mrsigner`). These are parsed but NOT compared against anything by this
+    /// `mrsignerseam`). These are parsed but NOT compared against anything by this
     /// crate — matching them to an allowlist is the caller's responsibility.
     pub quote: Quote,
 }
@@ -65,7 +65,7 @@ impl VerificationResult {
     ///   still returns `quote_verified == true`, so `is_valid()` returns `true`.
     ///   Gate on `tcb_status` against an allowlist, failing closed on an empty
     ///   allowlist and on `Revoked`.
-    /// - **Measurement registers `mrtd` / `rtmr0..3` / `mrsigner`** (in
+    /// - **Measurement registers `mrtd` / `rtmr0..3` / `mrsignerseam`** (in
     ///   `self.quote.body`) — parsed but never compared here. Check them against
     ///   a measurement allowlist to establish *which* workload was attested; a
     ///   valid signature only proves *some* genuine TDX platform produced the
