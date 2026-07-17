@@ -22,11 +22,24 @@
 //! the deny set is scoped to exactly the contexts where the member was
 //! removed.
 //!
-//! Entries are added when `MemberRemoved` / `MemberLeft` apply, and
-//! cleared when `MemberAdded` / `MemberJoinedViaTeeAttestation` apply for
-//! the same `(group_id, identity)` pair. Add → Remove → Add cycles end
-//! with the entry cleared — the deny-list is a derived view of "currently
-//! not a member," not an audit log.
+//! Entries are added when `MemberRemoved` / `MemberLeft` apply. They are
+//! cleared by any write of a direct member row for the same
+//! `(group_id, identity)` pair — [`MembershipRepository::add_member_with_keys`]
+//! retracts the entry as part of writing the row — plus the re-join paths that
+//! admit a member WITHOUT writing a row (`MemberJoinedViaTeeAttestation` for an
+//! inherited TEE, `MemberJoinedOpen` / `MemberJoined` at the namespace layer).
+//! Add → Remove → Add cycles end with the entry cleared: the deny-list is a
+//! derived view of "currently not a member," not an audit log.
+//!
+//! **The invariant, and why it is load-bearing:** a direct member row and a deny
+//! entry for the same pair must never coexist. They are contradictory answers to
+//! "is this identity currently a member of this group", and the two are read by
+//! different subsystems — governance resolves capabilities from the row, the
+//! state-delta receive filter silences traffic from the deny entry. Let them
+//! coexist and a re-joined member holds full capabilities in governance while
+//! every delta they author is dropped on the floor. The invariant is enforced
+//! from both sides: [`Self::mark`] `debug_assert!`s the row is already gone, and
+//! `add_member_with_keys` clears the entry when the row is written.
 
 use crate::MembershipRepository;
 use calimero_context_config::types::ContextGroupId;

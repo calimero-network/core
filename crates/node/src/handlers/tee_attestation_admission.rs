@@ -9,7 +9,9 @@
 //! delegated to `calimero_context::group_store` via the `ContextClient`.
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
-use calimero_tee_attestation::{is_mock_quote, verify_attestation, verify_mock_attestation};
+use calimero_tee_attestation::verify_attestation;
+#[cfg(feature = "mock-attestation")]
+use calimero_tee_attestation::{is_mock_quote, verify_mock_attestation};
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
@@ -41,16 +43,25 @@ pub async fn handle_tee_attestation_announce(
 ) -> eyre::Result<()> {
     let group_id = ContextGroupId::from(group_id_bytes);
 
+    // Without the `mock-attestation` feature there is no mock path: every quote
+    // is verified with the real DCAP verifier and a `MOCK_TDX_QUOTE_V1` blob just
+    // fails to parse.
+    #[cfg(feature = "mock-attestation")]
     let is_mock = is_mock_quote(&quote_bytes);
+    #[cfg(not(feature = "mock-attestation"))]
+    let is_mock = false;
 
     let pk_hash = public_key_binding_hash(&public_key);
 
+    #[cfg(feature = "mock-attestation")]
     let verification_result = if is_mock {
         warn!("Verifying MOCK attestation for TEE admission");
         verify_mock_attestation(&quote_bytes, &nonce, &pk_hash)?
     } else {
         verify_attestation(&quote_bytes, &nonce, &pk_hash).await?
     };
+    #[cfg(not(feature = "mock-attestation"))]
+    let verification_result = verify_attestation(&quote_bytes, &nonce, &pk_hash).await?;
 
     if !verification_result.is_valid() {
         warn!(

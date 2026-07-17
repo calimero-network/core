@@ -113,8 +113,10 @@ pub struct NodeConfig {
     pub vm_limits: calimero_runtime::logic::VMLimits,
     /// DEV/TEST ONLY. When true, the TEE admin handlers produce and accept mock
     /// attestation quotes instead of requiring real TDX hardware. Insecure —
-    /// never enable in production. Sourced from `merod run --mock-tee`
-    /// (`MEROD_MOCK_TEE`) and threaded onto the server's `AdminState`.
+    /// never enable in production. Sourced from `merod run --mock-tee` and
+    /// threaded onto the server's `AdminState`. Only present under the default-off
+    /// `mock-attestation` feature.
+    #[cfg(feature = "mock-attestation")]
     pub mock_tee: bool,
 }
 
@@ -460,6 +462,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         registry,
         node_readiness.clone(),
         shutdown_token.clone(),
+        #[cfg(feature = "mock-attestation")]
         config.mock_tee,
     );
 

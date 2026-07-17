@@ -105,7 +105,7 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                         // this op (no TOCTOU window between ingest and read). A
                         // poisoned lock skips feed+compare with a warning rather
                         // than affecting the governance apply path.
-                        let (fed, projected) = match scope_projections.write() {
+                        let (fed, projected, decoded) = match scope_projections.write() {
                             Ok(mut projections) => {
                                 projections.ingest_op(&shadow_op);
                                 // Resolve at THIS op's own causal cut (its id),
@@ -120,11 +120,22 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                                         &[shadow_op.id()],
                                     )
                                 });
-                                (true, role)
+                                // Is this cut's whole history present AND decoded?
+                                // If an ancestor is still an undecrypted `Noop`,
+                                // the folded membership is provisional and a
+                                // mismatch against live is a decrypt-feed lag, not
+                                // a fold-logic bug — same causal cut as `role`.
+                                let decoded = membership.is_some_and(|_| {
+                                    projections.cut_ancestry_decoded(
+                                        &shadow_op.scope,
+                                        &[shadow_op.id()],
+                                    )
+                                });
+                                (true, role, decoded)
                             }
                             Err(err) => {
                                 tracing::warn!(%err, "scope-projections lock poisoned; skipping unified-op shadow feed/compare");
-                                (false, None)
+                                (false, None, false)
                             }
                         };
 
@@ -137,7 +148,20 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                         // projection models as direct (an expected model
                         // difference, not a feed bug). The projection's first
                         // reader — the precursor to authorizing against it.
-                        if fed {
+                        //
+                        // Also require the cut's ancestry to be fully DECODED. When
+                        // an ancestor is still an undecrypted `Noop` — the window
+                        // between a member re-join and the `KeyDelivery` that lets
+                        // this node decrypt the encrypted `MemberAdded` (forward
+                        // secrecy rotates the group key on departure, so a re-add
+                        // rides a key epoch the rejoiner briefly lacks) — live
+                        // already has the materialized row while the projection is
+                        // still holding the add encrypted. That is a decrypt-feed
+                        // lag that the late-decrypt log upgrade heals on its own,
+                        // not a fold-logic divergence. Skipping it keeps the shadow
+                        // sharp for real disagreements, which surface only once the
+                        // history is fully readable.
+                        if fed && decoded {
                             if let Some((group, member)) = membership {
                                 let live = calimero_governance_store::MembershipRepository::new(
                                     &compare_store,

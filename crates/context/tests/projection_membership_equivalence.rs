@@ -56,10 +56,15 @@ fn meta(admin: PublicKey) -> GroupMetaValue {
     }
 }
 
+/// `nonce` identifies the invitation. It is a parameter rather than a constant
+/// because an invitation is spent once an identity joins with it: presenting the
+/// same one again after they exit cannot readmit them, so a re-invite has to
+/// carry a fresh nonce. Real invitations get a random one per issue.
 fn sign_invitation(
     admin_sk: &PrivateKey,
     group: ContextGroupId,
     role: u8,
+    nonce: [u8; 32],
 ) -> SignedGroupOpenInvitation {
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
@@ -67,7 +72,7 @@ fn sign_invitation(
         // 0 is the canonical "no expiry" sentinel — MemberJoined carries no
         // joined_at, so any non-zero expiration causes the apply gate to reject it.
         expiration_timestamp: 0,
-        invitation_nonce: [0x42; 32],
+        invitation_nonce: nonce,
         invited_role: role,
     };
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
@@ -208,7 +213,7 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
-            signed_invitation: sign_invitation(&admin_sk, ns, 1),
+            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
         }),
     )
     .expect("sign join_ns");
@@ -361,7 +366,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
-            signed_invitation: sign_invitation(&admin_sk, ns, 1),
+            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
         }),
     )
     .unwrap();
@@ -395,6 +400,14 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
     ));
 
     // leave ns: remove the root row (GroupOp on root, folded).
+    //
+    // The live side drops the row with a direct `remove_member` write rather than
+    // by applying the op, so no re-entry block is recorded — which is why the
+    // rejoin below is admitted at all. That is deliberate: this test is about
+    // fold equivalence between the projection and the live resolver, not about
+    // re-entry policy. Run the removal through `MemberRemoved` apply and the
+    // rejoin would be rejected outright, no invitation able to readmit them;
+    // that path is covered in `governance-store`.
     let leave = GroupOp::MemberRemoved {
         member: joiner,
         expected_group_state_hash: [0u8; 32],
@@ -419,7 +432,11 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         Some(false)
     );
 
-    // REJOIN ns via invitation (direct root membership again).
+    // REJOIN ns via a FRESHLY ISSUED invitation (direct root membership again).
+    // The nonce differs from the one they joined with above, and it has to: an
+    // invitation is spent for the identity that used it, so presenting the same
+    // one again after exiting cannot readmit them. Coming back means being
+    // re-invited.
     let rejoin_ns = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
@@ -427,7 +444,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         3,
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
-            signed_invitation: sign_invitation(&admin_sk, ns, 1),
+            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x43; 32]),
         }),
     )
     .unwrap();
@@ -507,7 +524,7 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
-            signed_invitation: sign_invitation(&admin_sk, ns, 1),
+            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
         }),
     )
     .unwrap();
@@ -615,7 +632,7 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
-            signed_invitation: sign_invitation(&admin_sk, ns, 1),
+            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
         }),
     )
     .unwrap();

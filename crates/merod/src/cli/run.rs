@@ -7,7 +7,7 @@ use calimero_server::config::{AuthMode, ServerConfig};
 use calimero_store::config::StoreConfig;
 use clap::Parser;
 use eyre::{bail, Result as EyreResult, WrapErr};
-use mero_auth::config::StorageConfig as AuthStorageConfig;
+use mero_auth::config::{StorageConfig as AuthStorageConfig, UserPasswordConfig};
 use mero_auth::embedded::default_config;
 use multiaddr::{Multiaddr, Protocol};
 use tracing::{info, warn};
@@ -26,12 +26,28 @@ pub struct RunCommand {
 
     /// DEV/TEST ONLY. Produce and accept MOCK TEE attestation quotes (no real TDX).
     /// Insecure — never use in production. Refuses to start alongside a real KMS.
-    #[clap(long, env = "MEROD_MOCK_TEE", default_value_t = false)]
+    /// CLI-only flag (no env inheritance); the mock path is compiled in only under
+    /// the default-off `mock-attestation` build feature.
+    #[clap(long, default_value_t = false)]
     pub mock_tee: bool,
 }
 
 impl RunCommand {
     pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
+        // The flag is declared unconditionally so that a binary built without
+        // `mock-attestation` rejects it with an actionable message instead of a
+        // bare clap "unexpected argument". Checked before anything else (node
+        // init, the deny-guard below): without the feature there is no mock path
+        // to guard in the first place, so the flag can never be honoured.
+        #[cfg(not(feature = "mock-attestation"))]
+        if self.mock_tee {
+            bail!(
+                "--mock-tee: this merod binary was built without mock-attestation support. \
+                 Rebuild with `cargo build -p merod --features mock-attestation` (dev/test only); \
+                 release binaries intentionally contain no mock attestation code."
+            );
+        }
+
         let path = root_args.home.join(root_args.node_name);
 
         if !ConfigFile::exists(&path) {
@@ -40,7 +56,10 @@ impl RunCommand {
 
         let mut config = ConfigFile::load(&path).await?;
 
-        // Apply CLI auth_mode override before validation
+        // Apply CLI auth_mode override before validation. The configured mode
+        // is kept around so the setup-code backfill below can persist config
+        // changes without also freezing a per-run CLI override into the file.
+        let configured_auth_mode = config.network.server.auth_mode;
         if let Some(mode) = self.auth_mode {
             config.network.server.auth_mode = mode.into();
         }
@@ -147,6 +166,44 @@ impl RunCommand {
             config.network.server.jsonrpc = None;
         }
 
+        // Nodes initialized before setup codes existed have embedded auth but
+        // no bootstrap secret, which makes the very first login fail with an
+        // opaque 401 (core#3221). Backfill a generated one on startup so an
+        // upgraded-but-fresh node keeps the "just log in" UX. Provisioned
+        // deployments are untouched: an env secret skips generation entirely
+        // (and is never persisted), a configured secret is kept, and a node
+        // that already has a root key never consults the value again.
+        // Only an existing embedded_auth section is backfilled — a missing
+        // section is rejected by validate_config above, same as before.
+        let needs_setup_code = matches!(config.network.server.auth_mode, AuthMode::Embedded)
+            && std::env::var("MERO_AUTH_BOOTSTRAP_SECRET").map_or(true, |s| s.is_empty())
+            && config
+                .network
+                .server
+                .embedded_auth
+                .as_ref()
+                .is_some_and(|auth_config| {
+                    auth_config
+                        .user_password
+                        .bootstrap_secret
+                        .as_deref()
+                        .is_none_or(str::is_empty)
+                });
+        if needs_setup_code {
+            if let Some(auth_config) = config.network.server.embedded_auth.as_mut() {
+                auth_config.user_password.bootstrap_secret =
+                    Some(UserPasswordConfig::generate_bootstrap_secret());
+            }
+            // Persist with the *configured* auth mode so a per-run
+            // `--auth-mode` override doesn't get frozen into config.toml
+            // as a side effect of saving the generated secret.
+            let effective_auth_mode = config.network.server.auth_mode;
+            config.network.server.auth_mode = configured_auth_mode;
+            config.save(&path).await?;
+            config.network.server.auth_mode = effective_auth_mode;
+            info!("Generated a first-login setup code and saved it to config.toml");
+        }
+
         let network = config.network;
         let mut server_source = network.server;
 
@@ -229,6 +286,7 @@ impl RunCommand {
             dag_compaction: config.dag_compaction,
             mode: node_mode,
             vm_limits: config.runtime.vm_limits(),
+            #[cfg(feature = "mock-attestation")]
             mock_tee: self.mock_tee,
         })
         .await

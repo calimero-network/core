@@ -426,6 +426,7 @@ impl SyncManager {
     ) -> eyre::Result<()> {
         use calimero_context::group_store::enumerate_group_contexts;
         use calimero_context::group_store::NamespaceMembershipService;
+        use calimero_context::group_store::ReentryRepository;
         use calimero_context_config::types::ContextGroupId;
         use calimero_context_config::types::SignedGroupOpenInvitation;
 
@@ -475,6 +476,58 @@ impl SyncManager {
                 sequence_id: 0,
                 payload: MessagePayload::NamespaceJoinRejected {
                     reason: format!("invitation rejected: {err}"),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
+
+        // Re-entry gate, and it is load-bearing rather than a nicety. Two things
+        // hang off it:
+        //
+        //   1. The pre-register below calls `add_member`, which retracts the
+        //      joiner's deny-list entry at the membership choke point. Without
+        //      this gate a removed member could open a join stream and un-silence
+        //      themselves on this node — their `MemberJoined` op would still be
+        //      rejected at apply, but their state deltas would already be flowing
+        //      past the receive filter.
+        //   2. It runs before the group key is wrapped, so a removed member does
+        //      not get handed the current key on the way to being rejected.
+        //
+        // The apply-path checks remain the authority — a joiner can publish
+        // `MemberJoined` straight to gossip and never open a stream at all. This
+        // gate is what makes the rejection land as a clean, diagnosable error on
+        // the joiner instead of a silent stall.
+        //
+        // Skipped for an identity that is already a member: the block governs
+        // RE-ENTRY, and a current member is not re-entering. They land here on a
+        // perfectly ordinary re-sync or a retried join round — and since a
+        // successful join consumes the invitation, gating them would reject every
+        // repeat request they ever make with their own invitation.
+        let already_member = MembershipRepository::new(&store)
+            .has_direct_member(&group_id, &joiner_public_key)
+            .unwrap_or(false);
+        let admission = if already_member {
+            Ok(())
+        } else {
+            ReentryRepository::new(&store).require_invitation_admits(
+                &group_id,
+                &joiner_public_key,
+                invitation.invitation.invitation_nonce,
+            )
+        };
+        if let Err(err) = admission {
+            warn!(
+                namespace_id = %hex::encode(namespace_id),
+                %joiner_public_key,
+                %err,
+                "rejecting namespace join: joiner may not re-enter this group"
+            );
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::NamespaceJoinRejected {
+                    reason: format!("{err}"),
                 },
                 next_nonce: nonce,
             };

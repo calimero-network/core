@@ -1,14 +1,17 @@
 use calimero_config::ConfigFile;
 use calimero_tee_attestation::{
-    build_report_data, generate_attestation, generate_mock_attestation, verify_attestation,
-    verify_mock_attestation, AttestationError, VerificationResult,
+    build_report_data, generate_attestation, verify_attestation, AttestationError,
+    VerificationResult,
 };
+#[cfg(feature = "mock-attestation")]
+use calimero_tee_attestation::{generate_mock_attestation, verify_mock_attestation};
 use clap::{Parser, Subcommand};
 use eyre::{bail, eyre, Result as EyreResult, WrapErr};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+#[cfg(feature = "mock-attestation")]
 use tracing::warn;
 
 use crate::cli::RootArgs;
@@ -29,7 +32,10 @@ enum TeeSubcommands {
 pub struct TeeProbeCommand {
     /// DEV/TEST ONLY. Produce and verify a MOCK TEE quote (no real TDX).
     /// Insecure — never use in production. Refuses to run alongside a real KMS.
-    #[clap(long, env = "MEROD_MOCK_TEE", default_value_t = false)]
+    /// CLI-only flag (no env inheritance); only present under the default-off
+    /// `mock-attestation` build feature.
+    #[cfg(feature = "mock-attestation")]
+    #[clap(long, default_value_t = false)]
     mock_tee: bool,
     /// Emit machine-readable probe result as JSON
     #[arg(long, default_value_t = false)]
@@ -113,7 +119,9 @@ impl TeeProbeCommand {
         // Mock TEE is dev/test only and must never coexist with real attestation.
         // Same deny-guard as `merod run --mock-tee`: refuse a mock probe on a node
         // configured for real KMS attestation, so a mock "success" can never be
-        // mistaken for real-hardware assurance.
+        // mistaken for real-hardware assurance. Only compiled with the
+        // `mock-attestation` feature (the flag exists only there).
+        #[cfg(feature = "mock-attestation")]
         if self.mock_tee
             && config
                 .tee
@@ -138,6 +146,7 @@ impl TeeProbeCommand {
         // Generate a fresh quote via the SAME code path as `/tee/attest`:
         // real TDX hardware unless `--mock-tee` explicitly opts into a mock quote.
         let report_data = build_report_data(&nonce, Some(&app_hash));
+        #[cfg(feature = "mock-attestation")]
         let attestation = if self.mock_tee {
             warn!("Generating MOCK TEE attestation for probe — INSECURE, DEV/TEST ONLY");
             generate_mock_attestation(report_data)
@@ -145,11 +154,19 @@ impl TeeProbeCommand {
             generate_attestation(report_data)
                 .wrap_err("Failed to generate TDX attestation for TEE probe")?
         };
+        #[cfg(not(feature = "mock-attestation"))]
+        let attestation = generate_attestation(report_data)
+            .wrap_err("Failed to generate TDX attestation for TEE probe")?;
 
         // A mock result outside `--mock-tee` means the platform has no real TDX
         // hardware. Do not silently pass — this mirrors `/tee/attest` returning
-        // NOT_IMPLEMENTED on an unsupported platform.
-        if attestation.is_mock && !self.mock_tee {
+        // NOT_IMPLEMENTED on an unsupported platform. Without the
+        // `mock-attestation` feature any mock result is always rejected.
+        #[cfg(feature = "mock-attestation")]
+        let reject_mock = attestation.is_mock && !self.mock_tee;
+        #[cfg(not(feature = "mock-attestation"))]
+        let reject_mock = attestation.is_mock;
+        if reject_mock {
             bail!(
                 "TEE is not available on this node: attestation produced a mock quote, \
                  which means no real TDX hardware is present. Refusing to report success. \
@@ -182,11 +199,14 @@ async fn verify_quote(
     app_hash: &[u8; 32],
     is_mock: bool,
 ) -> Result<VerificationResult, AttestationError> {
+    #[cfg(feature = "mock-attestation")]
     if is_mock {
-        verify_mock_attestation(quote_bytes, nonce, app_hash)
-    } else {
-        verify_attestation(quote_bytes, nonce, app_hash).await
+        return verify_mock_attestation(quote_bytes, nonce, app_hash);
     }
+    // Without the `mock-attestation` feature there is no mock verify path.
+    #[cfg(not(feature = "mock-attestation"))]
+    let _ = is_mock;
+    verify_attestation(quote_bytes, nonce, app_hash).await
 }
 
 /// Classify a verify error for the tampered-quote check.
@@ -375,6 +395,7 @@ fn pass_str(passed: bool) -> &'static str {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "mock-attestation")]
     #[tokio::test]
     async fn probe_checks_pass_for_wellformed_mock_quote() {
         let nonce = [7u8; 32];
@@ -397,6 +418,7 @@ mod tests {
         assert!(result.checks.tampered_quote.rejected);
     }
 
+    #[cfg(feature = "mock-attestation")]
     #[tokio::test]
     async fn probe_positive_fails_on_app_hash_mismatch() {
         let nonce = [1u8; 32];

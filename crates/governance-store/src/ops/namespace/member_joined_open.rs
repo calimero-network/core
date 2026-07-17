@@ -16,7 +16,7 @@ use super::context::NamespaceApplyCtx;
 use crate::authorizer::AtCutMembershipPath;
 use crate::{
     ApplyError, MemberJoinedOpenRejection, MembershipPath, MembershipRepository,
-    NamespaceRepository,
+    NamespaceRepository, ReentryRepository,
 };
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
@@ -56,6 +56,27 @@ pub(crate) fn apply(
                 gid: format!("{gid:?}"),
                 resolved_ns: format!("{resolved_ns:?}"),
                 this_ns: format!("{:?}", ContextGroupId::from(namespace_id.to_bytes())),
+            }
+        ));
+    }
+    // Re-entry gate. An identity that exited this group does not flow back in by
+    // inheritance — and it is exactly inheritance that would otherwise walk a
+    // kicked member straight back into the Open subgroup they were kicked from,
+    // since membership there is automatic for any parent member holding
+    // `CAN_JOIN_OPEN_SUBGROUPS`. Any prior exit blocks it, a voluntary leaver
+    // included: inheritance is passive and carries no fresh authorization, so
+    // there is nothing here to weigh a re-admission against.
+    //
+    // Runs after the signer/namespace guards (never read state on the say-so of
+    // an unauthenticated op) and before the path resolution below.
+    if ReentryRepository::new(store)
+        .block_of(&gid, &member)?
+        .is_some()
+    {
+        eyre::bail!(ApplyError::MemberJoinedOpenRejected(
+            MemberJoinedOpenRejection::ReentryBlocked {
+                member: format!("{member}"),
+                gid: format!("{gid:?}"),
             }
         ));
     }

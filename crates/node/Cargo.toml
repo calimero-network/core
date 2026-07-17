@@ -54,6 +54,14 @@ calimero-store-rocksdb.workspace = true
 calimero-tee-attestation.workspace = true
 calimero-utils-actix.workspace = true
 
+[features]
+# DEV/TEST ONLY. Compiles the mock TEE attestation path in the node admission
+# handlers plus the mock-fleet governance harness. Default OFF. See crate docs.
+mock-attestation = [
+    "calimero-tee-attestation/mock-attestation",
+    "calimero-server/mock-attestation",
+]
+
 [dev-dependencies]
 async-trait.workspace = true
 calimero-wasm-abi.workspace = true

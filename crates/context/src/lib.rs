@@ -111,6 +111,7 @@ pub mod group_store {
         NamespaceOpLogService,
         NamespaceRepository,
         PendingRotationRepository,
+        ReentryRepository,
         SigningKeysError,
         SigningKeysRepository,
         UpgradeLadderRepository,
