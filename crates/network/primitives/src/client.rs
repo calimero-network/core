@@ -1,7 +1,6 @@
 use calimero_primitives::{blobs::BlobId, context::ContextId};
 use calimero_utils_actix::LazyRecipient;
 use libp2p::gossipsub::{IdentTopic, MessageId, PublishError, TopicHash};
-use libp2p::request_response::{OutboundRequestId, ResponseChannel};
 use libp2p::Multiaddr;
 use tokio::sync::oneshot;
 
@@ -35,12 +34,10 @@ pub fn is_no_peers_subscribed_error(err: &eyre::Report) -> bool {
 use crate::blob_types::BlobAuth;
 use crate::messages::{
     AnnounceBlob, Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, MeshStats, NetworkMessage,
-    NetworkStatus, OpenStream, PeerCount, Publish, QueryBlob, RequestBlob,
-    SendSpecializedNodeInvitationResponse, SendSpecializedNodeVerificationRequest, SetPeerScore,
-    Subscribe, SubscribedPeers, Unsubscribe,
+    NetworkStatus, OpenStream, PeerCount, Publish, QueryBlob, RequestBlob, SetPeerScore, Subscribe,
+    SubscribedPeers, Unsubscribe,
 };
 use crate::network_status::NetworkStatusSnapshot;
-use crate::specialized_node_invite::{SpecializedNodeInvitationResponse, VerificationRequest};
 use crate::stream::Stream;
 
 #[derive(Clone, Debug)]
@@ -324,46 +321,6 @@ impl NetworkClient {
                     peer_id,
                     auth,
                 },
-                outcome: tx,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        rx.await.expect("Mailbox not to be dropped")
-    }
-
-    // Specialized node invite protocol methods
-
-    /// Send a specialized node verification request to a peer
-    pub async fn send_specialized_node_verification_request(
-        &self,
-        peer_id: libp2p::PeerId,
-        request: VerificationRequest,
-    ) -> eyre::Result<OutboundRequestId> {
-        let (tx, rx) = oneshot::channel();
-
-        self.network_manager
-            .send(NetworkMessage::SendSpecializedNodeVerificationRequest {
-                request: SendSpecializedNodeVerificationRequest { peer_id, request },
-                outcome: tx,
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        rx.await.expect("Mailbox not to be dropped")
-    }
-
-    /// Send a specialized node invitation response via the response channel
-    pub async fn send_specialized_node_invitation_response(
-        &self,
-        channel: ResponseChannel<SpecializedNodeInvitationResponse>,
-        response: SpecializedNodeInvitationResponse,
-    ) -> eyre::Result<()> {
-        let (tx, rx) = oneshot::channel();
-
-        self.network_manager
-            .send(NetworkMessage::SendSpecializedNodeInvitationResponse {
-                request: SendSpecializedNodeInvitationResponse { channel, response },
                 outcome: tx,
             })
             .await

@@ -38,7 +38,6 @@ meroctl --node <name> <subcommand>
 │   ├── delete    # Delete context
 │   ├── list      # List contexts
 │   ├── get       # Get context details
-│   ├── invite-specialized-node  # Invite a specialized node
 │   ├── update    # Update context
 │   ├── watch     # Watch context
 │   ├── sync      # Sync context
@@ -83,7 +82,6 @@ src/
 │   │   ├── delete.rs    # Delete command
 │   │   ├── get.rs       # Get command
 │   │   ├── list.rs      # List command
-│   │   ├── invite_specialized_node.rs  # Invite specialized node
 │   │   ├── update.rs    # Update command
 │   │   ├── sync.rs      # Sync command
 │   │   ├── watch.rs     # Watch command

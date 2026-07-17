@@ -3,7 +3,7 @@
 //! **SRP Applied**: Event handling is split into focused modules:
 //! - `subscriptions` - context/group topic subscribe lifecycle
 //! - `heartbeat` - hash heartbeat divergence detection and sync trigger
-//! - `specialized` - specialized node invitation protocol
+//! - `specialized` - fleet TEE attestation-announce admission dispatch
 //! - `namespace` - namespace governance and heartbeat handling
 //! - `blobs` - blob request/provider/download event handling
 //! - this file - dispatch wiring only
@@ -148,17 +148,6 @@ impl Handler<NetworkEvent> for NodeManager {
                             their_dag_heads,
                         );
                     }
-                    BroadcastMessage::SpecializedNodeDiscovery { nonce, node_type } => {
-                        let specialized_message =
-                            BroadcastMessage::SpecializedNodeDiscovery { nonce, node_type };
-                        let _handled = specialized::handle_specialized_broadcast(
-                            self,
-                            ctx,
-                            source,
-                            &topic,
-                            &specialized_message,
-                        );
-                    }
                     BroadcastMessage::TeeAttestationAnnounce {
                         quote_bytes,
                         public_key,
@@ -171,17 +160,6 @@ impl Handler<NetworkEvent> for NodeManager {
                             nonce,
                             node_type,
                         };
-                        let _handled = specialized::handle_specialized_broadcast(
-                            self,
-                            ctx,
-                            source,
-                            &topic,
-                            &specialized_message,
-                        );
-                    }
-                    BroadcastMessage::SpecializedNodeJoinConfirmation { nonce } => {
-                        let specialized_message =
-                            BroadcastMessage::SpecializedNodeJoinConfirmation { nonce };
                         let _handled = specialized::handle_specialized_broadcast(
                             self,
                             ctx,
@@ -257,38 +235,6 @@ impl Handler<NetworkEvent> for NodeManager {
                 error,
             } => {
                 blobs::handle_blob_download_failed(blob_id, context_id, from_peer, error);
-            }
-            NetworkEvent::SpecializedNodeVerificationRequest {
-                peer_id,
-                request_id,
-                request,
-                channel,
-            } => {
-                let _handled = specialized::handle_specialized_network_event(
-                    self,
-                    ctx,
-                    NetworkEvent::SpecializedNodeVerificationRequest {
-                        peer_id,
-                        request_id,
-                        request,
-                        channel,
-                    },
-                );
-            }
-            NetworkEvent::SpecializedNodeInvitationResponse {
-                peer_id,
-                request_id,
-                response,
-            } => {
-                let _handled = specialized::handle_specialized_network_event(
-                    self,
-                    ctx,
-                    NetworkEvent::SpecializedNodeInvitationResponse {
-                        peer_id,
-                        request_id,
-                        response,
-                    },
-                );
             }
         }
     }

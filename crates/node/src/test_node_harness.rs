@@ -24,7 +24,6 @@ use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::messages::MessageId;
 use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
 use calimero_node_primitives::messages::NodeMessage;
-use calimero_node_primitives::NodeMode;
 use calimero_store::db::InMemoryDB;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
@@ -172,7 +171,6 @@ pub(crate) async fn boot_test_node() -> TestNode {
         node_recipient.clone(),
         event_sender,
         sync_client,
-        String::new(),
         None,
     );
 
@@ -196,7 +194,7 @@ pub(crate) async fn boot_test_node() -> TestNode {
     )
     .with_migration_v2(false);
 
-    let node_state = NodeState::new(false, NodeMode::Standard);
+    let node_state = NodeState::new();
 
     let mut sync_manager = SyncManager::new(
         SyncConfig::default(),

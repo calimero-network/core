@@ -48,14 +48,12 @@ use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use libp2p::core::transport::ListenerId;
 pub use libp2p::gossipsub::{IdentTopic, Message, MessageId, TopicHash};
-pub use libp2p::request_response::{InboundRequestId, OutboundRequestId, ResponseChannel};
 pub use libp2p::PeerId;
 use libp2p::{Multiaddr, StreamProtocol};
 use tokio::sync::oneshot;
 
 use crate::blob_types::BlobAuth;
 use crate::network_status::NetworkStatusSnapshot;
-use crate::specialized_node_invite::{SpecializedNodeInvitationResponse, VerificationRequest};
 use crate::stream::Stream;
 
 /// Commands sent to the `NetworkManager` actor.
@@ -159,17 +157,6 @@ pub enum NetworkMessage {
     RequestBlob {
         request: RequestBlob,
         outcome: oneshot::Sender<<RequestBlob as actix::Message>::Result>,
-    },
-    /// Send a specialized node verification request.
-    SendSpecializedNodeVerificationRequest {
-        request: SendSpecializedNodeVerificationRequest,
-        outcome:
-            oneshot::Sender<<SendSpecializedNodeVerificationRequest as actix::Message>::Result>,
-    },
-    /// Send a specialized node invitation response.
-    SendSpecializedNodeInvitationResponse {
-        request: SendSpecializedNodeInvitationResponse,
-        outcome: oneshot::Sender<<SendSpecializedNodeInvitationResponse as actix::Message>::Result>,
     },
     /// Set a peer's gossipsub application-specific score (membership bias).
     SetPeerScore {
@@ -450,42 +437,6 @@ impl actix::Message for RequestBlob {
 }
 
 // ============================================================================
-// Specialized Node Invite Protocol Messages
-// ============================================================================
-
-/// Request to send a verification request to a peer.
-///
-/// Used in the specialized node invitation protocol where a new node
-/// verifies its identity with an existing node.
-#[derive(Debug)]
-pub struct SendSpecializedNodeVerificationRequest {
-    /// The peer to send the verification request to.
-    pub peer_id: PeerId,
-    /// The verification request payload.
-    pub request: VerificationRequest,
-}
-
-impl actix::Message for SendSpecializedNodeVerificationRequest {
-    type Result = eyre::Result<OutboundRequestId>;
-}
-
-/// Request to send an invitation response via a response channel.
-///
-/// Used to respond to an incoming verification request in the
-/// specialized node invitation protocol.
-#[derive(Debug)]
-pub struct SendSpecializedNodeInvitationResponse {
-    /// The response channel from the incoming request.
-    pub channel: ResponseChannel<SpecializedNodeInvitationResponse>,
-    /// The response to send.
-    pub response: SpecializedNodeInvitationResponse,
-}
-
-impl actix::Message for SendSpecializedNodeInvitationResponse {
-    type Result = eyre::Result<()>;
-}
-
-// ============================================================================
 // Network Events
 // ============================================================================
 
@@ -624,31 +575,6 @@ pub enum NetworkEvent {
         from_peer: PeerId,
         /// Error description.
         error: String,
-    },
-
-    /// Received a verification request from a specialized node.
-    ///
-    /// The application should verify the request and send a response
-    /// via the provided channel.
-    SpecializedNodeVerificationRequest {
-        /// The peer sending the verification request.
-        peer_id: PeerId,
-        /// Request ID for correlation.
-        request_id: InboundRequestId,
-        /// The verification request payload.
-        request: VerificationRequest,
-        /// Channel to send the response.
-        channel: ResponseChannel<SpecializedNodeInvitationResponse>,
-    },
-
-    /// Received an invitation response from a peer.
-    SpecializedNodeInvitationResponse {
-        /// The peer that sent the response.
-        peer_id: PeerId,
-        /// Request ID for correlation with the original request.
-        request_id: OutboundRequestId,
-        /// The invitation response.
-        response: SpecializedNodeInvitationResponse,
     },
 }
 

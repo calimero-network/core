@@ -81,7 +81,6 @@ pub(crate) async fn delta_store_over(store: Store) -> (DeltaStore, tempfile::Tem
         LazyRecipient::new(),
         event_sender,
         sync_client,
-        String::new(),
         None,
     );
 

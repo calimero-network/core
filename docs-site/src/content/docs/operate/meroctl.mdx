@@ -113,7 +113,6 @@ meroctl --node node1 app ls
 | `update`                           | Update the application in a context.              | `--context`/`-c`, `--application-id`/`-a`, `--path`, `--metadata`, `--watch`/`-w`, `--as` (executor) |
 | `watch` (`ws`)                     | Stream context events, optionally run a command.  | `--context`, `-x`/`--exec`, `-n`/`--count`                  |
 | `sync`                             | Explicitly request a sync.                        | `--context`/`-c`, `--all`                                    |
-| `invite-specialized-node`          | Invite a specialized (e.g. read-only TEE) node.   | `--context`, `--inviter`                                     |
 | `identity`                         | Manage context identities (see below).            | subcommand                                                    |
 | `alias`                            | Manage context aliases: `add`, `remove`, `get`, `list`. | subcommand                                              |
 | `use <CONTEXT>`                    | Set the default context.                          | `CONTEXT`, `--force`                                        |

@@ -26,7 +26,7 @@ cargo test -p calimero-config write_atomic_creates_file_mode_0600 -- --nocapture
 - File name: `CONFIG_FILE = "config.toml"` (constant in `src/lib.rs`).
 - Full path is `<node_dir>/config.toml`, where `<node_dir>` is chosen by the caller (this crate never hardcodes it). merod resolves `<node_dir>` as `--home/<node_name>`, and `--home` defaults to `~/.calimero` (`defaults::default_node_dir()` in `crates/merod/src/defaults.rs`, overridable via `CALIMERO_HOME`).
 - Format is TOML, (de)serialized with `serde` + the `toml` crate.
-- `ConfigFile` is `#[non_exhaustive]` at every level (`ConfigFile`, `TeeConfig`, `KmsConfig`, `PhalaKmsConfig`, `SyncConfig`, `SpecializedNodeConfig`, `NetworkConfig`, `ServerConfig`, `DataStoreConfig`, `BlobStoreConfig`) - external crates cannot build these with a struct literal; use the provided `::new`/`::with_*` constructors or field access, so adding a field here never breaks downstream compilation.
+- `ConfigFile` is `#[non_exhaustive]` at every level (`ConfigFile`, `TeeConfig`, `KmsConfig`, `PhalaKmsConfig`, `SyncConfig`, `NetworkConfig`, `ServerConfig`, `DataStoreConfig`, `BlobStoreConfig`) - external crates cannot build these with a struct literal; use the provided `::new`/`::with_*` constructors or field access, so adding a field here never breaks downstream compilation.
 
 ## Config Field Inventory (`ConfigFile`)
 
@@ -34,7 +34,7 @@ cargo test -p calimero-config write_atomic_creates_file_mode_0600 -- --nocapture
 | --- | --- | --- | --- |
 | `identity` | `[identity]` | `IdentityConfig` (`peer_id` + base58 protobuf `keypair`) | generates a fresh Ed25519 libp2p keypair |
 | `mode` | `mode = ...` | `NodeMode` (re-exported from `calimero-node-primitives`) | `NodeMode::default()` |
-| `network` | flattened (`[swarm]`, `[server]`, `[bootstrap]`, `[discovery]`, `[server.specialized_node]`) | `NetworkConfig` | no default - required unless every nested field has one |
+| `network` | flattened (`[swarm]`, `[server]`, `[bootstrap]`, `[discovery]`) | `NetworkConfig` | no default - required unless every nested field has one |
 | `sync` | `[sync]` | `SyncConfig` | required (no `#[serde(default)]` on the field itself) |
 | `datastore` | `[datastore]` | `DataStoreConfig` (just `path: Utf8PathBuf`) | required |
 | `blobstore` | `[blobstore]` | `BlobStoreConfig` (just `path: Utf8PathBuf`) | required |
@@ -47,10 +47,9 @@ Nested structs of note:
 
 | Struct | Fields | Notes |
 | --- | --- | --- |
-| `NetworkConfig` | `swarm`, `server`, `bootstrap` (default), `discovery` (default), `specialized_node` (default) | flattened into the top-level TOML, not a `[network]` section |
+| `NetworkConfig` | `swarm`, `server`, `bootstrap` (default), `discovery` (default) | flattened into the top-level TOML, not a `[network]` section |
 | `ServerConfig` | `listen: Vec<Multiaddr>`, `admin`/`jsonrpc`/`websocket`/`sse: Option<..>`, `auth_mode: AuthMode` (default `Proxy`), `embedded_auth: Option<AuthConfig>` | |
 | `SyncConfig` | `timeout` (`timeout_ms`), `session_deadline` (`session_deadline_ms`, defaults to 30s), `interval` (`interval_ms`), `frequency` (`frequency_ms`) | all four are millisecond integers on the wire via `serde_duration` |
-| `SpecializedNodeConfig` | `invite_topic` (default `"mero_specialized_node_invites"`), `accept_mock_tee` (default `false`) | read-only-node support |
 | `TeeConfig` | `kms: KmsConfig` | |
 | `KmsConfig` | `phala: Option<PhalaKmsConfig>` | only Phala is supported today |
 | `PhalaKmsConfig` | `url: Url`, `tls: KmsTlsConfig` (default), `attestation: KmsAttestationConfig` (default) | |
@@ -83,7 +82,7 @@ Nested structs of note:
 
 ## Invariants and Gotchas
 
-- **Never build these structs with a bare literal from outside the crate** - they are `#[non_exhaustive]`; use `ConfigFile::new`, `NetworkConfig::new`/`with_specialized_node`, `ServerConfig::new`/`with_auth`, `SyncConfig::new`, `DataStoreConfig::new`, `BlobStoreConfig::new`, or field access on an existing value.
+- **Never build these structs with a bare literal from outside the crate** - they are `#[non_exhaustive]`; use `ConfigFile::new`, `NetworkConfig::new`, `ServerConfig::new`/`with_auth`, `SyncConfig::new`, `DataStoreConfig::new`, `BlobStoreConfig::new`, or field access on an existing value.
 - **Duration fields are milliseconds on the wire**: `SyncConfig`'s four `Duration` fields serialize/deserialize as bare `u64` millis via the private `serde_duration` module (`timeout_ms`, `session_deadline_ms`, `interval_ms`, `frequency_ms`) - do not add a human-readable duration format without also handling old integer configs.
 - **`session_deadline` defaults independently of `timeout`**: if absent from TOML it defaults to a hardcoded 30s (`default_sync_session_deadline`), not to whatever `timeout_ms` was set to - the two can silently diverge in older configs that only set `timeout_ms`.
 - **Identity round-trip is self-verifying**: `serde_identity::deserialize` rejects a config where the stored `peer_id` doesn't match the decoded `keypair`'s public key. Hand-editing `config.toml`'s `[identity]` section (e.g. swapping just `peer_id`) will fail to load, by design.

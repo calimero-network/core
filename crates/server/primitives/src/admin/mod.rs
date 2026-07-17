@@ -448,45 +448,6 @@ impl GetContextsResponse {
     }
 }
 
-/// Request to invite specialized nodes (e.g., read-only TEE nodes) to join a context
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InviteSpecializedNodeRequest {
-    pub context_id: ContextId,
-    /// Optional inviter identity - defaults to context's default identity if not provided
-    pub inviter_id: Option<PublicKey>,
-}
-
-impl InviteSpecializedNodeRequest {
-    pub const fn new(context_id: ContextId, inviter_id: Option<PublicKey>) -> Self {
-        Self {
-            context_id,
-            inviter_id,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InviteSpecializedNodeResponseData {
-    /// Hex-encoded nonce used for the specialized node invite discovery
-    pub nonce: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InviteSpecializedNodeResponse {
-    pub data: InviteSpecializedNodeResponseData,
-}
-
-impl InviteSpecializedNodeResponse {
-    pub fn new(nonce: String) -> Self {
-        Self {
-            data: InviteSpecializedNodeResponseData { nonce },
-        }
-    }
-}
-
 /// Per-context application switch. Code-only: migrations are declared in the
 /// app's embedded ABI and resolved by the node during a group upgrade — the
 /// caller never names a migrate method.
@@ -1351,13 +1312,6 @@ impl Validate for CreateContextRequest {
         }
 
         errors
-    }
-}
-
-impl Validate for InviteSpecializedNodeRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        // All fields are typed (ContextId, Option<PublicKey>) which have their own validation
-        Vec::new()
     }
 }
 

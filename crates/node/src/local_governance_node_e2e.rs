@@ -17,7 +17,6 @@ use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
 use calimero_node_primitives::messages::NodeMessage;
 use calimero_node_primitives::sync::BroadcastMessage;
-use calimero_node_primitives::NodeMode;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -2812,11 +2811,10 @@ async fn build_standalone_sync_manager() -> (SyncManager, Store, NodeState, Temp
         node_recipient,
         event_sender,
         sync_client,
-        String::new(),
         None,
     );
     let context_client = ContextClient::new(store.clone(), node_client.clone(), context_recipient);
-    let node_state = NodeState::new(false, NodeMode::Standard);
+    let node_state = NodeState::new();
 
     let sync_manager = SyncManager::new(
         SyncConfig::default(),

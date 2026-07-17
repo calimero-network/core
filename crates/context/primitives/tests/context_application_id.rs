@@ -55,7 +55,6 @@ async fn setup_test_context_client() -> (ContextClient, TempDir) {
         node_manager,
         event_sender,
         sync_client,
-        String::new(),
         None,
     );
 

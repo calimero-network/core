@@ -26,7 +26,6 @@ use calimero_store_rocksdb::RocksDB;
 use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
 use futures_util::FutureExt;
-use libp2p::gossipsub::IdentTopic;
 use libp2p::identity::Keypair;
 use prometheus_client::registry::Registry;
 use tokio::sync::{broadcast, mpsc};
@@ -95,15 +94,6 @@ async fn shutdown_signal() {
     }
 }
 
-/// Configuration for specialized node functionality (e.g., read-only nodes).
-#[derive(Debug, Clone)]
-pub struct SpecializedNodeConfig {
-    /// Topic name for specialized node invite discovery messages.
-    pub invite_topic: String,
-    /// Whether to accept mock TEE attestation (testing only).
-    pub accept_mock_tee: bool,
-}
-
 #[derive(Debug)]
 pub struct NodeConfig {
     pub home: Utf8PathBuf,
@@ -118,7 +108,6 @@ pub struct NodeConfig {
     /// DAG compaction settings (issue #2026). Enabled by default.
     pub dag_compaction: calimero_node_primitives::DagCompactionConfig,
     pub mode: NodeMode,
-    pub specialized_node: SpecializedNodeConfig,
     /// Resolved per-execution VM resource limits from the `[runtime.limits]`
     /// config section (unset fields fall back to `VMLimits::default`).
     pub vm_limits: calimero_runtime::logic::VMLimits,
@@ -199,13 +188,6 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // Create arbiter pool for spawning actors across threads
     let mut arbiter_pool = ArbiterPool::new().await?;
 
-    // The specialized-node invite topic is subscribed by every node but
-    // is not an overlay we want per-key rendezvous registration for —
-    // reserve it so the discovery layer doesn't map it to a rendezvous
-    // key (which would register all nodes under one key and recreate the
-    // global fan-out).
-    let reserved_topics = BTreeSet::from([config.specialized_node.invite_topic.clone()]);
-
     // Create NetworkManager with channel-based dispatcher for reliable
     // event delivery. The datastore handle backs the peer-address cache
     // (datastore-backed peerstore) so a restart can dial known
@@ -214,7 +196,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         &config.network,
         Arc::new(network_event_sender),
         &mut registry,
-        reserved_topics,
+        BTreeSet::new(),
         Some(datastore.clone()),
     )
     .await?;
@@ -225,16 +207,6 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         assert!(network_recipient.init(ctx), "failed to initialize");
         network_manager
     });
-
-    info!(
-        topic = %config.specialized_node.invite_topic,
-        "Subscribing to specialized node invite topic"
-    );
-    let _ignored = network_client
-        .subscribe(IdentTopic::new(
-            config.specialized_node.invite_topic.clone(),
-        ))
-        .await?;
 
     // Channel capacities are named in `crate::constants` so the burst/concurrency
     // budgets live in one place rather than as scattered magic numbers.
@@ -262,7 +234,6 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_recipient.clone(),
         event_sender,
         sync_client,
-        config.specialized_node.invite_topic.clone(),
         Some(local_delta_tx),
     );
 
@@ -294,8 +265,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         context_manager
     });
 
-    let mut node_state =
-        crate::NodeState::new(config.specialized_node.accept_mock_tee, config.mode);
+    let mut node_state = crate::NodeState::new();
     // Share the one registry the context manager feeds, so the node side reads
     // the same projection at the data-write decision.
     node_state.scope_projections = std::sync::Arc::clone(&scope_projections);

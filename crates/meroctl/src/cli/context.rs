@@ -9,7 +9,6 @@ pub mod create;
 pub mod delete;
 pub mod get;
 pub mod identity;
-pub mod invite_specialized_node;
 pub mod list;
 pub mod sync;
 pub mod update;
@@ -48,7 +47,6 @@ pub enum ContextSubCommands {
     #[command(alias = "ls")]
     List(list::ListCommand),
     Create(Box<create::CreateCommand>),
-    InviteSpecializedNode(invite_specialized_node::InviteSpecializedNodeCommand),
     Get(get::GetCommand),
     #[command(alias = "del")]
     Delete(delete::DeleteCommand),
@@ -67,7 +65,6 @@ impl ContextCommand {
             ContextSubCommands::Create(create) => create.run(environment).await,
             ContextSubCommands::Delete(delete) => delete.run(environment).await,
             ContextSubCommands::Get(get) => get.run(environment).await,
-            ContextSubCommands::InviteSpecializedNode(cmd) => cmd.run(environment).await,
             ContextSubCommands::List(list) => list.run(environment).await,
             ContextSubCommands::Watch(watch) => watch.run(environment).await,
             ContextSubCommands::Update(update) => update.run(environment).await,

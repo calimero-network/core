@@ -45,7 +45,6 @@ src/
 │   │   │   ├── get_context_storage.rs
 │   │   │   ├── get_contexts_for_application.rs
 │   │   │   ├── get_contexts_with_executors_for_application.rs
-│   │   │   ├── invite_specialized_node.rs
 │   │   │   ├── join_context.rs
 │   │   │   ├── sync.rs
 │   │   │   └── update_context_application.rs
@@ -111,7 +110,6 @@ GET  /admin-api/applications          # List apps
 POST /admin-api/install-application   # Install app
 GET  /admin-api/applications/:id      # Get app
 
-POST /admin-api/contexts/invite-specialized-node   # Invite specialized node
 POST /admin-api/contexts/:id/join     # Join context
 ```
 
