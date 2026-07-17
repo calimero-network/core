@@ -530,3 +530,88 @@ fn test_unregistered_external_type_still_errors() {
     let result = normalize_type(&parse_type("TotallyUnknownExternalType"), true, &resolver);
     assert!(matches!(result, Err(NormalizeError::TypePathError(_))));
 }
+
+#[test]
+fn test_counter_and_aliases_normalize_to_counter_placeholder() {
+    use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType};
+
+    let resolver = MockResolver::new();
+
+    // `Counter` and its `GCounter` / `PNCounter` aliases all collapse to the
+    // single opaque `counter` ABI tag - the ALLOW_DECREMENT const generic is an
+    // internal serialization detail invisible to the ABI. syn does not expand
+    // `pub type` aliases, so each spelling is matched by name in normalize.rs.
+    // Bare forms are legal Rust (every generic is defaulted); generic spellings
+    // must resolve identically.
+    let spellings = [
+        "Counter",
+        "Counter<true>",
+        "GCounter",
+        "PNCounter",
+        "GCounter<MainStorage>",
+        "PNCounter<MainStorage>",
+    ];
+    for spelling in spellings {
+        let normalized = normalize_type(&parse_type(spelling), true, &resolver)
+            .unwrap_or_else(|e| panic!("{spelling} failed to normalize: {e:?}"));
+        match normalized {
+            TypeRef::Collection {
+                collection,
+                crdt_type,
+                inner_type,
+            } => {
+                assert_eq!(
+                    crdt_type,
+                    Some(CrdtCollectionType::Counter),
+                    "{spelling} must carry crdt_type = Counter"
+                );
+                assert!(
+                    matches!(collection, CollectionType::Record { .. }),
+                    "{spelling} must surface as the opaque placeholder Record"
+                );
+                assert!(
+                    inner_type.is_none(),
+                    "{spelling} opaque placeholder has no inner type"
+                );
+            }
+            other => panic!("{spelling}: expected Collection variant, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn test_all_public_storage_spellings_normalize() {
+    // RULE: every public storage-collection spelling an app can legally write in
+    // a type position must normalize without error. syn does not expand `pub type`
+    // aliases, so every alias over a storage wrapper must be listed BOTH here and
+    // in normalize.rs - a missed alias fails the WASM build with
+    // "unknown type: <Alias>". Bare spellings appear only where all generics are
+    // defaulted.
+    let resolver = MockResolver::new();
+    let spellings = [
+        "LwwRegister<String>",
+        "Counter",
+        "Counter<true>",
+        "GCounter",
+        "PNCounter",
+        "ReplicatedGrowableArray",
+        "Vector<String>",
+        "AuthoredVector<String>",
+        "UnorderedSet<String>",
+        "SortedSet<String>",
+        "UnorderedMap<String, String>",
+        "SortedMap<String, String>",
+        "AuthoredMap<String, String>",
+        "SharedStorage<String>",
+        "PermissionedStorage<String>",
+        "Ownable<String>",
+        "UserStorage<String>",
+        "FrozenStorage<String>",
+        "FrozenValue<String>",
+        "AccessControl",
+    ];
+    for spelling in spellings {
+        normalize_type(&parse_type(spelling), true, &resolver)
+            .unwrap_or_else(|e| panic!("{spelling} must normalize without error: {e:?}"));
+    }
+}
