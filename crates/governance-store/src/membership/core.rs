@@ -100,6 +100,15 @@ impl<'a> MembershipRepository<'a> {
         // Idempotent on an identity who was never denied (delete of an absent
         // key), so this costs one store delete on every member add.
         DenyListRepository::new(self.store).clear(group_id, identity)?;
+        // Also clear any namespace-root inherited-deny for this identity: writing
+        // a direct row here — which for a root re-admission (admin `MemberAdded`
+        // or a TEE re-attestation, both funnel through this choke point) restores
+        // the membership that inherited access flows from — must un-silence their
+        // descendant Open-subgroup traffic. Keyed to the root, so this is a no-op
+        // for a non-root direct add (nothing was marked there). Necessarily runs
+        // before the member can re-inherit, so a re-inherited node is never
+        // stranded behind a stale inherited-deny.
+        DenyListRepository::new(self.store).clear_inherited(group_id, identity)?;
 
         if !is_admin {
             let capabilities = CapabilitiesRepository::new(self.store);

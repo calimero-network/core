@@ -41,10 +41,13 @@
 //! from both sides: [`Self::mark`] `debug_assert!`s the row is already gone, and
 //! `add_member_with_keys` clears the entry when the row is written.
 
-use crate::MembershipRepository;
+use crate::{MembershipRepository, NamespaceRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
-use calimero_store::key::{GroupDeniedMember, GROUP_DENIED_MEMBER_PREFIX};
+use calimero_store::key::{
+    GroupDeniedMember, GroupInheritedDeniedMember, GROUP_DENIED_MEMBER_PREFIX,
+    GROUP_INHERITED_DENIED_MEMBER_PREFIX,
+};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
@@ -131,13 +134,79 @@ impl<'a> DenyListRepository<'a> {
             .map_err(|e| eyre::eyre!("DenyListRepository::is_denied: {e}"))
     }
 
-    /// Check whether `author` is denied for the group that owns
-    /// `context_id`. Returns `Ok(false)` when the context isn't
-    /// registered to any group (nothing to deny on) — group-less
-    /// contexts skip the deny-list layer entirely. Encapsulates the
-    /// two-step `get_group_for_context` → `is_denied` lookup so callers
-    /// (e.g. the state-delta handler) don't have to reach into the
-    /// group-id resolution.
+    /// Mark `member` as *inherited*-denied, keyed to the **namespace root**
+    /// `root_group_id`. Recorded when the member loses their root membership
+    /// (evicted from / left the namespace root): that revokes every Open-subgroup
+    /// membership they held purely by inheritance from the root row, so one
+    /// root-keyed entry covers every descendant. The receive filter resolves a
+    /// context's group to its root and checks here.
+    ///
+    /// Separate column from [`Self::mark`]: that one is the per-group "not a
+    /// member" view (asserts no direct row *and* is read by governance queries);
+    /// this is a receive-filter-only view whose clear lifecycle is tied to the
+    /// root re-admission, not the per-group row write. The `debug_assert!`
+    /// enforces the root row is already gone at mark time (callers mark after
+    /// `remove_member(root, ..)`).
+    pub fn mark_inherited(
+        &self,
+        root_group_id: &ContextGroupId,
+        member: &PublicKey,
+    ) -> EyreResult<()> {
+        debug_assert!(
+            !MembershipRepository::new(self.store)
+                .has_direct_member(root_group_id, member)
+                .unwrap_or(false),
+            "DenyListRepository::mark_inherited: member {member:?} still holds a direct row in \
+             root {root_group_id:?} — callers must remove_member(root, ..) first"
+        );
+        let key = GroupInheritedDeniedMember::new(root_group_id.to_bytes(), *member);
+        let mut handle = self.store.handle();
+        handle
+            .put(&key, &())
+            .map_err(|e| eyre::eyre!("DenyListRepository::mark_inherited: {e}"))?;
+        Ok(())
+    }
+
+    /// Clear `member`'s root-keyed inherited-deny entry. Idempotent. Invoked when
+    /// the member regains a direct row at the root (admin re-add or TEE
+    /// re-attestation, both via `add_member_with_keys`) — which necessarily
+    /// precedes any re-inheritance.
+    pub fn clear_inherited(
+        &self,
+        root_group_id: &ContextGroupId,
+        member: &PublicKey,
+    ) -> EyreResult<()> {
+        let key = GroupInheritedDeniedMember::new(root_group_id.to_bytes(), *member);
+        let mut handle = self.store.handle();
+        handle
+            .delete(&key)
+            .map_err(|e| eyre::eyre!("DenyListRepository::clear_inherited: {e}"))?;
+        Ok(())
+    }
+
+    /// Check whether `member` is inherited-denied at the namespace root
+    /// `root_group_id`. O(1).
+    pub fn is_inherited_denied(
+        &self,
+        root_group_id: &ContextGroupId,
+        member: &PublicKey,
+    ) -> EyreResult<bool> {
+        let key = GroupInheritedDeniedMember::new(root_group_id.to_bytes(), *member);
+        let handle = self.store.handle();
+        handle
+            .has(&key)
+            .map_err(|e| eyre::eyre!("DenyListRepository::is_inherited_denied: {e}"))
+    }
+
+    /// Check whether `author` is denied for the group that owns `context_id` —
+    /// by a direct deny entry on that group, OR a namespace-root inherited-deny
+    /// (an evicted/left member who reached the owning subgroup only by
+    /// inheritance from the root). Returns `Ok(false)` when the context isn't
+    /// registered to any group (nothing to deny on). Encapsulates the
+    /// `get_group_for_context` → deny lookups so callers (e.g. the state-delta
+    /// handler) don't reach into group-id resolution. The direct check is O(1);
+    /// the inherited check resolves the group's namespace root (a bounded
+    /// parent-chain walk, typically 1–2 steps).
     pub fn is_author_denied_for_context(
         &self,
         context_id: &calimero_primitives::context::ContextId,
@@ -146,7 +215,11 @@ impl<'a> DenyListRepository<'a> {
         let Some(group_id) = super::contexts::get_group_for_context(self.store, context_id)? else {
             return Ok(false);
         };
-        self.is_denied(&group_id, author)
+        if self.is_denied(&group_id, author)? {
+            return Ok(true);
+        }
+        let root = NamespaceRepository::new(self.store).resolve(&group_id)?;
+        self.is_inherited_denied(&root, author)
     }
 
     /// Remove every deny-list entry under `group_id`. Used during group
@@ -166,8 +239,19 @@ impl<'a> DenyListRepository<'a> {
             GROUP_DENIED_MEMBER_PREFIX,
             |k| k.group_id() == gid,
         )?;
+        let inherited_keys = collect_keys_with_prefix(
+            self.store,
+            GroupInheritedDeniedMember::new(gid, PublicKey::from([0u8; 32])),
+            GROUP_INHERITED_DENIED_MEMBER_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
         let mut handle = self.store.handle();
         for key in keys {
+            handle
+                .delete(&key)
+                .map_err(|e| eyre::eyre!("DenyListRepository::clear_all_for_group: {e}"))?;
+        }
+        for key in inherited_keys {
             handle
                 .delete(&key)
                 .map_err(|e| eyre::eyre!("DenyListRepository::clear_all_for_group: {e}"))?;

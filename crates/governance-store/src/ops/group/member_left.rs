@@ -160,6 +160,13 @@ pub(crate) fn apply(
     // Deny-list the leaver on this group too. See
     // `MemberRemoved` for the same rationale.
     DenyListRepository::new(store).mark(group_id, member)?;
+    // On a namespace-root leave the leaver loses every *inherited* Open-subgroup
+    // membership too; record a root-keyed inherited-deny so the receive filter
+    // fast-drops their deltas to those descendant subgroups. `is_namespace_leave`
+    // above already established `group_id` is the root. Cleared on root re-add.
+    if is_namespace_leave {
+        DenyListRepository::new(store).mark_inherited(group_id, member)?;
+    }
     // Block re-entry, with `Left` rather than `Removed` — see the descendant
     // cascade above. Like the deny-list write, this touches a separate,
     // deliberately unhashed column and so leaves the signed state hash
