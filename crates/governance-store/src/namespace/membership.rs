@@ -1,4 +1,4 @@
-use crate::{MembershipRepository, NamespaceRepository};
+use crate::{MembershipRepository, NamespaceRepository, ReentryRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_context_config::MemberCapabilities;
@@ -72,6 +72,38 @@ impl<'a> NamespaceMembershipService<'a> {
             return Ok(None);
         }
 
+        // Re-entry gate. Rejects two cases: an identity an admin REMOVED (no
+        // invitation readmits them — only an admin `MemberAdded` does), and an
+        // identity replaying an invitation they have already consumed (they
+        // left, and the invitation they joined with is spent for them; they need
+        // a freshly issued one). A first-time joiner has neither row, so this is
+        // a no-op for them.
+        //
+        // Placement is load-bearing, and it belongs AFTER the direct-row dedup
+        // above, not before it. The block governs RE-ENTRY; someone who already
+        // holds a member row is not re-entering, so the gate has nothing to say
+        // about them — and this handler MUST be idempotent on re-apply, which the
+        // whole apply pipeline relies on (the mutation re-runs on every gossip
+        // re-delivery, sync backfill, and post-restart DAG replay, before the
+        // op-log dedup fires; a handler that bails on a second run leaves the
+        // nonce unpersisted and wedges the node). Put the gate ahead of the dedup
+        // and the first apply consumes the invitation, then the second apply sees
+        // that consumption row and bails — a failing apply does not advance the
+        // namespace governance head, so every later governance op stalls behind it
+        // and the namespace stops converging. Behind the dedup, a re-apply hits
+        // `has_direct_member` and returns early, so the gate runs exactly once.
+        //
+        // It must still come after `verify_member_join_signature`, so we never
+        // read state on the say-so of an unauthenticated op.
+        //
+        // Nothing is smuggled past the gate by sitting behind the dedup: a
+        // blocked identity cannot acquire a direct row out of band. Every writer
+        // of one is itself gated — the sync responder's pre-register, and
+        // `join_group`'s local self-add — so a row existing here means the gate
+        // already passed for them.
+        let reentry = ReentryRepository::new(self.store);
+        reentry.require_invitation_admits(&group_id, member, inv.invitation_nonce)?;
+
         let role = role_from_invited_role(inv.invited_role);
         if role == GroupMemberRole::Admin
             && !MembershipRepository::new(self.store).is_admin(&group_id, &inviter_pk)?
@@ -85,6 +117,17 @@ impl<'a> NamespaceMembershipService<'a> {
         }
 
         MembershipRepository::new(self.store).add_member(&group_id, member, role)?;
+        // Spend the invitation for this identity: presenting it again after they
+        // next exit cannot readmit them. Recorded per `(group, identity, nonce)`,
+        // so the same open-invite link still admits everyone else who has not
+        // used it — an invitation is a bearer token with no invitee field, and
+        // burning it globally on first use would break the shared join link.
+        reentry.mark_invitation_consumed(&group_id, member, inv.invitation_nonce)?;
+        // They are a member again, so the block that stopped them re-entering is
+        // spent. Reaching this line means the gate above already established the
+        // block was `Left` and this invitation was fresh — a `Removed` block
+        // bails there and never gets here.
+        reentry.clear_block(&group_id, member)?;
         // #2422 Option 2: synthesize an `AutoFollowSet` so the auto-follow
         // handler backfills any pre-existing contexts in this group. Same
         // rationale as the `GroupOp::MemberAdded` arm in `apply_group_op_

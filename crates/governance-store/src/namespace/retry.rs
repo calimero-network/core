@@ -157,11 +157,33 @@ impl<'a> NamespaceRetryService<'a> {
         let mut candidates = Vec::new();
         let gid_typed = ContextGroupId::from(group_id);
         let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
+
+        // This node's own namespace identity. Ops it SIGNED were applied through
+        // the local authoring path (`sign_apply_and_publish` →
+        // `sign_apply_local_group_op_borsh`) at publish time, which records the
+        // GROUP-level nonce. The retry replays from the namespace op-log and the
+        // receive apply dedups on the NAMESPACE-level nonce — a separate sequence
+        // the local path never wrote — so a node's own op is NOT recognised as
+        // already-applied and its mutation re-runs. For an upsert that is
+        // harmless, but re-running a REMOVAL (`MemberLeft` / `MemberRemoved`)
+        // out of causal order re-deletes membership / `ContextIdentity` /
+        // deny-list / re-entry state a causally-later `MemberAdded` restored
+        // (the "re-added leaver can't author" bug). A node's own op is never
+        // buffered-awaiting-key in the first place (it held the key to encrypt
+        // it), so it never needs re-driving here — skip it.
+        let own_identity = super::NamespaceRepository::new(self.store)
+            .identity(&ns_typed)
+            .map_err(|e| eyre::eyre!("resolve own namespace identity: {e}"))?
+            .map(|(pk, _sk, _sender)| pk);
+
         let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
         let entries = op_log
             .collect_signed_group_ops_for_group(group_id)
             .map_err(|e| eyre::eyre!("op_log.collect_signed_group_ops_for_group: {e}"))?;
         for entry in entries {
+            if own_identity == Some(entry.signed_op.signer) {
+                continue;
+            }
             let NamespaceOp::Group { key_id, .. } = entry.signed_op.op else {
                 continue;
             };

@@ -19,6 +19,18 @@ impl PredefinedEntry for key::GroupDeniedMember {
     type DataType<'a> = ();
 }
 
+impl PredefinedEntry for key::GroupReentryBlock {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupReentryBlockValue;
+}
+
+// The key itself is the marker — presence means "this identity already used
+// this invitation to join this group".
+impl PredefinedEntry for key::GroupConsumedInvitation {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
 impl PredefinedEntry for key::GroupPendingKeyRotation {
     type Codec = Borsh;
     type DataType<'a> = ();

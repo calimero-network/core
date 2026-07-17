@@ -93,6 +93,25 @@ pub enum MembershipError {
     #[error("member {member} not found in group {group_id}")]
     MemberNotFound { group_id: String, member: String },
 
+    /// An admin removed this identity from the group, and only an admin
+    /// re-adding them (`MemberAdded`) lifts that. No invitation readmits a
+    /// removed identity, however freshly it was issued — otherwise a kick from
+    /// a group with a live open invitation would mean nothing.
+    #[error("identity {identity} was removed from group {group_id} and cannot rejoin; an admin must re-add them")]
+    RemovedFromGroup { group_id: String, identity: String },
+
+    /// The identity previously left this group and is presenting an invitation
+    /// they have already used. Leaving does not ban them, but it does spend the
+    /// invitation they joined with: they need a freshly issued one.
+    #[error("identity {identity} has already used this invitation to join group {group_id}; a new invitation is required")]
+    InvitationAlreadyConsumed { group_id: String, identity: String },
+
+    /// The identity exited this group, so they no longer flow back in through
+    /// Open-subgroup inheritance. Re-entry has to be an explicit act — a fresh
+    /// invitation, or an admin re-adding them.
+    #[error("identity {identity} exited group {group_id} and cannot re-enter by inheritance; they must be re-invited or re-added")]
+    ReentryBlocked { group_id: String, identity: String },
+
     /// TEE attestation submitted by a non-member. The verifier must
     /// itself be a member of the group whose admission policy it
     /// validates.
@@ -498,6 +517,14 @@ pub enum MemberJoinedOpenRejection {
     /// or `add_group_members` instead.
     #[error("signer {0} is a direct member; use MemberJoined or add_group_members instead")]
     AlreadyDirectMember(String),
+
+    /// Signer previously exited this group, so they no longer flow back in by
+    /// inheritance. Inheritance is passive and carries no fresh authorization,
+    /// so any prior exit blocks it — a voluntary leaver included, not just a
+    /// removed member. Re-entry has to be an explicit act: a fresh invitation,
+    /// or an admin re-adding them.
+    #[error("signer {member} exited group {gid} and cannot re-enter by inheritance; they must be re-invited or re-added")]
+    ReentryBlocked { member: String, gid: String },
 
     /// Signer has no inheritance path to the target group — Open
     /// inheritance check failed.
