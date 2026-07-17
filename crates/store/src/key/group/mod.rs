@@ -1885,6 +1885,24 @@ pub const GROUP_KEY_PREFIX: u8 = 0x3A;
 /// would drop legitimate traffic for groups they still belong to.
 pub const GROUP_DENIED_MEMBER_PREFIX: u8 = 0x3B;
 
+/// Prefix for the namespace-root *inherited* deny-list. An entry under
+/// `(namespace_root_id, member_pubkey)` means the member lost their root
+/// membership (evicted from / left the namespace root) and so lost every
+/// Open-subgroup membership they held purely by INHERITANCE from that root row.
+/// Their state deltas to any descendant subgroup's contexts are dropped at the
+/// receive filter — which resolves a context's group to its root and checks
+/// here — until they are re-admitted at the root.
+///
+/// Separate column from `GROUP_DENIED_MEMBER_PREFIX` on purpose: that one is the
+/// per-group "not a member" view carrying the "never coexists with a direct
+/// member row" invariant; this one is a receive-filter-only view keyed to the
+/// root, whose clear lifecycle is the root re-admission (not the per-group row
+/// write). Populated on `MemberRemoved` / `MemberLeft` at the namespace root;
+/// cleared when a direct root row is re-written (`add_member_with_keys`, which
+/// every root re-admission funnels through). Hash-neutral, like the direct
+/// deny-list.
+pub const GROUP_INHERITED_DENIED_MEMBER_PREFIX: u8 = 0x40;
+
 /// Prefix for the pending-key-rotation worklist. A row marks: `group_id` still
 /// owes a forward-secrecy key rotation because `departed` left, and no rotation
 /// has landed yet.
@@ -2060,6 +2078,70 @@ impl FromKeyParts for GroupDeniedMember {
 impl Debug for GroupDeniedMember {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GroupDeniedMember")
+            .field("group_id", &self.group_id())
+            .field("identity", &self.identity())
+            .finish()
+    }
+}
+
+/// Namespace-root inherited-deny entry (see [`GROUP_INHERITED_DENIED_MEMBER_PREFIX`]).
+/// Presence marks `identity`, keyed to the namespace root, as inherited-denied:
+/// the receive filter drops their deltas to any descendant subgroup they reached
+/// only by inheritance. Same 65-byte layout as `GroupDeniedMember`
+/// (`prefix(1) + group_id(32) + identity(32)`) so `(group_id, *)` prefix scans work
+/// identically, but a distinct column so the two deny views never collide.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupInheritedDeniedMember(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupInheritedDeniedMember {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], identity: PrimitivePublicKey) -> Self {
+        Self(Key(GenericArray::from([
+            GROUP_INHERITED_DENIED_MEMBER_PREFIX,
+        ])
+        .concat(GenericArray::from(group_id))
+        .concat(GenericArray::from(*identity))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> PrimitivePublicKey {
+        let mut pk = [0; 32];
+        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        pk.into()
+    }
+}
+
+impl AsKeyParts for GroupInheritedDeniedMember {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupInheritedDeniedMember {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupInheritedDeniedMember {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupInheritedDeniedMember")
             .field("group_id", &self.group_id())
             .field("identity", &self.identity())
             .finish()

@@ -5365,6 +5365,218 @@ fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
     );
 }
 
+/// #2816 Part 2: evicting a member from the namespace ROOT records a root-keyed
+/// *inherited*-deny, so the receive filter fast-drops their state deltas to Open
+/// subgroups they only inherited into (no direct row there). Re-admission at the
+/// root clears it. Red without the `mark_inherited` / `clear_inherited` wiring.
+#[test]
+fn inherited_deny_fast_drops_evicted_inherited_member_and_clears_on_readmit() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use rand::rngs::OsRng;
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xF1u8; 32]);
+    let subgroup = ContextGroupId::from([0xF2u8; 32]);
+    let ctx = ContextId::from([0xFCu8; 32]);
+
+    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_pk = admin_sk.public_key();
+    let member_pk = PublicKey::from([0xE7; 32]);
+
+    // namespace root ── Open subgroup ── context.
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+    register_context_in_group(&store, &subgroup, &ctx).unwrap();
+
+    // A regular member with a DIRECT row at the root + CAN_JOIN_OPEN_SUBGROUPS,
+    // so they inherit into the Open subgroup with no direct row there.
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &member_pk, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &ns_gid,
+            &member_pk,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+
+    let denied = || {
+        DenyListRepository::new(&store)
+            .is_author_denied_for_context(&ctx, &member_pk)
+            .unwrap()
+    };
+    assert!(
+        !denied(),
+        "precondition: the inherited member's subgroup traffic is allowed"
+    );
+
+    // Evict from the ROOT.
+    let rm = SignedGroupOp::sign(
+        &admin_sk,
+        ns_gid.to_bytes().into(),
+        vec![],
+        1,
+        dummy_member_removed_op(member_pk),
+    )
+    .expect("sign MemberRemoved");
+    apply_local_signed_group_op(&store, &rm).expect("apply MemberRemoved");
+
+    assert!(
+        DenyListRepository::new(&store)
+            .is_inherited_denied(&ns_gid, &member_pk)
+            .unwrap(),
+        "root eviction must record a root-keyed inherited-deny"
+    );
+    assert!(
+        denied(),
+        "receive filter must fast-drop the evicted member's deltas to the inherited subgroup"
+    );
+
+    // Re-admit at the ROOT.
+    let add = SignedGroupOp::sign(
+        &admin_sk,
+        ns_gid.to_bytes().into(),
+        vec![rm.content_hash().unwrap()],
+        2,
+        GroupOp::MemberAdded {
+            member: member_pk,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .expect("sign MemberAdded");
+    apply_local_signed_group_op(&store, &add).expect("apply MemberAdded");
+
+    assert!(
+        !DenyListRepository::new(&store)
+            .is_inherited_denied(&ns_gid, &member_pk)
+            .unwrap(),
+        "root re-admission must clear the inherited-deny"
+    );
+    assert!(
+        !denied(),
+        "after re-admission the inherited member's subgroup traffic flows again"
+    );
+}
+
+/// Regression for the MeroReviewer finding: a member directly (re-)added at a
+/// SUBGROUP after a root eviction must not be fast-dropped there, even though the
+/// root-keyed inherited-deny still stands (they never rejoined the root). The
+/// receive filter skips the inherited-deny for a current direct member — while
+/// a subgroup they hold no direct row in stays fast-dropped.
+#[test]
+fn inherited_deny_does_not_drop_a_direct_member_of_the_owning_subgroup() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xF3u8; 32]);
+    let subgroup = ContextGroupId::from([0xF4u8; 32]);
+    let ctx = ContextId::from([0xFDu8; 32]);
+    let admin_pk = PublicKey::from([0xA2; 32]);
+    let member_pk = PublicKey::from([0xE8; 32]);
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+    register_context_in_group(&store, &subgroup, &ctx).unwrap();
+
+    // The member was evicted from the root → root-keyed inherited-deny stands.
+    DenyListRepository::new(&store)
+        .mark_inherited(&ns_gid, &member_pk)
+        .unwrap();
+    assert!(
+        DenyListRepository::new(&store)
+            .is_author_denied_for_context(&ctx, &member_pk)
+            .unwrap(),
+        "precondition: with no direct row, the inherited-deny fast-drops subgroup traffic"
+    );
+
+    // Now the member is added DIRECTLY to the subgroup (not re-added at the root).
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &member_pk, GroupMemberRole::Member)
+        .unwrap();
+    assert!(
+        !DenyListRepository::new(&store)
+            .is_author_denied_for_context(&ctx, &member_pk)
+            .unwrap(),
+        "a direct member of the owning subgroup must not be dropped by the root inherited-deny"
+    );
+
+    // The root entry still stands (they never rejoined the root), so a subgroup
+    // they hold no direct row in stays fast-dropped.
+    let other_sub = ContextGroupId::from([0xF5u8; 32]);
+    let other_ctx = ContextId::from([0xFEu8; 32]);
+    MetaRepository::new(&store)
+        .save(&other_sub, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &other_sub)
+        .unwrap();
+    register_context_in_group(&store, &other_sub, &other_ctx).unwrap();
+    assert!(
+        DenyListRepository::new(&store)
+            .is_author_denied_for_context(&other_ctx, &member_pk)
+            .unwrap(),
+        "a subgroup they hold no direct row in stays fast-dropped by the root inherited-deny"
+    );
+}
+
+/// The inherited-deny column must be hash-neutral, like the direct deny-list —
+/// writing it must not perturb the group state hash (which reads only the
+/// GroupMeta and GroupMember rows). Otherwise the sign-time
+/// `compute_state_hash_after_remove` simulation would have to model it and every
+/// honest removal would false-diverge.
+#[test]
+fn inherited_deny_write_is_hash_neutral() {
+    let store = test_store();
+    let gid = test_group_id();
+    let admin_pk = PublicKey::from([0xA1; 32]);
+    let mut meta = test_meta();
+    meta.admin_identity = admin_pk;
+    meta.owner_identity = admin_pk;
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let before = MetaRepository::new(&store)
+        .compute_state_hash(&gid)
+        .unwrap();
+    // A non-member pk (no direct row — satisfies mark_inherited's debug_assert).
+    DenyListRepository::new(&store)
+        .mark_inherited(&gid, &PublicKey::from([0xB2; 32]))
+        .unwrap();
+    let after = MetaRepository::new(&store)
+        .compute_state_hash(&gid)
+        .unwrap();
+    assert_eq!(
+        before, after,
+        "the inherited-deny write must not change the group state hash"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Re-entry control, exercised through the real op-apply path.
 //

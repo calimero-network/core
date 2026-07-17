@@ -19,6 +19,11 @@ impl PredefinedEntry for key::GroupDeniedMember {
     type DataType<'a> = ();
 }
 
+impl PredefinedEntry for key::GroupInheritedDeniedMember {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
 impl PredefinedEntry for key::GroupReentryBlock {
     type Codec = Borsh;
     type DataType<'a> = key::GroupReentryBlockValue;
