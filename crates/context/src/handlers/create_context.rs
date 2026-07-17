@@ -565,9 +565,7 @@ async fn create_context(
     // identity (the common case — its key is resolved live from the namespace
     // identity, no per-context copy). An app-provided `identity_secret` distinct
     // from the namespace identity is a sole copy that must be stored so the node
-    // can sign as it. `sender_key` stays `None`: this is a group context, whose
-    // state deltas are encrypted with the group key (GroupKeyring), never the
-    // per-identity sender_key — that field is only read on the non-group path.
+    // can sign as it.
     let ns_pk = calimero_governance_store::NamespaceRepository::new(&datastore)
         .resolve_identity(&group_id)?
         .map(|(pk, _sk, _sender)| pk);
@@ -580,7 +578,6 @@ async fn create_context(
         &key::ContextIdentity::new(context.id, identity),
         &types::ContextIdentity {
             private_key: stored_private_key,
-            sender_key: None,
         },
     )?;
 

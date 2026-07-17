@@ -329,10 +329,7 @@ fn context_tree_service_register_move_detach_and_cascade_cleanup() {
     handle
         .put(
             &calimero_store::key::ContextIdentity::new(context, member),
-            &calimero_store::types::ContextIdentity {
-                private_key: None,
-                sender_key: Some([0u8; 32]),
-            },
+            &calimero_store::types::ContextIdentity { private_key: None },
         )
         .unwrap();
     drop(handle);
@@ -3763,10 +3760,7 @@ fn resolve_local_signing_key_covers_keyed_marker_and_absent() {
         handle
             .put(
                 &calimero_store::key::ContextIdentity::new(ctx, ns_member),
-                &calimero_store::types::ContextIdentity {
-                    private_key: None,
-                    sender_key: None,
-                },
+                &calimero_store::types::ContextIdentity { private_key: None },
             )
             .unwrap();
     }
@@ -3784,7 +3778,6 @@ fn resolve_local_signing_key_covers_keyed_marker_and_absent() {
                 &calimero_store::key::ContextIdentity::new(ctx, standalone),
                 &calimero_store::types::ContextIdentity {
                     private_key: Some(standalone_sk),
-                    sender_key: None,
                 },
             )
             .unwrap();
@@ -3801,10 +3794,7 @@ fn resolve_local_signing_key_covers_keyed_marker_and_absent() {
         handle
             .put(
                 &calimero_store::key::ContextIdentity::new(ctx, stranger),
-                &calimero_store::types::ContextIdentity {
-                    private_key: None,
-                    sender_key: None,
-                },
+                &calimero_store::types::ContextIdentity { private_key: None },
             )
             .unwrap();
     }
@@ -3847,7 +3837,6 @@ fn restore_member_context_identities_writes_missing_marker_rows() {
             row.private_key, None,
             "the marker is keyless — the signing key is resolved live from the namespace identity"
         );
-        assert_eq!(row.sender_key, None, "marker carries no sender_key");
     }
 }
 
@@ -3890,7 +3879,6 @@ fn restore_member_context_identities_is_idempotent() {
     let gid = test_group_id();
     let member = PublicKey::from([0x22; 32]);
     let original_sk = [0x11u8; 32];
-    let original_sender = [0x44u8; 32];
     let ctx = ContextId::from([0xD1; 32]);
     register_context_in_group(&store, &gid, &ctx).unwrap();
 
@@ -3900,9 +3888,8 @@ fn restore_member_context_identities_is_idempotent() {
         .store_identity(&gid, &member, &original_sk, &[0u8; 32])
         .unwrap();
 
-    // Pre-existing row from a (notional) successful prior `join_context`
-    // — already populated with a real sender_key from a delivered
-    // KeyDelivery. The restore must NOT overwrite it.
+    // Pre-existing keyed row from a (notional) successful prior `join_context`.
+    // The restore must NOT overwrite it.
     {
         let mut handle = store.handle();
         handle
@@ -3910,7 +3897,6 @@ fn restore_member_context_identities_is_idempotent() {
                 &calimero_store::key::ContextIdentity::new(ctx, member),
                 &calimero_store::types::ContextIdentity {
                     private_key: Some(original_sk),
-                    sender_key: Some(original_sender),
                 },
             )
             .unwrap();
@@ -3928,30 +3914,24 @@ fn restore_member_context_identities_is_idempotent() {
         Some(original_sk),
         "existing private_key must be preserved (no overwrite)"
     );
-    assert_eq!(
-        row.sender_key,
-        Some(original_sender),
-        "existing sender_key must be preserved (would clobber an already-delivered key otherwise)"
-    );
 }
 
 #[test]
 fn restore_member_context_identities_leaves_existing_rows_untouched() {
     // Restore only fills in a MISSING marker; any pre-existing row is left
-    // exactly as-is. In particular a standalone context's keyed row (with a
-    // delivered sender_key) must not be clobbered into a keyless marker.
+    // exactly as-is. In particular a standalone context's keyed row must not be
+    // clobbered into a keyless marker.
     let store = test_store();
     let gid = test_group_id();
     let member = PublicKey::from([0x23; 32]);
     let sk_bytes = [0x66u8; 32];
-    let delivered_sender = [0x77u8; 32];
     let ctx = ContextId::from([0xD2; 32]);
     register_context_in_group(&store, &gid, &ctx).unwrap();
     NamespaceRepository::new(&store)
         .store_identity(&gid, &member, &sk_bytes, &[0u8; 32])
         .unwrap();
 
-    // Pre-existing keyed row with a delivered sender_key.
+    // Pre-existing keyed row.
     {
         let mut handle = store.handle();
         handle
@@ -3959,7 +3939,6 @@ fn restore_member_context_identities_leaves_existing_rows_untouched() {
                 &calimero_store::key::ContextIdentity::new(ctx, member),
                 &calimero_store::types::ContextIdentity {
                     private_key: Some(sk_bytes),
-                    sender_key: Some(delivered_sender),
                 },
             )
             .unwrap();
@@ -3976,11 +3955,6 @@ fn restore_member_context_identities_leaves_existing_rows_untouched() {
         row.private_key,
         Some(sk_bytes),
         "existing keyed row must be left untouched"
-    );
-    assert_eq!(
-        row.sender_key,
-        Some(delivered_sender),
-        "an already-delivered sender_key must survive"
     );
 }
 
@@ -4038,7 +4012,6 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
                 &calimero_store::key::ContextIdentity::new(ctx, member_pk),
                 &calimero_store::types::ContextIdentity {
                     private_key: Some(member_sk_bytes),
-                    sender_key: Some([0x77; 32]),
                 },
             )
             .unwrap();
@@ -4164,7 +4137,6 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
                 &calimero_store::key::ContextIdentity::new(ctx, member_pk),
                 &calimero_store::types::ContextIdentity {
                     private_key: Some(member_sk_bytes),
-                    sender_key: Some([0x33; 32]),
                 },
             )
             .unwrap();
@@ -5271,7 +5243,6 @@ fn leave_then_admin_readd_restores_a_signable_context_identity() {
             &id_key,
             &calimero_store::types::ContextIdentity {
                 private_key: Some(member_sk_bytes),
-                sender_key: Some([0x11; 32]),
             },
         )
         .unwrap();
@@ -6409,10 +6380,7 @@ fn cascade_remove_member_does_not_change_group_state_hash() {
     handle
         .put(
             &id_key,
-            &calimero_store::types::ContextIdentity {
-                private_key: None,
-                sender_key: None,
-            },
+            &calimero_store::types::ContextIdentity { private_key: None },
         )
         .unwrap();
     drop(handle);
@@ -7900,7 +7868,6 @@ mod tee_member_removed_event_tests {
                     &identity_key,
                     &calimero_store::types::ContextIdentity {
                         private_key: Some([7u8; 32]),
-                        sender_key: None,
                     },
                 )
                 .unwrap();

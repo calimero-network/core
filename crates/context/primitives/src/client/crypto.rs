@@ -8,7 +8,7 @@ use super::ContextClient;
 /// Represents a user's identity within a specific context.
 ///
 /// An identity is defined by a public key. If the node manages this identity,
-/// it will also hold the corresponding private key(s).
+/// it will also hold the corresponding private key.
 #[derive(Debug)]
 pub struct ContextIdentity {
     /// The primary public key for this identity, used for identification and signing.
@@ -16,10 +16,11 @@ pub struct ContextIdentity {
     /// The optional private key corresponding to `public_key`. If `Some`, this node
     /// "owns" or "manages" this identity and can sign transactions on its behalf.
     /// If `None`, this node only knows about the identity but cannot act as it.
+    ///
+    /// For a group context whose identity is the node's namespace identity, this
+    /// is resolved live from the namespace identity (the stored row is a keyless
+    /// marker); only a standalone / provisioned identity carries a stored key.
     pub private_key: Option<PrivateKey>,
-    /// An optional, secondary private key used for a specific purpose, such as a
-    /// dedicated key for sending messages or transactions to reduce exposure of the primary key.
-    pub sender_key: Option<PrivateKey>,
 }
 
 impl ContextIdentity {
@@ -43,8 +44,6 @@ impl ContextIdentity {
 impl ContextClient {
     /// Creates a new cryptographic identity (key pair) and stores it in the datastore.
     /// The private key is randomly generated.
-    /// The new identity doesn't have any `sender_key`. If needed, the `sender_key` could be set via
-    /// `update_identity()` method later.
     ///
     /// # Note
     ///
@@ -69,7 +68,6 @@ impl ContextClient {
             &key::ContextIdentity::new(ContextId::zero(), public_key),
             &types::ContextIdentity {
                 private_key: Some(*private_key.as_bytes()),
-                sender_key: None,
             },
         )?;
 
@@ -111,8 +109,7 @@ impl ContextClient {
         // `new_identity` contexts keep their own key). Otherwise, for a
         // namespace-backed context, derive it live from the node's namespace
         // identity when `public_key` is that identity — so the row need not carry
-        // a per-context copy. `sender_key` (used only by non-group contexts) is
-        // read from the row unchanged.
+        // a per-context copy.
         let private_key = match row.private_key {
             Some(sk) => Some(sk),
             None => match self.registry.owned_namespace_signer(context_id)? {
@@ -124,7 +121,6 @@ impl ContextClient {
         let identity = ContextIdentity {
             public_key: *public_key,
             private_key: private_key.map(PrivateKey::from),
-            sender_key: row.sender_key.map(PrivateKey::from),
         };
 
         Ok(Some(identity))
@@ -132,8 +128,8 @@ impl ContextClient {
 
     /// Updates an existing identity in the datastore.
     ///
-    /// This is typically used to add or change the `sender_key` or `private_key`
-    /// for an identity that the node already knows about.
+    /// This is typically used to add or change the `private_key` for an identity
+    /// that the node already knows about.
     ///
     /// # Arguments
     ///
@@ -160,13 +156,6 @@ impl ContextClient {
             );
         };
 
-        identity.sender_key = new_identity
-            .sender_key
-            .as_ref()
-            .map(PrivateKey::as_bytes)
-            .copied();
-        // TODO: what we are updating the private key for? if we got here, the datastore already
-        // has the `identity.private_key` set.
         identity.private_key = new_identity
             .private_key
             .as_ref()
@@ -273,7 +262,6 @@ mod tests {
 
         assert_eq!(identity.public_key, public_key);
         assert!(identity.private_key.is_some(), "Identity should be owned");
-        assert!(identity.sender_key.is_none());
     }
 
     #[tokio::test]
@@ -287,16 +275,15 @@ mod tests {
         let key = key::ContextIdentity::new(context_id, public_key);
         let id_data = types::ContextIdentity {
             private_key: Some(private_key_bytes),
-            sender_key: None,
         };
         handle.put(&key, &id_data).unwrap();
 
-        let sender_private_key = PrivateKey::from([2; DIGEST_SIZE]);
+        let new_private_key = PrivateKey::from([2; DIGEST_SIZE]);
         let mut identity_to_update = client
             .get_identity(&context_id, &public_key)
             .unwrap()
             .unwrap();
-        identity_to_update.sender_key = Some(sender_private_key);
+        identity_to_update.private_key = Some(new_private_key);
 
         client
             .update_identity(&context_id, &identity_to_update)
@@ -306,9 +293,13 @@ mod tests {
             .get_identity(&context_id, &public_key)
             .unwrap()
             .unwrap();
-        assert!(
-            updated_identity.sender_key.is_some(),
-            "Sender key should have been updated"
+        assert_eq!(
+            updated_identity
+                .private_key
+                .as_ref()
+                .map(PrivateKey::as_bytes),
+            Some(&[2; DIGEST_SIZE]),
+            "private key should have been updated"
         );
 
         client.delete_identity(&context_id, &public_key).unwrap();

@@ -508,10 +508,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                     // resolved live at read time rather than copied.
                                     handle.put(
                                         &ci_key,
-                                        &calimero_store::types::ContextIdentity {
-                                            private_key: None,
-                                            sender_key: None,
-                                        },
+                                        &calimero_store::types::ContextIdentity { private_key: None },
                                     )?;
                                 }
                             }

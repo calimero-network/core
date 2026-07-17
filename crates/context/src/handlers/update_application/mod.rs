@@ -1674,10 +1674,7 @@ mod tests {
         handle
             .put(
                 &key::ContextIdentity::new(context_id, public_key),
-                &types::ContextIdentity {
-                    private_key,
-                    sender_key: None,
-                },
+                &types::ContextIdentity { private_key },
             )
             .expect("seed identity");
     }

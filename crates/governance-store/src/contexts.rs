@@ -202,10 +202,7 @@ pub fn restore_member_context_identities(
         if handle.get(&identity_key)?.is_none() {
             handle.put(
                 &identity_key,
-                &calimero_store::types::ContextIdentity {
-                    private_key: None,
-                    sender_key: None,
-                },
+                &calimero_store::types::ContextIdentity { private_key: None },
             )?;
             tracing::info!(
                 group_id = %hex::encode(group_id.to_bytes()),
@@ -347,7 +344,6 @@ mod tests {
                 &key::ContextIdentity::new(*context, *member),
                 &types::ContextIdentity {
                     private_key: has_private.then_some([0x77; 32]),
-                    sender_key: None,
                 },
             )
             .expect("put identity");

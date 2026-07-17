@@ -225,10 +225,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                     // keyless marker rows for members; this makes the owner match.
                     handle.put(
                         &calimero_store::key::ContextIdentity::new(context_id, joiner_identity),
-                        &calimero_store::types::ContextIdentity {
-                            private_key: None,
-                            sender_key: None,
-                        },
+                        &calimero_store::types::ContextIdentity { private_key: None },
                     )?;
 
                     // Clear any leave-tombstone written by a previous

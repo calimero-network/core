@@ -393,13 +393,10 @@ pub(crate) async fn apply_authorized_state_delta(
                 })?
             }
             None => {
-                let identity = node_clients
-                    .context
-                    .get_identity(&context_id, &author_id)?
-                    .ok_or_else(|| eyre::eyre!("no identity for author {author_id}"))?;
-                identity
-                    .sender_key
-                    .ok_or_else(|| eyre::eyre!("no sender_key or group_key for context"))?
+                // Every context is created group-registered, so a state delta
+                // for a context with no group is an invariant violation — there
+                // is no per-identity key to decrypt with.
+                bail!("context {context_id} is not registered to any group");
             }
         }
     };
@@ -1996,12 +1993,9 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                 .ok_or_else(|| eyre::eyre!("no group key found for buffered delta"))?
             }
             None => {
-                let identity = context_client
-                    .get_identity(&context_id, &buffered.author_id)?
-                    .ok_or_else(|| eyre::eyre!("no identity for buffered author"))?;
-                identity
-                    .sender_key
-                    .ok_or_else(|| eyre::eyre!("no sender_key or group_key"))?
+                // Every context is created group-registered; a buffered delta
+                // for a context with no group is an invariant violation.
+                bail!("context {context_id} is not registered to any group");
             }
         }
     };

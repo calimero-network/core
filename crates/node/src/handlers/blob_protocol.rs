@@ -650,10 +650,7 @@ mod tests {
             handle
                 .put(
                     &calimero_store::key::ContextIdentity::new(context_id, direct_pk),
-                    &calimero_store::types::ContextIdentity {
-                        private_key: None,
-                        sender_key: None,
-                    },
+                    &calimero_store::types::ContextIdentity { private_key: None },
                 )
                 .unwrap();
         }
