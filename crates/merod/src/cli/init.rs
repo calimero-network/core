@@ -259,9 +259,32 @@ impl InitCommand {
     pub async fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
         let mdns = self.mdns && !self.no_mdns;
 
-        // Resolve the admin credentials up front, before anything destructive
-        // below: a `--force` re-init must not wipe an existing node home only
-        // to then fail on missing or unreadable credentials.
+        let path = root_args.home.join(root_args.node_name);
+
+        // Idempotent short-circuit FIRST: a plain re-run against an already
+        // initialized node stays a credential-free no-op (provisioning
+        // scripts re-run `init` freely), and a corrupt config without
+        // `--force` fails before credentials are even looked at.
+        if ConfigFile::exists(&path) {
+            if let Err(err) = ConfigFile::load(&path).await {
+                if self.force {
+                    warn!(
+                        "Failed to load existing configuration, overwriting: {}",
+                        err
+                    );
+                } else {
+                    bail!("Failed to load existing configuration: {}", err);
+                }
+            } else if !self.force {
+                warn!("Node is already initialized in {:?}", path);
+                return Ok(());
+            }
+        }
+
+        // Resolve AND validate the admin credentials before anything
+        // destructive below: a `--force` re-init must not wipe an existing
+        // node home only to then fail on missing, unreadable, or
+        // policy-violating credentials.
         let auth_mode = self.auth_mode.map(Into::into).unwrap_or(AuthMode::Proxy);
         let auth_storage_choice = self.auth_storage.unwrap_or(AuthStorageArg::Persistent);
         let admin_creds = self.admin.resolve()?;
@@ -311,23 +334,24 @@ impl InitCommand {
             }
         };
 
-        let path = root_args.home.join(root_args.node_name);
+        // Enforce the creation-time password policy NOW, before the
+        // destructive re-init below — not only inside `provision_admin_key`
+        // at the very end. Init always embeds
+        // `mero_auth::embedded::default_config()`, whose user_password policy
+        // is `UserPasswordConfig::default()`; `provision_admin_key` re-checks
+        // the same policy at mint time.
+        if let Some((username, password)) = &admin_to_mint {
+            provisioning::validate_admin_credentials(
+                &UserPasswordConfig::default(),
+                username,
+                password,
+            )?;
+        }
 
+        // Destructive re-init. Only reachable with `--force`: the
+        // credential-free no-op and the corrupt-config bail both returned in
+        // the short-circuit above, and the credentials are already validated.
         if ConfigFile::exists(&path) {
-            if let Err(err) = ConfigFile::load(&path).await {
-                if self.force {
-                    warn!(
-                        "Failed to load existing configuration, overwriting: {}",
-                        err
-                    );
-                } else {
-                    bail!("Failed to load existing configuration: {}", err);
-                }
-            } else if !self.force {
-                warn!("Node is already initialized in {:?}", path);
-                return Ok(());
-            }
-
             // Refuse to delete anything but a real directory here. `path` is the
             // node home we're about to wipe; if it has been replaced by a symlink
             // (or a plain file) since the checks above, fail loudly with a clear

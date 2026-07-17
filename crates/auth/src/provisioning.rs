@@ -66,14 +66,7 @@ pub async fn provision_admin_key(
     username: &str,
     password: &str,
 ) -> eyre::Result<String> {
-    if username.is_empty() {
-        eyre::bail!("admin username must not be empty");
-    }
-    validate_password_length(
-        password,
-        config.min_password_length,
-        config.max_password_length,
-    )?;
+    validate_admin_credentials(config, username, password)?;
 
     let key_id = derive_key_id(username, password);
     let root_key = Key::new_root_key_with_permissions(
@@ -120,6 +113,28 @@ pub async fn provision_admin_key(
     );
 
     Ok(key_id)
+}
+
+/// Validate admin credentials against the creation-time policy (non-empty
+/// username; password within the configured min/max length) without touching
+/// storage.
+///
+/// [`provision_admin_key`] applies it itself; callers that do destructive
+/// work before minting (e.g. `merod init --force`, which wipes the node home)
+/// call it FIRST so bad credentials fail before anything is destroyed.
+pub fn validate_admin_credentials(
+    config: &UserPasswordConfig,
+    username: &str,
+    password: &str,
+) -> eyre::Result<()> {
+    if username.is_empty() {
+        eyre::bail!("admin username must not be empty");
+    }
+    validate_password_length(
+        password,
+        config.min_password_length,
+        config.max_password_length,
+    )
 }
 
 /// Read the admin password from the environment, if provided.
