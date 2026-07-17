@@ -29,8 +29,9 @@ pub enum AuthSubCommands {
 /// regain access after the auth storage was lost. Requires filesystem access
 /// to the node home — the same trust boundary as the node's private key.
 ///
-/// Re-minting with new credentials adds a new admin root key; it does not
-/// remove keys minted under other credentials.
+/// Re-minting with the SAME username rotates the account: the previous
+/// password's key is deleted and stops authenticating. A different username
+/// adds a separate admin account and leaves existing ones untouched.
 #[derive(Debug, Parser)]
 pub struct SetAdminCommand {
     #[clap(flatten)]
@@ -64,11 +65,7 @@ impl SetAdminCommand {
 
         let auth_db_path = match auth_config.storage {
             AuthStorageConfig::RocksDB { path: storage_path } => {
-                if storage_path.is_relative() {
-                    path.as_std_path().join(storage_path)
-                } else {
-                    storage_path
-                }
+                crate::cli::resolve_node_relative_path(path.as_std_path(), storage_path)
             }
             AuthStorageConfig::Memory => bail!(
                 "this node uses in-memory auth storage, which holds no persistent \
@@ -107,6 +104,12 @@ impl SetAdminCommand {
             &password,
         )
         .await?;
+        drop(auth_storage);
+
+        // Same defense-in-depth as init: with the store closed, pin the auth
+        // database files to owner-only (the storage provider already creates
+        // the directory 0700; this normalizes files written after open too).
+        super::init::restrict_tree_to_owner(&auth_db_path).await?;
 
         info!("Admin account provisioned (user: {username}); start the node and log in");
 

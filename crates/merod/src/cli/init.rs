@@ -60,9 +60,11 @@ async fn restrict_to_owner(_path: impl AsRef<Path>, _mode: u32) -> EyreResult<()
 /// walking the tree after the store is closed makes the raw data — and any
 /// content left by a previous partial init — unreadable to other local users
 /// rather than relying solely on the top-level directory's mode. Symlinks are
-/// left untouched (RocksDB creates none here).
+/// left untouched (RocksDB creates none here). `pub(crate)` so
+/// `auth set-admin` applies the same pinning to the auth database it may
+/// create.
 #[cfg(unix)]
-async fn restrict_tree_to_owner(root: impl AsRef<Path>) -> EyreResult<()> {
+pub(crate) async fn restrict_tree_to_owner(root: impl AsRef<Path>) -> EyreResult<()> {
     let mut stack = vec![root.as_ref().to_path_buf()];
 
     while let Some(dir) = stack.pop() {
@@ -86,7 +88,7 @@ async fn restrict_tree_to_owner(root: impl AsRef<Path>) -> EyreResult<()> {
 }
 
 #[cfg(not(unix))]
-async fn restrict_tree_to_owner(_root: impl AsRef<Path>) -> EyreResult<()> {
+pub(crate) async fn restrict_tree_to_owner(_root: impl AsRef<Path>) -> EyreResult<()> {
     Ok(())
 }
 
@@ -414,11 +416,8 @@ impl InitCommand {
                 AuthStorageArg::Persistent => {
                     let auth_path = storage_path.unwrap_or_else(|| PathBuf::from("auth"));
                     if admin_to_mint.is_some() {
-                        let resolved = if auth_path.is_relative() {
-                            path.as_std_path().join(&auth_path)
-                        } else {
-                            auth_path.clone()
-                        };
+                        let resolved =
+                            cli::resolve_node_relative_path(path.as_std_path(), auth_path.clone());
                         admin_provision = Some((resolved, auth_cfg.user_password.clone()));
                     }
                     auth_cfg.storage = AuthStorageConfig::RocksDB { path: auth_path };

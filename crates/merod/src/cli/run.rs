@@ -175,18 +175,20 @@ impl RunCommand {
 
             // Resolve relative RocksDB paths against the node's home directory
             if let AuthStorageConfig::RocksDB { path: storage_path } = &mut auth_config.storage {
-                if storage_path.is_relative() {
-                    *storage_path = path.as_std_path().join(&*storage_path);
-                }
+                *storage_path = crate::cli::resolve_node_relative_path(
+                    path.as_std_path(),
+                    storage_path.clone(),
+                );
             }
 
             server_source.embedded_auth = Some(auth_config);
         } else if let Some(cfg) = server_source.embedded_auth.as_mut() {
             // Also resolve paths for proxy mode if config exists
             if let AuthStorageConfig::RocksDB { path: storage_path } = &mut cfg.storage {
-                if storage_path.is_relative() {
-                    *storage_path = path.as_std_path().join(&*storage_path);
-                }
+                *storage_path = crate::cli::resolve_node_relative_path(
+                    path.as_std_path(),
+                    storage_path.clone(),
+                );
             }
         }
         if let Some(msg) =

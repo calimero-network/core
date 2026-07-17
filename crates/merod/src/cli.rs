@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use const_format::concatcp;
@@ -92,6 +94,19 @@ pub struct RootArgs {
     /// Name of node
     #[arg(short = 'n', long = "node", value_name = "NAME")]
     pub node_name: Utf8PathBuf,
+}
+
+/// Resolve a path from config against the node home: relative paths (the
+/// default, e.g. the `auth` storage dir) live under the node home; absolute
+/// paths are honored as-is. The single source of truth for this rule —
+/// `init`, `run`, and `auth set-admin` must all resolve identically or they
+/// operate on different databases.
+pub(crate) fn resolve_node_relative_path(node_home: &Path, path: PathBuf) -> PathBuf {
+    if path.is_relative() {
+        node_home.join(path)
+    } else {
+        path
+    }
 }
 
 impl RootCommand {

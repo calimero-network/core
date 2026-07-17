@@ -39,13 +39,25 @@ pub const ADMIN_PASSWORD_ENV: &str = "MERO_AUTH_ADMIN_PASSWORD";
 /// (e.g. a mounted secret). Takes precedence over [`ADMIN_PASSWORD_ENV`].
 pub const ADMIN_PASSWORD_FILE_ENV: &str = "MERO_AUTH_ADMIN_PASSWORD_FILE";
 
+/// Auth-method names the `user_password` provider answers to; used to scope
+/// key lookups and rotation to this provider's keys only.
+const USER_PASSWORD_METHODS: [&str; 2] = ["user_password", "username_password"];
+
 /// Mint the `user_password` admin root key for the given credentials.
 ///
 /// Applies the creation-time password policy (both minimum and maximum
 /// length), derives the storage key id with the same salted PBKDF2 the login
 /// path uses, and stores a root key carrying the `admin` permission.
-/// Idempotent for identical credentials: re-provisioning the same
-/// username/password pair overwrites the same record under the same id.
+///
+/// This SETS the account for `username`: any other `user_password` root key
+/// stored for the same username (i.e. minted under a previous password,
+/// including pre-PBKDF2 legacy ids) is deleted, so re-provisioning rotates
+/// the password rather than leaving the old one valid forever. Keys for
+/// other usernames are untouched. Idempotent for identical credentials.
+///
+/// The new key is stored before the old ones are deleted, so a crash in
+/// between leaves both passwords valid (re-run to finish the rotation) —
+/// never an account-less node.
 ///
 /// Returns the key id.
 pub async fn provision_admin_key(
@@ -76,6 +88,31 @@ pub async fn provision_admin_key(
         .set_key(&key_id, &root_key)
         .await
         .map_err(|err| eyre::eyre!("Failed to store admin root key: {err}"))?;
+
+    // Rotate: drop every other user_password key stored for this username.
+    // Without this, provisioning a new password after a compromise would
+    // leave the compromised one authenticating forever (its derived key id
+    // is still a valid lookup).
+    let existing = key_manager
+        .list_keys(KeyType::Root)
+        .await
+        .map_err(|err| eyre::eyre!("Failed to list root keys for rotation: {err}"))?;
+    for (stale_id, key) in existing {
+        let same_user = key.public_key.as_deref() == Some(username);
+        let same_provider = key
+            .auth_method
+            .as_deref()
+            .is_some_and(|method| USER_PASSWORD_METHODS.contains(&method));
+        if stale_id != key_id && same_user && same_provider {
+            key_manager.delete_key(&stale_id).await.map_err(|err| {
+                eyre::eyre!("Failed to delete the superseded root key for this username: {err}")
+            })?;
+            info!(
+                user = %crate::utils::sanitize_for_log(username),
+                "Rotated out a superseded root key for this username"
+            );
+        }
+    }
 
     info!(
         user = %crate::utils::sanitize_for_log(username),
@@ -108,21 +145,29 @@ pub fn admin_password_from_env() -> eyre::Result<Option<String>> {
 
 /// Read admin credentials from the environment, if provided.
 ///
-/// Returns `Ok(None)` when [`ADMIN_USER_ENV`] is unset or empty. When it is
-/// set, a password is required (see [`admin_password_from_env`]) — otherwise
-/// this errors rather than silently skipping provisioning.
+/// Returns `Ok(None)` only when NEITHER side is set. A partial
+/// specification errors instead of being silently ignored — an operator who
+/// wired only one of the two variables through (easy in container/CI
+/// configs) must find out at startup, not from a node that quietly has no
+/// admin account.
 pub fn admin_creds_from_env() -> eyre::Result<Option<(String, String)>> {
-    let username = match std::env::var(ADMIN_USER_ENV) {
-        Ok(user) if !user.is_empty() => user,
-        _ => return Ok(None),
-    };
+    let username = std::env::var(ADMIN_USER_ENV)
+        .ok()
+        .filter(|user| !user.is_empty());
+    let password = admin_password_from_env()?;
 
-    match admin_password_from_env()? {
-        Some(password) => Ok(Some((username, password))),
-        None => eyre::bail!(
+    match (username, password) {
+        (Some(username), Some(password)) => Ok(Some((username, password))),
+        (Some(_), None) => eyre::bail!(
             "{ADMIN_USER_ENV} is set but no password was provided; set \
              {ADMIN_PASSWORD_ENV} or {ADMIN_PASSWORD_FILE_ENV}"
         ),
+        (None, Some(_)) => eyre::bail!(
+            "an admin password is set ({ADMIN_PASSWORD_ENV} or \
+             {ADMIN_PASSWORD_FILE_ENV}) but {ADMIN_USER_ENV} is not; set it \
+             or unset the password"
+        ),
+        (None, None) => Ok(None),
     }
 }
 
@@ -158,12 +203,15 @@ pub async fn provision_admin_from_env_if_unbootstrapped(
         return Ok(());
     }
 
+    // Only user_password keys count: a root key minted by some future other
+    // provider must not silently suppress provisioning the user_password
+    // admin this function exists to create.
     let key_manager = KeyManager::new(Arc::clone(storage));
-    let existing = key_manager
-        .list_keys(KeyType::Root)
+    let has_admin = key_manager
+        .has_any_key(KeyType::Root, Some(&USER_PASSWORD_METHODS))
         .await
-        .map_err(|err| eyre::eyre!("failed to determine bootstrap state: {err}"))?;
-    if !existing.is_empty() {
+        .map_err(|err| eyre::eyre!("failed to determine provisioning state: {err}"))?;
+    if has_admin {
         return Ok(());
     }
 
@@ -234,6 +282,41 @@ mod tests {
             .unwrap();
         assert_eq!(first, second);
         assert_eq!(root_keys(&storage).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn reprovisioning_same_username_rotates_the_password() {
+        // set-admin with a new password must revoke the old one: after
+        // rotation only the new key remains, so the compromised/old password
+        // can no longer authenticate.
+        let storage = memory_storage();
+        let config = UserPasswordConfig::default();
+        let old_id = provision_admin_key(&storage, &config, "admin", "old-password-1")
+            .await
+            .unwrap();
+        let new_id = provision_admin_key(&storage, &config, "admin", "new-password-2")
+            .await
+            .unwrap();
+        assert_ne!(old_id, new_id);
+
+        let keys = root_keys(&storage).await;
+        assert_eq!(keys.len(), 1, "the superseded key must be deleted");
+        assert_eq!(keys[0].0, new_id);
+    }
+
+    #[tokio::test]
+    async fn different_usernames_keep_separate_admin_keys() {
+        // Rotation is per-username: provisioning a second admin under a
+        // different name must not touch the first.
+        let storage = memory_storage();
+        let config = UserPasswordConfig::default();
+        let _ops = provision_admin_key(&storage, &config, "ops", "password-1")
+            .await
+            .unwrap();
+        let _rescue = provision_admin_key(&storage, &config, "rescue", "password-2")
+            .await
+            .unwrap();
+        assert_eq!(root_keys(&storage).await.len(), 2);
     }
 
     #[tokio::test]
