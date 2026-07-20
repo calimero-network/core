@@ -149,11 +149,25 @@ impl KeyManager {
                     let key_path = format!("{}{}", prefixes::ROOT_KEY, key_id);
                     self.storage.delete(&key_path).await?;
 
-                    // Delete the public key index
+                    // Delete the public-key index — but only if it still points
+                    // at THIS key. The public key is the username, which is
+                    // stable across password rotations: when a rotation stores
+                    // the new root key first (repointing the index at the new
+                    // id) and then deletes the superseded one, its `public_key`
+                    // is the same username, so an unconditional delete here
+                    // would drop the index entry that now belongs to the live
+                    // key. Guard against clearing another key's index.
                     if let Some(public_key) = key.public_key {
                         let public_key_index =
                             format!("{}{}", prefixes::PUBLIC_KEY_INDEX, public_key);
-                        self.storage.delete(&public_key_index).await?;
+                        let points_here = self
+                            .storage
+                            .get(&public_key_index)
+                            .await?
+                            .is_some_and(|indexed| indexed == key_id.as_bytes());
+                        if points_here {
+                            self.storage.delete(&public_key_index).await?;
+                        }
                     }
 
                     // Delete the root-to-client index
@@ -326,6 +340,41 @@ impl KeyManager {
             }
             None => Ok(Vec::new()),
         }
+    }
+
+    /// Delete every client key derived from the given root key id.
+    ///
+    /// Revoking or rotating a root key does not by itself invalidate the
+    /// scoped client keys minted under it — they carry their own permissions
+    /// and are looked up independently at request time. When a root key is
+    /// being superseded for security reasons (e.g. `merod auth set-admin`
+    /// rotating a compromised admin password), those client keys must go too,
+    /// otherwise a token issued before the rotation keeps authenticating.
+    ///
+    /// Returns the number of client keys deleted. Client ids already gone or
+    /// revoked (invisible to `get_key`) are skipped.
+    pub async fn delete_client_keys_for_root(
+        &self,
+        root_key_id: &str,
+    ) -> Result<usize, StorageError> {
+        let root_clients_key = format!("{}{}", prefixes::ROOT_CLIENTS, root_key_id);
+        let client_ids: Vec<String> = match self.storage.get(&root_clients_key).await? {
+            Some(data) => deserialize(&data)?,
+            None => return Ok(0),
+        };
+
+        let mut deleted = 0;
+        for client_id in &client_ids {
+            // delete_key also maintains the root→client index for us; a client
+            // that is already gone/revoked resolves to NotFound — skip it.
+            match self.delete_key(client_id).await {
+                Ok(()) => deleted += 1,
+                Err(StorageError::NotFound) => {}
+                Err(err) => return Err(err),
+            }
+        }
+
+        Ok(deleted)
     }
 
     // /// Get a permission by ID
@@ -527,6 +576,108 @@ mod tests {
         assert!(key_manager.get_key("test_key").await.unwrap().is_none());
         assert!(key_manager
             .find_root_key_by_public_key("test_pub_key")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_client_keys_for_root_revokes_all_derived_keys() {
+        let storage = Arc::new(MemoryStorage::new());
+        let key_manager = KeyManager::new(storage);
+
+        let root = Key::new_root_key_with_permissions(
+            "admin".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        key_manager.set_key("root-1", &root).await.unwrap();
+
+        for name in ["client-a", "client-b"] {
+            let client = Key::new_client_key("root-1".to_string(), name.to_string(), vec![], None);
+            key_manager.set_key(name, &client).await.unwrap();
+        }
+        // A client of a different root must survive.
+        let other_root = Key::new_root_key_with_permissions(
+            "other".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        key_manager.set_key("root-2", &other_root).await.unwrap();
+        let other_client =
+            Key::new_client_key("root-2".to_string(), "keep-me".to_string(), vec![], None);
+        key_manager
+            .set_key("other-client", &other_client)
+            .await
+            .unwrap();
+
+        let deleted = key_manager
+            .delete_client_keys_for_root("root-1")
+            .await
+            .unwrap();
+        assert_eq!(deleted, 2);
+        assert!(key_manager.get_key("client-a").await.unwrap().is_none());
+        assert!(key_manager.get_key("client-b").await.unwrap().is_none());
+        assert!(key_manager.get_key("other-client").await.unwrap().is_some());
+
+        // Idempotent: a second call finds nothing left to delete.
+        assert_eq!(
+            key_manager
+                .delete_client_keys_for_root("root-1")
+                .await
+                .unwrap(),
+            0
+        );
+        // A root with no client keys is a clean no-op.
+        assert_eq!(
+            key_manager
+                .delete_client_keys_for_root("unknown")
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_superseded_root_keeps_the_repointed_public_key_index() {
+        // Usernames double as the public key, so rotation stores a new root
+        // key (repointing the username index at it) then deletes the old one.
+        // Deleting the old key must NOT clear the index entry now owned by the
+        // new key.
+        let storage = Arc::new(MemoryStorage::new());
+        let key_manager = KeyManager::new(storage);
+
+        let make = || {
+            Key::new_root_key_with_permissions(
+                "admin".to_string(),
+                "user_password".to_string(),
+                vec!["admin".to_string()],
+                None,
+            )
+        };
+        key_manager.set_key("old-id", &make()).await.unwrap();
+        // Storing the new key repoints PUBLIC_KEY_INDEX[admin] -> "new-id".
+        key_manager.set_key("new-id", &make()).await.unwrap();
+
+        key_manager.delete_key("old-id").await.unwrap();
+
+        let resolved = key_manager
+            .find_root_key_by_public_key("admin")
+            .await
+            .unwrap()
+            .map(|(id, _)| id);
+        assert_eq!(
+            resolved,
+            Some("new-id".to_string()),
+            "the index must still resolve to the surviving key"
+        );
+
+        // Deleting the key the index actually points at DOES clear it.
+        key_manager.delete_key("new-id").await.unwrap();
+        assert!(key_manager
+            .find_root_key_by_public_key("admin")
             .await
             .unwrap()
             .is_none());
