@@ -328,6 +328,41 @@ impl KeyManager {
         }
     }
 
+    /// Delete every client key derived from the given root key id.
+    ///
+    /// Revoking or rotating a root key does not by itself invalidate the
+    /// scoped client keys minted under it — they carry their own permissions
+    /// and are looked up independently at request time. When a root key is
+    /// being superseded for security reasons (e.g. `merod auth set-admin`
+    /// rotating a compromised admin password), those client keys must go too,
+    /// otherwise a token issued before the rotation keeps authenticating.
+    ///
+    /// Returns the number of client keys deleted. Client ids already gone or
+    /// revoked (invisible to `get_key`) are skipped.
+    pub async fn delete_client_keys_for_root(
+        &self,
+        root_key_id: &str,
+    ) -> Result<usize, StorageError> {
+        let root_clients_key = format!("{}{}", prefixes::ROOT_CLIENTS, root_key_id);
+        let client_ids: Vec<String> = match self.storage.get(&root_clients_key).await? {
+            Some(data) => deserialize(&data)?,
+            None => return Ok(0),
+        };
+
+        let mut deleted = 0;
+        for client_id in &client_ids {
+            // delete_key also maintains the root→client index for us; a client
+            // that is already gone/revoked resolves to NotFound — skip it.
+            match self.delete_key(client_id).await {
+                Ok(()) => deleted += 1,
+                Err(StorageError::NotFound) => {}
+                Err(err) => return Err(err),
+            }
+        }
+
+        Ok(deleted)
+    }
+
     // /// Get a permission by ID
     pub async fn get_permission(
         &self,
@@ -530,5 +565,64 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_client_keys_for_root_revokes_all_derived_keys() {
+        let storage = Arc::new(MemoryStorage::new());
+        let key_manager = KeyManager::new(storage);
+
+        let root = Key::new_root_key_with_permissions(
+            "admin".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        key_manager.set_key("root-1", &root).await.unwrap();
+
+        for name in ["client-a", "client-b"] {
+            let client = Key::new_client_key("root-1".to_string(), name.to_string(), vec![], None);
+            key_manager.set_key(name, &client).await.unwrap();
+        }
+        // A client of a different root must survive.
+        let other_root = Key::new_root_key_with_permissions(
+            "other".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        key_manager.set_key("root-2", &other_root).await.unwrap();
+        let other_client =
+            Key::new_client_key("root-2".to_string(), "keep-me".to_string(), vec![], None);
+        key_manager
+            .set_key("other-client", &other_client)
+            .await
+            .unwrap();
+
+        let deleted = key_manager
+            .delete_client_keys_for_root("root-1")
+            .await
+            .unwrap();
+        assert_eq!(deleted, 2);
+        assert!(key_manager.get_key("client-a").await.unwrap().is_none());
+        assert!(key_manager.get_key("client-b").await.unwrap().is_none());
+        assert!(key_manager.get_key("other-client").await.unwrap().is_some());
+
+        // Idempotent: a second call finds nothing left to delete.
+        assert_eq!(
+            key_manager
+                .delete_client_keys_for_root("root-1")
+                .await
+                .unwrap(),
+            0
+        );
+        // A root with no client keys is a clean no-op.
+        assert_eq!(
+            key_manager
+                .delete_client_keys_for_root("unknown")
+                .await
+                .unwrap(),
+            0
+        );
     }
 }

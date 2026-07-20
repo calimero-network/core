@@ -22,7 +22,7 @@
 
 use std::sync::Arc;
 
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::config::{AuthConfig, UserPasswordConfig};
 use crate::providers::impls::user_password::{derive_key_id, validate_password_length};
@@ -51,9 +51,11 @@ const USER_PASSWORD_METHODS: [&str; 2] = ["user_password", "username_password"];
 ///
 /// This SETS the account for `username`: any other `user_password` root key
 /// stored for the same username (i.e. minted under a previous password,
-/// including pre-PBKDF2 legacy ids) is deleted, so re-provisioning rotates
-/// the password rather than leaving the old one valid forever. Keys for
-/// other usernames are untouched. Idempotent for identical credentials.
+/// including pre-PBKDF2 legacy ids) is deleted — along with every scoped
+/// client key derived from it — so re-provisioning rotates the password and
+/// invalidates tokens minted under the old one rather than leaving either
+/// valid forever. Keys for other usernames are untouched. Idempotent for
+/// identical credentials.
 ///
 /// The new key is stored before the old ones are deleted, so a crash in
 /// between leaves both passwords valid (re-run to finish the rotation) —
@@ -97,11 +99,23 @@ pub async fn provision_admin_key(
             .as_deref()
             .is_some_and(|method| USER_PASSWORD_METHODS.contains(&method));
         if stale_id != key_id && same_user && same_provider {
+            // Revoke the client keys derived from the superseded root key
+            // first: they authenticate independently of their parent, so a
+            // token minted under the old password would otherwise survive the
+            // rotation. Do this before deleting the root key — deleting the
+            // root drops the root→client index this lookup relies on.
+            let revoked_clients = key_manager
+                .delete_client_keys_for_root(&stale_id)
+                .await
+                .map_err(|err| {
+                    eyre::eyre!("Failed to revoke client keys of the superseded root key: {err}")
+                })?;
             key_manager.delete_key(&stale_id).await.map_err(|err| {
                 eyre::eyre!("Failed to delete the superseded root key for this username: {err}")
             })?;
             info!(
                 user = %crate::utils::sanitize_for_log(username),
+                revoked_clients,
                 "Rotated out a superseded root key for this username"
             );
         }
@@ -141,15 +155,17 @@ pub fn validate_admin_credentials(
 ///
 /// [`ADMIN_PASSWORD_FILE_ENV`] takes precedence (a single trailing newline is
 /// stripped, as with any mounted secret); [`ADMIN_PASSWORD_ENV`] is the
-/// fallback. Returns `Ok(None)` when neither is set (empty values count as
-/// unset).
+/// fallback. Returns `Ok(None)` when neither is set. An empty value counts as
+/// unset for both sources — including a blank or newline-only secret file, so
+/// it can never mint a password-less admin even where the min-length policy is
+/// relaxed to 0.
 pub fn admin_password_from_env() -> eyre::Result<Option<String>> {
     if let Ok(path) = std::env::var(ADMIN_PASSWORD_FILE_ENV) {
         if !path.is_empty() {
             let raw = std::fs::read_to_string(&path).map_err(|err| {
                 eyre::eyre!("failed to read {ADMIN_PASSWORD_FILE_ENV}={path}: {err}")
             })?;
-            return Ok(Some(strip_trailing_newline(raw)));
+            return Ok(Some(strip_trailing_newline(raw)).filter(|password| !password.is_empty()));
         }
     }
 
@@ -186,6 +202,15 @@ pub fn admin_creds_from_env() -> eyre::Result<Option<(String, String)>> {
     }
 }
 
+/// Whether any admin credential environment variable is set to a non-empty
+/// value. Used only to decide whether to warn that credentials are being
+/// ignored (e.g. the `user_password` provider is disabled); it deliberately
+/// does not read secret files or validate a full pair.
+fn admin_env_present() -> bool {
+    let non_empty = |name: &str| std::env::var(name).is_ok_and(|value| !value.is_empty());
+    non_empty(ADMIN_USER_ENV) || non_empty(ADMIN_PASSWORD_ENV) || non_empty(ADMIN_PASSWORD_FILE_ENV)
+}
+
 /// Strip one trailing newline (`\n` or `\r\n`) — the artifact `echo` and most
 /// secret mounts leave behind. Interior whitespace is preserved.
 pub fn strip_trailing_newline(mut value: String) -> String {
@@ -215,6 +240,17 @@ pub async fn provision_admin_from_env_if_unbootstrapped(
         .copied()
         .unwrap_or(false)
     {
+        // Fail-loud: the whole point of this path is that credentials are
+        // never silently dropped. If an operator wired admin env creds through
+        // but the provider that would consume them is off, say so — otherwise
+        // they debug a locked-out node with no clue why the env had no effect.
+        if admin_env_present() {
+            warn!(
+                "{ADMIN_USER_ENV}/{ADMIN_PASSWORD_ENV} set but the `user_password` provider is \
+                 disabled; the admin account cannot be provisioned and these credentials are \
+                 ignored. Enable the provider to use them."
+            );
+        }
         return Ok(());
     }
 
@@ -357,6 +393,56 @@ mod tests {
                 .is_err()
         );
         assert!(root_keys(&storage).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rotating_the_password_revokes_client_keys_of_the_old_root() {
+        // A client token minted under the compromised password must stop
+        // working once set-admin rotates the password — otherwise rotation as
+        // an incident-response tool is defeated.
+        let storage = memory_storage();
+        let config = UserPasswordConfig::default();
+        let key_manager = KeyManager::new(Arc::clone(&storage));
+
+        let old_id = provision_admin_key(&storage, &config, "admin", "old-password-1")
+            .await
+            .unwrap();
+
+        // A scoped client key derived from the old admin root key.
+        let client = Key::new_client_key(old_id.clone(), "cli".to_owned(), vec![], None);
+        key_manager.set_key("client-token", &client).await.unwrap();
+        assert!(key_manager.get_key("client-token").await.unwrap().is_some());
+
+        // Rotate the admin password.
+        let new_id = provision_admin_key(&storage, &config, "admin", "new-password-2")
+            .await
+            .unwrap();
+        assert_ne!(old_id, new_id);
+
+        // Old root gone, its client gone, only the new root remains.
+        assert!(key_manager.get_key("client-token").await.unwrap().is_none());
+        let keys = root_keys(&storage).await;
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].0, new_id);
+    }
+
+    #[test]
+    fn empty_password_file_is_treated_as_unset() {
+        // A blank/newline-only secret file must not mint a password-less admin.
+        let dir = std::env::temp_dir();
+        let path = dir.join("mero-auth-empty-admin-password-test");
+        std::fs::write(&path, "\n").unwrap();
+
+        // No other test reads the admin password env vars concurrently.
+        std::env::set_var(ADMIN_PASSWORD_FILE_ENV, &path);
+        let resolved = admin_password_from_env();
+        std::env::remove_var(ADMIN_PASSWORD_FILE_ENV);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            resolved.unwrap().is_none(),
+            "an empty password file must resolve to None, not Some(\"\")"
+        );
     }
 
     #[test]
