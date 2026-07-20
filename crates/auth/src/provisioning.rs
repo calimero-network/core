@@ -269,14 +269,26 @@ pub async fn provision_admin_from_env_if_unbootstrapped(
         return Ok(());
     }
 
-    // Only user_password keys count: a root key minted by some future other
-    // provider must not silently suppress provisioning the user_password
-    // admin this function exists to create.
+    // Does a user_password admin already exist? This MUST use the same
+    // definition of "belongs to user_password" as `provision_admin_key`'s
+    // rotation sweep, or the two disagree: rotation treats a root key with no
+    // auth_method as a legacy user_password key, so bootstrap detection must
+    // too. Otherwise a node whose only admin is a pre-PBKDF2 legacy key (no
+    // auth_method) reads as un-bootstrapped here, env-provisioning runs, and
+    // the rotation logic silently deletes that legacy admin — a routine
+    // restart with the env vars still set (common in containers) would
+    // replace an existing account. A root key minted by some FUTURE other
+    // provider still doesn't count: providers tag their own auth_method, so it
+    // is neither a user_password method nor untagged.
     let key_manager = KeyManager::new(Arc::clone(storage));
     let has_admin = key_manager
         .has_any_key(KeyType::Root, Some(&USER_PASSWORD_METHODS))
         .await
-        .map_err(|err| eyre::eyre!("failed to determine provisioning state: {err}"))?;
+        .map_err(|err| eyre::eyre!("failed to determine provisioning state: {err}"))?
+        || key_manager
+            .has_any_key(KeyType::Root, Some(&[]))
+            .await
+            .map_err(|err| eyre::eyre!("failed to determine provisioning state: {err}"))?;
     if has_admin {
         return Ok(());
     }
@@ -302,8 +314,16 @@ pub async fn provision_admin_from_env_if_unbootstrapped(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
     use crate::storage::MemoryStorage;
+
+    /// Serializes tests that mutate the process-global admin env vars. The test
+    /// harness runs tests in parallel threads and env vars are process-wide, so
+    /// any two tests touching `MERO_AUTH_ADMIN_*` must not overlap. Poisoning is
+    /// recovered (a panic in one env test must not wedge the others).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn memory_storage() -> Arc<dyn Storage> {
         Arc::new(MemoryStorage::new())
@@ -411,6 +431,50 @@ mod tests {
         assert_eq!(keys[0].0, new_id);
     }
 
+    // Holds the std Mutex across `.await`: a test-only serialization guard for
+    // the process-global env vars, on a per-test current-thread runtime with no
+    // other task contending it — none of the deadlock hazard the lint guards.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn a_legacy_only_node_reads_as_already_bootstrapped() {
+        // Bootstrap detection must count a legacy key (auth_method == None) as
+        // an existing admin, or env-provisioning runs on restart and the
+        // rotation sweep silently replaces the legacy account.
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let storage = memory_storage();
+        let key_manager = KeyManager::new(Arc::clone(&storage));
+
+        let mut legacy = Key::new_root_key_with_permissions(
+            "admin".to_owned(),
+            "user_password".to_owned(),
+            vec!["admin".to_owned()],
+            None,
+        );
+        legacy.auth_method = None;
+        key_manager.set_key("legacy-id", &legacy).await.unwrap();
+
+        // Env vars a container would keep passing on every restart.
+        std::env::set_var(ADMIN_USER_ENV, "admin");
+        std::env::set_var(ADMIN_PASSWORD_ENV, "env-password-123");
+        let result = provision_admin_from_env_if_unbootstrapped(
+            &storage,
+            &crate::embedded::default_config(),
+        )
+        .await;
+        std::env::remove_var(ADMIN_USER_ENV);
+        std::env::remove_var(ADMIN_PASSWORD_ENV);
+        result.unwrap();
+
+        let keys = root_keys(&storage).await;
+        assert_eq!(keys.len(), 1, "the legacy admin must be left untouched");
+        assert_eq!(
+            keys[0].0, "legacy-id",
+            "env-provisioning must not run against a legacy-only node"
+        );
+    }
+
     #[tokio::test]
     async fn different_usernames_keep_separate_admin_keys() {
         // Rotation is per-username: provisioning a second admin under a
@@ -486,6 +550,9 @@ mod tests {
     fn admin_password_from_env_file_precedence_and_fallthrough() {
         // This is the only test that touches the admin password env vars, so it
         // owns them for its duration and covers every branch sequentially.
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = std::env::temp_dir();
         let blank = dir.join("mero-auth-blank-admin-password-test");
         let filled = dir.join("mero-auth-filled-admin-password-test");
