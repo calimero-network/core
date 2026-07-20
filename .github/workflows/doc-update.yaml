@@ -58,7 +58,7 @@ jobs:
       - uses: actions/checkout@v7
 
       # NOTE: `cache: pip` deliberately omitted — see file-level comment.
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
