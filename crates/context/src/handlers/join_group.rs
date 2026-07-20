@@ -503,12 +503,12 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                 let ci_key =
                                     key::ContextIdentity::new(*context_id, joiner_identity);
                                 if !handle.has(&ci_key)? {
+                                    // Keyless membership marker — `joiner_identity`
+                                    // is the node's namespace identity, whose key is
+                                    // resolved live at read time rather than copied.
                                     handle.put(
                                         &ci_key,
-                                        &calimero_store::types::ContextIdentity {
-                                            private_key: Some(sk_bytes),
-                                            sender_key: None,
-                                        },
+                                        &calimero_store::types::ContextIdentity { private_key: None },
                                     )?;
                                 }
                             }

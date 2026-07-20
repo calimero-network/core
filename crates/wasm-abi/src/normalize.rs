@@ -294,6 +294,8 @@ fn normalize_generic_type(
         // CRDT types - unwrap to inner type for ABI but preserve CRDT type metadata
         "LwwRegister"
         | "Counter"
+        | "GCounter"
+        | "PNCounter"
         | "ReplicatedGrowableArray"
         | "Vector"
         | "AuthoredVector"
@@ -303,16 +305,20 @@ fn normalize_generic_type(
             // These CRDT wrappers unwrap to their inner type for ABI purposes
             // but we preserve the CRDT type so deserializers know the format
 
-            if ident_str == "Counter" || ident_str == "ReplicatedGrowableArray" {
-                // Counter and RGA don't have generic args (or are opaque)
-                // Counter -> bytes (but preserve Counter type), RGA -> string (but preserve RGA type)
-                if ident_str == "Counter" {
+            // Counter/RGA are opaque (no ABI-visible generic args). GCounter and
+            // PNCounter are `pub type` aliases of Counter; syn does not expand
+            // aliases, so each spelling must be matched by name and collapse to
+            // the single `counter` tag.
+            match ident_str.as_str() {
+                "Counter" | "GCounter" | "PNCounter" => {
                     return Ok(opaque_crdt_placeholder(CrdtCollectionType::Counter));
-                } else {
+                }
+                "ReplicatedGrowableArray" => {
                     return Ok(opaque_crdt_placeholder(
                         CrdtCollectionType::ReplicatedGrowableArray,
                     ));
                 }
+                _ => {}
             }
 
             // LwwRegister<T>, Vector<T>, UnorderedSet<T> -> unwrap T but preserve CRDT type
@@ -527,7 +533,11 @@ fn normalize_scalar_type(
         // with the same fixed-size-bytes shape as `PublicKey`.
         "BlobId" | "ContextId" | "ApplicationId" => Ok(TypeRef::bytes_with_size(32, None)),
         // Storage CRDT wrappers – treat as opaque blobs until ABI definitions exist.
-        "Counter" => Ok(opaque_crdt_placeholder(CrdtCollectionType::Counter)),
+        // GCounter/PNCounter are `pub type` aliases of Counter; syn does not expand
+        // aliases, so each spelling is matched here (bare form is legal - generics default).
+        "Counter" | "GCounter" | "PNCounter" => {
+            Ok(opaque_crdt_placeholder(CrdtCollectionType::Counter))
+        }
         "ReplicatedGrowableArray" => Ok(opaque_crdt_placeholder(
             CrdtCollectionType::ReplicatedGrowableArray,
         )),

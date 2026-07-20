@@ -592,10 +592,7 @@ impl SyncManager {
             if !handle.has(&ci_key).unwrap_or(false) {
                 let _ = handle.put(
                     &ci_key,
-                    &calimero_store::types::ContextIdentity {
-                        private_key: None,
-                        sender_key: None,
-                    },
+                    &calimero_store::types::ContextIdentity { private_key: None },
                 );
             }
         }
