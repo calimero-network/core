@@ -1,6 +1,6 @@
 # Calimero Core - AI Agent Guidance
 
-Peer-to-peer platform for building collaborative apps with automatic conflict-free (CRDT) sync, encrypted P2P networking, and group-based access control. Apps are written in Rust or JavaScript and compiled to WASM; every node runs the same logic over state that converges automatically. (See [`architecture/`](architecture/index.html) for the authoritative definition.)
+Peer-to-peer platform for building collaborative apps with automatic conflict-free (CRDT) sync, encrypted P2P networking, and group-based access control. Apps are written in Rust or JavaScript and compiled to WASM; every node runs the same logic over state that converges automatically. (See the [documentation site](docs/) — source under `docs/src/content/docs/`, published to <https://calimero-network.github.io/core/> — for the authoritative definition.)
 
 - **Type**: Rust monorepo (Cargo workspace)
 - **Stack**: Rust 1.88.0, wasmer (WASM), libp2p (P2P), RocksDB
@@ -10,23 +10,24 @@ Peer-to-peer platform for building collaborative apps with automatic conflict-fr
 
 Read them in this order when you land in an unfamiliar area:
 
-1. **`architecture/` - the WHY and how it all connects.** A static HTML reference
-   site explaining the system as a whole: the philosophy, the end-to-end flows,
-   and how the crates interconnect. Start at
-   [`architecture/system-overview.html`](architecture/system-overview.html), then the
-   [protocol reference](architecture/protocol/index.html): the
-   [write path](architecture/protocol/write-path.html),
-   [receive & apply path](architecture/protocol/receive-path.html),
-   [operations & the causal DAG](architecture/protocol/operations.html),
-   [state, projection & the root hash](architecture/protocol/projection.html),
-   [sync & convergence](architecture/protocol/sync.html), and
-   [governance](architecture/protocol/governance.html). The
-   [dependency explorer](architecture/dependency-explorer.html) maps crate edges,
-   and [`unified-causal-log-cutover-plan.html`](architecture/unified-causal-log-cutover-plan.html)
-   is the live migration the `op`/`op-adapter`/`projection`/`authz` crates are
-   building toward. These are plain HTML - read the source directly, or open in a
-   browser. Treat `architecture/` as the source of truth for *intent*; a per-crate
-   `AGENTS.md` explains one crate, `architecture/` explains how they add up.
+1. **`docs/` - the WHY and how it all connects.** The Astro Starlight
+   documentation site (source under `docs/src/content/docs/`, published to
+   <https://calimero-network.github.io/core/>) explains the system as a whole:
+   the philosophy, the end-to-end flows, and how the crates interconnect. Start
+   at the [protocol overview](docs/src/content/docs/protocol/overview.mdx) — the
+   life of one operation — then the rest of the protocol reference: the
+   [write path](docs/src/content/docs/protocol/write-path.mdx),
+   [receive & apply path](docs/src/content/docs/protocol/receive-path.mdx),
+   [operations & the causal DAG](docs/src/content/docs/protocol/operations.mdx),
+   [state, projection & the root hash](docs/src/content/docs/protocol/projection.mdx),
+   [sync & convergence](docs/src/content/docs/protocol/sync.mdx), and
+   [governance](docs/src/content/docs/protocol/governance.mdx). The
+   [architecture orientation](docs/src/content/docs/contribute/architecture.mdx)
+   and [crate guide](docs/src/content/docs/contribute/crate-guide.mdx) map the
+   crates and their edges. The content is MDX - read the source directly, or
+   `cd docs && npm run dev` to browse. Treat `docs/` as the source of truth for
+   *intent*; a per-crate `AGENTS.md` explains one crate, `docs/` explains how
+   they add up.
 2. **Per-directory `AGENTS.md` - the WHAT.** Each crate/tool/app dir has one
    describing that unit: its types, entry points, commands, and local gotchas.
    Every `AGENTS.md` has a `CLAUDE.md` symlink beside it so both this tool and
@@ -276,7 +277,7 @@ Client Request → JSON-RPC Server → WASM Runtime → Storage (CRDTs)
 
 ## Core Concepts (Summary)
 
-Grounded in [`architecture/concepts.html`](architecture/concepts.html); read it for the full model.
+Grounded in the [Concepts & Scopes](docs/src/content/docs/protocol/concepts.mdx) page; read it for the full model.
 
 - **Namespace**: A root group (a group with no parent). The application-instance boundary and identity scope for a node - each namespace has its own Ed25519 keypair, and all its subgroups and contexts share that identity. All groups in a namespace share one governance DAG.
 - **Group**: A governance boundary within a namespace. Has members, an inherited application, and one or more contexts. Membership, access control, and upgrades happen here via signed governance ops that propagate over P2P gossip; every group has at least one Admin.
