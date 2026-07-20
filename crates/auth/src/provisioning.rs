@@ -94,10 +94,18 @@ pub async fn provision_admin_key(
         .map_err(|err| eyre::eyre!("Failed to list root keys for rotation: {err}"))?;
     for (stale_id, key) in existing {
         let same_user = key.public_key.as_deref() == Some(username);
-        let same_provider = key
-            .auth_method
-            .as_deref()
-            .is_some_and(|method| USER_PASSWORD_METHODS.contains(&method));
+        let same_provider = match key.auth_method.as_deref() {
+            Some(method) => USER_PASSWORD_METHODS.contains(&method),
+            // Legacy keys predate the `auth_method` field being populated (the
+            // "pre-PBKDF2 legacy ids" this function's doc promises to rotate
+            // out). A root key whose public key is this username but has no
+            // recorded auth_method is such a key: `user_password` is the only
+            // provider that mints username-keyed root keys, so treat it as
+            // belonging here rather than leaving an old credential able to
+            // authenticate forever. `same_user` already pins it to this exact
+            // username, so this can't sweep some other identity.
+            None => true,
+        };
         if stale_id != key_id && same_user && same_provider {
             // Revoke the client keys derived from the superseded root key
             // first: they authenticate independently of their parent, so a
@@ -352,6 +360,47 @@ mod tests {
 
         let keys = root_keys(&storage).await;
         assert_eq!(keys.len(), 1, "the superseded key must be deleted");
+        assert_eq!(keys[0].0, new_id);
+
+        // The username→key_id index must still resolve to the CURRENT key:
+        // deleting the old key (whose public_key is the same username) must not
+        // clobber the index entry the new key just claimed.
+        let resolved = KeyManager::new(Arc::clone(&storage))
+            .find_root_key_by_public_key("admin")
+            .await
+            .unwrap();
+        assert_eq!(
+            resolved.map(|(id, _)| id),
+            Some(new_id),
+            "the public-key index must point at the rotated-in key"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotation_sweeps_a_legacy_key_with_no_auth_method() {
+        // Pre-PBKDF2 keys predate the auth_method field: a root key for this
+        // username with auth_method == None must still be rotated out, or an
+        // old credential keeps authenticating forever (the doc promises it is
+        // swept).
+        let storage = memory_storage();
+        let config = UserPasswordConfig::default();
+        let key_manager = KeyManager::new(Arc::clone(&storage));
+
+        let mut legacy = Key::new_root_key_with_permissions(
+            "admin".to_owned(),
+            "user_password".to_owned(),
+            vec!["admin".to_owned()],
+            None,
+        );
+        legacy.auth_method = None; // as an old on-disk record would be
+        key_manager.set_key("legacy-id", &legacy).await.unwrap();
+
+        let new_id = provision_admin_key(&storage, &config, "admin", "new-password-2")
+            .await
+            .unwrap();
+
+        let keys = root_keys(&storage).await;
+        assert_eq!(keys.len(), 1, "the legacy key must be swept");
         assert_eq!(keys[0].0, new_id);
     }
 
