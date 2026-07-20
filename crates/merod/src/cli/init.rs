@@ -280,16 +280,24 @@ impl InitCommand {
             }
         }
 
-        // Resolve AND validate the admin credentials before anything
-        // destructive below: a `--force` re-init must not wipe an existing
-        // node home only to then fail on missing, unreadable, or
-        // policy-violating credentials.
+        // Only embedded auth with persistent storage mints an admin key at
+        // init, so ONLY that arm resolves the admin credentials — resolving
+        // reads `--admin-password-file`/stdin and consults the environment,
+        // any of which can fail hard (unreadable file, empty password, or a
+        // partial `MERO_AUTH_ADMIN_*` left in the environment for some
+        // unrelated reason). Doing that unconditionally would let those break
+        // a plain `merod init` in a mode that never uses the credentials. The
+        // resolve still happens before the destructive re-init below, so a
+        // `--force` re-init never wipes an existing node home only to then
+        // fail on missing, unreadable, or policy-violating credentials. Modes
+        // that ignore credentials warn only on explicit flags (`provided()`),
+        // never by reading the environment.
         let auth_mode = self.auth_mode.map(Into::into).unwrap_or(AuthMode::Proxy);
         let auth_storage_choice = self.auth_storage.unwrap_or(AuthStorageArg::Persistent);
-        let admin_creds = self.admin.resolve()?;
 
         let admin_to_mint = match (auth_mode, auth_storage_choice) {
             (AuthMode::Embedded, AuthStorageArg::Persistent) => {
+                let admin_creds = self.admin.resolve()?;
                 if self.no_admin {
                     if admin_creds.is_some() {
                         warn!(
@@ -315,7 +323,7 @@ impl InitCommand {
                 }
             }
             (AuthMode::Embedded, AuthStorageArg::Memory) => {
-                if admin_creds.is_some() || self.admin.provided() {
+                if self.admin.provided() {
                     warn!(
                         "In-memory auth storage holds no persistent accounts — ignoring the \
                          admin credentials. Set MERO_AUTH_ADMIN_USER and \
@@ -326,7 +334,7 @@ impl InitCommand {
                 None
             }
             (_, _) => {
-                if admin_creds.is_some() || self.admin.provided() {
+                if self.admin.provided() {
                     warn!("Admin credentials are only used with --auth-mode embedded; ignoring");
                 }
                 None
