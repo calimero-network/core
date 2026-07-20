@@ -98,7 +98,7 @@ jobs:
           path: _mero-js
 
       - name: Setup Node + pnpm
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
       - run: npm install -g pnpm
