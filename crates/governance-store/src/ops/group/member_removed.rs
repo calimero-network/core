@@ -183,6 +183,15 @@ pub(crate) fn apply(
     // dropped at the receive entry point before the cross-DAG
     // check runs. Cleared if/when the member is re-added.
     DenyListRepository::new(store).mark(group_id, member)?;
+    // If this is a namespace-root removal, the member also loses every
+    // *inherited* Open-subgroup membership that flowed from this root row.
+    // Record a namespace-root-keyed inherited-deny so the receive filter
+    // fast-drops their deltas to those descendant subgroups too — the direct
+    // deny-list above only covers this exact group. Cleared on root re-admission
+    // (`add_member_with_keys`), which necessarily precedes any re-inheritance.
+    if NamespaceRepository::new(store).parent(group_id)?.is_none() {
+        DenyListRepository::new(store).mark_inherited(group_id, member)?;
+    }
     // Block re-entry. Distinct from the deny-list above in both purpose and
     // lifetime: the deny-list silences their traffic and is retracted the moment
     // any member row is written, while this block is authorization state that

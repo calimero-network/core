@@ -31,22 +31,23 @@ on:
 env:
   CARGO_TERM_COLOR: always
   SERVER_PORT: "2428"
-  # Out-of-band secret gating first-root-key bootstrap (fail-closed since the
-  # TOFU removal). The boot step exports it into merod's environment; the
-  # "Bootstrap root key" step presents the same value to mint the dev/dev root
-  # key BEFORE the SDK suite runs, so mero-js's plain username/password logins
-  # authenticate on the existing-user fast path and never need the secret.
-  # CI-only test value for an ephemeral localhost node.
-  MERO_AUTH_BOOTSTRAP_SECRET: sdk-e2e-ci-bootstrap
-  # Root-user credentials, pre-provisioned by the "Bootstrap root key" step
-  # and consumed by mero-js's e2e harness (tests/e2e/harness.ts resolveCreds()
-  # reads MERO_E2E_USER / MERO_E2E_PASS, defaulting to dev/dev). Pinning them
-  # here keeps both sides in lockstep even if the harness defaults change.
+  # Admin credentials minted AT INIT (the login path never mints keys; there
+  # is no first-login bootstrap secret anymore). `merod init` reads these from
+  # its environment, so the dev/dev-password root key exists before the node
+  # ever listens and every login the SDK suite performs is a plain
+  # existing-user authentication. CI-only values for an ephemeral localhost
+  # node; the password is consumed at init to derive the key — nothing is at
+  # rest in config.toml.
+  MERO_AUTH_ADMIN_USER: dev
+  MERO_AUTH_ADMIN_PASSWORD: dev-password
+  # The same credentials, as consumed by mero-js's e2e harness
+  # (tests/e2e/harness.ts resolveCreds() reads MERO_E2E_USER / MERO_E2E_PASS,
+  # defaulting to dev/dev). Pinning them here keeps both sides in lockstep
+  # even if the harness defaults change.
   #
   # The password MUST satisfy the provider's configured minimum length
-  # (default 8): the "Bootstrap root key" step below creates the root key, and
-  # creation enforces the minimum (a short password → 401 at bootstrap). This
-  # workflow-level value is what that step inherits, so it cannot be `dev`.
+  # (default 8): init-time provisioning enforces the creation-time policy, so
+  # it cannot be `dev`.
   MERO_E2E_USER: dev
   MERO_E2E_PASS: dev-password
 
@@ -117,28 +118,28 @@ jobs:
             if [ "$i" = "60" ]; then echo "merod did not become healthy"; exit 1; fi
           done
 
-      - name: Bootstrap root key (out-of-band secret)
-        # First-root-key bootstrap requires MERO_AUTH_BOOTSTRAP_SECRET (the
-        # node inherited it from the boot step's environment). Mint the root
-        # key for MERO_E2E_USER here so every login the SDK suite performs is
-        # a plain existing-user authentication — including the negative test
-        # that asserts wrong/wrong is rejected (a root key exists, so the
-        # bootstrap path never re-opens).
+      - name: Verify the init-minted admin key answers a plain login
+        # The admin root key was minted at init from MERO_AUTH_ADMIN_USER /
+        # MERO_AUTH_ADMIN_PASSWORD — assert a plain username/password login
+        # works BEFORE the SDK suite runs, so an auth regression fails here
+        # with a clear message instead of somewhere inside the suite. (The
+        # negative wrong/wrong test in the suite stays meaningful: the login
+        # path never mints keys, so nothing can "re-open" on a wrong guess.)
         run: |
           BODY=$(jq -n --arg u "$MERO_E2E_USER" --arg p "$MERO_E2E_PASS" \
-            --arg s "$MERO_AUTH_BOOTSTRAP_SECRET" --argjson ts "$(date +%s)" \
+            --argjson ts "$(date +%s)" \
             '{auth_method: "user_password", public_key: $u,
               client_name: "sdk-e2e-ci", permissions: ["admin"], timestamp: $ts,
-              provider_data: {username: $u, password: $p, bootstrap_secret: $s}}')
+              provider_data: {username: $u, password: $p}}')
           RESP=$(curl -fsS -m 10 -X POST "http://localhost:$SERVER_PORT/auth/token" \
             -H 'Content-Type: application/json' -d "$BODY") || {
-              echo "::error::root-key bootstrap request failed"; exit 1; }
+              echo "::error::admin login request failed"; exit 1; }
           TOKEN=$(echo "$RESP" | jq -r '.data.access_token // empty')
           if [ -z "$TOKEN" ]; then
-            echo "::error::root-key bootstrap did not return a token: $RESP"
+            echo "::error::admin login did not return a token: $RESP"
             exit 1
           fi
-          echo "root key bootstrapped for user $MERO_E2E_USER"
+          echo "init-minted admin key logs in for user $MERO_E2E_USER"
 
       - name: Run mero-js e2e against booted node
         working-directory: _mero-js

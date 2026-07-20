@@ -14,7 +14,7 @@ Generates and verifies Intel TDX attestation quotes, binding them to a nonce and
 # Build
 cargo build -p calimero-tee-attestation
 
-# Test (crate has no unit tests of its own; exercised via callers)
+# Test (the `policy` module has unit tests; the rest is exercised via callers)
 cargo test -p calimero-tee-attestation
 ```
 
@@ -52,7 +52,12 @@ Consumers propagate it explicitly: `calimero-server/mock-attestation`, `calimero
 | `verify_attestation(quote_bytes, nonce, expected_app_hash)` | async fn | Real path: parses the quote, fetches Intel PCS collateral (`dcap_qvl::collateral::get_collateral_from_pcs`), runs `dcap_qvl::verify::verify`, checks nonce and app hash against `report_input_data()` |
 | `verify_mock_attestation(quote_bytes, nonce, expected_app_hash)` | fn | **`mock-attestation` only.** Verifies a mock quote's embedded nonce/app hash; `quote_verified` is unconditionally `true` (there is no signature) |
 | `VerificationResult` | struct | `quote_verified`, `nonce_verified`, `application_hash_verified: bool`; `tcb_status: Option<String>`; `advisory_ids: Vec<String>`; `quote: Quote` |
-| `VerificationResult::is_valid()` | fn | `quote_verified && nonce_verified && application_hash_verified` |
+| `VerificationResult::is_valid()` | fn | `quote_verified && nonce_verified && application_hash_verified`. **Crypto-only — not an authorization verdict**: it ignores `tcb_status` and the measurement registers, so it returns `true` for a crypto-valid quote from an `OutOfDate`/`Revoked` platform or an unapproved workload. Never admit/release a key on this alone |
+| `VerificationResult::policy_valid(&policy)` | fn | The safe-by-construction gate new callers should use: folds `is_valid()` together with a fail-closed TCB allowlist, the mock decision, the MRTD/RTMR allowlists and the app-hash binding. `Result<(), PolicyRejection>` |
+| `VerifierPolicy` | struct | The policy `policy_valid` enforces: `allowed_tcb_statuses`, `allowed_mrtd`, `allowed_rtmr0..3`, `accept_mock`, `require_app_hash`. `VerifierPolicy::new(allowed_mrtd)` is the intended entry point. Every field fails closed (empty `allowed_mrtd` rejects; empty `allowed_tcb_statuses` enforces `DEFAULT_ALLOWED_TCB_STATUS`) — except `allowed_rtmr0..3`, where empty deliberately skips that register |
+| `PolicyRejection` | enum | Typed reason: `NotCryptoValid`, `TcbRevoked`, `TcbNotAllowed { status }`, `MockNotAccepted`, `EmptyMrtdAllowlist`, `MeasurementMismatch { register }`, `AppHashNotBound` |
+| `MeasurementRegister` | enum | `Mrtd`, `Rtmr0..3` — names the register in `MeasurementMismatch` |
+| `DEFAULT_ALLOWED_TCB_STATUS` / `TCB_STATUS_REVOKED` / `TCB_STATUS_MOCK` | const | `"UpToDate"` / `"Revoked"` / `"Mock"`. **Not** gated by `mock-attestation`: `policy_valid` only compares the `tcb_status` *string*, so production builds must keep the ability to reject a mock quote |
 | `get_tee_info()` | async fn | Returns `TeeInfo { cloud_provider, os_image, mrtd }`; on Linux reads MRTD via `tdx_workload_attestation` and probes the GCP metadata server for the OS image |
 | `TeeInfo` | struct | `cloud_provider: String`, `os_image: String`, `mrtd: String` (hex) |
 | `AttestationError` | enum | `NotSupported`, `QuoteGenerationFailed`, `QuoteParsingFailed`, `QuoteConversionFailed`, `QuoteVerificationFailed`, `CollateralFetchFailed`, `InvalidNonce`, `InvalidApplicationHash`, `NonceMismatch { expected, actual }`, `ApplicationHashMismatch { expected, actual }`, `InfoRetrievalFailed`, `SystemTimeError` - all carry `String` context, no source-error chaining |
@@ -83,6 +88,7 @@ This crate has no dstack or Phala-specific code - it is a generic TDX quote gene
 | `src/lib.rs` | Public re-exports and module-level docs; the module boundary is intentional (generate/verify/info/error are independently testable and have different platform `cfg`s) |
 | `src/generate.rs` | `generate_attestation`, `generate_mock_attestation`, `is_mock_quote`, `create_mock_quote`, `build_report_data`, `MOCK_QUOTE_HEADER`, `AttestationResult` |
 | `src/verify.rs` | `verify_attestation`, `verify_mock_attestation`, `VerificationResult` |
+| `src/policy.rs` | `VerificationResult::policy_valid`, `VerifierPolicy`, `PolicyRejection`, `MeasurementRegister`, the TCB constants, and the policy unit tests. Deliberately mirrors `calimero_governance_store::membership::policy_rules::tcb_status_allowed` by value rather than importing it — this is a leaf `publish = true` crate and must not depend on the governance store, so the two MUST stay in sync |
 | `src/info.rs` | `get_tee_info`, `TeeInfo`; MRTD retrieval and cloud-provider detection |
 | `src/error.rs` | `AttestationError` |
 

@@ -75,6 +75,13 @@ async fn main() -> Result<()> {
         .await
         .expect("Failed to create storage");
 
+    // Mint the admin root key from operator-supplied environment credentials
+    // when no root keys exist yet (the login path never mints keys). Fails
+    // closed — with no credentials, login stays disabled until provisioned.
+    mero_auth::provisioning::provision_admin_from_env_if_unbootstrapped(&storage, &config)
+        .await
+        .expect("Failed to provision the admin account from the environment");
+
     // Create the secret manager with the storage trait. `with_storage_config`
     // resolves the at-rest KEK (env-provided, or a 0600 sibling key file for
     // RocksDB) so the JWT signing secrets are sealed on disk.

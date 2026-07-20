@@ -95,15 +95,18 @@ jobs:
 
       - name: Run auth-seam e2e (merobox, embedded auth)
         env:
-          # Out-of-band secret gating first-root-key bootstrap (fail-closed
-          # since the TOFU removal). Binary-mode merobox spawns merod with
-          # os.environ inherited, and script steps (target: local) inherit
-          # it too — so this single export both provisions the node's
-          # expected secret AND lets scripts/e2e-auth-seam.sh present the
-          # same value in provider_data.bootstrap_secret on the first
-          # login. CI-only test value for an ephemeral localhost node; not
-          # baked into any image or shipped config.
-          MERO_AUTH_BOOTSTRAP_SECRET: auth-seam-ci-bootstrap
+          # Admin credentials minted AT INIT (the login path never mints
+          # keys; there is no first-login bootstrap secret anymore).
+          # Binary-mode merobox spawns `merod init`/`run` with os.environ
+          # inherited, and script steps (target: local) inherit it too — so
+          # this single export both provisions the node's admin account AND
+          # tells scripts/e2e-auth-seam.sh which credentials log in.
+          # CI-only test values for an ephemeral localhost node; the
+          # password is consumed at init — nothing lands in config.toml.
+          MERO_AUTH_ADMIN_USER: dev
+          MERO_AUTH_ADMIN_PASSWORD: dev-password
+          MERO_E2E_USER: dev
+          MERO_E2E_PASS: dev-password
         run: |
           merobox bootstrap run workflows/auth-seam.yml \
             --no-docker --binary-path ./merod --auth-mode embedded
@@ -451,17 +454,15 @@ jobs:
 
       - name: Run ${{ matrix.workflow }}
         env:
-          # Out-of-band secret gating first-root-key bootstrap (fail-closed
-          # since the TOFU removal). Requires merobox pass-through support:
-          # merobox must forward this var into node containers AND present
-          # it as provider_data.bootstrap_secret in its `login` step
-          # (tracked cross-repo in calimero-network/merobox). Inert on older
-          # merobox; once the pass-through ships via the APT repo these
-          # workflows heal without further changes here. Bump MIN_MEROBOX in
-          # .github/actions/setup-merobox when that lands. CI-only test
-          # value for ephemeral containers; not baked into any image or
-          # shipped config.
-          MERO_AUTH_BOOTSTRAP_SECRET: merobox-e2e-bootstrap
+          # Admin credentials for embedded-auth scenarios, matching the
+          # dev/dev-password `login` steps in the workflow YAMLs. The login
+          # path never mints keys (no first-login bootstrap secret anymore):
+          # merobox ≥0.6.43 forwards these vars into node containers, where
+          # `merod init` mints the admin root key before the node listens.
+          # CI-only test values for ephemeral containers; the password is
+          # consumed at init — nothing lands in any image or shipped config.
+          MERO_AUTH_ADMIN_USER: dev
+          MERO_AUTH_ADMIN_PASSWORD: dev-password
         run: |
           # Phase 11.3 (#2237): single attempt, fail loud. The retry loop
           # + `merobox nuke --force` between attempts existed to mask

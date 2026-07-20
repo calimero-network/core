@@ -27,9 +27,10 @@ use calimero_storage::entities::OpMask;
 /// `CAN_JOIN_OPEN_SUBGROUPS` capability bit — gates inherited membership into an
 /// open subgroup (mirrors the live `MemberCapabilities` constant).
 const CAN_JOIN_OPEN_SUBGROUPS: u32 = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits();
-/// Max subgroup-tree depth the inheritance walk traverses (mirrors the live
-/// `MAX_NAMESPACE_DEPTH`).
-const MAX_NAMESPACE_DEPTH: usize = 16;
+/// Max subgroup-tree depth the inheritance walk traverses. Sourced from the
+/// single definition in `calimero-context-config` (shared with governance-store
+/// and the context client so the walk bound cannot drift between crates).
+const MAX_NAMESPACE_DEPTH: usize = calimero_context_config::MAX_NAMESPACE_DEPTH;
 
 /// How `author` reaches membership of a group at a cut — the at-cut analogue of
 /// the live `MembershipPath`. Carries enough to derive the enumeration ROLE

@@ -340,18 +340,17 @@ impl<'a> NamespaceGovernance<'a> {
                         // sync diverges in the kick/leave-rejoin e2e.
                         // Idempotent on a member who was never denied.
                         DenyListRepository::new(self.store).clear(&group_id_typed, member)?;
-                        // Local rejoiner recovery: restore any per-context
-                        // `ContextIdentity` rows that a prior `MemberLeft`
-                        // cascade deleted. The local-rejoiner anti-spoof
-                        // gate is enforced inside
-                        // `restore_member_context_identities` — on peers
-                        // whose namespace identity differs from `member`
-                        // it is a no-op. On first-time inheritance joiners
-                        // the row may not exist yet — it is written so the
-                        // joiner can author state-DAG ops as soon as
-                        // `KeyDelivery` populates `sender_key`. Idempotent:
-                        // an existing row from a prior `join_context` is
-                        // left untouched.
+                        // Local rejoiner recovery: re-create the per-context
+                        // `ContextIdentity` membership marker that a prior
+                        // `MemberLeft` cascade deleted. The marker is keyless —
+                        // the signer is resolved live from the node's namespace
+                        // identity — and the scope gate inside
+                        // `restore_member_context_identities` makes it a no-op on
+                        // peers whose namespace identity differs from `member`.
+                        // With the marker present the joiner can author state-DAG
+                        // ops as soon as `KeyDelivery` populates the group key
+                        // (GroupKeyring). Idempotent: an existing row is left
+                        // untouched.
                         restore_member_context_identities(self.store, &group_id_typed, member)?;
                     }
                     RootOp::GroupCreated { group_id, .. } => {

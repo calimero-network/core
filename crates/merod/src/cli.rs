@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use const_format::concatcp;
@@ -5,6 +7,8 @@ use eyre::Result as EyreResult;
 
 use crate::defaults;
 
+mod admin_creds;
+mod auth;
 mod auth_mode;
 mod config;
 mod init;
@@ -13,6 +17,7 @@ mod run;
 mod tee;
 mod validation;
 
+use auth::AuthCommand;
 use config::ConfigCommand;
 use init::InitCommand;
 use kms::KmsCommand;
@@ -70,6 +75,7 @@ pub struct RootCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SubCommands {
+    Auth(AuthCommand),
     Config(ConfigCommand),
     Init(InitCommand),
     Kms(KmsCommand),
@@ -90,9 +96,23 @@ pub struct RootArgs {
     pub node_name: Utf8PathBuf,
 }
 
+/// Resolve a path from config against the node home: relative paths (the
+/// default, e.g. the `auth` storage dir) live under the node home; absolute
+/// paths are honored as-is. The single source of truth for this rule —
+/// `init`, `run`, and `auth set-admin` must all resolve identically or they
+/// operate on different databases.
+pub(crate) fn resolve_node_relative_path(node_home: &Path, path: PathBuf) -> PathBuf {
+    if path.is_relative() {
+        node_home.join(path)
+    } else {
+        path
+    }
+}
+
 impl RootCommand {
     pub async fn run(self) -> EyreResult<()> {
         match self.action {
+            SubCommands::Auth(auth) => auth.run(&self.args).await,
             SubCommands::Config(config) => config.run(&self.args).await,
             SubCommands::Init(init) => init.run(self.args).await,
             SubCommands::Kms(kms) => kms.run(&self.args).await,

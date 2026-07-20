@@ -83,46 +83,12 @@ pub async fn build_app(config: AuthConfig) -> Result<EmbeddedAuthApp> {
     let metrics = AuthMetrics::new();
     let key_manager = KeyManager::new(Arc::clone(&storage));
 
-    // Surface the first-login setup code while the node is still
-    // un-bootstrapped (no root keys yet), then never again. The code is
-    // already at rest in the 0600 config.toml next to the node's private
-    // key, so logging it here exposes nothing the node's owner can't read —
-    // and without this, a fresh node's first login fails with an opaque 401
-    // (core#3221 deliberately makes the rejection indistinguishable from a
-    // wrong password).
-    if config
-        .providers
-        .get("user_password")
-        .copied()
-        .unwrap_or(false)
-    {
-        match key_manager
-            .list_keys(crate::storage::models::KeyType::Root)
-            .await
-        {
-            Ok(keys) if keys.is_empty() => {
-                if let Some(secret) = config.user_password.effective_bootstrap_secret() {
-                    info!("==============================================================");
-                    info!("No account exists on this node yet.");
-                    info!("First-login setup code: {secret}");
-                    info!("Log in with your chosen username/password plus this code to");
-                    info!("create the admin account. (Also stored in config.toml.)");
-                    info!("==============================================================");
-                } else {
-                    info!(
-                        "No account exists on this node yet and no bootstrap secret is \
-                         configured — first login will be rejected. Set \
-                         MERO_AUTH_BOOTSTRAP_SECRET or [user_password] bootstrap_secret \
-                         to enable first-login setup."
-                    );
-                }
-            }
-            Ok(_) => {}
-            Err(err) => {
-                info!("Could not determine bootstrap state: {err}");
-            }
-        }
-    }
+    // The login path never mints keys. If this node has no admin account yet
+    // (fresh in-memory storage, a node initialized before credentials-at-init
+    // existed, or a wiped auth store), mint it now from operator-supplied
+    // environment credentials — or log how to provision one and stay fail
+    // closed. Nothing secret is logged or written to config either way.
+    crate::provisioning::provision_admin_from_env_if_unbootstrapped(&storage, &config).await?;
 
     let state = Arc::new(AppState {
         auth_service: auth_service.clone(),

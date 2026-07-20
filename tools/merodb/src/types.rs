@@ -110,7 +110,7 @@ impl Column {
         match self {
             Self::Meta => "ContextMeta { application: ApplicationId, root_hash: Hash, dag_heads: Vec<Hash> }",
             Self::Config => "ContextConfig { protocol, network, contract, proxy_contract, application_revision, members_revision }",
-            Self::Identity => "ContextIdentity { private_key: Option<[u8; 32]>, sender_key: Option<[u8; 32]> }",
+            Self::Identity => "ContextIdentity { private_key: Option<[u8; 32]> }",
             Self::State => "Raw bytes (application-specific state)",
             Self::Delta => "ContextDagDelta { delta_id, parents, actions, hlc, applied, expected_root_hash }",
             Self::Blobs => "BlobMeta { size: u64, hash: [u8; 32], links: Box<[BlobId]> }",
@@ -326,12 +326,6 @@ fn parse_context_identity(data: &[u8]) -> Result<Value> {
                 drop(result.insert(
                     "private_key".to_owned(),
                     json!(String::from_utf8_lossy(&private_key)),
-                ));
-            }
-            if let Some(sender_key) = identity.sender_key {
-                drop(result.insert(
-                    "sender_key".to_owned(),
-                    json!(String::from_utf8_lossy(&sender_key)),
                 ));
             }
             Ok(json!(result))
