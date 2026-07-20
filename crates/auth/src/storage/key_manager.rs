@@ -149,11 +149,25 @@ impl KeyManager {
                     let key_path = format!("{}{}", prefixes::ROOT_KEY, key_id);
                     self.storage.delete(&key_path).await?;
 
-                    // Delete the public key index
+                    // Delete the public-key index — but only if it still points
+                    // at THIS key. The public key is the username, which is
+                    // stable across password rotations: when a rotation stores
+                    // the new root key first (repointing the index at the new
+                    // id) and then deletes the superseded one, its `public_key`
+                    // is the same username, so an unconditional delete here
+                    // would drop the index entry that now belongs to the live
+                    // key. Guard against clearing another key's index.
                     if let Some(public_key) = key.public_key {
                         let public_key_index =
                             format!("{}{}", prefixes::PUBLIC_KEY_INDEX, public_key);
-                        self.storage.delete(&public_key_index).await?;
+                        let points_here = self
+                            .storage
+                            .get(&public_key_index)
+                            .await?
+                            .is_some_and(|indexed| indexed == key_id.as_bytes());
+                        if points_here {
+                            self.storage.delete(&public_key_index).await?;
+                        }
                     }
 
                     // Delete the root-to-client index
@@ -624,5 +638,48 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_superseded_root_keeps_the_repointed_public_key_index() {
+        // Usernames double as the public key, so rotation stores a new root
+        // key (repointing the username index at it) then deletes the old one.
+        // Deleting the old key must NOT clear the index entry now owned by the
+        // new key.
+        let storage = Arc::new(MemoryStorage::new());
+        let key_manager = KeyManager::new(storage);
+
+        let make = || {
+            Key::new_root_key_with_permissions(
+                "admin".to_string(),
+                "user_password".to_string(),
+                vec!["admin".to_string()],
+                None,
+            )
+        };
+        key_manager.set_key("old-id", &make()).await.unwrap();
+        // Storing the new key repoints PUBLIC_KEY_INDEX[admin] -> "new-id".
+        key_manager.set_key("new-id", &make()).await.unwrap();
+
+        key_manager.delete_key("old-id").await.unwrap();
+
+        let resolved = key_manager
+            .find_root_key_by_public_key("admin")
+            .await
+            .unwrap()
+            .map(|(id, _)| id);
+        assert_eq!(
+            resolved,
+            Some("new-id".to_string()),
+            "the index must still resolve to the surviving key"
+        );
+
+        // Deleting the key the index actually points at DOES clear it.
+        key_manager.delete_key("new-id").await.unwrap();
+        assert!(key_manager
+            .find_root_key_by_public_key("admin")
+            .await
+            .unwrap()
+            .is_none());
     }
 }

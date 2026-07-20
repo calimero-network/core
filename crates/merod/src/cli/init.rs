@@ -296,32 +296,32 @@ impl InitCommand {
         let auth_storage_choice = self.auth_storage.unwrap_or(AuthStorageArg::Persistent);
 
         let admin_to_mint = match (auth_mode, auth_storage_choice) {
-            (AuthMode::Embedded, AuthStorageArg::Persistent) => {
-                let admin_creds = self.admin.resolve()?;
-                if self.no_admin {
-                    if admin_creds.is_some() {
-                        warn!(
-                            "Ignoring the provided admin credentials because --no-admin was passed"
-                        );
-                    }
-                    warn!(
-                        "No admin account will be created: login stays disabled until one is \
-                         provisioned via `merod auth set-admin` or MERO_AUTH_ADMIN_USER/\
-                         MERO_AUTH_ADMIN_PASSWORD at node startup"
-                    );
-                    None
-                } else if admin_creds.is_none() {
-                    bail!(
-                        "--auth-mode embedded requires admin credentials so the admin account \
-                         exists before the node ever listens. Provide --admin-user with \
-                         --admin-password-file or --admin-password-stdin (or set \
-                         MERO_AUTH_ADMIN_USER and MERO_AUTH_ADMIN_PASSWORD), or pass \
-                         --no-admin to explicitly defer provisioning."
-                    );
-                } else {
-                    admin_creds
+            // --no-admin explicitly defers provisioning, so it must not resolve
+            // credentials at all: an unreadable --admin-password-file or a
+            // partial env spec left over from a script must not fail an init
+            // that was explicitly told not to create an account. Warn only on
+            // explicit flags.
+            (AuthMode::Embedded, AuthStorageArg::Persistent) if self.no_admin => {
+                if self.admin.provided() {
+                    warn!("Ignoring the provided admin credentials because --no-admin was passed");
                 }
+                warn!(
+                    "No admin account will be created: login stays disabled until one is \
+                     provisioned via `merod auth set-admin` or MERO_AUTH_ADMIN_USER/\
+                     MERO_AUTH_ADMIN_PASSWORD at node startup"
+                );
+                None
             }
+            (AuthMode::Embedded, AuthStorageArg::Persistent) => match self.admin.resolve()? {
+                Some(creds) => Some(creds),
+                None => bail!(
+                    "--auth-mode embedded requires admin credentials so the admin account \
+                     exists before the node ever listens. Provide --admin-user with \
+                     --admin-password-file or --admin-password-stdin (or set \
+                     MERO_AUTH_ADMIN_USER and MERO_AUTH_ADMIN_PASSWORD), or pass \
+                     --no-admin to explicitly defer provisioning."
+                ),
+            },
             (AuthMode::Embedded, AuthStorageArg::Memory) => {
                 if self.admin.provided() {
                     warn!(
