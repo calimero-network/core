@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use calimero_config::ConfigFile;
+use calimero_server::config::AuthMode;
 use clap::{Parser, Subcommand};
 use eyre::{bail, Result as EyreResult};
 use mero_auth::config::{StorageConfig as AuthStorageConfig, UserPasswordConfig};
@@ -87,6 +88,19 @@ impl SetAdminCommand {
         }
 
         let config = ConfigFile::load(&path).await?;
+
+        // The embedded_auth section can linger in config.toml after a switch to
+        // proxy auth (nothing clears it on mode change). Provisioning into that
+        // stale store would mint a key the running node never consults, so the
+        // success message would be a lie. Gate on the ACTIVE mode, not just the
+        // presence of the section.
+        if !matches!(config.network.server.auth_mode, AuthMode::Embedded) {
+            bail!(
+                "this node's active auth_mode is not 'embedded'; `auth set-admin` provisions \
+                 into the embedded-auth store, which the node will not consult until auth_mode \
+                 is switched to 'embedded'"
+            );
+        }
 
         let Some(auth_config) = config.network.server.embedded_auth else {
             bail!(

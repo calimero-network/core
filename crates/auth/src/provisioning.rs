@@ -163,17 +163,24 @@ pub fn validate_admin_credentials(
 ///
 /// [`ADMIN_PASSWORD_FILE_ENV`] takes precedence (a single trailing newline is
 /// stripped, as with any mounted secret); [`ADMIN_PASSWORD_ENV`] is the
-/// fallback. Returns `Ok(None)` when neither is set. An empty value counts as
-/// unset for both sources — including a blank or newline-only secret file, so
-/// it can never mint a password-less admin even where the min-length policy is
-/// relaxed to 0.
+/// fallback. Returns `Ok(None)` when neither yields a password. An empty value
+/// counts as unset for both sources: a blank or newline-only secret file is
+/// treated as "not provided" and **falls through** to [`ADMIN_PASSWORD_ENV`]
+/// (a secret mount that hasn't been populated yet must not shadow a valid
+/// fallback), so it can never mint a password-less admin even where the
+/// min-length policy is relaxed to 0. An unreadable file is still a hard error
+/// — that is a misconfiguration, not an "unset" source.
 pub fn admin_password_from_env() -> eyre::Result<Option<String>> {
     if let Ok(path) = std::env::var(ADMIN_PASSWORD_FILE_ENV) {
         if !path.is_empty() {
             let raw = std::fs::read_to_string(&path).map_err(|err| {
                 eyre::eyre!("failed to read {ADMIN_PASSWORD_FILE_ENV}={path}: {err}")
             })?;
-            return Ok(Some(strip_trailing_newline(raw)).filter(|password| !password.is_empty()));
+            let password = strip_trailing_newline(raw);
+            if !password.is_empty() {
+                return Ok(Some(password));
+            }
+            // Blank/newline-only file: fall through to the plain env var.
         }
     }
 
@@ -476,22 +483,42 @@ mod tests {
     }
 
     #[test]
-    fn empty_password_file_is_treated_as_unset() {
-        // A blank/newline-only secret file must not mint a password-less admin.
+    fn admin_password_from_env_file_precedence_and_fallthrough() {
+        // This is the only test that touches the admin password env vars, so it
+        // owns them for its duration and covers every branch sequentially.
         let dir = std::env::temp_dir();
-        let path = dir.join("mero-auth-empty-admin-password-test");
-        std::fs::write(&path, "\n").unwrap();
+        let blank = dir.join("mero-auth-blank-admin-password-test");
+        let filled = dir.join("mero-auth-filled-admin-password-test");
+        std::fs::write(&blank, "\n").unwrap();
+        std::fs::write(&filled, "from-file\n").unwrap();
 
-        // No other test reads the admin password env vars concurrently.
-        std::env::set_var(ADMIN_PASSWORD_FILE_ENV, &path);
-        let resolved = admin_password_from_env();
+        std::env::remove_var(ADMIN_PASSWORD_ENV);
         std::env::remove_var(ADMIN_PASSWORD_FILE_ENV);
-        let _ = std::fs::remove_file(&path);
 
-        assert!(
-            resolved.unwrap().is_none(),
-            "an empty password file must resolve to None, not Some(\"\")"
+        // 1. A blank file with no env fallback resolves to None — never a
+        //    password-less admin.
+        std::env::set_var(ADMIN_PASSWORD_FILE_ENV, &blank);
+        assert_eq!(admin_password_from_env().unwrap(), None);
+
+        // 2. A blank file falls through to the plain env var (an unpopulated
+        //    secret mount must not shadow a valid fallback).
+        std::env::set_var(ADMIN_PASSWORD_ENV, "from-env");
+        assert_eq!(
+            admin_password_from_env().unwrap().as_deref(),
+            Some("from-env")
         );
+
+        // 3. A non-empty file wins over the env var.
+        std::env::set_var(ADMIN_PASSWORD_FILE_ENV, &filled);
+        assert_eq!(
+            admin_password_from_env().unwrap().as_deref(),
+            Some("from-file")
+        );
+
+        std::env::remove_var(ADMIN_PASSWORD_ENV);
+        std::env::remove_var(ADMIN_PASSWORD_FILE_ENV);
+        let _ = std::fs::remove_file(&blank);
+        let _ = std::fs::remove_file(&filled);
     }
 
     #[test]
