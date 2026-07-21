@@ -4,11 +4,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use actix::Actor;
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_context::group_store::{apply_local_signed_group_op, get_local_gov_nonce};
-use calimero_context::ContextManager;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::group::{CreateGroupRequest, SetMemberAutoFollowRequest};
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
@@ -19,7 +17,6 @@ use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
 use calimero_node_primitives::messages::NodeMessage;
 use calimero_node_primitives::sync::BroadcastMessage;
-use calimero_node_primitives::NodeMode;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -28,7 +25,6 @@ use calimero_store::key::GroupMetaValue;
 use calimero_store::types::ApplicationMeta as ApplicationMetaValue;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
-use prometheus_client::registry::Registry;
 use rand::rngs::OsRng;
 use serial_test::serial;
 use sha2::{Digest, Sha256};
@@ -36,76 +32,10 @@ use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 
-use crate::arbiter_pool::ArbiterPool;
 use crate::peer_identity_cache::ObservedMembership;
 use crate::sync::{SyncConfig, SyncManager};
-use crate::{NodeManager, NodeState};
-
-/// Minimal stand-in for the real network actor. The governance publish path
-/// (`group_store::sign_apply_and_publish`) samples mesh peer count and best-
-/// effort-publishes before/after the local store apply; both go through the
-/// `LazyRecipient<NetworkMessage>`. Left uninitialised, a `send().await` on
-/// that recipient queues and never resolves, deadlocking the admission task.
-///
-/// This stub answers every `NetworkMessage` variant with a benign default
-/// (no mesh peers, no connected peers, publish "succeeds" with a dummy id) so
-/// the publish path returns promptly and the local apply — the part this test
-/// asserts on — actually runs. It sends nothing on the wire: there is no peer.
-struct StubNetworkActor;
-
-impl actix::Actor for StubNetworkActor {
-    type Context = actix::Context<Self>;
-}
-
-impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for StubNetworkActor {
-    type Result = ();
-
-    fn handle(
-        &mut self,
-        msg: calimero_network_primitives::messages::NetworkMessage,
-        _ctx: &mut Self::Context,
-    ) -> Self::Result {
-        // `MessageId` is already in scope from the module-level import; only
-        // `NetworkMessage` needs bringing in here for the match arms below.
-        use calimero_network_primitives::messages::NetworkMessage;
-        // The admission publish path only samples mesh/peer state and
-        // best-effort-publishes. Resolve those `outcome` oneshots with a
-        // benign default so the awaiting client future completes; drop every
-        // other variant (none are reached by the paths under test, and a
-        // dropped receiver simply surfaces `MailboxError::Closed`). `let _ =`
-        // tolerates a caller that already stopped awaiting.
-        match msg {
-            NetworkMessage::MeshPeerCount { outcome, .. } => {
-                let _ = outcome.send(0);
-            }
-            NetworkMessage::MeshPeers { outcome, .. } => {
-                let _ = outcome.send(Vec::new());
-            }
-            NetworkMessage::MeshStats { outcome, .. } => {
-                let _ = outcome.send(Vec::new());
-            }
-            NetworkMessage::PeerCount { outcome, .. } => {
-                let _ = outcome.send(0);
-            }
-            NetworkMessage::Publish { outcome, .. } => {
-                let _ = outcome.send(Ok(MessageId(b"stub".to_vec())));
-            }
-            // The create-group path subscribes to the namespace governance
-            // topic before publishing GroupCreated; echo the requested topic
-            // back so `NetworkClient::subscribe` resolves instead of panicking
-            // on a dropped mailbox.
-            NetworkMessage::Subscribe { request, outcome } => {
-                let _ = outcome.send(Ok(request.0));
-            }
-            // Lazy upgrades announce each rung blob on the DHT; the stub
-            // acknowledges so the awaiting client future completes.
-            NetworkMessage::AnnounceBlob { outcome, .. } => {
-                let _ = outcome.send(Ok(()));
-            }
-            _ => {}
-        }
-    }
-}
+use crate::test_node_harness::{boot_test_node, TestNode};
+use crate::NodeState;
 
 fn sample_meta(admin: PublicKey) -> GroupMetaValue {
     GroupMetaValue {
@@ -117,170 +47,6 @@ fn sample_meta(admin: PublicKey) -> GroupMetaValue {
         owner_identity: admin,
         migration: None,
         auto_join: true,
-    }
-}
-
-/// Bundle of resources kept alive for the duration of a test — dropping
-/// `_tmp` or `_pool` would tear down the blobstore / arbiters underneath
-/// the running actors.
-// Visibility note: this struct (and `boot_test_node` below) are
-// `pub(crate)` so the sibling `cascade_dispatch_e2e` test module can
-// share the same actor harness without duplicating ~120 LOC of
-// `ContextManager` + `NodeManager` boot machinery. The fields it
-// reads (`store`, `context_client`) are likewise `pub(crate)`.
-pub(crate) struct TestNode {
-    _pool: ArbiterPool,
-    _tmp: TempDir,
-    pub(crate) store: Store,
-    pub(crate) context_client: ContextClient,
-    /// Blob/network client for tests that need to seed real blob bytes
-    /// (e.g. the cascade tests' ABI-bearing bytecode fixtures).
-    pub(crate) node_client: NodeClient,
-    /// Address of the running `NodeManager` actor. Lets a test deliver a
-    /// synthesized `NetworkEvent` straight to the production
-    /// `Handler<NetworkEvent>` dispatch (the same entrypoint a real
-    /// gossipsub message takes), exercising the network-event → admission
-    /// path without standing up a libp2p transport.
-    node_addr: actix::Addr<NodeManager>,
-}
-
-/// Boots a `ContextManager` + `NodeManager` against an in-memory store and
-/// a tempdir-backed blobstore, with no peer wired up (the network client's
-/// recipient is a never-initialised `LazyRecipient`, so any outbound op
-/// publish becomes a local-only apply). Sufficient for governance handlers
-/// that just need the actor mailbox and the datastore.
-pub(crate) async fn boot_test_node() -> TestNode {
-    let mut pool = ArbiterPool::new().await.expect("arbiter pool");
-    let tmp = tempfile::tempdir().expect("tempdir");
-
-    let db = InMemoryDB::owned();
-    let store = Store::new(Arc::new(db));
-
-    let blob_store_config =
-        BlobStoreConfig::new(tmp.path().to_path_buf().try_into().expect("utf8 blob path"));
-    let file_system = FileSystem::new(&blob_store_config).await.expect("blob fs");
-    let blob_store = BlobStore::new(store.clone(), file_system);
-    let blob_manager = BlobManager::new(blob_store.clone());
-
-    let node_recipient = LazyRecipient::<NodeMessage>::new();
-    let context_recipient = LazyRecipient::new();
-    let network_recipient = LazyRecipient::new();
-
-    let network_client = NetworkClient::new(network_recipient.clone());
-    let (event_sender, _) = broadcast::channel(16);
-    let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(64);
-    let (ns_sync_tx, ns_sync_rx) = mpsc::channel(16);
-    let (ns_join_tx, ns_join_rx) = mpsc::channel(16);
-    let (open_subgroup_join_tx, open_subgroup_join_rx) = mpsc::channel(16);
-
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
-
-    let node_client = NodeClient::new(
-        store.clone(),
-        blob_manager.clone(),
-        network_client.clone(),
-        node_recipient.clone(),
-        event_sender,
-        sync_client,
-        String::new(),
-        None,
-    );
-
-    let context_client = ContextClient::new(
-        store.clone(),
-        node_client.clone(),
-        context_recipient.clone(),
-    );
-
-    let mut registry = Registry::default();
-    // These node-e2e fixtures assert the *legacy* cascade write-gate behaviour
-    // (an InProgress upgrade freezes state-op writes). PR-6b flipped the
-    // `migration_v2` default ON (no freeze + absorb-don't-drop), so pin the
-    // flag OFF here to keep exercising the legacy gate; the new default is
-    // covered by the absorb tests and the migration e2e scenarios.
-    let context_manager = ContextManager::new(
-        store.clone(),
-        node_client.clone(),
-        context_client.clone(),
-        Some(&mut registry),
-    )
-    .with_migration_v2(false);
-
-    let node_state = NodeState::new(false, NodeMode::Standard);
-
-    let mut sync_manager = SyncManager::new(
-        SyncConfig::default(),
-        node_client.clone(),
-        context_client.clone(),
-        network_client.clone(),
-        node_state.clone(),
-        ctx_sync_rx,
-        ns_sync_rx,
-        ns_join_rx,
-        open_subgroup_join_rx,
-    );
-
-    let state_delta_arbiter = pool.get().await.expect("state-delta arbiter");
-    let state_delta_tx = crate::state_delta_bridge::start_state_delta_actor(
-        &state_delta_arbiter,
-        crate::state_delta_bridge::STATE_DELTA_CHANNEL_CAPACITY,
-    );
-
-    let sync_session_arbiter = pool.get().await.expect("sync-session arbiter");
-    let (session_result_tx, session_result_rx) = tokio::sync::mpsc::unbounded_channel();
-    let sync_session_tx = crate::sync_session_bridge::start_sync_session_actor(
-        &sync_session_arbiter,
-        crate::sync_session_bridge::SYNC_SESSION_CHANNEL_CAPACITY,
-        SyncConfig::default().max_concurrent,
-        sync_manager.clone(),
-        SyncConfig::default().session_deadline,
-        Some(session_result_tx),
-        &mut registry,
-    );
-    sync_manager.set_session_handles(sync_session_tx.clone(), session_result_rx);
-
-    let node_manager = NodeManager::new(
-        blob_store,
-        sync_manager,
-        context_client.clone(),
-        node_client.clone(),
-        store.clone(),
-        node_state,
-        state_delta_tx,
-        sync_session_tx,
-        prometheus_client::metrics::counter::Counter::default(),
-    );
-
-    let arb = pool.get().await.expect("arbiter");
-    let _context_addr = Actor::start_in_arbiter(&arb, move |ctx| {
-        assert!(context_recipient.init(ctx), "context recipient");
-        context_manager
-    });
-
-    let arb2 = pool.get().await.expect("arbiter 2");
-    let node_addr = Actor::start_in_arbiter(&arb2, move |ctx| {
-        assert!(node_recipient.init(ctx), "node recipient");
-        node_manager
-    });
-
-    // Wire the network recipient to a stub so the governance publish path
-    // (mesh sampling + best-effort publish) resolves instead of deadlocking
-    // on an uninitialised `LazyRecipient`. See `StubNetworkActor`.
-    let arb3 = pool.get().await.expect("arbiter 3");
-    let _network_addr = Actor::start_in_arbiter(&arb3, move |ctx| {
-        assert!(network_recipient.init(ctx), "network recipient");
-        StubNetworkActor
-    });
-
-    sleep(Duration::from_millis(50)).await;
-
-    TestNode {
-        _pool: pool,
-        _tmp: tmp,
-        store,
-        context_client,
-        node_client,
-        node_addr,
     }
 }
 
@@ -3045,11 +2811,10 @@ async fn build_standalone_sync_manager() -> (SyncManager, Store, NodeState, Temp
         node_recipient,
         event_sender,
         sync_client,
-        String::new(),
         None,
     );
     let context_client = ContextClient::new(store.clone(), node_client.clone(), context_recipient);
-    let node_state = NodeState::new(false, NodeMode::Standard);
+    let node_state = NodeState::new();
 
     let sync_manager = SyncManager::new(
         SyncConfig::default(),
@@ -3141,5 +2906,135 @@ async fn member_peers_for_context_resolves_cached_members_end_to_end() {
             .member_peers_for_context(&unregistered)
             .is_empty(),
         "unregistered context yields no cached members"
+    );
+}
+
+/// End-to-end: a self-leave from a Restricted subgroup drives a REMAINING ADMIN's
+/// node all the way through a real key rotation.
+///
+/// Every other test of this feature stops at the store layer. This one is the only
+/// thing that exercises the chain that actually has to fire in production:
+///
+///   `MemberLeft` apply → `OpEvent::MemberRemoved` → the rotation listener →
+///   `ContextClient::rotate_group_key` → the actor handler → the publisher, which
+///   mints a fresh group key, installs it at a higher epoch, and applies
+///   `GroupKeyRotated` locally to discharge the pending row.
+///
+/// A wiring mistake anywhere in that chain means NO ROTATION EVER HAPPENS — the
+/// leaver silently keeps the subgroup key forever — while every unit test still
+/// passes. So the assertions here are the load-bearing ones: the debt is recorded,
+/// then paid, and the group's current key genuinely changes.
+///
+/// This node holds the namespace identity of the subgroup's admin, so it IS the
+/// eligible rotator. The leaver is a plain member with no node of its own.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn self_leave_drives_a_real_key_rotation_on_a_remaining_admin() {
+    use calimero_context::group_store::{
+        GroupKeyring, MembershipRepository, PendingRotationRepository,
+    };
+
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    let (admin_pk, _admin_sk) = provision_tee_owner_with_sk(&node, &ns_gid, &mut rng);
+
+    // A born-Restricted subgroup: it holds its OWN key, so a departure must rotate it.
+    // Going through the real create path also mints and stores that key locally, which
+    // is what makes this node the key-holder (and so a capable rotator).
+    let sub_gid = create_restricted_subgroup(&node, &ns_gid, &admin_pk, &mut rng).await;
+
+    // The member who will leave. A plain `Member`, so the leave is not blocked by the
+    // owner / last-admin guards.
+    let leaver_sk = PrivateKey::random(&mut rng);
+    let leaver_pk = leaver_sk.public_key();
+    MembershipRepository::new(&node.store)
+        .add_member(&sub_gid, &leaver_pk, GroupMemberRole::Member)
+        .expect("add the leaver to the subgroup");
+
+    let key_before = GroupKeyring::new(&node.store, sub_gid)
+        .load_current_key_record()
+        .expect("read the subgroup key")
+        .expect("the create path must have minted a subgroup key");
+
+    // The leaver self-leaves. This is the op a departing node publishes; applying it
+    // here is exactly what a remaining admin's node does on receipt.
+    let leave = SignedGroupOp::sign(
+        &leaver_sk,
+        sub_gid.to_bytes().into(),
+        vec![],
+        1,
+        GroupOp::MemberLeft {
+            member: leaver_pk,
+            expected_group_state_hash: [0u8; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+    )
+    .expect("sign MemberLeft");
+    apply_local_signed_group_op(&node.store, &leave).expect("apply MemberLeft");
+
+    // The membership row is gone immediately...
+    assert!(
+        MembershipRepository::new(&node.store)
+            .role_of(&sub_gid, &leaver_pk)
+            .expect("role_of")
+            .is_none(),
+        "the leaver's membership row must be removed by the leave itself"
+    );
+
+    // ...and the forward-secrecy debt is recorded, because the leaver could not have
+    // rotated for themselves.
+    assert!(
+        PendingRotationRepository::new(&node.store)
+            .is_pending(&sub_gid, &leaver_pk)
+            .expect("is_pending"),
+        "the leave must record a pending rotation — nothing else will ever prompt one"
+    );
+
+    // Now the part only this test covers: the listener fires on this node (a remaining
+    // admin), publishes the rotation, and the pending row is discharged. Nothing here
+    // is driven by the test — it is the production listener reacting to the op-event.
+    let store = node.store.clone();
+    let cleared = wait_until(|| {
+        // A read error counts as "still pending" so a transient store fault cannot be
+        // mistaken for a successful rotation.
+        !PendingRotationRepository::new(&store)
+            .is_pending(&sub_gid, &leaver_pk)
+            .unwrap_or(true)
+    })
+    .await;
+    assert!(
+        cleared,
+        "the rotation listener never discharged the pending rotation — the chain \
+         (op-event → listener → rotate_group_key handler → publisher) is broken, and the \
+         departed member would keep the subgroup key indefinitely"
+    );
+
+    // The rotation was real: a fresh key, at a strictly higher epoch, is now current.
+    let key_after = GroupKeyring::new(&node.store, sub_gid)
+        .load_current_key_record()
+        .expect("read the subgroup key")
+        .expect("a current key must still exist");
+
+    // `load_current_key_record` selects the highest-epoch key (ties broken by the larger
+    // key id), so a CHANGED current key is itself the proof that the freshly minted key
+    // outranks the one the leaver holds — from here on, this group encrypts under a key
+    // the departed member has never seen.
+    assert_ne!(
+        key_after.group_key, key_before.group_key,
+        "the group's current key must actually CHANGE — a discharged pending row with the \
+         same key would mean the bookkeeping ran but no forward secrecy was gained, and \
+         the group would go on encrypting under the key the leaver still holds"
+    );
+
+    // The OLD key is retained, not deleted: ops written before the rotation must stay
+    // decryptable. Forward secrecy is about what comes next, not about erasing the past.
+    assert!(
+        GroupKeyring::new(&node.store, sub_gid)
+            .load_key_by_id(&key_before.key_id)
+            .expect("load the pre-rotation key")
+            .is_some(),
+        "the pre-rotation key must be retained so already-written ops stay readable"
     );
 }

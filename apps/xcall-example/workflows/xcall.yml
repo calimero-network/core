@@ -55,7 +55,7 @@ steps:
     type: login
     node: xcall-authz-1
     username: dev
-    password: dev
+    password: dev-password
 
   # ---------------- setup: namespace N ⊃ {C1, C2}, namespace M ⊃ {C3} ----------------
   - name: Install app on Node 1

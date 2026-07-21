@@ -2,8 +2,8 @@ use calimero_server_primitives::admin::{
     CreateContextResponse, DeleteContextResponse, GenerateContextIdentityResponse,
     GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
     GetContextStorageResponse, GetContextUsersResponse, GetContextsResponse, GetPeersCountResponse,
-    GrantPermissionResponse, InviteSpecializedNodeResponse, RevokePermissionResponse,
-    SyncContextResponse, UpdateContextApplicationResponse,
+    GrantPermissionResponse, RevokePermissionResponse, SyncContextResponse,
+    UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::jsonrpc::Response;
 use comfy_table::{Cell, Color, Table};
@@ -174,21 +174,6 @@ impl Report for GrantPermissionResponse {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Permissions Granted").fg(Color::Green)]);
         let _ = table.add_row(vec!["Successfully granted permissions"]);
-        println!("{table}");
-    }
-}
-
-impl Report for InviteSpecializedNodeResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![
-            Cell::new("Specialized Node Invite Discovery Broadcast").fg(Color::Green),
-            Cell::new("Nonce").fg(Color::Blue),
-        ]);
-        let _ = table.add_row(vec![
-            "Successfully broadcast specialized node invite discovery",
-            &self.data.nonce,
-        ]);
         println!("{table}");
     }
 }

@@ -340,18 +340,17 @@ impl<'a> NamespaceGovernance<'a> {
                         // sync diverges in the kick/leave-rejoin e2e.
                         // Idempotent on a member who was never denied.
                         DenyListRepository::new(self.store).clear(&group_id_typed, member)?;
-                        // Local rejoiner recovery: restore any per-context
-                        // `ContextIdentity` rows that a prior `MemberLeft`
-                        // cascade deleted. The local-rejoiner anti-spoof
-                        // gate is enforced inside
-                        // `restore_member_context_identities` — on peers
-                        // whose namespace identity differs from `member`
-                        // it is a no-op. On first-time inheritance joiners
-                        // the row may not exist yet — it is written so the
-                        // joiner can author state-DAG ops as soon as
-                        // `KeyDelivery` populates `sender_key`. Idempotent:
-                        // an existing row from a prior `join_context` is
-                        // left untouched.
+                        // Local rejoiner recovery: re-create the per-context
+                        // `ContextIdentity` membership marker that a prior
+                        // `MemberLeft` cascade deleted. The marker is keyless —
+                        // the signer is resolved live from the node's namespace
+                        // identity — and the scope gate inside
+                        // `restore_member_context_identities` makes it a no-op on
+                        // peers whose namespace identity differs from `member`.
+                        // With the marker present the joiner can author state-DAG
+                        // ops as soon as `KeyDelivery` populates the group key
+                        // (GroupKeyring). Idempotent: an existing row is left
+                        // untouched.
                         restore_member_context_identities(self.store, &group_id_typed, member)?;
                     }
                     RootOp::GroupCreated { group_id, .. } => {
@@ -1289,6 +1288,64 @@ impl<'a> NamespaceGovernance<'a> {
 
         if attempted == 0 {
             record_namespace_retry_event("none");
+        }
+
+        // #2256/#3198: an `Open` subgroup encrypts its governance ops with the
+        // *namespace* key (see `GroupGovernancePublisher`), not its own. A
+        // root-admitted member (e.g. a `ReadOnlyTee`) that receives an
+        // Open-subgroup op BEFORE the namespace key was delivered parks it
+        // undecryptable. The per-group retry above only re-drives the group
+        // whose key just arrived — here the namespace root — so nothing
+        // re-drives the *subgroup's* own buffered ops. A `SubgroupVisibilitySet
+        // -> Open` that arrived early then stays applied-at-DAG-but-effect-
+        // skipped forever: the subgroup keeps reading `Restricted`, and
+        // inherited auto-follow refuses to join contexts registered under it.
+        //
+        // When the delivered/rotated key IS the namespace key, also re-drive
+        // every OTHER group in this namespace that now holds a decryptable
+        // buffered op — exactly the held-key buffered-op set the #2848 Part C
+        // startup sweep re-drives, applied here at delivery time so recovery
+        // does not have to wait for a node restart. Each re-drive runs through
+        // the normal signature/nonce/authorizer apply path (no security bypass),
+        // is idempotent (nonce-window deduped), and the set is self-limiting to
+        // groups with pending decryptable ops.
+        //
+        // This runs on EVERY namespace-key delivery/rotation, but once a
+        // subgroup's buffered ops have applied their nonces are windowed, so
+        // subsequent passes are cheap no-ops (`redrive_..._counted` returns 0) —
+        // bounded and idempotent, so no extra "already re-driven" filtering is
+        // needed here.
+        if group_id == self.namespace_id.to_bytes() {
+            match retry_service.groups_with_held_key_buffered_ops() {
+                Ok(groups) => {
+                    for sub in groups {
+                        if sub == group_id {
+                            continue;
+                        }
+                        // Intentional: unlike the namespace-root `retry` above
+                        // (which threads `retry_divergence` back to the caller),
+                        // this fan-out uses the counted re-drive and DROPS the
+                        // divergence signal. A re-driven Open-subgroup
+                        // MemberRemoved/MemberLeft divergence is instead surfaced
+                        // by that subgroup's own key-delivery path or the #2848
+                        // startup sweep — not reported from here.
+                        if let Err(e) = self.redrive_encrypted_ops_for_group_counted(sub) {
+                            tracing::warn!(
+                                group_id = %hex::encode(sub),
+                                error = %format!("{e:#}"),
+                                "failed to re-drive Open-subgroup buffered ops after \
+                                 namespace key delivery"
+                            );
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    namespace_id = %hex::encode(self.namespace_id.to_bytes()),
+                    error = %format!("{e:#}"),
+                    "failed to enumerate held-key buffered-op groups after namespace \
+                     key delivery"
+                ),
+            }
         }
 
         Ok(retry_divergence)

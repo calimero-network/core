@@ -622,12 +622,6 @@ fn event_type_name(event: &NetworkEvent) -> &'static str {
         NetworkEvent::BlobProvidersFound { .. } => "blob_providers_found",
         NetworkEvent::BlobDownloaded { .. } => "blob_downloaded",
         NetworkEvent::BlobDownloadFailed { .. } => "blob_download_failed",
-        NetworkEvent::SpecializedNodeVerificationRequest { .. } => {
-            "specialized_node_verification_request"
-        }
-        NetworkEvent::SpecializedNodeInvitationResponse { .. } => {
-            "specialized_node_invitation_response"
-        }
     }
 }
 

@@ -19,6 +19,7 @@ on:
       - "apps/components-demo/**"
       - "apps/blobs/**"
       - ".github/workflows/e2e-rust-apps.yml"
+      - ".github/workflows/build-merod-image.yml"
 
   pull_request:
     branches: [master]
@@ -30,6 +31,7 @@ on:
       - "apps/components-demo/**"
       - "apps/blobs/**"
       - ".github/workflows/e2e-rust-apps.yml"
+      - ".github/workflows/build-merod-image.yml"
 
   workflow_dispatch:
 
@@ -45,38 +47,13 @@ env:
 
 jobs:
   # ── Build merod Docker image (heaviest step) ──
+  # Reusable build-merod-image.yml, shared verbatim with app-migration-e2e.yml
+  # so the identical merod build lives in one place and both suites ride the
+  # same warm `e2e-rust-apps` cache. Uploads the `merod-image` artifact
+  # (zstd tarball) consumed by the jobs below.
   build-image:
     name: Build Image
-    runs-on: ubuntu-24.04-8cpu
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
-        with:
-          toolchain: stable
-          shared-key: e2e-rust-apps
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-
-      - name: Build local merod image
-        uses: ./.github/actions/build-local-merod
-        env:
-          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Save and upload Docker image
-        run: docker save merod:local | zstd -T0 -3 -o /tmp/merod-local.tar.zst
-
-      - name: Upload Docker image
-        uses: actions/upload-artifact@v7
-        with:
-          name: merod-image
-          path: /tmp/merod-local.tar.zst
-          retention-days: 1
-          compression-level: 0
+    uses: ./.github/workflows/build-merod-image.yml
 
   # ── Auth seam: client-token e2e over real HTTP ──
   # Proves a client token minted the way the auth frontend mints it can call
@@ -117,6 +94,19 @@ jobs:
         uses: ./.github/actions/setup-merobox
 
       - name: Run auth-seam e2e (merobox, embedded auth)
+        env:
+          # Admin credentials minted AT INIT (the login path never mints
+          # keys; there is no first-login bootstrap secret anymore).
+          # Binary-mode merobox spawns `merod init`/`run` with os.environ
+          # inherited, and script steps (target: local) inherit it too — so
+          # this single export both provisions the node's admin account AND
+          # tells scripts/e2e-auth-seam.sh which credentials log in.
+          # CI-only test values for an ephemeral localhost node; the
+          # password is consumed at init — nothing lands in config.toml.
+          MERO_AUTH_ADMIN_USER: dev
+          MERO_AUTH_ADMIN_PASSWORD: dev-password
+          MERO_E2E_USER: dev
+          MERO_E2E_PASS: dev-password
         run: |
           merobox bootstrap run workflows/auth-seam.yml \
             --no-docker --binary-path ./merod --auth-mode embedded
@@ -463,6 +453,16 @@ jobs:
         uses: ./.github/actions/setup-merobox
 
       - name: Run ${{ matrix.workflow }}
+        env:
+          # Admin credentials for embedded-auth scenarios, matching the
+          # dev/dev-password `login` steps in the workflow YAMLs. The login
+          # path never mints keys (no first-login bootstrap secret anymore):
+          # merobox ≥0.6.43 forwards these vars into node containers, where
+          # `merod init` mints the admin root key before the node listens.
+          # CI-only test values for ephemeral containers; the password is
+          # consumed at init — nothing lands in any image or shipped config.
+          MERO_AUTH_ADMIN_USER: dev
+          MERO_AUTH_ADMIN_PASSWORD: dev-password
         run: |
           # Phase 11.3 (#2237): single attempt, fail loud. The retry loop
           # + `merobox nuke --force` between attempts existed to mask

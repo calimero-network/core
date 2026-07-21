@@ -93,6 +93,25 @@ pub enum MembershipError {
     #[error("member {member} not found in group {group_id}")]
     MemberNotFound { group_id: String, member: String },
 
+    /// An admin removed this identity from the group, and only an admin
+    /// re-adding them (`MemberAdded`) lifts that. No invitation readmits a
+    /// removed identity, however freshly it was issued — otherwise a kick from
+    /// a group with a live open invitation would mean nothing.
+    #[error("identity {identity} was removed from group {group_id} and cannot rejoin; an admin must re-add them")]
+    RemovedFromGroup { group_id: String, identity: String },
+
+    /// The identity previously left this group and is presenting an invitation
+    /// they have already used. Leaving does not ban them, but it does spend the
+    /// invitation they joined with: they need a freshly issued one.
+    #[error("identity {identity} has already used this invitation to join group {group_id}; a new invitation is required")]
+    InvitationAlreadyConsumed { group_id: String, identity: String },
+
+    /// The identity exited this group, so they no longer flow back in through
+    /// Open-subgroup inheritance. Re-entry has to be an explicit act — a fresh
+    /// invitation, or an admin re-adding them.
+    #[error("identity {identity} exited group {group_id} and cannot re-enter by inheritance; they must be re-invited or re-added")]
+    ReentryBlocked { group_id: String, identity: String },
+
     /// TEE attestation submitted by a non-member. The verifier must
     /// itself be a member of the group whose admission policy it
     /// validates.
@@ -499,6 +518,14 @@ pub enum MemberJoinedOpenRejection {
     #[error("signer {0} is a direct member; use MemberJoined or add_group_members instead")]
     AlreadyDirectMember(String),
 
+    /// Signer previously exited this group, so they no longer flow back in by
+    /// inheritance. Inheritance is passive and carries no fresh authorization,
+    /// so any prior exit blocks it — a voluntary leaver included, not just a
+    /// removed member. Re-entry has to be an explicit act: a fresh invitation,
+    /// or an admin re-adding them.
+    #[error("signer {member} exited group {gid} and cannot re-enter by inheritance; they must be re-invited or re-added")]
+    ReentryBlocked { member: String, gid: String },
+
     /// Signer has no inheritance path to the target group — Open
     /// inheritance check failed.
     #[error("signer {member} has no membership path to {gid}")]
@@ -528,6 +555,29 @@ pub enum ApplyError {
     /// remote-only op delivered to the local-apply handler).
     #[error("unsupported group op variant")]
     UnsupportedOp,
+
+    /// The apply gate could not decide the signer's authority AT THE OP'S CUT: the
+    /// op cites a real causal cut, but this node has not folded that cut's ancestry,
+    /// so the projection has no authoritative verdict.
+    ///
+    /// This is **not** a rejection — it is "not yet decidable here". The distinction
+    /// is the whole point. Guessing from the live rows instead would make the verdict
+    /// a function of this replica's fold progress: a replica that had folded a
+    /// concurrent capability revoke would reject an op its peers applied, and because
+    /// the reject path never advances the DAG head, everything descending from that op
+    /// would stall on that replica alone. Permanent, silent divergence.
+    ///
+    /// Treated like any other apply error by the DAG: the head is not advanced and the
+    /// nonce is not burned, so the op is re-fetched and re-applied once the missing
+    /// ancestry arrives. A node that keeps hitting this is missing op-log history it
+    /// cannot reconstruct — that is a loud, recoverable stall, which is strictly
+    /// better than a quiet divergence.
+    #[error(
+        "authority undecidable for signer {signer} in group {group_id}: this node has not \
+         folded the ancestry of the op's causal cut, so the op cannot be authorized here \
+         yet — retrying once the missing history arrives"
+    )]
+    AuthorityUndecidable { group_id: String, signer: String },
 
     /// Governance nonce counter overflowed `u64`. Practically
     /// unreachable; documented for completeness.

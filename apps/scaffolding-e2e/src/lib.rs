@@ -26,8 +26,8 @@ use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env, PublicKey};
 use calimero_storage::collections::{
     AuthoredMap, AuthoredVector, Counter, FrozenStorage, GCounter, LwwRegister, Mergeable,
-    ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet, UnorderedMap, UnorderedSet,
-    UserStorage, Vector,
+    PNCounter, ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet, UnorderedMap,
+    UnorderedSet, UserStorage, Vector,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -121,7 +121,7 @@ pub struct E2eKvStore {
     crdt_counters: UnorderedMap<String, Counter>,
     /// Map of PN-Counters (supports decrement, concurrent inc/dec should merge correctly)
     /// Counter<true> = PNCounter (allows decrement)
-    crdt_pn_counters: UnorderedMap<String, Counter<true>>,
+    crdt_pn_counters: UnorderedMap<String, PNCounter>,
     /// Map of LWW registers (latest timestamp wins)
     crdt_registers: UnorderedMap<String, LwwRegister<String>>,
     /// Nested maps (field-level merge)
@@ -144,7 +144,7 @@ pub struct E2eKvStore {
     /// Collaborative text document
     rga_document: ReplicatedGrowableArray,
     /// Edit count for document (G-Counter)
-    rga_edit_count: Counter,
+    rga_edit_count: GCounter,
     /// Document metadata (title, owner)
     rga_metadata: UnorderedMap<String, LwwRegister<String>>,
 

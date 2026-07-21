@@ -272,6 +272,14 @@ fn hlc_zero_golden_bytes_are_self_consistent() {
 }
 
 /// GroupOp ordinal 25 — CascadeUpgrade (all zero fields; HybridTimestamp::zero() via GOLDEN_HLC_ZERO)
+/// `GroupKeyRotated { departed }` — appended at the END of `GroupOp`, so every
+/// pre-existing ordinal is preserved. Discriminant 26 + a 32-byte `departed` key.
+const GOLDEN_GROUP_OP_GROUP_KEY_ROTATED: &[u8] = &[
+    26, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // departed
+];
+
 const GOLDEN_GROUP_OP_CASCADE_UPGRADE: &[u8] = &[
     25, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -433,6 +441,11 @@ fn group_op_discriminants_are_golden() {
         GOLDEN_GROUP_OP_CASCADE_UPGRADE,
         GroupOp::CascadeUpgrade { .. },
         25
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_GROUP_KEY_ROTATED,
+        GroupOp::GroupKeyRotated { .. },
+        26
     );
 
     assert!(

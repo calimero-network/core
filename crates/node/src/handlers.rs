@@ -4,9 +4,6 @@
 //! **Structure**: Each event type has its own focused file (SRP).
 
 use crate::migration_status::DEFAULT_HEARTBEAT_TTL;
-use crate::specialized_node_invite_state::{
-    PendingSpecializedNodeInvite, SpecializedNodeInviteAction,
-};
 use actix::Handler;
 use calimero_node_primitives::messages::NodeMessage;
 use calimero_utils_actix::adapters::ActorExt;
@@ -18,7 +15,6 @@ use crate::NodeManager;
 mod blob_protocol;
 mod get_blob_bytes;
 mod network_event;
-mod specialized_node_invite;
 pub(crate) mod state_delta;
 mod stream_opened;
 pub(crate) mod tee_attestation_admission;
@@ -30,32 +26,6 @@ impl Handler<NodeMessage> for NodeManager {
         match msg {
             NodeMessage::GetBlobBytes { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
-            }
-            NodeMessage::RegisterPendingSpecializedNodeInvite { request } => {
-                let action = SpecializedNodeInviteAction::HandleContextInvite {
-                    context_id: request.context_id,
-                    inviter_id: request.inviter_id,
-                };
-                self.state
-                    .pending_specialized_node_invites_handle()
-                    .insert(request.nonce, PendingSpecializedNodeInvite::new(action));
-
-                debug!(
-                    context_id = %request.context_id,
-                    inviter_id = %request.inviter_id,
-                    nonce = %hex::encode(request.nonce),
-                    "Registered pending specialized node invite"
-                );
-            }
-            NodeMessage::RemovePendingSpecializedNodeInvite { request } => {
-                self.state
-                    .pending_specialized_node_invites_handle()
-                    .remove(&request.nonce);
-
-                debug!(
-                    nonce = %hex::encode(request.nonce),
-                    "Removed pending specialized node invite"
-                );
             }
             NodeMessage::GetSyncStatus {
                 context_id,
@@ -127,6 +97,21 @@ impl Handler<NodeMessage> for NodeManager {
                 // an on-change heartbeat and seeds the namespace into the
                 // emitter so its periodic keep-alive tick goes live.
                 self.notify_migration_facts(namespace_id);
+            }
+            NodeMessage::ForwardNamespaceSubscribed { namespace_id } => {
+                // Seed the readiness FSM's `subscribed_at` at subscribe time.
+                // Same mount-window caveat as `ForwardNamespaceOpApplied`: a
+                // signal dropped before the actor is wired is harmless — the
+                // first applied op seeds the entry (just later).
+                if let Some(addr) = &self.readiness_addr {
+                    addr.do_send(crate::readiness::NamespaceSubscribed { namespace_id });
+                } else {
+                    debug!(
+                        namespace_id = %hex::encode(namespace_id),
+                        "ForwardNamespaceSubscribed received before ReadinessManager mounted; \
+                         dropping (first applied op will seed the entry)"
+                    );
+                }
             }
             NodeMessage::RefreshMigrationFacts { namespace_id } => {
                 // Edge-trigger a fact recompute + emit-on-change for this

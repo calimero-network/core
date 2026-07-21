@@ -5,8 +5,7 @@
 //! join ops on behalf of this node — subject to the member having the
 //! relevant [`AutoFollowFlags`] set for the group in question.
 //!
-//! See `architecture/auto-follow.html` for the full
-//! architecture. This module implements the context side of Phase 3:
+//! This module implements the context side of Phase 3:
 //!
 //! - `OpEvent::ContextRegistered { group, context }` — if this node is
 //!   a member of `group` with `auto_follow.contexts = true`, emit a
@@ -327,10 +326,81 @@ async fn run(
                     });
                 }
             }
+            // TODO(#3198 follow-up): only the `open: true` transition is handled.
+            // An Open->Restricted flip-back (`open: false`) is ignored, which
+            // leaves an inherited-only ReadOnlyTee with neither inherited access
+            // (the wall now hides the subgroup) nor a direct admit row — it
+            // silently stops following with no re-admit path. Tracked separately;
+            // needs a re-admit-or-leave decision on flip-back.
+            OpEvent::SubgroupVisibilityChanged {
+                group_id,
+                open: true,
+            } => {
+                let store = store.clone();
+                let context_client = context_client.clone();
+                let limiter = Arc::clone(&limiter);
+                let _ = tasks.spawn(async move {
+                    handle_subgroup_opened(&store, &context_client, &limiter, group_id).await;
+                });
+            }
             // Subgroup auto-follow (SubgroupNested) and other variants
-            // are handled in a separate pass — see module docs.
+            // (including a Subgroup flip to `Restricted`) are handled in a
+            // separate pass — see module docs.
             _ => {}
         }
+    }
+}
+
+/// A subgroup just flipped to `Open`. A root-admitted member (e.g. a
+/// `ReadOnlyTee`) inherits membership into `Open` subgroups, so contexts
+/// registered under it whose `ContextRegistered` auto-follow decision ran while
+/// the subgroup still read `Restricted` were never joined. Re-run the follow
+/// decision for every context in the now-`Open` subgroup.
+///
+/// This is the event-driven complement to the `SubgroupVisibilitySet` re-drive
+/// on the governance side: the re-drive makes the subgroup read `Open` locally,
+/// and this makes auto-follow act on it without waiting for a fresh
+/// `ContextRegistered` (which, for contexts registered before the flip applied,
+/// will never come again).
+async fn handle_subgroup_opened(
+    store: &Store,
+    context_client: &ContextClient,
+    limiter: &Arc<RateLimiter>,
+    group_id: [u8; 32],
+) {
+    if !should_follow_on_subgroup_open(store, group_id) {
+        return;
+    }
+    // `should_follow_on_subgroup_open` already confirmed a namespace identity.
+    let Some(self_pk) = self_pk_for_group(store, &ContextGroupId::from(group_id)) else {
+        return;
+    };
+    info!(
+        group_id = %hex::encode(group_id),
+        "auto-follow: subgroup flipped to Open — re-evaluating its contexts for inherited join"
+    );
+    // Reuse the flag-enabled backfill path: enumerate the subgroup's contexts
+    // and (idempotently) join each. `join_context` is inheritance-aware, so a
+    // non-inherited member is refused there and an already-joined context is a
+    // no-op.
+    handle_auto_follow_enabled(store, context_client, limiter, group_id, self_pk).await;
+}
+
+/// Whether a `SubgroupVisibilityChanged { open: true }` on `group_id` should
+/// make this node re-evaluate the subgroup's contexts for an inherited join.
+///
+/// `true` iff this node holds a namespace identity for the subgroup AND
+/// auto-follows its contexts. `should_auto_follow_contexts` is inheritance-aware:
+/// for a member with NO direct row (the root-admitted `ReadOnlyTee`) it resolves
+/// the Open-chain anchor row's `auto_follow.contexts` flag — which only yields
+/// `true` once the subgroup actually reads `Open` (a `Restricted` subgroup walls
+/// off inheritance). Extracted from [`handle_subgroup_opened`] so this gate is
+/// unit-testable without a live `ContextClient`/rate-limiter/broadcast bus.
+pub(crate) fn should_follow_on_subgroup_open(store: &Store, group_id: [u8; 32]) -> bool {
+    let gid = ContextGroupId::from(group_id);
+    match self_pk_for_group(store, &gid) {
+        Some(self_pk) => should_auto_follow_contexts(store, &gid, &self_pk),
+        None => false,
     }
 }
 
@@ -736,8 +806,9 @@ mod tests {
         use rand::rngs::OsRng;
 
         use super::super::{
-            decide_on_auto_follow_enabled, decide_on_context_registered, AutoFollowEnabledDecision,
-            ContextRegisteredDecision, BACKFILL_LIMIT,
+            decide_on_auto_follow_enabled, decide_on_context_registered,
+            should_follow_on_subgroup_open, AutoFollowEnabledDecision, ContextRegisteredDecision,
+            BACKFILL_LIMIT,
         };
         use calimero_governance_store::{
             register_context_in_group, CapabilitiesRepository, MembershipRepository,
@@ -992,6 +1063,146 @@ mod tests {
             assert_eq!(
                 decide_on_context_registered(&store, sub_gid.to_bytes(), &context_id),
                 ContextRegisteredDecision::NotAutoFollowing,
+            );
+        }
+
+        // ----- should_follow_on_subgroup_open (#3198 secondary path) ------
+        //
+        // The `SubgroupVisibilitySet -> Open` re-trigger: a flip that applies
+        // AFTER a context was registered must itself re-evaluate the subgroup's
+        // contexts for an inherited join (the context's own `ContextRegistered`
+        // follow decision already ran while the subgroup read `Restricted`).
+        // These pin the gate `handle_subgroup_opened` applies before it
+        // enumerates+joins.
+
+        /// Seed a root-admitted inherited member (root row with
+        /// `CAN_JOIN_OPEN_SUBGROUPS` + `auto_follow.contexts = true`, no direct
+        /// subgroup row) whose subgroup starts `Restricted`. Returns the store,
+        /// the root gid, the subgroup gid, and self pk.
+        fn seed_inherited_member_with_restricted_subgroup(
+            rng: &mut OsRng,
+            root_gid: ContextGroupId,
+            sub_gid: ContextGroupId,
+        ) -> (Store, PublicKey) {
+            let (store, _sk, pk) = seed_self_member(rng, root_gid);
+            CapabilitiesRepository::new(&store)
+                .set_member_capability(
+                    &root_gid,
+                    &pk,
+                    MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+                )
+                .expect("set_member_capability");
+            MembershipRepository::new(&store)
+                .set_auto_follow(
+                    &root_gid,
+                    &pk,
+                    AutoFollowFlags {
+                        contexts: true,
+                        subgroups: false,
+                    },
+                )
+                .expect("set_member_auto_follow");
+            // Subgroup nested under root, meta present, but visibility
+            // Restricted (the `GroupCreated` birth default — NOT flipped).
+            MetaRepository::new(&store)
+                .save(&sub_gid, &sample_meta(pk))
+                .expect("save_subgroup_meta");
+            NamespaceRepository::new(&store)
+                .nest(&root_gid, &sub_gid)
+                .expect("nest subgroup under root");
+            CapabilitiesRepository::new(&store)
+                .set_subgroup_visibility(&sub_gid, VisibilityMode::Restricted)
+                .expect("set subgroup Restricted");
+            (store, pk)
+        }
+
+        /// A `Restricted` subgroup walls off inheritance, so an inherited-only
+        /// member must NOT be triggered to follow — even though the root anchor
+        /// grants `CAN_JOIN_OPEN_SUBGROUPS` + `auto_follow.contexts`.
+        #[test]
+        fn subgroup_open_flip_no_follow_while_restricted() {
+            let mut rng = OsRng;
+            let root_gid = ContextGroupId::from([0xF1u8; 32]);
+            let sub_gid = ContextGroupId::from([0xF2u8; 32]);
+            let (store, _pk) =
+                seed_inherited_member_with_restricted_subgroup(&mut rng, root_gid, sub_gid);
+
+            assert!(
+                !should_follow_on_subgroup_open(&store, sub_gid.to_bytes()),
+                "a Restricted subgroup must not trigger inherited follow"
+            );
+        }
+
+        /// After the flip to `Open`, the SAME inherited-only member IS triggered,
+        /// and the subgroup's already-registered context is the join target
+        /// (`decide_on_auto_follow_enabled` enumerates it). This is the durable
+        /// signal `handle_subgroup_opened` acts on.
+        #[test]
+        fn subgroup_open_flip_triggers_follow_for_inherited_member() {
+            let mut rng = OsRng;
+            let root_gid = ContextGroupId::from([0xF3u8; 32]);
+            let sub_gid = ContextGroupId::from([0xF4u8; 32]);
+            let (store, self_pk) =
+                seed_inherited_member_with_restricted_subgroup(&mut rng, root_gid, sub_gid);
+
+            // A context is registered under the subgroup BEFORE the flip.
+            let context_id = ContextId::from([0xF5u8; 32]);
+            register_context_in_group(&store, &sub_gid, &context_id)
+                .expect("register context -> subgroup");
+
+            // Pre-flip: the gate is closed (Restricted walls off inheritance).
+            assert!(
+                !should_follow_on_subgroup_open(&store, sub_gid.to_bytes()),
+                "precondition: no follow while the subgroup is Restricted"
+            );
+
+            // Flip to Open — exactly what `SubgroupVisibilitySet` apply does.
+            CapabilitiesRepository::new(&store)
+                .set_subgroup_visibility(&sub_gid, VisibilityMode::Open)
+                .expect("flip subgroup Open");
+
+            assert!(
+                should_follow_on_subgroup_open(&store, sub_gid.to_bytes()),
+                "the flip to Open must open the inherited-follow gate"
+            );
+            // And the previously-registered context is the enumerated join target.
+            assert_eq!(
+                decide_on_auto_follow_enabled(&store, sub_gid.to_bytes(), self_pk),
+                AutoFollowEnabledDecision::Backfill {
+                    contexts: vec![context_id],
+                    truncated: false,
+                },
+                "the flip must surface the subgroup's existing context for an inherited join"
+            );
+        }
+
+        /// Even Open, an anchor with `auto_follow.contexts = false` must NOT be
+        /// triggered — the flip respects the member's opt-out.
+        #[test]
+        fn subgroup_open_flip_no_follow_when_anchor_flag_false() {
+            let mut rng = OsRng;
+            let root_gid = ContextGroupId::from([0xF6u8; 32]);
+            let sub_gid = ContextGroupId::from([0xF7u8; 32]);
+            let (store, pk) =
+                seed_inherited_member_with_restricted_subgroup(&mut rng, root_gid, sub_gid);
+            // Opt out on the anchor row.
+            MembershipRepository::new(&store)
+                .set_auto_follow(
+                    &root_gid,
+                    &pk,
+                    AutoFollowFlags {
+                        contexts: false,
+                        subgroups: false,
+                    },
+                )
+                .expect("set_member_auto_follow");
+            CapabilitiesRepository::new(&store)
+                .set_subgroup_visibility(&sub_gid, VisibilityMode::Open)
+                .expect("flip subgroup Open");
+
+            assert!(
+                !should_follow_on_subgroup_open(&store, sub_gid.to_bytes()),
+                "an anchor opt-out (auto_follow.contexts = false) must suppress the flip trigger"
             );
         }
 

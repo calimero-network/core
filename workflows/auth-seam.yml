@@ -29,9 +29,14 @@ nodes:
   base_rpc_port: 4001
 
 steps:
-  # No `login` step needed: the seam script performs the bootstrap login
-  # itself (first login on a fresh embedded-auth node creates the root
-  # key), and node teardown is process-level, not HTTP.
+  # No `login` step needed: the seam script performs the root login itself,
+  # and node teardown is process-level, not HTTP.
+  #
+  # The admin root key is minted at `merod init` from MERO_AUTH_ADMIN_USER /
+  # MERO_AUTH_ADMIN_PASSWORD (the login path never mints keys). Binary-mode
+  # merobox starts merod with the inherited environment, and local script
+  # steps inherit it too (the script logs in with MERO_E2E_USER /
+  # MERO_E2E_PASS, which must match) — one export, both ends.
   - name: "Run the client-token seam assertions"
     type: script
     script: scripts/e2e-auth-seam.sh
@@ -41,5 +46,7 @@ stop_all_nodes: true
 nuke_on_end: true
 
 # How to run (from the repo root):
+#   export MERO_AUTH_ADMIN_USER=dev MERO_AUTH_ADMIN_PASSWORD=dev-password
+#   export MERO_E2E_USER=dev MERO_E2E_PASS=dev-password
 #   merobox bootstrap run workflows/auth-seam.yml --no-docker \
 #     --binary-path ./target/debug/merod

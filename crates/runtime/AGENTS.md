@@ -7,7 +7,7 @@ WebAssembly runtime using wasmer to compile and execute Calimero applications.
 - **Crate**: `calimero-runtime`
 - **Entry**: `src/lib.rs`
 - **Framework**: wasmer (WASM), tokio (async)
-- **Related Docs**: [README.md](README.md) (architecture), [HOST_FUNCTIONS.md](HOST_FUNCTIONS.md) (API reference)
+- **Related Docs**: [HOST_FUNCTIONS.md](HOST_FUNCTIONS.md) (API reference), [MEMORY_MODEL.md](MEMORY_MODEL.md) (memory model)
 
 ## Quick Understanding
 
@@ -90,15 +90,12 @@ src/
 ├── logic/
 │   ├── imports.rs            # imports! macro registering all host functions
 │   ├── registers.rs          # Register management
-│   ├── traits.rs             # ContextHost trait
 │   ├── errors.rs             # VMLogicError
 │   └── host_functions/       # Host function implementations
 │       ├── storage.rs        # storage_read/write/remove, private_storage_*
-│       ├── context.rs        # context_create/delete/add_member/etc
 │       ├── blobs.rs          # blob_create/write/close/open/read
 │       ├── utility.rs        # fetch, random_bytes, time_now, ed25519_verify
 │       ├── system.rs         # panic, registers, input/output, emit, commit
-│       ├── governance.rs     # send_proposal, approve_proposal
 │       └── js_collections.rs # js_crdt_* functions for JS SDK
 └── tests/
     └── errors.rs             # Error handling tests
@@ -151,7 +148,7 @@ impl VMHostFunctions<'_> {
 let context = VMContext::new(input, context_id, executor_id);
 
 // 2. Create logic with storage and limits
-let mut logic = VMLogic::new(storage, private_storage, context, limits, node_client, context_host);
+let mut logic = VMLogic::new(storage, private_storage, context, limits, node_client);
 
 // 3. Set up memory (from Wasmer instance)
 logic.with_memory(memory);
@@ -192,9 +189,6 @@ rg "^            fn [a-z_]+\(" src/logic/imports.rs
 # Storage functions
 rg "fn (storage|private_storage)_" src/logic/imports.rs
 
-# Context functions
-rg "fn context_" src/logic/imports.rs
-
 # JS CRDT functions
 rg "fn js_crdt_" src/logic/imports.rs
 ```
@@ -207,7 +201,6 @@ rg "pub fn " src/logic/host_functions/
 
 # Specific category implementations
 rg "pub fn storage_" src/logic/host_functions/storage.rs
-rg "pub fn context_" src/logic/host_functions/context.rs
 rg "pub fn blob_" src/logic/host_functions/blobs.rs
 
 # Memory access patterns

@@ -25,13 +25,13 @@ steps:
     type: login
     node: new-calimero-node-1
     username: dev
-    password: dev
+    password: dev-password
 
   - name: Login on new-calimero-node-2
     type: login
     node: new-calimero-node-2
     username: dev
-    password: dev
+    password: dev-password
 
   # Node 1 installs; the installer is config owner, sole settings writer, admin.
   - name: Install Application on Node 1

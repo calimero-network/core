@@ -329,7 +329,6 @@ where
     /// Local-only opt-out from a single context. Stops sync and disarms
     /// auto-follow on this node only — peers do not observe the leave.
     /// Reversal: call [`Self::join_context`] which clears the marker.
-    /// See `architecture/membership-and-leave.html` § 4 for semantics.
     pub async fn leave_context(&self, context_id: &str) -> Result<LeaveContextApiResponse> {
         let response = self
             .connection
@@ -342,8 +341,7 @@ where
     /// `MemberLeft` op that all peers apply, deleting the leaver's
     /// direct membership row. Subject to apply-side validation:
     /// signer must be a direct member, must not be Owner, and must
-    /// not be the only admin (`LastAdmin` rejection). See
-    /// `architecture/membership-and-leave.html` § 5.
+    /// not be the only admin (`LastAdmin` rejection).
     pub async fn leave_group(&self, group_id: &str) -> Result<LeaveGroupApiResponse> {
         let response = self
             .connection
@@ -356,7 +354,7 @@ where
     /// every descendant where the leaver has a direct row; multi-scope
     /// owner + last-admin checks run upfront. Rejects with
     /// `MustTransferOwnership` if the leaver owns any group in the
-    /// subtree. See `architecture/membership-and-leave.html` § 6.
+    /// subtree.
     pub async fn leave_namespace(&self, namespace_id: &str) -> Result<LeaveNamespaceApiResponse> {
         let response = self
             .connection

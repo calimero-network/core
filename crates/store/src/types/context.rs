@@ -161,7 +161,6 @@ impl AsRef<[u8]> for ContextPrivateState<'_> {
 )]
 pub struct ContextIdentity {
     pub private_key: Option<[u8; 32]>,
-    pub sender_key: Option<[u8; 32]>,
 }
 
 impl PredefinedEntry for key::ContextIdentity {

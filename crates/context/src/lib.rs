@@ -39,6 +39,7 @@ pub mod handlers;
 pub mod hlc_fence;
 mod lifecycle;
 pub mod migration_plan;
+pub mod rotation_listener;
 pub mod scope_projection;
 pub mod self_purge;
 pub mod tee_subgroup_admit;
@@ -109,6 +110,8 @@ pub mod group_store {
         NamespaceMembershipService,
         NamespaceOpLogService,
         NamespaceRepository,
+        PendingRotationRepository,
+        ReentryRepository,
         SigningKeysError,
         SigningKeysRepository,
         UpgradeLadderRepository,
@@ -807,7 +810,7 @@ impl Actor for ContextManager {
         // the recovered context is reliably replicated rather than dropped by
         // the best-effort broadcast. Do not reorder these two spawns.
         auto_follow::spawn(self.datastore.clone(), self.context_client.clone());
-        // Self-purge handler (see docs/adr/0002-fleet-tee-leave-protocol.md) — reacts
+        // Self-purge handler — reacts
         // to `OpEvent::TeeMemberRemoved` (paired follow-up emitted ONLY when the
         // removed member's prior role was `ReadOnlyTee`) for our own identity and
         // drops the local rows (signing keys, gov ops, namespace identity,
@@ -831,6 +834,15 @@ impl Actor for ContextManager {
         // guarantees we (re)bind to this instance's current store/client.
         tee_subgroup_admit::shutdown();
         tee_subgroup_admit::spawn(self.datastore.clone(), self.context_client.clone());
+
+        // Forward secrecy on self-leave. A leaver cannot rotate the key they are being
+        // cut off from, so `MemberLeft` records the debt and the REMAINING admins pay
+        // it. This listener is that half: it reacts to departures and also drains the
+        // persisted worklist on startup, which is the only thing that covers an admin
+        // that was offline when the leave applied. Same shutdown-then-spawn rebinding
+        // rationale as the TEE-admit listener above.
+        rotation_listener::shutdown();
+        rotation_listener::spawn(self.datastore.clone(), self.context_client.clone());
     }
 }
 

@@ -3,13 +3,16 @@
 
 use super::super::super::verify_post_apply_state_hashes;
 use super::context::GroupApplyCtx;
+use crate::pending_rotation::group_rotates_on_departure;
 use crate::{
     cascade_remove_member_from_group_tree, DenyListRepository, MembershipError, MembershipPolicy,
-    MembershipRepository, MetaRepository, NamespaceRepository,
+    MembershipRepository, MetaRepository, NamespaceRepository, PendingRotationRepository,
+    ReentryRepository,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
+use calimero_store::key::GroupExitReason;
 use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(
@@ -93,14 +96,52 @@ pub(crate) fn apply(
             }
         }
 
-        for (sub, role) in &direct_descendants {
+        for sub in &descendants {
+            // Defensive: `collect_descendants` excludes the root, but were it
+            // ever to return `group_id` itself, the direct-row teardown below
+            // would mutate the ROOT's `GroupMember` rows before
+            // `verify_post_apply_state_hashes` runs and diverge the signed root
+            // hash on every honest receiver. The single intended root teardown
+            // happens after this block. Mirrors `member_removed.rs`.
+            if *sub == *group_id {
+                continue;
+            }
+            // `ContextIdentity` hygiene runs for EVERY descendant — including
+            // Open subgroups the leaver only *inherited* into (no direct
+            // `GroupMember` row) yet auto-followed contexts of. Skipping those
+            // would strand the leaver's per-context membership markers there
+            // (#2816 Part 1 — the symmetric leak the eviction path closed in
+            // #2809). `cascade_remove_member` is an idempotent no-op where the
+            // leaver holds no rows and touches only `ContextIdentity` (disjoint
+            // from `GroupMember`), so it is group-state-hash-neutral.
             cascade_remove_member_from_group_tree(store, sub, member)?;
+            // Membership teardown + deny-list + re-entry block + role-scoped
+            // events fire only where the leaver holds a DIRECT row (gathered
+            // with its owner / last-admin checks above). Inherited rows have no
+            // per-subgroup `GroupMember` to remove and never emitted a join
+            // event; deny-listing them would strand a stale entry with no
+            // subgroup-level re-join op to clear it (re-inheritance is
+            // re-evaluated from the ancestor row). See `member_removed.rs` for
+            // the full rationale.
+            let Some(role) = direct_descendants
+                .iter()
+                .find_map(|(g, r)| (*g == *sub).then_some(r))
+            else {
+                continue;
+            };
             MembershipRepository::new(store).remove_member(sub, member)?;
-            // Self-leave cascade: deny-list every descendant
-            // group where the leaver had a row, so their
-            // state-delta traffic on those topics is dropped
-            // until they re-join.
             DenyListRepository::new(store).mark(sub, member)?;
+            // ...and record the forward-secrecy debt for each descendant that
+            // encrypts under its own key. See the rotation note below.
+            if group_rotates_on_departure(store, sub)? {
+                PendingRotationRepository::new(store).mark(sub, member)?;
+            }
+            // Block re-entry into each descendant they left. A `Left` block, not
+            // `Removed`: walking out is not a kick, so a freshly issued
+            // invitation readmits them. What it does stop is passively flowing
+            // back in — by re-inheriting an Open subgroup, or by replaying the
+            // invitation they joined with.
+            ReentryRepository::new(store).block(sub, member, GroupExitReason::Left)?;
             ctx.queue_event(crate::op_events::OpEvent::MemberRemoved {
                 group_id: sub.to_bytes(),
                 member: *member,
@@ -119,19 +160,56 @@ pub(crate) fn apply(
     // Deny-list the leaver on this group too. See
     // `MemberRemoved` for the same rationale.
     DenyListRepository::new(store).mark(group_id, member)?;
+    // On a namespace-root leave the leaver loses every *inherited* Open-subgroup
+    // membership too; record a root-keyed inherited-deny so the receive filter
+    // fast-drops their deltas to those descendant subgroups. `is_namespace_leave`
+    // above already established `group_id` is the root. Cleared on root re-add.
+    if is_namespace_leave {
+        DenyListRepository::new(store).mark_inherited(group_id, member)?;
+    }
+    // Block re-entry, with `Left` rather than `Removed` — see the descendant
+    // cascade above. Like the deny-list write, this touches a separate,
+    // deliberately unhashed column and so leaves the signed state hash
+    // untouched; the ordering invariant documented on `MemberRemoved` applies
+    // here verbatim.
+    ReentryRepository::new(store).block(group_id, member, GroupExitReason::Left)?;
 
-    // NOTE on forward secrecy: this op deliberately does NOT trigger
-    // the key-rotation pipeline that `MemberRemoved` does, because
-    // the publisher (the leaver) cannot generate the new key without
-    // also retaining it — which would defeat forward secrecy.
-    // Proper forward secrecy on self-leave requires a follow-up
-    // two-phase rotation (a remaining admin's apply hook publishes
-    // KeyDelivery), which is tracked as a follow-up to this PR. For
-    // now, an admin-initiated `MemberRemoved` is the path to a
-    // cryptographically-complete leave; `MemberLeft` is the
-    // governance-level departure (membership row removed, peers
-    // observe the leave) without the rotation. Same caveat applies
-    // to the namespace cascade above — row-removal only.
+    // Forward secrecy on self-leave: record the debt, don't discharge it here.
+    //
+    // A key rotation is minted by whoever PUBLISHES the op that triggers it. For an
+    // admin-initiated `MemberRemoved` that works — the publisher stays in the group.
+    // Here the publisher IS the leaver, and they cannot rotate for themselves twice
+    // over: they would have to mint the very key they are being cut off from (and
+    // would keep it), and peers reject a rotation from a non-admin regardless. So the
+    // leave and the rotation must be performed by DIFFERENT nodes.
+    //
+    // This row is the hand-off. It is written inside the deterministic, replicated
+    // apply, so every node derives the same worklist with no coordination, and a
+    // remaining admin discharges it by publishing `GroupKeyRotated` — which carries
+    // the new key, wrapped for everyone who remains and for nobody who left.
+    //
+    // Any remaining admin may do it; there is deliberately no election. Two admins
+    // racing mint different keys, and the keyring already converges on one (highest
+    // epoch, ties broken by the larger key id — a total order, identical on every
+    // node). Safety survives the race because EVERY competing key excludes the leaver.
+    //
+    // Only groups that encrypt under their own key are recorded — see
+    // `group_rotates_on_departure`. Leaving the namespace root rotates the namespace
+    // key itself, which is the only thing that stops a namespace-leaver from going on
+    // reading the root and every Open subgroup beneath it.
+    if group_rotates_on_departure(store, group_id)? {
+        PendingRotationRepository::new(store).mark(group_id, member)?;
+    }
+
+    // Until that rotation lands, ops are still encrypted under the key the leaver
+    // holds. The deny-list above stops them WRITING, and they unsubscribe, but a
+    // leaver who keeps watching gossip can still read that window. It is bounded by
+    // how quickly a remaining admin rotates, and it is observable (the pending row).
+    //
+    // Nothing here touches BACKWARD secrecy: the leaver keeps whatever they could
+    // already decrypt. Old keys are never deleted from a keyring — rejoin and
+    // re-keyshare depend on that. The guarantee is the same one removal gives:
+    // decrypt everything up to and including your own departure, and nothing after.
     //
     // Ordering invariant (mirrors `MemberRemoved`'s call site):
     // `verify_post_apply_state_hashes` must run after the last

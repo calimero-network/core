@@ -66,7 +66,6 @@ async fn add_local_applied_delta_prunes_non_head_ancestors() {
         node_recipient,
         event_sender,
         sync_client,
-        String::new(),
         None,
     );
 

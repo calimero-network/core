@@ -1,18 +1,17 @@
 name: AI Code Review
 
 on:
+  # This workflow is core's ONLY automatic reviewer (the MeroReviewer App is
+  # removed from this repo - it double-reviewed every PR). `synchronize` is
+  # included: every push re-reviews, with delta tracking + convergence keeping
+  # repeat passes cheap and cancel-in-progress deduping rapid push trains.
   pull_request:
-    # `synchronize` (re-run on every push) deliberately omitted to control
-    # cost — a review fires on PR open / reopen / draft→ready, not on each
-    # push. Re-trigger a review by toggling draft or via workflow_dispatch.
-    types: [opened, reopened, ready_for_review]
-    # Skipped only when ALL changed files are under docs/architecture/docs-static —
-    # mixed PRs still trigger a review (standard GitHub Actions paths-ignore semantics).
-    # Pure-doc PRs are owned by the `Doc Auto-Update` workflow; this avoids paying
-    # twice for the same diff.
+    types: [opened, reopened, ready_for_review, synchronize]
+    # Skipped only when ALL changed files are doc-site content - mixed PRs
+    # still trigger (standard paths-ignore semantics). Pure-doc PRs are owned
+    # by the Doc Auto-Update workflow.
     paths-ignore:
       - 'docs/**'
-      - 'architecture/**'
       - 'docs-static/**'
   workflow_dispatch:
     inputs:
@@ -34,15 +33,13 @@ concurrency:
 jobs:
   review:
     runs-on: ubuntu-latest
-    # Skip on draft PRs and on PRs from forks (forks don't get repo secrets,
-    # so the run would attempt to call Claude with no key and fail noisily).
-    # Maintainers can review fork PRs manually via workflow_dispatch after
-    # auditing the diff.
+    # Skip drafts and fork PRs (forks don't get repo secrets, so the run
+    # would call Claude with no key and fail noisily). Review fork PRs via
+    # workflow_dispatch after auditing the diff.
     if: >-
       (github.event_name == 'workflow_dispatch') ||
       (github.event.pull_request.draft == false &&
        github.event.pull_request.head.repo.full_name == github.repository)
-
     permissions:
       contents: read
       pull-requests: write
@@ -52,26 +49,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
       # Tracks ai-code-reviewer @master (pin a SHA here for a deliberate review gate).
       - name: Install ai-code-reviewer
         run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@master
-
-      # Authenticate as the MeroReviewer App so review comments genuinely
-      # come from meroreviewer[bot] (not whatever GH_PAT/GITHUB_TOKEN
-      # resolves to), matching the --reviewer-name label below.
-      - name: Create GitHub App token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        id: app-token
-        with:
-          app-id: ${{ vars.MERO_REVIEWER_APP_ID }}
-          private-key: ${{ secrets.MERO_REVIEWER_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: |
-            core
 
       - name: Determine PR number and agent count
         id: pr
@@ -89,7 +73,12 @@ jobs:
       - name: Run AI Code Review
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Built-in token: the MeroReviewer App was removed from this repo
+          # (it double-reviewed), so its installation token no longer exists.
+          # Reviews post as github-actions[bot]; the body header still says
+          # MeroReviewer via --reviewer-name, and past meroreviewer[bot]
+          # reviews stay recognized via extra_reviewer_users in .ai-reviewer.yaml.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ai-reviewer review-pr \
             ${{ github.repository }} \

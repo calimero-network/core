@@ -133,87 +133,57 @@ pub fn cascade_remove_member_from_group_tree(
     ContextTreeService::new(store, *group_id).cascade_remove_member(member)
 }
 
-/// Inverse of [`cascade_remove_member_from_group_tree`]: re-create
-/// `ContextIdentity` rows for the rejoiner under every context registered
-/// directly beneath `group_id`.
+/// Inverse of [`cascade_remove_member_from_group_tree`]: re-create the local
+/// rejoiner's `ContextIdentity` **membership marker** under every context
+/// registered directly beneath `group_id`.
 ///
-/// Idempotent on rows that already carry a usable `private_key: Some(_)`
-/// (e.g., a first-time join via the `join_context` handler beat the
-/// apply-path call to here). A rejoiner who never had a `ContextIdentity`
-/// row for a given context gets a freshly-written row with
-/// `private_key: Some(_)` and `sender_key: None` — the same shape
-/// `join_context` writes — so KeyDelivery can then populate `sender_key`.
-/// A pre-existing row with `private_key: None` is repaired in place
-/// (`private_key` filled, `sender_key` preserved) rather than skipped,
-/// since a keyless row would leave the rejoiner unable to sign.
+/// The marker is *keyless* (`private_key: None`). Its presence is what tells the
+/// signing path "this node is a member here"; the actual signing key is resolved
+/// live from the node's namespace identity at read time (see the client-side
+/// `resolve_owned_namespace_signer`), so no per-context key copy is stored. A
+/// prior `MemberRemoved` / `MemberLeft` cascade deletes the marker; this restores
+/// it so the rejoiner can author again the moment the member row is back.
 ///
-/// **Anti-spoof gate is enforced inside this function.** Writing a
-/// `private_key: Some(_)` row for `member` would let the writing node
-/// author state-DAG ops as `member`. The function therefore resolves
-/// the namespace for `group_id`, reads THIS node's namespace identity,
-/// and returns early (a no-op) unless the local identity *is*
-/// `member` — i.e. this node genuinely owns the private key. The
-/// private key is derived internally from that identity; callers
-/// cannot pass in an arbitrary key. Both apply-path call sites
-/// (`MemberAdded` in `mod.rs`, `MemberJoinedOpen` in
-/// `namespace_governance.rs`) invoke this unconditionally and rely on
-/// the internal gate — a future call site cannot accidentally omit it.
+/// **Scoped to the local rejoiner.** Only re-create the marker on the node whose
+/// namespace identity *is* `member` — on every other peer this resolves to a
+/// different identity (or `None`) and the function is a no-op. Peers re-learn a
+/// member's marker through the ordinary sync/registration paths, not here. Both
+/// apply-path call sites (`MemberAdded` in `mod.rs`, `MemberJoinedOpen` in
+/// `namespace_governance.rs`) invoke this unconditionally and rely on the gate.
 ///
-/// **Crash-consistency.** Rows are written one `put` at a time with
-/// no batch transaction, so a crash mid-loop leaves a partial restore
-/// (identity present for some contexts, absent for others). This is
-/// self-healing, and the reason is the *ordering* of the apply
-/// pipeline — not blind re-application. Both call sites run this
-/// function as part of the op mutation, and the governance nonce /
-/// DAG head only advances *after* the entire mutation returns:
-/// `apply_local_signed_group_op` calls `apply_group_op_mutations`
-/// (which contains this loop) and only then `persist_group_governance_progress`
-/// (which advances the nonce); the `MemberJoinedOpen` path advances
-/// the namespace-DAG head likewise after `apply_signed_op` completes.
-/// So a crash that left rows unwritten necessarily crashed *before*
-/// the nonce/head advanced — the op is therefore NOT yet
-/// nonce-deduplicated and is re-applied on the next receipt, and the
-/// idempotent loop here fills the remaining rows. (Conversely, once
-/// the nonce advances and re-receipt becomes a no-op, the loop had
-/// already completed — there is nothing left to heal.) Worst case if
-/// that reasoning is ever broken by a refactor: the member calls
-/// `join_context` for the affected context, which writes the row
-/// directly. The symmetric `cascade_remove_member` uses the same
-/// one-`handle`-loop pattern; if either is ever made transactional,
-/// both should be.
+/// An existing row is left untouched: a standalone context's *keyed* row must
+/// not be clobbered, and an already-present marker needs no rewrite.
 ///
-/// **No concurrent-registration gap.** The enumerate and the write
-/// loop use separate store handles, but a context cannot be
-/// registered between them: governance ops for a namespace apply
-/// sequentially through a single actor, so no `ContextRegistered`
-/// can interleave with this `MemberAdded` / `MemberJoinedOpen`
-/// apply. A context registered by a *later* governance op is a
-/// no-op for membership — the rejoiner's row already exists by then,
-/// and `register_context` does not touch `ContextIdentity`.
+/// **Crash-consistency.** Rows are written one `put` at a time with no batch
+/// transaction, so a crash mid-loop leaves a partial restore. This is
+/// self-healing because of the apply-pipeline *ordering*: both call sites run
+/// this as part of the op mutation, and the governance nonce / DAG head only
+/// advances *after* the mutation returns. A crash that left markers unwritten
+/// therefore crashed before the nonce/head advanced, so the op is not yet
+/// nonce-deduplicated and re-applies on the next receipt, filling the rest. The
+/// symmetric `cascade_remove_member` uses the same one-`handle`-loop pattern; if
+/// either is ever made transactional, both should be.
 ///
-/// **Why `enumerate_group_contexts(.., 0, usize::MAX)` is fine here.**
-/// The hot-path concern is unbounded reads. In this codebase the
-/// number of contexts directly registered under a single
-/// `ContextGroupId` is the count of contexts in one channel
-/// (subgroup), which is bounded by application-level use — typically
-/// 1, rarely more than a handful. The same unbounded-enumerate
-/// pattern is used by `cascade_remove_member_from_group_tree` /
-/// `ContextTreeService::cascade_remove_member` (see this file) and
-/// has not surfaced as a memory or latency hotspot. If a future use
-/// case starts pushing tens of contexts into a single subgroup, both
-/// paths should be paginated together — they share the same
-/// invariant.
+/// **No concurrent-registration gap.** The enumerate and the write loop use
+/// separate store handles, but a context cannot be registered between them:
+/// governance ops for a namespace apply sequentially through a single actor, so
+/// no `ContextRegistered` can interleave with this apply.
+///
+/// **Why `enumerate_group_contexts(.., 0, usize::MAX)` is fine here.** The number
+/// of contexts directly registered under a single `ContextGroupId` is bounded by
+/// application use (typically 1, rarely a handful). The same unbounded-enumerate
+/// pattern is used by `cascade_remove_member`; if a future use case pushes tens
+/// of contexts into one subgroup, both paths should be paginated together.
 pub fn restore_member_context_identities(
     store: &Store,
     group_id: &ContextGroupId,
     member: &PublicKey,
 ) -> EyreResult<()> {
-    // Internal anti-spoof gate (see doc comment). Only the local
-    // rejoiner's own node holds the namespace identity bytes for
-    // `member`; on every other peer this resolves to a different pk
-    // (or `None`) and the function is a no-op.
+    // Scope gate (see doc comment). Only the local rejoiner's own node holds the
+    // namespace identity for `member`; on every other peer this resolves to a
+    // different pk (or `None`) and the function is a no-op.
     let namespace_id = NamespaceRepository::new(store).resolve(group_id)?;
-    let Some((local_pk, private_key, _sender_key)) =
+    let Some((local_pk, _private_key, _sender_key)) =
         NamespaceRepository::new(store).identity(&namespace_id)?
     else {
         return Ok(());
@@ -226,66 +196,121 @@ pub fn restore_member_context_identities(
     let mut handle = store.handle();
     for context_id in &contexts {
         let identity_key = calimero_store::key::ContextIdentity::new(*context_id, *member);
-        // Three cases:
-        //   * No row              → write a fresh `Some(private_key)` row.
-        //   * Row, private_key None → repair it: the rejoiner can't sign
-        //     with a `None` key. Overwrite `private_key` but PRESERVE
-        //     `sender_key` so an already-delivered key isn't clobbered.
-        //   * Row, private_key Some → leave untouched (idempotent — a
-        //     prior `join_context` already wrote a usable row).
-        // The `None` case shouldn't arise on the local rejoiner's own
-        // store today (the cascade deletes the whole row, and the
-        // anti-spoof gate above means peers never write a `None` row
-        // for a member they don't own), but repairing it rather than
-        // skipping keeps the restore robust against any future path
-        // that leaves a keyless row behind.
-        let existing = handle.get(&identity_key)?;
-        let needs_write = match &existing {
-            None => true,
-            Some(row) => row.private_key.is_none(),
-        };
-        if needs_write {
-            let sender_key = existing.and_then(|row| row.sender_key);
+        // Only write when there is no row at all. A prior cascade deleted the
+        // marker, so re-create it keyless. Leave any existing row untouched — a
+        // standalone keyed row or an already-present marker must not be clobbered.
+        if handle.get(&identity_key)?.is_none() {
             handle.put(
                 &identity_key,
-                &calimero_store::types::ContextIdentity {
-                    private_key: Some(private_key),
-                    sender_key,
-                },
+                &calimero_store::types::ContextIdentity { private_key: None },
             )?;
             tracing::info!(
                 group_id = %hex::encode(group_id.to_bytes()),
                 context_id = %hex::encode(context_id.as_ref()),
                 member = %member,
-                "rejoin: restored ContextIdentity row for local rejoiner"
+                "rejoin: restored ContextIdentity membership marker for local rejoiner"
             );
         }
     }
     Ok(())
 }
 
-/// Scans the ContextIdentity column for the given context and returns the first
-/// `PublicKey` for which the node holds a local private key. Used to find a
-/// valid signer when performing group upgrades on behalf of a context that the
-/// group admin may not be a member of.
+/// The node's namespace identity `PublicKey` for `context_id`, if it holds a
+/// membership marker row in that context.
+///
+/// Namespace-backed contexts store a *keyless* `ContextIdentity` marker per
+/// membership; the signing key is resolved live from the node's namespace
+/// identity. A key scan (`private_key.is_some()`) misses these markers, so the
+/// signer-finders below consult this to include the node's namespace identity.
+/// Gated on the marker row's presence — the same row-presence membership signal
+/// the client uses — so a removed member (whose marker the cascade deleted) is
+/// not returned.
+fn owned_namespace_marker(store: &Store, context_id: &ContextId) -> EyreResult<Option<PublicKey>> {
+    let Some(group_id) = get_group_for_context(store, context_id)? else {
+        return Ok(None); // standalone context — no namespace identity
+    };
+    let namespace_id = NamespaceRepository::new(store).resolve(&group_id)?;
+    let Some((local_pk, _private_key, _sender_key)) =
+        NamespaceRepository::new(store).identity(&namespace_id)?
+    else {
+        return Ok(None); // this node holds no identity for the namespace
+    };
+    let marker = calimero_store::key::ContextIdentity::new(*context_id, local_pk);
+    if store.handle().has(&marker)? {
+        Ok(Some(local_pk))
+    } else {
+        Ok(None)
+    }
+}
+
+/// The private signing key this node holds for `(context_id, public_key)`, or
+/// `None` if it holds none here.
+///
+/// A stored key wins (standalone / `new_identity` contexts). Otherwise, when a
+/// keyless membership marker is present and `public_key` is the node's namespace
+/// identity, the key is resolved live from that namespace identity. Mirrors the
+/// client-side `ContextClient::get_identity` key resolution, for callers in
+/// crates that read the store directly rather than through the context client
+/// (e.g. sync proof-of-possession, migration authorization). Row presence is the
+/// membership gate: no marker row → `None`.
+pub fn resolve_local_signing_key(
+    store: &Store,
+    context_id: &ContextId,
+    public_key: &PublicKey,
+) -> EyreResult<Option<[u8; 32]>> {
+    let marker = calimero_store::key::ContextIdentity::new(*context_id, *public_key);
+    let Some(row) = store.handle().get(&marker)? else {
+        return Ok(None); // no membership marker → not a local identity here
+    };
+    if let Some(sk) = row.private_key {
+        return Ok(Some(sk));
+    }
+    // Keyless marker: resolve the key from the namespace identity when this pk is it.
+    let Some(group_id) = get_group_for_context(store, context_id)? else {
+        return Ok(None);
+    };
+    let namespace_id = NamespaceRepository::new(store).resolve(&group_id)?;
+    match NamespaceRepository::new(store).identity(&namespace_id)? {
+        Some((ns_pk, ns_sk, _sender)) if ns_pk == *public_key => Ok(Some(ns_sk)),
+        _ => Ok(None),
+    }
+}
+
+/// Returns a `PublicKey` this node can sign with for `context_id`. Prefers a
+/// `ContextIdentity` row that carries a stored private key (standalone contexts
+/// keep their own), then falls back to the node's namespace identity when a
+/// keyless membership marker is present. Used to find a valid signer when
+/// performing group upgrades on behalf of a context that the group admin may not
+/// be a member of.
 pub fn find_local_signing_identity(
     store: &Store,
     context_id: &ContextId,
 ) -> EyreResult<Option<PublicKey>> {
-    ContextTreeService::new(store, ContextGroupId::from([0u8; 32]))
-        .find_local_signing_identity(context_id)
+    if let Some(pk) = ContextTreeService::new(store, ContextGroupId::from([0u8; 32]))
+        .find_local_signing_identity(context_id)?
+    {
+        return Ok(Some(pk));
+    }
+    owned_namespace_marker(store, context_id)
 }
 
-/// Scans the ContextIdentity column for the given context and returns EVERY
-/// `PublicKey` for which the node holds a local private key. Used by
-/// `leave_context`, which must tombstone all of the node's identities in a
-/// context, not just the first one.
+/// Returns EVERY `PublicKey` this node can sign with for `context_id`: every
+/// `ContextIdentity` row with a stored private key, plus the node's namespace
+/// identity when a keyless membership marker is present. Used by `leave_context`,
+/// which must tombstone all of the node's identities in a context, not just the
+/// first one.
 pub fn find_local_signing_identities(
     store: &Store,
     context_id: &ContextId,
 ) -> EyreResult<Vec<PublicKey>> {
-    ContextTreeService::new(store, ContextGroupId::from([0u8; 32]))
-        .find_local_signing_identities(context_id)
+    let mut identities = ContextTreeService::new(store, ContextGroupId::from([0u8; 32]))
+        .find_local_signing_identities(context_id)?;
+    if let Some(pk) = owned_namespace_marker(store, context_id)? {
+        if !identities.contains(&pk) {
+            identities.push(pk);
+        }
+    }
+    Ok(identities)
 }
 
 #[cfg(test)]
@@ -297,7 +322,16 @@ mod tests {
     use calimero_store::db::InMemoryDB;
     use calimero_store::{key, types, Store};
 
-    use super::{find_local_signing_identities, find_local_signing_identity};
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use calimero_primitives::context::GroupMemberRole;
+
+    use super::{
+        find_local_signing_identities, find_local_signing_identity,
+        is_currently_authorized_for_context, register_context_in_group,
+    };
+    use crate::test_fixtures::{nest_for_test, sample_meta_with_admin};
+    use crate::{CapabilitiesRepository, MembershipRepository, MetaRepository};
 
     fn store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
@@ -310,7 +344,6 @@ mod tests {
                 &key::ContextIdentity::new(*context, *member),
                 &types::ContextIdentity {
                     private_key: has_private.then_some([0x77; 32]),
-                    sender_key: None,
                 },
             )
             .expect("put identity");
@@ -349,5 +382,105 @@ mod tests {
         assert!(find_local_signing_identities(&store, &context)
             .expect("enumerate")
             .is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // Open -> Restricted flip-back at the *authorization* surface
+    // (PR #3267 review comments 3593200482 / 3593200484).
+    //
+    // `membership::tests::flip_back_*` pin that `check_path` stops
+    // resolving an inherited-only member. These pin what actually gates
+    // apply: `is_currently_authorized_for_context`, which HC/LevelWise
+    // reach through `is_leaf_currently_authorized`.
+    // -----------------------------------------------------------------
+
+    /// Root-admitted inherited-only member with a context registered
+    /// under an `Open` subgroup. Returns (root, sub, context, member).
+    fn seed_inherited_context_open(
+        store: &Store,
+    ) -> (ContextGroupId, ContextGroupId, ContextId, PublicKey) {
+        let root = ContextGroupId::from([0xB0; 32]);
+        let sub = ContextGroupId::from([0xB1; 32]);
+        let context = ContextId::from([0xB2; 32]);
+        let admin = PublicKey::from([0xEE; 32]);
+        let tee = PublicKey::from([0x01; 32]);
+
+        // Distinct admin so the member is never short-circuited by the
+        // `is_admin` creator carve-out in the function under test.
+        MetaRepository::new(store)
+            .save(&root, &sample_meta_with_admin(admin))
+            .expect("save root meta");
+        MetaRepository::new(store)
+            .save(&sub, &sample_meta_with_admin(admin))
+            .expect("save sub meta");
+        nest_for_test(store, &root, &sub);
+        MembershipRepository::new(store)
+            .add_member(&root, &tee, GroupMemberRole::Member)
+            .expect("add root member");
+        CapabilitiesRepository::new(store)
+            .set_member_capability(
+                &root,
+                &tee,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )
+            .expect("grant join cap");
+        CapabilitiesRepository::new(store)
+            .set_subgroup_visibility(&sub, VisibilityMode::Open)
+            .expect("open sub");
+        register_context_in_group(store, &sub, &context).expect("register context");
+        (root, sub, context, tee)
+    }
+
+    /// The authorization surface that actually gates apply must deny an
+    /// inherited-only member once the subgroup walls back off.
+    #[test]
+    fn flip_back_to_restricted_revokes_context_authorization() {
+        let store = store();
+        let (_root, sub, context, tee) = seed_inherited_context_open(&store);
+
+        assert!(
+            is_currently_authorized_for_context(&store, &context, &tee).unwrap(),
+            "precondition: an Open subgroup authorizes the inherited member"
+        );
+
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+            .unwrap();
+
+        assert!(
+            !is_currently_authorized_for_context(&store, &context, &tee).unwrap(),
+            "flip-back must deny the inherited member at the apply gate"
+        );
+    }
+
+    /// The residue the TODO is really about: the flip-back revokes
+    /// *authorization* but leaves the local `ContextIdentity` join row
+    /// behind. Nothing prunes it — this is the documented gap, and it is
+    /// a cleanup concern, NOT an authorization bypass, because the gate
+    /// above denies regardless of the row's presence.
+    #[test]
+    fn flip_back_to_restricted_leaves_stale_context_identity_row() {
+        let store = store();
+        let (_root, sub, context, tee) = seed_inherited_context_open(&store);
+        // The join that happened while the subgroup was Open.
+        put_identity(&store, &context, &tee, true);
+
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+            .unwrap();
+
+        // The row survives...
+        assert!(
+            store
+                .handle()
+                .has(&key::ContextIdentity::new(context, tee))
+                .unwrap(),
+            "the join row is not pruned on flip-back — the real gap"
+        );
+        // ...but it confers nothing: authorization is resolved live.
+        assert!(
+            !is_currently_authorized_for_context(&store, &context, &tee).unwrap(),
+            "a surviving join row must not confer authorization after the wall is back up"
+        );
     }
 }

@@ -18,7 +18,9 @@ use super::super::{
     cascade_remove_member_from_group_tree, collect_keys_with_prefix, get_group_for_context,
 };
 
-pub const MAX_NAMESPACE_DEPTH: usize = 16;
+/// Re-exported from `calimero-context-config` — the single source of truth for
+/// the namespace parent-chain walk bound (see `context_config::MAX_NAMESPACE_DEPTH`).
+pub const MAX_NAMESPACE_DEPTH: usize = calimero_context_config::MAX_NAMESPACE_DEPTH;
 
 #[derive(Debug, Clone, Copy)]
 pub struct NamespaceIdentityRecord {

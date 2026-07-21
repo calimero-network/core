@@ -58,17 +58,31 @@ impl<'a> MembershipPolicy<'a> {
     }
 
     /// Would removing/demoting `member` orphan `group`'s admins? Resolved at the op's
-    /// PARENT cut from the projection (F5 #28 stage 4c-flip) — `is_last_admin_at_cut`
-    /// reads the pre-mutation admin set as of the op's own parents (the correct cut
-    /// for a check the op is about to invalidate). `None` — no apply-auth context (a
-    /// local pre-check / cascade / test) OR an incomplete fold — falls back to the
-    /// live `is_admin && !has_another_admin`. The live fallback retires in #29b.
+    /// PARENT cut from the projection — `is_last_admin_at_cut` reads the pre-mutation
+    /// admin set as of the op's own parents, which is the correct cut for a check the
+    /// op is about to invalidate.
+    ///
+    /// When the projection abstains, fall back to live ONLY if the abstention means
+    /// "there is no cut to resolve against" (a genesis op, or a construction with no
+    /// apply-auth context — the emit path, the local apply, tests). If the cut is real
+    /// but unfolded, refuse: a live answer would depend on which concurrent role ops
+    /// this replica has folded, so two replicas could disagree on whether the SAME op
+    /// orphans the admin set — one applying it and one rejecting it forever.
     fn would_orphan_admins(&self, member: &PublicKey) -> EyreResult<bool> {
         if let Some(blocks) =
             self.authorizer
                 .is_last_admin_at_cut(&self.group_id, member, self.parents)
         {
             return Ok(blocks);
+        }
+        if !self
+            .authorizer
+            .can_resolve_cut(&self.group_id, self.parents)
+        {
+            bail!(crate::ApplyError::AuthorityUndecidable {
+                group_id: format!("{:?}", self.group_id),
+                signer: format!("{member}"),
+            });
         }
         Ok(self.membership.is_admin(member)? && !self.membership.has_another_admin(member)?)
     }
@@ -129,6 +143,7 @@ impl<'a> MembershipPolicy<'a> {
             allowed_rtmr2: policy.allowed_rtmr2.clone(),
             allowed_rtmr3: policy.allowed_rtmr3.clone(),
             allowed_tcb_statuses: policy.allowed_tcb_statuses.clone(),
+            accept_mock: policy.accept_mock,
         };
         if let Err(err) = validate_tee_attestation_allowlists(&normalized_policy, fields) {
             let reason = match err.reason() {

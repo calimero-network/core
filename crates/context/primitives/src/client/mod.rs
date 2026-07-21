@@ -40,7 +40,7 @@ use crate::group::{
     LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, MigrationStatus, NamespaceSummary, RemoveGroupMembersRequest,
-    ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest,
+    ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest, RotateGroupKeyRequest,
     SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
     SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
     SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
@@ -358,10 +358,83 @@ mod borsh_layout_round_trip {
     }
 }
 
+/// Resolve the node's namespace signing identity (public key + private key) for
+/// `context_id`'s namespace, if this node holds one.
+///
+/// For a namespace-backed context the node signs state deltas with its one
+/// namespace identity. The per-context [`key::ContextIdentity`] row used to
+/// carry a *copy* of that private key, but the copy was redundant (and fragile —
+/// an out-of-order removal could delete it). Namespace-backed contexts now store
+/// only a **keyless marker row** per membership; this resolver derives the actual
+/// key live from the namespace identity. Standalone / `new_identity` contexts
+/// have no `NamespaceIdentity` and keep their own stored key — callers must
+/// prefer a stored key and only fall back here.
+///
+/// This does **not** check membership: whether the node is a member here is
+/// conveyed by the presence of a `ContextIdentity` marker row (governance-store
+/// writes it on join and deletes it on removal), which the callers gate on. This
+/// keeps effective-membership logic in governance-store — the layer that owns it —
+/// rather than duplicating the inheritance/deny-list walk in this lower layer.
+///
+/// Free function (rather than a `&self` method) so `get_context_members` can
+/// call it from inside its `try_stream!` with a moved `Store` clone.
+fn resolve_owned_namespace_signer(
+    store: &Store,
+    context_id: &ContextId,
+) -> eyre::Result<Option<(PublicKey, [u8; 32])>> {
+    let handle = store.handle();
+
+    let Some(group_id) = handle.get(&key::ContextGroupRef::new(*context_id))? else {
+        return Ok(None);
+    };
+
+    // The namespace identity is keyed at the namespace root; walk up to it.
+    // Bound and semantics mirror `NamespaceRepository::resolve` exactly (shared
+    // `MAX_NAMESPACE_DEPTH`, inclusive loop). Fail loud on an over-deep or cyclic
+    // chain rather than silently resolving against a non-root ancestor — the
+    // canonical resolver bails `DepthExceeded` in the same case.
+    let mut ns_root = group_id;
+    let mut reached_root = false;
+    for _ in 0..=calimero_context_config::MAX_NAMESPACE_DEPTH {
+        match handle.get(&key::GroupParentRef::new(ns_root))? {
+            Some(parent) => ns_root = parent,
+            None => {
+                reached_root = true;
+                break;
+            }
+        }
+    }
+    if !reached_root {
+        eyre::bail!(
+            "namespace parent chain for context {context_id} exceeds \
+             MAX_NAMESPACE_DEPTH (too deep or cyclic GroupParentRef data)"
+        );
+    }
+
+    let Some(identity) = handle.get(&key::NamespaceIdentity::new(ns_root))? else {
+        return Ok(None); // this node holds no identity for the namespace
+    };
+    let identity: key::NamespaceIdentityValue = identity;
+    Ok(Some((
+        PublicKey::from(identity.public_key),
+        identity.private_key,
+    )))
+}
+
 impl ContextRegistry {
     #[must_use]
     pub const fn new(datastore: Store) -> Self {
         Self { datastore }
+    }
+
+    /// See [`resolve_owned_namespace_signer`]. The node's namespace signing
+    /// identity (public + private key) for `context_id`'s namespace, or `None`
+    /// if this node holds no namespace identity there. Does not check membership.
+    pub fn owned_namespace_signer(
+        &self,
+        context_id: &ContextId,
+    ) -> eyre::Result<Option<(PublicKey, [u8; 32])>> {
+        resolve_owned_namespace_signer(&self.datastore, context_id)
     }
 
     /// Returns a handle to the datastore for direct access.
@@ -854,6 +927,62 @@ impl ContextRegistry {
         Ok(())
     }
 
+    /// Atomically set a context's `root_hash` **and** `dag_heads` in a single
+    /// `ContextMeta` write.
+    ///
+    /// This is the snapshot-finalize counterpart to [`persist_deltas_and_dag_heads`]:
+    /// the snapshot path must publish both fields together. Doing it as two
+    /// separate read-modify-writes ([`force_root_hash`] then [`update_dag_heads`])
+    /// leaves a window where `root_hash` is set but `dag_heads` is still the
+    /// pre-snapshot value (or vice versa), and — worse — a concurrent
+    /// `ContextMeta` read-modify-write can interleave *between* the two puts and
+    /// clobber the first with a stale whole-record write (issue #3252). Folding
+    /// both mutations into one [`Store::apply`] (`WriteBatch`) closes the
+    /// intra-finalize window: a reader observes either the pre- or post-finalize
+    /// `ContextMeta`, never a half-updated one.
+    ///
+    /// As with [`persist_deltas_and_dag_heads`], atomicity covers the *write*
+    /// only — the `meta` read and the commit are not one transaction, so two
+    /// unsynchronised callers racing on the same context can still clobber each
+    /// other (the read-modify-write race documented there). The snapshot finalize
+    /// runs only for uninitialized / crash-recovery / resync contexts, which are
+    /// not being concurrently mutated by the delta path; the remaining external
+    /// racer (`sync_context_config`) is fixed at its source (#3252).
+    ///
+    /// [`force_root_hash`]: Self::force_root_hash
+    /// [`update_dag_heads`]: Self::update_dag_heads
+    /// [`persist_deltas_and_dag_heads`]: Self::persist_deltas_and_dag_heads
+    pub fn set_root_and_dag_heads(
+        &self,
+        context_id: &ContextId,
+        root_hash: Hash,
+        dag_heads: Vec<[u8; 32]>,
+    ) -> eyre::Result<()> {
+        let meta_key = key::ContextMeta::new(*context_id);
+
+        let Some(mut meta) = self.datastore.handle().get(&meta_key)? else {
+            eyre::bail!("Context not found: {}", context_id);
+        };
+
+        meta.root_hash = *root_hash;
+        meta.dag_heads = dag_heads;
+        let dag_heads_count = meta.dag_heads.len();
+
+        let mut tx = Transaction::default();
+        let meta_bytes: Slice<'_> = borsh::to_vec(&meta)?.into();
+        tx.put(&meta_key, meta_bytes);
+        self.datastore.apply(&tx)?;
+
+        tracing::debug!(
+            %context_id,
+            new_root = ?root_hash,
+            dag_heads_count,
+            "Atomically set root_hash and dag_heads (snapshot finalize)"
+        );
+
+        Ok(())
+    }
+
     /// Reads ROOT's index entry + `Key::Entry(ROOT)` bytes in a single
     /// pass and returns both the self-dump (own_hash/full_hash/entry
     /// summary) and the children list — diagnostic for #2319.
@@ -1023,6 +1152,10 @@ impl ContextRegistry {
         owned: Option<bool>,
     ) -> impl Stream<Item = eyre::Result<(PublicKey, bool)>> {
         let handle = self.datastore.handle();
+        // Moved into the stream so the namespace-identity fallback can run
+        // without borrowing `self` across the stream's lifetime (cheap: `Store`
+        // is Arc-backed).
+        let store = self.datastore.clone();
         let context_id = *context_id;
         let only_owned = owned.unwrap_or(false);
 
@@ -1034,6 +1167,13 @@ impl ContextRegistry {
                 .transpose()
                 .map(|k| (k, iter.read()));
 
+            // The node's namespace identity pk for this context. A member of a
+            // namespace-backed context has a *keyless* marker row; the node owns
+            // that identity because it can resolve the key live from its one
+            // namespace identity. The marker row's presence is the membership
+            // signal (governance-store deletes it on removal), so no separate
+            // membership check is needed here.
+            let ns_signer = resolve_owned_namespace_signer(&store, &context_id)?.map(|(pk, _)| pk);
             for (k, v) in first.into_iter().chain(iter.entries()) {
                 let (k, v) = (k?, v?);
 
@@ -1041,7 +1181,9 @@ impl ContextRegistry {
                     break;
                 }
 
-                let is_owned = v.private_key.is_some();
+                // Owned if we hold a stored key (standalone / `new_identity`) or
+                // this row is the keyless marker for our namespace identity.
+                let is_owned = v.private_key.is_some() || ns_signer == Some(k.public_key());
                 if !only_owned || is_owned {
                     yield (k.public_key(), is_owned);
                 }
@@ -1399,6 +1541,17 @@ impl ContextClient {
     /// Forces the root hash for a context to a specific value.
     pub fn force_root_hash(&self, context_id: &ContextId, root_hash: Hash) -> eyre::Result<()> {
         self.registry.force_root_hash(context_id, root_hash)
+    }
+
+    /// See [`ContextRegistry::set_root_and_dag_heads`].
+    pub fn set_root_and_dag_heads(
+        &self,
+        context_id: &ContextId,
+        root_hash: Hash,
+        dag_heads: Vec<[u8; 32]>,
+    ) -> eyre::Result<()> {
+        self.registry
+            .set_root_and_dag_heads(context_id, root_hash, dag_heads)
     }
 
     /// Diagnostic — dump ROOT's self summary + children list in one read.
@@ -2013,6 +2166,12 @@ impl ContextClient {
         eyre::Result<()>
     );
     forward_to_actor!(
+        rotate_group_key,
+        RotateGroupKey,
+        RotateGroupKeyRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
         set_subgroup_visibility,
         SetSubgroupVisibility,
         SetSubgroupVisibilityRequest,
@@ -2482,6 +2641,80 @@ mod atomic_persist_tests {
         assert!(
             !has_delta(&store, &cid, DELTA_B),
             "dropped (uncommitted) batch must not persist"
+        );
+    }
+
+    fn read_root(store: &Store, context_id: &ContextId) -> [u8; 32] {
+        store
+            .handle()
+            .get(&key::ContextMeta::new(*context_id))
+            .expect("read meta")
+            .expect("meta present")
+            .root_hash
+    }
+
+    // #3252: the snapshot finalize publishes root_hash + dag_heads together.
+    // One call updates both fields of the existing ContextMeta.
+    #[test]
+    fn set_root_and_dag_heads_updates_both_fields() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let cid = ctx();
+        seed_meta(&store, &cid, vec![INITIAL_HEAD]);
+        assert_eq!(
+            read_root(&store, &cid),
+            [0u8; 32],
+            "seed starts uninitialized"
+        );
+
+        let registry = ContextRegistry::new(store.clone());
+        registry
+            .set_root_and_dag_heads(&cid, DELTA_A.into(), vec![DELTA_B])
+            .expect("atomic finalize succeeds");
+
+        assert_eq!(read_root(&store, &cid), DELTA_A, "root_hash published");
+        assert_eq!(
+            read_heads(&store, &cid),
+            vec![DELTA_B],
+            "dag_heads published"
+        );
+    }
+
+    // The finalize must route its write through `apply` (one WriteBatch), never
+    // a direct `put` — so the root+heads update can't be split into a state a
+    // concurrent ContextMeta writer straddles (#3252). A backend armed to panic
+    // on any `put` proves the path is `apply`-only.
+    #[test]
+    fn set_root_and_dag_heads_is_apply_only() {
+        let armed = Arc::new(AtomicBool::new(false));
+        let store = Store::new(Arc::new(FailOnApply {
+            inner: InMemoryDB::owned(),
+            armed: Arc::clone(&armed),
+        }));
+        let cid = ctx();
+        seed_meta(&store, &cid, vec![INITIAL_HEAD]);
+
+        // From here any direct `put` panics; only `apply` may write.
+        armed.store(true, Ordering::SeqCst);
+
+        let registry = ContextRegistry::new(store.clone());
+        let err = registry
+            .set_root_and_dag_heads(&cid, DELTA_A.into(), vec![DELTA_B])
+            .expect_err("armed backend fails the atomic commit");
+        assert!(
+            err.to_string().contains("injected apply failure"),
+            "must fail at apply (proving no stray put), got: {err}"
+        );
+
+        // All-or-nothing: the failed commit left the pre-finalize meta intact.
+        assert_eq!(
+            read_root(&store, &cid),
+            [0u8; 32],
+            "root unchanged on failure"
+        );
+        assert_eq!(
+            read_heads(&store, &cid),
+            vec![INITIAL_HEAD],
+            "heads unchanged on failure"
         );
     }
 }

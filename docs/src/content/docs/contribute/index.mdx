@@ -1,0 +1,36 @@
+---
+title: Contribute to Calimero Core
+description: Orientation for developers hacking on the Calimero Core Rust workspace — the repo shape, the crate map, and the dev workflow.
+sidebar:
+  label: Overview
+  order: 1
+---
+
+import { CardGrid, LinkCard, Steps, Aside } from '@astrojs/starlight/components';
+
+Calimero Core is a Rust workspace of ~30 crates plus example apps and tools.
+This track orients you in the codebase and the development workflow.
+
+## Start here
+
+<Steps>
+
+1. Read the **[architecture orientation](/contribute/architecture/)** — the actor model and the crate map.
+2. Skim the **[Protocol Reference](/protocol/overview/)** for the model the code implements.
+3. Set up your **[development workflow](/contribute/development/)** — build, test, the PR conventions.
+
+</Steps>
+
+## Orientation
+
+<CardGrid>
+  <LinkCard title="Architecture &amp; crate map" href="/contribute/architecture/" description="Actors, layers, and what each crate does." />
+  <LinkCard title="Protocol Reference" href="/protocol/overview/" description="The model the codebase implements." />
+</CardGrid>
+
+## Working on core
+
+<CardGrid>
+  <LinkCard title="Development workflow" href="/contribute/development/" description="Build, test, lint, commit and PR conventions." />
+  <LinkCard title="Writing documentation" href="/contribute/docs/" description="How this docs site is structured and contributed to." />
+</CardGrid>

@@ -21,10 +21,6 @@ use crate::delta_store::DeltaStore;
 use crate::peer_identity_cache::{
     ObservedMembership, PeerIdentityCache, PeerScoreTier, PEER_IDENTITY_TTL_SECS,
 };
-use crate::run::NodeMode;
-use crate::specialized_node_invite_state::{
-    new_pending_specialized_node_invites, PendingSpecializedNodeInvites,
-};
 use crate::sync::SyncManager;
 
 /// Current wall-clock unix seconds, used to stamp `last_seen` on cached
@@ -104,12 +100,6 @@ pub(crate) struct SyncSession {
 pub(crate) struct NodeState {
     pub(crate) blob_cache: Arc<DashMap<BlobId, CachedBlob>>,
     pub(crate) delta_stores: Arc<DashMap<ContextId, DeltaStore>>,
-    /// Pending specialized node invites (standard node side) - tracks context_id/inviter for incoming verifications
-    pub(crate) pending_specialized_node_invites: PendingSpecializedNodeInvites,
-    /// Whether to accept mock TEE attestation (from config, for testing only)
-    pub(crate) accept_mock_tee: bool,
-    /// Node operation mode (Standard or ReadOnly)
-    pub(crate) node_mode: NodeMode,
     /// Shared unified-op projection registry (cutover-flip prerequisite). The
     /// same `Arc` the context manager feeds; the node reads it at the
     /// data-write decision for the authorize-vs-live shadow-compare. Default
@@ -229,25 +219,10 @@ impl NodeState {
         self.delta_stores.clone()
     }
 
-    pub(crate) fn pending_specialized_node_invites_handle(&self) -> PendingSpecializedNodeInvites {
-        self.pending_specialized_node_invites.clone()
-    }
-
-    pub(crate) const fn accept_mock_tee(&self) -> bool {
-        self.accept_mock_tee
-    }
-
-    pub(crate) const fn node_mode(&self) -> NodeMode {
-        self.node_mode
-    }
-
-    pub(crate) fn new(accept_mock_tee: bool, node_mode: NodeMode) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             blob_cache: Arc::new(DashMap::new()),
             delta_stores: Arc::new(DashMap::new()),
-            pending_specialized_node_invites: new_pending_specialized_node_invites(),
-            accept_mock_tee,
-            node_mode,
             scope_projections: Arc::new(std::sync::RwLock::new(
                 calimero_context::scope_projection::ScopeProjections::new(),
             )),
@@ -850,7 +825,7 @@ mod tests {
     fn cached_member_peers_reflects_observed_membership() {
         use crate::sync::state_access::SyncStateAccess;
 
-        let state = NodeState::new(false, NodeMode::Standard);
+        let state = NodeState::new();
         let group = ContextGroupId::from([3u8; 32]);
         let identity = PublicKey::from([4u8; 32]);
         let peer = PeerId::random();
@@ -899,7 +874,7 @@ mod tests {
     /// (try the earliest deliverer first).
     #[test]
     fn governance_pending_source_peers_dedups_and_preserves_order() {
-        let state = NodeState::new(false, NodeMode::Standard);
+        let state = NodeState::new();
         let ctx = ContextId::from([7u8; 32]);
         let p1 = PeerId::random();
         let p2 = PeerId::random();
@@ -914,7 +889,7 @@ mod tests {
 
     #[test]
     fn governance_pending_source_peers_empty_for_unknown_context() {
-        let state = NodeState::new(false, NodeMode::Standard);
+        let state = NodeState::new();
         assert!(state
             .governance_pending_source_peers(&ContextId::from([9u8; 32]))
             .is_empty());

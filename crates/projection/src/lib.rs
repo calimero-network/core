@@ -411,6 +411,42 @@ impl ScopeState {
         true
     }
 
+    /// Like [`Self::cut_ancestry_complete`], but ALSO requires every op in the
+    /// cut's ancestry to be **decoded** — i.e. carry a real payload, not
+    /// `OpPayload::Noop`.
+    ///
+    /// An encrypted op the node can't yet decrypt is retained as a `Noop`
+    /// placeholder (it shares the signed op's content-id, so a later decrypted
+    /// re-ingest upgrades it in place). `cut_ancestry_complete` counts that
+    /// placeholder as "present" — correct for structural completeness, wrong for
+    /// deciding whether the folded membership can be trusted. A `Noop` in the
+    /// ancestry means the fold is missing whatever that op did (an add, a remove,
+    /// a role change), so a membership answer read over it is provisional, not
+    /// authoritative.
+    ///
+    /// Returns `false` if any ancestor is absent OR still a `Noop`; `true` only
+    /// when the whole history behind the cut is present and readable. Used by the
+    /// projection/live shadow-compare to avoid crying divergence during the
+    /// key-delivery window after a member re-join, where live has the
+    /// materialized row but the projection is still holding the re-add encrypted.
+    #[must_use]
+    pub fn cut_ancestry_decoded(log: &[Op], parents: &[[u8; 32]]) -> bool {
+        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id(), op)).collect();
+        let mut visited: HashSet<[u8; 32]> = HashSet::new();
+        let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
+        while let Some(id) = queue.pop_front() {
+            if !visited.insert(id) {
+                continue;
+            }
+            match by_id.get(&id) {
+                Some(op) if matches!(op.payload, OpPayload::Noop) => return false,
+                Some(op) => queue.extend(op.parents.iter().copied()),
+                None => return false,
+            }
+        }
+        true
+    }
+
     /// The single convergence root over the whole projection (values + ACL +
     /// groups). See [`calimero_op::scope_root`].
     #[must_use]
@@ -921,6 +957,53 @@ mod tests {
 
         // A cited head absent from the log → also incomplete.
         assert!(!ScopeState::cut_ancestry_complete(&[], &[remove.id()]));
+    }
+
+    #[test]
+    fn cut_ancestry_decoded_rejects_a_noop_in_the_ancestry() {
+        // add → re-add chain where the re-add is still an undecrypted `Noop`
+        // (its group key hasn't arrived). The ancestry is structurally COMPLETE —
+        // every id is present — but not fully DECODED, so a membership answer
+        // read over it is provisional and must not be flagged as a divergence.
+        let group = ContextGroupId::from([3u8; 32]);
+        let member = PublicKey::from([0x55; 32]);
+        let scope = ScopeId::from([0u8; 32]);
+        let author = PublicKey::from([1u8; 32]);
+        let zero = hlc(0);
+        let mk = |parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
+            Op::new(scope, parents, author, zero, payload, [0u8; 32], [0u8; 64])
+        };
+        let add = mk(
+            vec![],
+            OpPayload::MemberAdded {
+                group,
+                member,
+                role: GroupMemberRole::Member,
+            },
+        );
+        // The re-add op, still encrypted → retained as a `Noop` placeholder. Its
+        // content-id is stable across decrypt, so we model that by giving the
+        // Noop the same parents a decrypted re-add would carry.
+        let readd_noop = mk(vec![add.id()], OpPayload::Noop);
+
+        let log = vec![add.clone(), readd_noop.clone()];
+
+        // Structurally complete — both ids reachable.
+        assert!(ScopeState::cut_ancestry_complete(&log, &[readd_noop.id()]));
+        // But NOT fully decoded — the re-add is a Noop.
+        assert!(!ScopeState::cut_ancestry_decoded(&log, &[readd_noop.id()]));
+
+        // Once the re-add decrypts (same id, real payload), it is decoded.
+        let readd = mk(
+            vec![add.id()],
+            OpPayload::MemberAdded {
+                group,
+                member,
+                role: GroupMemberRole::Member,
+            },
+        );
+        let healed = vec![add, readd.clone()];
+        assert!(ScopeState::cut_ancestry_decoded(&healed, &[readd.id()]));
     }
 
     #[test]

@@ -7,37 +7,12 @@ pub mod get_blob_bytes;
 
 use get_blob_bytes::GetBlobBytesRequest;
 
-/// Request to register a pending specialized node invite in the node's state.
-#[derive(Clone, Debug)]
-pub struct RegisterPendingSpecializedNodeInvite {
-    /// The nonce from the specialized node invite broadcast
-    pub nonce: [u8; 32],
-    /// The context to invite specialized nodes to
-    pub context_id: ContextId,
-    /// The identity performing the invitation
-    pub inviter_id: PublicKey,
-}
-
-/// Request to remove a pending specialized node invite from the node's state.
-/// Used to clean up if broadcast fails after registration.
-#[derive(Clone, Debug)]
-pub struct RemovePendingSpecializedNodeInvite {
-    /// The nonce to remove
-    pub nonce: [u8; 32],
-}
-
 #[derive(Debug, Message)]
 #[rtype("()")]
 pub enum NodeMessage {
     GetBlobBytes {
         request: GetBlobBytesRequest,
         outcome: oneshot::Sender<<GetBlobBytesRequest as Message>::Result>,
-    },
-    RegisterPendingSpecializedNodeInvite {
-        request: RegisterPendingSpecializedNodeInvite,
-    },
-    RemovePendingSpecializedNodeInvite {
-        request: RemovePendingSpecializedNodeInvite,
     },
     /// Forward a `NamespaceOpApplied` signal from the publisher path
     /// (which lives in `crates/context`, with no direct line into the
@@ -53,6 +28,12 @@ pub enum NodeMessage {
     /// claim "FSM observes every monotonic advance regardless of
     /// origin" only held for the receive path until #2237 follow-up.
     ForwardNamespaceOpApplied { namespace_id: [u8; 32] },
+    /// Forward a `NamespaceSubscribed` signal to the readiness FSM so it
+    /// seeds `subscribed_at` at subscribe time. Routed `NodeClient ->
+    /// NodeManager -> readiness_addr`, mirroring `ForwardNamespaceOpApplied`;
+    /// the subscribe path (`join_namespace`) holds a `NodeClient`, not the
+    /// actor address.
+    ForwardNamespaceSubscribed { namespace_id: [u8; 32] },
     /// Edge-trigger the migration-heartbeat emitter to recompute and re-publish
     /// this node's facts for a namespace, out of band of the periodic tick.
     /// Routed `NodeClient -> NodeManager` (the emitter address lives on

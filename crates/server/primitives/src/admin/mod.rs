@@ -448,45 +448,6 @@ impl GetContextsResponse {
     }
 }
 
-/// Request to invite specialized nodes (e.g., read-only TEE nodes) to join a context
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InviteSpecializedNodeRequest {
-    pub context_id: ContextId,
-    /// Optional inviter identity - defaults to context's default identity if not provided
-    pub inviter_id: Option<PublicKey>,
-}
-
-impl InviteSpecializedNodeRequest {
-    pub const fn new(context_id: ContextId, inviter_id: Option<PublicKey>) -> Self {
-        Self {
-            context_id,
-            inviter_id,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InviteSpecializedNodeResponseData {
-    /// Hex-encoded nonce used for the specialized node invite discovery
-    pub nonce: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InviteSpecializedNodeResponse {
-    pub data: InviteSpecializedNodeResponseData,
-}
-
-impl InviteSpecializedNodeResponse {
-    pub fn new(nonce: String) -> Self {
-        Self {
-            data: InviteSpecializedNodeResponseData { nonce },
-        }
-    }
-}
-
 /// Per-context application switch. Code-only: migrations are declared in the
 /// app's embedded ABI and resolved by the node during a group upgrade — the
 /// caller never names a migrate method.
@@ -1255,43 +1216,6 @@ impl TeeAttestResponse {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TeeVerifyQuoteRequest {
-    /// Base64-encoded TDX quote to verify
-    pub quote_b64: String,
-    /// Client-provided nonce that should match report_data[0..32] (64 hex chars = 32 bytes)
-    pub nonce: String,
-    /// Expected application hash that must match report_data[32..64] (64 hex chars = 32 bytes).
-    /// Mandatory: the attestation is only valid if it is bound to this hash.
-    pub expected_application_hash: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TeeVerifyQuoteResponseData {
-    /// Whether the quote signature and certificate chain are valid
-    pub quote_verified: bool,
-    /// Whether the nonce matches report_data[0..32]
-    pub nonce_verified: bool,
-    /// Whether the application hash matches report_data[32..64]
-    pub application_hash_verified: bool,
-    /// Parsed quote structure
-    pub quote: Quote,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TeeVerifyQuoteResponse {
-    pub data: TeeVerifyQuoteResponseData,
-}
-
-impl TeeVerifyQuoteResponse {
-    pub fn new(data: TeeVerifyQuoteResponseData) -> Self {
-        Self { data }
-    }
-}
-
 // -------------------------------------------- Validation Implementations --------------------------------------------
 //
 // Validation Strategy:
@@ -1316,7 +1240,7 @@ use crate::validation::{
         validate_safe_path, validate_string_length, validate_url,
     },
     Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE, MAX_PACKAGE_NAME_LENGTH,
-    MAX_QUOTE_B64_LENGTH, MAX_VERSION_LENGTH,
+    MAX_VERSION_LENGTH,
 };
 
 impl Validate for InstallApplicationRequest {
@@ -1391,13 +1315,6 @@ impl Validate for CreateContextRequest {
     }
 }
 
-impl Validate for InviteSpecializedNodeRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        // All fields are typed (ContextId, Option<PublicKey>) which have their own validation
-        Vec::new()
-    }
-}
-
 impl Validate for UpdateContextApplicationRequest {
     fn validate(&self) -> Vec<ValidationError> {
         // All fields are typed (ApplicationId, PublicKey) with their own validation
@@ -1426,38 +1343,6 @@ impl Validate for TeeAttestRequest {
 
         // Nonce must be exactly 64 hex characters (32 bytes)
         if let Some(e) = validate_hex_string(&self.nonce, "nonce", 32) {
-            errors.push(e);
-        }
-
-        errors
-    }
-}
-
-impl Validate for TeeVerifyQuoteRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        // Quote base64 size limit
-        if self.quote_b64.len() > MAX_QUOTE_B64_LENGTH {
-            errors.push(ValidationError::StringTooLong {
-                field: "quote_b64",
-                max: MAX_QUOTE_B64_LENGTH,
-                actual: self.quote_b64.len(),
-            });
-        }
-
-        // Nonce must be exactly 64 hex characters (32 bytes)
-        if let Some(e) = validate_hex_string(&self.nonce, "nonce", 32) {
-            errors.push(e);
-        }
-
-        // Expected application hash must be exactly 64 hex characters (32 bytes).
-        // It is mandatory: an unbound attestation can never be considered valid.
-        if let Some(e) = validate_hex_string(
-            &self.expected_application_hash,
-            "expected_application_hash",
-            32,
-        ) {
             errors.push(e);
         }
 

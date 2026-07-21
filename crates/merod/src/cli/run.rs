@@ -2,7 +2,7 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_config::ConfigFile;
 use calimero_network_primitives::config::NetworkConfig;
 use calimero_node::sync::SyncConfig;
-use calimero_node::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
+use calimero_node::{start, NodeConfig, NodeMode};
 use calimero_server::config::{AuthMode, ServerConfig};
 use calimero_store::config::StoreConfig;
 use clap::Parser;
@@ -26,12 +26,28 @@ pub struct RunCommand {
 
     /// DEV/TEST ONLY. Produce and accept MOCK TEE attestation quotes (no real TDX).
     /// Insecure — never use in production. Refuses to start alongside a real KMS.
-    #[clap(long, env = "MEROD_MOCK_TEE", default_value_t = false)]
+    /// CLI-only flag (no env inheritance); the mock path is compiled in only under
+    /// the default-off `mock-attestation` build feature.
+    #[clap(long, default_value_t = false)]
     pub mock_tee: bool,
 }
 
 impl RunCommand {
     pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
+        // The flag is declared unconditionally so that a binary built without
+        // `mock-attestation` rejects it with an actionable message instead of a
+        // bare clap "unexpected argument". Checked before anything else (node
+        // init, the deny-guard below): without the feature there is no mock path
+        // to guard in the first place, so the flag can never be honoured.
+        #[cfg(not(feature = "mock-attestation"))]
+        if self.mock_tee {
+            bail!(
+                "--mock-tee: this merod binary was built without mock-attestation support. \
+                 Rebuild with `cargo build -p merod --features mock-attestation` (dev/test only); \
+                 release binaries intentionally contain no mock attestation code."
+            );
+        }
+
         let path = root_args.home.join(root_args.node_name);
 
         if !ConfigFile::exists(&path) {
@@ -40,7 +56,7 @@ impl RunCommand {
 
         let mut config = ConfigFile::load(&path).await?;
 
-        // Apply CLI auth_mode override before validation
+        // Apply CLI auth_mode override before validation.
         if let Some(mode) = self.auth_mode {
             config.network.server.auth_mode = mode.into();
         }
@@ -159,18 +175,20 @@ impl RunCommand {
 
             // Resolve relative RocksDB paths against the node's home directory
             if let AuthStorageConfig::RocksDB { path: storage_path } = &mut auth_config.storage {
-                if storage_path.is_relative() {
-                    *storage_path = path.as_std_path().join(&*storage_path);
-                }
+                *storage_path = crate::cli::resolve_node_relative_path(
+                    path.as_std_path(),
+                    storage_path.clone(),
+                );
             }
 
             server_source.embedded_auth = Some(auth_config);
         } else if let Some(cfg) = server_source.embedded_auth.as_mut() {
             // Also resolve paths for proxy mode if config exists
             if let AuthStorageConfig::RocksDB { path: storage_path } = &mut cfg.storage {
-                if storage_path.is_relative() {
-                    *storage_path = path.as_std_path().join(&*storage_path);
-                }
+                *storage_path = crate::cli::resolve_node_relative_path(
+                    path.as_std_path(),
+                    storage_path.clone(),
+                );
             }
         }
         if let Some(msg) =
@@ -228,11 +246,8 @@ impl RunCommand {
             gc_interval_secs: None, // Use default (12 hours)
             dag_compaction: config.dag_compaction,
             mode: node_mode,
-            specialized_node: SpecializedNodeConfig {
-                invite_topic: network.specialized_node.invite_topic,
-                accept_mock_tee: network.specialized_node.accept_mock_tee,
-            },
             vm_limits: config.runtime.vm_limits(),
+            #[cfg(feature = "mock-attestation")]
             mock_tee: self.mock_tee,
         })
         .await

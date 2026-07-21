@@ -16,19 +16,14 @@ use calimero_utils_actix::LazyRecipient;
 use dashmap::DashMap;
 use eyre::{OptionExt, WrapErr};
 use futures_util::Stream;
-use libp2p::gossipsub::{IdentTopic, TopicHash};
+use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
-use rand::Rng;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
 
-use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use tokio::sync::oneshot;
 
-use crate::messages::{
-    MigrationStatusReport, NodeMessage, RegisterPendingSpecializedNodeInvite,
-    RemovePendingSpecializedNodeInvite,
-};
+use crate::messages::{MigrationStatusReport, NodeMessage};
 use crate::sync::{BroadcastMessage, SealedDeltaPayload, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
 use crate::TopicManager;
 
@@ -206,7 +201,6 @@ pub struct NodeClient {
     node_manager: LazyRecipient<NodeMessage>,
     event_sender: broadcast::Sender<NodeEvent>,
     sync_client: SyncClient,
-    specialized_node_invite_topic: String,
     /// Channel for notifying the node about locally-applied deltas so
     /// its in-memory `DeltaStore` stays in sync without re-scanning the
     /// DB each `perform_interval_sync`. `None` in unit/integration
@@ -235,7 +229,6 @@ impl NodeClient {
         node_manager: LazyRecipient<NodeMessage>,
         event_sender: broadcast::Sender<NodeEvent>,
         sync_client: SyncClient,
-        specialized_node_invite_topic: String,
         local_delta_tx: Option<mpsc::Sender<LocalAppliedDelta>>,
     ) -> Self {
         let topic_manager = TopicManager::new(network_client.clone());
@@ -247,7 +240,6 @@ impl NodeClient {
             node_manager,
             event_sender,
             sync_client,
-            specialized_node_invite_topic,
             local_delta_tx,
             known_subscribers: Arc::new(DashMap::new()),
         }
@@ -355,6 +347,25 @@ impl NodeClient {
                 namespace_id = %hex::encode(namespace_id),
                 "failed to enqueue NamespaceOpApplied signal — readiness FSM will \
                  lag for this namespace until the next op fires or a peer beacon arrives"
+            );
+        }
+    }
+
+    /// Notify the readiness FSM that we just subscribed to a namespace
+    /// topic, so it seeds `subscribed_at` at subscribe time (boot-grace
+    /// anchor) instead of at the first applied op. Best-effort, mirroring
+    /// [`notify_namespace_op_applied`]: on a `try_send` failure the first
+    /// applied op still seeds the entry, just with a later `subscribed_at`.
+    pub fn notify_namespace_subscribed(&self, namespace_id: [u8; 32]) {
+        if let Err(err) = self
+            .node_manager
+            .try_send(NodeMessage::ForwardNamespaceSubscribed { namespace_id })
+        {
+            warn!(
+                ?err,
+                namespace_id = %hex::encode(namespace_id),
+                "failed to enqueue NamespaceSubscribed signal — readiness FSM will \
+                 seed subscribed_at at the first applied op instead"
             );
         }
     }
@@ -728,71 +739,6 @@ impl NodeClient {
         Ok(())
     }
 
-    /// Broadcast a specialized node invite discovery to the global invite topic.
-    ///
-    /// This broadcasts a discovery message and registers a pending invite so that
-    /// when a specialized node responds with verification, the node can create an invitation.
-    ///
-    /// # Arguments
-    /// * `context_id` - The context to invite specialized nodes to
-    /// * `inviter_id` - The identity performing the invitation
-    /// * `invite_topic` - The global topic name for specialized node invite discovery
-    ///
-    /// # Returns
-    /// The nonce used in the request
-    pub async fn broadcast_specialized_node_invite(
-        &self,
-        context_id: ContextId,
-        inviter_id: PublicKey,
-    ) -> eyre::Result<[u8; 32]> {
-        let nonce: [u8; 32] = rand::thread_rng().gen();
-        // Currently only ReadOnly node type is supported
-        let node_type = SpecializedNodeType::ReadOnly;
-
-        info!(
-            %context_id,
-            %inviter_id,
-            ?node_type,
-            topic = %self.specialized_node_invite_topic,
-            nonce = %hex::encode(nonce),
-            "Broadcasting specialized node invite discovery"
-        );
-
-        // Register the pending invite FIRST to avoid race condition
-        // A fast-responding specialized node could send verification request
-        // before registration completes if we broadcast first
-        self.node_manager
-            .send(NodeMessage::RegisterPendingSpecializedNodeInvite {
-                request: RegisterPendingSpecializedNodeInvite {
-                    nonce,
-                    context_id,
-                    inviter_id,
-                },
-            })
-            .await
-            .expect("Mailbox not to be dropped");
-
-        // Now broadcast the discovery message
-        let payload = BroadcastMessage::SpecializedNodeDiscovery { nonce, node_type };
-        let payload = borsh::to_vec(&payload)?;
-        let topic = IdentTopic::new(self.specialized_node_invite_topic.to_owned());
-        let result = self.network_client.publish(topic.hash(), payload).await;
-
-        // If broadcast failed, clean up the pending invite before returning error
-        if result.is_err() {
-            self.node_manager
-                .send(NodeMessage::RemovePendingSpecializedNodeInvite {
-                    request: RemovePendingSpecializedNodeInvite { nonce },
-                })
-                .await
-                .expect("Mailbox not to be dropped");
-        }
-
-        let _ignored = result?;
-
-        Ok(nonce)
-    }
-
     pub fn send_event(&self, event: NodeEvent) -> eyre::Result<()> {
         // the caller doesn't care if there are no receivers
         // so we create a temporary receiver
@@ -1025,7 +971,6 @@ mod publish_on_namespace_now_tests {
             LazyRecipient::new(),
             event_sender,
             sync_client,
-            String::new(),
             None,
         );
 

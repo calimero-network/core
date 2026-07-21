@@ -1,0 +1,38 @@
+name: AI Review Trigger
+
+# On-demand re-review via a PR comment: `/ai-review`.
+# Closes the dismissal-only-round gap: after resolving review threads there was
+# no way to get a fresh verdict without pushing a commit or opening the Actions
+# UI. Write-access commenters only; dispatches the AI Code Review workflow.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: write
+  # For the acknowledgement reaction on the triggering comment.
+  issues: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    # PR comments only, exact command prefix, and write-capable authors only.
+    # author_association and body are evaluated in the expression context, never
+    # interpolated into a shell.
+    if: >-
+      github.event.issue.pull_request != null &&
+      startsWith(github.event.comment.body, '/ai-review') &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
+               github.event.comment.author_association)
+    steps:
+      - name: Acknowledge and dispatch review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" -f content=eyes
+          gh workflow run ai-review.yaml --repo "$REPO" \
+            -f pr_number="$PR_NUMBER" -f agents=3

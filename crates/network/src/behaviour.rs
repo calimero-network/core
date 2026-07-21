@@ -5,11 +5,7 @@ use calimero_network_primitives::config::{
     NetworkConfig, GOSSIPSUB_MESH_N, GOSSIPSUB_MESH_N_HIGH, GOSSIPSUB_MESH_N_LOW,
     GOSSIPSUB_MESH_OUTBOUND_MIN,
 };
-use calimero_network_primitives::specialized_node_invite::{
-    SpecializedNodeInviteCodec, CALIMERO_SPECIALIZED_NODE_INVITE_PROTOCOL,
-};
 use eyre::WrapErr;
-use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm};
 use libp2p::{
@@ -91,19 +87,12 @@ const KAD_MAX_PROVIDED_KEYS: usize = 1024;
 // Gossipsub message-size ceiling. libp2p's hidden default is 64 KiB, which is
 // also the only inbound size guard on the receive path — and small enough that
 // a legitimate large state-delta broadcast is silently dropped. Set it
-// explicitly to 1 MiB: comfortably above real envelopes+deltas, matched to the
-// specialized-node-invite cap, and far below the transport stream limit so it
-// never conflicts with yamux framing. `flood_publish` fans each publish out to
-// every subscriber, so this doubles as the amplification bound and is kept
-// deliberately modest rather than pushed to the stream ceiling.
+// explicitly to 1 MiB: comfortably above real envelopes+deltas and far below
+// the transport stream limit so it never conflicts with yamux framing.
+// `flood_publish` fans each publish out to every subscriber, so this doubles as
+// the amplification bound and is kept deliberately modest rather than pushed to
+// the stream ceiling.
 const GOSSIPSUB_MAX_TRANSMIT_SIZE: usize = 1024 * 1024;
-
-// Inbound concurrency cap for the specialized-node-invite request-response
-// protocol. Each request carries a TEE attestation quote whose verification is
-// expensive; without a cap a peer can open many concurrent request streams and
-// turn cheap bytes into disproportionate CPU. The message size is already
-// bounded by the codec; this bounds how many verifications run at once.
-const SPECIALIZED_NODE_INVITE_MAX_CONCURRENT_STREAMS: usize = 8;
 
 // Addresses dialed in parallel per dial attempt (libp2p default is 8). Lowering
 // it curbs the socket burst when dialing a peer that advertises many
@@ -142,7 +131,6 @@ pub struct Behaviour {
     pub relay: relay::client::Behaviour,
     pub rendezvous: rendezvous::client::Behaviour,
     pub stream: libp2p_stream::Behaviour,
-    pub specialized_node_invite: request_response::Behaviour<SpecializedNodeInviteCodec>,
 }
 
 impl Behaviour {
@@ -326,15 +314,6 @@ impl Behaviour {
                     rendezvous: rendezvous::client::Behaviour::new(key.clone()),
                     relay: relay_behaviour,
                     stream: libp2p_stream::Behaviour::new(),
-                    specialized_node_invite: request_response::Behaviour::new(
-                        [(
-                            CALIMERO_SPECIALIZED_NODE_INVITE_PROTOCOL,
-                            ProtocolSupport::Full,
-                        )],
-                        request_response::Config::default().with_max_concurrent_streams(
-                            SPECIALIZED_NODE_INVITE_MAX_CONCURRENT_STREAMS,
-                        ),
-                    ),
                 };
 
                 // Enable gossipsub application-specific peer scoring

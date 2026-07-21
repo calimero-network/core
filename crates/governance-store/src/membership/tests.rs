@@ -360,6 +360,7 @@ fn membership_policy_rules_report_rejection_reasons() {
         allowed_rtmr2: vec![],
         allowed_rtmr3: vec![],
         allowed_tcb_statuses: vec!["ok".to_owned()],
+        accept_mock: false,
     };
     let claims = TeeAttestationClaims {
         mrtd: "m-ok",
@@ -392,6 +393,160 @@ fn membership_policy_rules_report_rejection_reasons() {
     };
     let err = validate_tee_attestation_allowlists(&policy, &bad_tcb).unwrap_err();
     assert_eq!(err.reason(), MembershipPolicyRejection::TcbStatusNotAllowed);
+}
+
+#[test]
+fn tcb_status_gate_fail_closed_on_empty_allowlist() {
+    use super::policy_rules::{tcb_status_allowed, DEFAULT_ALLOWED_TCB_STATUS};
+
+    // Audit #356 / #17: an empty allowlist must NOT skip the TCB check; it
+    // enforces against the secure default {"UpToDate"}.
+    assert_eq!(DEFAULT_ALLOWED_TCB_STATUS, "UpToDate");
+
+    // Real UpToDate is admitted under an empty (default) policy.
+    assert!(tcb_status_allowed(&[], "UpToDate", false, false));
+
+    // Real OutOfDate is rejected under an empty policy — the regression this
+    // fix proves. Previously this was admitted (check skipped).
+    assert!(!tcb_status_allowed(&[], "OutOfDate", false, false));
+    assert!(!tcb_status_allowed(&[], "SWHardeningNeeded", false, false));
+}
+
+#[test]
+fn tcb_status_gate_honors_non_empty_allowlist() {
+    use super::policy_rules::tcb_status_allowed;
+
+    let allow = vec!["SWHardeningNeeded".to_owned()];
+    // Explicit allowlist still honored: an entry it lists is admitted...
+    assert!(tcb_status_allowed(
+        &allow,
+        "SWHardeningNeeded",
+        false,
+        false
+    ));
+    // ...and a status it does not list is rejected (including the default).
+    assert!(!tcb_status_allowed(&allow, "UpToDate", false, false));
+    assert!(!tcb_status_allowed(&allow, "OutOfDate", false, false));
+}
+
+#[test]
+fn tcb_status_gate_rejects_revoked_unconditionally() {
+    use super::policy_rules::tcb_status_allowed;
+
+    // Revoked is rejected even if somehow present in the allowlist, and
+    // case-insensitively (guards the stored-status subgroup-reuse path).
+    assert!(!tcb_status_allowed(&[], "Revoked", false, false));
+    assert!(!tcb_status_allowed(
+        &["Revoked".to_owned()],
+        "Revoked",
+        false,
+        false
+    ));
+    assert!(!tcb_status_allowed(&[], "revoked", false, false));
+    assert!(!tcb_status_allowed(&[], "REVOKED", false, false));
+    // Even an explicit mock flag on a mock-accepting policy does not rescue a
+    // Revoked status — Revoked is rejected before the mock branch.
+    assert!(!tcb_status_allowed(&[], "Revoked", true, true));
+}
+
+#[test]
+fn tcb_status_gate_preserves_mock_path() {
+    use super::policy_rules::tcb_status_allowed;
+
+    // Mock must still be admitted on a mock-accepting policy: via the explicit
+    // is_mock flag under an empty policy (admit_tee_node path)...
+    assert!(tcb_status_allowed(&[], "Mock", true, true));
+    // ...and via the reserved "Mock" status with is_mock=false (the op-apply /
+    // subgroup-reuse path, which carries no is_mock flag).
+    assert!(tcb_status_allowed(&[], "Mock", false, true));
+    // Mock bypasses even a non-empty allowlist that does not list it.
+    assert!(tcb_status_allowed(
+        &["UpToDate".to_owned()],
+        "Mock",
+        false,
+        true
+    ));
+
+    // The is_mock flag bypasses the TCB check entirely — even a real-looking
+    // non-"Mock" status like OutOfDate is admitted when is_mock=true on a
+    // mock-accepting policy (the TCB allowlist does not apply to the mock path).
+    assert!(tcb_status_allowed(&[], "OutOfDate", true, true));
+}
+
+#[test]
+fn tcb_status_gate_mock_requires_accept_mock() {
+    use super::policy_rules::tcb_status_allowed;
+
+    // Audit follow-up: the mock bypass is gated on the group's stored
+    // `accept_mock`. A stored "Mock" status replayed onto a real fleet
+    // (accept_mock=false) on the op-apply path must NOT bypass the gate — it
+    // falls through to the empty-allowlist secure default and is rejected,
+    // rather than acting as a permanent bypass token.
+    assert!(!tcb_status_allowed(&[], "Mock", false, false));
+    assert!(!tcb_status_allowed(
+        &["UpToDate".to_owned()],
+        "Mock",
+        false,
+        false
+    ));
+    // The explicit is_mock flag is likewise inert when the policy rejects mock
+    // (defense-in-depth behind admit_tee_node's upstream `is_mock && !accept_mock`
+    // rejection). With a non-allowlisted status it is rejected.
+    assert!(!tcb_status_allowed(&[], "OutOfDate", true, false));
+}
+
+#[test]
+fn validate_allowlists_empty_tcb_enforces_secure_default() {
+    use super::policy_rules::{
+        validate_tee_attestation_allowlists, MembershipPolicyRejection, TeeAllowlistPolicy,
+        TeeAttestationClaims,
+    };
+
+    // Empty allowlists everywhere except the secure-default TCB enforcement.
+    // `accept_mock` defaults false here (a real fleet); the mock case below
+    // flips it on.
+    let policy = TeeAllowlistPolicy {
+        allowed_mrtd: vec!["m-ok".to_owned()],
+        allowed_rtmr0: vec![],
+        allowed_rtmr1: vec![],
+        allowed_rtmr2: vec![],
+        allowed_rtmr3: vec![],
+        allowed_tcb_statuses: vec![],
+        accept_mock: false,
+    };
+    let up_to_date = TeeAttestationClaims {
+        mrtd: "m-ok",
+        rtmr0: "x",
+        rtmr1: "x",
+        rtmr2: "x",
+        rtmr3: "x",
+        tcb_status: "UpToDate",
+    };
+    assert!(validate_tee_attestation_allowlists(&policy, &up_to_date).is_ok());
+
+    let out_of_date = TeeAttestationClaims {
+        tcb_status: "OutOfDate",
+        ..up_to_date
+    };
+    let err = validate_tee_attestation_allowlists(&policy, &out_of_date).unwrap_err();
+    assert_eq!(err.reason(), MembershipPolicyRejection::TcbStatusNotAllowed);
+
+    // A stored "Mock" status on the op-apply path is rejected on a real fleet
+    // (accept_mock=false): it falls through to the secure default rather than
+    // bypassing the gate.
+    let mock = TeeAttestationClaims {
+        tcb_status: "Mock",
+        ..up_to_date
+    };
+    let err = validate_tee_attestation_allowlists(&policy, &mock).unwrap_err();
+    assert_eq!(err.reason(), MembershipPolicyRejection::TcbStatusNotAllowed);
+
+    // ...but on a mock-accepting fleet the same stored "Mock" passes through.
+    let mock_policy = TeeAllowlistPolicy {
+        accept_mock: true,
+        ..policy
+    };
+    assert!(validate_tee_attestation_allowlists(&mock_policy, &mock).is_ok());
 }
 
 #[test]
@@ -2030,6 +2185,100 @@ fn get_effective_member_capabilities_none_for_denied_inherited_member() {
 }
 
 #[test]
+fn add_member_retracts_a_stale_deny_list_entry() {
+    // A direct member row and a deny entry are contradictory answers to "is
+    // this identity currently a member". Writing the row must retract the deny,
+    // at the write choke point — not only in the `MemberAdded` apply handler,
+    // because several paths materialize a row without going through an op.
+    let store = test_store();
+    let group = test_group_id();
+    let bob = PublicKey::from([0x02; 32]);
+
+    // Removal: the row is deleted, then the identity is deny-listed.
+    MembershipRepository::new(&store)
+        .add_member(&group, &bob, GroupMemberRole::Member)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .remove_member(&group, &bob)
+        .unwrap();
+    DenyListRepository::new(&store).mark(&group, &bob).unwrap();
+    assert!(DenyListRepository::new(&store)
+        .is_denied(&group, &bob)
+        .unwrap());
+
+    // Re-add through the choke point every direct-row writer funnels through.
+    MembershipRepository::new(&store)
+        .add_member(&group, &bob, GroupMemberRole::Member)
+        .unwrap();
+
+    assert!(
+        !DenyListRepository::new(&store)
+            .is_denied(&group, &bob)
+            .unwrap(),
+        "writing a direct member row must retract the deny entry — otherwise the \
+         member holds capabilities in governance while the receive filter silences them"
+    );
+}
+
+#[test]
+fn pre_registered_rejoiner_is_never_denied_and_capable_at_once() {
+    use calimero_context_config::MemberCapabilities;
+
+    // The split-brain this guards against: a kicked member re-joins, and a peer
+    // materializes their direct row OUTSIDE the op-apply path — the sync
+    // responder pre-registering a joiner on a join stream, or the joiner's own
+    // local add in `join_group`. Both call `add_member` directly, so before the
+    // invariant was enforced at that choke point the peer ended up with a direct
+    // row AND a live deny entry. In that state `effective_capabilities` takes the
+    // `Direct` arm (which does not consult the deny-list) and hands back the
+    // group's re-seeded default capabilities, while the state-delta receive
+    // filter drops every delta the member authors. The two views must agree.
+    let store = test_store();
+    let group = test_group_id();
+    let bob = PublicKey::from([0x02; 32]);
+
+    CapabilitiesRepository::new(&store)
+        .set_default_capabilities(&group, MemberCapabilities::CAN_CREATE_CONTEXT.bits())
+        .unwrap();
+
+    // Kick: row deleted (which also drops the capability row), identity denied.
+    MembershipRepository::new(&store)
+        .add_member(&group, &bob, GroupMemberRole::Member)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .remove_member(&group, &bob)
+        .unwrap();
+    DenyListRepository::new(&store).mark(&group, &bob).unwrap();
+
+    // Re-join, materialized by a peer ahead of the governance op landing.
+    MembershipRepository::new(&store)
+        .add_member(&group, &bob, GroupMemberRole::Member)
+        .unwrap();
+
+    let denied = DenyListRepository::new(&store)
+        .is_denied(&group, &bob)
+        .unwrap();
+    let caps = MembershipRepository::new(&store)
+        .effective_capabilities(&group, &bob)
+        .unwrap();
+
+    assert!(
+        !denied,
+        "pre-registering a re-joiner must lift the network-level silence"
+    );
+    assert_eq!(
+        caps,
+        Some(MemberCapabilities::CAN_CREATE_CONTEXT.bits()),
+        "re-add re-seeds the group defaults"
+    );
+    // The actual invariant: governance and the receive filter cannot disagree.
+    assert!(
+        !(denied && caps.is_some()),
+        "split-brain: capable in governance while silenced on the network"
+    );
+}
+
+#[test]
 fn subgroup_visible_to_open_child_is_public_to_everyone() {
     use calimero_context_config::VisibilityMode;
 
@@ -2215,4 +2464,223 @@ fn is_authoritative_namespace_identity_recognizes_owner_admin_tee() {
     assert!(!MembershipRepository::new(&store)
         .is_authoritative_namespace_identity(namespace_id.into(), &stranger)
         .unwrap());
+}
+
+// ---------------------------------------------------------------------
+// Open -> Restricted flip-back semantics (PR #3267 review comments
+// 3593200482 / 3593200484).
+//
+// The AI reviewer asserted that an inherited-only member "keeps its
+// already-granted inherited access" after a subgroup reverts from Open
+// to Restricted, because nothing re-evaluates existing joins on the
+// flip-back. These tests pin the actual resolution semantics rather
+// than arguing from a reading of `check_path`.
+// ---------------------------------------------------------------------
+
+/// Seed a root-admitted inherited-only member: a direct row at `root`
+/// carrying `CAN_JOIN_OPEN_SUBGROUPS`, no direct row at `sub`, and `sub`
+/// nested under `root` and flipped `Open`. This is the `ReadOnlyTee`
+/// shape the flip-back findings are about.
+fn seed_inherited_only_member_open(
+    store: &Store,
+    root: &ContextGroupId,
+    sub: &ContextGroupId,
+    member: &PublicKey,
+) {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    nest_for_test(store, root, sub);
+    MembershipRepository::new(store)
+        .add_member(root, member, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(store)
+        .set_member_capability(
+            root,
+            member,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+    CapabilitiesRepository::new(store)
+        .set_subgroup_visibility(sub, VisibilityMode::Open)
+        .unwrap();
+}
+
+/// The contested claim, stated as a test: an inherited-only member does
+/// NOT retain membership across an Open -> Restricted flip-back. The
+/// wall closes on the very next resolution — there is no cached grant
+/// and therefore no "already-granted access" to revoke.
+#[test]
+fn flip_back_to_restricted_revokes_inherited_membership() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let root = ContextGroupId::from([0xA0; 32]);
+    let sub = ContextGroupId::from([0xA1; 32]);
+    let tee = PublicKey::from([0x01; 32]);
+
+    seed_inherited_only_member_open(&store, &root, &sub, &tee);
+
+    // While Open: inherited membership resolves.
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&sub, &tee)
+            .unwrap(),
+        "precondition: an Open subgroup grants inherited membership"
+    );
+    assert!(matches!(
+        MembershipRepository::new(&store)
+            .check_path(&sub, &tee)
+            .unwrap(),
+        MembershipPath::Inherited {
+            via_admin: false,
+            ..
+        }
+    ));
+
+    // The flip back, exactly as `SubgroupVisibilitySet -> Restricted` applies it.
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+        .unwrap();
+
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&sub, &tee)
+            .unwrap(),
+        "flip-back to Restricted must revoke inherited membership immediately"
+    );
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .check_path(&sub, &tee)
+            .unwrap(),
+        MembershipPath::None,
+        "an inherited-only member resolves to None once the wall is back up"
+    );
+}
+
+/// Membership is not the only surface: the capability bitmask an
+/// inherited member holds must lapse on the same flip, otherwise a
+/// caller gating on `effective_capabilities` would still see a grant.
+#[test]
+fn flip_back_to_restricted_revokes_inherited_capabilities() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let root = ContextGroupId::from([0xA2; 32]);
+    let sub = ContextGroupId::from([0xA3; 32]);
+    let tee = PublicKey::from([0x02; 32]);
+
+    seed_inherited_only_member_open(&store, &root, &sub, &tee);
+    assert!(
+        MembershipRepository::new(&store)
+            .effective_capabilities(&sub, &tee)
+            .unwrap()
+            .is_some(),
+        "precondition: an Open subgroup yields inherited capabilities"
+    );
+
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+        .unwrap();
+
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .effective_capabilities(&sub, &tee)
+            .unwrap(),
+        None,
+        "flip-back must lapse the inherited capability bitmask, not just is_member"
+    );
+}
+
+/// Control: the flip-back must revoke ONLY inherited access. A member
+/// with a direct row in the subgroup is unaffected — this is what makes
+/// the revocation attributable to the visibility wall rather than to
+/// some unrelated teardown.
+#[test]
+fn flip_back_to_restricted_leaves_direct_membership_intact() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let root = ContextGroupId::from([0xA4; 32]);
+    let sub = ContextGroupId::from([0xA5; 32]);
+    let inherited_only = PublicKey::from([0x03; 32]);
+    let direct = PublicKey::from([0x04; 32]);
+
+    seed_inherited_only_member_open(&store, &root, &sub, &inherited_only);
+    // `direct` additionally holds a real row in the subgroup itself.
+    MembershipRepository::new(&store)
+        .add_member(&sub, &direct, GroupMemberRole::Member)
+        .unwrap();
+
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+        .unwrap();
+
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&sub, &inherited_only)
+            .unwrap(),
+        "inherited-only access lapses"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&sub, &direct)
+            .unwrap(),
+        "a direct row survives the flip-back — the wall gates inheritance only"
+    );
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .check_path(&sub, &direct)
+            .unwrap(),
+        MembershipPath::Direct,
+    );
+}
+
+/// Depth-independence: the wall closes at ANY hop of the Open chain, not
+/// just the leaf the member is resolving. A mid-chain flip-back cuts a
+/// member inheriting from further up.
+#[test]
+fn flip_back_at_mid_chain_revokes_inheritance_from_root() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let root = ContextGroupId::from([0xA6; 32]);
+    let mid = ContextGroupId::from([0xA7; 32]);
+    let leaf = ContextGroupId::from([0xA8; 32]);
+    let tee = PublicKey::from([0x05; 32]);
+
+    nest_for_test(&store, &root, &mid);
+    nest_for_test(&store, &mid, &leaf);
+    MembershipRepository::new(&store)
+        .add_member(&root, &tee, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &root,
+            &tee,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+    for gid in [&mid, &leaf] {
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(gid, VisibilityMode::Open)
+            .unwrap();
+    }
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&leaf, &tee)
+            .unwrap(),
+        "precondition: a fully-Open chain grants inherited membership at the leaf"
+    );
+
+    // `leaf` itself stays Open; the wall goes back up at `mid`.
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&mid, VisibilityMode::Restricted)
+        .unwrap();
+
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&leaf, &tee)
+            .unwrap(),
+        "a Restricted hop anywhere on the chain cuts inheritance at the leaf"
+    );
 }

@@ -38,16 +38,24 @@ meroctl --node <name> <subcommand>
 │   ├── delete    # Delete context
 │   ├── list      # List contexts
 │   ├── get       # Get context details
-│   ├── invite    # Invite member
-│   ├── join      # Join via invitation
+│   ├── update    # Update context
+│   ├── watch     # Watch context
+│   ├── sync      # Sync context
+│   ├── alias     # Context alias management
+│   ├── use       # Set default context
 │   └── identity  # Identity management
 ├── blob          # Blob storage
 │   ├── upload    # Upload blob
 │   ├── download  # Download blob
 │   ├── list      # List blobs
 │   └── delete    # Delete blob
+├── dev           # Development helpers
+├── group         # Group management
+├── namespace     # Namespace management (alias: ns)
 ├── call          # Call context method
+├── network       # Network management
 ├── peers         # Peer management
+├── tee           # TEE management
 └── node          # Node info
 ```
 
@@ -74,13 +82,9 @@ src/
 │   │   ├── delete.rs    # Delete command
 │   │   ├── get.rs       # Get command
 │   │   ├── list.rs      # List command
-│   │   ├── invite.rs    # Invite command
-│   │   ├── invite_specialized_node.rs  # Invite specialized node
-│   │   ├── join.rs      # Join command
 │   │   ├── update.rs    # Update command
 │   │   ├── sync.rs      # Sync command
 │   │   ├── watch.rs     # Watch command
-│   │   ├── proposals.rs # Proposals command
 │   │   ├── alias.rs     # Alias command
 │   │   ├── identity.rs  # Identity subcommands parent
 │   │   └── identity/
@@ -107,7 +111,9 @@ src/
 │   ├── contexts.rs      # Context output
 │   ├── blobs.rs         # Blob output
 │   ├── aliases.rs       # Alias output
-│   └── proposals.rs     # Proposal output
+│   ├── groups.rs        # Group output
+│   ├── network.rs       # Network output
+│   └── tee.rs           # TEE output
 ├── common.rs            # Shared utilities
 ├── config.rs            # Configuration
 ├── connection.rs        # Connection handling

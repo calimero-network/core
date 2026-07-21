@@ -8,6 +8,15 @@ listen_addr = "0.0.0.0:3001"
 issuer = "calimero-auth"
 access_token_expiry = 1800          # 30 minutes
 refresh_token_expiry = 2592000    # 30 days
+# Trusted authoritative host for node-binding validation (security finding #7).
+# When set, node-bound tokens are validated against THIS host instead of the
+# client-controllable Host/X-Forwarded-Host request headers, preventing a caller
+# that reaches the auth service directly from spoofing X-Forwarded-Host to replay
+# a token bound to another node. Set it to the public host clients reach this
+# node at (e.g. "node.example.com" or "localhost:2428"); host-only comparison.
+# Leave it unset (default) to keep legacy header-based behavior — a backend
+# cannot auto-discover its public host, so this hardening is opt-in.
+# node_host = "node.example.com"
 
 # Storage configuration
 [storage]

@@ -21,13 +21,17 @@ use core::net::IpAddr;
 use core::time::Duration;
 use eyre::{bail, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
-use mero_auth::config::{AuthConfig as EmbeddedAuthConfig, StorageConfig as AuthStorageConfig};
+use mero_auth::config::{
+    AuthConfig as EmbeddedAuthConfig, StorageConfig as AuthStorageConfig, UserPasswordConfig,
+};
+use mero_auth::provisioning;
 use multiaddr::{Multiaddr, Protocol};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{info, warn};
 
+use super::admin_creds::AdminCredArgs;
 use super::auth_mode::AuthModeArg;
 use crate::cli;
 
@@ -55,9 +59,11 @@ async fn restrict_to_owner(_path: impl AsRef<Path>, _mode: u32) -> EyreResult<()
 /// walking the tree after the store is closed makes the raw data — and any
 /// content left by a previous partial init — unreadable to other local users
 /// rather than relying solely on the top-level directory's mode. Symlinks are
-/// left untouched (RocksDB creates none here).
+/// left untouched (RocksDB creates none here). `pub(crate)` so
+/// `auth set-admin` applies the same pinning to the auth database it may
+/// create.
 #[cfg(unix)]
-async fn restrict_tree_to_owner(root: impl AsRef<Path>) -> EyreResult<()> {
+pub(crate) async fn restrict_tree_to_owner(root: impl AsRef<Path>) -> EyreResult<()> {
     let mut stack = vec![root.as_ref().to_path_buf()];
 
     while let Some(dir) = stack.pop() {
@@ -81,7 +87,7 @@ async fn restrict_tree_to_owner(root: impl AsRef<Path>) -> EyreResult<()> {
 }
 
 #[cfg(not(unix))]
-async fn restrict_tree_to_owner(_root: impl AsRef<Path>) -> EyreResult<()> {
+pub(crate) async fn restrict_tree_to_owner(_root: impl AsRef<Path>) -> EyreResult<()> {
     Ok(())
 }
 
@@ -159,6 +165,19 @@ pub struct InitCommand {
     /// Embedded auth storage path (only used with persistent storage)
     #[clap(long, value_name = "PATH")]
     pub auth_storage_path: Option<PathBuf>,
+
+    /// Admin-account credentials, required for `--auth-mode embedded` with
+    /// persistent storage: the admin root key is minted at init, before the
+    /// node ever listens. The password is consumed on the spot (only the
+    /// derived key is stored) — nothing secret lands in config.toml or logs.
+    #[clap(flatten)]
+    pub admin: AdminCredArgs,
+
+    /// Skip creating the admin account at init (embedded auth only). Login
+    /// stays disabled until one is provisioned — via `merod auth set-admin`,
+    /// or MERO_AUTH_ADMIN_USER/MERO_AUTH_ADMIN_PASSWORD at node startup.
+    #[clap(long)]
+    pub no_admin: bool,
 
     /// Enable mDNS discovery
     #[clap(long, default_value_t = true)]
@@ -241,6 +260,10 @@ impl InitCommand {
 
         let path = root_args.home.join(root_args.node_name);
 
+        // Idempotent short-circuit FIRST: a plain re-run against an already
+        // initialized node stays a credential-free no-op (provisioning
+        // scripts re-run `init` freely), and a corrupt config without
+        // `--force` fails before credentials are even looked at.
         if ConfigFile::exists(&path) {
             if let Err(err) = ConfigFile::load(&path).await {
                 if self.force {
@@ -255,7 +278,87 @@ impl InitCommand {
                 warn!("Node is already initialized in {:?}", path);
                 return Ok(());
             }
+        }
 
+        // Only embedded auth with persistent storage mints an admin key at
+        // init, so ONLY that arm resolves the admin credentials — resolving
+        // reads `--admin-password-file`/stdin and consults the environment,
+        // any of which can fail hard (unreadable file, empty password, or a
+        // partial `MERO_AUTH_ADMIN_*` left in the environment for some
+        // unrelated reason). Doing that unconditionally would let those break
+        // a plain `merod init` in a mode that never uses the credentials. The
+        // resolve still happens before the destructive re-init below, so a
+        // `--force` re-init never wipes an existing node home only to then
+        // fail on missing, unreadable, or policy-violating credentials. Modes
+        // that ignore credentials warn only on explicit flags (`provided()`),
+        // never by reading the environment.
+        let auth_mode = self.auth_mode.map(Into::into).unwrap_or(AuthMode::Proxy);
+        let auth_storage_choice = self.auth_storage.unwrap_or(AuthStorageArg::Persistent);
+
+        let admin_to_mint = match (auth_mode, auth_storage_choice) {
+            // --no-admin explicitly defers provisioning, so it must not resolve
+            // credentials at all: an unreadable --admin-password-file or a
+            // partial env spec left over from a script must not fail an init
+            // that was explicitly told not to create an account. Warn only on
+            // explicit flags.
+            (AuthMode::Embedded, AuthStorageArg::Persistent) if self.no_admin => {
+                if self.admin.provided() {
+                    warn!("Ignoring the provided admin credentials because --no-admin was passed");
+                }
+                warn!(
+                    "No admin account will be created: login stays disabled until one is \
+                     provisioned via `merod auth set-admin` or MERO_AUTH_ADMIN_USER/\
+                     MERO_AUTH_ADMIN_PASSWORD at node startup"
+                );
+                None
+            }
+            (AuthMode::Embedded, AuthStorageArg::Persistent) => match self.admin.resolve()? {
+                Some(creds) => Some(creds),
+                None => bail!(
+                    "--auth-mode embedded requires admin credentials so the admin account \
+                     exists before the node ever listens. Provide --admin-user with \
+                     --admin-password-file or --admin-password-stdin (or set \
+                     MERO_AUTH_ADMIN_USER and MERO_AUTH_ADMIN_PASSWORD), or pass \
+                     --no-admin to explicitly defer provisioning."
+                ),
+            },
+            (AuthMode::Embedded, AuthStorageArg::Memory) => {
+                if self.admin.provided() {
+                    warn!(
+                        "In-memory auth storage holds no persistent accounts — ignoring the \
+                         admin credentials. Set MERO_AUTH_ADMIN_USER and \
+                         MERO_AUTH_ADMIN_PASSWORD when running the node instead; the account \
+                         is then minted at every startup."
+                    );
+                }
+                None
+            }
+            (_, _) => {
+                if self.admin.provided() {
+                    warn!("Admin credentials are only used with --auth-mode embedded; ignoring");
+                }
+                None
+            }
+        };
+
+        // Enforce the creation-time password policy NOW, before the
+        // destructive re-init below — not only inside `provision_admin_key`
+        // at the very end. Init always embeds
+        // `mero_auth::embedded::default_config()`, whose user_password policy
+        // is `UserPasswordConfig::default()`; `provision_admin_key` re-checks
+        // the same policy at mint time.
+        if let Some((username, password)) = &admin_to_mint {
+            provisioning::validate_admin_credentials(
+                &UserPasswordConfig::default(),
+                username,
+                password,
+            )?;
+        }
+
+        // Destructive re-init. Only reachable with `--force`: the
+        // credential-free no-op and the corrupt-config bail both returned in
+        // the short-circuit above, and the credentials are already validated.
+        if ConfigFile::exists(&path) {
             // Refuse to delete anything but a real directory here. `path` is the
             // node home we're about to wipe; if it has been replaced by a symlink
             // (or a plain file) since the checks above, fail loudly with a clear
@@ -294,6 +397,35 @@ impl InitCommand {
         // one so the private key and datastore land in an owner-only directory.
         restrict_to_owner(&path, 0o700).await?;
 
+        // The configured auth-storage location (possibly relative); the
+        // embedded-auth config below stores it as-is, while minting resolves
+        // it against the node home — the same rule `merod run` applies.
+        let auth_storage_rel = self
+            .auth_storage_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("auth"));
+
+        // Mint the admin root key BEFORE config.toml is written: config.toml
+        // is what marks a node "initialized" (the idempotent short-circuit
+        // above keys on it), so a failure here cannot leave a node that
+        // reports "already initialized" yet has no account — a re-run starts
+        // over and re-mints (provisioning is idempotent). `admin_to_mint` is
+        // only Some for embedded auth with persistent storage. The policy is
+        // `UserPasswordConfig::default()`, the same one
+        // `mero_auth::embedded::default_config()` embeds below.
+        if let Some((username, password)) = &admin_to_mint {
+            let auth_db_path =
+                cli::resolve_node_relative_path(path.as_std_path(), auth_storage_rel.clone());
+            super::auth::provision_admin_into_storage(
+                &auth_db_path,
+                &UserPasswordConfig::default(),
+                username,
+                password,
+            )
+            .await?;
+            info!("Created the admin account (user: {username})");
+        }
+
         let identity = Keypair::generate_ed25519();
         info!("Generated identity: {:?}", identity.public().to_peer_id());
 
@@ -330,19 +462,17 @@ impl InitCommand {
             },
         };
 
-        let auth_mode = self.auth_mode.map(Into::into).unwrap_or(AuthMode::Proxy);
         let embedded_auth = if matches!(auth_mode, AuthMode::Embedded) {
             let mut auth_cfg: EmbeddedAuthConfig = mero_auth::embedded::default_config();
-            let storage_choice = self.auth_storage.unwrap_or(AuthStorageArg::Persistent);
-            let storage_path = self.auth_storage_path.clone();
 
-            match storage_choice {
+            match auth_storage_choice {
                 AuthStorageArg::Persistent => {
-                    let path = storage_path.unwrap_or_else(|| PathBuf::from("auth"));
-                    auth_cfg.storage = AuthStorageConfig::RocksDB { path };
+                    auth_cfg.storage = AuthStorageConfig::RocksDB {
+                        path: auth_storage_rel.clone(),
+                    };
                 }
                 AuthStorageArg::Memory => {
-                    if let Some(path) = storage_path {
+                    if let Some(path) = self.auth_storage_path {
                         warn!(
                             "Ignoring --auth-storage-path={} because in-memory storage is selected",
                             path.display()

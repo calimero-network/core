@@ -55,6 +55,22 @@ pub struct JwtConfig {
     /// Refresh token expiry time in seconds (default: 30 days)
     #[serde(default = "default_refresh_token_expiry")]
     pub refresh_token_expiry: u64,
+
+    /// Trusted authoritative host for node-binding validation (security finding
+    /// #7). When set, a node-bound token is validated against THIS value instead
+    /// of the request's `Host`/`X-Forwarded-Host` header — both of which are
+    /// client-controllable, so an attacker reaching the auth service directly
+    /// (outside the reverse-proxy path) could otherwise spoof `X-Forwarded-Host`
+    /// to replay a node-A token against node-B.
+    ///
+    /// Set it to the node's public host that clients actually reach (e.g.
+    /// `node.example.com` or `localhost:2428`); the scheme/port are compared
+    /// host-only. Leave it unset to preserve the legacy header-based behavior —
+    /// a backend cannot reliably auto-discover its own public host, so this
+    /// hardening is opt-in and non-breaking for local/dev and existing
+    /// deployments.
+    #[serde(default)]
+    pub node_host: Option<String>,
 }
 
 fn default_access_token_expiry() -> u64 {
@@ -82,6 +98,11 @@ pub enum StorageConfig {
 }
 
 /// Username/password configuration
+///
+/// Configs written by older releases may still carry a `bootstrap_secret`
+/// key (the removed first-login setup-code flow); serde ignores unknown
+/// fields, so those files keep parsing and the value is inert. The admin
+/// account is provisioned out of band instead — see [`crate::provisioning`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserPasswordConfig {
     /// Minimum password length
@@ -354,4 +375,23 @@ pub fn load_config(path: &str) -> eyre::Result<AuthConfig> {
         .try_deserialize()?;
 
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UserPasswordConfig;
+
+    #[test]
+    fn stale_bootstrap_secret_key_in_config_is_ignored() {
+        // Configs written by pre-cutover releases carry a `bootstrap_secret`
+        // key; it must parse (serde ignores unknown fields) and stay inert.
+        let cfg: UserPasswordConfig = toml::from_str(
+            "min_password_length = 8\n\
+             max_password_length = 128\n\
+             bootstrap_secret = \"stale-setup-code\"\n",
+        )
+        .expect("a config with the removed key must still parse");
+        assert_eq!(cfg.min_password_length, 8);
+        assert_eq!(cfg.max_password_length, 128);
+    }
 }

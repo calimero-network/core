@@ -19,8 +19,11 @@ runs:
       id: cache-key
       shell: bash
       run: |
-        # Key changes only when core (Cargo.lock, crates, prebuilt Dockerfile) changes
-        KEY="merod-image-$( (tar cf - Cargo.lock crates .github/workflows/deps/prebuilt.Dockerfile 2>/dev/null || true) | sha256sum | cut -c1-16)"
+        # Key changes when core (Cargo.lock, crates, prebuilt Dockerfile) changes.
+        # Profile suffix keeps default- and fast-profile callers from colliding on
+        # this repo-wide cache (see commit message).
+        PROFILE="lto-${CARGO_PROFILE_RELEASE_LTO:-default}-cgu-${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-default}"
+        KEY="merod-image-${PROFILE}-$( (tar cf - Cargo.lock crates .github/workflows/deps/prebuilt.Dockerfile 2>/dev/null || true) | sha256sum | cut -c1-16)"
         echo "key=${KEY}" >> "$GITHUB_OUTPUT"
         echo "CACHE_KEY=${KEY}" >> "$GITHUB_ENV"
 

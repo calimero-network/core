@@ -637,6 +637,76 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
 }
 
 #[test]
+fn namespace_retry_service_skips_the_nodes_own_ops() {
+    // A node's own group op is applied through the local authoring path at
+    // publish time (recording the GROUP nonce), but the KeyDelivery retry
+    // replays from the namespace op-log and the receive apply dedups on the
+    // NAMESPACE nonce — a separate sequence the local path never wrote. So a
+    // node's own op would slip past the nonce guard and re-run its mutation. For
+    // a removal replayed out of causal order after a re-add, that re-deletes the
+    // membership / identity / deny state the re-add restored (the "re-added
+    // leaver can't author" bug). A node's own op is never buffered-awaiting-key,
+    // so it must never appear as a retry candidate.
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let namespace_id = [0x84; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let group = ContextGroupId::from([0x85; 32]);
+
+    let own_sk = PrivateKey::random(&mut rng);
+    let own_pk = own_sk.public_key();
+    let peer_sk = PrivateKey::random(&mut rng);
+
+    // This node holds the namespace identity `own_pk`.
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &own_pk, own_sk.as_bytes(), &[0u8; 32])
+        .unwrap();
+
+    let group_key = [0x92; 32];
+    let key_id = GroupKeyring::new(&store, group)
+        .store_key(&group_key)
+        .unwrap();
+    let mk = |sk: &PrivateKey, nonce: u64| {
+        SignedNamespaceOp::sign(
+            sk,
+            namespace_id.into(),
+            vec![],
+            nonce,
+            NamespaceOp::Group {
+                group_id: group.to_bytes().into(),
+                key_id: key_id.into(),
+                encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
+                key_rotation: None,
+            },
+        )
+        .unwrap()
+    };
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    gov.store_operation(&mk(&own_sk, 1)).unwrap();
+    gov.store_operation(&mk(&peer_sk, 1)).unwrap();
+
+    let candidates = NamespaceRetryService::new(&store, namespace_id.into())
+        .collect_retry_candidates_for_group(group.to_bytes())
+        .unwrap();
+
+    assert_eq!(
+        candidates.len(),
+        1,
+        "the node's own op must be skipped; only the peer op is retryable"
+    );
+    assert_eq!(
+        candidates[0].signed_op.signer,
+        peer_sk.public_key(),
+        "the surviving candidate is the peer op, not the node's own"
+    );
+}
+
+#[test]
 fn namespace_retry_service_orders_candidates_by_signer_nonce() {
     // Regression test for #2349: when a peer buffers several
     // `NamespaceOp::Group` ops from the same signer pending
@@ -5786,5 +5856,263 @@ fn curative_sweep_redrives_stranded_context() {
         known_namespace_identities(&store).unwrap(),
         vec![namespace_id],
         "the node's known-namespace enumeration must include the joined namespace"
+    );
+}
+
+/// #3198 regression: delivering the NAMESPACE key must re-drive an `Open`
+/// subgroup's buffered ops, not only the namespace root's own ops.
+///
+/// An `Open` subgroup encrypts its governance ops with the *namespace* key (see
+/// `GroupGovernancePublisher`). A root-admitted member (e.g. a `ReadOnlyTee`)
+/// that receives a `SubgroupVisibilitySet -> Open` op BEFORE the namespace key
+/// arrived parks it undecryptable, and the subgroup keeps reading `Restricted`.
+/// Before the fix, the key-delivery retry (`retry_encrypted_ops_for_group`) only
+/// re-drove the group whose key just arrived — the namespace root — so the
+/// parked subgroup op stayed effect-skipped forever, and inherited auto-follow
+/// never joined contexts registered under the subgroup (`meroctl context ls`
+/// empty on the replica). The fix fans the namespace-key delivery out to every
+/// group that now holds a decryptable buffered op.
+#[test]
+fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_context_config::VisibilityMode;
+    use rand::rngs::OsRng;
+    use rand::RngCore;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    // ---- Namespace root + this (receiver) node's identity ------------------
+    let ns_gid = ContextGroupId::from([0xA7u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(owner_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &owner_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
+        .unwrap();
+
+    // ---- The Open subgroup: born Restricted, owner is its admin ------------
+    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    nest_for_test(&store, &ns_gid, &sub_gid);
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(owner_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&sub_gid, &owner_pk, GroupMemberRole::Admin)
+        .unwrap();
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&sub_gid)
+            .unwrap(),
+        VisibilityMode::Restricted,
+        "precondition: the subgroup is born Restricted"
+    );
+
+    // ---- Mint the NAMESPACE key (Open subgroups encrypt under it) ----------
+    let ns_key: [u8; 32] = {
+        let mut k = [0u8; 32];
+        rng.fill_bytes(&mut k);
+        k
+    };
+    let ns_key_id = GroupKeyring::key_id_for(&ns_key);
+
+    // ---- Buffer the namespace-key-encrypted SubgroupVisibilitySet(Open) ----
+    let inner_op = GroupOp::SubgroupVisibilitySet {
+        mode: VisibilityMode::Open,
+    };
+    let encrypted = GroupKeyring::encrypt_op(&ns_key, &inner_op).unwrap();
+    let flip_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id.into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: sub_gid.to_bytes().into(),
+            key_id: ns_key_id.into(),
+            encrypted,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    // Applied WITHOUT the namespace key present → DAG-applied but effect-skipped.
+    apply_signed_namespace_op(&store, &flip_op)
+        .expect("apply buffered SubgroupVisibilitySet (effect-skipped: no namespace key)");
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&sub_gid)
+            .unwrap(),
+        VisibilityMode::Restricted,
+        "the flip must be effect-skipped while the namespace key is absent"
+    );
+
+    // ---- Namespace key arrives; drive the key-delivery retry entry point ---
+    let stored_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&ns_key)
+        .unwrap();
+    assert_eq!(stored_id, ns_key_id, "stored namespace key id must match");
+
+    // This is exactly what `apply_received_group_key` calls after storing a
+    // delivered key. Pre-fix it only re-drove the namespace root's own ops and
+    // left the subgroup Restricted; post-fix it fans out to the Open subgroup.
+    retry_encrypted_ops_for_group(&store, namespace_id.into(), namespace_id)
+        .expect("namespace-key delivery retry must not error");
+
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&sub_gid)
+            .unwrap(),
+        VisibilityMode::Open,
+        "#3198: delivering the namespace key must re-drive the Open subgroup's \
+         buffered SubgroupVisibilitySet so it reads Open (enabling inherited follow)"
+    );
+}
+
+// -----------------------------------------------------------------------
+// `GroupCreated` must authorize at the op's causal cut.
+//
+// The arm used to read `MembershipRepository` live for BOTH its legs (root-admin,
+// and root-scoped `CAN_CREATE_SUBGROUP`). A replica that had folded a concurrent
+// capability revoke therefore rejected a `GroupCreated` its peers accepted — and
+// since the reject path never advances the DAG head, every op descending from that
+// `GroupCreated` stalled on the rejecting replica. These pin both directions.
+#[test]
+fn group_created_honors_at_cut_grant_over_live_denial() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    use super::super::test_fixtures::{FixedAuthorizer, TEST_CUT};
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner = owner_sk.public_key();
+    // A namespace member with NO admin row and NO capability row: the live
+    // resolver denies them outright. They stand for a signer whose
+    // CAN_CREATE_SUBGROUP grant this replica has not folded yet.
+    let creator_sk = PrivateKey::random(&mut rng);
+    let creator = creator_sk.public_key();
+
+    let namespace_id = [0xE1u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner });
+    let signed_genesis =
+        SignedNamespaceOp::sign(&owner_sk, namespace_id.into(), vec![], 0, genesis)
+            .expect("owner signs genesis");
+    gov.apply_signed_op(&signed_genesis)
+        .expect("genesis must apply");
+
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &creator)
+            .unwrap(),
+        "precondition: the creator must be denied by the LIVE resolver"
+    );
+
+    let head = gov.read_head_record().expect("read head");
+    let subgroup_id = [0xE2u8; 32];
+    let create_op = NamespaceOp::Root(RootOp::GroupCreated {
+        group_id: subgroup_id.into(),
+        parent_id: namespace_id.into(),
+        restricted: true,
+    });
+    let signed = SignedNamespaceOp::sign(
+        &creator_sk,
+        namespace_id.into(),
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        create_op,
+    )
+    .expect("creator signs GroupCreated");
+
+    NamespaceGovernance::new(&store, namespace_id.into())
+        .with_apply_auth(&TEST_CUT, &FixedAuthorizer(true))
+        .apply_signed_op(&signed)
+        .expect("at-cut grant must authorize GroupCreated even though live rows deny");
+
+    assert!(
+        MetaRepository::new(&store)
+            .load(&ContextGroupId::from(subgroup_id))
+            .unwrap()
+            .is_some(),
+        "the subgroup must be created when the cut authorizes the creator"
+    );
+}
+
+#[test]
+fn group_created_honors_at_cut_denial_over_live_grant() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    use super::super::test_fixtures::{FixedAuthorizer, TEST_CUT};
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    // The owner IS a live admin — the live resolver would wave this through.
+    // At the op's cut, though, the signer had no authority, so it must be rejected.
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner = owner_sk.public_key();
+
+    let namespace_id = [0xE3u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner });
+    let signed_genesis =
+        SignedNamespaceOp::sign(&owner_sk, namespace_id.into(), vec![], 0, genesis)
+            .expect("owner signs genesis");
+    gov.apply_signed_op(&signed_genesis)
+        .expect("genesis must apply");
+
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &owner)
+            .unwrap(),
+        "precondition: the owner must be granted by the LIVE resolver"
+    );
+
+    let head = gov.read_head_record().expect("read head");
+    let subgroup_id = [0xE4u8; 32];
+    let create_op = NamespaceOp::Root(RootOp::GroupCreated {
+        group_id: subgroup_id.into(),
+        parent_id: namespace_id.into(),
+        restricted: true,
+    });
+    let signed = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id.into(),
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        create_op,
+    )
+    .expect("owner signs GroupCreated");
+
+    let err = NamespaceGovernance::new(&store, namespace_id.into())
+        .with_apply_auth(&TEST_CUT, &FixedAuthorizer(false))
+        .apply_signed_op(&signed)
+        .expect_err("at-cut denial must reject GroupCreated even though live rows grant");
+    let _ = err;
+
+    assert!(
+        MetaRepository::new(&store)
+            .load(&ContextGroupId::from(subgroup_id))
+            .unwrap()
+            .is_none(),
+        "a rejected GroupCreated must not write the subgroup meta"
     );
 }

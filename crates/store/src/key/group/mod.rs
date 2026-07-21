@@ -1234,7 +1234,6 @@ pub struct GroupMetaValue {
     /// pre-existing groups). The Owner has exclusive privileges no other
     /// admin can perform: `TransferOwnership`, `DeleteGroup`/
     /// `DeleteNamespace`, and immunity from involuntary `MemberRemoved`.
-    /// See `architecture/membership-and-leave.html` § 7.
     ///
     /// Set to the signer of `CreateGroupRequest` on group creation. New
     /// groups have `owner_identity == admin_identity` initially.
@@ -1252,8 +1251,6 @@ pub struct GroupMetaValue {
 /// - `subgroups`: when a subgroup is nested under a group where this member
 ///   is present, the handler emits a self-admission op in the child carrying
 ///   the member's inherited role.
-///
-/// See `architecture/auto-follow.html` for the full design.
 ///
 /// # Default
 ///
@@ -1885,6 +1882,67 @@ pub const GROUP_KEY_PREFIX: u8 = 0x3A;
 /// would drop legitimate traffic for groups they still belong to.
 pub const GROUP_DENIED_MEMBER_PREFIX: u8 = 0x3B;
 
+/// Prefix for the namespace-root *inherited* deny-list. An entry under
+/// `(namespace_root_id, member_pubkey)` means the member lost their root
+/// membership (evicted from / left the namespace root) and so lost every
+/// Open-subgroup membership they held purely by INHERITANCE from that root row.
+/// Their state deltas to any descendant subgroup's contexts are dropped at the
+/// receive filter — which resolves a context's group to its root and checks
+/// here — until they are re-admitted at the root.
+///
+/// Separate column from `GROUP_DENIED_MEMBER_PREFIX` on purpose: that one is the
+/// per-group "not a member" view carrying the "never coexists with a direct
+/// member row" invariant; this one is a receive-filter-only view keyed to the
+/// root, whose clear lifecycle is the root re-admission (not the per-group row
+/// write). Populated on `MemberRemoved` / `MemberLeft` at the namespace root;
+/// cleared when a direct root row is re-written (`add_member_with_keys`, which
+/// every root re-admission funnels through). Hash-neutral, like the direct
+/// deny-list.
+pub const GROUP_INHERITED_DENIED_MEMBER_PREFIX: u8 = 0x40;
+
+/// Prefix for the pending-key-rotation worklist. A row marks: `group_id` still
+/// owes a forward-secrecy key rotation because `departed` left, and no rotation
+/// has landed yet.
+///
+/// Written by the `MemberLeft` apply — which is deterministic and replicated, so
+/// every node derives the SAME worklist with no coordination — and cleared by the
+/// `GroupKeyRotated` apply that carries the new key. A leaver cannot rotate for
+/// themselves (they would have to mint the key they are being cut off from, and
+/// peers reject a rotation from a non-admin anyway), so the row is the durable
+/// hand-off that lets a remaining admin finish the job, including after a restart.
+pub const GROUP_PENDING_KEY_ROTATION_PREFIX: u8 = 0x3F;
+
+/// Prefix for the per-group re-entry block. An entry under
+/// `(group_id, identity)` means the identity has EXITED the group and may not
+/// re-enter it passively — the value records how they left, which decides what
+/// can readmit them.
+///
+/// Distinct from the deny-list (`GROUP_DENIED_MEMBER_PREFIX`) in both lifetime
+/// and purpose, and the two must not be conflated. The deny-list is a derived
+/// view of "not currently a member" that silences an identity's traffic at the
+/// receive filter, and it is retracted the moment a member row is written. This
+/// block is an *authorization* record that deliberately SURVIVES a member-row
+/// write, because its whole job is to make a re-join attempt fail. Writing a
+/// member row must never clear it; only the paths named below may.
+///
+/// Written on `MemberRemoved` / `MemberLeft` apply. Cleared on `MemberAdded`
+/// apply (an admin re-adding you is the only unban) and, for a `Left` block
+/// only, by a successful invitation join with a nonce this identity has not
+/// already consumed.
+pub const GROUP_REENTRY_BLOCK_PREFIX: u8 = 0x27;
+
+/// Prefix for consumed invitations, keyed
+/// `(group_id, identity, invitation_nonce)`. An entry means this identity has
+/// already used this specific invitation to join this group, so presenting it
+/// again cannot readmit them — they need a freshly issued one.
+///
+/// Keyed by identity as well as nonce on purpose: an open invitation is a
+/// bearer token with no invitee field, so the same nonce legitimately admits
+/// many *different* identities (that is what makes a shared join link work).
+/// What must not happen is the same identity replaying it after they exit.
+/// Consumption is therefore per-identity, not global.
+pub const GROUP_CONSUMED_INVITATION_PREFIX: u8 = 0x28;
+
 /// Prefix for the durable pending-self-purge marker. A row keyed by
 /// `namespace_id` marks that THIS node was confirmed TEE-self-evicted from
 /// the namespace and the local-state cascade purge is in flight or
@@ -2019,6 +2077,301 @@ impl Debug for GroupDeniedMember {
         f.debug_struct("GroupDeniedMember")
             .field("group_id", &self.group_id())
             .field("identity", &self.identity())
+            .finish()
+    }
+}
+
+/// Namespace-root inherited-deny entry (see [`GROUP_INHERITED_DENIED_MEMBER_PREFIX`]).
+/// Presence marks `identity`, keyed to the namespace root, as inherited-denied:
+/// the receive filter drops their deltas to any descendant subgroup they reached
+/// only by inheritance. Same 65-byte layout as `GroupDeniedMember`
+/// (`prefix(1) + group_id(32) + identity(32)`) so `(group_id, *)` prefix scans work
+/// identically, but a distinct column so the two deny views never collide.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupInheritedDeniedMember(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupInheritedDeniedMember {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], identity: PrimitivePublicKey) -> Self {
+        Self(Key(GenericArray::from([
+            GROUP_INHERITED_DENIED_MEMBER_PREFIX,
+        ])
+        .concat(GenericArray::from(group_id))
+        .concat(GenericArray::from(*identity))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> PrimitivePublicKey {
+        let mut pk = [0; 32];
+        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        pk.into()
+    }
+}
+
+impl AsKeyParts for GroupInheritedDeniedMember {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupInheritedDeniedMember {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupInheritedDeniedMember {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupInheritedDeniedMember")
+            .field("group_id", &self.group_id())
+            .field("identity", &self.identity())
+            .finish()
+    }
+}
+
+/// How an identity left a group. Recorded on the re-entry block, because what
+/// can readmit them depends on it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub enum GroupExitReason {
+    /// An admin removed them (`MemberRemoved`). Only an admin `MemberAdded`
+    /// readmits them — no invitation, however freshly issued, will.
+    Removed,
+    /// They left of their own accord (`MemberLeft`). A fresh invitation whose
+    /// nonce they have not already consumed readmits them, as does an admin
+    /// `MemberAdded`.
+    Left,
+}
+
+/// Value for [`GroupReentryBlock`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupReentryBlockValue {
+    pub reason: GroupExitReason,
+}
+
+/// Blocks an identity from re-entering a group after they exited it.
+/// Key layout: `prefix(1) + group_id(32) + identity(32)` = 65 bytes.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupReentryBlock(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupReentryBlock {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], identity: PrimitivePublicKey) -> Self {
+        Self(Key(GenericArray::from([GROUP_REENTRY_BLOCK_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(*identity))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> PrimitivePublicKey {
+        let mut pk = [0; 32];
+        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        pk.into()
+    }
+}
+
+impl AsKeyParts for GroupReentryBlock {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupReentryBlock {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupReentryBlock {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupReentryBlock")
+            .field("group_id", &self.group_id())
+            .field("identity", &self.identity())
+            .finish()
+    }
+}
+
+/// Records that `identity` has already used the invitation identified by
+/// `invitation_nonce` to join `group_id`.
+/// Key layout: `prefix(1) + group_id(32) + identity(32) + nonce(32)` = 97 bytes.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupConsumedInvitation(
+    Key<(
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    )>,
+);
+
+impl GroupConsumedInvitation {
+    #[must_use]
+    pub fn new(
+        group_id: [u8; 32],
+        identity: PrimitivePublicKey,
+        invitation_nonce: [u8; 32],
+    ) -> Self {
+        Self(Key(GenericArray::from([GROUP_CONSUMED_INVITATION_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(*identity))
+            .concat(GenericArray::from(invitation_nonce))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> PrimitivePublicKey {
+        let mut pk = [0; 32];
+        pk.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[33..65]);
+        pk.into()
+    }
+
+    #[must_use]
+    pub fn invitation_nonce(&self) -> [u8; 32] {
+        let mut nonce = [0; 32];
+        nonce.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[65..]);
+        nonce
+    }
+}
+
+impl AsKeyParts for GroupConsumedInvitation {
+    type Components = (
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    );
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupConsumedInvitation {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupConsumedInvitation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupConsumedInvitation")
+            .field("group_id", &self.group_id())
+            .field("identity", &self.identity())
+            .field("invitation_nonce", &self.invitation_nonce())
+            .finish()
+    }
+}
+
+/// Pending-key-rotation worklist entry. Presence of the key means: `group_id` owes
+/// a forward-secrecy rotation because `departed` left it, and none has landed yet.
+///
+/// The value is `()` — presence of the key IS the marker, like [`GroupDeniedMember`].
+/// Keyed by `(group_id, departed)` rather than `group_id` alone so two members
+/// leaving the same group concurrently each get their own row: one rotation may
+/// discharge both, but neither row is silently lost if only one rotation lands.
+///
+/// Key layout: `prefix(1) + group_id(32) + departed(32)` = 65 bytes — the same shape
+/// as [`GroupMember`] / [`GroupDeniedMember`], so a `(group_id, *)` prefix scan
+/// enumerates every rotation a group owes, and a full-prefix scan enumerates the
+/// node's whole rotation backlog (what the rotator drains at startup).
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupPendingKeyRotation(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupPendingKeyRotation {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], departed: PrimitivePublicKey) -> Self {
+        Self(Key(GenericArray::from([GROUP_PENDING_KEY_ROTATION_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(*departed))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn departed(&self) -> PrimitivePublicKey {
+        let mut pk = [0; 32];
+        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        pk.into()
+    }
+}
+
+impl AsKeyParts for GroupPendingKeyRotation {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupPendingKeyRotation {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupPendingKeyRotation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupPendingKeyRotation")
+            .field("group_id", &self.group_id())
+            .field("departed", &self.departed())
             .finish()
     }
 }
@@ -2351,6 +2704,7 @@ mod tests {
             NAMESPACE_GOV_HEAD_PREFIX,
             GROUP_KEY_PREFIX,
             GROUP_DENIED_MEMBER_PREFIX,
+            GROUP_PENDING_KEY_ROTATION_PREFIX,
             PENDING_SELF_PURGE_PREFIX,
         ];
         for i in 0..prefixes.len() {

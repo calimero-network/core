@@ -39,7 +39,7 @@ use rand::rngs::OsRng;
 use serial_test::serial;
 use tokio::time::sleep;
 
-use crate::local_governance_node_e2e::boot_test_node;
+use crate::test_node_harness::{boot_test_node, TestNode};
 
 /// The app-keys the fixture runs on. Blob ids are content hashes, so the
 /// fixture seeds REAL blob bytes (a minimal wasm module with an embedded
@@ -59,11 +59,11 @@ struct AppBlobs {
 /// Minimal valid wasm module: magic + version, no sections.
 const EMPTY_WASM: [u8; 8] = [0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
 
-async fn seed_app_blobs(node: &crate::local_governance_node_e2e::TestNode) -> AppBlobs {
+async fn seed_app_blobs(node: &TestNode) -> AppBlobs {
     use calimero_wasm_abi::embed::write_embedded_state_schema;
     use calimero_wasm_abi::schema::{Manifest, MigrationEdgeAbi};
 
-    async fn add(node: &crate::local_governance_node_e2e::TestNode, bytes: Vec<u8>) -> [u8; 32] {
+    async fn add(node: &TestNode, bytes: Vec<u8>) -> [u8; 32] {
         let (blob_id, _) = node
             .node_client
             .add_blob(&bytes[..], None, None)
@@ -738,11 +738,11 @@ struct LadderBlobs {
     v3: [u8; 32],
 }
 
-async fn seed_ladder_bundles(node: &crate::local_governance_node_e2e::TestNode) -> LadderBlobs {
+async fn seed_ladder_bundles(node: &TestNode) -> LadderBlobs {
     use calimero_wasm_abi::embed::write_embedded_state_schema;
     use calimero_wasm_abi::schema::{Manifest, MigrationEdgeAbi};
 
-    async fn add(node: &crate::local_governance_node_e2e::TestNode, bytes: Vec<u8>) -> [u8; 32] {
+    async fn add(node: &TestNode, bytes: Vec<u8>) -> [u8; 32] {
         let (blob_id, _) = node
             .node_client
             .add_blob(&bytes[..], None, None)

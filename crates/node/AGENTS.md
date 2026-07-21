@@ -25,7 +25,9 @@ cargo test -p calimero-node test_sync -- --nocapture
 
 ```
 src/
-├── lib.rs                    # NodeManager actor, NodeClients, NodeState
+├── lib.rs                    # Crate root: module declarations and re-exports
+├── manager.rs                # NodeManager actor
+├── state.rs                  # NodeClients, NodeManagers, NodeState
 ├── run.rs                    # Node startup (start function)
 ├── handlers.rs               # Handler module parent
 ├── handlers/
@@ -33,33 +35,28 @@ src/
 │   ├── network_event/
 │   │   ├── namespace.rs      # ns/<id> topic dispatch (Op/Ack/ReadinessBeacon/ReadinessProbe)
 │   │   └── readiness.rs      # ReadinessBeacon + ReadinessProbe receiver-side handlers
-│   ├── state_delta.rs        # State delta handler
+│   ├── state_delta/          # State delta handler (mod.rs, buffering.rs, crypto.rs, events.rs, store_setup.rs, verify.rs)
 │   ├── stream_opened.rs      # Stream opened handler
 │   ├── blob_protocol.rs      # Blob protocol handler
-│   ├── get_blob_bytes.rs     # Get blob bytes handler
-│   └── specialized_node_invite.rs  # Specialized node invitation handler
+│   └── get_blob_bytes.rs     # Get blob bytes handler
 ├── readiness.rs              # ReadinessTier FSM + ReadinessCache + ReadinessManager actor
 ├── readiness/
 │   └── tests.rs              # FSM transition tests + cache picker / atomicity tests
 ├── join_namespace.rs         # J6 namespace-join: join_namespace/await_namespace_ready/with_retry
 ├── sync/
 │   ├── mod.rs                # Sync module (exception to no mod.rs rule)
-│   ├── manager.rs            # SyncManager
-│   ├── manager/
-│   │   └── application.rs    # Application sync manager
+│   ├── manager/              # SyncManager (mod.rs, blob_fetch.rs, handshake.rs, namespace_join.rs, namespace_sync.rs, tests.rs)
 │   ├── stream.rs             # Sync streams
 │   ├── config.rs             # Sync configuration
 │   ├── tracking.rs           # Sync tracking
 │   ├── blobs.rs              # Blob sync
 │   ├── delta_request.rs      # Delta request handling
 │   ├── helpers.rs            # Sync helpers
-│   ├── key.rs                # Sync key utilities
 │   └── snapshot.rs           # Snapshot handling
 ├── delta_store.rs            # Delta storage
 ├── gc.rs                     # Garbage collection
 ├── constants.rs              # Constants
 ├── arbiter_pool.rs           # Actix arbiter pool
-├── specialized_node_invite_state.rs  # Specialized node invite state
 └── utils.rs                  # Utilities
 primitives/                   # calimero-node-primitives
 ├── src/
@@ -76,7 +73,7 @@ primitives/                   # calimero-node-primitives
 Main coordinator using actix actor pattern:
 
 ```rust
-// src/lib.rs
+// src/manager.rs
 pub struct NodeManager {
     clients: NodeClients,      // External service clients
     managers: NodeManagers,    // Service managers
@@ -109,7 +106,7 @@ impl Handler<NetworkEvent> for NodeManager {
 Handles state synchronization between nodes:
 
 ```rust
-// src/sync/manager.rs
+// src/sync/manager/mod.rs
 pub struct SyncManager {
     // Sync configuration and state
 }
@@ -166,15 +163,16 @@ publishes a `ReadinessProbe`, and awaits the first fresh beacon.
 
 | File                            | Purpose                        |
 | ------------------------------- | ------------------------------ |
-| `src/lib.rs`                    | NodeManager actor definition   |
+| `src/manager.rs`                | NodeManager actor definition   |
+| `src/state.rs`                  | NodeClients, NodeManagers, NodeState |
 | `src/run.rs`                    | `start()` function, NodeConfig |
 | `src/handlers/network_event.rs` | Network event handling         |
 | `src/handlers/network_event/namespace.rs` | `ns/<id>` topic dispatch (Op/Ack/Beacon/Probe) |
 | `src/handlers/network_event/readiness.rs` | Beacon receive + probe forwarding |
-| `src/handlers/state_delta.rs`   | State delta processing         |
+| `src/handlers/state_delta/`     | State delta processing         |
 | `src/readiness.rs`              | Readiness FSM + cache + manager (#2237) |
 | `src/join_namespace.rs`         | J6 namespace-join flow         |
-| `src/sync/manager.rs`           | Sync coordination              |
+| `src/sync/manager/mod.rs`       | Sync coordination              |
 | `primitives/src/client.rs`      | NodeClient interface           |
 
 ## JIT Index
@@ -214,10 +212,10 @@ cargo test -p calimero-node --test network_simulation
 - `ReadinessCache` and `ReadinessCacheNotify` use poison-recoverable
   mutex helpers (`entries_lock` / `waiters_lock`); never call `.lock()`
   directly on those fields
-- `ReadinessCache::insert` does NOT verify signatures or membership —
+- `ReadinessCache::insert` does NOT verify signatures or membership -
   the receiver-side gate `verify_readiness_beacon` is the choke point;
   callers from outside the receiver path must verify first
 - `ns/<id>` topic publishes wrap inner `NamespaceTopicMsg` in
   `BroadcastMessage::NamespaceGovernanceDelta { namespace_id, delta_id,
-  parent_ids, payload: borsh(NamespaceTopicMsg) }` — sender-side
+  parent_ids, payload: borsh(NamespaceTopicMsg) }` - sender-side
   envelope skips break receive-side decoding silently

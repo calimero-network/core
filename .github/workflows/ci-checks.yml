@@ -69,6 +69,21 @@ jobs:
 
           cargo test -- --nocapture
 
+      # The mock TEE attestation path is compiled out by default (the
+      # `mock-attestation` feature is default-OFF so it never reaches a release
+      # binary). The default `cargo test` above therefore does NOT cover it, so
+      # lint + run the mock-only tests explicitly here, otherwise that coverage
+      # silently disappears. Covers: merod KMS mock-attest tests, `merod tee
+      # probe --mock-tee` tests, and the calimero-node mock-fleet governance
+      # harness (`local_governance_node_e2e` + `cascade_dispatch_e2e`).
+      - name: Cargo clippy (mock-attestation)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p merod -p calimero-node -p calimero-server -p calimero-tee-attestation --all-targets --features mock-attestation -- -D warnings
+
+      - name: Cargo test (mock-attestation)
+        if: ${{ !cancelled() }}
+        run: cargo test -p merod -p calimero-node -p calimero-tee-attestation --features mock-attestation -- --nocapture
+
       - name: Cargo check (calimero-context-config)
         if: ${{ !cancelled() }}
         run: cargo check -p calimero-context-config

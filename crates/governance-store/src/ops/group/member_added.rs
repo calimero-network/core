@@ -4,7 +4,7 @@
 use super::super::super::build_auto_follow_set_if_enabled;
 use super::super::super::contexts::restore_member_context_identities;
 use super::context::GroupApplyCtx;
-use crate::{DenyListRepository, MembershipError, MembershipRepository};
+use crate::{MembershipError, MembershipRepository, ReentryRepository};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result as EyreResult};
@@ -24,11 +24,23 @@ pub(crate) fn apply(
     ctx.permissions()
         .require_manage_members(signer, "add member")?;
     ctx.permissions().require_admin_to_add_admin(signer, role)?;
+    // `add_member` also retracts any deny-list entry for the pair, so re-adding
+    // a previously removed member transparently restores their network-level
+    // access. The clear is a property of writing the member row now, not of this
+    // handler — see `MembershipRepository::add_member_with_keys`.
     MembershipRepository::new(store).add_member(group_id, member, role.clone())?;
-    // Clear any stale deny-list entry — re-adding a previously
-    // removed member transparently restores their network-level
-    // access. Idempotent on a member who was never denied.
-    DenyListRepository::new(store).clear(group_id, member)?;
+    // Lift the re-entry block. An admin re-adding someone is the ONLY thing that
+    // readmits an identity an admin removed — no invitation does that, however
+    // freshly issued.
+    //
+    // This lives here, in the admin-gated op handler, and deliberately NOT in
+    // `add_member` alongside the deny-list clear. Several paths write a member
+    // row without an admin authorizing it — the sync responder pre-registers a
+    // joiner, `join_group` adds the joiner locally — and if the block were
+    // cleared at that choke point, a removed member could unban themselves just
+    // by opening a join stream. Reaching this line means `require_manage_members`
+    // above has already passed, which is exactly the authority an unban needs.
+    ReentryRepository::new(store).clear_block(group_id, member)?;
     // Restore per-context `ContextIdentity` rows that
     // `cascade_remove_member_from_group_tree` deleted on a prior
     // `MemberRemoved`. The local-rejoiner anti-spoof gate is

@@ -7,6 +7,7 @@ pub mod auth;
 pub mod config;
 pub mod embedded;
 pub mod providers;
+pub mod provisioning;
 pub mod secrets;
 pub mod server;
 pub mod storage;
@@ -37,6 +38,13 @@ pub enum AuthError {
     InvalidToken(String),
     #[error("Token has expired")]
     TokenExpired,
+    /// A refresh token that was already exchanged (consumed) is being replayed.
+    /// This is treated as token theft: it is a terminal failure that revokes the
+    /// whole refresh-token family (finding #2). Surfaced to clients as the
+    /// `x-auth-error: token_reuse` wire signal so they clear tokens and force
+    /// re-authentication rather than retrying.
+    #[error("Refresh token reuse detected")]
+    TokenReuse,
     /// The presented token's key has been revoked. Kept distinct from
     /// [`InvalidToken`](AuthError::InvalidToken) so the HTTP layer maps it to
     /// `403 Forbidden` via the type, not a substring match on the message

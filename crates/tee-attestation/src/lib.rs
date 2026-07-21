@@ -2,9 +2,18 @@
 //!
 //! This crate provides platform-agnostic interfaces for:
 //! - Generating TDX attestation quotes (Linux with TDX)
-//! - Mock attestation generation (non-Linux platforms, for development)
+//! - Mock attestation generation (non-Linux platforms, for development) —
+//!   compiled only under the default-off `mock-attestation` cargo feature
 //! - Verifying TDX attestation quotes (cross-platform)
 //! - Retrieving TEE host information
+//!
+//! # The `mock-attestation` feature
+//!
+//! `generate_mock_attestation`, `is_mock_quote`, `verify_mock_attestation` and
+//! the `MOCK_QUOTE_HEADER` marker are gated behind the default-off
+//! `mock-attestation` feature so production builds contain no mock-attestation
+//! code path. With the feature off, `generate_attestation` on a non-TDX platform
+//! returns `AttestationError::QuoteGenerationFailed` instead of a mock quote.
 //!
 //! # Example
 //!
@@ -46,12 +55,18 @@
 mod error;
 mod generate;
 mod info;
+mod policy;
 mod verify;
 
 pub use error::AttestationError;
-pub use generate::{
-    build_report_data, generate_attestation, generate_mock_attestation, is_mock_quote,
-    AttestationResult,
-};
+pub use generate::{build_report_data, generate_attestation, AttestationResult};
+#[cfg(feature = "mock-attestation")]
+pub use generate::{generate_mock_attestation, is_mock_quote};
 pub use info::{get_tee_info, TeeInfo};
-pub use verify::{verify_attestation, verify_mock_attestation, VerificationResult};
+pub use policy::{
+    MeasurementRegister, PolicyRejection, VerifierPolicy, DEFAULT_ALLOWED_TCB_STATUS,
+    TCB_STATUS_MOCK, TCB_STATUS_REVOKED,
+};
+#[cfg(feature = "mock-attestation")]
+pub use verify::verify_mock_attestation;
+pub use verify::{verify_attestation, VerificationResult};
