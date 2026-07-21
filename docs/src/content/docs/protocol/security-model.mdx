@@ -107,9 +107,8 @@ Confidentiality is selective and enforced by payload-layer encryption *before* d
 
 | Data | Encrypted? | Key |
 | --- | --- | --- |
-| State-delta `artifact` (the CRDT actions) | **Yes** | Group/scope key (AES-256-GCM, `SharedKey::from_sk`) |
-| State-delta `events` (execution events) | **No** | Plaintext `serde_json`, shipped alongside the artifact |
-| Delta envelope: `root_hash`, `parent_ids`, `hlc`, `author_id`, `key_id`, `governance_position` | **No** | Cleartext routing/causality metadata |
+| State-delta `artifact` (CRDT actions), `root_hash`, and `events` — sealed together in `SealedDeltaPayload` | **Yes** | Group/scope key (AES-256-GCM, `SharedKey::from_sk`) |
+| Delta envelope: `parent_ids`, `hlc`, `author_id`, `delta_id`, `key_id`, `governance_position` | **No** | Cleartext routing/causality metadata |
 | Governance **Group** ops (`EncryptedGroupOp.ciphertext`) | **Yes** | Group key (`from_sk`); `group_id` / `key_id` / `signer` stay cleartext as routing tags |
 | Governance **Root** ops (`GroupCreated`, `MemberJoined`, `KeyDelivery`, …) | **No** | Cleartext by design, visible to all namespace members |
 | Key delivery (`KeyEnvelope.ciphertext`) | **Yes** | ECDH `SharedKey::new(sender_sk, recipient_pk)` over the 32-byte group key |
@@ -133,8 +132,7 @@ Mechanics and the rotation-log bookkeeping are in [Key Rotation](/protocol/key-r
 
 Stating the non-guarantees is as important as the guarantees:
 
-- **Execution `events` are plaintext.** They ride alongside the encrypted artifact on the gossip topic. Do not put secrets in events — treat them as public to any topic subscriber.
-- **Envelope metadata is observable on the topic.** The gossip topic for a context is its `context_id`, and messages are *signed but not encrypted*. Any subscriber — even one holding no group key — can read `author_id`, `parent_ids`, `hlc`, `root_hash`, and `key_id`, and from those reconstruct the DAG shape, write cadence, active participants, and convergence state. Confidentiality hides payloads, not traffic analysis.
+- **Envelope metadata is observable on the topic.** The gossip topic for a context is its `context_id`, and the envelope is *signed but not encrypted*. Any subscriber — even one holding no group key — can read `author_id`, `parent_ids`, `hlc`, `delta_id`, and `key_id`, and from those reconstruct the DAG shape, write cadence, and active participants. Confidentiality hides payloads (including the `root_hash` and `events`, which are sealed), not traffic analysis.
 - **A compromised member can write and delete default data.** Membership is the write boundary for non-restricted entities (`DEFAULT_MEMBER_MASK = WRITE | DELETE`). A single compromised member key can corrupt or wipe any default entity in the scope. Narrow this only by making sensitive data restricted objects with explicit ACLs.
 - **Blobs are not encrypted** at rest or at the application layer; only the transport protects them in flight. `BlobId = SHA-256(plaintext)`.
 - **At-rest store *keys* are plaintext** even when the optional `EncryptedDatabase` wrapper is enabled (so range scans still work); only values are encrypted, and only if the wrapper is on.
@@ -143,7 +141,7 @@ Stating the non-guarantees is as important as the guarantees:
 
 | Position | Can do | Can't do |
 | --- | --- | --- |
-| **Topic observer** (subscribed, holds no group key) | Read all envelope metadata: `context_id`, `author_id`, `parent_ids`, `hlc`, `root_hash`, `key_id`, `signer`; read plaintext `events`; perform traffic analysis (who is active, write cadence, DAG shape) | Decrypt the state-delta `artifact` or encrypted governance ops; forge a signed op; write to state; learn restricted-object contents |
+| **Topic observer** (subscribed, holds no group key) | Read all envelope metadata: `context_id`, `author_id`, `parent_ids`, `hlc`, `delta_id`, `key_id`, `signer`; perform traffic analysis (who is active, write cadence, DAG shape) | Decrypt the sealed payload (state-delta `artifact`, `root_hash`, `events`) or encrypted governance ops; forge a signed op; write to state; learn restricted-object contents |
 | **Malicious member** (holds the group key, valid identity) | Read all group data; write and delete any *non-restricted* entity (`DEFAULT_MEMBER_MASK`); author validly-signed ops; write to restricted objects they are an ACL writer on | Forge ops as another identity; write to restricted objects they are not listed on; grant themselves `ADMIN` on a default entity; perform admin-only governance without the capability bit |
 | **Removed member** (held the key until removal) | Decrypt past ciphertext encrypted under the *old* key; retain anything already read | Decrypt any state written under the *new* key after rotation; author ops accepted at a cut after their removal (authorization fails at the cut) |
 | **Non-member** (no key, not in the scope) | See only what is observable on the gossip topic (same as a topic observer) | Read any encrypted payload; write anything (no valid membership at any cut); be admitted without an invitation or — for TEE replicas — a valid attestation matching the admission policy |

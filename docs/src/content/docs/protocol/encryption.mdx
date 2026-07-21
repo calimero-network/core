@@ -13,7 +13,7 @@ Confidentiality in Calimero is not a single switch. It is three independent laye
 - **Payload** — application-layer encryption applied to specific fields *before* they are gossiped, so that even a peer subscribed to the topic cannot read them without the right key.
 - **At-rest** — encryption of values written to local storage, gated on an optional KMS-backed wrapper.
 
-The headline question this page answers is: for any given piece of data, *which* of these layers actually covers it. The short version is that payload-layer encryption is selective — it protects the state-change artifact and group governance mutations, but a large amount of routing metadata (and, today, execution events) rides in cleartext on the gossip topic.
+The headline question this page answers is: for any given piece of data, *which* of these layers actually covers it. The short version is that payload-layer encryption is selective — it protects the state-change artifact, the post-apply `root_hash`, and the execution events (all sealed together in one ciphertext), plus group governance mutations, but a large amount of routing metadata rides in cleartext on the gossip topic.
 
 This page cross-links [Identities & Keys](/protocol/identities/) (which key is which), [Key Rotation](/protocol/key-rotation/) (how group keys turn over), [Networking](/protocol/networking/) (the transport and gossip layers), and the operator-facing [Security](/operate/security/) guide.
 
@@ -39,8 +39,9 @@ This is the master map. "Encrypted?" refers to **payload-layer** encryption; eve
 | Data | Encrypted? | Key | Algorithm / notes |
 | --- | --- | --- | --- |
 | State-delta `artifact` (the CRDT actions) | **Yes** | Group/scope key (`from_sk`) | AES-256-GCM. Encrypted at `crates/node/primitives/src/client.rs:557`; decrypted at `crates/node/src/handlers/state_delta/crypto.rs:113`. |
-| State-delta `events` (execution events) | **No** | — | Plaintext `serde_json` shipped alongside the artifact (`client.rs:570`). See the caution below. |
-| Delta envelope: `root_hash`, `parent_ids`, `hlc`, `author_id`, `key_id`, `governance_position`, `delta_signature` | **No** | — | Plaintext routing/causality metadata. |
+| State-delta `events` (execution events) | **Yes** | Group/scope key (`from_sk`) | Sealed with the artifact inside `SealedDeltaPayload`, then AES-256-GCM (`client.rs`). Readable only by group-key holders. |
+| State-delta `root_hash` (post-apply state fingerprint) | **Yes** | Group/scope key (`from_sk`) | Also sealed inside `SealedDeltaPayload` — never a cleartext wire field. |
+| Delta envelope: `parent_ids`, `hlc`, `author_id`, `delta_id`, `key_id`, `governance_position`, `delta_signature`, `nonce` | **No** | — | Plaintext routing/causality metadata. |
 | `key_id` | n/a (it is a tag) | — | `SHA-256(group_key)`; cleartext so receivers can resolve the key. |
 | Governance **Root** ops (`GroupCreated`, `AdminChanged`, `MemberJoined`, `KeyDelivery`, …) | **No** | — | Cleartext, visible to all namespace members by design. |
 | Governance **Group** ops (`EncryptedGroupOp.ciphertext`) | **Yes** | Group key (`from_sk`) | AES-256-GCM over `borsh(GroupOp)`. `group_id` / `key_id` / `signer` stay cleartext as routing tags; non-members store an `OpaqueSkeleton` (`crates/governance-types/src/lib.rs`). |
@@ -67,26 +68,25 @@ The gossip topic for a context is `TopicHash::from_raw(context_id)`, and gossips
   ]}
   steps={[
     { from: 0, to: 0, label: 'SharedKey::from_sk(group_key).encrypt(borsh(artifact)) → ciphertext' },
-    { from: 0, to: 0, label: 'wrap envelope: root_hash · parent_ids · hlc · author_id · key_id + plaintext events' },
+    { from: 0, to: 0, label: 'cleartext envelope: parent_ids · hlc · author_id · key_id — seal payload: artifact + root_hash + events' },
     { from: 0, to: 1, label: 'gossip delta on TopicHash(context_id) — signed, not encrypted', color: '#58a6ff' },
     { from: 0, to: 2, label: 'same message reaches every topic subscriber', color: '#f0883e' },
     { type: 'divider', label: 'identical bytes on the wire — the key is what differs' },
     { from: 1, to: 1, label: 'key_id = sha256(group_key) → pick key from keyring → decrypt → fold artifact' },
     { from: 2, to: 2, label: 'no key for key_id → artifact stays opaque ciphertext' },
-    { from: 2, to: 2, label: 'still reads envelope metadata + plaintext events (kinds, data, handler names)' },
+    { from: 2, to: 2, label: 'reads cleartext envelope metadata only; artifact, root_hash and events stay sealed' },
   ]}
 />
 
 :::caution[Normative]
-Payload encryption protects the `artifact` only. The delta envelope (`root_hash`, `parent_ids`, `hlc`, `author_id`, `key_id`) and the `events` field travel in cleartext and MUST be treated as visible to any topic subscriber, member or not. Do not place secrets in `events`.
+Payload encryption seals the `artifact`, the `root_hash`, and the `events` together in one ciphertext (`SealedDeltaPayload`). The delta envelope (`parent_ids`, `hlc`, `author_id`, `delta_id`, `key_id`, `governance_position`) travels in cleartext and MUST be treated as visible to any topic subscriber, member or not.
 :::
 
 
 - **The context itself** — the topic hash *is* the `context_id`.
 - **Who is active** — `author_id` on every delta, `signer` on every governance op.
-- **The causal graph** — `parent_ids`, `hlc`, and `root_hash` reveal the DAG shape, write cadence, and convergence state, even though the payloads are opaque.
+- **The causal graph** — `parent_ids` and `hlc` reveal the DAG shape and write cadence, even though the payloads are opaque. (The `root_hash` convergence fingerprint is *not* exposed — it is sealed inside the ciphertext.)
 - **Group structure and membership churn** — `group_id` and `key_id` tags on governance ops, plus `KeyDelivery` / `MemberJoined` / `MemberRemoved` Root ops in cleartext, expose who joined or left which group and when.
-- **Execution events** — today, the full event stream (kinds, data, handler names) is in cleartext. See below.
 
 In other words, payload encryption gives you **content confidentiality**, but **not metadata privacy or membership privacy**. An observer who cannot read a single byte of your application state can still map your group's membership, activity, and topology.
 
@@ -101,22 +101,21 @@ BroadcastMessage::StateDelta {
   delta_id:      0x3c08…9d        // hash(parents ‖ actions)
   parent_ids:    [ 0x11aa…02 ]    // previous head(s)
   hlc:           1750.000123:#0   // (seconds.fraction, logical counter)
-  root_hash:     0x6e72…ff        // author's expected scope_root after apply
   key_id:        0x4d90…7c        // = SHA-256(group_key) — which key decrypts
   nonce:         0x1b…(12 bytes)  // AES-GCM nonce
-  artifact:      0xa3f1…(opaque)  // CIPHERTEXT — borsh(actions) under group key
-  events:        [ { kind: "MessageSent", data: { len: 2 } } ]   // PLAINTEXT
+  artifact:      0xa3f1…(opaque)  // CIPHERTEXT — encrypt(borsh(SealedDeltaPayload))
+                                  //   sealed inside: { root_hash, actions, events }
   delta_signature: Some(0x82c5…)  // author's envelope signature
 }
 ```
 
 | Field group | Non-member observer (no key) | Member peer (holds `group_key` where `SHA-256 == key_id`) |
 | --- | --- | --- |
-| `artifact` | Opaque ciphertext — no key for `key_id`, stays unreadable | `SharedKey::from_sk(group_key).decrypt(artifact, nonce)` → the CRDT action(s): a `Put` to the messages collection entry with value `borsh("hi")` |
-| Envelope (`author_id`, `delta_id`, `parent_ids`, `hlc`, `root_hash`, `key_id`) | Fully readable — reconstructs who wrote, when, on top of what, and the convergence state | Same cleartext, plus it now *means* something: the peer folds the decrypted action and confirms its recomputed root matches `root_hash` |
-| `events` | **Readable**: sees a `MessageSent` event fired (kind + data) — even though it never learns the text was `"hi"` | Same — events are plaintext for everyone |
+| `artifact` (sealed payload) | Opaque ciphertext — no key for `key_id`, stays unreadable | `SharedKey::from_sk(group_key).decrypt(artifact, nonce)` → the `SealedDeltaPayload`: the CRDT action(s) (a `Put` with value `borsh("hi")`), the expected `root_hash`, and the `events` |
+| `root_hash` & `events` | **Not visible** — sealed inside the ciphertext | Recovered on decrypt: confirms the recomputed root matches `root_hash`; replays the `MessageSent` event |
+| Envelope (`author_id`, `delta_id`, `parent_ids`, `hlc`, `key_id`) | Fully readable — reconstructs who wrote, when, and on top of what | Same cleartext, plus the decrypted payload now *means* something |
 
-So the observer learns *that* member `0x9f4b…21` sent a chat message of some length at a known time, building on a known parent — it just never learns the **content** `"hi"`. The member learns everything.
+So the observer learns *that* member `0x9f4b…21` wrote some delta at a known time, building on a known parent — but never the **content** `"hi"`, the event it fired, or the resulting convergence state. The member learns everything.
 
 ## How at-rest encryption works
 
@@ -145,20 +144,16 @@ understanding because they make key rotation a non-event (`crates/store/encrypti
 
 These are the sharp edges. Read them before reasoning about what is and isn't private.
 
-:::caution[Execution events ship in cleartext]
-A doc-comment on the wire struct (`crates/node/primitives/src/sync/snapshot.rs:667`) claims `events` is "encrypted along with the artifact." It is not. The broadcast path sends `events` as plaintext `serde_json` (`client.rs:570`), only the `artifact` is passed through `SharedKey::encrypt`. **Event kinds, their data, and handler names are visible to anyone on the gossip topic.** Treat the doc-comment as stale and the events field as public.
+:::note[Events and root_hash are sealed, not cleartext]
+The broadcast path wraps the storage delta, the post-apply `root_hash`, and the execution `events` in a single `SealedDeltaPayload` and passes the whole thing through `SharedKey::encrypt` before publishing (`crates/node/primitives/src/client.rs`). None of the three is a cleartext wire field — event kinds, their data, handler names, and the convergence fingerprint are readable only by group-key holders, recovered on decrypt (`crates/node/src/handlers/state_delta/crypto.rs`). (Earlier builds did ship `events`/`root_hash` in the clear; that gap is closed.)
 :::
 
 :::caution[Empty AAD — envelope fields are not cipher-bound]
-Every `SharedKey` call uses `aead::Aad::empty()`. Nothing in the cleartext envelope (`author_id`, `key_id`, `parent_ids`, `root_hash`, `governance_position`) is bound into the AES-GCM tag. The ciphertext authenticates *only itself*. Integrity of the envelope-to-payload binding therefore rests entirely on the separate `delta_signature` — which is still an `Option` on the wire (verified when `Some`, not yet mandatory). Until that tightens to required, a holder of the group key could re-label a delta's metadata without the GCM tag noticing.
+Every `SharedKey` call uses `aead::Aad::empty()`. Nothing in the cleartext envelope (`author_id`, `key_id`, `parent_ids`, `governance_position`) is bound into the AES-GCM tag. The ciphertext authenticates *only itself*. Integrity of the envelope-to-payload binding rests on the separate `delta_signature`, which covers `(context_id, delta_id, author_id, governance_position)`. The field is still typed `Option` on the wire for the roll-out transition, but the receive path now **rejects a delta whose signature is missing** (`crates/node/src/handlers/state_delta/mod.rs` — "a missing signature cannot prove authorship"), so a group-key holder can no longer re-label a foreign delta's author or DAG position and have it accepted.
 :::
 
 :::caution[Metadata leaks even when payloads are confidential]
 Because the whole envelope is cleartext (see the observer section above), confidential payloads do **not** buy you membership or activity privacy. `context_id` (= topic), `author`, DAG shape, `group_id`, `key_id`, and `signer` are all observable to any topic subscriber. If your threat model includes "who is in this group and how busy are they," payload encryption alone does not cover it.
-:::
-
-:::caution[`root_hash` is cleartext (flagged in-source)]
-The `root_hash` field carries an in-source `todo! shouldn't be cleartext` (`snapshot.rs:663`). It currently leaks each context's convergence state to topic observers. It is a known gap, not a deliberate design point.
 :::
 
 :::caution[The two `SharedKey` semantics are easy to conflate]
@@ -172,9 +167,9 @@ Store-value encryption only happens when the `EncryptedDatabase` wrapper (backed
 ## Summary
 
 - Two crypto modes, one API: `from_sk` (symmetric, group key, bulk data) and `new` (ECDH, key delivery). Both AES-256-GCM, 12-byte nonce, empty AAD.
-- Encrypted: state-delta artifacts, group governance ops, key envelopes; optionally store values (KMS); always the transport.
-- **Not** encrypted: execution events, the entire delta/governance envelope metadata, store keys, blobs. Gossip is signed, not encrypted.
-- Confidentiality covers *content*, not *metadata or membership*. Plan your threat model around the cleartext envelope, the plaintext events, and the off-by-default at-rest layer.
+- Encrypted: state-delta artifacts, the post-apply `root_hash`, and execution events (all sealed together in `SealedDeltaPayload`), group governance ops, key envelopes; optionally store values (KMS); always the transport.
+- **Not** encrypted: the delta/governance envelope routing metadata (`parent_ids`, `hlc`, `author_id`, `key_id`, `governance_position`, …), store keys, blobs. Gossip is signed, not encrypted.
+- Confidentiality covers *content*, not *metadata or membership*. Plan your threat model around the cleartext envelope and the off-by-default at-rest layer.
 
 For how group keys are created and turned over, see [Key Rotation](/protocol/key-rotation/); for the keys themselves, [Identities & Keys](/protocol/identities/).
 

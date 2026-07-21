@@ -72,10 +72,11 @@ Follow one real chat write through the six steps. The context's current head is 
 
 4. persist  — one atomic write: { delta, meta(root=0x6e72…ff, heads=[0x3c08…9d]), state }
 
-5. broadcast — SharedKey::from_sk(group_key).encrypt(borsh(artifact), nonce) → ciphertext
+5. broadcast — seal { root_hash=0x6e72…ff, artifact, events } into SealedDeltaPayload;
+               SharedKey::from_sk(group_key).encrypt(borsh(payload), nonce) → ciphertext
                publish BroadcastMessage::StateDelta { author_id, delta_id, parent_ids,
-                 hlc, root_hash=0x6e72…ff, key_id=0x4d90…7c, nonce, artifact=ciphertext,
-                 events (plaintext), delta_signature } on TopicHash(context_id)
+                 hlc, key_id=0x4d90…7c, nonce, artifact=ciphertext, delta_signature }
+                 on TopicHash(context_id)
 ```
 
 After step 4 the writer's own state already shows `"hi"` and its head has advanced to `delta_id`. The new head **is** the `delta_id` — the next op the same node authors will list `0x3c08…9d` as its parent. Step 5 is how everyone else finds out; the [receive path](/protocol/receive-path/) picks up this exact message from here.
