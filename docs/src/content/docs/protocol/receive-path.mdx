@@ -75,7 +75,7 @@ The `send_message("hi")` delta from the [write path](/protocol/write-path/) land
 5. fold      — apply the Put; messages["m17"] = "hi"; head advances to 0x3c08…9d
                recompute scope_root → 0x6e72…ff == the message's root_hash ✓ converged
 
-6. handlers  — dispatch the plaintext "MessageSent" event to subscribed clients
+6. handlers  — dispatch the "MessageSent" event (recovered from the decrypted payload) to subscribed clients
 ```
 
 The recomputed root in step 5 equals the `root_hash` the author put on the wire — the convergence assertion checks out, so the two peers now hold an identical scope root. Note the author's `root_hash` was never *trusted*: the peer folds its own state and compares, so a tampered value would surface as a divergence to repair, never as granted authority.
