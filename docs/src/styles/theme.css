@@ -30,33 +30,53 @@
 /* Structural diagrams and media never overflow the (now wider) column. */
 .sl-markdown-content :is(svg, img, .archmap) { max-width: 100%; height: auto; }
 
-/* ---- Dark theme (default) ---- */
+/* ---- Dark theme (default) ----
+ * Palette ported verbatim from the published Calimero docs
+ * (docs.calimero.network, also Starlight): the #a5ff11 brand lime on the
+ * neutral Zinc ramp over near-black #09090b. */
 :root[data-theme='dark'] {
-  --sl-color-accent-low: #1f3a04;
+  --sl-color-accent-low: #1a2210;
   --sl-color-accent: #a5ff11;        /* the Calimero brand lime */
-  --sl-color-accent-high: #e0ffb0;
+  --sl-color-accent-high: #a5ff11;
+  --sl-color-text-accent: #b8ff44;   /* brighter lime for links/inline accents */
 
-  --sl-color-white: #f0f6fc;
-  --sl-color-gray-1: #e6edf3;
-  --sl-color-gray-2: #c9d1d9;
-  --sl-color-gray-3: #a8b1ba;        /* lifted for WCAG AA on dark surfaces */
-  --sl-color-gray-4: #7d8590;
-  --sl-color-gray-5: #444c56;
-  --sl-color-gray-6: #21262d;
-  --sl-color-gray-7: #161b22;
-  --sl-color-black: #0d1117;
+  --sl-color-white: #fafafa;
+  --sl-color-gray-1: #e4e4e7;
+  --sl-color-gray-2: #a1a1aa;
+  --sl-color-gray-3: #71717a;
+  --sl-color-gray-4: #52525b;
+  --sl-color-gray-5: #3f3f46;
+  --sl-color-gray-6: #27272a;        /* borders/hairline — lifted for definition on near-black */
+  --sl-color-gray-7: #18181b;        /* code/raised surface — lifts off the page bg */
+  --sl-color-black: #09090b;
 
-  --sl-color-bg: #0d1117;
-  --sl-color-bg-nav: #0d1117ee;
-  --sl-color-bg-sidebar: #161b22;
-  --sl-color-hairline-shade: #30363d;
+  --sl-color-bg: #09090b;
+  --sl-color-bg-nav: rgba(9, 9, 11, .9);
+  --sl-color-bg-sidebar: #111113;
+  --sl-color-hairline-shade: #27272a;
 }
 
-/* ---- Light theme (kept honest — accent darkened for contrast) ---- */
+/* ---- Light theme (Zinc, inverted — accent darkened for AA contrast) ---- */
 :root[data-theme='light'] {
-  --sl-color-accent-low: #d7eeb0;
-  --sl-color-accent: #4d7c0f;
-  --sl-color-accent-high: #1a2e05;
+  --sl-color-accent-low: #edffd0;
+  --sl-color-accent: #5a8f00;
+  --sl-color-accent-high: #5a8f00;
+  --sl-color-text-accent: #4a7600;
+
+  --sl-color-white: #09090b;
+  --sl-color-gray-1: #18181b;
+  --sl-color-gray-2: #3f3f46;
+  --sl-color-gray-3: #71717a;
+  --sl-color-gray-4: #a1a1aa;
+  --sl-color-gray-5: #d4d4d8;
+  --sl-color-gray-6: #e4e4e7;
+  --sl-color-gray-7: #f4f4f5;
+  --sl-color-black: #fafafa;
+
+  --sl-color-bg: #fafafa;
+  --sl-color-bg-nav: rgba(250, 250, 250, .92);
+  --sl-color-bg-sidebar: #f4f4f5;
+  --sl-color-hairline-shade: #e4e4e7;
 }
 
 /* A touch more air in prose; restrained accent on links. */
@@ -71,13 +91,9 @@
 /* Wide spec/reference tables scroll instead of overflowing on small screens. */
 .sl-markdown-content table { display: block; overflow-x: auto; max-width: 100%; }
 
-/* Light theme: keep surfaces and the diagram Replay control legible. */
-:root[data-theme='light'] {
-  --sl-color-bg-sidebar: #f6f8fa;
-  --sl-color-bg-nav: #ffffffee;
-}
+/* Light theme: keep the diagram Replay control legible. */
 :root[data-theme='light'] .replay-btn {
-  background: #f0f3f6; color: #57606a; border-color: #d0d7de;
+  background: #f4f4f5; color: #52525b; border-color: #d4d4d8;
 }
 
 /* ---- Animated diagram engine (ported from the bespoke site) ---- */
