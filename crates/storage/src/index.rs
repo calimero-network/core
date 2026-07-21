@@ -1003,6 +1003,14 @@ impl<S: StorageAdaptor> Index<S> {
     /// single-level concurrent add/update-vs-delete semantics applied
     /// transitively.
     ///
+    /// `Frozen` descendants are the one exception: they are immutable and never
+    /// deleted, so the walk skips a `Frozen` node and its whole subtree rather
+    /// than tombstoning it. A local delete never reaches this state — it is
+    /// rejected up front by `remove_child_from`'s `find_frozen_descendant` scan.
+    /// The skip here is the replay-side fallback: on `apply_delete_ref_action`
+    /// this replica can't reject a peer's `DeleteRef` without diverging, so it
+    /// preserves the frozen data (leaving it a detached orphan) and converges.
+    ///
     /// Internal subtree parent-lists and hashes are intentionally NOT
     /// recomputed: the whole subtree is detached at the root, so none of it
     /// feeds a live hash. Only the root's removal from its parent (done by the
@@ -1029,6 +1037,21 @@ impl<S: StorageAdaptor> Index<S> {
             let Some(index) = Self::get_index(id)? else {
                 continue;
             };
+            // Frozen data is immutable and never deleted: skip a Frozen node AND
+            // its subtree (don't recurse) so deleting a non-frozen parent leaves
+            // the frozen descendant as a surviving orphan. Mirrors the
+            // `RemoveMode::Delete` Frozen guard in `Interface`. Scoped to
+            // descendants (`id != root_id`): both callers (`remove_child_from`,
+            // `apply_delete_ref_action`) reject deleting Frozen data upstream, so
+            // the root is never Frozen here; the caller tombstones it regardless.
+            if id != root_id
+                && matches!(
+                    index.metadata.storage_type,
+                    crate::entities::StorageType::Frozen
+                )
+            {
+                continue;
+            }
             if let Some(children) = &index.children {
                 for child in children {
                     stack.push(child.id());
@@ -1049,6 +1072,41 @@ impl<S: StorageAdaptor> Index<S> {
         }
 
         Ok(())
+    }
+
+    /// Returns the id of the first `Frozen` entity in `root_id`'s subtree
+    /// (excluding `root_id` itself), or `None` if the subtree holds no frozen
+    /// data.
+    ///
+    /// Read-only pre-check for the local delete guard in
+    /// [`remove_child_from`](crate::interface::Interface::remove_child_from): a
+    /// genuine subtree delete must refuse to strand `Frozen` data, so the
+    /// caller rejects the delete and asks the operator to relocate the frozen
+    /// entity out of the subtree first. Kept separate from
+    /// [`tombstone_descendants_of`](Self::tombstone_descendants_of) because the
+    /// check must complete and reject BEFORE any state is mutated.
+    pub(crate) fn find_frozen_descendant(root_id: Id) -> Result<Option<Id>, StorageError> {
+        let _mutation_guard = index_mutation_guard();
+        let mut stack = vec![root_id];
+        while let Some(id) = stack.pop() {
+            let Some(index) = Self::get_index(id)? else {
+                continue;
+            };
+            if id != root_id
+                && matches!(
+                    index.metadata.storage_type,
+                    crate::entities::StorageType::Frozen
+                )
+            {
+                return Ok(Some(id));
+            }
+            if let Some(children) = &index.children {
+                for child in children {
+                    stack.push(child.id());
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Removes a child reference from a parent without creating a tombstone.

@@ -793,6 +793,171 @@ mod subtree_tombstoning {
         }
         assert!(!<Index<TestStorage>>::is_deleted(root).unwrap());
     }
+
+    /// A non-frozen parent may contain a `Frozen` descendant (e.g. a
+    /// `FrozenStorage` field). Frozen data is immutable and never deleted, so
+    /// deleting the parent must SKIP the frozen node AND its subtree (no
+    /// recursion) while still tombstoning the non-frozen rows. Regression for
+    /// the #286 cascade, which tombstoned frozen leaves too.
+    ///
+    /// This exercises the `tombstone_descendants_of` skip layer directly
+    /// (`Index`-level). The `Interface`-level behavior — a local delete of such
+    /// a subtree is REJECTED before any mutation — is covered separately by
+    /// `remove_child_from_rejects_subtree_with_frozen_descendant` in
+    /// `tests/interface.rs`. The skip here is the replay-side fallback.
+    #[test]
+    fn subtree_delete_skips_frozen_descendant_and_its_subtree() {
+        use crate::entities::StorageType;
+        type S = MockedStorage<2104>;
+
+        let frozen_md = Metadata {
+            storage_type: StorageType::Frozen,
+            ..Metadata::default()
+        };
+
+        let root = Id::random();
+        let a = Id::random(); // non-frozen parent being deleted
+        let b = Id::random(); // non-frozen descendant -> tombstoned
+        let f = Id::random(); // Frozen descendant -> survives
+        let fc = Id::random(); // element under the frozen node -> survives (no recursion)
+
+        <Index<S>>::add_root(ChildInfo::new(root, [1; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(root, ChildInfo::new(a, [2; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(b, [3; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(f, [4; 32], frozen_md.clone())).unwrap();
+        <Index<S>>::add_child_to(f, ChildInfo::new(fc, [5; 32], frozen_md)).unwrap();
+
+        <Index<S>>::remove_child_from(root, a, time_now()).unwrap();
+
+        assert!(
+            <Index<S>>::is_deleted(a).unwrap(),
+            "deleted parent tombstoned"
+        );
+        assert!(
+            <Index<S>>::is_deleted(b).unwrap(),
+            "non-frozen descendant tombstoned"
+        );
+        assert!(
+            !<Index<S>>::is_deleted(f).unwrap(),
+            "Frozen descendant must survive the subtree delete"
+        );
+        assert!(
+            !<Index<S>>::is_deleted(fc).unwrap(),
+            "walk must not recurse into a Frozen node: its subtree survives too"
+        );
+        assert!(
+            <Index<S>>::get_children_of(root)
+                .unwrap()
+                .iter()
+                .all(|c| c.id() != a),
+            "deleted node must be removed from parent's children list"
+        );
+        // The skipped frozen node must NOT be advertised as deleted on the sync
+        // wire: it lives on, so listing it in its parent's `deleted_children`
+        // would make a syncing peer apply a spurious delete-wins against it.
+        assert!(
+            !<Index<S>>::get_index(a)
+                .unwrap()
+                .unwrap()
+                .deleted_children()
+                .contains(&f),
+            "surviving frozen node must not appear in parent's deleted_children advert"
+        );
+    }
+
+    /// The skip is by-subtree, not by-node-type: a Frozen node is skipped
+    /// together with EVERYTHING under it, including a *non-frozen* child. Also
+    /// covers a Frozen leaf (no children of its own). Complements
+    /// `subtree_delete_skips_frozen_descendant_and_its_subtree`.
+    #[test]
+    fn subtree_delete_skips_whole_frozen_subtree_and_frozen_leaf() {
+        use crate::entities::StorageType;
+        type S = MockedStorage<2105>;
+
+        let frozen_md = Metadata {
+            storage_type: StorageType::Frozen,
+            ..Metadata::default()
+        };
+
+        let root = Id::random();
+        let a = Id::random(); // non-frozen parent being deleted
+        let f = Id::random(); // Frozen node with a non-frozen child below it
+        let nf_under_f = Id::random(); // NON-frozen, under Frozen -> still survives (no recursion)
+        let fleaf = Id::random(); // Frozen leaf (no children) -> survives
+
+        <Index<S>>::add_root(ChildInfo::new(root, [1; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(root, ChildInfo::new(a, [2; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(f, [3; 32], frozen_md.clone())).unwrap();
+        <Index<S>>::add_child_to(f, ChildInfo::new(nf_under_f, [4; 32], Metadata::default()))
+            .unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(fleaf, [5; 32], frozen_md)).unwrap();
+
+        <Index<S>>::remove_child_from(root, a, time_now()).unwrap();
+
+        assert!(
+            <Index<S>>::is_deleted(a).unwrap(),
+            "deleted parent tombstoned"
+        );
+        assert!(!<Index<S>>::is_deleted(f).unwrap(), "Frozen node survives");
+        assert!(
+            !<Index<S>>::is_deleted(nf_under_f).unwrap(),
+            "non-frozen child under a Frozen node survives: the walk skips the \
+             whole frozen subtree, not just frozen nodes"
+        );
+        assert!(
+            !<Index<S>>::is_deleted(fleaf).unwrap(),
+            "Frozen leaf (no children) survives"
+        );
+    }
+
+    /// `find_frozen_descendant` powers the local delete guard: it locates a
+    /// Frozen entity buried anywhere below the delete root (excluding the root
+    /// itself) and returns `None` for a frozen-free subtree.
+    #[test]
+    fn find_frozen_descendant_locates_deep_frozen_and_ignores_root() {
+        use crate::entities::StorageType;
+        type S = MockedStorage<2106>;
+
+        let frozen_md = Metadata {
+            storage_type: StorageType::Frozen,
+            ..Metadata::default()
+        };
+
+        let root = Id::random();
+        let a = Id::random(); // delete root (non-frozen)
+        let b = Id::random(); // non-frozen descendant
+        let f = Id::random(); // Frozen descendant, two levels down
+
+        <Index<S>>::add_root(ChildInfo::new(root, [1; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(root, ChildInfo::new(a, [2; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(b, [3; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(b, ChildInfo::new(f, [4; 32], frozen_md.clone())).unwrap();
+
+        assert_eq!(
+            <Index<S>>::find_frozen_descendant(a).unwrap(),
+            Some(f),
+            "must find the frozen entity nested below the delete root"
+        );
+
+        // A frozen-free subtree returns None.
+        let c = Id::random();
+        <Index<S>>::add_child_to(root, ChildInfo::new(c, [5; 32], Metadata::default())).unwrap();
+        assert_eq!(
+            <Index<S>>::find_frozen_descendant(c).unwrap(),
+            None,
+            "a subtree with no frozen data must not be flagged"
+        );
+
+        // The root's own StorageType is ignored — only descendants count.
+        let froot = Id::random();
+        <Index<S>>::add_child_to(root, ChildInfo::new(froot, [6; 32], frozen_md)).unwrap();
+        assert_eq!(
+            <Index<S>>::find_frozen_descendant(froot).unwrap(),
+            None,
+            "the scan excludes the root itself: a Frozen root with no frozen \
+             descendants returns None"
+        );
+    }
 }
 
 #[cfg(test)]

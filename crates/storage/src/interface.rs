@@ -2500,6 +2500,21 @@ impl<S: StorageAdaptor> Interface<S> {
             ));
         }
 
+        // A genuine subtree delete must not strand Frozen data buried deeper in
+        // the tree either. Scan descendants BEFORE mutating any state; if any
+        // Frozen entity exists, reject so the operator relocates it out of the
+        // subtree first. Same split-brain avoidance as the direct-child guard
+        // above: we never tombstone the subtree or broadcast a `DeleteRef` that
+        // would leave the frozen data detached on every peer.
+        if mode == RemoveMode::Delete {
+            if let Some(frozen_id) = <Index<S>>::find_frozen_descendant(child_id)? {
+                return Err(StorageError::ActionNotAllowed(format!(
+                    "cannot delete subtree {child_id}: it contains Frozen data at {frozen_id}; \
+                     relocate the frozen entity out of the subtree before deleting"
+                )));
+            }
+        }
+
         // If this is a local user action, set the nonce
         if let StorageType::User { owner, .. } = metadata.storage_type {
             if *owner == crate::env::executor_id() {

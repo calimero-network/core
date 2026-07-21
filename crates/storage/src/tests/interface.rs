@@ -2018,6 +2018,76 @@ mod frozen_storage_verification {
         }
     }
 
+    /// Deleting a non-frozen subtree that has a Frozen entity buried below it
+    /// must also be rejected — the operator has to relocate the frozen data
+    /// out first. The direct child is NOT frozen here, so this exercises the
+    /// descendant scan (`find_frozen_descendant`), not the direct-child guard.
+    #[test]
+    fn remove_child_from_rejects_subtree_with_frozen_descendant() {
+        use crate::delta::{commit_causal_delta, reset_delta_context};
+        use crate::entities::{ChildInfo, Metadata};
+        use crate::index::Index;
+        use crate::store::MainStorage;
+
+        env::reset_for_testing();
+
+        // Non-frozen parent under root, with a non-frozen paragraph beneath it.
+        let mut page = Page::new_from_element("Parent", Element::root());
+        assert!(MainInterface::save(&mut page).unwrap());
+        let mut para = Paragraph::new_from_element("Middle", Element::new(None));
+        assert!(MainInterface::add_child_to(page.id(), &mut para).unwrap());
+
+        // Attach a Frozen entity two levels down, under the paragraph.
+        let frozen_id = Id::new([9; 32]);
+        <Index<MainStorage>>::add_child_to(
+            para.id(),
+            ChildInfo::new(
+                frozen_id,
+                [7; 32],
+                Metadata {
+                    storage_type: StorageType::Frozen,
+                    ..Metadata::default()
+                },
+            ),
+        )
+        .unwrap();
+
+        reset_delta_context();
+
+        // Deleting the paragraph must be refused: its subtree holds frozen data.
+        match MainInterface::remove_child_from(page.id(), para.id()) {
+            Err(StorageError::ActionNotAllowed(msg)) => {
+                assert!(
+                    msg.contains("Frozen") && msg.contains("subtree"),
+                    "error should name the frozen subtree: {msg}"
+                );
+            }
+            other => panic!("Expected ActionNotAllowed error, got {other:?}"),
+        }
+
+        // Nothing tombstoned: the paragraph and the frozen node both survive.
+        assert!(
+            !<Index<MainStorage>>::is_deleted(para.id()).unwrap(),
+            "paragraph must not be tombstoned by a rejected delete"
+        );
+        assert!(
+            !<Index<MainStorage>>::is_deleted(frozen_id).unwrap(),
+            "frozen descendant must survive"
+        );
+
+        // And no `DeleteRef` was broadcast — the guard fires before mutation.
+        if let Some(delta) = commit_causal_delta(&[0; 32]).unwrap() {
+            assert!(
+                !delta
+                    .actions
+                    .iter()
+                    .any(|a| matches!(a, Action::DeleteRef { id, .. } if *id == para.id())),
+                "rejected delete must not emit a DeleteRef, got: {:?}",
+                delta.actions
+            );
+        }
+    }
+
     #[test]
     fn frozen_blob_too_small_fails() {
         env::reset_for_testing();
