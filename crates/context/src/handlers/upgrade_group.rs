@@ -897,16 +897,12 @@ fn classify_target_schema(bytes: &[u8]) -> eyre::Result<Option<Manifest>> {
     }
 }
 
-/// Per-service upgrade decision from the two resolved ABIs. Pure over its
-/// inputs (no I/O) so the guard, plan-match, and evidence-absent rules are
-/// unit-testable without a `NodeClient`. Returns the migration method when the
-/// service must migrate, or `None` for a code-only activation.
+/// Per-service upgrade decision from the two resolved ABIs. Pure (no I/O) so it
+/// is unit-testable without a `NodeClient`. Returns the migration method when
+/// the service must migrate, or `None` for a code-only activation.
 ///
-/// `force_code_only` relaxes ONLY the absent-target-evidence arm (the target
-/// build has no embedded ABI): `true` proceeds code-only, `false` refuses. It
-/// never bypasses the current-side refusal (unknowable from-version) or the
-/// Downgrade/MissingEdge/Behind bails, which are declared evidence of
-/// incompatibility.
+/// `force_code_only` relaxes ONLY the absent-target-ABI arm; it never bypasses
+/// the current-side refusal or the Downgrade/MissingEdge/Behind bails.
 fn decide_service_upgrade(
     service: &str,
     current_abi: Option<&Manifest>,
@@ -937,14 +933,10 @@ fn decide_service_upgrade(
              upgrades are not supported yet - upgrade one version at a time",
             to - from,
         ),
-        // Evidence absent: one side's ABI is unresolvable. A target with no ABI
-        // declares no migration, so force_code_only may proceed code-only (the
-        // operator asserts layout-compatibility); without the flag, refuse
-        // rather than swap bytecode blind. A PRESENT target whose current side
-        // is unknowable stays refused even when forced - a declared schema
-        // cannot be matched against an unknown from-version. (In production the
-        // I/O guards reject the declared-migration current-unknowable case
-        // first; the target-absent case is what reaches here.)
+        // Target has no ABI: it declares no migration, so a forced code-only is
+        // safe (operator asserts layout-compatibility); unforced, refuse rather
+        // than swap blind. An unknowable current side is rejected earlier by the
+        // I/O guards, so only the target-absent case reaches here.
         Err(err) if target_abi.is_none() => {
             if force_code_only {
                 warn!(

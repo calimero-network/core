@@ -421,26 +421,6 @@ fn free_migrate_fn_name(items: &[syn::Item]) -> Option<String> {
     None
 }
 
-/// Three-valued (Kleene) truth of a `#[cfg(...)]` predicate against a known
-/// active-feature set. `Unknown` is any atom the ABI build cannot decide
-/// (`test`, `target_arch`, `doc`, …); it never drops an item on its own.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CfgTruth {
-    True,
-    False,
-    Unknown,
-}
-
-impl CfgTruth {
-    fn not(self) -> Self {
-        match self {
-            Self::True => Self::False,
-            Self::False => Self::True,
-            Self::Unknown => Self::Unknown,
-        }
-    }
-}
-
 /// Fold a feature name into cargo's env-var space (uppercase, `-` -> `_`) so
 /// `schema-v2`, `schema_v2`, and `SCHEMA_V2` all compare equal - matching how
 /// cargo derives `CARGO_FEATURE_*`.
@@ -465,93 +445,65 @@ where
         .collect()
 }
 
-/// Evaluate a `#[cfg(...)]` predicate (`feature = "x"`, `not`, `all`, `any`,
-/// or any other atom) with Kleene logic against the active feature set.
-fn eval_cfg_meta(meta: &syn::Meta, features: &BTreeSet<String>) -> CfgTruth {
-    match meta {
-        syn::Meta::NameValue(nv) if nv.path.is_ident("feature") => {
-            if let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(s),
-                ..
-            }) = &nv.value
-            {
-                if feature_active(&s.value(), features) {
-                    CfgTruth::True
-                } else {
-                    CfgTruth::False
-                }
-            } else {
-                CfgTruth::Unknown
-            }
-        }
-        syn::Meta::List(list) if list.path.is_ident("not") => {
-            match list.parse_args::<syn::Meta>() {
-                Ok(inner) => eval_cfg_meta(&inner, features).not(),
-                Err(_) => CfgTruth::Unknown,
-            }
-        }
-        syn::Meta::List(list) if list.path.is_ident("all") || list.path.is_ident("any") => {
-            let is_all = list.path.is_ident("all");
-            let Ok(preds) = list.parse_args_with(
-                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-            ) else {
-                return CfgTruth::Unknown;
-            };
-            let mut result = if is_all {
-                CfgTruth::True
-            } else {
-                CfgTruth::False
-            };
-            for pred in &preds {
-                match (is_all, eval_cfg_meta(pred, features)) {
-                    // `all`: any False dominates; else Unknown lingers.
-                    (true, CfgTruth::False) => return CfgTruth::False,
-                    (true, CfgTruth::Unknown) => result = CfgTruth::Unknown,
-                    // `any`: any True dominates; else Unknown lingers.
-                    (false, CfgTruth::True) => return CfgTruth::True,
-                    (false, CfgTruth::Unknown) => result = CfgTruth::Unknown,
-                    _ => {}
-                }
-            }
-            result
-        }
-        // Any other atom (`test`, `target_arch = "…"`, `unix`, bare paths, …).
-        _ => CfgTruth::Unknown,
+/// The feature name of a `feature = "x"` predicate, or `None` for any other shape.
+fn cfg_feature_name(meta: &syn::Meta) -> Option<String> {
+    let syn::Meta::NameValue(nv) = meta else {
+        return None;
+    };
+    if !nv.path.is_ident("feature") {
+        return None;
+    }
+    match &nv.value {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(s),
+            ..
+        }) => Some(s.value()),
+        _ => None,
     }
 }
 
-/// Top-level item attributes, or `&[]` for item kinds that carry none.
+/// Whether a single `#[cfg(...)]` definitely gates the item OUT of this build.
+/// Only `feature = "x"` and `not(feature = "x")` are evaluated; every other
+/// shape (compound `all`/`any`, `target_arch`, …) is left in - if that leaves
+/// two `#[app::state]` roots active, the ambiguity check fails the build loudly.
+fn cfg_excludes(meta: &syn::Meta, features: &BTreeSet<String>) -> bool {
+    if let Some(feat) = cfg_feature_name(meta) {
+        return !feature_active(&feat, features);
+    }
+    if let syn::Meta::List(list) = meta {
+        if list.path.is_ident("not") {
+            if let Ok(inner) = list.parse_args::<syn::Meta>() {
+                if let Some(feat) = cfg_feature_name(&inner) {
+                    return feature_active(&feat, features);
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Top-level item attributes, or `&[]` for kinds that carry no ABI content.
 fn item_attrs(item: &Item) -> &[syn::Attribute] {
     match item {
-        Item::Const(i) => &i.attrs,
         Item::Enum(i) => &i.attrs,
-        Item::ExternCrate(i) => &i.attrs,
         Item::Fn(i) => &i.attrs,
-        Item::ForeignMod(i) => &i.attrs,
         Item::Impl(i) => &i.attrs,
-        Item::Macro(i) => &i.attrs,
         Item::Mod(i) => &i.attrs,
-        Item::Static(i) => &i.attrs,
         Item::Struct(i) => &i.attrs,
-        Item::Trait(i) => &i.attrs,
-        Item::TraitAlias(i) => &i.attrs,
         Item::Type(i) => &i.attrs,
-        Item::Union(i) => &i.attrs,
-        Item::Use(i) => &i.attrs,
         _ => &[],
     }
 }
 
-/// Whether a top-level item survives cfg filtering. Multiple `#[cfg]` attrs are
-/// a conjunction; an item is dropped only when some `#[cfg]` is a definite
-/// False (Unknown and True keep it).
+/// A top-level item survives cfg filtering unless some `#[cfg]` definitely
+/// excludes it (multiple `#[cfg]` attrs act as a conjunction).
 fn item_cfg_active(item: &Item, features: &BTreeSet<String>) -> bool {
     item_attrs(item).iter().all(|attr| {
         !attr.path().is_ident("cfg")
-            || attr
+            || !attr
                 .parse_args::<syn::Meta>()
-                .map_or(CfgTruth::Unknown, |pred| eval_cfg_meta(&pred, features))
-                != CfgTruth::False
+                .map(|pred| cfg_excludes(&pred, features))
+                .unwrap_or(false)
     })
 }
 
@@ -839,13 +791,10 @@ pub fn emit_manifest_from_crate(
     emit_manifest_from_crate_with_features(sources, &features)
 }
 
-/// Emit an ABI manifest from multiple source files against an explicit active
-/// feature set (env-var space, e.g. `SCHEMA_V2` for feature `schema-v2`).
-///
-/// Top-level items gated off by inactive features are dropped right after
-/// parsing, BEFORE any downstream processing, so a `#[cfg]`-versioned single
-/// crate emits the manifest for exactly the schema this build compiles - no
-/// v1-only type leaks into a v2 manifest, and vice versa.
+/// Emit an ABI manifest against an explicit active feature set (env-var space,
+/// e.g. `SCHEMA_V2` for feature `schema-v2`). cfg-inactive top-level items are
+/// dropped right after parsing, so a `#[cfg]`-versioned single crate emits the
+/// manifest for exactly the schema this build compiles.
 ///
 /// # Errors
 /// Same as [`emit_manifest_from_crate`], plus an error when more than one
@@ -854,8 +803,6 @@ pub fn emit_manifest_from_crate_with_features(
     sources: &[(String, String)],
     features: &BTreeSet<String>,
 ) -> Result<Manifest, Box<dyn error::Error>> {
-    // Parse all files, dropping cfg-inactive top-level items before anything
-    // reads them (type collection, method scan, state scan).
     let mut files = Vec::new();
     for (name, content) in sources {
         let mut file =
@@ -864,9 +811,8 @@ pub fn emit_manifest_from_crate_with_features(
         files.push(file);
     }
 
-    // Ambiguity backstop: exactly one `#[app::state]` root may be active per
-    // build. More than one after filtering means overlapping state roots were
-    // left ungated - reject rather than silently letting the last one win.
+    // Exactly one `#[app::state]` root may be active per build; more than one
+    // after filtering is ambiguous - reject rather than letting the last win.
     let active_states: Vec<String> = files
         .iter()
         .flat_map(|f| &f.items)
@@ -1352,8 +1298,7 @@ mod cfg_tests {
         assert_eq!(m.state_version, Some(2));
     }
 
-    // An undecidable atom (`target_arch`) must NOT drop the item - Unknown
-    // keeps it, so the state root still emits.
+    // A non-feature cfg (`target_arch`) is left in, so the state root emits.
     #[test]
     fn unknown_atom_keeps_item() {
         let lib = r#"
@@ -1365,25 +1310,6 @@ mod cfg_tests {
         "#;
         let m = emit(lib, &features(&[]));
         assert_eq!(m.state_version, Some(3));
-    }
-
-    // `all(feature = "x", target_arch = "wasm32")` with x inactive: False
-    // dominates Unknown, so the item is dropped.
-    #[test]
-    fn three_valued_false_dominates_unknown() {
-        let lib = r#"
-            #[cfg(all(feature = "x", target_arch = "wasm32"))]
-            #[app::state(version = 2)]
-            pub struct Gated { x: u32 }
-
-            #[app::state(version = 1)]
-            pub struct State { x: u32 }
-            #[app::logic]
-            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
-        "#;
-        // `Gated` drops (False), leaving only the ungated v1 `State`.
-        let m = emit(lib, &features(&[]));
-        assert_eq!(m.state_version, Some(1));
     }
 
     // Two UNGATED `#[app::state]` structs is an ambiguous state root, not a
