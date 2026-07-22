@@ -217,6 +217,11 @@ pub struct UpgradeGroupRequest {
     /// to every descendant subgroup whose `app_key` matches the signed
     /// group's; when `false` (default), stay on the single-group path.
     pub cascade: bool,
+    /// When `true`, a target build with no embedded ABI proceeds code-only
+    /// (the operator asserts the update is layout-compatible) instead of
+    /// being refused. Never bypasses the declared-incompatibility bails
+    /// (downgrade, missing edge) or the unknowable-current-side refusal.
+    pub force_code_only: bool,
 }
 
 impl UpgradeGroupRequest {
@@ -234,6 +239,7 @@ impl UpgradeGroupRequest {
             target_application_id,
             requester,
             cascade: false,
+            force_code_only: false,
         }
     }
 }

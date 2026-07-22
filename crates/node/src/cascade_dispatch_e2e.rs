@@ -359,6 +359,7 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
             target_application_id: app_id_v2(),
             requester: Some(fx.admin_pk),
             cascade: true,
+            force_code_only: false,
         })
         .await
         .expect("cascade upgrade should succeed");
@@ -569,6 +570,7 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
             target_application_id: app_id_v2(),
             requester: Some(fx.admin_pk),
             cascade: true,
+            force_code_only: false,
         })
         .await
         .expect("cascade upgrade should succeed");
@@ -661,6 +663,7 @@ async fn cascade_dispatch_e2e_migration_under_automatic_descendant_rejected() {
             target_application_id: app_id_v2(),
             requester: Some(fx.admin_pk),
             cascade: true,
+            force_code_only: false,
         })
         .await;
 
@@ -841,6 +844,7 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
             target_application_id: app_id,
             requester: Some(admin_pk),
             cascade: false,
+            force_code_only: false,
         })
         .await
         .expect("multi-hop lazy upgrade should succeed");
@@ -907,6 +911,7 @@ async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
             target_application_id: app_id,
             requester: Some(admin_pk),
             cascade: false,
+            force_code_only: false,
         })
         .await
         .expect_err("missing intermediate must reject");

@@ -73,6 +73,20 @@ for suite in "${SUITES[@]}"; do
     bash "$suite/build.sh"
 done
 
+# Unembedded v2 variant for the missing-ABI refusal scenario
+# (39-missing-abi-refused). Bundle migration-suite-v2-add-field's wasm HERE,
+# BEFORE the embed loop below, so this bundle's wasm carries NO
+# `calimero_abi_v1` section. An upgrade whose target has no embedded ABI is
+# refused (no migration evidence) unless forceCodeOnly is passed. Distinct
+# package -> distinct ApplicationId, so it never collides with the embedded
+# migration-suite bundles built later.
+echo ">>> Bundling unembedded migration-suite-v2 (com.calimero.migration-suite-noabi @ 2.0.0)"
+bash apps/migrations/bundle-wasm.sh \
+    "apps/migrations/migration-suite-v2-add-field" \
+    "migration_suite_v2_add_field.wasm" \
+    "com.calimero.migration-suite-noabi" \
+    "2.0.0"
+
 # Embed each fixture's state schema as the wasm's `calimero_abi_v1` section
 # (AFTER build.sh so wasm-opt cannot strip it). The node reads this embedded
 # form for the upgrade decision table (state_version + migration edges) and
