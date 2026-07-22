@@ -1,37 +1,23 @@
 name: Setup Merobox
-description: "Install merobox from the project's APT repository (Linux only)"
+description: "Install merobox from PyPI (Linux only)"
 
 runs:
   using: "composite"
   steps:
-    - name: Install merobox (apt)
+    - name: Install merobox (pip)
       shell: bash
-      # Each network step gets its own bounded timeout. Without these, a
-      # stalled curl / apt-get on a slow Azure runner can wedge the job
-      # for the runner-wide 6h limit — one such hang on PR #2472 ran 90
-      # min in this step alone. Use `timeout` for the GNU-coreutils
-      # bound + `--connect-timeout` / `apt -o` so each tool's own
-      # network retries are also bounded.
+      # Installed from PyPI: the gh-pages APT repository this action used to
+      # target was replaced by the merobox docs site (its dists/ Release file
+      # 404s), so apt installs fail for every consumer. `timeout` bounds the
+      # network steps so a stalled download cannot wedge the job (one such
+      # hang on PR #2472 ran 90 min in this step alone).
       run: |
         set -euo pipefail
-        timeout 60 curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 2 \
-          https://calimero-network.github.io/merobox/gpg.key \
-          | sudo tee /usr/share/keyrings/merobox.gpg > /dev/null
-        echo "deb [signed-by=/usr/share/keyrings/merobox.gpg] https://calimero-network.github.io/merobox stable main" \
-          | sudo tee /etc/apt/sources.list.d/merobox.list
-        # Refresh only merobox's list, not the flaky Ubuntu mirrors that timed
-        # the step out; List-Cleanup=0 keeps cached deps for the install below.
-        timeout 60 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
-          -o Acquire::https::Timeout=20 \
-          -o Dir::Etc::sourcelist="sources.list.d/merobox.list" \
-          -o Dir::Etc::sourceparts="-" \
-          -o APT::Get::List-Cleanup="0" \
-          update
-        timeout 180 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
-          -o Acquire::https::Timeout=20 install -y merobox
-        merobox --version
-        # Floor: the e2e workflows depend on merobox features the APT repo's
-        # "latest" must be new enough to provide —
+        timeout 180 python3 -m pip install --user "merobox==0.6.43"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        "$HOME/.local/bin/merobox" --version
+        # Floor: the e2e workflows depend on merobox features the pinned
+        # version must be new enough to provide —
         #   * native per-container log persistence to data/container-logs/
         #     (merobox#207, 0.6.34),
         #   * the partition_peers/heal_peers surgical libp2p partition steps
@@ -55,7 +41,7 @@ runs:
         # Pin the floor so an older build fails loudly rather than skipping
         # steps or collecting empty log artifacts.
         MIN_MEROBOX="0.6.43"
-        HAVE_MEROBOX="$(merobox --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+        HAVE_MEROBOX="$("$HOME/.local/bin/merobox" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
         if [ "$(printf '%s\n%s\n' "$MIN_MEROBOX" "$HAVE_MEROBOX" | sort -V | head -1)" != "$MIN_MEROBOX" ]; then
           echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX} (MERO_AUTH_ADMIN_* env forwarding)"
           exit 1

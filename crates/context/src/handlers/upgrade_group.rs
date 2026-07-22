@@ -31,6 +31,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             target_application_id,
             requester,
             cascade,
+            force_code_only,
         }: UpgradeGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -73,6 +74,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 requester,
                 signing_key,
                 node_identity,
+                force_code_only,
             );
         }
 
@@ -191,6 +193,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             current_app_key,
                             target_blob,
                             target_size,
+                            force_code_only,
                         )
                         .await?
                     };
@@ -401,8 +404,13 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             // without running the declared migration. Also rejects
             // missing-edge / multi-hop targets.
             if let Some(target_blob) = target_blob_bytes {
-                if let Some(declared) =
-                    resolve_upgrade_from_abis(&node_client, current_app_key, target_blob).await?
+                if let Some(declared) = resolve_upgrade_from_abis(
+                    &node_client,
+                    current_app_key,
+                    target_blob,
+                    force_code_only,
+                )
+                .await?
                 {
                     eyre::bail!(
                         "target app declares migration '{}' in its ABI; migrations only \
@@ -748,13 +756,15 @@ async fn plan_emit_ladder(
     current_app_key: [u8; 32],
     target_blob: [u8; 32],
     target_size: u64,
+    force_code_only: bool,
 ) -> eyre::Result<Vec<EmitRung>> {
     let from_sv = blob_max_state_version(node_client, current_app_key).await;
     let to_sv = blob_max_state_version(node_client, target_blob).await;
     let multi_hop = matches!((from_sv, to_sv), (Some(f), Some(t)) if t > f + 1);
     if !multi_hop {
         let migration =
-            resolve_upgrade_from_abis(node_client, current_app_key, target_blob).await?;
+            resolve_upgrade_from_abis(node_client, current_app_key, target_blob, force_code_only)
+                .await?;
         return Ok(vec![EmitRung {
             app_key: target_blob,
             size: target_size,
@@ -786,7 +796,7 @@ async fn plan_emit_ladder(
     let mut rungs = Vec::new();
     let mut prev = current_app_key;
     for (blob, size) in intermediates {
-        let migration = resolve_upgrade_from_abis(node_client, prev, blob).await?;
+        let migration = resolve_upgrade_from_abis(node_client, prev, blob, force_code_only).await?;
         rungs.push(EmitRung {
             app_key: blob,
             size,
@@ -794,7 +804,8 @@ async fn plan_emit_ladder(
         });
         prev = blob;
     }
-    let migration = resolve_upgrade_from_abis(node_client, prev, target_blob).await?;
+    let migration =
+        resolve_upgrade_from_abis(node_client, prev, target_blob, force_code_only).await?;
     rungs.push(EmitRung {
         app_key: target_blob,
         size: target_size,
@@ -886,15 +897,76 @@ fn classify_target_schema(bytes: &[u8]) -> eyre::Result<Option<Manifest>> {
     }
 }
 
+/// Per-service upgrade decision from the two resolved ABIs. Pure (no I/O) so it
+/// is unit-testable without a `NodeClient`. Returns the migration method when
+/// the service must migrate, or `None` for a code-only activation.
+///
+/// `force_code_only` relaxes ONLY the absent-target-ABI arm; it never bypasses
+/// the current-side refusal or the Downgrade/MissingEdge/Behind bails.
+fn decide_service_upgrade(
+    service: &str,
+    current_abi: Option<&Manifest>,
+    target_abi: Option<&Manifest>,
+    force_code_only: bool,
+) -> eyre::Result<Option<String>> {
+    use crate::migration_plan::{plan_upgrade, UpgradeAction};
+
+    match plan_upgrade(current_abi, target_abi) {
+        Ok(UpgradeAction::CodeOnly) => Ok(None),
+        Ok(UpgradeAction::Migrate { method, from, to }) => {
+            info!(
+                service, %method, from, to,
+                "upgrade resolves a declared migration edge from the app ABI"
+            );
+            Ok(Some(method))
+        }
+        Ok(UpgradeAction::Downgrade { from, to }) => eyre::bail!(
+            "service '{service}' declares state v{to}, OLDER than the running v{from} - schema \
+             downgrades are not supported",
+        ),
+        Ok(UpgradeAction::MissingEdge { from, to }) => eyre::bail!(
+            "service '{service}' declares state v{to} but no migration edge from v{from} - \
+             rebuild the app with a #[derive(app::Migrate)] edge for this hop",
+        ),
+        Ok(UpgradeAction::Behind { from, to }) => eyre::bail!(
+            "service '{service}' is {} versions behind the target (v{from} -> v{to}); chained \
+             upgrades are not supported yet - upgrade one version at a time",
+            to - from,
+        ),
+        // Target has no ABI: it declares no migration, so a forced code-only is
+        // safe (operator asserts layout-compatibility); unforced, refuse rather
+        // than swap blind. An unknowable current side is rejected earlier by the
+        // I/O guards, so only the target-absent case reaches here.
+        Err(err) if target_abi.is_none() => {
+            if force_code_only {
+                warn!(
+                    service,
+                    "target build has no embedded ABI; proceeding code-only (forceCodeOnly)"
+                );
+                Ok(None)
+            } else {
+                eyre::bail!(
+                    "service '{service}': the target build has no embedded ABI ({err}); refusing \
+                     to swap bytecode without migration evidence. Embed the state schema with \
+                     `mero-abi embed`, or pass forceCodeOnly=true if this update is \
+                     layout-compatible",
+                )
+            }
+        }
+        Err(err) => {
+            eyre::bail!("service '{service}': {err}; cannot determine the from-version safely",)
+        }
+    }
+}
+
 pub(crate) async fn resolve_upgrade_from_abis(
     node_client: &calimero_node_primitives::client::NodeClient,
     current_app_key: [u8; 32],
     target_blob: [u8; 32],
+    force_code_only: bool,
 ) -> eyre::Result<Option<MigrationParams>> {
     use calimero_primitives::blobs::BlobId;
     use calimero_wasm_abi::embed::read_embedded_state_schema;
-
-    use crate::migration_plan::{plan_upgrade, UpgradeAction};
 
     let target_blob_id = BlobId::from(target_blob);
     let services = node_client
@@ -1011,63 +1083,29 @@ pub(crate) async fn resolve_upgrade_from_abis(
             }
         };
 
-        match plan_upgrade(current_abi.as_ref(), target_abi.as_ref()) {
-            Ok(UpgradeAction::CodeOnly) => {}
-            Ok(UpgradeAction::Downgrade { from, to }) => {
-                eyre::bail!(
-                    "service '{}' declares state v{to}, OLDER than the running v{from} —                      schema downgrades are not supported",
-                    service.as_deref().unwrap_or("<single>"),
-                );
-            }
-            Ok(UpgradeAction::Migrate { method, from, to }) => {
-                info!(
-                    service = service.as_deref().unwrap_or("<single>"),
-                    %method, from, to,
-                    "upgrade resolves a declared migration edge from the app ABI"
-                );
-                match &resolved_method {
-                    None => resolved_method = Some(method),
-                    Some(existing) if *existing == method => {}
-                    Some(existing) => {
-                        // The wire carries ONE method; running it on every
-                        // context (with missing-export = vacuous) is only
-                        // sound when all migrating services agree on the
-                        // name. Distinct names need per-service actuation —
-                        // reject rather than silently dropping one.
-                        eyre::bail!(
-                            "services declare DIFFERENT migration methods for this release \
-                             ('{existing}' vs '{method}'); migrating multiple services with \
-                             distinct methods in one release is not supported yet — use the \
-                             same method name in each service, or split the release",
-                        );
-                    }
+        let service_name = service.as_deref().unwrap_or("<single>");
+        if let Some(method) = decide_service_upgrade(
+            service_name,
+            current_abi.as_ref(),
+            target_abi.as_ref(),
+            force_code_only,
+        )? {
+            match &resolved_method {
+                None => resolved_method = Some(method),
+                Some(existing) if *existing == method => {}
+                Some(existing) => {
+                    // The wire carries ONE method; running it on every
+                    // context (with missing-export = vacuous) is only
+                    // sound when all migrating services agree on the
+                    // name. Distinct names need per-service actuation -
+                    // reject rather than silently dropping one.
+                    eyre::bail!(
+                        "services declare DIFFERENT migration methods for this release \
+                         ('{existing}' vs '{method}'); migrating multiple services with \
+                         distinct methods in one release is not supported yet - use the \
+                         same method name in each service, or split the release",
+                    );
                 }
-            }
-            Ok(UpgradeAction::MissingEdge { from, to }) => {
-                eyre::bail!(
-                    "service '{}' declares state v{to} but no migration edge from v{from} — \
-                     rebuild the app with a #[derive(app::Migrate)] edge for this hop",
-                    service.as_deref().unwrap_or("<single>"),
-                );
-            }
-            Ok(UpgradeAction::Behind { from, to }) => {
-                eyre::bail!(
-                    "service '{}' is {} versions behind the target (v{from} -> v{to}); \
-                     chained upgrades are not supported yet — upgrade one version at a time",
-                    service.as_deref().unwrap_or("<single>"),
-                    to - from,
-                );
-            }
-            // Only reachable when the TARGET build has no embedded ABI (the
-            // current-side unknowns all reject above when the target declares
-            // a migration). A target without an ABI declares nothing —
-            // code-only is the only sound action for it.
-            Err(err) => {
-                warn!(
-                    service = service.as_deref().unwrap_or("<single>"),
-                    %err,
-                    "target build has no embedded ABI; proceeding code-only"
-                );
             }
         }
     }
@@ -1456,6 +1494,7 @@ fn dispatch_cascade(
     requester: PublicKey,
     signing_key: Option<[u8; 32]>,
     node_identity: Option<(PublicKey, [u8; 32])>,
+    force_code_only: bool,
 ) -> ActorResponse<ContextManager, eyre::Result<UpgradeGroupResponse>> {
     // --- Lightweight cascade validation ---
     // Cascade bypasses `validate_upgrade` because that helper requires
@@ -1677,9 +1716,13 @@ fn dispatch_cascade(
         // services) and re-run the per-descendant policy gate that the sync
         // section could not (resolution is async).
         let migration = {
-            let resolved =
-                resolve_upgrade_from_abis(&node_client_for_publish, from_app_key, new_app_key)
-                    .await?;
+            let resolved = resolve_upgrade_from_abis(
+                &node_client_for_publish,
+                from_app_key,
+                new_app_key,
+                force_code_only,
+            )
+            .await?;
             if resolved.is_some() {
                 ensure_cascade_migration_policies_supported(&descendant_policies)?;
             }
@@ -2190,5 +2233,111 @@ mod tests {
                 "unexpected error: {err}"
             ),
         }
+    }
+
+    // --- decide_service_upgrade: the pure per-service decision ---
+
+    use calimero_wasm_abi::schema::{Manifest, MigrationEdgeAbi};
+
+    fn mv(version: u32) -> Manifest {
+        let mut m = Manifest::new();
+        m.state_version = Some(version);
+        m
+    }
+
+    fn mv_edge(version: u32, method: &str, from: u32) -> Manifest {
+        let mut m = mv(version);
+        m.migrations.push(MigrationEdgeAbi {
+            method: method.to_owned(),
+            from_version: from,
+        });
+        m
+    }
+
+    #[test]
+    fn decide_refuses_missing_target_abi_by_default() {
+        let cur = mv(1);
+        let err = super::decide_service_upgrade("svc", Some(&cur), None, false).unwrap_err();
+        let s = err.to_string();
+        assert!(s.contains("no embedded ABI"), "{s}");
+        assert!(s.contains("forceCodeOnly=true"), "{s}");
+    }
+
+    #[test]
+    fn decide_proceeds_code_only_when_forced() {
+        let cur = mv(1);
+        assert_eq!(
+            super::decide_service_upgrade("svc", Some(&cur), None, true).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn decide_migration_unaffected_by_force() {
+        let cur = mv(1);
+        let tgt = mv_edge(2, "migrate_v1_to_v2", 1);
+        for force in [false, true] {
+            assert_eq!(
+                super::decide_service_upgrade("svc", Some(&cur), Some(&tgt), force).unwrap(),
+                Some("migrate_v1_to_v2".to_owned()),
+                "force={force}"
+            );
+        }
+    }
+
+    #[test]
+    fn decide_downgrade_bails_regardless_of_force() {
+        let cur = mv(3);
+        let tgt = mv(2);
+        for force in [false, true] {
+            let err =
+                super::decide_service_upgrade("svc", Some(&cur), Some(&tgt), force).unwrap_err();
+            assert!(err.to_string().contains("downgrades"), "force={force}");
+        }
+    }
+
+    #[test]
+    fn decide_missing_edge_bails_regardless_of_force() {
+        let cur = mv(1);
+        let tgt = mv(2); // declares v2 but no edge from 1
+        for force in [false, true] {
+            let err =
+                super::decide_service_upgrade("svc", Some(&cur), Some(&tgt), force).unwrap_err();
+            assert!(
+                err.to_string().contains("no migration edge"),
+                "force={force}"
+            );
+        }
+    }
+
+    #[test]
+    fn decide_equal_versions_is_code_only() {
+        let cur = mv(2);
+        let tgt = mv(2);
+        assert_eq!(
+            super::decide_service_upgrade("svc", Some(&cur), Some(&tgt), false).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn decide_unknowable_current_refused_even_when_forced() {
+        // Current side undeterminable + target has a real ABI: force does NOT
+        // relax this (only the target-absent arm is relaxed) - a declared schema
+        // cannot be matched against an unknown from-version.
+        let tgt = mv_edge(2, "migrate_v1_to_v2", 1);
+        assert!(super::decide_service_upgrade("svc", None, Some(&tgt), true).is_err());
+    }
+
+    #[test]
+    fn decide_both_absent_proceeds_code_only_when_forced() {
+        // Fully-legacy replay: neither side has an ABI. force_code_only must
+        // preserve the old code-only behavior so a lazy member is not wedged;
+        // without the flag it refuses.
+        assert_eq!(
+            super::decide_service_upgrade("svc", None, None, true).unwrap(),
+            None
+        );
+        assert!(super::decide_service_upgrade("svc", None, None, false).is_err());
     }
 }

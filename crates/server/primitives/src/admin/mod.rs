@@ -1660,6 +1660,11 @@ pub struct UpgradeGroupApiRequest {
     /// when `false` (default), stay on the single-group path.
     #[serde(default)]
     pub cascade: bool,
+    /// When `true`, a target build with no embedded ABI proceeds code-only
+    /// (the operator asserts layout-compatibility) instead of being refused;
+    /// when `false` (default), a missing target ABI refuses the upgrade.
+    #[serde(default)]
+    pub force_code_only: bool,
 }
 
 impl Validate for UpgradeGroupApiRequest {

@@ -206,6 +206,7 @@ jobs:
           # `delete_blob_on_disk` rm was a no-op for chunked blobs.
           - 37-stranded-resync
           - 38-namespace-invite-join-regression
+          - 39-missing-abi-refused
     env:
       WORKFLOW: ${{ matrix.workflow }}
     steps:
