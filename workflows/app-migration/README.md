@@ -36,7 +36,7 @@ and the namespace-cascade additions designed in
 | `12-scenario-field-remove-archive.yml` | **Remove with archive** — v2 drops `legacy_note` but stashes the value in `archived_legacy: UnorderedMap<String, String>` under key `"latest"`. Companion to `03` (which discards). | Yes |
 | `13-scenario-invariant-reshuffle.yml` | **Invariant reshuffle** — v1 has denormalized `global_count` + `per_item_counts` (invariant easy to violate via two independent setters). v2 funnels both updates through a single `record()` method; migrate re-derives `total` from the per-item map (does NOT trust v1's `global_count`). | Yes |
 
-### Collection-coverage + engine-feature workflows (14–37)
+### Collection-coverage + engine-feature workflows (14–39)
 
 | File | What it covers |
 | --- | --- |
@@ -59,6 +59,8 @@ and the namespace-cascade additions designed in
 | `35-two-namespaces-coexist.yml` | Two namespaces coexist on different versions on one node. |
 | `36-chained-catchup.yml` | Chained catch-up via the upgrade ladder (`v2 → v3 → v4`, 2-node). |
 | `37-stranded-resync.yml` | Stranded context recovers via resync — an intermediate upgrade-ladder rung's blob is deleted on every holder, the behind member hits `NoMigrationPath`, and `resync_context force=true` adopts a peer's full-state snapshot (2-node). |
+| `38-namespace-invite-join-regression.yml` | Namespace invite + join regression guard for the `MemberJoinedAt` invitation-expiry wire change (2-node). |
+| `39-missing-abi-refused.yml` | Negative path: an upgrade whose target build has no embedded ABI is REFUSED (missing migration evidence) rather than silently proceeding code-only (1-node, core#3285). |
 
 ### Out of scope (not in this PR)
 

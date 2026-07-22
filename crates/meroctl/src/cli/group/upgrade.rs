@@ -54,6 +54,14 @@ pub struct TriggerUpgradeCommand {
                 current app_key matches the signed group's app_key. Default: false."
     )]
     pub cascade: bool,
+
+    #[clap(
+        long,
+        help = "Proceed code-only when the target build has no embedded ABI (asserts the \
+                update is layout-compatible). Without this, a missing target ABI refuses \
+                the upgrade. Default: false."
+    )]
+    pub force_code_only: bool,
 }
 
 impl TriggerUpgradeCommand {
@@ -62,6 +70,7 @@ impl TriggerUpgradeCommand {
             target_application_id: self.target_application_id,
             requester: self.requester,
             cascade: self.cascade,
+            force_code_only: self.force_code_only,
         };
 
         let client = environment.client()?;

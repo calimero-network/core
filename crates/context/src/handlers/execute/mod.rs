@@ -1544,10 +1544,18 @@ impl ContextManager {
             if !ensure_blob_local(&node_client, &context_id, rung_app_key).await {
                 eyre::bail!("rung bytecode blob not available locally or from peers");
             }
+            // Replay actuates an already-committed, already-gated governance
+            // decision. A rung blob with no embedded ABI at replay time proves
+            // the initiator forced code-only (else the emit-side would have
+            // refused under the default), so honor that here (force_code_only =
+            // true) rather than wedge this lazy member. force only relaxes the
+            // absent-evidence arm: a rung whose ABI declares a migration still
+            // resolves and runs it.
             crate::handlers::upgrade_group::resolve_upgrade_from_abis(
                 &node_client,
                 bound,
                 rung_app_key,
+                true,
             )
             .await
         }
