@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::error;
 
 use syn::visit::Visit;
@@ -421,6 +421,140 @@ fn free_migrate_fn_name(items: &[syn::Item]) -> Option<String> {
     None
 }
 
+/// Three-valued (Kleene) truth of a `#[cfg(...)]` predicate against a known
+/// active-feature set. `Unknown` is any atom the ABI build cannot decide
+/// (`test`, `target_arch`, `doc`, …); it never drops an item on its own.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CfgTruth {
+    True,
+    False,
+    Unknown,
+}
+
+impl CfgTruth {
+    fn not(self) -> Self {
+        match self {
+            Self::True => Self::False,
+            Self::False => Self::True,
+            Self::Unknown => Self::Unknown,
+        }
+    }
+}
+
+/// Fold a feature name into cargo's env-var space (uppercase, `-` -> `_`) so
+/// `schema-v2`, `schema_v2`, and `SCHEMA_V2` all compare equal - matching how
+/// cargo derives `CARGO_FEATURE_*`.
+fn normalize_feature(name: &str) -> String {
+    name.to_uppercase().replace('-', "_")
+}
+
+fn feature_active(name: &str, features: &BTreeSet<String>) -> bool {
+    let target = normalize_feature(name);
+    features.iter().any(|f| normalize_feature(f) == target)
+}
+
+/// Active features from an iterator of (key, value) env pairs: each
+/// `CARGO_FEATURE_<NAME>` key contributes `<NAME>`. Pure over its input so it is
+/// testable without touching the process environment.
+fn active_features_from_vars<I>(vars: I) -> BTreeSet<String>
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    vars.into_iter()
+        .filter_map(|(k, _)| k.strip_prefix("CARGO_FEATURE_").map(ToOwned::to_owned))
+        .collect()
+}
+
+/// Evaluate a `#[cfg(...)]` predicate (`feature = "x"`, `not`, `all`, `any`,
+/// or any other atom) with Kleene logic against the active feature set.
+fn eval_cfg_meta(meta: &syn::Meta, features: &BTreeSet<String>) -> CfgTruth {
+    match meta {
+        syn::Meta::NameValue(nv) if nv.path.is_ident("feature") => {
+            if let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(s),
+                ..
+            }) = &nv.value
+            {
+                if feature_active(&s.value(), features) {
+                    CfgTruth::True
+                } else {
+                    CfgTruth::False
+                }
+            } else {
+                CfgTruth::Unknown
+            }
+        }
+        syn::Meta::List(list) if list.path.is_ident("not") => {
+            match list.parse_args::<syn::Meta>() {
+                Ok(inner) => eval_cfg_meta(&inner, features).not(),
+                Err(_) => CfgTruth::Unknown,
+            }
+        }
+        syn::Meta::List(list) if list.path.is_ident("all") || list.path.is_ident("any") => {
+            let is_all = list.path.is_ident("all");
+            let Ok(preds) = list.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            ) else {
+                return CfgTruth::Unknown;
+            };
+            let mut result = if is_all {
+                CfgTruth::True
+            } else {
+                CfgTruth::False
+            };
+            for pred in &preds {
+                match (is_all, eval_cfg_meta(pred, features)) {
+                    // `all`: any False dominates; else Unknown lingers.
+                    (true, CfgTruth::False) => return CfgTruth::False,
+                    (true, CfgTruth::Unknown) => result = CfgTruth::Unknown,
+                    // `any`: any True dominates; else Unknown lingers.
+                    (false, CfgTruth::True) => return CfgTruth::True,
+                    (false, CfgTruth::Unknown) => result = CfgTruth::Unknown,
+                    _ => {}
+                }
+            }
+            result
+        }
+        // Any other atom (`test`, `target_arch = "…"`, `unix`, bare paths, …).
+        _ => CfgTruth::Unknown,
+    }
+}
+
+/// Top-level item attributes, or `&[]` for item kinds that carry none.
+fn item_attrs(item: &Item) -> &[syn::Attribute] {
+    match item {
+        Item::Const(i) => &i.attrs,
+        Item::Enum(i) => &i.attrs,
+        Item::ExternCrate(i) => &i.attrs,
+        Item::Fn(i) => &i.attrs,
+        Item::ForeignMod(i) => &i.attrs,
+        Item::Impl(i) => &i.attrs,
+        Item::Macro(i) => &i.attrs,
+        Item::Mod(i) => &i.attrs,
+        Item::Static(i) => &i.attrs,
+        Item::Struct(i) => &i.attrs,
+        Item::Trait(i) => &i.attrs,
+        Item::TraitAlias(i) => &i.attrs,
+        Item::Type(i) => &i.attrs,
+        Item::Union(i) => &i.attrs,
+        Item::Use(i) => &i.attrs,
+        _ => &[],
+    }
+}
+
+/// Whether a top-level item survives cfg filtering. Multiple `#[cfg]` attrs are
+/// a conjunction; an item is dropped only when some `#[cfg]` is a definite
+/// False (Unknown and True keep it).
+fn item_cfg_active(item: &Item, features: &BTreeSet<String>) -> bool {
+    item_attrs(item).iter().all(|attr| {
+        !attr.path().is_ident("cfg")
+            || attr
+                .parse_args::<syn::Meta>()
+                .map_or(CfgTruth::Unknown, |pred| eval_cfg_meta(&pred, features))
+                != CfgTruth::False
+    })
+}
+
 impl<'ast> Visit<'ast> for AbiEmitter {
     fn visit_item_struct(&mut self, item_struct: &'ast ItemStruct) {
         let struct_name = item_struct.ident.to_string();
@@ -693,14 +827,62 @@ impl<'ast> Visit<'ast> for AbiEmitter {
 ///
 /// # Errors
 /// Returns an error if lib.rs is not found in the sources or if parsing fails.
+///
+/// Active features are read from the process environment (`CARGO_FEATURE_*`),
+/// which build scripts always have set, so every build.rs caller gets
+/// cfg-aware emission with no change. Tests and non-build-script callers use
+/// [`emit_manifest_from_crate_with_features`] to pass the set explicitly.
 pub fn emit_manifest_from_crate(
     sources: &[(String, String)],
 ) -> Result<Manifest, Box<dyn error::Error>> {
-    // Parse all files
+    let features = active_features_from_vars(std::env::vars());
+    emit_manifest_from_crate_with_features(sources, &features)
+}
+
+/// Emit an ABI manifest from multiple source files against an explicit active
+/// feature set (env-var space, e.g. `SCHEMA_V2` for feature `schema-v2`).
+///
+/// Top-level items gated off by inactive features are dropped right after
+/// parsing, BEFORE any downstream processing, so a `#[cfg]`-versioned single
+/// crate emits the manifest for exactly the schema this build compiles - no
+/// v1-only type leaks into a v2 manifest, and vice versa.
+///
+/// # Errors
+/// Same as [`emit_manifest_from_crate`], plus an error when more than one
+/// `#[app::state]` struct survives filtering (ambiguous state root).
+pub fn emit_manifest_from_crate_with_features(
+    sources: &[(String, String)],
+    features: &BTreeSet<String>,
+) -> Result<Manifest, Box<dyn error::Error>> {
+    // Parse all files, dropping cfg-inactive top-level items before anything
+    // reads them (type collection, method scan, state scan).
     let mut files = Vec::new();
     for (name, content) in sources {
-        let file = syn::parse_file(content).map_err(|e| format!("Failed to parse {name}: {e}"))?;
+        let mut file =
+            syn::parse_file(content).map_err(|e| format!("Failed to parse {name}: {e}"))?;
+        file.items.retain(|item| item_cfg_active(item, features));
         files.push(file);
+    }
+
+    // Ambiguity backstop: exactly one `#[app::state]` root may be active per
+    // build. More than one after filtering means overlapping state roots were
+    // left ungated - reject rather than silently letting the last one win.
+    let active_states: Vec<String> = files
+        .iter()
+        .flat_map(|f| &f.items)
+        .filter_map(|item| match item {
+            Item::Struct(s) if has_app_state_attribute(&s.attrs) => Some(s.ident.to_string()),
+            _ => None,
+        })
+        .collect();
+    if active_states.len() > 1 {
+        return Err(format!(
+            "multiple `#[app::state]` structs are active in this build ({}); exactly one state \
+             root may be active per build - gate the alternates with `#[cfg(feature = ...)]` or \
+             split schema versions into separate crates",
+            active_states.join(", ")
+        )
+        .into());
     }
 
     let mut emitter = AbiEmitter::new();
@@ -1106,5 +1288,140 @@ mod migration_tests {
         "#;
         let m = emit_manifest_from_crate(&[("lib.rs".to_owned(), lib.to_owned())]).unwrap();
         assert!(m.migrations.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod cfg_tests {
+    use super::*;
+
+    fn features(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn emit(lib: &str, feats: &BTreeSet<String>) -> Manifest {
+        emit_manifest_from_crate_with_features(&[("lib.rs".to_owned(), lib.to_owned())], feats)
+            .expect("emit succeeds")
+    }
+
+    // Both schema versions gated in ONE crate. The active feature set alone
+    // decides which state root (and its migration edge) reaches the manifest.
+    const VERSIONED: &str = r#"
+        #[cfg(not(feature = "schema_v2"))]
+        #[app::state(version = 1)]
+        pub struct State { x: u32 }
+
+        #[cfg(feature = "schema_v2")]
+        #[app::state(version = 2)]
+        #[derive(app::Migrate)]
+        #[migrate(from = OldState, method = migrate_v1_to_v2)]
+        pub struct State { x: u32, y: u32 }
+
+        #[app::logic]
+        impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
+    "#;
+
+    #[test]
+    fn v1_manifest_when_feature_inactive() {
+        let m = emit(VERSIONED, &features(&[]));
+        assert_eq!(m.state_version, Some(1));
+        assert!(m.migrations.is_empty());
+    }
+
+    #[test]
+    fn v2_manifest_when_feature_active() {
+        let m = emit(VERSIONED, &features(&["schema_v2"]));
+        assert_eq!(m.state_version, Some(2));
+        let edge = m.edge_from(1).expect("v2 edge emitted");
+        assert_eq!(edge.method, "migrate_v1_to_v2");
+    }
+
+    // cfg declares the feature with a dash; the active set (env-var space) has
+    // an underscore. Cargo folds both to the same `CARGO_FEATURE_*`, so the
+    // matcher must too.
+    #[test]
+    fn dash_underscore_folding_matches() {
+        let lib = r#"
+            #[cfg(feature = "schema-v2")]
+            #[app::state(version = 2)]
+            pub struct State { x: u32 }
+            #[app::logic]
+            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
+        "#;
+        let m = emit(lib, &features(&["schema_v2"]));
+        assert_eq!(m.state_version, Some(2));
+    }
+
+    // An undecidable atom (`target_arch`) must NOT drop the item - Unknown
+    // keeps it, so the state root still emits.
+    #[test]
+    fn unknown_atom_keeps_item() {
+        let lib = r#"
+            #[cfg(target_arch = "wasm32")]
+            #[app::state(version = 3)]
+            pub struct State { x: u32 }
+            #[app::logic]
+            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
+        "#;
+        let m = emit(lib, &features(&[]));
+        assert_eq!(m.state_version, Some(3));
+    }
+
+    // `all(feature = "x", target_arch = "wasm32")` with x inactive: False
+    // dominates Unknown, so the item is dropped.
+    #[test]
+    fn three_valued_false_dominates_unknown() {
+        let lib = r#"
+            #[cfg(all(feature = "x", target_arch = "wasm32"))]
+            #[app::state(version = 2)]
+            pub struct Gated { x: u32 }
+
+            #[app::state(version = 1)]
+            pub struct State { x: u32 }
+            #[app::logic]
+            impl State { #[app::init] pub fn init() -> State { State { x: 0 } } }
+        "#;
+        // `Gated` drops (False), leaving only the ungated v1 `State`.
+        let m = emit(lib, &features(&[]));
+        assert_eq!(m.state_version, Some(1));
+    }
+
+    // Two UNGATED `#[app::state]` structs is an ambiguous state root, not a
+    // last-wins pick.
+    #[test]
+    fn two_ungated_state_roots_is_ambiguity_error() {
+        let lib = r#"
+            #[app::state(version = 1)]
+            pub struct StateA { x: u32 }
+            #[app::state(version = 2)]
+            pub struct StateB { y: u32 }
+            #[app::logic]
+            impl StateA { #[app::init] pub fn init() -> StateA { StateA { x: 0 } } }
+        "#;
+        let err = emit_manifest_from_crate_with_features(
+            &[("lib.rs".to_owned(), lib.to_owned())],
+            &features(&[]),
+        )
+        .expect_err("ambiguous state roots must error");
+        let msg = err.to_string();
+        assert!(msg.contains("StateA"), "names surviving structs: {msg}");
+        assert!(msg.contains("StateB"), "names surviving structs: {msg}");
+    }
+
+    // Env parsing is pure over its input and folds to env-var space.
+    #[test]
+    fn env_var_parsing_is_pure_and_normalized() {
+        let vars = vec![
+            ("CARGO_FEATURE_FOO_BAR".to_owned(), "1".to_owned()),
+            ("PATH".to_owned(), "/usr/bin".to_owned()),
+            ("CARGO_PKG_NAME".to_owned(), "demo".to_owned()),
+        ];
+        let set = active_features_from_vars(vars);
+        assert_eq!(set.len(), 1);
+        assert!(set.contains("FOO_BAR"));
+        // Matches the feature declared either way.
+        assert!(feature_active("foo-bar", &set));
+        assert!(feature_active("foo_bar", &set));
+        assert!(!feature_active("other", &set));
     }
 }
