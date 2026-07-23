@@ -31,7 +31,7 @@ impl<'a> NamespaceMembershipService<'a> {
         member: &PublicKey,
         signed_invitation: &SignedGroupOpenInvitation,
         joined_at: Option<u64>,
-    ) -> EyreResult<Option<crate::op_events::OpEvent>> {
+    ) -> EyreResult<Vec<crate::op_events::OpEvent>> {
         let inv = &signed_invitation.invitation;
         let group_id = inv.group_id;
 
@@ -69,7 +69,7 @@ impl<'a> NamespaceMembershipService<'a> {
         // so subsequent direct-membership lookups (e.g. removal,
         // capability writes, list_group_members) reflect their join.
         if MembershipRepository::new(self.store).has_direct_member(&group_id, member)? {
-            return Ok(None);
+            return Ok(Vec::new());
         }
 
         // Re-entry gate. Rejects two cases: an identity an admin REMOVED (no
@@ -116,7 +116,7 @@ impl<'a> NamespaceMembershipService<'a> {
             bail!("group does not belong to this namespace");
         }
 
-        MembershipRepository::new(self.store).add_member(&group_id, member, role)?;
+        MembershipRepository::new(self.store).add_member(&group_id, member, role.clone())?;
         // Spend the invitation for this identity: presenting it again after they
         // next exit cannot readmit them. Recorded per `(group, identity, nonce)`,
         // so the same open-invite link still admits everyone else who has not
@@ -128,6 +128,16 @@ impl<'a> NamespaceMembershipService<'a> {
         // block was `Left` and this invitation was fresh — a `Removed` block
         // bails there and never gets here.
         reentry.clear_block(&group_id, member)?;
+        // Membership-change signal for the client-facing GroupMembership event
+        // (the bridge in `calimero_context::membership_events`). Queued only on
+        // a real first join — the direct-row dedup above returns early on a
+        // replay, so this line runs once per genuine materialization. Emitted
+        // unconditionally, unlike the flag-gated `AutoFollowSet` below.
+        let mut events = vec![crate::op_events::OpEvent::MemberJoined {
+            group_id: group_id.to_bytes(),
+            member: *member,
+            role: Some(role),
+        }];
         // #2422 Option 2: synthesize an `AutoFollowSet` so the auto-follow
         // handler backfills any pre-existing contexts in this group. Same
         // rationale as the `GroupOp::MemberAdded` arm in `apply_group_op_
@@ -136,7 +146,11 @@ impl<'a> NamespaceMembershipService<'a> {
         // Open-subgroup self-joiner with `contexts: true` (the post-#2422
         // default) would only auto-follow FUTURE contexts, not the ones
         // already registered when they joined.
-        build_auto_follow_set_if_enabled(self.store, &group_id, member)
+        if let Some(auto_follow) = build_auto_follow_set_if_enabled(self.store, &group_id, member)?
+        {
+            events.push(auto_follow);
+        }
+        Ok(events)
     }
 
     /// Validate an open invitation for the responder key-delivery path:

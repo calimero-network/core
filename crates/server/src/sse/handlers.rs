@@ -39,6 +39,8 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::Extension;
 use axum::Json;
+use calimero_context::group_store::MembershipRepository;
+use calimero_context_config::types::ContextGroupId;
 use calimero_server_primitives::sse::{
     Command, ConnectionId, Request, RequestPayload, Response as SseResponse, ResponseBody,
     ResponseBodyError, ServerResponseError, SseEvent,
@@ -238,10 +240,45 @@ pub async fn handle_subscription(
                     })
                     .collect();
 
+                // Group-membership subscriptions are authorized by GROUP
+                // membership (never the context-scoped `has_member`), since a
+                // GroupMembership event names the affected identity and would
+                // leak the member list to a non-member. Same owner/no-auth
+                // rules as contexts.
+                let subscribed_groups: Vec<_> = ctxs
+                    .group_ids
+                    .iter()
+                    .copied()
+                    .filter(|group_id| {
+                        let caller_is_member =
+                            auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| {
+                                let gid = ContextGroupId::from(*group_id.as_bytes());
+                                MembershipRepository::new(state.ctx_client.datastore())
+                                    .is_member(&gid, pk)
+                                    .unwrap_or_else(|err| {
+                                        warn!(%session_id, group_id=%group_id, %err, "group is_member lookup failed; denying subscription");
+                                        false
+                                    })
+                            });
+                        let authorized = crate::ws::may_observe_group(
+                            state.auth_enabled,
+                            node_owner,
+                            caller_is_member,
+                        );
+                        if !authorized {
+                            warn!(%session_id, group_id=%group_id, "SSE subscribe denied: caller is not a member of the group");
+                        }
+                        authorized
+                    })
+                    .collect();
+
                 let persisted = {
                     let mut inner = session.inner.write().await;
                     for ctx in &subscribed {
                         let _ = inner.subscriptions.insert(*ctx);
+                    }
+                    for gid in &subscribed_groups {
+                        let _ = inner.group_subscriptions.insert(*gid);
                     }
                     inner.touch();
                     inner.to_persisted()
@@ -259,6 +296,7 @@ pub async fn handle_subscription(
                         body: ResponseBody::Result(serde_json::json!({
                             "status": "subscribed",
                             "contexts": subscribed,
+                            "groups": subscribed_groups,
                         })),
                     }),
                 )
@@ -299,6 +337,9 @@ pub async fn handle_subscription(
                         if inner.subscriptions.remove(ctx) {
                             unsubscribed.push(*ctx);
                         }
+                    }
+                    for gid in &ctxs.group_ids {
+                        let _ = inner.group_subscriptions.remove(gid);
                     }
                     inner.touch();
                     inner.to_persisted()

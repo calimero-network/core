@@ -90,7 +90,19 @@ pub(crate) fn apply(
         None => membership_path_kind(&MembershipRepository::new(store).check_path(&gid, &member)?),
     };
     match path {
-        AtCutMembershipPath::Inherited => Ok(()),
+        AtCutMembershipPath::Inherited => {
+            // Membership-change signal for the client-facing GroupMembership
+            // event (bridged in `calimero_context::membership_events`). No
+            // direct row is materialized for an inherited join, so `role` is
+            // `None`. Queued (not notified) so the outer op-log dedup drops it
+            // on a replay, matching every other membership OpEvent.
+            ctx.queue_event(crate::op_events::OpEvent::MemberJoined {
+                group_id,
+                member,
+                role: None,
+            });
+            Ok(())
+        }
         AtCutMembershipPath::Direct => {
             // Direct members go through `MemberJoined` or `add_group_members`
             // — they shouldn't be using this op.

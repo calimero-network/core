@@ -38,6 +38,7 @@ pub mod governance_dag;
 pub mod handlers;
 pub mod hlc_fence;
 mod lifecycle;
+pub mod membership_events;
 pub mod migration_plan;
 pub mod rotation_listener;
 pub mod scope_projection;
@@ -821,6 +822,16 @@ impl Actor for ContextManager {
         // existing rejoin codepaths can re-establish state. Mirrors
         // auto_follow's listener pattern. Idempotent across restarts.
         self_purge::spawn(self.datastore.clone(), self.node_client.clone());
+
+        // Membership-events bridge — forwards membership OpEvents (join/add/
+        // remove/leave) to this node's connected clients as
+        // `NodeEvent::GroupMembership`, so a UI can live-refresh a group's
+        // member list. Purely observational (runs after durable apply, never
+        // feeds back into governance). Like the listeners above it subscribes
+        // to `op_events` synchronously on the spawn thread; `shutdown` before
+        // `spawn` rebinds cleanly to this instance's `node_client` on restart.
+        membership_events::shutdown();
+        membership_events::spawn(self.node_client.clone());
 
         // Transparent per-subgroup TEE admission (proposal.md §12d, Phase 1).
         // Reacts to SubgroupCreated / TeeMemberAdmitted to admit entitled TEE

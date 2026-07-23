@@ -15,6 +15,7 @@ use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::NodeEvent;
+use calimero_primitives::hash::Hash;
 use calimero_server_primitives::ws::{
     Command, Request as WsRequest, RequestPayload, Response, ResponseBody, ResponseBodyError,
     ServerResponseError,
@@ -37,7 +38,7 @@ mod execute;
 mod subscribe;
 mod unsubscribe;
 
-pub(crate) use subscribe::may_observe_context;
+pub(crate) use subscribe::{may_observe_context, may_observe_group};
 
 /// Globally unique identifier of a WebSocket client connection. Internal to the
 /// server (log correlation + connection-map key); never serialized to clients,
@@ -90,6 +91,11 @@ impl WsConfig {
 #[derive(Debug)]
 pub(crate) struct ConnectionStateInner {
     subscriptions: HashSet<ContextId>,
+    /// Group ids this connection observes for `GroupMembership` events. A
+    /// distinct id-space from `subscriptions` (context ids), routed
+    /// independently; keeping the two sets separate leaves context delivery
+    /// byte-for-byte unchanged for existing clients.
+    group_subscriptions: HashSet<Hash>,
     last_pong: AtomicU64, // Timestamp of last received pong (or connection start)
     /// The verified public key of the authenticated client that opened this
     /// connection, or `None` when the auth method does not provide a
@@ -107,6 +113,7 @@ impl ConnectionStateInner {
     fn new(caller: Option<calimero_primitives::identity::PublicKey>, node_owner: bool) -> Self {
         Self {
             subscriptions: HashSet::default(),
+            group_subscriptions: HashSet::default(),
             last_pong: AtomicU64::new(unix_timestamp()),
             caller,
             node_owner,
@@ -383,14 +390,28 @@ async fn handle_socket(
 /// resulting bytes shared across all subscribed connections via
 /// [`Command::SendSerialized`] — previously every connection's own event task
 /// re-cloned and re-serialized the same event.
+/// Which subscription set a `NodeEvent` is delivered against.
+#[derive(Clone, Copy)]
+enum EventRoute {
+    Context(ContextId),
+    Group(Hash),
+}
+
 async fn fan_out_node_events(state: Arc<ServiceState>) {
     let events = state.node_client.receive_events();
 
     let mut events = pin!(events);
 
     while let Some(event) = events.next().await {
-        let NodeEvent::Context(ref context_event) = event;
-        let context_id = context_event.context_id;
+        // Route by id-space: context events by `context_id` (unchanged), group
+        // membership events by `group_id`. Each connection is tested against
+        // the matching subscription set below.
+        let route = match &event {
+            NodeEvent::Context(context_event) => EventRoute::Context(context_event.context_id),
+            NodeEvent::GroupMembership(membership_event) => {
+                EventRoute::Group(membership_event.group_id)
+            }
+        };
 
         debug!("Received node event: {:?}", event);
 
@@ -423,13 +444,12 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
         {
             let connections = state.connections.read().await;
             for (connection_id, connection) in &*connections {
-                if connection
-                    .inner
-                    .read()
-                    .await
-                    .subscriptions
-                    .contains(&context_id)
-                {
+                let inner = connection.inner.read().await;
+                let matched = match route {
+                    EventRoute::Context(context_id) => inner.subscriptions.contains(&context_id),
+                    EventRoute::Group(group_id) => inner.group_subscriptions.contains(&group_id),
+                };
+                if matched {
                     targets.push((*connection_id, connection.commands.clone()));
                 }
             }
@@ -788,9 +808,11 @@ mod tests {
     use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
     use calimero_primitives::context::ContextId;
     use calimero_primitives::events::{
-        ContextEvent, ContextEventPayload, NodeEvent, StateMutationPayload,
+        ContextEvent, ContextEventPayload, GroupMembershipEvent, MembershipChange,
+        MembershipChangePayload, NodeEvent, StateMutationPayload,
     };
     use calimero_primitives::hash::Hash;
+    use calimero_primitives::identity::PublicKey;
     use calimero_server_primitives::jsonrpc::ExecutionRequest;
     use calimero_server_primitives::ws::{
         Request as WsRequest, RequestPayload, SubscribeRequest, UnsubscribeRequest,
@@ -825,6 +847,17 @@ mod tests {
     }
 
     async fn spawn_test_ws() -> TestServer {
+        spawn_test_ws_full(false, None).await
+    }
+
+    // Auth-enabled server whose upgrades carry an authenticated (non-owner)
+    // caller, so the per-request subscribe auth gates actually run (an
+    // auth-enabled server with no caller extension is rejected at upgrade).
+    async fn spawn_test_ws_authed(caller: PublicKey) -> TestServer {
+        spawn_test_ws_full(true, Some(caller)).await
+    }
+
+    async fn spawn_test_ws_full(auth_enabled: bool, caller: Option<PublicKey>) -> TestServer {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
 
         let blob_dir = TempDir::new().unwrap();
@@ -864,13 +897,15 @@ mod tests {
             ctx_client,
             connections: RwLock::default(),
             config: WsConfig::new(true),
-            auth_enabled: false,
+            auth_enabled,
             events_fanout: std::sync::Once::new(),
         });
 
-        let app = Router::new()
-            .route("/ws", get(ws_handler))
-            .layer(Extension(Arc::clone(&state)));
+        let mut app = Router::new().route("/ws", get(ws_handler));
+        if let Some(caller) = caller {
+            app = app.layer(Extension(crate::auth::AuthenticatedKey(caller)));
+        }
+        let app = app.layer(Extension(Arc::clone(&state)));
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -925,9 +960,134 @@ mod tests {
             id: Some(id),
             payload: RequestPayload::Subscribe(SubscribeRequest {
                 context_ids: vec![ctx],
+                group_ids: vec![],
             }),
         };
         Message::Text(serde_json::to_string(&req).unwrap())
+    }
+
+    fn subscribe_group_msg(id: u64, group: Hash) -> Message {
+        let req = WsRequest {
+            id: Some(id),
+            payload: RequestPayload::Subscribe(SubscribeRequest {
+                context_ids: vec![],
+                group_ids: vec![group],
+            }),
+        };
+        Message::Text(serde_json::to_string(&req).unwrap())
+    }
+
+    fn group_membership_event(group: Hash) -> NodeEvent {
+        NodeEvent::GroupMembership(GroupMembershipEvent {
+            group_id: group,
+            payload: MembershipChangePayload::MemberJoined(MembershipChange {
+                member: PublicKey::from([9u8; 32]),
+                role: None,
+            }),
+        })
+    }
+
+    // A group subscriber receives GroupMembership events for its group; a
+    // connection that did not subscribe the group id receives nothing. Mirrors
+    // `events_only_reach_subscribers` for the group id-space (auth disabled, so
+    // the subscription itself is always admitted).
+    #[tokio::test]
+    async fn group_membership_events_only_reach_group_subscribers() {
+        let server = spawn_test_ws().await;
+        let group = Hash::from([77u8; 32]);
+
+        let (mut write_a, mut read_a) = connect_async(&server.url).await.unwrap().0.split();
+        let (_write_b, mut read_b) = connect_async(&server.url).await.unwrap().0.split();
+
+        write_a.send(subscribe_group_msg(1, group)).await.unwrap();
+        let sub_resp = next_json(&mut read_a, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        assert_eq!(sub_resp["id"], json!(1));
+        assert_eq!(
+            sub_resp["result"]["groupIds"],
+            serde_json::to_value(vec![group]).unwrap(),
+            "the group id should be echoed as subscribed"
+        );
+
+        let listening = tokio::time::timeout(Duration::from_secs(5), async {
+            while server.event_sender.receiver_count() < 1 {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(listening, "the event fan-out task should be listening");
+
+        server
+            .event_sender
+            .send(group_membership_event(group))
+            .unwrap();
+
+        let pushed = next_json(&mut read_a, Duration::from_secs(5))
+            .await
+            .expect("group subscriber should receive the event");
+        assert_eq!(
+            pushed["result"]["type"], "MemberJoined",
+            "the frame should carry the membership-change discriminant: {pushed}"
+        );
+        assert!(
+            pushed["result"].get("groupId").is_some(),
+            "the frame should carry the groupId: {pushed}"
+        );
+
+        let leaked = next_json(&mut read_b, Duration::from_millis(500)).await;
+        assert!(
+            leaked.is_none(),
+            "a non-group-subscriber must not receive the event: {leaked:?}"
+        );
+    }
+
+    // With auth enabled and an authenticated caller that is NOT a member of the
+    // group, `may_observe_group` denies the subscription (the response lists no
+    // group ids) and no event is delivered — proving the group-scoped auth gate
+    // is wired and fails closed against a non-member. The empty in-memory store
+    // makes `is_member` false for any group.
+    #[tokio::test]
+    async fn group_subscribe_denied_for_non_member() {
+        let non_member = PublicKey::from([0x55u8; 32]);
+        let server = spawn_test_ws_authed(non_member).await;
+        let group = Hash::from([88u8; 32]);
+
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+        write.send(subscribe_group_msg(1, group)).await.unwrap();
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        assert_eq!(resp["id"], json!(1));
+        let denied = resp["result"]
+            .get("groupIds")
+            .and_then(|v| v.as_array())
+            .is_none_or(|a| a.is_empty());
+        assert!(
+            denied,
+            "non-member group subscription must be denied: {resp}"
+        );
+
+        let listening = tokio::time::timeout(Duration::from_secs(5), async {
+            while server.event_sender.receiver_count() < 1 {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(listening, "the event fan-out task should be listening");
+
+        server
+            .event_sender
+            .send(group_membership_event(group))
+            .unwrap();
+
+        let leaked = next_json(&mut read, Duration::from_millis(500)).await;
+        assert!(
+            leaked.is_none(),
+            "a denied subscriber must not receive the group event: {leaked:?}"
+        );
     }
 
     #[tokio::test]
@@ -984,6 +1144,7 @@ mod tests {
             id: Some(2),
             payload: RequestPayload::Unsubscribe(UnsubscribeRequest {
                 context_ids: vec![ctx],
+                group_ids: vec![],
             }),
         };
         write

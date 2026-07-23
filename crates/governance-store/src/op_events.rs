@@ -63,6 +63,19 @@ pub enum OpEvent {
         member: PublicKey,
         role: GroupMemberRole,
     },
+    /// A member joined a group via a self-service path: `RootOp::MemberJoined`
+    /// (open-invite direct-row join) or `RootOp::MemberJoinedOpen` (inherited
+    /// Open-subgroup join). The admin-driven `MemberAdded` and the removal
+    /// paths already emit their own events; this fills the two join arms that
+    /// previously signalled nothing but a flag-gated `AutoFollowSet`.
+    /// `role` is the joiner's subgroup role for the invite path and `None`
+    /// for the inherited Open-subgroup path (no direct row is materialized).
+    /// `group_id` is the JOINED subgroup, never the namespace root.
+    MemberJoined {
+        group_id: [u8; 32],
+        member: PublicKey,
+        role: Option<GroupMemberRole>,
+    },
     /// `GroupOp::MemberJoinedViaTeeAttestation` — a TEE node was admitted.
     TeeMemberAdmitted {
         group_id: [u8; 32],

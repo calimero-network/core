@@ -1,4 +1,5 @@
 use calimero_primitives::context::ContextId;
+use calimero_primitives::hash::Hash;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,6 +23,10 @@ use super::config::SESSION_EXPIRY_SECS;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedSessionData {
     pub subscriptions: HashSet<ContextId>,
+    /// Group ids observed for `GroupMembership` events. `#[serde(default)]` so
+    /// records persisted before group subscriptions existed still deserialize.
+    #[serde(default)]
+    pub group_subscriptions: HashSet<Hash>,
     pub event_counter: u64,
     pub last_activity: u64, // Unix timestamp
     /// Principal that owns this session (the authenticated caller that created
@@ -37,6 +42,7 @@ pub struct PersistedSessionData {
 #[derive(Debug)]
 pub struct SessionStateInner {
     pub subscriptions: HashSet<ContextId>,
+    pub group_subscriptions: HashSet<Hash>,
     pub event_counter: AtomicU64,
     pub last_activity: AtomicU64,
     /// See [`PersistedSessionData::owner`]. Set once at session creation and
@@ -49,6 +55,7 @@ impl Default for SessionStateInner {
     fn default() -> Self {
         Self {
             subscriptions: HashSet::new(),
+            group_subscriptions: HashSet::new(),
             // Event IDs start at 1. The connection's initial "connect" event is
             // emitted with the reserved id `{session_id}-0`, so the first real
             // event must not also be `-0` (`fetch_add` returns the pre-increment
@@ -76,6 +83,7 @@ impl SessionStateInner {
     pub fn from_persisted(data: PersistedSessionData) -> Self {
         Self {
             subscriptions: data.subscriptions,
+            group_subscriptions: data.group_subscriptions,
             event_counter: AtomicU64::new(data.event_counter),
             last_activity: AtomicU64::new(data.last_activity),
             owner: data.owner,
@@ -87,6 +95,7 @@ impl SessionStateInner {
     pub fn to_persisted(&self) -> PersistedSessionData {
         PersistedSessionData {
             subscriptions: self.subscriptions.clone(),
+            group_subscriptions: self.group_subscriptions.clone(),
             event_counter: self.event_counter.load(Ordering::SeqCst),
             last_activity: self.last_activity.load(Ordering::SeqCst),
             owner: self.owner.clone(),

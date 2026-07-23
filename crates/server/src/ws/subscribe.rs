@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use calimero_context::group_store::MembershipRepository;
+use calimero_context_config::types::ContextGroupId;
 use calimero_server_primitives::ws::{SubscribeRequest, SubscribeResponse};
 use calimero_server_primitives::Infallible;
 use eyre::Result as EyreResult;
@@ -48,16 +50,44 @@ async fn handle(
         }
     }
 
+    // Only subscribe to groups this connection is authorized to observe.
+    // A GroupMembership event names the affected identity, so delivering it to
+    // a non-member would leak the group's member list. Authorization is by
+    // GROUP membership (direct or inherited) — NOT the context-scoped
+    // `has_member` — resolved against the caller's authenticated identity.
+    let mut subscribed_groups = Vec::with_capacity(request.group_ids.len());
+    for group_id in request.group_ids {
+        let caller_is_member = caller.map(|key| {
+            let gid = ContextGroupId::from(*group_id.as_bytes());
+            MembershipRepository::new(state.ctx_client.datastore())
+                .is_member(&gid, &key)
+                .unwrap_or_else(|err| {
+                    warn!(group_id=%group_id, %err, "group is_member lookup failed; denying subscription");
+                    false
+                })
+        });
+
+        if may_observe_group(state.auth_enabled, node_owner, caller_is_member) {
+            subscribed_groups.push(group_id);
+        } else {
+            warn!(group_id=%group_id, "denying WS group subscription: caller is not a member of the group");
+        }
+    }
+
     // Acquire the write lock only to record the approved subscriptions.
     {
         let mut inner = connection_state.inner.write().await;
         for id in &subscribed {
             let _ = inner.subscriptions.insert(*id);
         }
+        for gid in &subscribed_groups {
+            let _ = inner.group_subscriptions.insert(*gid);
+        }
     }
 
     Ok(SubscribeResponse {
         context_ids: subscribed,
+        group_ids: subscribed_groups,
     })
 }
 
@@ -79,9 +109,27 @@ pub(crate) fn may_observe_context(
     }
 }
 
+/// Whether a connection may subscribe to (observe) a group's membership events.
+///
+/// Identical gate shape to [`may_observe_context`], but `caller_is_member` MUST
+/// come from a GROUP-membership check, not the context-scoped `has_member` —
+/// reusing the context gate would authorize the wrong id-space and leak a
+/// group's member list to non-members.
+pub(crate) fn may_observe_group(
+    auth_enabled: bool,
+    node_owner: bool,
+    caller_is_member: Option<bool>,
+) -> bool {
+    if node_owner || !auth_enabled {
+        true
+    } else {
+        caller_is_member.unwrap_or(false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::may_observe_context;
+    use super::{may_observe_context, may_observe_group};
 
     #[test]
     fn node_owner_observes_everything() {
@@ -99,5 +147,18 @@ mod tests {
         assert!(may_observe_context(true, false, Some(true)));
         assert!(!may_observe_context(true, false, Some(false)));
         assert!(!may_observe_context(true, false, None));
+    }
+
+    #[test]
+    fn group_gate_owner_and_no_auth_observe_everything() {
+        assert!(may_observe_group(true, true, None));
+        assert!(may_observe_group(false, false, None));
+    }
+
+    #[test]
+    fn group_gate_member_allowed_others_denied() {
+        assert!(may_observe_group(true, false, Some(true)));
+        assert!(!may_observe_group(true, false, Some(false)));
+        assert!(!may_observe_group(true, false, None));
     }
 }

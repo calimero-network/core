@@ -5975,6 +5975,139 @@ fn a_kicked_member_cannot_re_inherit_into_the_open_subgroup_they_were_kicked_fro
 }
 
 // ---------------------------------------------------------------------------
+// Membership OpEvent emission on the two self-service JOIN arms.
+//
+// These are the source signal the client-facing GroupMembership event bridges.
+// `#[serial_test::serial]` because `op_events` is a process-global broadcast bus
+// (subscribing before the apply captures only this test's events).
+// ---------------------------------------------------------------------------
+
+/// Drain the receiver (synchronously — `notify` fires inline during apply, so
+/// events are already buffered by the time apply returns) and report whether a
+/// `MemberJoined` for `(group, member)` was seen, and the role it carried.
+fn drained_member_joined(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::op_events::OpEvent>,
+    group: [u8; 32],
+    member: PublicKey,
+) -> Option<Option<GroupMemberRole>> {
+    let mut found = None;
+    while let Ok(event) = rx.try_recv() {
+        if let crate::op_events::OpEvent::MemberJoined {
+            group_id,
+            member: m,
+            role,
+        } = event
+        {
+            if group_id == group && m == member {
+                found = Some(role);
+            }
+        }
+    }
+    found
+}
+
+#[test]
+#[serial_test::serial]
+fn member_joined_invite_emits_membership_op_event() {
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let (ns_id, _ns_gid, subgroup) = reentry_fixture(&store, admin_pk);
+
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+
+    let mut rx = crate::op_events::subscribe();
+    let invite = signed_invitation_for(&admin_sk, subgroup, [0xC1; 32]);
+    apply_member_joined(&store, ns_id, &member_sk, invite, 1).expect("first join succeeds");
+
+    let role = drained_member_joined(&mut rx, subgroup.to_bytes(), member_pk).expect(
+        "RootOp::MemberJoined apply must emit OpEvent::MemberJoined for the joined subgroup",
+    );
+    assert_eq!(
+        role,
+        Some(GroupMemberRole::Member),
+        "the invite-path join carries the joiner's subgroup role"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn member_joined_open_emits_membership_op_event() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xD0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let subgroup = ContextGroupId::from([0xD1u8; 32]);
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+
+    // Bob inherits into the Open subgroup (namespace member with the join
+    // capability) but holds NO direct subgroup row, so the apply path is
+    // `Inherited` — the success arm that must now emit the membership event.
+    let bob_sk = PrivateKey::random(&mut rng);
+    let bob_pk = bob_sk.public_key();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &bob_pk, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &ns_gid,
+            &bob_pk,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+
+    let mut rx = crate::op_events::subscribe();
+    let signed = SignedNamespaceOp::sign(
+        &bob_sk,
+        ns_id.into(),
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedOpen {
+            member: bob_pk,
+            group_id: subgroup,
+        }),
+    )
+    .unwrap();
+    apply_signed_namespace_op(&store, &signed).expect("inherited open-subgroup join succeeds");
+
+    let role = drained_member_joined(&mut rx, subgroup.to_bytes(), bob_pk)
+        .expect("RootOp::MemberJoinedOpen apply must emit OpEvent::MemberJoined for the subgroup");
+    assert_eq!(
+        role, None,
+        "an inherited open-subgroup join materializes no direct row, so role is None"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Metadata records: CAN_MANAGE_METADATA gate + state-hash exclusion.
 // ---------------------------------------------------------------------------
 
