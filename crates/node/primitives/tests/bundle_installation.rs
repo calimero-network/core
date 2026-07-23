@@ -65,6 +65,7 @@ fn create_test_bundle(
         signer_id: Some(signer_id),
         min_runtime_version: "0.1.0".to_string(),
         metadata: None,
+        handlers: None,
         interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
             path: "app.wasm".to_string(),
@@ -447,6 +448,7 @@ fn create_test_bundle_custom_wasm_path(
         signer_id: Some(signer_id),
         min_runtime_version: "0.1.0".to_string(),
         metadata: None,
+        handlers: None,
         interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
             path: wasm_path.to_string(),
@@ -1419,6 +1421,7 @@ fn create_test_bundle_with_key(
         signer_id: Some(signer_id),
         min_runtime_version: "0.1.0".to_string(),
         metadata: None,
+        handlers: None,
         interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
             path: "app.wasm".to_string(),
