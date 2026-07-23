@@ -5,7 +5,7 @@
 //! `ContextManager::started`, that subscribes to
 //! [`calimero_governance_store::op_events`] and forwards the membership ops to
 //! this node's connected UI clients as [`NodeEvent::GroupMembership`]. It runs
-//! on every node, so each node serves the update from its OWN local apply — no
+//! on every node, so each node serves the update from its OWN local apply - no
 //! extra cross-node traffic.
 //!
 //! Strictly observational: it runs AFTER durable apply and never feeds back
@@ -70,7 +70,7 @@ async fn run(mut rx: broadcast::Receiver<OpEvent>, node_client: NodeClient) {
                 warn!(
                     skipped,
                     "membership-events bridge lagged; some events dropped. The DAG is \
-                     authoritative — a client can re-query the member list to reconcile."
+                     authoritative - a client can re-query the member list to reconcile."
                 );
                 continue;
             }

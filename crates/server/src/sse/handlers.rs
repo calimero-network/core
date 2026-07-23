@@ -240,11 +240,18 @@ pub async fn handle_subscription(
                     })
                     .collect();
 
-                // Group-membership subscriptions are authorized by GROUP
-                // membership (never the context-scoped `has_member`), since a
-                // GroupMembership event names the affected identity and would
-                // leak the member list to a non-member. Same owner/no-auth
-                // rules as contexts.
+                // Group-membership subscriptions are authorized by EFFECTIVE
+                // group membership (`effective_capabilities(..).is_some()`) -
+                // the deny-list-aware view `list_group_members` uses - never
+                // the context-scoped `has_member` and never the deny-list-blind
+                // `is_member` (a kicked inherited member keeps an inheritance
+                // path but is deny-listed, so `is_member` would leak them the
+                // events the member list excludes them from). A GroupMembership
+                // event names the affected identity, so a non-member must not
+                // receive it. Same owner/no-auth rules as contexts, and (like
+                // `may_observe_context`) authorization is checked only at
+                // subscribe time - a later removal persists the live
+                // subscription until the session drops it.
                 let subscribed_groups: Vec<_> = ctxs
                     .group_ids
                     .iter()
@@ -254,9 +261,10 @@ pub async fn handle_subscription(
                             auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| {
                                 let gid = ContextGroupId::from(*group_id.as_bytes());
                                 MembershipRepository::new(state.ctx_client.datastore())
-                                    .is_member(&gid, pk)
+                                    .effective_capabilities(&gid, pk)
+                                    .map(|caps| caps.is_some())
                                     .unwrap_or_else(|err| {
-                                        warn!(%session_id, group_id=%group_id, %err, "group is_member lookup failed; denying subscription");
+                                        warn!(%session_id, group_id=%group_id, %err, "group effective-membership lookup failed; denying subscription");
                                         false
                                     })
                             });

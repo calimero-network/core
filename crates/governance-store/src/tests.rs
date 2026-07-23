@@ -5982,7 +5982,7 @@ fn a_kicked_member_cannot_re_inherit_into_the_open_subgroup_they_were_kicked_fro
 // (subscribing before the apply captures only this test's events).
 // ---------------------------------------------------------------------------
 
-/// Drain the receiver (synchronously — `notify` fires inline during apply, so
+/// Drain the receiver (synchronously - `notify` fires inline during apply, so
 /// events are already buffered by the time apply returns) and report whether a
 /// `MemberJoined` for `(group, member)` was seen, and the role it carried.
 fn drained_member_joined(
@@ -6071,7 +6071,7 @@ fn member_joined_open_emits_membership_op_event() {
 
     // Bob inherits into the Open subgroup (namespace member with the join
     // capability) but holds NO direct subgroup row, so the apply path is
-    // `Inherited` — the success arm that must now emit the membership event.
+    // `Inherited` - the success arm that must now emit the membership event.
     let bob_sk = PrivateKey::random(&mut rng);
     let bob_pk = bob_sk.public_key();
     MembershipRepository::new(&store)

@@ -823,7 +823,7 @@ impl Actor for ContextManager {
         // auto_follow's listener pattern. Idempotent across restarts.
         self_purge::spawn(self.datastore.clone(), self.node_client.clone());
 
-        // Membership-events bridge — forwards membership OpEvents (join/add/
+        // Membership-events bridge - forwards membership OpEvents (join/add/
         // remove/leave) to this node's connected clients as
         // `NodeEvent::GroupMembership`, so a UI can live-refresh a group's
         // member list. Purely observational (runs after durable apply, never

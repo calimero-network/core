@@ -1045,7 +1045,7 @@ mod tests {
 
     // With auth enabled and an authenticated caller that is NOT a member of the
     // group, `may_observe_group` denies the subscription (the response lists no
-    // group ids) and no event is delivered — proving the group-scoped auth gate
+    // group ids) and no event is delivered - proving the group-scoped auth gate
     // is wired and fails closed against a non-member. The empty in-memory store
     // makes `is_member` false for any group.
     #[tokio::test]
@@ -1087,6 +1087,105 @@ mod tests {
         assert!(
             leaked.is_none(),
             "a denied subscriber must not receive the group event: {leaked:?}"
+        );
+    }
+
+    // The important auth edge (design risk #1): a member kicked from an Open
+    // subgroup keeps an inheritance path (kick = deny-list entry, not row
+    // deletion), so the deny-list-BLIND `is_member`/`check_path` would still
+    // pass and leak them the subgroup's events. The gate uses the deny-list-
+    // AWARE `effective_capabilities`, so the deny-listed inherited member is
+    // denied the subscription and receives no event - matching the member set
+    // `list_group_members` exposes.
+    #[tokio::test]
+    async fn group_subscribe_denied_for_deny_listed_inherited_member() {
+        use calimero_context::group_store::{
+            CapabilitiesRepository, DenyListRepository, MembershipRepository, NamespaceRepository,
+        };
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_context_config::{MemberCapabilities, VisibilityMode};
+        use calimero_primitives::context::GroupMemberRole;
+
+        let bob_sk = calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng);
+        let bob_pk = bob_sk.public_key();
+        let server = spawn_test_ws_authed(bob_pk).await;
+
+        let ns_gid = ContextGroupId::from([0xB0u8; 32]);
+        let subgroup = ContextGroupId::from([0xB1u8; 32]);
+        let store = server.state.ctx_client.datastore();
+
+        // Bob is a namespace member holding CAN_JOIN_OPEN_SUBGROUPS, the subgroup
+        // is Open and nested under the namespace, and Bob has NO direct subgroup
+        // row - so he is an inherited member of the subgroup.
+        MembershipRepository::new(store)
+            .add_member(&ns_gid, &bob_pk, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(store)
+            .set_member_capability(
+                &ns_gid,
+                &bob_pk,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )
+            .unwrap();
+        NamespaceRepository::new(store)
+            .nest(&ns_gid, &subgroup)
+            .unwrap();
+        CapabilitiesRepository::new(store)
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+            .unwrap();
+
+        // The kick: a per-subgroup deny-list entry. `is_member` (deny-list-blind)
+        // still passes; `effective_capabilities` (deny-list-aware) does not.
+        DenyListRepository::new(store)
+            .mark(&subgroup, &bob_pk)
+            .unwrap();
+        assert!(
+            MembershipRepository::new(store)
+                .is_member(&subgroup, &bob_pk)
+                .unwrap(),
+            "precondition: the deny-list-blind check still sees Bob as a member (that is the bug)"
+        );
+        assert!(
+            MembershipRepository::new(store)
+                .effective_capabilities(&subgroup, &bob_pk)
+                .unwrap()
+                .is_none(),
+            "precondition: the deny-list-aware check must exclude the kicked member"
+        );
+
+        let group = Hash::from(subgroup.to_bytes());
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+        write.send(subscribe_group_msg(1, group)).await.unwrap();
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        let denied = resp["result"]
+            .get("groupIds")
+            .and_then(|v| v.as_array())
+            .is_none_or(|a| a.is_empty());
+        assert!(
+            denied,
+            "a deny-listed inherited member must be denied the group subscription: {resp}"
+        );
+
+        let listening = tokio::time::timeout(Duration::from_secs(5), async {
+            while server.event_sender.receiver_count() < 1 {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(listening, "the event fan-out task should be listening");
+
+        server
+            .event_sender
+            .send(group_membership_event(group))
+            .unwrap();
+
+        let leaked = next_json(&mut read, Duration::from_millis(500)).await;
+        assert!(
+            leaked.is_none(),
+            "a deny-listed inherited member must not receive the group event: {leaked:?}"
         );
     }
 

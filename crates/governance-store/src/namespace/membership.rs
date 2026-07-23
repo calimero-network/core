@@ -130,7 +130,7 @@ impl<'a> NamespaceMembershipService<'a> {
         reentry.clear_block(&group_id, member)?;
         // Membership-change signal for the client-facing GroupMembership event
         // (the bridge in `calimero_context::membership_events`). Queued only on
-        // a real first join — the direct-row dedup above returns early on a
+        // a real first join - the direct-row dedup above returns early on a
         // replay, so this line runs once per genuine materialization. Emitted
         // unconditionally, unlike the flag-gated `AutoFollowSet` below.
         let mut events = vec![crate::op_events::OpEvent::MemberJoined {
