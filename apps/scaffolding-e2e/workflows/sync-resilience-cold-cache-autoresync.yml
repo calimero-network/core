@@ -1,0 +1,166 @@
+description: >
+  Investigation repro (A/B against sync-resilience-peer-restart-autoresync.yml)
+  for the reported "members online but no gossip mesh / context never syncs"
+  bug (2026-07-23).
+
+  Root-cause hypothesis (#2): the durable peer-identity cache — the direct-dial
+  fallback the sync manager uses when a context's gossip subscriber set is
+  empty — is populated ONLY when a context receives+applies an authorized
+  STATE DELTA from a co-member (crates/node/src/state.rs:266 via
+  handlers/state_delta/mod.rs:1058-1080). The namespace-governance receive path
+  passes `None` and does NOT persist (network_event/namespace.rs:312). So a
+  context whose joiner has never received a delta has NO cold-start fallback: if
+  its gossip subscriber set is also empty (e.g. after a reconnect), it can
+  neither push- nor pull-sync. On a real node this stranded 3 of 4 contexts;
+  the 1 that worked had received a delta earlier and had a cached member to
+  direct-dial.
+
+  This scenario is `peer-restart-autoresync` with ONE deliberate change: it does
+  NOT write a baseline key before restarting node-2. So node-2 joins the context
+  but never receives a state delta -> its peer-identity cache for the context
+  stays empty. After the restart, node-1 writes the FIRST delta, and node-2 must
+  converge WITHOUT a manual sync trigger.
+
+  A/B READING:
+    * peer-restart-autoresync.yml (primes a pre-restart delta) -> converges.
+    * this file (no priming delta) -> if it FAILS to converge, that isolates the
+      cache-population gap (#2). If it still converges, the cache is being
+      repopulated by some other path (e.g. join-time sync) and the real-node
+      failure is the connectivity/relay black hole (#1), which merobox's fresh
+      NAT setup does not reproduce -> needs real-node network logs.
+
+  This is a diagnostic; do not merge as-is. Its PASS/FAIL is the signal.
+
+name: "Sync Resilience — Cold-Cache Context Auto-Resync (NAT cone, no priming delta)"
+
+force_pull_image: false
+
+topology:
+  type: nat
+  nat_mode: cone
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: coldcache-node
+
+steps:
+  - name: Login on coldcache-node-1
+    type: login
+    node: coldcache-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on coldcache-node-2
+    type: login
+    node: coldcache-node-2
+    username: dev
+    password: dev-password
+
+  # ---------- Setup: 2-node namespace + context ----------
+
+  - name: Install application on node-1
+    type: install_application
+    node: coldcache-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: coldcache-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create context in namespace on node-1
+    type: create_context
+    node: coldcache-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: coldcache-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation_node2: invitation
+
+  - name: Wait for namespace gossip
+    type: wait
+    seconds: 5
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: coldcache-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation_node2}}'
+
+  - name: Node-2 joins context via group membership
+    type: join_context
+    node: coldcache-node-2
+    context_id: '{{ctx_id}}'
+
+  # ---------- NO priming delta (the A/B difference) ----------
+  # peer-restart-autoresync writes a baseline key here and converges it, which
+  # populates node-2's peer-identity cache for the context. We deliberately skip
+  # that, so node-2 enters the fault with a COLD cache for this context.
+
+  # ---------- Fault: restart node-2 ----------
+
+  - name: Restart node-2 mid-session (cold cache for the context)
+    type: restart_container
+    container: coldcache-node-2
+    wait_healthy: true
+    timeout: 60
+
+  - name: Wait for libp2p + relay reservation to re-form after restart
+    type: wait
+    seconds: 15
+
+  # ---------- The regression gate: FIRST delta after a cold-cache restart ----------
+
+  - name: Write the first-ever key on node-1 (after node-2 restart, cold cache)
+    type: call
+    node: coldcache-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: first_delta
+      value: cold_cache_autoconverge
+
+  # trigger_sync: false — node-2 must discover node-1 for THIS context and
+  # converge on its own. With a cold peer-identity cache, this exercises whether
+  # a context that never received a delta can still (a) push-receive over a
+  # re-formed gossip subscriber set, or (b) find a peer to pull from. If neither
+  # works, this times out — the reproduction.
+  - name: Wait for the first delta to auto-converge (NO trigger_sync, cold cache)
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - coldcache-node-1
+      - coldcache-node-2
+    timeout: 90
+    trigger_sync: false
+
+  - name: Read the first delta on node-2
+    type: call
+    node: coldcache-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: first_delta
+    outputs:
+      first_n2: result
+
+  - name: Assert cold-cache context auto-converged
+    type: assert
+    statements:
+      - "contains({{first_n2}}, 'cold_cache_autoconverge')"
+
+stop_all_nodes: true
