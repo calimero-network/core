@@ -1,0 +1,161 @@
+name: E2E KV Store - Join With No Reachable Mesh Peer (not-ready repro)
+description: >
+  Reproduces the Slack report (2026-07-23): a node tries to join a group via
+  invitation but its gossip mesh to the inviter hasn't formed / isn't
+  reachable, so the join can't complete — and the node is left "not a member",
+  making every subsequent admin list endpoint return HTTP 500
+  ("node is not a member of group ..."). Fran joined fine; Sandi didn't.
+
+  Root cause (crates/context/src/handlers/join_group.rs): after writing the
+  group meta + adding the INVITER as a member, the handler does a single
+  `request_namespace_join(...).await?` (a direct stream to a mesh peer, with a
+  ~45s discovery budget). The joiner's OWN membership row is written only
+  AFTER that call returns (join_group.rs:303). So if no namespace-mesh peer is
+  reachable within the budget, the `?` aborts the join BEFORE the joiner is
+  recorded locally — leaving the node not-a-member, whose only user-visible
+  symptom is a 500 from list_group_members / list_group_contexts.
+
+  This scenario forces that condition deterministically with merobox's
+  `partition_peers` (merobox#278): a libp2p-only cut between node-1 and node-2
+  that leaves BOTH nodes RPC-reachable, so we can drive node-2's join while it
+  cannot reach node-1's mesh.
+
+  Two things are asserted:
+    1. FAILURE: under the partition, node-2's join fails and node-2 is left
+       "not a member" — list_group_members returns an error (the reported 500).
+    2. RECOVERY: after `heal_peers`, a re-join succeeds and node-2 then lists
+       members including itself.
+
+  NOTE: (1) codifies the CURRENT (fragile) behavior — a not-ready mesh is a
+  hard, membership-losing failure. When join_group is hardened (readiness-gated
+  retry so a not-yet-ready mesh is waited on rather than fatal), the step marked
+  `expected_failure` below must be revisited: the join should no longer fail
+  outright. This file is the reproduction for that fix.
+
+force_pull_image: false
+near_devnet: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: notready-node
+
+steps:
+  - name: Login on notready-node-1
+    type: login
+    node: notready-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on notready-node-2
+    type: login
+    node: notready-node-2
+    username: dev
+    password: dev-password
+
+  # ── Bootstrap on node-1: app, namespace, a context, an invitation ─────
+
+  - name: Install application on node-1
+    type: install_application
+    node: notready-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Node-1 creates namespace (root group)
+    type: create_namespace
+    node: notready-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Node-1 creates a context in the group
+    type: create_context
+    node: notready-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Node-1 creates a group open invitation
+    type: create_namespace_invitation
+    node: notready-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation: invitation
+
+  - name: Let the two nodes connect + namespace governance gossip
+    type: wait
+    seconds: 8
+
+  # ── Fault: libp2p-only cut between node-1 and node-2 (RPC stays up) ───
+
+  - name: Partition node-2 from node-1 (libp2p only; RPC reachable)
+    type: partition_peers
+    node: notready-node-1
+    peers:
+      - notready-node-2
+
+  # ── (1) FAILURE: join can't reach a mesh peer → aborts pre-membership ─
+  # request_namespace_join exhausts its ~45s discovery budget with no
+  # reachable peer, so join_group returns Err before writing node-2's
+  # membership row. expected_failure asserts the join RPC fails.
+
+  - name: Node-2 attempts to join while partitioned (expected to fail)
+    type: join_namespace
+    node: notready-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation}}'
+    expected_failure: true
+
+  # The reported symptom: because the join aborted before recording node-2
+  # as a member, listing the group from node-2 errors ("node is not a
+  # member" -> HTTP 500). expected_failure asserts that error.
+  - name: Node-2 lists group members while not-a-member (expected 500)
+    type: list_group_members
+    node: notready-node-2
+    group_id: '{{namespace_id}}'
+    expected_failure: true
+
+  # ── Recovery: heal the partition, then a re-join must succeed ─────────
+
+  - name: Heal the partition
+    type: heal_peers
+    node: notready-node-1
+    peers:
+      - notready-node-2
+
+  - name: Wait for libp2p to redial + namespace mesh to re-form
+    type: wait
+    seconds: 15
+
+  - name: Node-2 re-joins the group (should now succeed)
+    type: join_namespace
+    node: notready-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation}}'
+    outputs:
+      member_identity_node2: memberIdentity
+
+  - name: Assert re-join returned a member identity
+    type: assert
+    statements:
+      - "is_set({{member_identity_node2}})"
+
+  - name: Node-2 lists group members after recovery
+    type: list_group_members
+    node: notready-node-2
+    group_id: '{{namespace_id}}'
+    outputs:
+      joiner_members: members
+
+  - name: Assert joiner now sees the group members, including itself
+    type: assert
+    statements:
+      - "is_set({{joiner_members}})"
+      - "contains({{joiner_members}}, {{member_identity_node2}})"
+
+stop_all_nodes: true
