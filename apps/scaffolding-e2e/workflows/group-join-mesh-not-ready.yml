@@ -142,9 +142,31 @@ steps:
     peers:
       - notready-node-2
 
-  - name: Wait for libp2p to redial + namespace mesh to re-form
+  # Healing the libp2p cut does not instantly restore the connection, and the
+  # earlier fixed 15s sleep was racy: in CI node-2 was still unable to reach
+  # node-1 more than 60s after heal, so the re-join's direct request found no
+  # reachable mesh peer and fell through to the short (5s) gossip KeyDelivery
+  # fallback, which timed out ("KeyDelivery timed out for group ..."). Drive
+  # recovery actively instead of guessing a sleep: give libp2p a moment to
+  # notice the heal, then trigger a namespace governance sync between the two
+  # nodes and block until they converge. That forces the redial + gossipsub
+  # mesh re-GRAFT, so by the time we re-join, node-2 can reach node-1 and fetch
+  # the group key directly — the same wait -> wait_for_sync(trigger_sync)
+  # recovery shape the sync-resilience partition scenarios use. This hardens
+  # the TEST only; it does not touch the 5s key_delivery_fallback_wait product
+  # default.
+  - name: Wait for libp2p to notice the heal before driving sync
     type: wait
-    seconds: 15
+    seconds: 20
+
+  - name: Re-establish the namespace mesh (force redial + governance convergence)
+    type: wait_for_sync
+    group_id: '{{namespace_id}}'
+    nodes:
+      - notready-node-1
+      - notready-node-2
+    timeout: 120
+    trigger_sync: true
 
   - name: Node-2 re-joins the group (should now succeed)
     type: join_namespace
