@@ -38,7 +38,7 @@ mod execute;
 mod subscribe;
 mod unsubscribe;
 
-pub(crate) use subscribe::{may_observe_context, may_observe_group};
+pub(crate) use subscribe::{caller_may_observe_group, may_observe_context};
 
 /// Globally unique identifier of a WebSocket client connection. Internal to the
 /// server (log correlation + connection-map key); never serialized to clients,

@@ -39,8 +39,6 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::Extension;
 use axum::Json;
-use calimero_context::group_store::MembershipRepository;
-use calimero_context_config::types::ContextGroupId;
 use calimero_server_primitives::sse::{
     Command, ConnectionId, Request, RequestPayload, Response as SseResponse, ResponseBody,
     ResponseBodyError, ServerResponseError, SseEvent,
@@ -248,21 +246,13 @@ pub async fn handle_subscription(
                     .iter()
                     .copied()
                     .filter(|group_id| {
-                        let caller_is_member =
-                            auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| {
-                                let gid = ContextGroupId::from(*group_id.as_bytes());
-                                MembershipRepository::new(state.ctx_client.datastore())
-                                    .effective_capabilities(&gid, pk)
-                                    .map(|caps| caps.is_some())
-                                    .unwrap_or_else(|err| {
-                                        warn!(%session_id, group_id=%group_id, %err, "group effective-membership lookup failed; denying subscription");
-                                        false
-                                    })
-                            });
-                        let authorized = crate::ws::may_observe_group(
+                        let caller = auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| pk);
+                        let authorized = crate::ws::caller_may_observe_group(
+                            &state.ctx_client,
                             state.auth_enabled,
                             node_owner,
-                            caller_is_member,
+                            caller,
+                            group_id,
                         );
                         if !authorized {
                             warn!(%session_id, group_id=%group_id, "SSE subscribe denied: caller is not a member of the group");

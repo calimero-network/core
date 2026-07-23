@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use calimero_context::group_store::MembershipRepository;
+use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
 use calimero_server_primitives::ws::{SubscribeRequest, SubscribeResponse};
 use calimero_server_primitives::Infallible;
@@ -55,18 +56,13 @@ async fn handle(
     // Subscribe-time only, like may_observe_context.
     let mut subscribed_groups = Vec::with_capacity(request.group_ids.len());
     for group_id in request.group_ids {
-        let caller_is_member = caller.map(|key| {
-            let gid = ContextGroupId::from(*group_id.as_bytes());
-            MembershipRepository::new(state.ctx_client.datastore())
-                .effective_capabilities(&gid, &key)
-                .map(|caps| caps.is_some())
-                .unwrap_or_else(|err| {
-                    warn!(group_id=%group_id, %err, "group effective-membership lookup failed; denying subscription");
-                    false
-                })
-        });
-
-        if may_observe_group(state.auth_enabled, node_owner, caller_is_member) {
+        if caller_may_observe_group(
+            &state.ctx_client,
+            state.auth_enabled,
+            node_owner,
+            caller.as_ref(),
+            &group_id,
+        ) {
             subscribed_groups.push(group_id);
         } else {
             warn!(group_id=%group_id, "denying WS group subscription: caller is not a member of the group");
@@ -120,6 +116,29 @@ pub(crate) fn may_observe_group(
     } else {
         caller_is_member.unwrap_or(false)
     }
+}
+
+/// Group-subscription authorization gate, shared by the WS and SSE handlers so
+/// the deny-list-aware membership check lives in one place. Resolves effective
+/// membership for `caller` then applies [`may_observe_group`].
+pub(crate) fn caller_may_observe_group(
+    ctx_client: &ContextClient,
+    auth_enabled: bool,
+    node_owner: bool,
+    caller: Option<&calimero_primitives::identity::PublicKey>,
+    group_id: &calimero_primitives::hash::Hash,
+) -> bool {
+    let caller_is_member = caller.map(|key| {
+        let gid = ContextGroupId::from(*group_id.as_bytes());
+        MembershipRepository::new(ctx_client.datastore())
+            .effective_capabilities(&gid, key)
+            .map(|caps| caps.is_some())
+            .unwrap_or_else(|err| {
+                warn!(group_id=%group_id, %err, "group effective-membership lookup failed; denying subscription");
+                false
+            })
+    });
+    may_observe_group(auth_enabled, node_owner, caller_is_member)
 }
 
 #[cfg(test)]
