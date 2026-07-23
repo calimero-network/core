@@ -207,12 +207,32 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
     }
 
     let elapsed = discovery_started.elapsed();
-    warn!(
-        %context_id,
-        attempts = max_retries,
-        ?elapsed,
-        "Mesh peer discovery exhausted all retries (context mesh + namespace fallback)"
-    );
+    // Split the diagnostic on connectivity so the next occurrence is
+    // actionable without a bespoke capture: zero connected peers means a
+    // dial/discovery gap (the node reached nobody — the cold-context case
+    // where sync goes dark despite members being online); connected peers
+    // present but none subscribed to the topic means a materialisation or
+    // relay gap (we reached peers, but none follow this context/namespace).
+    let connected_peers = sync_network.connected_peer_count().await;
+    if connected_peers == 0 {
+        warn!(
+            %context_id,
+            attempts = max_retries,
+            ?elapsed,
+            connected_peers,
+            "Mesh peer discovery exhausted all retries: not connected to any peer \
+             (dial/discovery gap — no dial targets for this context's members)"
+        );
+    } else {
+        warn!(
+            %context_id,
+            attempts = max_retries,
+            ?elapsed,
+            connected_peers,
+            "Mesh peer discovery exhausted all retries: connected to peers but none \
+             subscribe to the context or namespace topic (materialisation/relay gap)"
+        );
+    }
     // Typed error so `apply_session_result` can recognise "no peer right
     // now" as benign (no failure_count bump, no exponential-backoff warn)
     // rather than a sync failure. Display still contains "No peers to
@@ -446,6 +466,45 @@ mod tests {
         assert!(
             result.is_err(),
             "all namespace peers opted out → no candidates → Err"
+        );
+    }
+
+    /// The exhausted-retries bail is unchanged whether or not the node is
+    /// connected to peers — connectivity only selects which diagnostic warn
+    /// fires (dial/discovery gap vs materialisation/relay gap). Both branches
+    /// still return the benign `NoPeersAvailable` error so the caller retries
+    /// promptly rather than backing off.
+    #[tokio::test(start_paused = true)]
+    async fn discovery_errs_regardless_of_connectivity_diagnostic() {
+        // Connected to peers, but none subscribe to the topic.
+        let connected = MockSyncNetwork::default();
+        connected.set_connected_peer_count(3);
+        assert!(
+            discover_mesh_peers_with_namespace_fallback(
+                &connected,
+                ctx(0xAA),
+                2,
+                Duration::from_millis(10),
+                || None,
+            )
+            .await
+            .is_err(),
+            "connected-but-not-subscribed still bails"
+        );
+
+        // Connected to no one at all.
+        let isolated = MockSyncNetwork::default();
+        assert!(
+            discover_mesh_peers_with_namespace_fallback(
+                &isolated,
+                ctx(0xAA),
+                2,
+                Duration::from_millis(10),
+                || None,
+            )
+            .await
+            .is_err(),
+            "not-connected still bails"
         );
     }
 

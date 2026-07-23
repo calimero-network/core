@@ -53,6 +53,14 @@ pub trait SyncNetwork: Send + Sync + 'static {
     /// occupying a mesh slot could starve sync discovery.
     async fn subscribed_peers(&self, topic: TopicHash) -> Vec<PeerId>;
 
+    /// Total number of peers this node is currently connected to, across
+    /// all topics. Used only for diagnostics: when topic discovery finds
+    /// zero subscribers, this distinguishes "connected to no one" (a
+    /// dial/discovery gap) from "connected but no one subscribes to this
+    /// topic" (a materialisation/relay gap) so the exhausted-retries warn
+    /// is actionable without a bespoke log capture.
+    async fn connected_peer_count(&self) -> usize;
+
     /// Open a new substream to `peer_id` over the calimero protocol.
     ///
     /// Used by every sync initiator path. Mock impls can return
@@ -75,6 +83,10 @@ impl SyncNetwork for NetworkClient {
     // compile instead — the failure mode we want.
     async fn subscribed_peers(&self, topic: TopicHash) -> Vec<PeerId> {
         NetworkClient::subscribed_peers(self, topic).await
+    }
+
+    async fn connected_peer_count(&self) -> usize {
+        NetworkClient::peer_count(self).await
     }
 
     async fn open_stream(&self, peer_id: PeerId) -> eyre::Result<Stream> {
