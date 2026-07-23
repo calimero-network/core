@@ -207,6 +207,9 @@ jobs:
           - workflow: groups
             file: workflows/groups.yml
             app: scaffolding-e2e
+          - workflow: group-join-then-list-from-joiner
+            file: workflows/group-join-then-list-from-joiner.yml
+            app: scaffolding-e2e
           - workflow: group-3node
             file: workflows/group-3node.yml
             app: scaffolding-e2e
