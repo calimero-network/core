@@ -1,37 +1,29 @@
 name: Setup Merobox
-description: "Install merobox from the project's APT repository (Linux only)"
+description: "Install merobox from PyPI via pipx (Linux only)"
 
 runs:
   using: "composite"
   steps:
-    - name: Install merobox (apt)
+    - name: Install merobox (pipx)
       shell: bash
+      # Install merobox from PyPI in an isolated pipx venv. This replaces the
+      # previous apt-from-GitHub-Pages path (#2180): that repo's prebuilt
+      # `.deb` was served from a Pages deploy (calimero-network.github.io/
+      # merobox), a single point of failure — a 404 on its `gpg.key` took
+      # down all e2e repo-wide. PyPI has no such dependency.
+      #
       # Each network step gets its own bounded timeout. Without these, a
-      # stalled curl / apt-get on a slow Azure runner can wedge the job
-      # for the runner-wide 6h limit — one such hang on PR #2472 ran 90
-      # min in this step alone. Use `timeout` for the GNU-coreutils
-      # bound + `--connect-timeout` / `apt -o` so each tool's own
-      # network retries are also bounded.
+      # stalled index / pip on a slow runner can wedge the job toward the
+      # runner-wide 6h limit — one such hang on PR #2472 ran 90 min in the
+      # old apt step alone (see also #2807).
       run: |
         set -euo pipefail
-        timeout 60 curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 2 \
-          https://calimero-network.github.io/merobox/gpg.key \
-          | sudo tee /usr/share/keyrings/merobox.gpg > /dev/null
-        echo "deb [signed-by=/usr/share/keyrings/merobox.gpg] https://calimero-network.github.io/merobox stable main" \
-          | sudo tee /etc/apt/sources.list.d/merobox.list
-        # Refresh only merobox's list, not the flaky Ubuntu mirrors that timed
-        # the step out; List-Cleanup=0 keeps cached deps for the install below.
-        timeout 60 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
-          -o Acquire::https::Timeout=20 \
-          -o Dir::Etc::sourcelist="sources.list.d/merobox.list" \
-          -o Dir::Etc::sourceparts="-" \
-          -o APT::Get::List-Cleanup="0" \
-          update
-        timeout 180 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
-          -o Acquire::https::Timeout=20 install -y merobox
-        merobox --version
-        # Floor: the e2e workflows depend on merobox features the APT repo's
-        # "latest" must be new enough to provide —
+        # pipx is preinstalled on ubuntu GitHub runners; install it if absent.
+        if ! command -v pipx >/dev/null 2>&1; then
+          timeout 120 python3 -m pip install --user pipx
+        fi
+        # Floor: the e2e workflows depend on merobox features that only a
+        # new-enough release provides —
         #   * native per-container log persistence to data/container-logs/
         #     (merobox#207, 0.6.34),
         #   * the partition_peers/heal_peers surgical libp2p partition steps
@@ -52,9 +44,14 @@ runs:
         #     variables (the login path never mints keys; the bootstrap-secret
         #     flow is gone). Without it every fresh-node scenario login fails
         #     "Invalid credentials".
-        # Pin the floor so an older build fails loudly rather than skipping
+        # Pin the floor so an older release fails loudly rather than skipping
         # steps or collecting empty log artifacts.
         MIN_MEROBOX="0.6.43"
+        timeout 180 pipx install "merobox>=${MIN_MEROBOX}"
+        # Ensure the pipx bin dir is on PATH for this step and all that follow.
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        export PATH="$HOME/.local/bin:$PATH"
+        merobox --version
         HAVE_MEROBOX="$(merobox --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
         if [ "$(printf '%s\n%s\n' "$MIN_MEROBOX" "$HAVE_MEROBOX" | sort -V | head -1)" != "$MIN_MEROBOX" ]; then
           echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX} (MERO_AUTH_ADMIN_* env forwarding)"
