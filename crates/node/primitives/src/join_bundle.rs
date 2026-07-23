@@ -27,4 +27,21 @@ impl JoinBundle {
     pub fn has_key(&self) -> bool {
         !self.key_envelope_bytes.is_empty()
     }
+
+    /// An empty bundle: no key, no contexts, no governance ops, zero
+    /// application id, default capabilities `0`. Used as the graceful
+    /// fallback when the direct namespace-join request cannot reach a mesh
+    /// peer, so the joiner can still record local membership from its
+    /// (already signature-verified) invitation and catch the rest up via the
+    /// gossip `KeyDelivery` fallback and namespace sync, rather than aborting
+    /// the join and leaving the node not-a-member.
+    pub fn empty() -> Self {
+        Self {
+            key_envelope_bytes: Vec::new(),
+            context_ids: Vec::new(),
+            application_id: ApplicationId::from([0u8; 32]),
+            governance_ops: Vec::new(),
+            default_capabilities: 0,
+        }
+    }
 }
