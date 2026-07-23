@@ -137,12 +137,27 @@ steps:
       - "is_set({{joiner_members}})"
       - "contains({{joiner_members}}, {{member_identity_node2}})"
 
+  - name: Wait for the group's context to sync to the joiner
+    # `list_group_members` reflects the joiner's own membership row, written
+    # synchronously inside join_group. The context-under-group registration
+    # the joiner pulls from the join bundle can lag slightly, so sync the
+    # context to node-2 before asserting it appears in list_group_contexts.
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - joinlist-node-1
+      - joinlist-node-2
+    timeout: 60
+    trigger_sync: true
+
   - name: Node-2 lists group contexts (was HTTP 500 in the report)
     type: list_group_contexts
     node: joinlist-node-2
     group_id: '{{namespace_id}}'
     outputs:
-      joiner_contexts: data
+      # merobox's ListGroupContextsStep exposes the list under `contexts`
+      # (not the admin API's raw `data` envelope field).
+      joiner_contexts: contexts
 
   - name: Assert joiner sees the group's context
     type: assert
