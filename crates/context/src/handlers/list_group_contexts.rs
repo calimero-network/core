@@ -26,7 +26,12 @@ impl Handler<ListGroupContextsRequest> for ContextManager {
                 &group_id,
                 &node_identity,
             )? {
-                bail!("node is not a member of group '{group_id:?}'");
+                // Typed so the admin API surfaces this precondition as a 403,
+                // not a generic 500 (see `parse_api_error`).
+                return Err(crate::error::ContextError::NotAGroupMember {
+                    group_id: format!("{group_id:?}"),
+                }
+                .into());
             }
             MetadataRepository::new(&self.datastore)
                 .enumerate_contexts_with_names(&group_id, offset, limit)
