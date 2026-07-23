@@ -40,7 +40,12 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
                     .is_member(&group_id, &node_identity)?,
             };
             if !is_member {
-                bail!("node is not a member of group '{group_id:?}'");
+                // Typed so the admin API surfaces this precondition as a 403,
+                // not a generic 500 (see `parse_api_error`).
+                return Err(crate::error::ContextError::NotAGroupMember {
+                    group_id: format!("{group_id:?}"),
+                }
+                .into());
             }
 
             // Effective membership = stored explicit rows ∪ inherited

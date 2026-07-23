@@ -616,6 +616,19 @@ impl IntoResponse for ApiError {
 
 #[must_use]
 pub fn parse_api_error(err: Report) -> ApiError {
+    // A membership-gate rejection ("node is not a member of group X") is a
+    // legitimate client-side precondition, not a server fault. Surface it as a
+    // typed 403 with its (safe, intended) message instead of letting it fall
+    // through to the generic 500 below. This is what a caller sees when it
+    // lists a group the node hasn't joined / isn't in.
+    if let Some(calimero_context::error::ContextError::NotAGroupMember { .. }) =
+        err.downcast_ref::<calimero_context::error::ContextError>()
+    {
+        return ApiError {
+            status_code: StatusCode::FORBIDDEN,
+            message: err.to_string(),
+        };
+    }
     match err.downcast::<ApiError>() {
         Ok(api_error) => api_error,
         // An untyped error is an unexpected internal failure. Don't echo its
@@ -790,5 +803,47 @@ mod static_asset_tests {
         assert!(is_rewritable_text("text/css"));
         assert!(!is_rewritable_text("image/png"));
         assert!(!is_rewritable_text("application/wasm"));
+    }
+}
+
+#[cfg(test)]
+mod parse_api_error_tests {
+    use axum::http::StatusCode;
+
+    use super::{parse_api_error, ApiError};
+
+    #[test]
+    fn not_a_group_member_maps_to_403_with_message() {
+        let err = calimero_context::error::ContextError::NotAGroupMember {
+            group_id: "test-group".to_owned(),
+        };
+        let api = parse_api_error(err.into());
+        assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+        assert!(
+            api.message.contains("not a member"),
+            "expected the typed reason to reach the client, got: {}",
+            api.message
+        );
+    }
+
+    #[test]
+    fn untyped_error_stays_a_generic_500() {
+        let api = parse_api_error(eyre::eyre!("some internal detail with /store/path"));
+        assert_eq!(api.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+        // The internal detail must not leak to the client.
+        assert_eq!(api.message, "Internal server error");
+    }
+
+    #[test]
+    fn typed_api_error_is_preserved() {
+        let api = parse_api_error(
+            ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "bad group id".to_owned(),
+            }
+            .into(),
+        );
+        assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+        assert_eq!(api.message, "bad group id");
     }
 }

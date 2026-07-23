@@ -37,4 +37,15 @@ pub enum ContextError {
         /// A description of the storage error.
         message: String,
     },
+
+    /// This node is not a member of the group the operation targets.
+    ///
+    /// A legitimate client-side precondition (the node hasn't joined the
+    /// group, or isn't in it), not a server fault — callers map this to a
+    /// `403`, never a generic `500`.
+    #[error("node is not a member of group '{group_id}'")]
+    NotAGroupMember {
+        /// Debug rendering of the target group id (for the message only).
+        group_id: String,
+    },
 }
