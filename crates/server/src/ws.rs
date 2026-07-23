@@ -91,10 +91,8 @@ impl WsConfig {
 #[derive(Debug)]
 pub(crate) struct ConnectionStateInner {
     subscriptions: HashSet<ContextId>,
-    /// Group ids this connection observes for `GroupMembership` events. A
-    /// distinct id-space from `subscriptions` (context ids), routed
-    /// independently; keeping the two sets separate leaves context delivery
-    /// byte-for-byte unchanged for existing clients.
+    /// Group ids observed for `GroupMembership` events, routed independently
+    /// from `subscriptions`.
     group_subscriptions: HashSet<Hash>,
     last_pong: AtomicU64, // Timestamp of last received pong (or connection start)
     /// The verified public key of the authenticated client that opened this
@@ -403,9 +401,7 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
     let mut events = pin!(events);
 
     while let Some(event) = events.next().await {
-        // Route by id-space: context events by `context_id` (unchanged), group
-        // membership events by `group_id`. Each connection is tested against
-        // the matching subscription set below.
+        // Route by id-space: context events by context_id, membership events by group_id.
         let route = match &event {
             NodeEvent::Context(context_event) => EventRoute::Context(context_event.context_id),
             NodeEvent::GroupMembership(membership_event) => {
@@ -850,9 +846,8 @@ mod tests {
         spawn_test_ws_full(false, None).await
     }
 
-    // Auth-enabled server whose upgrades carry an authenticated (non-owner)
-    // caller, so the per-request subscribe auth gates actually run (an
-    // auth-enabled server with no caller extension is rejected at upgrade).
+    // Auth-enabled server with an authenticated (non-owner) caller, so the
+    // per-request subscribe auth gates actually run.
     async fn spawn_test_ws_authed(caller: PublicKey) -> TestServer {
         spawn_test_ws_full(true, Some(caller)).await
     }
@@ -988,9 +983,7 @@ mod tests {
     }
 
     // A group subscriber receives GroupMembership events for its group; a
-    // connection that did not subscribe the group id receives nothing. Mirrors
-    // `events_only_reach_subscribers` for the group id-space (auth disabled, so
-    // the subscription itself is always admitted).
+    // non-subscriber receives nothing.
     #[tokio::test]
     async fn group_membership_events_only_reach_group_subscribers() {
         let server = spawn_test_ws().await;
@@ -1043,11 +1036,8 @@ mod tests {
         );
     }
 
-    // With auth enabled and an authenticated caller that is NOT a member of the
-    // group, `may_observe_group` denies the subscription (the response lists no
-    // group ids) and no event is delivered - proving the group-scoped auth gate
-    // is wired and fails closed against a non-member. The empty in-memory store
-    // makes `is_member` false for any group.
+    // A caller that is not a member of the group is denied the subscription
+    // and receives no event.
     #[tokio::test]
     async fn group_subscribe_denied_for_non_member() {
         let non_member = PublicKey::from([0x55u8; 32]);
@@ -1090,13 +1080,8 @@ mod tests {
         );
     }
 
-    // The important auth edge (design risk #1): a member kicked from an Open
-    // subgroup keeps an inheritance path (kick = deny-list entry, not row
-    // deletion), so the deny-list-BLIND `is_member`/`check_path` would still
-    // pass and leak them the subgroup's events. The gate uses the deny-list-
-    // AWARE `effective_capabilities`, so the deny-listed inherited member is
-    // denied the subscription and receives no event - matching the member set
-    // `list_group_members` exposes.
+    // A kicked member keeps an inheritance path (deny-list entry, not row
+    // deletion), so the gate must use deny-list-aware `effective_capabilities`, not `is_member`.
     #[tokio::test]
     async fn group_subscribe_denied_for_deny_listed_inherited_member() {
         use calimero_context::group_store::{
@@ -1114,9 +1099,7 @@ mod tests {
         let subgroup = ContextGroupId::from([0xB1u8; 32]);
         let store = server.state.ctx_client.datastore();
 
-        // Bob is a namespace member holding CAN_JOIN_OPEN_SUBGROUPS, the subgroup
-        // is Open and nested under the namespace, and Bob has NO direct subgroup
-        // row - so he is an inherited member of the subgroup.
+        // Bob has no direct subgroup row, so he is an inherited member via the Open subgroup.
         MembershipRepository::new(store)
             .add_member(&ns_gid, &bob_pk, GroupMemberRole::Member)
             .unwrap();

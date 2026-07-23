@@ -91,11 +91,7 @@ pub(crate) fn apply(
     };
     match path {
         AtCutMembershipPath::Inherited => {
-            // Membership-change signal for the client-facing GroupMembership
-            // event (bridged in `calimero_context::membership_events`). No
-            // direct row is materialized for an inherited join, so `role` is
-            // `None`. Queued (not notified) so the outer op-log dedup drops it
-            // on a replay, matching every other membership OpEvent.
+            // Emit on real join; queued so replay dedups it.
             ctx.queue_event(crate::op_events::OpEvent::MemberJoined {
                 group_id,
                 member,

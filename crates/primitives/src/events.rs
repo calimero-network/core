@@ -9,13 +9,8 @@ use crate::sync_status::SyncState;
 #[serde(untagged)]
 pub enum NodeEvent {
     Context(ContextEvent),
-    /// A group's membership changed (a join/add/remove/leave). Keyed by
-    /// `groupId`, a separate id-space from `contextId`, so a client watching
-    /// a group's member list gets a live signal even when the group has no
-    /// contexts yet. Delivered only to connections that subscribed the
-    /// `groupId`; old (Context-only) clients never subscribe one, so they
-    /// never receive this variant. The two variants are structurally disjoint
-    /// on the wire (`contextId` vs `groupId`), so untagged still round-trips.
+    /// A group's membership changed (join/add/remove/leave). Keyed by `groupId`,
+    /// disjoint from `contextId`, so untagged still round-trips.
     GroupMembership(GroupMembershipEvent),
 }
 
@@ -29,10 +24,8 @@ pub struct GroupMembershipEvent {
     pub payload: MembershipChangePayload,
 }
 
-/// The kind of membership change, tagged like [`ContextEventPayload`] so a
-/// client discriminates on `type` and reads the change in `data`. `MemberLeft`
-/// and an admin `MemberRemoved` both surface as `MemberRemoved` (the source
-/// governance signal does not distinguish them).
+/// The kind of membership change, tagged like [`ContextEventPayload`]. `MemberLeft`
+/// and an admin `MemberRemoved` both surface as `MemberRemoved`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", content = "data", rename_all = "PascalCase")]
 pub enum MembershipChangePayload {
@@ -230,9 +223,7 @@ mod tests {
         assert_eq!(v["status"], "ok");
     }
 
-    // GroupMembership carries groupId on the wrapper, the change kind as the
-    // PascalCase `type` tag, and member/role in `data`. Role is omitted when
-    // absent (an inherited Open-subgroup join or a removal).
+    // groupId on the wrapper, type tag + member/role in data; role omitted when absent.
     #[test]
     fn group_membership_tag_and_shape() {
         let event = NodeEvent::GroupMembership(GroupMembershipEvent {
@@ -261,10 +252,7 @@ mod tests {
         assert!(v["data"].get("role").is_none(), "None role omitted");
     }
 
-    // The untagged NodeEvent still round-trips with a second variant: a
-    // GroupMembership frame deserializes back to GroupMembership (its `groupId`
-    // is structurally disjoint from Context's `contextId`), and a Context frame
-    // is unaffected.
+    // The untagged NodeEvent still round-trips with a second variant.
     #[test]
     fn node_event_untagged_round_trips_both_variants() {
         let group = NodeEvent::GroupMembership(GroupMembershipEvent {

@@ -50,17 +50,9 @@ async fn handle(
         }
     }
 
-    // Only subscribe to groups this connection is authorized to observe.
-    // A GroupMembership event names the affected identity, so delivering it to
-    // a non-member would leak the group's member list. Authorize by EFFECTIVE
-    // group membership (`effective_capabilities(..).is_some()`) - the same
-    // deny-list-aware view `list_group_members` uses - NOT the context-scoped
-    // `has_member`, and NOT the deny-list-blind `is_member`/`check_path`: a
-    // kicked inherited member still has an inheritance path but carries a
-    // deny-list entry, so `is_member` would pass and leak them events the
-    // member list already excludes them from. Authorization is checked only at
-    // subscribe time, mirroring `may_observe_context`: a member removed AFTER
-    // subscribing keeps its live subscription until it disconnects.
+    // Authorize by effective (deny-list-aware) group membership, not is_member:
+    // a kicked inherited member keeps a path but is denied, and must not observe.
+    // Subscribe-time only, like may_observe_context.
     let mut subscribed_groups = Vec::with_capacity(request.group_ids.len());
     for group_id in request.group_ids {
         let caller_is_member = caller.map(|key| {
@@ -116,12 +108,8 @@ pub(crate) fn may_observe_context(
     }
 }
 
-/// Whether a connection may subscribe to (observe) a group's membership events.
-///
-/// Identical gate shape to [`may_observe_context`], but `caller_is_member` MUST
-/// come from a deny-list-aware group-membership check (effective membership),
-/// not the context-scoped `has_member` and not the deny-list-blind `is_member`:
-/// either would authorize the wrong set and leak a group's member list.
+/// Whether a connection may subscribe to a group's membership events. Identical
+/// gate shape to [`may_observe_context`], but requires effective (deny-list-aware) membership.
 pub(crate) fn may_observe_group(
     auth_enabled: bool,
     node_owner: bool,

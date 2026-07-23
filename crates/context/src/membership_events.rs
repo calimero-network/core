@@ -1,16 +1,5 @@
-//! Bridge from the internal governance `OpEvent` bus to the client-facing
-//! `NodeEvent` bus for group-membership changes.
-//!
-//! Structural twin of [`crate::auto_follow`]: a background task, spawned in
-//! `ContextManager::started`, that subscribes to
-//! [`calimero_governance_store::op_events`] and forwards the membership ops to
-//! this node's connected UI clients as [`NodeEvent::GroupMembership`]. It runs
-//! on every node, so each node serves the update from its OWN local apply - no
-//! extra cross-node traffic.
-//!
-//! Strictly observational: it runs AFTER durable apply and never feeds back
-//! into apply/authorization. The source bus dedups replays, so one real
-//! membership change yields one `NodeEvent` per node.
+//! Bridges the governance `OpEvent` bus to the client-facing `NodeEvent` bus for
+//! group-membership changes. Structural twin of [`crate::auto_follow`]; observational only.
 
 use std::sync::Mutex;
 
@@ -28,19 +17,15 @@ use tracing::{debug, info, warn};
 /// actor restart) does not double-subscribe and double-deliver every event.
 static HANDLE: Mutex<Option<AbortHandle>> = Mutex::new(None);
 
-/// Spawn the membership-event bridge. Returns immediately; the task runs for
-/// the process lifetime. Idempotent: a second call is a no-op while the first
-/// task is still running.
+/// Spawn the membership-event bridge. Idempotent: a no-op while a prior task
+/// is still running.
 pub fn spawn(node_client: NodeClient) {
     let mut slot = HANDLE.lock().expect("membership-events HANDLE poisoned");
     if slot.as_ref().is_some_and(|h| !h.is_finished()) {
         debug!("membership-events bridge already running; skipping re-spawn");
         return;
     }
-    // Subscribe SYNCHRONOUSLY here, before spawning, for the same reason
-    // auto_follow does: tokio broadcast only delivers to receivers that exist
-    // before a send, so subscribing on the caller thread guarantees no gap
-    // between this bridge and any op-emitting work the actor kicks off next.
+    // Subscribe synchronously, before spawning, so no event emitted right after can be missed.
     let rx = op_events::subscribe();
     let abort = tokio::spawn(async move {
         run(rx, node_client).await;
@@ -91,10 +76,8 @@ async fn run(mut rx: broadcast::Receiver<OpEvent>, node_client: NodeClient) {
     }
 }
 
-/// Map the membership-carrying `OpEvent`s to a client-facing payload. Returns
-/// `None` for every other op variant. `MemberLeft` is already folded into
-/// `OpEvent::MemberRemoved` by the governance apply path, so both a kick and a
-/// voluntary leave surface here as `MemberRemoved`.
+/// Maps membership-carrying `OpEvent`s to a client-facing payload; `None` for
+/// every other variant. `MemberLeft` is folded into `MemberRemoved` upstream.
 fn to_membership_change(event: &OpEvent) -> Option<([u8; 32], MembershipChangePayload)> {
     match event {
         OpEvent::MemberJoined {

@@ -32,9 +32,8 @@ pub enum RequestPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ContextIds {
     pub context_ids: Vec<ContextId>,
-    /// Group ids to observe for `GroupMembership` events. Optional and
-    /// defaulted so existing clients that send only `contextIds` are
-    /// unaffected.
+    /// Group ids to observe for `GroupMembership` events. Optional, so
+    /// existing `contextIds`-only clients are unaffected.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_ids: Vec<Hash>,
 }

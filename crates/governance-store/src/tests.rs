@@ -5974,17 +5974,11 @@ fn a_kicked_member_cannot_re_inherit_into_the_open_subgroup_they_were_kicked_fro
     );
 }
 
-// ---------------------------------------------------------------------------
 // Membership OpEvent emission on the two self-service JOIN arms.
-//
-// These are the source signal the client-facing GroupMembership event bridges.
-// `#[serial_test::serial]` because `op_events` is a process-global broadcast bus
-// (subscribing before the apply captures only this test's events).
-// ---------------------------------------------------------------------------
+// `#[serial_test::serial]`: `op_events` is a process-global broadcast bus.
 
-/// Drain the receiver (synchronously - `notify` fires inline during apply, so
-/// events are already buffered by the time apply returns) and report whether a
-/// `MemberJoined` for `(group, member)` was seen, and the role it carried.
+/// Drains the receiver and reports whether a `MemberJoined` for `(group,
+/// member)` was seen, and the role it carried.
 fn drained_member_joined(
     rx: &mut tokio::sync::broadcast::Receiver<crate::op_events::OpEvent>,
     group: [u8; 32],
@@ -6069,9 +6063,7 @@ fn member_joined_open_emits_membership_op_event() {
         .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
         .unwrap();
 
-    // Bob inherits into the Open subgroup (namespace member with the join
-    // capability) but holds NO direct subgroup row, so the apply path is
-    // `Inherited` - the success arm that must now emit the membership event.
+    // Bob has no direct subgroup row, so the apply path is `Inherited`.
     let bob_sk = PrivateKey::random(&mut rng);
     let bob_pk = bob_sk.public_key();
     MembershipRepository::new(&store)

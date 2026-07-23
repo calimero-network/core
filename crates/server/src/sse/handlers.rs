@@ -240,18 +240,9 @@ pub async fn handle_subscription(
                     })
                     .collect();
 
-                // Group-membership subscriptions are authorized by EFFECTIVE
-                // group membership (`effective_capabilities(..).is_some()`) -
-                // the deny-list-aware view `list_group_members` uses - never
-                // the context-scoped `has_member` and never the deny-list-blind
-                // `is_member` (a kicked inherited member keeps an inheritance
-                // path but is deny-listed, so `is_member` would leak them the
-                // events the member list excludes them from). A GroupMembership
-                // event names the affected identity, so a non-member must not
-                // receive it. Same owner/no-auth rules as contexts, and (like
-                // `may_observe_context`) authorization is checked only at
-                // subscribe time - a later removal persists the live
-                // subscription until the session drops it.
+                // Authorize by effective (deny-list-aware) group membership, not
+                // is_member: a kicked inherited member keeps a path but is denied.
+                // Subscribe-time only, like may_observe_context.
                 let subscribed_groups: Vec<_> = ctxs
                     .group_ids
                     .iter()
