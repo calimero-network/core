@@ -10,6 +10,7 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{JoinGroupRequest, JoinGroupResponse};
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_context_client::messages::NamespaceApplyOutcome;
+use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_primitives::context::{ContextConfigParams, GroupMemberRole};
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::key;
@@ -161,9 +162,36 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 let invitation_bytes = borsh::to_vec(&invitation)
                     .map_err(|e| eyre::eyre!("failed to serialize invitation: {e}"))?;
 
-                let join_result = node_client
+                // A thin / still-forming namespace mesh at join time must not
+                // strand the joiner. If no mesh peer can serve the direct join
+                // bundle within the discovery budget, fall back to an empty
+                // bundle and proceed: the invitation signature is already
+                // verified above, so the joiner still records local membership
+                // (below) and publishes `MemberJoinedAt`. That keeps
+                // `list_group_*` from 500ing with "node is not a member", and
+                // the group key, contexts, and governance ops catch up via the
+                // gossip `KeyDelivery` fallback and namespace sync once a peer
+                // becomes reachable — no manual re-join. This follows the same
+                // "advance locally regardless of transport readiness" invariant
+                // the `MemberJoinedAt` publish further below already relies on.
+                // Previously this was a hard `?`, so a join attempted before the
+                // mesh formed aborted before writing the joiner's membership row
+                // and left the node not-a-member (the reported symptom).
+                let join_result = match node_client
                     .request_namespace_join(namespace_id, invitation_bytes, joiner_identity)
-                    .await?;
+                    .await
+                {
+                    Ok(bundle) => bundle,
+                    Err(e) => {
+                        warn!(
+                            ?e,
+                            ?group_id,
+                            "direct namespace-join request found no reachable mesh peer; \
+                             recording local membership and relying on gossip/sync catch-up"
+                        );
+                        JoinBundle::empty()
+                    }
+                };
 
                 // Unwrap and store the group key.
                 if !join_result.has_key() {

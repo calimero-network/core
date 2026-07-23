@@ -1,36 +1,37 @@
-name: E2E KV Store - Join With No Reachable Mesh Peer (not-ready repro)
+name: E2E KV Store - Join With No Reachable Mesh Peer (not-stranded regression)
 description: >
-  Reproduces the Slack report (2026-07-23): a node tries to join a group via
-  invitation but its gossip mesh to the inviter hasn't formed / isn't
-  reachable, so the join can't complete — and the node is left "not a member",
-  making every subsequent admin list endpoint return HTTP 500
-  ("node is not a member of group ..."). Fran joined fine; Sandi didn't.
+  Regression guard for the Slack report (2026-07-23): a node joins a group via
+  invitation while its gossip mesh to the inviter hasn't formed / isn't
+  reachable. Before the fix this left the node "not a member", so every admin
+  list endpoint returned HTTP 500 ("node is not a member of group ..."). Fran
+  joined fine; Sandi didn't.
 
-  Root cause (crates/context/src/handlers/join_group.rs): after writing the
-  group meta + adding the INVITER as a member, the handler does a single
-  `request_namespace_join(...).await?` (a direct stream to a mesh peer, with a
-  ~45s discovery budget). The joiner's OWN membership row is written only
-  AFTER that call returns (join_group.rs:303). So if no namespace-mesh peer is
-  reachable within the budget, the `?` aborts the join BEFORE the joiner is
-  recorded locally — leaving the node not-a-member, whose only user-visible
-  symptom is a 500 from list_group_members / list_group_contexts.
+  Root cause (crates/context/src/handlers/join_group.rs): the handler did a
+  single `request_namespace_join(...).await?` (a direct stream to a mesh peer,
+  ~45s discovery budget), and wrote the joiner's OWN membership row only AFTER
+  that call. So if no namespace-mesh peer was reachable within the budget, the
+  `?` aborted the join BEFORE recording membership — the node was stranded
+  not-a-member, and its only symptom was a 500 from list_group_members /
+  list_group_contexts.
 
-  This scenario forces that condition deterministically with merobox's
+  The fix: on a failed direct request, fall back to an empty join bundle and
+  proceed. The invitation signature is already verified, so the joiner still
+  records local membership and publishes `MemberJoinedAt`; the group key,
+  contexts, and governance ops catch up via the gossip `KeyDelivery` fallback
+  and namespace sync once a peer is reachable. The node is "joined, pending
+  key" — never stranded, and list endpoints no longer 500.
+
+  This scenario forces the condition deterministically with merobox's
   `partition_peers` (merobox#278): a libp2p-only cut between node-1 and node-2
   that leaves BOTH nodes RPC-reachable, so we can drive node-2's join while it
   cannot reach node-1's mesh.
 
-  Two things are asserted:
-    1. FAILURE: under the partition, node-2's join fails and node-2 is left
-       "not a member" — list_group_members returns an error (the reported 500).
-    2. RECOVERY: after `heal_peers`, a re-join succeeds and node-2 then lists
-       members including itself.
-
-  NOTE: (1) codifies the CURRENT (fragile) behavior — a not-ready mesh is a
-  hard, membership-losing failure. When join_group is hardened (readiness-gated
-  retry so a not-yet-ready mesh is waited on rather than fatal), the step marked
-  `expected_failure` below must be revisited: the join should no longer fail
-  outright. This file is the reproduction for that fix.
+  RED→GREEN: the discriminating assertion is that `list_group_members` on the
+  joining node SUCCEEDS while partitioned. On pre-fix code the join aborts and
+  that list 500s (workflow red); with the fix the node is a member pending key
+  and the list returns 200 (workflow green). (The earlier characterization
+  commit on this branch asserted the 500 via `expected_failure` — its green run
+  is the proof that the 500 reproduces on pre-fix code.)
 
 force_pull_image: false
 near_devnet: false
@@ -99,26 +100,39 @@ steps:
     peers:
       - notready-node-2
 
-  # ── (1) FAILURE: join can't reach a mesh peer → aborts pre-membership ─
-  # request_namespace_join exhausts its ~45s discovery budget with no
-  # reachable peer, so join_group returns Err before writing node-2's
-  # membership row. expected_failure asserts the join RPC fails.
+  # ── Join under partition ─────────────────────────────────────────────
+  # request_namespace_join exhausts its ~45s discovery budget with no reachable
+  # peer. The join RPC still returns an error because no group key can be
+  # delivered while partitioned (the KeyDelivery fallback times out) — that
+  # typed "joined but not yet usable" error is intentional (PR #3288), so we
+  # keep expecting it here. The FIX is not that this call succeeds; it is that
+  # it no longer aborts BEFORE recording membership.
 
-  - name: Node-2 attempts to join while partitioned (expected to fail)
+  - name: Node-2 joins while partitioned (RPC still errors — no key yet)
     type: join_namespace
     node: notready-node-2
     namespace_id: '{{namespace_id}}'
     invitation: '{{invitation}}'
     expected_failure: true
 
-  # The reported symptom: because the join aborted before recording node-2
-  # as a member, listing the group from node-2 errors ("node is not a
-  # member" -> HTTP 500). expected_failure asserts that error.
-  - name: Node-2 lists group members while not-a-member (expected 500)
+  # THE regression signal (RED→GREEN). Pre-fix: the join aborted before
+  # recording node-2, so this returned HTTP 500 ("node is not a member") and
+  # the workflow went red. Post-fix: node-2 recorded local membership from the
+  # verified invitation before the key-wait, so this now SUCCEEDS (200) — the
+  # node is "joined, pending key", not stranded. A failed list step (500) here
+  # fails the workflow, which is exactly the pre-fix behavior we are guarding
+  # against.
+  - name: Node-2 lists group members while join is pending (was HTTP 500 pre-fix)
     type: list_group_members
     node: notready-node-2
     group_id: '{{namespace_id}}'
-    expected_failure: true
+    outputs:
+      pending_members: members
+
+  - name: Assert the joining node is listable, not stranded (no "not a member" 500)
+    type: assert
+    statements:
+      - "is_set({{pending_members}})"
 
   # ── Recovery: heal the partition, then a re-join must succeed ─────────
 
