@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use actix::{AsyncContext, WrapFuture};
 use calimero_context::governance_broadcast::sign_ack;
-use calimero_context::group_store::NamespaceRepository;
+use calimero_context::group_store::{MembershipRepository, NamespaceRepository};
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, NamespaceTopicMsg, SignedNamespaceOp,
 };
@@ -268,6 +268,35 @@ impl NamespaceDeltaApply {
         // instead of the old single fire-and-forget shot.
     }
 
+    /// Resolve the group + role to attach to a governance-path peer-identity
+    /// observation so it persists to the durable cache rather than only the
+    /// in-memory reverse view.
+    ///
+    /// The signer just authored a namespace governance op, so they are a member
+    /// of the namespace root group — whose id IS the namespace id. We record the
+    /// observation under that root group; the cold-start peer resolver unions
+    /// the root group's bucket into every context in the namespace, so a root
+    /// member becomes a dial target for any of the namespace's contexts. Returns
+    /// `None` — an in-memory-only observation — when the signer has no resolvable
+    /// root-group role (e.g. a subgroup-only member) or the store read fails. The
+    /// cache is a routing hint, never a trust gate, so a miss costs at most the
+    /// durable write, never correctness.
+    fn resolve_signer_membership(
+        &self,
+        namespace_id: [u8; 32],
+        signer: &calimero_primitives::identity::PublicKey,
+    ) -> Option<crate::peer_identity_cache::ObservedMembership> {
+        let root_group = ContextGroupId::from(namespace_id);
+        let store = self.context_client.datastore_handle().into_inner();
+        let role = MembershipRepository::new(&store)
+            .role_of(&root_group, signer)
+            .ok()??;
+        Some(crate::peer_identity_cache::ObservedMembership {
+            group_id: root_group,
+            role,
+        })
+    }
+
     /// Side effects that run only when the op *newly* applied: nudge the
     /// readiness FSM, drive an on-change migration heartbeat, record the
     /// (peer, identity) pair, drain governance-pending / absorbed state deltas,
@@ -306,10 +335,16 @@ impl NamespaceDeltaApply {
 
         // Record the (peer, identity) pair now that the signature verified, the
         // nonce was monotonic, and the op applied. Consumed by anchor-preferred
-        // sync peer selection. `None`: this path doesn't carry the signer's
-        // group + role cheaply, so it updates only the in-memory reverse view;
-        // the durable cache is populated from the state-delta path that follows.
-        self.node_state.observe_peer_identity(source, signer, None);
+        // sync peer selection. Resolve the signer's root-group role so the
+        // observation also writes through to the DURABLE peer-identity cache:
+        // that is what gives a context joined purely via governance — one that
+        // has never received a state delta, so the state-delta observe path
+        // never ran for it — dial targets on a cold cache. Without this the
+        // node has no one to dial for that context and sync goes dark even
+        // though the members are online.
+        let membership = self.resolve_signer_membership(namespace_id, &signer);
+        self.node_state
+            .observe_peer_identity(source, signer, membership);
 
         // Governance-pending active drain: a governance op that just applied may
         // unblock state deltas previously buffered as `Unknown`. Without this

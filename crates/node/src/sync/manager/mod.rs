@@ -947,9 +947,34 @@ impl SyncManager {
         else {
             return Vec::new();
         };
-        Self::dedup_peers_by_strongest_role(
-            self.state_access.cached_member_peers_for_group(&group_id),
-        )
+        // Union the cache buckets of the context's own group AND every
+        // ancestor up to the namespace root. The durable cache is keyed
+        // per group, but a member's dial target is recorded under whichever
+        // group the observation resolved: the state-delta path records under
+        // the context's own group, while the governance path records under the
+        // namespace root (see `resolve_signer_membership`). A member is a valid
+        // direct-stream sync partner for ANY context in the namespace, so a
+        // subgroup context must be able to reach root-recorded members — hence
+        // the walk. `dedup_peers_by_strongest_role` collapses a peer that
+        // appears at multiple levels to its strongest role.
+        let mut pairs = self.state_access.cached_member_peers_for_group(&group_id);
+        let ns_repo = NamespaceRepository::new(&store);
+        let mut current = group_id;
+        // `<=` because reaching the root at depth D takes D+1 parent hops to
+        // observe the root's `None` parent (mirrors `NamespaceRepository::resolve`).
+        for _ in 0..=calimero_context_config::MAX_NAMESPACE_DEPTH {
+            match ns_repo.parent(&current) {
+                Ok(Some(parent)) => {
+                    pairs.extend(self.state_access.cached_member_peers_for_group(&parent));
+                    current = parent;
+                }
+                // Root reached (`None`) or a store error: stop walking. A read
+                // error just means we union fewer levels — the cache is a hint,
+                // never load-bearing, so degrade rather than abort selection.
+                _ => break,
+            }
+        }
+        Self::dedup_peers_by_strongest_role(pairs)
     }
 
     /// Anchor-preference ordering of a cached role: higher binds the
