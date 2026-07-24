@@ -2909,6 +2909,61 @@ async fn member_peers_for_context_resolves_cached_members_end_to_end() {
     );
 }
 
+/// End-to-end (#3296): the governance path records a member under the namespace
+/// ROOT group (see `NamespaceDeltaApply::resolve_signer_membership`), and a
+/// context registered to a SUBGROUP must still resolve that member as a dial
+/// target via the ancestor-walk union in `member_peers_for_context`.
+///
+/// This is the cold-context case the issue is about: a context joined via
+/// governance that has never received a state delta only ever populates the
+/// cache through the governance path (which keys at the root), so a subgroup
+/// context whose own bucket is empty must walk up to the root bucket — otherwise
+/// it has no dial targets, topic discovery comes up empty, and sync goes dark
+/// despite the members being online.
+#[tokio::test]
+async fn member_peers_for_context_unions_root_group_for_subgroup_context() {
+    use calimero_context::group_store::{register_context_in_group, NamespaceRepository};
+
+    let (sync_manager, store, node_state, _tmp) = build_standalone_sync_manager().await;
+
+    let root_group = ContextGroupId::from([0x11; 32]);
+    let sub_group = ContextGroupId::from([0x22; 32]);
+    let context_id = calimero_primitives::context::ContextId::from([0x33; 32]);
+
+    // Topology: sub_group nested under root_group; the context is registered to
+    // the subgroup (so `get_group_for_context` returns the subgroup, whose own
+    // cache bucket stays empty in this test).
+    NamespaceRepository::new(&store)
+        .nest(&root_group, &sub_group)
+        .expect("nest subgroup under root");
+    register_context_in_group(&store, &sub_group, &context_id)
+        .expect("register context -> subgroup");
+
+    // A member recorded ONLY under the root group — exactly what the governance
+    // path produces for a cold context.
+    let admin_id = PrivateKey::random(&mut OsRng).public_key();
+    let admin_peer = libp2p::PeerId::random();
+    node_state.observe_peer_identity(
+        admin_peer,
+        admin_id,
+        Some(ObservedMembership {
+            group_id: root_group,
+            role: GroupMemberRole::Admin,
+        }),
+    );
+
+    let resolved: std::collections::BTreeMap<_, _> = sync_manager
+        .member_peers_for_context(&context_id)
+        .into_iter()
+        .collect();
+    assert_eq!(
+        resolved.get(&admin_peer),
+        Some(&GroupMemberRole::Admin),
+        "a member recorded under the namespace root must resolve as a dial \
+         target for a context registered to a subgroup (ancestor-walk union)"
+    );
+}
+
 /// End-to-end: a self-leave from a Restricted subgroup drives a REMAINING ADMIN's
 /// node all the way through a real key rotation.
 ///
