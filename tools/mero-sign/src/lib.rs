@@ -30,7 +30,7 @@ const DEV_SEED: [u8; 32] = [
 
 /// Key file format
 #[derive(Debug, Serialize, Deserialize)]
-pub struct KeyFile {
+struct KeyFile {
     /// Base64url encoded 32-byte private key seed
     private_key: String,
     /// Base64url encoded 32-byte public key
@@ -279,13 +279,37 @@ pub fn generate_key(output_path: &Path) -> Result<()> {
     };
 
     let key_json = serde_json::to_string_pretty(&key_file)?;
-    fs::write(output_path, key_json)
+    write_private_key(output_path, &key_json)
         .with_context(|| format!("failed to write key file: {}", output_path.display()))?;
 
     eprintln!("Generated new keypair: {}", output_path.display());
     eprintln!("  signerId: {signer_id}");
 
     Ok(())
+}
+
+/// Write the private-key JSON, creating it owner-only (0600) on unix so the
+/// seed is never briefly world-readable. `.mode()` applies only on creation, so
+/// also tighten an overwritten file. Non-unix keeps the default `fs::write`.
+fn write_private_key(path: &Path, contents: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(contents.as_bytes())?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, contents)
+    }
 }
 
 /// Derive the signerId from a key file
@@ -474,6 +498,23 @@ mod tests {
         );
         assert!(signature.get("publicKey").is_some());
         assert!(signature.get("signature").is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generate_key_writes_owner_only_perms() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("key.json");
+        generate_key(&key_path).unwrap();
+
+        let mode = std::fs::metadata(&key_path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "private key must be readable only by owner"
+        );
     }
 
     #[test]
