@@ -102,7 +102,7 @@ fn resolve_targets(metadata: &cargo_metadata::Metadata, args: &BuildArgs) -> Res
             metadata
                 .packages
                 .iter()
-                .find(|p| p.manifest_path.parent() == Some(dir))
+                .find(|p| meta::same_dir(&p.manifest_path, dir))
         })
         .or_else(|| metadata.root_package())
         .ok_or_else(|| {

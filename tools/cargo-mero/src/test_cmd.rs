@@ -125,7 +125,7 @@ fn resolve_package<'a>(
             metadata
                 .packages
                 .iter()
-                .find(|p| p.manifest_path.parent() == Some(dir.as_path()))
+                .find(|p| crate::meta::same_dir(&p.manifest_path, dir.as_path()))
         })
         .or_else(|| metadata.root_package())
 }

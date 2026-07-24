@@ -88,6 +88,20 @@ pub(crate) fn canonical_dir(manifest_path: &Utf8Path) -> Utf8PathBuf {
         .unwrap_or_else(|_| parent.to_owned())
 }
 
+/// True when `pkg_manifest_path`'s parent dir and `query_dir` name the same
+/// directory. cargo_metadata reports paths as cargo resolves them, which keeps
+/// symlinked components (macOS temp dirs live in `/var/folders`, a symlink to
+/// `/private/var/folders`), so BOTH sides must be canonicalized or a
+/// `--manifest-path` through a symlink never matches its own package.
+pub(crate) fn same_dir(pkg_manifest_path: &Utf8Path, query_dir: &Utf8Path) -> bool {
+    fn canon(dir: &Utf8Path) -> Utf8PathBuf {
+        dir.canonicalize_utf8().unwrap_or_else(|_| dir.to_owned())
+    }
+    pkg_manifest_path
+        .parent()
+        .is_some_and(|dir| canon(dir) == canon(query_dir))
+}
+
 /// Service names become on-disk `services/<name>.wasm` staging paths, so a name
 /// must be a simple path-safe identifier. The metadata comes from a possibly
 /// untrusted third-party `Cargo.toml`, so a name with path separators or `..`
@@ -121,12 +135,16 @@ pub fn load(metadata: &cargo_metadata::Metadata, manifest_dir: &Utf8Path) -> Res
     let package = metadata
         .packages
         .iter()
-        .find(|p| p.manifest_path.parent() == Some(manifest_dir));
+        .find(|p| same_dir(&p.manifest_path, manifest_dir));
 
-    let package_value = calimero_subtable(package.map(|p| &p.metadata));
+    // The calimero table must come from the package actually resolved: deriving
+    // it from the dir match alone meant a failed match plus a root-package
+    // fallback reported "missing table" for a manifest that has one.
+    let resolved = package.or_else(|| metadata.root_package());
+    let package_value = calimero_subtable(resolved.map(|p| &p.metadata));
     let workspace_value = calimero_subtable(Some(&metadata.workspace_metadata));
 
-    match package.or_else(|| metadata.root_package()) {
+    match resolved {
         Some(p) => load_from_values(
             workspace_value,
             package_value,
@@ -373,6 +391,24 @@ mod tests {
             dir.join("app").canonicalize_utf8().unwrap()
         );
         assert!(canonical_dir(&messy).is_absolute());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_dir_matches_through_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Utf8Path::from_path(tmp.path()).unwrap();
+        std::fs::create_dir(dir.join("real")).unwrap();
+        std::fs::write(dir.join("real/Cargo.toml"), "").unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("link").as_std_path()).unwrap();
+
+        // cargo_metadata may report the package via one spelling while the
+        // query dir arrives via the other (macOS temp dirs: /var/folders is a
+        // symlink to /private/var/folders). Both directions must match, or
+        // `bundle --manifest-path` in a temp dir resolves the wrong package.
+        assert!(same_dir(&dir.join("link/Cargo.toml"), &dir.join("real")));
+        assert!(same_dir(&dir.join("real/Cargo.toml"), &dir.join("link")));
+        assert!(!same_dir(&dir.join("real/Cargo.toml"), dir));
     }
 
     #[test]
