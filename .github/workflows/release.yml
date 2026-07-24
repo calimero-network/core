@@ -32,6 +32,7 @@ env:
     merod
     meroctl
     mero-abi
+    cargo-mero
   AUTH_BINARIES: |-
     mero-auth
   # Binaries to publish to Homebrew
@@ -39,6 +40,7 @@ env:
     merod
     meroctl
     mero-abi
+    cargo-mero
   DOCKER_PLATFORMS: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
   INCLUDE_AARCH64: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
 
