@@ -6,9 +6,77 @@ Development and debugging tools for Calimero infrastructure.
 
 | Tool           | Binary     | Purpose                                      |
 | -------------- | ---------- | -------------------------------------------- |
+| `cargo-mero`   | `cargo-mero` | App toolchain: scaffold, build, test, and bundle a signed `.mpk` |
 | `merodb`       | `merodb`    | RocksDB debugging, inspection, and migration |
 | `calimero-abi` | `mero-abi`  | ABI extraction and inspection from WASM      |
 | `mero-sign`    | `mero-sign` | Sign Calimero bundle manifests (Ed25519)     |
+
+## cargo-mero - App Toolchain
+
+The supported build path for Calimero apps: one Cargo subcommand from `cargo mero new` to a signed `.mpk`.
+It replaces the hand-rolled `build.sh` / `build-bundle.sh` scripts.
+User-facing docs live in `tools/cargo-mero/README.md`, `tools/cargo-mero/SIGNING.md`, and the docs site page `docs/src/content/docs/build/cargo-mero.mdx`.
+
+### Commands
+
+```bash
+# Build / install
+cargo build -p cargo-mero
+cargo install --path tools/cargo-mero      # picked up as `cargo mero`
+```
+
+| Command | Purpose |
+| ------- | ------- |
+| `new <name>` | Scaffold an app (Cargo.toml, build.rs, lib.rs with a TestHost test) |
+| `build` | Compile to wasm32, `wasm-opt -Oz`, embed the ABI as `calimero_abi_v1` |
+| `test` | Run node-free TestHost unit tests + `tests/converge.rs` |
+| `bundle` | Build all services, write + sign `manifest.json`, tar the `.mpk` |
+| `abi` | Passthrough to `mero-abi`: `extract` / `state` / `types` / `inspect` / `embed` / `diff` |
+| `key` | Signing-key utilities: `generate` / `derive-signer-id` (backed by `mero-sign`) |
+| `sign` | Sign a bundle `manifest.json` in place |
+| `guide` | Print the 5-step workflow guide (the canonical wording, in `src/guide.rs`) |
+
+### Usage
+
+```bash
+# The five-step ladder
+cargo mero new my-app
+cargo mero build             # -> res/my_app.wasm (ABI embedded)
+cargo mero test
+cargo mero bundle --dev      # -> dist/<package>.mpk (dev key; --key <file> for prod)
+
+# CI signing without a checked-in key
+export MERO_SIGN_KEY="$RUNNER_TEMP/mero-key.json"
+cargo mero bundle            # reads MERO_SIGN_KEY when no --key/--dev/--unsigned
+```
+
+### File Organization
+
+```
+cargo-mero/
+├── Cargo.toml
+├── README.md                # user-facing workflow + metadata reference
+├── SIGNING.md               # dev vs prod keys, MERO_SIGN_KEY, ApplicationId derivation
+├── src/
+│   ├── main.rs              # CLI (DEFAULT_SDK_VERSION lives here)
+│   ├── new.rs               # `new` scaffold (+ version-pin tests)
+│   ├── build.rs             # `build`: compile -> wasm-opt -> embed ABI
+│   ├── test_cmd.rs          # `test`
+│   ├── bundle.rs            # `bundle`: stage, manifest, sign, package
+│   ├── manifest.rs          # manifest.json shape
+│   ├── meta.rs              # [package.metadata.calimero] parsing
+│   └── guide.rs             # `guide` text (canonical 5-step wording)
+├── templates/              # scaffold templates for `new`
+└── tests/
+    ├── pipeline.rs          # end-to-end ladder tests (all #[ignore]d)
+    └── fixtures/            # demo-app + multi-app crates
+```
+
+### Common Gotchas
+
+- The `tests/pipeline.rs` end-to-end tests are all `#[ignore]`d because they scaffold and compile fresh crates (slow, and `new_build_test_bundle_ladder` needs network for the git SDK deps). Run them with `cargo test -p cargo-mero -- --ignored`.
+- Bumping the scaffolded SDK version touches two files in lockstep: `DEFAULT_SDK_VERSION` in `src/main.rs` and the version assertions in `src/new.rs` tests.
+- `services` is a workspace-only key: it is rejected under a `[package.metadata.calimero]` table, only accepted under `[workspace.metadata.calimero]`.
 
 ## merodb - Database Tool
 

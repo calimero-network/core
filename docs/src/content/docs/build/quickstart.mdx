@@ -21,6 +21,12 @@ CLI — `app`, `context`, `namespace`, `call`).
 
 ## 1. Write and build the app
 
+<Aside type="tip" title="cargo mero automates this">
+  The [cargo mero toolchain](/build/cargo-mero/) scaffolds, builds, and
+  optimizes an app for you: `cargo mero new my-app` then `cargo mero build`. The
+  manual steps below stay valid and show what the tool does under the hood.
+</Aside>
+
 <Steps>
 
 1. Create a library crate with a WASM-compatible `crate-type`. A minimal

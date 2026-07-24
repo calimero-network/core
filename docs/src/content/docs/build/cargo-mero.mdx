@@ -1,0 +1,242 @@
+---
+title: The cargo-mero toolchain
+description: cargo mero scaffolds, builds, tests, and packages a signed .mpk bundle for a Calimero app - the supported build path that replaces hand-rolled build scripts.
+sidebar:
+  label: cargo mero toolchain
+---
+
+import { Aside, Steps, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+`cargo mero` is the supported build path for Calimero applications.
+It scaffolds an app, compiles it to `wasm32-unknown-unknown` with the ABI embedded, runs the node-free test suite, and packages a signed `.mpk` bundle ready for `meroctl app install`.
+One tool covers the whole path from `cargo mero new` to an installable bundle, replacing the hand-written `build.sh` / `build-bundle.sh` scripts each app used to carry.
+
+## Install
+
+`cargo mero` is a Cargo subcommand: install the `cargo-mero` binary and Cargo picks it up as `cargo mero`.
+
+```bash
+# From a core checkout:
+cargo install --path tools/cargo-mero
+
+# Or straight from the repository:
+cargo install --git https://github.com/calimero-network/core cargo-mero
+```
+
+The build step also needs the `wasm32-unknown-unknown` target.
+`cargo mero build` auto-installs it when `rustup` is available, or add it yourself:
+
+```bash
+rustup target add wasm32-unknown-unknown
+```
+
+Size-optimization with `wasm-opt -Oz` runs automatically on every release build.
+The optimizer is compiled into `cargo-mero`, so there is nothing to install on `PATH` and the output is reproducible across machines.
+
+## Commands
+
+| Command | What it does |
+| ------- | ------------ |
+| `cargo mero new <name>` | Scaffold a new app (Cargo.toml, build.rs, lib.rs with a TestHost test). |
+| `cargo mero build` | Compile to wasm32, optimize, and embed the ABI into `res/<name>.wasm`. |
+| `cargo mero test` | Run the node-free native tests (TestHost unit tests + convergence tests). |
+| `cargo mero bundle` | Build all services and package a signed `.mpk` bundle. |
+| `cargo mero abi` | ABI utilities: `extract`, `state`, `types`, `inspect`, `embed`, `diff`. |
+| `cargo mero key` | Signing-key utilities: `generate`, `derive-signer-id`. |
+| `cargo mero sign` | Sign a bundle `manifest.json` in place. |
+| `cargo mero guide` | Print the end-to-end workflow guide. |
+
+## The workflow
+
+The five steps below match `cargo mero guide` (the canonical source; run it any time).
+
+```bash
+cargo mero new my-app        # 1. scaffold an app (state, events, logic, tests)
+cargo mero build             # 2. compile -> wasm-opt -> embed ABI (res/my_app.wasm)
+cargo mero test              # 3. run TestHost + convergence tests (no node needed)
+cargo mero bundle --dev      # 4. build all services, write manifest.json, sign, tar dist/<package>.mpk
+meroctl app install --path dist/<package>.mpk ...   # 5. install on a node (merod)
+```
+
+<Steps>
+
+1. **Scaffold.**
+   `cargo mero new my-app` writes a crate with `Cargo.toml` (SDK pins, the `[package.metadata.calimero]` app id, and the `app-release` / `app-profiling` profiles), `build.rs`, `src/lib.rs` (state, events, logic, and a `#[cfg(test)]` TestHost test), and `tests/converge.rs`.
+
+   ```
+   $ cargo mero new my-app
+   Scaffolded `my-app` at ./my-app
+
+   Next steps:
+     cd my-app
+     cargo mero build      # compile -> wasm-opt -> embed ABI
+     cargo mero test       # TestHost + convergence tests (no node needed)
+   ```
+
+2. **Build.**
+   Compiles to `wasm32-unknown-unknown`, copies the wasm into `res/`, size-optimizes it with `wasm-opt -Oz` (release only), and embeds the canonicalized full ABI as the wasm `calimero_abi_v1` custom section.
+
+   ```
+   $ cargo mero build
+   • target wasm32-unknown-unknown present
+   • building my-app (--profile app-release)
+   • copied wasm to res/my_app.wasm
+   • optimizing res/my_app.wasm (wasm-opt -Oz)
+   • embedding res/abi.json into res/my_app.wasm
+   ```
+
+   Artifacts: `res/<name>.wasm` (the built, ABI-embedded wasm) plus `res/abi.json` and `res/state-schema.json` emitted by the app's `build.rs`.
+
+3. **Test.**
+   Runs the native test suite - the in-crate TestHost unit tests plus the `tests/converge.rs` convergence test.
+   No node or network is needed.
+
+   ```
+   $ cargo mero test
+   running 2 tests
+   test tests::set_and_get ... ok
+   test converge::two_nodes_converge ... ok
+
+   test result: ok. 2 passed; 0 failed
+   ```
+
+4. **Bundle.**
+   Builds every service, stages the wasm/abi files, writes `manifest.json`, signs it, and packages everything into a tar.gz `.mpk` at `dist/<package>.mpk`.
+   Pass a signing method: `--dev` (local), `--key <file>` (production), or `--unsigned`.
+
+   ```
+   $ cargo mero bundle --dev
+   • staging bundle files in ...
+   • writing manifest.json
+   • signing manifest.json with the DEV key
+   ============================================================
+     WARNING: signing with the DEVELOPMENT key
+     The dev key is well-known and public: fine locally, REFUSED
+     by the registry. For a publishable bundle, use --key.
+   ============================================================
+   • packaging dist/com.example.my-app.mpk
+
+   bundle:     dist/com.example.my-app.mpk
+   package:    com.example.my-app
+   appVersion: 0.1.0
+   signerId:   did:key:z6MknF3p5L5FDHJQ7FREUapuX4Wmp4MtF6WrHYaXS2B3eZQd
+   ```
+
+5. **Install.**
+   `meroctl app install --path dist/<package>.mpk` installs the bundle on a running `merod` node.
+   The node derives the `ApplicationId` from the bundle's `package` and signer (see [Signing](#signing)).
+
+</Steps>
+
+## Metadata reference
+
+Bundle metadata comes from a `[package.metadata.calimero]` table in the app's `Cargo.toml`.
+Keys are kebab-case.
+
+| `Cargo.toml` key | `manifest.json` field | Default |
+| ---------------- | --------------------- | ------- |
+| `package` | `package` | required (no default) |
+| `name` | `metadata.name` | the crate name |
+| `description` | `metadata.description` | omitted |
+| `author` | `metadata.author` | omitted |
+| `min-runtime-version` | `minRuntimeVersion` | `0.1.0` |
+| `frontend` | `links.frontend` | omitted |
+| `services` | `services[]` | empty (workspace table only) |
+
+The app version (`manifest.json` `appVersion`) is not a metadata key.
+It defaults to the crate's `[package] version` and is overridable with `cargo mero bundle --app-version <v>`.
+The `manifest.json` `version` field is the manifest schema version and is always `1.0`.
+
+```toml
+[package.metadata.calimero]
+package = "com.example.my-app"
+name = "My App"
+description = "A collaborative example app"
+min-runtime-version = "0.7.0"
+frontend = "https://my-app.example.com"
+```
+
+### Multi-service workspaces
+
+A workspace that ships several wasm services declares them under `[workspace.metadata.calimero]`, which wins over a `[package.metadata.calimero]` table when both are present.
+Each `services` entry maps a bundle service `name` to the `crate` that builds it; `services` under a `[package.metadata.calimero]` table is rejected.
+The bundle then emits `services/<name>.wasm` + `services/<name>-abi.json` per service instead of a top-level `app.wasm` / `abi.json`.
+
+```toml
+# workspace root Cargo.toml
+[workspace.metadata.calimero]
+package = "network.calimero.mero-drive"
+name = "Mero Drive"
+description = "Collaborative file storage"
+min-runtime-version = "0.7.0"
+frontend = "https://drive.calimero.network"
+
+[[workspace.metadata.calimero.services]]
+name = "drive"
+crate = "mero-drive-service"
+
+[[workspace.metadata.calimero.services]]
+name = "index"
+crate = "mero-index-service"
+```
+
+## Signing
+
+Every `.mpk` carries an Ed25519 signature over its `manifest.json`, and `cargo mero bundle` signs as part of packaging.
+There are two kinds of key:
+
+- **Development key (`--dev`).**
+  A single well-known key baked into the tool - no key file, fine for local installs and CI.
+  Because the key is public it proves nothing about provenance, so the registry refuses `--dev` bundles and `cargo mero bundle --dev` prints a warning saying so.
+- **Production key (`--key <file>`).**
+  A private Ed25519 key that only you hold, for anything you publish or install against a registry.
+  Generate one with `cargo mero key generate -o my-key.json`.
+
+In CI, inject the key rather than checking it in: when none of `--key` / `--dev` / `--unsigned` is passed, `bundle` reads `MERO_SIGN_KEY` as the path to a key file.
+
+```bash
+export MERO_SIGN_KEY="$RUNNER_TEMP/mero-key.json"
+echo "$MERO_SIGN_KEY_JSON" > "$MERO_SIGN_KEY"   # from a CI secret
+cargo mero bundle
+```
+
+<Aside type="caution">
+The node derives the `ApplicationId` from the `package` and the `signerId`, not from the wasm bytes.
+Publishing under the same package with the same key produces the same `ApplicationId` (an upgrade); a different key forks the identity into a new app.
+Pick the production key before your first published release and keep signing with it.
+</Aside>
+
+Full details - key generation, the `did:key` derivation, and how package + signer become the `ApplicationId` - are in the toolchain's [SIGNING.md](https://github.com/calimero-network/core/blob/master/tools/cargo-mero/SIGNING.md).
+
+## What gets embedded
+
+A built app carries its ABI in two places that hold the same full manifest but differ in ordering.
+
+The wasm's embedded `calimero_abi_v1` custom section holds the **canonicalized full ABI**: every method (with its per-method metadata such as `xcall_callable`) and event, plus the state schema.
+Its `methods` and `events` arrays are sorted by name, because the node's `validate_manifest` requires them name-sorted and silently discards a section that fails validation.
+
+The bundle's `abi.json` sidecar is the same full ABI **as emitted** by the SDK, in source-declaration order.
+This is also what `cargo mero abi diff` compares between versions to flag breaking or unsafe identity downgrades.
+
+<CardGrid>
+  <LinkCard
+    title="Packaging & signing"
+    description="The manual bundle workflow that cargo mero bundle automates, step by step."
+    href="/build/packaging-signing/"
+  />
+  <LinkCard
+    title="App interface (ABI)"
+    description="What the extracted abi.json contains and how it is embedded in the wasm."
+    href="/build/app-abi/"
+  />
+  <LinkCard
+    title="Testing your app"
+    description="The TestHost harness behind cargo mero test - node-free unit and convergence tests."
+    href="/build/testing/"
+  />
+  <LinkCard
+    title="Quickstart"
+    description="Install an app on a node, attach a context, and call a method."
+    href="/build/quickstart/"
+  />
+</CardGrid>

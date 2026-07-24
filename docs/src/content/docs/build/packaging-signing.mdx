@@ -19,6 +19,13 @@ detail.
 
 ## The workflow
 
+<Aside type="tip" title="cargo mero automates this">
+  The [cargo mero toolchain](/build/cargo-mero/) runs this whole workflow as one
+  command: `cargo mero bundle` builds every service, writes and signs
+  `manifest.json`, and packages the `.mpk`. The manual steps below stay valid and
+  document what the tool does under the hood.
+</Aside>
+
 <Steps>
 
 1. **Build the WASM and extract the ABI.**
