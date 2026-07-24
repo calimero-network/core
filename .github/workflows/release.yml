@@ -8,6 +8,7 @@ on:
       - Cargo.toml
       - Cargo.lock
       - "crates/**"
+      - "tools/**"
       - ".github/workflows/release.yml"
       - ".github/workflows/deps/**"
       - ".github/actions/**"
@@ -19,6 +20,7 @@ on:
       - Cargo.toml
       - Cargo.lock
       - "crates/**"
+      - "tools/**"
       - ".github/workflows/release.yml"
       - ".github/workflows/deps/**"
       - ".github/actions/**"

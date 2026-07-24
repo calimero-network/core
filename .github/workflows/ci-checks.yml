@@ -10,6 +10,8 @@ on:
       - "crates/**"
       - "apps/**"
       - "e2e-tests/**"
+      - "tools/**"
+      - ".github/workflows/ci-checks.yml"
 
 env:
   CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -129,5 +131,7 @@ jobs:
           restore-keys: |
             cargo-mero-fixtures-${{ runner.os }}-
 
+      # Unset the workflow-level CARGO_TARGET_DIR so each fixture builds into its
+      # own target dir (the cached paths above), not the shared workspace target.
       - name: Run pipeline e2e
-        run: cargo test -p cargo-mero --test pipeline -- --ignored --test-threads 1
+        run: env -u CARGO_TARGET_DIR cargo test -p cargo-mero --test pipeline -- --ignored --test-threads 1
