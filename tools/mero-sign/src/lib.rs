@@ -376,6 +376,50 @@ mod tests {
     }
 
     #[test]
+    fn verify_manifest_rejects_signer_id_mismatched_with_embedded_key() {
+        let mut rng = rand::thread_rng();
+        let key_a = SigningKey::generate(&mut rng);
+        let key_b = SigningKey::generate(&mut rng);
+
+        // Builds and signs a manifest with `signing_key`, claiming `signer_id`.
+        // signerId is part of the canonicalized (signed) payload, so it must be
+        // baked in before signing rather than patched in afterward.
+        let sign_with = |signing_key: &SigningKey, signer_id: &str| -> serde_json::Value {
+            let mut manifest = json!({
+                "package": "com.example.app",
+                "appVersion": "1.0.0",
+                "signerId": signer_id,
+            });
+            let canonical_bytes = canonicalize_manifest(&manifest).unwrap();
+            let signing_payload = compute_signing_payload(&canonical_bytes);
+            let signature = signing_key.sign(&signing_payload);
+            manifest["signature"] = serde_json::to_value(SignatureObject {
+                algorithm: "ed25519".to_string(),
+                public_key: URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes()),
+                signature: URL_SAFE_NO_PAD.encode(signature.to_bytes()),
+            })
+            .unwrap();
+            manifest
+        };
+
+        // Key A truthfully claims its own identity: signature verifies and
+        // signerId matches the embedded key.
+        let honest_id = derive_signer_id_did_key(key_a.verifying_key().as_bytes());
+        let honest = sign_with(&key_a, &honest_id);
+        assert!(verify_manifest(&honest).unwrap());
+
+        // Key A signs the identical structure but falsely claims key B's
+        // identity. The ed25519 signature still verifies (it signs over
+        // whatever bytes it is given, lie included), so the rejection below
+        // can only come from the signerId-vs-embedded-key check, not a
+        // signature failure - the "honest" case above proves the signature
+        // path alone succeeds for this exact signing key.
+        let claimed_id = derive_signer_id_did_key(key_b.verifying_key().as_bytes());
+        let forged = sign_with(&key_a, &claimed_id);
+        assert!(!verify_manifest(&forged).unwrap());
+    }
+
+    #[test]
     fn test_derive_signer_id_did_key() {
         let pubkey: [u8; 32] = [
             0x3b, 0x6a, 0x27, 0xbc, 0xce, 0xb6, 0xa4, 0x2d, 0x62, 0xa3, 0xa8, 0xd0, 0x2a, 0x6f,
