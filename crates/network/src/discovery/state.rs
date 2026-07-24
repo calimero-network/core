@@ -470,6 +470,23 @@ impl DiscoveryState {
         let _ = self.autonat_index.remove(peer_id);
     }
 
+    /// The peer's known **direct** (non-relayed) addresses, insertion-ordered
+    /// (freshest last, per [`add_peer_addr`](Self::add_peer_addr)). Empty for a
+    /// peer we only ever reached via relay — relayed multiaddrs are never stored
+    /// in the book (see `swarm.rs` `ConnectionEstablished`) — so a NAT'd peer
+    /// yields nothing here and disconnect recovery falls through to rendezvous.
+    ///
+    /// Used by the `ConnectionClosed` cascade to re-dial a peer we hold a
+    /// working direct address for, instead of waiting on a rendezvous
+    /// round-trip. Must be read BEFORE [`remove_peer`](Self::remove_peer), which
+    /// drops the entry.
+    pub(crate) fn peer_direct_addrs(&self, peer_id: &PeerId) -> Vec<Multiaddr> {
+        self.peers
+            .get(peer_id)
+            .map(|info| info.addrs().cloned().collect())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn update_peer_protocols(&mut self, peer_id: &PeerId, protocols: &[StreamProtocol]) {
         for protocol in protocols {
             if protocol == &HOP_PROTOCOL_NAME {

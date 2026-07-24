@@ -199,7 +199,28 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                             .state
                             .is_peer_discovered_via(&peer_id, PeerDiscoveryMechanism::Mdns)
                     {
+                        // Capture the peer's known DIRECT addresses BEFORE
+                        // `remove_peer` drops them. A peer we hold a confirmed
+                        // direct address for (same-LAN, or any previously
+                        // directly-connected member) should be re-dialed
+                        // straight away rather than rediscovered via a
+                        // rendezvous round-trip — the rendezvous-only recovery
+                        // below strands such a peer whenever rendezvous is slow
+                        // or unreachable (e.g. mDNS dead on a CI runner), which
+                        // is exactly the `group-join-mesh-not-ready` post-heal
+                        // flake. Empty for a purely relayed/NAT'd peer (their
+                        // relayed address is never stored in the book), so those
+                        // correctly fall through to the rendezvous path alone.
+                        let direct_addrs = self.discovery.state.peer_direct_addrs(&peer_id);
+
                         self.discovery.state.remove_peer(&peer_id);
+
+                        // Direct re-dial now (and on the re-fire schedule
+                        // below). Safe for NAT'd peers: a stale direct address
+                        // just fails the dial (recorded by the
+                        // `OutgoingConnectionError` handler) and the rendezvous
+                        // path still recovers them.
+                        self.redial_direct(peer_id, direct_addrs.clone());
 
                         // Our address book held nothing dialable for
                         // them — relayed addresses are intentionally
@@ -278,6 +299,7 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                         // specifically).
                         let disconnected_peer = peer_id;
                         for delay_secs in [5_u64, 15, 30, 60] {
+                            let refire_addrs = direct_addrs.clone();
                             ctx.run_later(
                                 core::time::Duration::from_secs(delay_secs),
                                 move |actor, _ctx| {
@@ -287,6 +309,13 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                                     let actions =
                                         actor.discovery.state.on_regular_peer_disconnected();
                                     actor.execute_reachability_actions(actions);
+                                    // Retry the direct dial too: the immediate
+                                    // attempt above lands during the outage
+                                    // (partition not yet healed / peer still
+                                    // restarting); a later re-fire lands after
+                                    // connectivity returns and reconnects
+                                    // without waiting on rendezvous.
+                                    actor.redial_direct(disconnected_peer, refire_addrs.clone());
                                 },
                             );
                         }
