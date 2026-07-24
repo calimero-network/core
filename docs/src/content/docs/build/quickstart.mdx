@@ -88,21 +88,8 @@ CLI — `app`, `context`, `namespace`, `call`).
    cargo mero build
    ```
 
-   One command runs the whole pipeline in the correct order: compile for
-   `wasm32-unknown-unknown` with the `app-release` profile, copy the artifact
-   into `res/`, shrink it with the bundled `wasm-opt` (`-Oz`), and embed the
-   ABI into the wasm as the `calimero_abi_v1` section.
-   The result lands at `res/<crate_name>.wasm`, ready to bundle.
-
-   :::note
-   Under the hood this is `rustup target add wasm32-unknown-unknown`, then
-   `cargo build --target wasm32-unknown-unknown --profile app-release`, then
-   `wasm-opt -Oz --enable-bulk-memory`, then the ABI embed - the steps the
-   in-repo example apps' `build.sh` scripts still run by hand until they
-   migrate to the toolchain.
-   The `app-release` (and `app-profiling`) profiles are defined in the
-   workspace; `cargo mero new` scaffolds them into standalone crates for you.
-   :::
+   One command compiles, optimizes, and embeds the ABI; the wasm lands at
+   `res/<crate_name>.wasm`, ready to bundle.
 
 </Steps>
 

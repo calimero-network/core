@@ -45,11 +45,6 @@ detail.
    `cargo mero bundle` stages both into the bundle directory for you, together
    with the `manifest.json` you sign in step 3.
 
-   :::note
-   Hand-rolled flows do the same with `./build.sh` plus
-   `calimero-abi extract app.wasm --output bundle-temp/abi.json`; the in-repo
-   example apps still ship such scripts until they migrate to the toolchain.
-   :::
 
 2. **Generate a signing key (one-time).**
 
