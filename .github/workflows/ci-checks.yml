@@ -99,3 +99,35 @@ jobs:
           # on Rust 1.88.0. 0.16.3 could not load the current advisory DB.
           cargo install cargo-deny --version 0.19.9 --locked
           cargo deny check advisories bans licenses sources
+
+  cargo-mero-e2e:
+    name: cargo-mero e2e
+    runs-on: big-machine
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          shared-key: cargo-mero-e2e
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      # Fixtures build core's SDK plus binaryen into their own target dirs;
+      # cache them so warm runs are minutes, not tens of minutes.
+      - name: Cache fixture build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            tools/cargo-mero/tests/fixtures/demo-app/target
+            tools/cargo-mero/tests/fixtures/multi-app/target
+          key: cargo-mero-fixtures-${{ runner.os }}-${{ hashFiles('tools/cargo-mero/tests/fixtures/**/Cargo.toml') }}
+          restore-keys: |
+            cargo-mero-fixtures-${{ runner.os }}-
+
+      - name: Run pipeline e2e
+        run: cargo test -p cargo-mero --test pipeline -- --ignored --test-threads 1
