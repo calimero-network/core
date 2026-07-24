@@ -119,13 +119,13 @@ fn resolve_package<'a>(
     metadata: &'a Metadata,
     manifest_path: Option<&Utf8Path>,
 ) -> Option<&'a Package> {
-    let manifest_dir = manifest_path.and_then(Utf8Path::parent);
+    let manifest_dir = manifest_path.map(crate::meta::canonical_dir);
     manifest_dir
         .and_then(|dir| {
             metadata
                 .packages
                 .iter()
-                .find(|p| p.manifest_path.parent() == Some(dir))
+                .find(|p| p.manifest_path.parent() == Some(dir.as_path()))
         })
         .or_else(|| metadata.root_package())
 }
