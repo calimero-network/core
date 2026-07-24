@@ -288,23 +288,28 @@ pub fn generate_key(output_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write the private-key JSON, creating it owner-only (0600) on unix so the
-/// seed is never briefly world-readable. `.mode()` applies only on creation, so
-/// also tighten an overwritten file. Non-unix keeps the default `fs::write`.
+/// Write the private-key JSON owner-only (0600) on unix so the seed is never
+/// briefly world-readable. `.mode()` applies only when the file is CREATED, so
+/// remove any prior key first and `create_new`, guaranteeing 0600 from the
+/// first byte rather than tightening an already-written file. `create_new` also
+/// refuses to follow a pre-placed symlink. Non-unix keeps the default `fs::write`.
 fn write_private_key(path: &Path, contents: &str) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write as _;
-        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        use std::os::unix::fs::OpenOptionsExt as _;
 
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
         let mut file = fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
             .open(path)?;
-        file.write_all(contents.as_bytes())?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        file.write_all(contents.as_bytes())
     }
     #[cfg(not(unix))]
     {
@@ -507,6 +512,13 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let key_path = dir.path().join("key.json");
+
+        // Pre-place a world-readable file with junk: overwriting a key must both
+        // replace the content AND end at 0600, never leave the new seed under
+        // the old 0644.
+        std::fs::write(&key_path, "junk, not a key").unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
         generate_key(&key_path).unwrap();
 
         let mode = std::fs::metadata(&key_path).unwrap().permissions().mode();
@@ -515,6 +527,13 @@ mod tests {
             0o600,
             "private key must be readable only by owner"
         );
+
+        let content = std::fs::read_to_string(&key_path).unwrap();
+        assert!(
+            content.contains("private_key"),
+            "junk content must be replaced by the key JSON"
+        );
+        assert!(!content.contains("junk"), "stale content must not survive");
     }
 
     #[test]
