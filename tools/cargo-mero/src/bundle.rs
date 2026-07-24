@@ -42,6 +42,7 @@ pub fn run(args: &BundleArgs) -> Result<PathBuf> {
     let base = base_dir(&metadata, args);
     let mut bundle_meta = meta::load(&metadata, &base)?;
     if let Some(p) = &args.package {
+        meta::validate_package_id(p)?;
         bundle_meta.package = p.clone();
     }
     if let Some(v) = &args.app_version {

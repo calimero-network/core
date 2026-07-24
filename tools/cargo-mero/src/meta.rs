@@ -119,6 +119,22 @@ fn validate_service_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// The package id becomes the bundle's output filename (`dist/<package>.mpk`),
+/// and it can arrive from an untrusted `Cargo.toml` or a CLI override, so it
+/// must be path-safe: reverse-DNS characters only, no separators.
+pub(crate) fn validate_package_id(package: &str) -> Result<()> {
+    let safe = !package.is_empty()
+        && package
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_');
+    if !safe {
+        return Err(eyre!(
+            "invalid package id `{package}`: package ids may contain only ASCII letters, digits, `.`, `-`, and `_`"
+        ));
+    }
+    Ok(())
+}
+
 /// Pull the `calimero` subtable out of a cargo `[*.metadata]` value, which cargo
 /// delivers nested under the tool key as `{ "calimero": { .. } }`. `None` when
 /// the input is absent, not an object, or the subtable is null.
@@ -221,6 +237,7 @@ fn load_from_values(
     }
 
     let package = raw.package.ok_or(MissingCalimeroPackage)?;
+    validate_package_id(&package)?;
 
     let services = raw
         .services
@@ -398,6 +415,23 @@ mod tests {
                 "`{bad}` should be rejected, got: {err}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_path_traversal_package_id() {
+        for bad in ["../../evil", "a/b", "a\\b", "dist/../../x", ""] {
+            let workspace_value = json!({ "package": bad });
+            let err = load_from_values(Some(&workspace_value), None, "app", "1.0.0")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("invalid package id"),
+                "`{bad}` should be rejected, got: {err}"
+            );
+        }
+
+        let ok = json!({ "package": "com.example.my-app_2" });
+        assert!(load_from_values(Some(&ok), None, "app", "1.0.0").is_ok());
     }
 
     #[test]
