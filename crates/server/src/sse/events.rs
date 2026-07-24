@@ -81,7 +81,13 @@ pub async fn handle_node_events(
             },
         };
 
-        let subscriptions = session_state.inner.read().await.subscriptions.clone();
+        let (subscriptions, group_subscriptions) = {
+            let inner = session_state.inner.read().await;
+            (
+                inner.subscriptions.clone(),
+                inner.group_subscriptions.clone(),
+            )
+        };
 
         debug!(
             %session_id,
@@ -95,6 +101,10 @@ pub async fn handle_node_events(
                 NodeEvent::Context(event)
             }
             NodeEvent::Context(_) => continue,
+            NodeEvent::GroupMembership(event) if group_subscriptions.contains(&event.group_id) => {
+                NodeEvent::GroupMembership(event)
+            }
+            NodeEvent::GroupMembership(_) => continue,
         };
 
         let body = match to_json_value(event) {

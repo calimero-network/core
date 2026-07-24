@@ -1,13 +1,51 @@
 use serde::{Deserialize, Serialize};
 
-use crate::context::ContextId;
+use crate::context::{ContextId, GroupMemberRole};
 use crate::hash::Hash;
+use crate::identity::PublicKey;
 use crate::sync_status::SyncState;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum NodeEvent {
     Context(ContextEvent),
+    /// A group's membership changed (join/add/remove/leave). Keyed by `groupId`,
+    /// disjoint from `contextId`, so untagged still round-trips.
+    GroupMembership(GroupMembershipEvent),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMembershipEvent {
+    /// The group whose membership changed (the JOINED subgroup for a join,
+    /// never the namespace root). Serialized base58, like every 32-byte id.
+    pub group_id: Hash,
+    #[serde(flatten)]
+    pub payload: MembershipChangePayload,
+}
+
+/// The kind of membership change, tagged like [`ContextEventPayload`]. `MemberLeft`
+/// and an admin `MemberRemoved` both surface as `MemberRemoved`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "PascalCase")]
+pub enum MembershipChangePayload {
+    /// A member joined via a self-service path (open invite or inherited
+    /// Open-subgroup join).
+    MemberJoined(MembershipChange),
+    /// An admin added a member.
+    MemberAdded(MembershipChange),
+    /// A member was removed or left the group.
+    MemberRemoved(MembershipChange),
+}
+
+/// The affected identity and, when known, the role it holds in the group.
+/// `role` is absent for an inherited Open-subgroup join and for removals.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MembershipChange {
+    pub member: PublicKey,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<GroupMemberRole>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -183,5 +221,63 @@ mod tests {
     fn xcall_outcome_ok_shape() {
         let v = serde_json::to_value(XCallOutcome::Ok).expect("serialize");
         assert_eq!(v["status"], "ok");
+    }
+
+    // groupId on the wrapper, type tag + member/role in data; role omitted when absent.
+    #[test]
+    fn group_membership_tag_and_shape() {
+        let event = NodeEvent::GroupMembership(GroupMembershipEvent {
+            group_id: Hash::from([0x07; 32]),
+            payload: MembershipChangePayload::MemberJoined(MembershipChange {
+                member: PublicKey::from([0x09; 32]),
+                role: Some(GroupMemberRole::Member),
+            }),
+        });
+        let v = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(v["type"], "MemberJoined");
+        assert!(v.get("groupId").is_some(), "groupId on the wrapper");
+        assert!(v.get("contextId").is_none(), "no contextId leaks in");
+        assert_eq!(v["data"]["role"], "Member");
+        assert!(v["data"].get("member").is_some());
+    }
+
+    #[test]
+    fn group_membership_omits_role_when_absent() {
+        let v = serde_json::to_value(MembershipChangePayload::MemberRemoved(MembershipChange {
+            member: PublicKey::from([0x0A; 32]),
+            role: None,
+        }))
+        .expect("serialize");
+        assert_eq!(v["type"], "MemberRemoved");
+        assert!(v["data"].get("role").is_none(), "None role omitted");
+    }
+
+    // The untagged NodeEvent still round-trips with a second variant.
+    #[test]
+    fn node_event_untagged_round_trips_both_variants() {
+        let group = NodeEvent::GroupMembership(GroupMembershipEvent {
+            group_id: Hash::from([0x11; 32]),
+            payload: MembershipChangePayload::MemberAdded(MembershipChange {
+                member: PublicKey::from([0x12; 32]),
+                role: Some(GroupMemberRole::Admin),
+            }),
+        });
+        let json = serde_json::to_string(&group).expect("to_string");
+        let back: NodeEvent = serde_json::from_str(&json).expect("deserialize");
+        assert!(
+            matches!(back, NodeEvent::GroupMembership(_)),
+            "got {back:?}"
+        );
+
+        let ctx = NodeEvent::Context(ContextEvent {
+            context_id: ContextId::from([0x13; 32]),
+            payload: ContextEventPayload::AppVersionChanged(AppVersionChangedPayload {
+                from_version: None,
+                to_version: Some("2.0.0".to_owned()),
+            }),
+        });
+        let json = serde_json::to_string(&ctx).expect("to_string");
+        let back: NodeEvent = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(back, NodeEvent::Context(_)), "got {back:?}");
     }
 }

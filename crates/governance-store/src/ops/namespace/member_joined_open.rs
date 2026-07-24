@@ -90,7 +90,15 @@ pub(crate) fn apply(
         None => membership_path_kind(&MembershipRepository::new(store).check_path(&gid, &member)?),
     };
     match path {
-        AtCutMembershipPath::Inherited => Ok(()),
+        AtCutMembershipPath::Inherited => {
+            // Emit on real join; queued so replay dedups it.
+            ctx.queue_event(crate::op_events::OpEvent::MemberJoined {
+                group_id,
+                member,
+                role: None,
+            });
+            Ok(())
+        }
         AtCutMembershipPath::Direct => {
             // Direct members go through `MemberJoined` or `add_group_members`
             // — they shouldn't be using this op.

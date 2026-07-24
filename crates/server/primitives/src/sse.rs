@@ -1,4 +1,5 @@
 use calimero_primitives::context::ContextId;
+use calimero_primitives::hash::Hash;
 use eyre::Error as EyreError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,6 +32,10 @@ pub enum RequestPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ContextIds {
     pub context_ids: Vec<ContextId>,
+    /// Group ids to observe for `GroupMembership` events. Optional, so
+    /// existing `contextIds`-only clients are unaffected.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group_ids: Vec<Hash>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

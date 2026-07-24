@@ -15,9 +15,9 @@ pub(crate) fn apply(
     signed_invitation: &SignedGroupOpenInvitation,
     joined_at: Option<u64>,
 ) -> EyreResult<()> {
-    let event = NamespaceMembershipService::new(ctx.store(), ctx.namespace_id())
+    let events = NamespaceMembershipService::new(ctx.store(), ctx.namespace_id())
         .apply_member_joined(&op.signer, member, signed_invitation, joined_at)?;
-    if let Some(event) = event {
+    for event in events {
         ctx.queue_event(event);
     }
     Ok(())
