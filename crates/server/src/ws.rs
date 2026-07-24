@@ -999,8 +999,8 @@ mod tests {
         assert_eq!(sub_resp["id"], json!(1));
         assert_eq!(
             sub_resp["result"]["groupIds"],
-            serde_json::to_value(vec![group]).unwrap(),
-            "the group id should be echoed as subscribed"
+            json!([hex::encode(group.as_bytes())]),
+            "the group id should be echoed as subscribed, hex-encoded like the admin API"
         );
 
         let listening = tokio::time::timeout(Duration::from_secs(5), async {
@@ -1033,6 +1033,66 @@ mod tests {
         assert!(
             leaked.is_none(),
             "a non-group-subscriber must not receive the event: {leaked:?}"
+        );
+    }
+
+    // Regression for the hex/base58 id-representation bug: a real client
+    // subscribes with the RAW group-only wire frame it actually sends - no
+    // `contextIds`, and `groupIds` a HEX-encoded id in the exact form the
+    // group/namespace admin API returns (`hex::encode(id)`), not base58. Both
+    // the hex parse and the group-only payload must survive the socket + route
+    // path, and the delivered event's `groupId` must echo that same hex, or a
+    // client can neither subscribe with the id it holds nor correlate the event
+    // it receives.
+    #[tokio::test]
+    async fn group_only_hex_subscribe_receives_event() {
+        let server = spawn_test_ws().await;
+        let group = Hash::from([0x2bu8; 32]);
+        // Exactly what the admin API emits for this id.
+        let group_hex = hex::encode(group.as_bytes());
+
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+
+        // The raw frame a real client puts on the wire, not a typed
+        // SubscribeRequest built from a Hash on both ends.
+        let raw =
+            format!(r#"{{"id":1,"method":"subscribe","params":{{"groupIds":["{group_hex}"]}}}}"#);
+        write.send(Message::Text(raw)).await.unwrap();
+
+        let sub_resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        assert_eq!(sub_resp["id"], json!(1));
+        assert_eq!(
+            sub_resp["result"]["groupIds"],
+            json!([group_hex]),
+            "the subscribed group must be echoed as the same hex the client sent: {sub_resp}"
+        );
+
+        let listening = tokio::time::timeout(Duration::from_secs(5), async {
+            while server.event_sender.receiver_count() < 1 {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(listening, "the event fan-out task should be listening");
+
+        server
+            .event_sender
+            .send(group_membership_event(group))
+            .unwrap();
+
+        let pushed = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("the hex-subscribed client should receive the event");
+        assert_eq!(
+            pushed["result"]["type"], "MemberJoined",
+            "the frame should carry the membership-change discriminant: {pushed}"
+        );
+        assert_eq!(
+            pushed["result"]["groupId"], group_hex,
+            "the delivered groupId must equal the hex the client subscribed with: {pushed}"
         );
     }
 
