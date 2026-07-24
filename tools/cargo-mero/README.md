@@ -11,7 +11,7 @@ One tool covers the whole path from `cargo mero new` to an installable bundle, r
 Install from the repository (works today):
 
 ```bash
-cargo install --git https://github.com/calimero-network/cargo-mero cargo-mero
+cargo install --git https://github.com/calimero-network/core cargo-mero
 ```
 
 Once published, `cargo install cargo-mero` will install it from crates.io, and prebuilt binaries will be attached to the repository's releases page.
@@ -146,13 +146,12 @@ The tool now lives back in core's workspace at `tools/cargo-mero`, versioned and
 
 ## Bumping the SDK version
 
-The scaffolded SDK version is pinned in several places that must move together.
-When bumping to a new `calimero-sdk` / `calimero-wasm-abi` release, update all of:
+The scaffolded SDK version has a single source of truth; a bump moves it and the test that pins the expected value:
 
-- `DEFAULT_SDK_VERSION` in `tools/cargo-mero/src/main.rs` (the single source used for `cargo mero new`'s default and `cargo mero test`'s example dev-dep hint).
-- the `calimero-wasm-abi` pin in the workspace `Cargo.toml` (`[workspace.dependencies]`).
-- the SDK tags in the test fixtures: `tools/cargo-mero/tests/fixtures/demo-app/Cargo.toml` and `tools/cargo-mero/tests/fixtures/multi-app/crates/*/Cargo.toml`.
-- the version assertions in `tools/cargo-mero/src/new.rs` tests.
+- `DEFAULT_SDK_VERSION` in `tools/cargo-mero/src/main.rs` - the one value `cargo mero new` substitutes into the scaffolded `Cargo.toml` (both the SDK git tag and the exact `calimero-wasm-abi` pin) and that `cargo mero test`'s example dev-dep hint prints.
+- the version assertions in `tools/cargo-mero/src/new.rs` tests, which hardcode the expected tag/pin and so must be bumped in lockstep.
+
+The in-repo test fixtures use `path` dependencies on core's own SDK crates, so they need no SDK-version update.
 
 ## License
 
