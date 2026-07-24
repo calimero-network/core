@@ -148,14 +148,15 @@ pub struct ContextManagerConfig {
     /// admin + their `publish_and_await_ack` budget", not the full
     /// gossipsub heartbeat reconciliation window.
     ///
-    /// Default is 15s (#3295): the previous 5s routinely elapsed before a
-    /// realistic post-reconnect round-trip — libp2p redial, gossipsub
-    /// re-GRAFT of the `ns/<id>` mesh (several ~1s heartbeats), the joiner's
-    /// `MemberJoinedAt` reaching an admin, that admin publishing a targeted
-    /// `KeyDelivery`, and its receipt — leaving the joiner keyless. This is
-    /// only a margin, not the cure: a joiner that still misses the window
-    /// self-heals via the durable `recover_missing_group_keys` pull, which
-    /// now also covers a member that holds no key with no buffered op.
+    /// This in-RPC wait is a best-effort fast path, not the cure for a joiner
+    /// that misses it: durable self-healing is provided by the
+    /// `recover_missing_group_keys` pull, which (as of #3295) also covers a
+    /// member that holds no key with no buffered op, so it re-acquires the key
+    /// from the interval tick with no manual re-join. The window is
+    /// deliberately kept short (5s) rather than widened — a longer wait blocks
+    /// the join RPC without adding robustness the durable reconciler doesn't
+    /// already give, and widening it measurably lengthened the pre-heal window
+    /// in the `group-join-mesh-not-ready` partition scenario.
     pub key_delivery_fallback_wait: Duration,
 
     /// Master switch for the hybrid zero-downtime migration framework.
@@ -171,7 +172,7 @@ pub struct ContextManagerConfig {
 impl Default for ContextManagerConfig {
     fn default() -> Self {
         Self {
-            key_delivery_fallback_wait: Duration::from_secs(15),
+            key_delivery_fallback_wait: Duration::from_secs(5),
             migration_v2: true,
         }
     }
