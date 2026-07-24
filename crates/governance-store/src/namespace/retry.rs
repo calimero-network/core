@@ -1,5 +1,6 @@
+use super::core::NamespaceRepository;
 use super::op_log::NamespaceOpLogService;
-use crate::GroupKeyring;
+use crate::{GroupKeyring, MembershipRepository};
 use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::NamespaceId;
@@ -67,6 +68,62 @@ impl<'a> NamespaceRetryService<'a> {
             }
         }
         Ok(awaiting.into_iter().collect())
+    }
+
+    /// Distinct group ids in this namespace where the node holds a **direct
+    /// membership row for its own namespace identity but no usable group key**
+    /// — regardless of whether any op is buffered.
+    ///
+    /// This is the membership-driven counterpart to [`groups_awaiting_key`],
+    /// which is purely op-driven (a group only appears once an undecryptable op
+    /// is buffered for it). A node that joins under a thin/healing mesh records
+    /// local membership but may fail to obtain the key, and if the namespace is
+    /// then quiescent no encrypted op is ever buffered — so the op-driven set
+    /// stays empty and the direct-pull recovery never fires. Enumerating
+    /// member-but-keyless groups here lets that recovery re-acquire the key
+    /// from the interval tick alone, with no buffered op and no manual re-join
+    /// (#3295). The requester asks for the group's **current** key (`key_id`
+    /// `None`), since with no op there is no specific epoch to target.
+    ///
+    /// "Keyless" mirrors [`groups_awaiting_key`]'s dual resolution: no current
+    /// key in the group's own keyring AND none in the namespace keyring (an
+    /// `Open` subgroup is decryptable under the namespace key). A `Restricted`
+    /// subgroup whose member holds the namespace key but not the subgroup key
+    /// is therefore treated as keyed here — but that case still surfaces
+    /// through the op-driven set the moment one of its (subgroup-key-encrypted)
+    /// ops is buffered, so it is not stranded.
+    pub fn groups_member_but_keyless(&self) -> EyreResult<Vec<[u8; 32]>> {
+        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
+
+        // The member we'd be missing a key for is this node's namespace
+        // identity. No identity ⇒ nothing to recover.
+        let my_identity = match NamespaceRepository::new(self.store).identity_record(&ns_typed)? {
+            Some(record) => record.public_key,
+            None => return Ok(Vec::new()),
+        };
+
+        // Every group in the namespace: the root plus all descendants.
+        let mut groups = vec![ns_typed];
+        groups.extend(NamespaceRepository::new(self.store).collect_descendants(&ns_typed)?);
+
+        let mut out = std::collections::BTreeSet::new();
+        for gid in groups {
+            if !MembershipRepository::new(self.store).has_direct_member(&gid, &my_identity)? {
+                continue;
+            }
+            let has_key = GroupKeyring::new(self.store, gid)
+                .load_current_key()
+                .map_err(|e| eyre::eyre!("load_current_key(group): {e}"))?
+                .is_some()
+                || GroupKeyring::new(self.store, ns_typed)
+                    .load_current_key()
+                    .map_err(|e| eyre::eyre!("load_current_key(namespace): {e}"))?
+                    .is_some();
+            if !has_key {
+                let _ = out.insert(gid.to_bytes());
+            }
+        }
+        Ok(out.into_iter().collect())
     }
 
     /// Distinct `(group_id, key_id)` pairs the local node is buffering an

@@ -70,6 +70,7 @@ pub mod group_store {
         is_currently_authorized_for_context,
         namespace_group_keys_awaiting,
         namespace_groups_awaiting_key,
+        namespace_groups_member_but_keyless,
         now_millis,
         now_secs,
         read_op_log_after,
@@ -146,6 +147,15 @@ pub struct ContextManagerConfig {
     /// `MemberJoined` is on the wire, so the bound is "round-trip to any
     /// admin + their `publish_and_await_ack` budget", not the full
     /// gossipsub heartbeat reconciliation window.
+    ///
+    /// Default is 15s (#3295): the previous 5s routinely elapsed before a
+    /// realistic post-reconnect round-trip — libp2p redial, gossipsub
+    /// re-GRAFT of the `ns/<id>` mesh (several ~1s heartbeats), the joiner's
+    /// `MemberJoinedAt` reaching an admin, that admin publishing a targeted
+    /// `KeyDelivery`, and its receipt — leaving the joiner keyless. This is
+    /// only a margin, not the cure: a joiner that still misses the window
+    /// self-heals via the durable `recover_missing_group_keys` pull, which
+    /// now also covers a member that holds no key with no buffered op.
     pub key_delivery_fallback_wait: Duration,
 
     /// Master switch for the hybrid zero-downtime migration framework.
@@ -161,7 +171,7 @@ pub struct ContextManagerConfig {
 impl Default for ContextManagerConfig {
     fn default() -> Self {
         Self {
-            key_delivery_fallback_wait: Duration::from_secs(5),
+            key_delivery_fallback_wait: Duration::from_secs(15),
             migration_v2: true,
         }
     }

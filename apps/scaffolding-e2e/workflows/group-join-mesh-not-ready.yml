@@ -168,6 +168,24 @@ steps:
     timeout: 120
     trigger_sync: true
 
+  # #3295 — passive key recovery, asserted BEFORE any re-join. Once the mesh is
+  # back, node-2's namespace-sync tick drives `recover_missing_group_keys`. The
+  # durable fix makes that pull cover a member that holds NO key with NO buffered
+  # op (the quiescent "joined, pending key" state this scenario produces): node-2
+  # is a member of the root namespace group but keyless, so it now surfaces via
+  # `namespace_groups_member_but_keyless` and the tick requests the current key
+  # from node-1. This log line is emitted by `recover_missing_group_keys` on a
+  # successful pull (crates/node/src/sync/manager/namespace_sync.rs) — its
+  # presence proves the joiner reacquired the key WITHOUT the manual re-join
+  # below. `trigger_sync` above is ordinary background sync merobox pokes, not a
+  # re-join. The re-join steps that follow now only exercise the re-join path
+  # itself as additional coverage.
+  - name: Assert node-2 recovered the group key passively (no re-join)
+    type: assert_log_present
+    nodes: [notready-node-2]
+    patterns:
+      - "recovered group key via direct delivery"
+
   - name: Node-2 re-joins the group (should now succeed)
     type: join_namespace
     node: notready-node-2

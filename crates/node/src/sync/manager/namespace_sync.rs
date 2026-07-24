@@ -1478,8 +1478,39 @@ impl SyncManager {
                 return;
             }
         };
+        // Membership-driven set (#3295): groups we're a member of but hold no
+        // key for, even with no buffered op. Without this, a joiner stranded
+        // "joined, pending key" under a quiescent namespace never appears in
+        // the op-driven `awaiting` set above and never recovers. Non-fatal on
+        // error — fall back to the op-driven set alone.
+        let member_keyless =
+            match calimero_context::group_store::namespace_groups_member_but_keyless(
+                &store,
+                namespace_id.into(),
+            ) {
+                Ok(groups) => groups,
+                Err(err) => {
+                    debug!(%err, "failed to enumerate member-but-keyless groups");
+                    Vec::new()
+                }
+            };
         drop(store);
-        if awaiting.is_empty() {
+
+        // Merge into one request list of `(group_id, Option<key_id>)`: op-driven
+        // pairs target the EXACT stranded epoch (`Some`), membership-driven
+        // groups ask for the group's CURRENT key (`None`) since no op pins an
+        // epoch. Skip a membership group already covered by an op-driven pair to
+        // avoid a redundant request.
+        let op_group_ids: std::collections::BTreeSet<[u8; 32]> =
+            awaiting.iter().map(|(g, _)| *g).collect();
+        let mut requests: Vec<([u8; 32], Option<[u8; 32]>)> =
+            awaiting.into_iter().map(|(g, k)| (g, Some(k))).collect();
+        for g in member_keyless {
+            if !op_group_ids.contains(&g) {
+                requests.push((g, None));
+            }
+        }
+        if requests.is_empty() {
             return;
         }
 
@@ -1501,7 +1532,7 @@ impl SyncManager {
             return;
         }
 
-        for (group_id, key_id) in awaiting {
+        for (group_id, key_id) in requests {
             for peer in &candidates {
                 let Some((envelope_bytes, responder_identity)) = self
                     .request_group_key_from_peer(
@@ -1509,7 +1540,7 @@ impl SyncManager {
                         namespace_id,
                         group_id,
                         requester_public_key,
-                        Some(key_id),
+                        key_id,
                     )
                     .await
                 else {
