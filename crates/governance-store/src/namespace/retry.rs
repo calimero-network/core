@@ -28,6 +28,30 @@ impl<'a> NamespaceRetryService<'a> {
         }
     }
 
+    /// Does the node hold the key epoch `key_id` for `group_id`?
+    ///
+    /// Mirrors the apply path's resolution order — the group's own keyring
+    /// first (a `Restricted` subgroup has its own key), then the namespace
+    /// keyring (an `Open` subgroup is encrypted under it). Shared by every
+    /// buffered-op enumerator (`groups_awaiting_key`, `awaited_group_keys`,
+    /// `groups_with_held_key_buffered_ops`) so the fallback order lives in one
+    /// place — a future fix to the resolution order changes only this method.
+    fn holds_key_epoch(
+        &self,
+        group_id: ContextGroupId,
+        ns_typed: ContextGroupId,
+        key_id: &[u8; 32],
+    ) -> EyreResult<bool> {
+        Ok(GroupKeyring::new(self.store, group_id)
+            .load_key_by_id(key_id)
+            .map_err(|e| eyre::eyre!("load_key_by_id(group): {e}"))?
+            .is_some()
+            || GroupKeyring::new(self.store, ns_typed)
+                .load_key_by_id(key_id)
+                .map_err(|e| eyre::eyre!("load_key_by_id(namespace): {e}"))?
+                .is_some())
+    }
+
     /// Distinct group ids that have at least one buffered encrypted op the
     /// local node cannot yet decrypt — decided **per op `key_id`**, not by
     /// whether the node holds *some* key for the group.
@@ -52,18 +76,7 @@ impl<'a> NamespaceRetryService<'a> {
         let mut awaiting = std::collections::BTreeSet::new();
         for (group_id, key_id) in op_keys {
             let gid_typed = ContextGroupId::from(group_id);
-            // Same resolution order as `apply_signed_op`'s Group arm:
-            // the subgroup's own keyring first (Restricted), then the
-            // namespace keyring (Open subgroups are encrypted under it).
-            let resolvable = GroupKeyring::new(self.store, gid_typed)
-                .load_key_by_id(&key_id)
-                .map_err(|e| eyre::eyre!("load_key_by_id(group): {e}"))?
-                .is_some()
-                || GroupKeyring::new(self.store, ns_typed)
-                    .load_key_by_id(&key_id)
-                    .map_err(|e| eyre::eyre!("load_key_by_id(namespace): {e}"))?
-                    .is_some();
-            if !resolvable {
+            if !self.holds_key_epoch(gid_typed, ns_typed, &key_id)? {
                 awaiting.insert(group_id);
             }
         }
@@ -102,6 +115,18 @@ impl<'a> NamespaceRetryService<'a> {
             None => return Ok(Vec::new()),
         };
 
+        // The namespace (root) key decrypts the root group AND every `Open`
+        // subgroup, so its presence alone means no group here is keyless.
+        // Resolve it once rather than re-reading the namespace keyring for
+        // every group in the loop.
+        let has_namespace_key = GroupKeyring::new(self.store, ns_typed)
+            .load_current_key()
+            .map_err(|e| eyre::eyre!("load_current_key(namespace): {e}"))?
+            .is_some();
+        if has_namespace_key {
+            return Ok(Vec::new());
+        }
+
         // Every group in the namespace: the root plus all descendants.
         let mut groups = vec![ns_typed];
         groups.extend(NamespaceRepository::new(self.store).collect_descendants(&ns_typed)?);
@@ -111,14 +136,12 @@ impl<'a> NamespaceRetryService<'a> {
             if !MembershipRepository::new(self.store).has_direct_member(&gid, &my_identity)? {
                 continue;
             }
+            // `has_namespace_key` is already known false here; only the group's
+            // own keyring can still supply a key (a `Restricted` subgroup).
             let has_key = GroupKeyring::new(self.store, gid)
                 .load_current_key()
                 .map_err(|e| eyre::eyre!("load_current_key(group): {e}"))?
-                .is_some()
-                || GroupKeyring::new(self.store, ns_typed)
-                    .load_current_key()
-                    .map_err(|e| eyre::eyre!("load_current_key(namespace): {e}"))?
-                    .is_some();
+                .is_some();
             if !has_key {
                 let _ = out.insert(gid.to_bytes());
             }
@@ -144,15 +167,7 @@ impl<'a> NamespaceRetryService<'a> {
         let mut awaiting = std::collections::BTreeSet::new();
         for (group_id, key_id) in op_keys {
             let gid_typed = ContextGroupId::from(group_id);
-            let resolvable = GroupKeyring::new(self.store, gid_typed)
-                .load_key_by_id(&key_id)
-                .map_err(|e| eyre::eyre!("load_key_by_id(group): {e}"))?
-                .is_some()
-                || GroupKeyring::new(self.store, ns_typed)
-                    .load_key_by_id(&key_id)
-                    .map_err(|e| eyre::eyre!("load_key_by_id(namespace): {e}"))?
-                    .is_some();
-            if !resolvable {
+            if !self.holds_key_epoch(gid_typed, ns_typed, &key_id)? {
                 awaiting.insert((group_id, key_id));
             }
         }
@@ -189,18 +204,7 @@ impl<'a> NamespaceRetryService<'a> {
         let mut held = std::collections::BTreeSet::new();
         for (group_id, key_id) in op_keys {
             let gid_typed = ContextGroupId::from(group_id);
-            // Same resolution order as `apply_signed_op`'s Group arm and
-            // `groups_awaiting_key`: subgroup keyring first (Restricted),
-            // then the namespace keyring (Open subgroups encrypt under it).
-            let resolvable = GroupKeyring::new(self.store, gid_typed)
-                .load_key_by_id(&key_id)
-                .map_err(|e| eyre::eyre!("load_key_by_id(group): {e}"))?
-                .is_some()
-                || GroupKeyring::new(self.store, ns_typed)
-                    .load_key_by_id(&key_id)
-                    .map_err(|e| eyre::eyre!("load_key_by_id(namespace): {e}"))?
-                    .is_some();
-            if resolvable {
+            if self.holds_key_epoch(gid_typed, ns_typed, &key_id)? {
                 held.insert(group_id);
             }
         }
