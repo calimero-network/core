@@ -35,7 +35,20 @@ struct Target {
     crate_dir: Utf8PathBuf,
 }
 
+/// CLI `cargo mero build`: honors `-p`/`--manifest-path` target selection.
 pub fn run(args: &BuildArgs) -> Result<Vec<BuiltWasm>> {
+    run_inner(args, false)
+}
+
+/// Build EVERY declared service (or the single package when none are declared),
+/// ignoring `-p`/`--manifest-path` selection. `bundle` stages `services/<name>.*`
+/// for each manifest entry, so it must always compile the full set - a filtered
+/// CLI `run` would silently drop services from the `.mpk`.
+pub fn run_all(args: &BuildArgs) -> Result<Vec<BuiltWasm>> {
+    run_inner(args, true)
+}
+
+fn run_inner(args: &BuildArgs, all_services: bool) -> Result<Vec<BuiltWasm>> {
     let mut cmd = cargo_metadata::MetadataCommand::new();
     if let Some(mp) = &args.manifest_path {
         let _ = cmd.manifest_path(mp);
@@ -50,7 +63,7 @@ pub fn run(args: &BuildArgs) -> Result<Vec<BuiltWasm>> {
         "app-release"
     };
 
-    let targets = resolve_targets(&metadata, args)?;
+    let targets = resolve_targets(&metadata, args, all_services)?;
     ensure_wasm_target()?;
     ensure_profile(&metadata.workspace_root, profile)?;
 
@@ -61,13 +74,16 @@ pub fn run(args: &BuildArgs) -> Result<Vec<BuiltWasm>> {
     Ok(built)
 }
 
-/// The crates to build: an explicit `-p`, else every declared workspace
-/// service, else the single resolved package.
-fn resolve_targets(metadata: &cargo_metadata::Metadata, args: &BuildArgs) -> Result<Vec<Target>> {
-    if let Some(pkg) = &args.package {
-        return Ok(vec![target_for_named(metadata, pkg)?]);
-    }
-
+/// The crates to build. When the workspace declares services, `all_services`
+/// (set by `bundle` via `run_all`) forces the full set; otherwise a CLI build
+/// honors `-p`/`--manifest-path` through `select_service_builds`. With no
+/// services declared it is the single package named by `-p`/`--manifest-path`,
+/// else the resolved root package.
+fn resolve_targets(
+    metadata: &cargo_metadata::Metadata,
+    args: &BuildArgs,
+    all_services: bool,
+) -> Result<Vec<Target>> {
     // Canonicalize so a relative `--manifest-path` matches cargo_metadata's
     // absolute package paths (otherwise it silently falls through to root_package).
     let manifest_dir = args.manifest_path.as_ref().map(|p| meta::canonical_dir(p));
@@ -90,26 +106,90 @@ fn resolve_targets(metadata: &cargo_metadata::Metadata, args: &BuildArgs) -> Res
     };
 
     if !services.is_empty() {
-        return services
-            .into_iter()
-            .map(|s| target_for_named(metadata, &s.crate_name))
+        let service_crates: Vec<String> = services.iter().map(|s| s.crate_name.clone()).collect();
+        let selected = if all_services {
+            service_crates
+        } else {
+            // A --manifest-path that names the workspace root (or is absent)
+            // builds all services; one that names a member builds just it.
+            let root_manifest = manifest_dir
+                .as_ref()
+                .is_none_or(|dir| meta::same_dir(&metadata.workspace_root.join("Cargo.toml"), dir));
+            let matched_member = manifest_dir
+                .as_deref()
+                .and_then(|dir| package_in_dir(metadata, dir))
+                .map(|p| p.name.to_string());
+            select_service_builds(
+                &service_crates,
+                args.package.as_deref(),
+                matched_member.as_deref(),
+                root_manifest,
+            )?
+        };
+        return selected
+            .iter()
+            .map(|name| target_for_named(metadata, name))
             .collect();
     }
 
-    let package = manifest_dir
-        .as_deref()
-        .and_then(|dir| {
-            metadata
-                .packages
-                .iter()
-                .find(|p| meta::same_dir(&p.manifest_path, dir))
-        })
-        .or_else(|| metadata.root_package())
-        .ok_or_else(|| {
+    if let Some(pkg) = &args.package {
+        return Ok(vec![target_for_named(metadata, pkg)?]);
+    }
+
+    // No services declared. An explicit --manifest-path must resolve to a real
+    // package; a non-matching one is an error, NOT a silent root fallback (the
+    // fallback is only for the no-flag case).
+    let package = match &manifest_dir {
+        Some(dir) => package_in_dir(metadata, dir).ok_or_else(|| {
+            eyre!("--manifest-path `{dir}` does not match any package in the workspace")
+        })?,
+        None => metadata.root_package().ok_or_else(|| {
             eyre!("could not resolve an app package to build (pass -p or --manifest-path)")
-        })?;
+        })?,
+    };
 
     Ok(vec![target_from_package(package)?])
+}
+
+/// Decide which crates a CLI `build` compiles when the workspace declares
+/// `services`. Pure (no cargo_metadata) so the selection rules stay
+/// unit-testable:
+///  - `-p X` builds exactly X;
+///  - a root (or absent) `--manifest-path` builds every service;
+///  - a `--manifest-path` at a member crate builds just that member;
+///  - a `--manifest-path` that is neither is an error, not a silent build-all.
+///
+/// `bundle` bypasses this via `run_all` and always builds every service.
+fn select_service_builds(
+    services: &[String],
+    explicit_package: Option<&str>,
+    matched_member: Option<&str>,
+    root_manifest: bool,
+) -> Result<Vec<String>> {
+    if let Some(pkg) = explicit_package {
+        return Ok(vec![pkg.to_owned()]);
+    }
+    if root_manifest {
+        return Ok(services.to_vec());
+    }
+    if let Some(member) = matched_member {
+        return Ok(vec![member.to_owned()]);
+    }
+    bail!(
+        "--manifest-path matches no declared service crate: pass `-p <crate>`, point \
+         --manifest-path at a service member, or at the workspace root to build all services"
+    )
+}
+
+/// The workspace package whose manifest lives directly in `dir`, if any.
+fn package_in_dir<'a>(
+    metadata: &'a cargo_metadata::Metadata,
+    dir: &Utf8Path,
+) -> Option<&'a cargo_metadata::Package> {
+    metadata
+        .packages
+        .iter()
+        .find(|p| meta::same_dir(&p.manifest_path, dir))
 }
 
 /// meta::load's "no calimero table / no package id" error, which `build`
@@ -337,8 +417,45 @@ strip = false"#;
 
 #[cfg(test)]
 mod tests {
-    use super::canonicalize_abi;
+    use super::{canonicalize_abi, select_service_builds};
     use serde_json::json;
+
+    fn services() -> Vec<String> {
+        vec!["api".to_string(), "worker".to_string()]
+    }
+
+    #[test]
+    fn selection_builds_all_services_at_root_or_no_manifest_path() {
+        // no -p, no/root --manifest-path -> every declared service.
+        assert_eq!(
+            select_service_builds(&services(), None, None, true).unwrap(),
+            services()
+        );
+    }
+
+    #[test]
+    fn selection_builds_only_the_member_named_by_manifest_path() {
+        assert_eq!(
+            select_service_builds(&services(), None, Some("worker"), false).unwrap(),
+            vec!["worker".to_string()]
+        );
+    }
+
+    #[test]
+    fn selection_honors_explicit_package() {
+        // -p wins even when a member --manifest-path also matched.
+        assert_eq!(
+            select_service_builds(&services(), Some("api"), Some("worker"), false).unwrap(),
+            vec!["api".to_string()]
+        );
+    }
+
+    #[test]
+    fn selection_rejects_unmatched_manifest_path() {
+        // --manifest-path given, not root, matched no member: error, not build-all.
+        let err = select_service_builds(&services(), None, None, false).unwrap_err();
+        assert!(err.to_string().contains("--manifest-path"));
+    }
 
     fn names(v: &serde_json::Value, key: &str) -> Vec<String> {
         v[key]

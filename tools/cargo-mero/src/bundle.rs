@@ -60,7 +60,9 @@ pub fn run(args: &BundleArgs) -> Result<PathBuf> {
         package: None,
         manifest_path: args.manifest_path.clone(),
     };
-    let built = build::run(&build_args)?;
+    // bundle must build EVERY declared service (stage() writes services/<name>.*
+    // per manifest entry), so bypass build's -p/--manifest-path selection.
+    let built = build::run_all(&build_args)?;
 
     let staging = base.join("res").join("bundle-temp");
     if staging.exists() {
