@@ -1,0 +1,38 @@
+# {{name}}
+
+A Calimero app scaffolded with `cargo mero new`.
+
+## Workflow
+
+```
+cargo mero build              # compile -> wasm-opt -> embed ABI (res/{{name_snake}}.wasm)
+cargo mero test               # TestHost unit tests + convergence tests (no node needed)
+cargo mero bundle --dev       # build, write manifest.json, sign, tar dist/com.example.{{name}}.mpk
+meroctl app install --path dist/com.example.{{name}}.mpk ...   # install on a node (merod)
+```
+
+Artifacts:
+- `res/{{name_snake}}.wasm` - the built, ABI-embedded wasm
+- `res/abi.json`, `res/state-schema.json` - emitted by `build.rs`
+- `dist/com.example.{{name}}.mpk` - the signed bundle
+
+## Signing
+
+```
+cargo mero key generate -o key.json      create a production Ed25519 key
+cargo mero bundle --key key.json         sign with it (CI: export MERO_SIGN_KEY=...)
+cargo mero bundle --dev                  well-known dev key: fine locally, REFUSED by the registry
+```
+
+A `--dev` bundle is signed with a well-known development key: convenient for
+local installs, but the registry refuses it. Ship with a real key from
+`cargo mero key generate` (pass it via `--key` or the `MERO_SIGN_KEY` env var).
+
+## Where the code lives
+
+- `src/lib.rs` - state, events, logic, and the `#[cfg(test)]` TestHost tests
+- `tests/converge.rs` - multi-replica convergence test
+- `Cargo.toml` - SDK pins, the `[package.metadata.calimero]` app id, and the
+  `app-release` / `app-profiling` build profiles
+
+Full docs: https://calimero-network.github.io/core/

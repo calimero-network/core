@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = ["crates/svc-a", "crates/svc-b"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.metadata.calimero]
+package = "com.example.multi-app"
+name = "Multi App"
+description = "cargo-mero multi-service pipeline fixture"
+
+[[workspace.metadata.calimero.services]]
+name = "svc-a"
+crate = "svc-a"
+
+[[workspace.metadata.calimero.services]]
+name = "svc-b"
+crate = "svc-b"
+
+# Profiles must live at the workspace root (cargo ignores profiles in members).
+[profile.app-release]
+inherits = "release"
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+strip = "symbols"
+panic = "abort"
+overflow-checks = true
+
+[profile.app-profiling]
+inherits = "release"
+opt-level = 2
+debug = true
+strip = false
