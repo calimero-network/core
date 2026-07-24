@@ -21,38 +21,23 @@ CLI — `app`, `context`, `namespace`, `call`).
 
 ## 1. Write and build the app
 
-<Aside type="tip" title="cargo mero automates this">
-  The [cargo mero toolchain](/build/cargo-mero/) scaffolds, builds, and
-  optimizes an app for you: `cargo mero new my-app` then `cargo mero build`. The
-  manual steps below stay valid and show what the tool does under the hood.
-</Aside>
-
 <Steps>
 
-1. Create a library crate with a WASM-compatible `crate-type`. A minimal
-   `Cargo.toml`, modelled on `apps/kv-store/Cargo.toml`:
+1. Scaffold an app with the [cargo mero toolchain](/build/cargo-mero/):
 
-   ```toml
-   [lib]
-   crate-type = ["cdylib", "rlib"]
-
-   [dependencies]
-   calimero-sdk = { git = "https://github.com/calimero-network/core" }
-   calimero-storage = { git = "https://github.com/calimero-network/core" }
-
-   [dev-dependencies]
-   # native test harness (TestHost) + CRDT merge under `cargo test`
-   calimero-storage = { git = "https://github.com/calimero-network/core", features = ["testing"] }
+   ```sh
+   cargo mero new my-app
+   cd my-app
    ```
 
-   :::caution
-   The dependency lines above show the crate names; pin them to a tag, rev, or
-   workspace path as appropriate for your setup. The in-repo example apps use
-   `calimero-sdk.workspace = true`.
-   :::
+   This writes a ready-to-build crate: `Cargo.toml` (SDK pins, the app-id
+   metadata, and the build profiles), `build.rs`, a working `src/lib.rs`, and a
+   TestHost test. The [tutorial](/build/tutorial/) walks the generated manifest
+   field by field.
 
-2. Write the smallest possible app — a state struct plus one method. This is the
-   shape every Calimero app follows (see [SDK macros](/build/sdk-macros/)):
+2. The generated `src/lib.rs` is already a working app: a state struct plus
+   methods. This is the shape every Calimero app follows (see
+   [SDK macros](/build/sdk-macros/)):
 
    ```rust
    use calimero_sdk::app;
