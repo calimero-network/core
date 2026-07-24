@@ -97,7 +97,7 @@ pub fn load(metadata: &cargo_metadata::Metadata, manifest_dir: &Utf8Path) -> Res
         Some(p) => load_from_values(
             workspace_value,
             package_value,
-            &p.name.to_string(),
+            p.name.as_ref(),
             &p.version.to_string(),
         ),
         // A VIRTUAL workspace root (no root package) is the normal multi-service

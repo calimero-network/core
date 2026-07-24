@@ -233,7 +233,7 @@ fn canonicalize_abi(manifest: &mut serde_json::Value) {
             .get_mut(key)
             .and_then(serde_json::Value::as_array_mut)
         {
-            arr.sort_by(|a, b| name_of(a).cmp(&name_of(b)));
+            arr.sort_by_key(&name_of);
         }
     }
 }
