@@ -134,27 +134,27 @@ This sort is a workaround for that emitter/validator ordering mismatch (a core b
 
 ## Repository layout
 
-- `crates/cargo-mero` - the `cargo mero` CLI (scaffold, build, test, bundle, plus abi/key/sign passthroughs)
-- `crates/mero-abi` - extracts and embeds the WASM ABI (backs `cargo mero abi`)
-- `crates/mero-sign` - Ed25519 signing, key generation, and did:key derivation (backs `cargo mero key` / `cargo mero sign`)
+- `tools/cargo-mero` - the `cargo mero` CLI (scaffold, build, test, bundle, plus abi/key/sign passthroughs)
+- `tools/calimero-abi` (crate `mero-abi`) - extracts and embeds the WASM ABI (backs `cargo mero abi`)
+- `tools/mero-sign` - Ed25519 signing, key generation, and did:key derivation (backs `cargo mero key` / `cargo mero sign`)
 
 ## Design notes
 
 A `cargo-mero` tool previously lived in `calimero-network/core` (`tools/cargo-mero`, added in core#1317, moved to `tools/` in core#1512) offering `cargo mero new` and `cargo mero build` - app scaffolding plus a thin `cargo build --target wasm32-unknown-unknown` wrapper.
 It was removed in core#1518 with no documented rationale (template-only PR body, terse commit message); the removal landed the same day as unrelated tools-versioning/publishing cleanup in that directory, which is the likeliest driver rather than a flaw in the concept itself.
-This repo carries the tool forward standalone, decoupled from core's workspace versioning, so that prior friction does not recur.
+The tool now lives back in core's workspace at `tools/cargo-mero`, versioned and released alongside the rest of core, so that prior friction does not recur.
 
 ## Bumping the SDK version
 
 The scaffolded SDK version is pinned in several places that must move together.
 When bumping to a new `calimero-sdk` / `calimero-wasm-abi` release, update all of:
 
-- `DEFAULT_SDK_VERSION` in `crates/cargo-mero/src/main.rs` (the single source used for `cargo mero new`'s default and `cargo mero test`'s example dev-dep hint).
+- `DEFAULT_SDK_VERSION` in `tools/cargo-mero/src/main.rs` (the single source used for `cargo mero new`'s default and `cargo mero test`'s example dev-dep hint).
 - the `calimero-wasm-abi` pin in the workspace `Cargo.toml` (`[workspace.dependencies]`).
-- the SDK tags in the test fixtures: `crates/cargo-mero/tests/fixtures/demo-app/Cargo.toml` and `crates/cargo-mero/tests/fixtures/multi-app/crates/*/Cargo.toml`.
-- the version assertions in `crates/cargo-mero/src/new.rs` tests.
+- the SDK tags in the test fixtures: `tools/cargo-mero/tests/fixtures/demo-app/Cargo.toml` and `tools/cargo-mero/tests/fixtures/multi-app/crates/*/Cargo.toml`.
+- the version assertions in `tools/cargo-mero/src/new.rs` tests.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.
+Licensed under either of Apache License, Version 2.0 or MIT license, at your option - see the repository root.
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this crate by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
