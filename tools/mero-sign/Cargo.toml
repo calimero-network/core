@@ -6,7 +6,11 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+readme = "README.md"
 publish = true
+
+[lib]
+name = "mero_sign"
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
