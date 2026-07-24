@@ -166,6 +166,38 @@ impl NetworkManager {
         self.peer_cache.record(peer_id, addr, now);
     }
 
+    /// Fire-and-forget re-dial of `peer_id` at its last known **direct**
+    /// addresses, used by the `ConnectionClosed` recovery cascade so a peer we
+    /// hold a working direct address for is reconnected immediately rather than
+    /// via a rendezvous round-trip. No-op when `addrs` is empty (a relay-only /
+    /// NAT'd peer), so those keep relying on the rendezvous path.
+    ///
+    /// `PeerCondition::DisconnectedAndNotDialing` makes the dial idempotent —
+    /// if we've already reconnected or a dial is in flight, this is a no-op, so
+    /// the immediate attempt and the 5/15/30/60s re-fires can't stack up
+    /// redundant dials. Errors are debug-logged; a genuine failure resurfaces
+    /// as `OutgoingConnectionError`, which records the dial failure and leaves
+    /// the parallel rendezvous recovery to carry the peer.
+    pub(crate) fn redial_direct(&mut self, peer_id: PeerId, addrs: Vec<Multiaddr>) {
+        if addrs.is_empty() {
+            return;
+        }
+        for addr in &addrs {
+            let _ignored = self
+                .swarm
+                .behaviour_mut()
+                .kad
+                .add_address(&peer_id, addr.clone());
+        }
+        let opts = DialOpts::peer_id(peer_id)
+            .condition(PeerCondition::DisconnectedAndNotDialing)
+            .addresses(addrs)
+            .build();
+        if let Err(err) = self.swarm.dial(opts) {
+            debug!(%peer_id, %err, "direct re-dial on disconnect failed to initiate");
+        }
+    }
+
     /// Connected peers subscribed to at least one of our own
     /// (non-reserved) overlay topics — the relevant set to persist/dial.
     fn current_overlay_subscribers(&self) -> std::collections::BTreeSet<PeerId> {
