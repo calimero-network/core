@@ -285,7 +285,12 @@ pub async fn handle_subscription(
                         body: ResponseBody::Result(serde_json::json!({
                             "status": "subscribed",
                             "contexts": subscribed,
-                            "groups": subscribed_groups,
+                            // Hex-encoded to match the id representation the
+                            // client subscribed with (and the group admin API).
+                            "groups": subscribed_groups
+                                .iter()
+                                .map(|g| hex::encode(g.as_bytes()))
+                                .collect::<Vec<_>>(),
                         })),
                     }),
                 )

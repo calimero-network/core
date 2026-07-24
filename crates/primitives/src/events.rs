@@ -18,7 +18,10 @@ pub enum NodeEvent {
 #[serde(rename_all = "camelCase")]
 pub struct GroupMembershipEvent {
     /// The group whose membership changed (the JOINED subgroup for a join,
-    /// never the namespace root). Serialized base58, like every 32-byte id.
+    /// never the namespace root). Hex-encoded, matching the group/namespace
+    /// admin API's id representation, so a client can correlate it with the
+    /// `groupId`/`namespaceId` it subscribed with.
+    #[serde(with = "crate::hash::hex_repr")]
     pub group_id: Hash,
     #[serde(flatten)]
     pub payload: MembershipChangePayload,
@@ -235,7 +238,9 @@ mod tests {
         });
         let v = serde_json::to_value(&event).expect("serialize");
         assert_eq!(v["type"], "MemberJoined");
-        assert!(v.get("groupId").is_some(), "groupId on the wrapper");
+        // groupId must be hex (matches the group/namespace admin API), so a client
+        // can correlate the event to the id it subscribed with.
+        assert_eq!(v["groupId"], hex::encode([0x07; 32]), "groupId is hex");
         assert!(v.get("contextId").is_none(), "no contextId leaks in");
         assert_eq!(v["data"]["role"], "Member");
         assert!(v["data"].get("member").is_some());

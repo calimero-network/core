@@ -238,6 +238,58 @@ impl Serialize for Hash {
     }
 }
 
+/// Serde helpers that (de)serialize a [`Hash`] as a **hex** string instead of
+/// base58. The group/namespace admin API represents 32-byte ids as hex (see the
+/// server's `parse_group_id`), so the group-membership surface - the SSE
+/// subscription `groupIds` and the emitted event `groupId` - must use hex too,
+/// or a client that obtained its ids from that API can neither subscribe with
+/// them nor correlate a received event back to a known group.
+pub mod hex_repr {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::{Hash, BYTES_LEN};
+
+    fn decode<E: serde::de::Error>(s: &str) -> Result<Hash, E> {
+        let bytes = hex::decode(s).map_err(E::custom)?;
+        let arr: [u8; BYTES_LEN] = bytes
+            .try_into()
+            .map_err(|v: Vec<u8>| E::invalid_length(v.len(), &"32 hex-encoded bytes"))?;
+        Ok(Hash::from(arr))
+    }
+
+    pub fn serialize<S: Serializer>(hash: &Hash, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&hex::encode(hash.as_bytes()))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Hash, D::Error> {
+        let s = String::deserialize(d)?;
+        decode(&s)
+    }
+
+    /// Same hex representation, for a `Vec<Hash>` field.
+    pub mod vec {
+        use serde::ser::SerializeSeq;
+        use serde::{Deserialize, Deserializer, Serializer};
+
+        use super::{decode, Hash};
+
+        pub fn serialize<S: Serializer>(hashes: &[Hash], s: S) -> Result<S::Ok, S::Error> {
+            let mut seq = s.serialize_seq(Some(hashes.len()))?;
+            for h in hashes {
+                seq.serialize_element(&hex::encode(h.as_bytes()))?;
+            }
+            seq.end()
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Hash>, D::Error> {
+            Vec::<String>::deserialize(d)?
+                .iter()
+                .map(|s| decode(s))
+                .collect()
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for Hash {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct HashVisitor;
