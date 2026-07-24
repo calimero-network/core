@@ -238,12 +238,8 @@ impl Serialize for Hash {
     }
 }
 
-/// Serde helpers that (de)serialize a [`Hash`] as a **hex** string instead of
-/// base58. The group/namespace admin API represents 32-byte ids as hex (see the
-/// server's `parse_group_id`), so the group-membership surface - the SSE
-/// subscription `groupIds` and the emitted event `groupId` - must use hex too,
-/// or a client that obtained its ids from that API can neither subscribe with
-/// them nor correlate a received event back to a known group.
+/// (De)serialize a [`Hash`] as hex instead of base58, matching the group/namespace
+/// admin API's id representation so a client can subscribe with the ids it got there.
 pub mod hex_repr {
     use serde::{Deserialize, Deserializer, Serializer};
 

@@ -17,10 +17,8 @@ pub enum NodeEvent {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupMembershipEvent {
-    /// The group whose membership changed (the JOINED subgroup for a join,
-    /// never the namespace root). Hex-encoded, matching the group/namespace
-    /// admin API's id representation, so a client can correlate it with the
-    /// `groupId`/`namespaceId` it subscribed with.
+    /// The group whose membership changed (the joined subgroup, never the
+    /// namespace root). Hex-encoded to match the group/namespace admin API.
     #[serde(with = "crate::hash::hex_repr")]
     pub group_id: Hash,
     #[serde(flatten)]
