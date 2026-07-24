@@ -129,6 +129,49 @@ mod tests {
         }
     }
 
+    // The invariant the hex/base58 bug broke: the id representation the
+    // group/namespace admin API EMITS must be exactly the one the subscribe
+    // payload ACCEPTS and the one the emitted event CARRIES. If any leg drifts
+    // (e.g. subscribe back to base58), a client can't correlate what it holds,
+    // subscribes with, and receives. All three are pinned to one hex string.
+    #[test]
+    fn admin_emit_subscribe_and_event_share_one_hex_representation() {
+        use calimero_primitives::events::{
+            GroupMembershipEvent, MembershipChange, MembershipChangePayload,
+        };
+        use calimero_primitives::identity::PublicKey;
+
+        let id = Hash::from([0x2bu8; 32]);
+        // Leg 1: what the admin API emits for this id.
+        let emitted = hex::encode(id.as_bytes());
+
+        // Leg 2: the subscribe payload must deserialize that exact string back
+        // into the same id.
+        let parsed = match parse_payload(&format!(
+            r#"{{"id":"1","method":"subscribe","params":{{"groupIds":["{emitted}"]}}}}"#
+        )) {
+            RequestPayload::Subscribe(ids) => ids,
+            other => panic!("expected Subscribe, got {other:?}"),
+        };
+        assert_eq!(
+            parsed.group_ids,
+            vec![id],
+            "subscribe must accept the emitted hex"
+        );
+
+        // Leg 3: the event carrying that id must serialize `groupId` to the
+        // same string.
+        let event = GroupMembershipEvent {
+            group_id: id,
+            payload: MembershipChangePayload::MemberJoined(MembershipChange {
+                member: PublicKey::from([9u8; 32]),
+                role: None,
+            }),
+        };
+        let v = serde_json::to_value(&event).expect("event serializes");
+        assert_eq!(v["groupId"], emitted, "the event must carry the same hex");
+    }
+
     // A context-only subscribe (legacy clients) still parses with `groupIds`
     // absent.
     #[test]
