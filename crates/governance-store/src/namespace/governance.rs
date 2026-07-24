@@ -1972,6 +1972,18 @@ pub fn namespace_groups_awaiting_key(
     NamespaceRetryService::new(store, namespace_id).groups_awaiting_key()
 }
 
+/// Distinct group ids in `namespace_id` where the node has a direct membership
+/// row for its own namespace identity but holds no usable group key — the
+/// membership-driven recovery set that lets a joiner stranded "joined, pending
+/// key" re-acquire its key with no buffered op and no manual re-join (#3295).
+/// See [`NamespaceRetryService::groups_member_but_keyless`].
+pub fn namespace_groups_member_but_keyless(
+    store: &Store,
+    namespace_id: NamespaceId,
+) -> EyreResult<Vec<[u8; 32]>> {
+    NamespaceRetryService::new(store, namespace_id).groups_member_but_keyless()
+}
+
 /// Distinct group ids in `namespace_id` that have at least one buffered
 /// encrypted group op the local node CAN already decrypt — the inverse of
 /// [`namespace_groups_awaiting_key`]. This is the held-key, buffered-op set

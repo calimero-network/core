@@ -405,6 +405,63 @@ mod key_recovery_trigger {
             .unwrap()
             .is_empty());
     }
+
+    /// #3295: a member stranded "joined, pending key" with NO buffered op is
+    /// invisible to the op-driven `namespace_groups_awaiting_key`, so the
+    /// interval-tick recovery used to find nothing to do and the member stayed
+    /// locked out. The membership-driven `namespace_groups_member_but_keyless`
+    /// surfaces it, and that is the set `recover_missing_group_keys` now unions
+    /// in — so recovery fires with no buffered op and no manual re-join.
+    #[test]
+    fn keyless_member_surfaces_for_recovery_without_any_buffered_op() {
+        use calimero_context::group_store::{
+            namespace_groups_member_but_keyless, MembershipRepository, NamespaceRepository,
+        };
+        use calimero_primitives::context::GroupMemberRole;
+
+        let store = fresh_store();
+        let mut rng = rand::rngs::OsRng;
+
+        let namespace_id = [0xF1u8; 32];
+        let ns_gid = ContextGroupId::from(namespace_id);
+
+        // Our namespace identity + a direct membership row, no key, no op —
+        // the quiescent "joined, pending key" state.
+        let sk_bytes = rand::Rng::gen::<[u8; 32]>(&mut rng);
+        let my_id = PrivateKey::from(sk_bytes).public_key();
+        NamespaceRepository::new(&store)
+            .store_identity(&ns_gid, &my_id, &sk_bytes, &[0u8; 32])
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &my_id, GroupMemberRole::Member)
+            .unwrap();
+
+        // Op-driven set is empty (nothing buffered) — the old recovery had
+        // nothing to act on.
+        assert!(
+            namespace_groups_awaiting_key(&store, namespace_id.into())
+                .unwrap()
+                .is_empty(),
+            "no buffered op ⇒ op-driven worklist is empty"
+        );
+
+        // Membership-driven set surfaces the keyless group that recovery now
+        // requests the current key for.
+        assert_eq!(
+            namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+            vec![namespace_id],
+        );
+
+        // Clears once the key arrives.
+        GroupKeyring::new(&store, ns_gid)
+            .store_key(&[0x11; 32])
+            .unwrap();
+        assert!(
+            namespace_groups_member_but_keyless(&store, namespace_id.into())
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
 
 // `should_stop_peer_retry` stops `perform_interval_sync` only for the
