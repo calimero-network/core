@@ -1,18 +1,24 @@
 [package]
 name = "mero-abi"
-description = "CLI tool for extracting Calimero WASM ABI"
-# Note: workspace versioning doesn't work for tools if published to crates.io, must be independently managed
+description = "Calimero WASM ABI toolkit: extract, embed, inspect, and diff ABI schemas (library + CLI)"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
-publish = false
+readme = "README.md"
+publish = true
+
+[lib]
+name = "mero_abi"
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
-wasmparser = "0.118"
+wasmparser.workspace = true
 serde_json.workspace = true
 eyre.workspace = true
-calimero-wasm-abi = { workspace = true }
- 
+calimero-wasm-abi.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wat.workspace = true

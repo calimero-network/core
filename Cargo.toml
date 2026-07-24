@@ -76,7 +76,6 @@ exclude = [
     "./crates/merod",
     "./crates/meroctl",
     "./crates/build-utils",
-    "./tools/calimero-abi",
 ]
 
 [workspace]
