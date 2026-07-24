@@ -171,12 +171,12 @@ fn print_dev_warning() {
 }
 
 /// Base directory of the app: the manifest's parent when `--manifest-path` is
-/// given, else the workspace root.
+/// given, else the workspace root. Canonicalized so a relative `--manifest-path`
+/// still matches cargo_metadata's absolute package paths.
 fn base_dir(metadata: &cargo_metadata::Metadata, args: &BundleArgs) -> Utf8PathBuf {
     args.manifest_path
         .as_ref()
-        .and_then(|p| p.parent())
-        .map(Utf8Path::to_owned)
+        .map(|p| meta::canonical_dir(p))
         .unwrap_or_else(|| metadata.workspace_root.clone())
 }
 

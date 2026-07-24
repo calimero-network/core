@@ -1,7 +1,7 @@
 //! Bundle metadata parsing from `[package.metadata.calimero]` /
 //! `[workspace.metadata.calimero]` tables.
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{eyre, Result};
 use serde::Deserialize;
 use serde_json::Value;
@@ -71,6 +71,39 @@ impl std::fmt::Display for MissingCalimeroPackage {
 }
 
 impl std::error::Error for MissingCalimeroPackage {}
+
+/// Canonicalize the directory containing a `--manifest-path` so it can be
+/// compared against cargo_metadata's always-absolute, canonical manifest paths.
+/// A relative or non-canonical path (`./my-app/Cargo.toml`, `a/../a`) would
+/// otherwise never match and silently resolve to the wrong package. Falls back
+/// to the un-canonicalized dir when the path can't be resolved (then it just
+/// won't match, as before).
+pub(crate) fn canonical_dir(manifest_path: &Utf8Path) -> Utf8PathBuf {
+    let parent = match manifest_path.parent() {
+        Some(p) if !p.as_str().is_empty() => p,
+        _ => Utf8Path::new("."),
+    };
+    parent
+        .canonicalize_utf8()
+        .unwrap_or_else(|_| parent.to_owned())
+}
+
+/// Service names become on-disk `services/<name>.wasm` staging paths, so a name
+/// must be a simple path-safe identifier. The metadata comes from a possibly
+/// untrusted third-party `Cargo.toml`, so a name with path separators or `..`
+/// could escape the staging dir - reject anything but `[A-Za-z0-9_-]`.
+fn validate_service_name(name: &str) -> Result<()> {
+    let safe = !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if !safe {
+        return Err(eyre!(
+            "invalid service name `{name}`: service names may contain only ASCII letters, digits, `-`, and `_`"
+        ));
+    }
+    Ok(())
+}
 
 /// Pull the `calimero` subtable out of a cargo `[*.metadata]` value, which cargo
 /// delivers nested under the tool key as `{ "calimero": { .. } }`. `None` when
@@ -157,6 +190,18 @@ fn load_from_values(
 
     let package = raw.package.ok_or(MissingCalimeroPackage)?;
 
+    let services = raw
+        .services
+        .into_iter()
+        .map(|s| {
+            validate_service_name(&s.name)?;
+            Ok(ServiceMeta {
+                name: s.name,
+                crate_name: s.crate_name,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
     Ok(BundleMeta {
         package,
         name: raw.name.or_else(|| Some(crate_name.to_string())),
@@ -167,14 +212,7 @@ fn load_from_values(
             .unwrap_or_else(|| "0.1.0".to_string()),
         frontend: raw.frontend,
         app_version: crate_version.to_string(),
-        services: raw
-            .services
-            .into_iter()
-            .map(|s| ServiceMeta {
-                name: s.name,
-                crate_name: s.crate_name,
-            })
-            .collect(),
+        services,
     })
 }
 
@@ -299,6 +337,42 @@ mod tests {
 
         std::fs::write(dir.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
         assert_eq!(workspace_package_version(dir), None);
+    }
+
+    #[test]
+    fn rejects_path_traversal_service_name() {
+        for bad in ["../../../../etc/evil", "a/b", "a\\b", "..", "", "svc.wasm"] {
+            let workspace_value = json!({
+                "package": "com.example.suite",
+                "services": [{ "name": bad, "crate": "api-service" }],
+            });
+            let err = load_from_values(Some(&workspace_value), None, "suite", "0.5.0")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("invalid service name"),
+                "`{bad}` should be rejected, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_dir_resolves_noncanonical_manifest_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Utf8Path::from_path(tmp.path()).unwrap();
+        std::fs::create_dir(dir.join("app")).unwrap();
+        std::fs::write(dir.join("app/Cargo.toml"), "").unwrap();
+
+        // A non-canonical --manifest-path (extra `.`/`..` components, exactly
+        // what a relative invocation from a workspace root produces) must
+        // resolve to the same canonical dir cargo_metadata reports, so the
+        // package-by-dir lookup in `load`/`resolve_targets` matches.
+        let messy = dir.join("app/../app/./Cargo.toml");
+        assert_eq!(
+            canonical_dir(&messy),
+            dir.join("app").canonicalize_utf8().unwrap()
+        );
+        assert!(canonical_dir(&messy).is_absolute());
     }
 
     #[test]

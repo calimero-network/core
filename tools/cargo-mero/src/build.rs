@@ -68,11 +68,9 @@ fn resolve_targets(metadata: &cargo_metadata::Metadata, args: &BuildArgs) -> Res
         return Ok(vec![target_for_named(metadata, pkg)?]);
     }
 
-    let manifest_dir = args
-        .manifest_path
-        .as_ref()
-        .and_then(|p| p.parent())
-        .map(Utf8Path::to_owned);
+    // Canonicalize so a relative `--manifest-path` matches cargo_metadata's
+    // absolute package paths (otherwise it silently falls through to root_package).
+    let manifest_dir = args.manifest_path.as_ref().map(|p| meta::canonical_dir(p));
 
     // Service discovery must also work from a workspace-root cwd with no
     // --manifest-path (`cd workspace && cargo mero bundle --dev`): fall back to
