@@ -1,0 +1,4 @@
+self-hosted-runner:
+  # big-machine is the org's self-hosted runner pool used across workflows.
+  labels:
+    - big-machine
