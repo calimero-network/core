@@ -3,6 +3,28 @@ use libp2p::rendezvous::Namespace;
 use super::*;
 
 #[test]
+fn peer_direct_addrs_returns_book_then_clears_on_remove() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+    let a1: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+    let a2: Multiaddr = "/ip4/127.0.0.1/udp/4002/quic-v1".parse().unwrap();
+
+    // Unknown peer → nothing to re-dial.
+    assert!(state.peer_direct_addrs(&peer).is_empty());
+
+    state.add_peer_addr(peer, &a1);
+    state.add_peer_addr(peer, &a2);
+    let addrs = state.peer_direct_addrs(&peer);
+    assert!(addrs.contains(&a1) && addrs.contains(&a2));
+    assert_eq!(addrs.len(), 2);
+
+    // After remove_peer the entry is gone — which is exactly why the
+    // ConnectionClosed cascade must read the addrs BEFORE removing the peer.
+    state.remove_peer(&peer);
+    assert!(state.peer_direct_addrs(&peer).is_empty());
+}
+
+#[test]
 fn test_get_preferred_addr() {
     let mut peer_info = PeerInfo::default();
     let tcp_addr_1: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
