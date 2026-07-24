@@ -206,13 +206,9 @@ pub async fn handle_subscription(
                     }
                 }
 
-                // Only subscribe to contexts this caller may observe. Context
-                // events carry state roots and application execution-event
-                // payloads, so a session must not receive events for a context
-                // its caller isn't a member of. The node owner (and a no-auth dev
-                // server) may observe everything; any other caller must prove
-                // membership via its authenticated key. Unauthorized ids are
-                // dropped and the response reflects only what was subscribed.
+                // Only subscribe to contexts this caller may observe; context events
+                // carry state, so a non-member must not receive them. Unauthorized
+                // ids are dropped and the response reflects only what was subscribed.
                 let node_owner = auth_node_owner.is_some();
                 let subscribed: Vec<_> = ctxs
                     .context_ids
@@ -285,7 +281,12 @@ pub async fn handle_subscription(
                         body: ResponseBody::Result(serde_json::json!({
                             "status": "subscribed",
                             "contexts": subscribed,
-                            "groups": subscribed_groups,
+                            // Hex-encoded to match the id representation the
+                            // client subscribed with (and the group admin API).
+                            "groups": subscribed_groups
+                                .iter()
+                                .map(|g| hex::encode(g.as_bytes()))
+                                .collect::<Vec<_>>(),
                         })),
                     }),
                 )

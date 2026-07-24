@@ -74,10 +74,15 @@ pub enum ServerResponseError {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscribeRequest {
-    pub context_ids: Vec<ContextId>,
-    /// Group ids to observe for `GroupMembership` events. Optional and defaulted
-    /// so pre-existing clients (which send only `contextIds`) are unaffected.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_ids: Vec<ContextId>,
+    /// Groups to observe for `GroupMembership` events. Hex-encoded, matching the
+    /// group/namespace admin API's id representation.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "calimero_primitives::hash::hex_repr::vec"
+    )]
     pub group_ids: Vec<Hash>,
 }
 
@@ -86,7 +91,11 @@ pub struct SubscribeRequest {
 pub struct SubscribeResponse {
     pub context_ids: Vec<ContextId>,
     /// The group ids actually subscribed (unauthorized ones are dropped).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "calimero_primitives::hash::hex_repr::vec"
+    )]
     pub group_ids: Vec<Hash>,
 }
 // *************************************************************************
@@ -95,8 +104,13 @@ pub struct SubscribeResponse {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnsubscribeRequest {
-    pub context_ids: Vec<ContextId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_ids: Vec<ContextId>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "calimero_primitives::hash::hex_repr::vec"
+    )]
     pub group_ids: Vec<Hash>,
 }
 
@@ -104,7 +118,11 @@ pub struct UnsubscribeRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UnsubscribeResponse {
     pub context_ids: Vec<ContextId>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "calimero_primitives::hash::hex_repr::vec"
+    )]
     pub group_ids: Vec<Hash>,
 }
 // *************************************************************************
