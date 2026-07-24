@@ -303,8 +303,8 @@ wasmer = "6.1.0"
 wasmer-types = "6.1.0"
 wasmer-compiler-cranelift = "6.1.0"
 wasmer-middlewares = "6.1.0"
-wasmparser = "0.118"
 wasm-opt = "0.116"
+wasmparser = "0.118"
 wat = "1.243.0"
 web3 = "0.19.0"
 webbrowser = "1.0.4"
@@ -348,8 +348,8 @@ calimero-tee-attestation = { path = "./crates/tee-attestation" }
 calimero-utils-actix = { path = "./crates/utils/actix" }
 calimero-wasm-abi = { path = "./crates/wasm-abi" }
 mero-abi = { path = "./tools/calimero-abi" }
-mero-sign = { path = "./tools/mero-sign" }
 mero-auth = { path = "./crates/auth" }
+mero-sign = { path = "./tools/mero-sign" }
 kv-store = { path = "./apps/kv-store" }
 xcall-example = { path = "./apps/xcall-example" }
 
