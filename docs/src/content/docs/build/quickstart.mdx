@@ -128,6 +128,10 @@ configured alias) or `--api <URL>`.
 
    List what is installed with `meroctl --node node1 app ls`.
 
+   Installing the raw wasm is the fast dev loop; for a signed, distributable
+   `.mpk` run `cargo mero bundle` and pass the bundle to `--path` instead - see
+   [Packaging & signing](/build/packaging-signing/).
+
 2. **Attach the app to a context.** A context is a running instance of an app
    over a shared state. The simplest entry is to create a namespace bound to the
    application id:
