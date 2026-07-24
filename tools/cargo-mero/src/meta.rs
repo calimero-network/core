@@ -206,6 +206,20 @@ fn load_from_values(
         ));
     }
 
+    // The workspace table wins for actual metadata, but a stray `services` array
+    // under the package table would otherwise go unparsed and unchecked.
+    if from_workspace {
+        if let Some(pv) = package_value {
+            let raw_package: RawCalimeroMeta = serde_json::from_value(pv.clone())
+                .map_err(|e| eyre!("invalid [..metadata.calimero] table: {e}"))?;
+            if !raw_package.services.is_empty() {
+                return Err(eyre!(
+                    "`services` belongs under [workspace.metadata.calimero], not [package.metadata.calimero]"
+                ));
+            }
+        }
+    }
+
     let package = raw.package.ok_or(MissingCalimeroPackage)?;
 
     let services = raw
@@ -219,6 +233,18 @@ fn load_from_values(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+
+    // Duplicate names collide in bundle::stage()'s services/<name>.wasm staging
+    // path, silently overwriting one service's files; duplicate crates are fine.
+    let mut seen_names = std::collections::HashSet::new();
+    for s in &services {
+        if !seen_names.insert(&s.name) {
+            return Err(eyre!(
+                "duplicate service name `{}`: service names must be unique",
+                s.name
+            ));
+        }
+    }
 
     Ok(BundleMeta {
         package,
@@ -409,6 +435,53 @@ mod tests {
         assert!(same_dir(&dir.join("link/Cargo.toml"), &dir.join("real")));
         assert!(same_dir(&dir.join("real/Cargo.toml"), &dir.join("link")));
         assert!(!same_dir(&dir.join("real/Cargo.toml"), dir));
+    }
+
+    #[test]
+    fn duplicate_service_names_rejected() {
+        let workspace_value = json!({
+            "package": "com.example.suite",
+            "services": [
+                { "name": "api", "crate": "api-service" },
+                { "name": "api", "crate": "other-service" },
+            ],
+        });
+
+        let err = load_from_values(Some(&workspace_value), None, "suite", "0.5.0")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("duplicate service name"));
+        assert!(err.contains("api"));
+
+        // Distinct names deliberately pointing at the same crate are fine.
+        let same_crate = json!({
+            "package": "com.example.suite",
+            "services": [
+                { "name": "api", "crate": "shared-service" },
+                { "name": "worker", "crate": "shared-service" },
+            ],
+        });
+        let meta = load_from_values(Some(&same_crate), None, "suite", "0.5.0").unwrap();
+        assert_eq!(meta.services.len(), 2);
+    }
+
+    #[test]
+    fn misplaced_services_rejected_even_when_workspace_table_wins() {
+        let workspace_value = json!({ "package": "com.example.workspace-wins" });
+        let package_value = json!({
+            "package": "com.example.package-loses",
+            "services": [{ "name": "api", "crate": "api-service" }],
+        });
+
+        let err = load_from_values(
+            Some(&workspace_value),
+            Some(&package_value),
+            "my-app",
+            "1.0.0",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("[workspace.metadata.calimero]"));
     }
 
     #[test]
