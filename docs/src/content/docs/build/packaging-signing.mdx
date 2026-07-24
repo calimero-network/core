@@ -12,7 +12,8 @@ deliverable is an **`.mpk` bundle**: a single archive carrying your WASM, its AB
 the state schema, a `manifest.json`, and an Ed25519 signature. This page walks the
 builder workflow that produces one.
 
-The signing tool is `mero-sign` (`tools/mero-sign/`). The node side — how a bundle
+The signing tool is `mero-sign` (`tools/mero-sign/`), also exposed as
+`cargo mero key` and `cargo mero sign`. The node side — how a bundle
 is parsed, verified, and trusted on install — lives in
 [Upgrades & migration](/protocol/upgrades/); this page does not duplicate that
 detail.
@@ -36,14 +37,19 @@ detail.
    [App interface (ABI)](/build/app-abi/).
 
    ```bash
-   ./build.sh                       # compile to wasm32-unknown-unknown
-   calimero-abi extract app.wasm \
-     --output bundle-temp/abi.json  # the full ABI manifest
+   cargo mero build   # compile, wasm-opt, embed the ABI into the wasm
    ```
 
-   The bundle directory ends up holding the WASM, `abi.json`, an optional
-   `state-schema.json`, and the `manifest.json` you sign in step 3. Most apps wrap
-   all of this in a `build-bundle.sh` script.
+   The build leaves `res/<crate_name>.wasm` (with the ABI embedded as the
+   `calimero_abi_v1` section) and the full `res/abi.json` next to it.
+   `cargo mero bundle` stages both into the bundle directory for you, together
+   with the `manifest.json` you sign in step 3.
+
+   :::note
+   Hand-rolled flows do the same with `./build.sh` plus
+   `calimero-abi extract app.wasm --output bundle-temp/abi.json`; the in-repo
+   example apps still ship such scripts until they migrate to the toolchain.
+   :::
 
 2. **Generate a signing key (one-time).**
 

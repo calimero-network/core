@@ -16,12 +16,19 @@ One tool covers the whole path from `cargo mero new` to an installable bundle, r
 `cargo mero` is a Cargo subcommand: install the `cargo-mero` binary and Cargo picks it up as `cargo mero`.
 
 ```bash
-# From a core checkout:
+# From crates.io (published with each core release, like mero-sign):
+cargo install cargo-mero
+
+# From a core checkout (e.g. for unreleased changes):
 cargo install --path tools/cargo-mero
 
 # Or straight from the repository:
 cargo install --git https://github.com/calimero-network/core cargo-mero
 ```
+
+Prebuilt binaries also ship with core's
+[GitHub releases](https://github.com/calimero-network/core/releases) and the
+Homebrew tap, alongside `merod` and `meroctl`.
 
 The build step also needs the `wasm32-unknown-unknown` target.
 `cargo mero build` auto-installs it when `rustup` is available, or add it yourself:

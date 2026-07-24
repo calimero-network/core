@@ -82,26 +82,26 @@ CLI — `app`, `context`, `namespace`, `call`).
    }
    ```
 
-3. Build to WASM. The example apps ship a `build.sh`; the load-bearing line is:
+3. Build to WASM with the [cargo mero toolchain](/build/cargo-mero/):
 
    ```sh
-   rustup target add wasm32-unknown-unknown
-   cargo build --target wasm32-unknown-unknown --profile app-release
+   cargo mero build
    ```
 
-   The artifact lands at
-   `target/wasm32-unknown-unknown/app-release/<crate_name>.wasm`. The example
-   scripts then copy it into a local `res/` directory and (if `wasm-opt` is
-   installed) shrink it:
-
-   ```sh
-   wasm-opt -Oz --enable-bulk-memory ./res/my_app.wasm -o ./res/my_app.wasm
-   ```
+   One command runs the whole pipeline in the correct order: compile for
+   `wasm32-unknown-unknown` with the `app-release` profile, copy the artifact
+   into `res/`, shrink it with the bundled `wasm-opt` (`-Oz`), and embed the
+   ABI into the wasm as the `calimero_abi_v1` section.
+   The result lands at `res/<crate_name>.wasm`, ready to bundle.
 
    :::note
-   The `app-release` (and `app-profiling`) profiles are defined in the workspace.
-   Building a standalone crate outside the workspace? Either copy those profiles
-   into your `Cargo.toml` or use `--release` instead.
+   Under the hood this is `rustup target add wasm32-unknown-unknown`, then
+   `cargo build --target wasm32-unknown-unknown --profile app-release`, then
+   `wasm-opt -Oz --enable-bulk-memory`, then the ABI embed - the steps the
+   in-repo example apps' `build.sh` scripts still run by hand until they
+   migrate to the toolchain.
+   The `app-release` (and `app-profiling`) profiles are defined in the
+   workspace; `cargo mero new` scaffolds them into standalone crates for you.
    :::
 
 </Steps>
