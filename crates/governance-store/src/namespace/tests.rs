@@ -5291,6 +5291,63 @@ fn groups_awaiting_key_reports_then_clears() {
     assert!(awaiting.is_empty());
 }
 
+/// #3295: `groups_member_but_keyless` reports a group the node is a member of
+/// but holds no key for — even with NO buffered op (the op-driven
+/// `groups_awaiting_key` would miss it) — and clears once the key is stored.
+/// A subgroup the node is NOT a member of is excluded, so the membership filter
+/// is load-bearing (not just "any keyless group in the namespace").
+#[test]
+fn groups_member_but_keyless_reports_then_clears() {
+    use rand::rngs::OsRng;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    let namespace_id = [0xE1u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    // This node's namespace identity — the member we'd be missing a key for.
+    let sk_bytes = rand::Rng::gen::<[u8; 32]>(&mut rng);
+    let my_id = PrivateKey::from(sk_bytes).public_key();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &my_id, &sk_bytes, &[0u8; 32])
+        .unwrap();
+
+    // A subgroup we are NOT a member of — must never be reported.
+    let other_sub = ContextGroupId::from([0xE2u8; 32]);
+    nest_for_test(&store, &ns_gid, &other_sub);
+
+    // Before we're a member of anything, nothing is reported (no buffered op
+    // and no membership row).
+    assert!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into())
+            .unwrap()
+            .is_empty()
+    );
+
+    // Join the root namespace group, still holding no key.
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &my_id, GroupMemberRole::Member)
+        .unwrap();
+
+    // Member of the namespace group but keyless → reported; the non-member
+    // subgroup is excluded.
+    assert_eq!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
+        vec![namespace_id],
+    );
+
+    // Once the namespace key lands, the group drops out.
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x11; 32])
+        .unwrap();
+    assert!(
+        namespace_groups_member_but_keyless(&store, namespace_id.into())
+            .unwrap()
+            .is_empty()
+    );
+}
+
 #[test]
 fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
     // Regression for the whole group-* e2e suite going red: a joiner gets

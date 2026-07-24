@@ -70,6 +70,7 @@ pub mod group_store {
         is_currently_authorized_for_context,
         namespace_group_keys_awaiting,
         namespace_groups_awaiting_key,
+        namespace_groups_member_but_keyless,
         now_millis,
         now_secs,
         read_op_log_after,
@@ -146,6 +147,16 @@ pub struct ContextManagerConfig {
     /// `MemberJoined` is on the wire, so the bound is "round-trip to any
     /// admin + their `publish_and_await_ack` budget", not the full
     /// gossipsub heartbeat reconciliation window.
+    ///
+    /// This in-RPC wait is a best-effort fast path, not the cure for a joiner
+    /// that misses it: durable self-healing is provided by the
+    /// `recover_missing_group_keys` pull, which (as of #3295) also covers a
+    /// member that holds no key with no buffered op, so it re-acquires the key
+    /// from the interval tick with no manual re-join. The window is
+    /// deliberately kept short (5s) rather than widened — a longer wait blocks
+    /// the join RPC without adding robustness the durable reconciler doesn't
+    /// already give, and widening it measurably lengthened the pre-heal window
+    /// in the `group-join-mesh-not-ready` partition scenario.
     pub key_delivery_fallback_wait: Duration,
 
     /// Master switch for the hybrid zero-downtime migration framework.
