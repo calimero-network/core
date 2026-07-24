@@ -238,10 +238,36 @@ pub async fn handle_subscription(
                     })
                     .collect();
 
+                // Authorize by effective (deny-list-aware) group membership, not
+                // is_member: a kicked inherited member keeps a path but is denied.
+                // Subscribe-time only, like may_observe_context.
+                let subscribed_groups: Vec<_> = ctxs
+                    .group_ids
+                    .iter()
+                    .copied()
+                    .filter(|group_id| {
+                        let caller = auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| pk);
+                        let authorized = crate::ws::caller_may_observe_group(
+                            &state.ctx_client,
+                            state.auth_enabled,
+                            node_owner,
+                            caller,
+                            group_id,
+                        );
+                        if !authorized {
+                            warn!(%session_id, group_id=%group_id, "SSE subscribe denied: caller is not a member of the group");
+                        }
+                        authorized
+                    })
+                    .collect();
+
                 let persisted = {
                     let mut inner = session.inner.write().await;
                     for ctx in &subscribed {
                         let _ = inner.subscriptions.insert(*ctx);
+                    }
+                    for gid in &subscribed_groups {
+                        let _ = inner.group_subscriptions.insert(*gid);
                     }
                     inner.touch();
                     inner.to_persisted()
@@ -259,6 +285,7 @@ pub async fn handle_subscription(
                         body: ResponseBody::Result(serde_json::json!({
                             "status": "subscribed",
                             "contexts": subscribed,
+                            "groups": subscribed_groups,
                         })),
                     }),
                 )
@@ -299,6 +326,9 @@ pub async fn handle_subscription(
                         if inner.subscriptions.remove(ctx) {
                             unsubscribed.push(*ctx);
                         }
+                    }
+                    for gid in &ctxs.group_ids {
+                        let _ = inner.group_subscriptions.remove(gid);
                     }
                     inner.touch();
                     inner.to_persisted()

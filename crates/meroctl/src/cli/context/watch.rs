@@ -103,6 +103,7 @@ impl WatchCommand {
 
         let subscribe_request = RequestPayload::Subscribe(SubscribeRequest {
             context_ids: vec![context_id],
+            group_ids: vec![],
         });
         let request = Request {
             id: None,

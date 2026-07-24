@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use calimero_primitives::context::ContextId;
+use calimero_primitives::hash::Hash;
 use eyre::Error as EyreError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -74,12 +75,19 @@ pub enum ServerResponseError {
 #[serde(rename_all = "camelCase")]
 pub struct SubscribeRequest {
     pub context_ids: Vec<ContextId>,
+    /// Group ids to observe for `GroupMembership` events. Optional and defaulted
+    /// so pre-existing clients (which send only `contextIds`) are unaffected.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group_ids: Vec<Hash>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscribeResponse {
     pub context_ids: Vec<ContextId>,
+    /// The group ids actually subscribed (unauthorized ones are dropped).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group_ids: Vec<Hash>,
 }
 // *************************************************************************
 
@@ -88,12 +96,16 @@ pub struct SubscribeResponse {
 #[serde(rename_all = "camelCase")]
 pub struct UnsubscribeRequest {
     pub context_ids: Vec<ContextId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group_ids: Vec<Hash>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnsubscribeResponse {
     pub context_ids: Vec<ContextId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group_ids: Vec<Hash>,
 }
 // *************************************************************************
 

@@ -17,8 +17,12 @@ async fn handle(
     request.context_ids.iter().for_each(|id| {
         let _ = inner.subscriptions.remove(id);
     });
+    request.group_ids.iter().for_each(|id| {
+        let _ = inner.group_subscriptions.remove(id);
+    });
 
     Ok(UnsubscribeResponse {
         context_ids: request.context_ids,
+        group_ids: request.group_ids,
     })
 }

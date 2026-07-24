@@ -63,6 +63,13 @@ pub enum OpEvent {
         member: PublicKey,
         role: GroupMemberRole,
     },
+    /// A member joined via a self-service path (open invite or inherited
+    /// Open-subgroup join). `role` is `None` for the inherited path.
+    MemberJoined {
+        group_id: [u8; 32],
+        member: PublicKey,
+        role: Option<GroupMemberRole>,
+    },
     /// `GroupOp::MemberJoinedViaTeeAttestation` — a TEE node was admitted.
     TeeMemberAdmitted {
         group_id: [u8; 32],
