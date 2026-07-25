@@ -296,40 +296,38 @@ pub fn generate_key(output_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write the private-key JSON owner-only (0600) on unix so the seed is never
-/// briefly world-readable. `.mode()` applies only when the file is CREATED, so
-/// remove any prior key first and `create_new`, guaranteeing 0600 from the
-/// first byte rather than tightening an already-written file. `create_new` also
-/// refuses to follow a pre-placed symlink. Non-unix keeps the default `fs::write`.
+/// Write the private-key JSON to a file this process creates, never to one that
+/// already exists: an existing file would keep its old permissions, and
+/// `create_new` refuses to write through a pre-placed symlink. On unix the seed
+/// is owner-only (0600) from its first byte, since `.mode()` applies at creation
+/// only. Other platforms inherit the default ACL, and say so.
 fn write_private_key(path: &Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+
+    let mut options = fs::OpenOptions::new();
+    let _ = options.write(true).create_new(true);
+
     #[cfg(unix)]
     {
-        use std::io::Write as _;
         use std::os::unix::fs::OpenOptionsExt as _;
-
-        match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        }
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)?;
-        file.write_all(contents.as_bytes())
+        let _ = options.mode(0o600);
     }
-    // No portable way to restrict the file here, and the seed is unencrypted, so
-    // say so rather than leaving the key at whatever the platform defaults to.
+    // std cannot set a Windows ACL, so the file inherits the directory's. Say so
+    // rather than leaving the operator to assume the key is protected.
     #[cfg(not(unix))]
-    {
-        eprintln!(
-            "warning: cannot restrict permissions on {} on this platform; \
-             the private key is written with the default ACL - keep it off shared hosts",
-            path.display()
-        );
-        fs::write(path, contents)
-    }
+    eprintln!(
+        "warning: {} inherits the directory's default permissions on this platform; \
+         keep it out of shared or world-readable locations",
+        path.display()
+    );
+
+    options.open(path)?.write_all(contents.as_bytes())
 }
 
 /// Derive the signerId from a key file
