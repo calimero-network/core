@@ -177,6 +177,7 @@ Node-local storage that is **NOT synchronized** across the network.
 | `read_root_state` | `(register_id: u64) -> i32` | Reads persisted root state. Returns `1` if exists, `0` if not. |
 | `apply_storage_delta` | `(delta_ptr: u64)` | Applies Borsh-encoded `StorageDelta::Actions` from another executor. |
 | `flush_delta` | `() -> i32` | Flushes pending CRDT actions as causal delta. Returns `1` if delta emitted, `0` if nothing to commit. |
+| `register_js_sdk_root_merge` | `()` | Opts the JS app root into the WASM `__calimero_merge_root_state` sync path (concurrent-writer convergence). `persist_root_state` then stamps the root with the `JsRoot` marker instead of `None`. |
 
 ### CRDT Collections (JS)
 
@@ -187,6 +188,7 @@ These functions support JavaScript SDK CRDT collections. All return `i32` status
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `js_crdt_map_new` | `(register_id: u64) -> i32` | Creates new CRDT map, ID written to register. |
+| `js_crdt_map_new_with_id` | `(id_ptr: u64, register_id: u64) -> i32` | Creates CRDT map at a caller-supplied deterministic 32-byte ID. |
 | `js_crdt_map_get` | `(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32` | Gets value for key. |
 | `js_crdt_map_insert` | `(map_id_ptr: u64, key_ptr: u64, value_ptr: u64, register_id: u64) -> i32` | Inserts key-value pair. |
 | `js_crdt_map_remove` | `(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32` | Removes key from map. |
@@ -198,6 +200,7 @@ These functions support JavaScript SDK CRDT collections. All return `i32` status
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `js_crdt_vector_new` | `(register_id: u64) -> i32` | Creates new CRDT vector. |
+| `js_crdt_vector_new_with_id` | `(id_ptr: u64, register_id: u64) -> i32` | Creates CRDT vector at a caller-supplied deterministic 32-byte ID. |
 | `js_crdt_vector_len` | `(vector_id_ptr: u64, register_id: u64) -> i32` | Gets vector length. |
 | `js_crdt_vector_push` | `(vector_id_ptr: u64, value_ptr: u64) -> i32` | Appends value to vector. |
 | `js_crdt_vector_get` | `(vector_id_ptr: u64, index: u64, register_id: u64) -> i32` | Gets value at index. |
@@ -208,6 +211,7 @@ These functions support JavaScript SDK CRDT collections. All return `i32` status
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `js_crdt_set_new` | `(register_id: u64) -> i32` | Creates new CRDT set. |
+| `js_crdt_set_new_with_id` | `(id_ptr: u64, register_id: u64) -> i32` | Creates CRDT set at a caller-supplied deterministic 32-byte ID. |
 | `js_crdt_set_insert` | `(set_id_ptr: u64, value_ptr: u64) -> i32` | Inserts value into set. |
 | `js_crdt_set_contains` | `(set_id_ptr: u64, value_ptr: u64) -> i32` | Checks if value exists. |
 | `js_crdt_set_remove` | `(set_id_ptr: u64, value_ptr: u64) -> i32` | Removes value from set. |
@@ -220,6 +224,7 @@ These functions support JavaScript SDK CRDT collections. All return `i32` status
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `js_crdt_lww_new` | `(register_id: u64) -> i32` | Creates new Last-Writer-Wins register. |
+| `js_crdt_lww_new_with_id` | `(id_ptr: u64, register_id: u64) -> i32` | Creates LWW register at a caller-supplied deterministic 32-byte ID. |
 | `js_crdt_lww_set` | `(register_id_ptr: u64, value_ptr: u64, has_value: u32) -> i32` | Sets register value. |
 | `js_crdt_lww_get` | `(register_id_ptr: u64, register_id: u64) -> i32` | Gets current value. |
 | `js_crdt_lww_timestamp` | `(register_id_ptr: u64, register_id: u64) -> i32` | Gets last update timestamp. |
@@ -229,6 +234,7 @@ These functions support JavaScript SDK CRDT collections. All return `i32` status
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `js_crdt_counter_new` | `(register_id: u64) -> i32` | Creates new CRDT counter. |
+| `js_crdt_counter_new_with_id` | `(id_ptr: u64, register_id: u64) -> i32` | Creates CRDT counter at a caller-supplied deterministic 32-byte ID. |
 | `js_crdt_counter_increment` | `(counter_id_ptr: u64) -> i32` | Increments counter. |
 | `js_crdt_counter_value` | `(counter_id_ptr: u64, register_id: u64) -> i32` | Gets current counter value. |
 | `js_crdt_counter_get_executor_count` | `(counter_id_ptr: u64, executor_ptr: u64, has_executor: u32, register_id: u64) -> i32` | Gets per-executor count. `has_executor` indicates if executor provided. |
@@ -242,6 +248,7 @@ Per-user storage keyed by executor identity.
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `js_user_storage_new` | `(register_id: u64) -> i32` | Creates user storage instance. |
+| `js_user_storage_new_with_id` | `(id_ptr: u64, register_id: u64) -> i32` | Creates user storage instance at a caller-supplied deterministic 32-byte ID. |
 | `js_user_storage_insert` | `(storage_id_ptr: u64, value_ptr: u64, register_id: u64) -> i32` | Inserts value for current user. |
 | `js_user_storage_get` | `(storage_id_ptr: u64, register_id: u64) -> i32` | Gets current user's value. |
 | `js_user_storage_get_for_user` | `(storage_id_ptr: u64, user_key_ptr: u64, register_id: u64) -> i32` | Gets specific user's value. |
@@ -256,6 +263,7 @@ Content-addressable storage for immutable blobs.
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `js_frozen_storage_new` | `(register_id: u64) -> i32` | Creates frozen storage instance. |
+| `js_frozen_storage_new_with_id` | `(id_ptr: u64, register_id: u64) -> i32` | Creates frozen storage instance at a caller-supplied deterministic 32-byte ID. |
 | `js_frozen_storage_add` | `(storage_id_ptr: u64, value_ptr: u64, register_id: u64) -> i32` | Adds blob, returns hash. |
 | `js_frozen_storage_get` | `(storage_id_ptr: u64, hash_ptr: u64, register_id: u64) -> i32` | Gets blob by hash. |
 | `js_frozen_storage_contains` | `(storage_id_ptr: u64, hash_ptr: u64) -> i32` | Checks if hash exists. |

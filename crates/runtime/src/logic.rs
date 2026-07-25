@@ -472,6 +472,13 @@ pub struct VMLogic<'a> {
     migration_witness: Option<Vec<u8>>,
     /// Tracks whether the guest has explicitly called `env.commit`.
     commit_called: bool,
+    /// Tracks whether the guest called `register_js_sdk_root_merge`, opting its
+    /// opaque JS root into the WASM `__calimero_merge_root_state` sync path.
+    /// When set, `persist_root_state` stamps the root with the `JsRoot` marker
+    /// instead of `None`, so concurrent writers converge via the guest merge
+    /// callback rather than Last-Writer-Wins. Set during the runtime's
+    /// `__calimero_register_merge` call, which runs in this same execution.
+    js_root_merge: bool,
 
     /// An optional client for interacting with the node's blob storage and aliases.
     node_client: Option<NodeClient>,
@@ -579,6 +586,7 @@ impl<'a> VMLogic<'a> {
             artifact: vec![],
             migration_witness: None,
             commit_called: false,
+            js_root_merge: false,
 
             node_client,
             blob_handles: HashMap::new(),

@@ -2823,9 +2823,22 @@ impl<S: StorageAdaptor> Interface<S> {
                     // a non-opaque root (real `crdt_type`) still errors loudly
                     // (I5). Read the opaqueness off the STORED entity — its
                     // metadata is the authoritative record of what kind of root
-                    // this is; a local `persist_root_state` write always carries
-                    // `crdt_type: None` (`Metadata::new`).
-                    let is_opaque_root = is_opaque_root_crdt_type(&last_metadata.crdt_type);
+                    // this is.
+                    //
+                    // A JS-SDK root (the `JsRoot` marker, stamped when the guest
+                    // called `register_js_sdk_root_merge`) resolves LOCAL writes
+                    // by LWW too: a local write's incoming state always descends
+                    // from the existing state, so incoming-wins is correct here.
+                    // Its field-aware convergence for CONCURRENT writers runs only
+                    // on the sync path, where the marker routes the root to the
+                    // guest `__calimero_merge_root_state` callback. A real
+                    // `#[app::state]` root still merges through the registry
+                    // (checked first) and never reaches the LWW arm.
+                    let is_opaque_root = is_opaque_root_crdt_type(&last_metadata.crdt_type)
+                        || last_metadata
+                            .crdt_type
+                            .as_ref()
+                            .is_some_and(|t| t.is_js_root());
                     let merged = Self::try_merge_data(
                         id,
                         &existing_data,

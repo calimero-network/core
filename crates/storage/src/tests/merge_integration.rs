@@ -3967,3 +3967,70 @@ fn non_opaque_root_local_write_still_errors_when_unregistered() {
         "expected NoMergeFunctionRegistered, got: {err:?}"
     );
 }
+
+/// A JS-SDK root carries the `JsRoot` marker (stamped by `persist_root_state`
+/// when the guest called `register_js_sdk_root_merge`) rather than `crdt_type:
+/// None`. That marker is what routes the root to the guest
+/// `__calimero_merge_root_state` callback on the SYNC path. On the LOCAL write
+/// path there is no concurrent peer — incoming descends from existing — so a
+/// `JsRoot` root must resolve by LWW just like an opaque root, NOT fail with
+/// `NoMergeFunctionRegistered` (which would break every JS-app local write once
+/// the marker is present). This guards the local-path predicate that treats the
+/// `JsRoot` marker as LWW-eligible.
+#[test]
+#[serial]
+fn js_root_local_write_falls_back_to_lww_when_unregistered() {
+    use crate::address::Id;
+    use crate::collections::crdt_meta::CrdtType;
+    use crate::entities::Metadata;
+    use crate::interface::Interface;
+    use crate::store::MockedStorage;
+
+    type NodeStorage = MockedStorage<992>;
+
+    env::reset_for_testing();
+    clear_merge_registry();
+    env::set_executor_id([9; 32]);
+
+    let root = Id::root();
+    let js_root = CrdtType::js_root();
+    assert!(
+        js_root.is_js_root(),
+        "sanity: js_root() must be the JsRoot marker"
+    );
+
+    // Creation (`created_at == updated_at`): stored verbatim with the marker.
+    Interface::<NodeStorage>::save_raw(
+        root,
+        b"v1".to_vec(),
+        Metadata::with_crdt_type(100, 100, js_root.clone()),
+    )
+    .expect("initial JsRoot root write must succeed");
+
+    // Bootstrap-accepted update (`created_at == updated_at`); accepted via the
+    // bootstrap fast-path, advances `updated_at` to 200.
+    Interface::<NodeStorage>::save_raw(
+        root,
+        b"v2".to_vec(),
+        Metadata::with_crdt_type(100, 200, js_root.clone()),
+    )
+    .expect("bootstrap-accepted JsRoot root update must succeed");
+
+    // Non-bootstrap update: stored root now has `created_at (100) != updated_at
+    // (200)`, so `merge_root_state` reports `NoMergeFunctionRegistered`. A NON-
+    // opaque non-JsRoot root would fail here (I5); a JsRoot root must instead
+    // resolve by LWW (newer wins) so local writes keep working.
+    Interface::<NodeStorage>::save_raw(
+        root,
+        b"v3".to_vec(),
+        Metadata::with_crdt_type(100, 300, js_root),
+    )
+    .expect("JsRoot root local write must LWW-fall-back, not NoMergeFunctionRegistered");
+
+    let stored = Interface::<NodeStorage>::find_by_id_raw(root)
+        .expect("root entity must be present after LWW writes");
+    assert_eq!(
+        stored, b"v3",
+        "later updated_at must win under JsRoot local LWW"
+    );
+}

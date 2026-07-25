@@ -50,6 +50,15 @@ impl VMHostFunctions<'_> {
         self.invoke_with_storage_env(|host| host.crdt_map_new(dest_register_id))
     }
 
+    /// Creates a new CRDT map at a caller-supplied deterministic id.
+    pub fn js_crdt_map_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_map_new_with_id(id_ptr, dest_register_id))
+    }
+
     /// Retrieves a value from the CRDT map.
     pub fn js_crdt_map_get(
         &mut self,
@@ -105,6 +114,15 @@ impl VMHostFunctions<'_> {
         self.invoke_with_storage_env(|host| host.crdt_vector_new(dest_register_id))
     }
 
+    /// Creates a new vector collection at a caller-supplied deterministic id.
+    pub fn js_crdt_vector_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_vector_new_with_id(id_ptr, dest_register_id))
+    }
+
     pub fn js_crdt_vector_len(
         &mut self,
         vector_id_ptr: u64,
@@ -144,6 +162,15 @@ impl VMHostFunctions<'_> {
         self.invoke_with_storage_env(|host| host.crdt_set_new(dest_register_id))
     }
 
+    /// Creates a new set collection at a caller-supplied deterministic id.
+    pub fn js_crdt_set_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_set_new_with_id(id_ptr, dest_register_id))
+    }
+
     pub fn js_crdt_set_insert(&mut self, set_id_ptr: u64, value_ptr: u64) -> VMLogicResult<i32> {
         self.invoke_with_storage_env(|host| host.crdt_set_insert(set_id_ptr, value_ptr))
     }
@@ -180,6 +207,15 @@ impl VMHostFunctions<'_> {
         self.invoke_with_storage_env(|host| host.crdt_lww_new(dest_register_id))
     }
 
+    /// Creates a new LWW register at a caller-supplied deterministic id.
+    pub fn js_crdt_lww_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_lww_new_with_id(id_ptr, dest_register_id))
+    }
+
     pub fn js_crdt_lww_set(
         &mut self,
         register_id_ptr: u64,
@@ -211,6 +247,15 @@ impl VMHostFunctions<'_> {
 
     pub fn js_crdt_counter_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
         self.invoke_with_storage_env(|host| host.crdt_counter_new(dest_register_id))
+    }
+
+    /// Creates a new counter at a caller-supplied deterministic id.
+    pub fn js_crdt_counter_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_counter_new_with_id(id_ptr, dest_register_id))
     }
 
     pub fn js_crdt_counter_increment(&mut self, counter_id_ptr: u64) -> VMLogicResult<i32> {
@@ -247,6 +292,15 @@ impl VMHostFunctions<'_> {
     /// Creates a new UserStorage and returns its identifier.
     pub fn js_user_storage_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
         self.invoke_with_storage_env(|host| host.user_storage_new(dest_register_id))
+    }
+
+    /// Creates a new UserStorage at a caller-supplied deterministic id.
+    pub fn js_user_storage_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.user_storage_new_with_id(id_ptr, dest_register_id))
     }
 
     /// Inserts or replaces a value in UserStorage for the current executor.
@@ -314,6 +368,17 @@ impl VMHostFunctions<'_> {
         self.invoke_with_storage_env(|host| host.frozen_storage_new(dest_register_id))
     }
 
+    /// Creates a new FrozenStorage at a caller-supplied deterministic id.
+    pub fn js_frozen_storage_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.frozen_storage_new_with_id(id_ptr, dest_register_id)
+        })
+    }
+
     /// Inserts a value into FrozenStorage and returns its hash.
     pub fn js_frozen_storage_add(
         &mut self,
@@ -351,6 +416,32 @@ impl VMHostFunctions<'_> {
         let outcome =
             panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsUnorderedMap, String> {
                 let mut map = JsUnorderedMap::new();
+                save_js_map_instance(&mut map)?;
+                Ok(map)
+            }));
+
+        match outcome {
+            Ok(Ok(map)) => {
+                self.write_register_bytes(dest_register_id, map.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_map_new_with_id(&mut self, id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome =
+            panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsUnorderedMap, String> {
+                let mut map = JsUnorderedMap::new_with_id(id);
                 save_js_map_instance(&mut map)?;
                 Ok(map)
             }));
@@ -557,6 +648,35 @@ impl VMHostFunctions<'_> {
         }
     }
 
+    fn crdt_vector_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsVector, String> {
+            let mut vector = JsVector::new_with_id(id);
+            save_js_vector_instance(&mut vector)?;
+            Ok(vector)
+        }));
+
+        match outcome {
+            Ok(Ok(vector)) => {
+                self.write_register_bytes(dest_register_id, vector.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
     fn crdt_vector_len(&mut self, vector_id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
         let vector_id = match self.read_map_id(vector_id_ptr)? {
             Ok(id) => id,
@@ -670,6 +790,32 @@ impl VMHostFunctions<'_> {
         let outcome =
             panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsUnorderedSet, String> {
                 let mut set = JsUnorderedSet::new();
+                save_js_set_instance(&mut set)?;
+                Ok(set)
+            }));
+
+        match outcome {
+            Ok(Ok(set)) => {
+                self.write_register_bytes(dest_register_id, set.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_set_new_with_id(&mut self, id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome =
+            panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsUnorderedSet, String> {
+                let mut set = JsUnorderedSet::new_with_id(id);
                 save_js_set_instance(&mut set)?;
                 Ok(set)
             }));
@@ -871,6 +1017,31 @@ impl VMHostFunctions<'_> {
         }
     }
 
+    fn crdt_lww_new_with_id(&mut self, id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsLwwRegister, String> {
+            let mut register = JsLwwRegister::new_with_id(id);
+            save_js_lww_instance(&mut register)?;
+            Ok(register)
+        }));
+
+        match outcome {
+            Ok(Ok(register)) => {
+                self.write_register_bytes(dest_register_id, register.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
     fn crdt_lww_set(
         &mut self,
         register_id_ptr: u64,
@@ -977,6 +1148,35 @@ impl VMHostFunctions<'_> {
         }
     }
 
+    fn crdt_counter_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsCounter, String> {
+            let mut counter = JsCounter::new_with_id(id);
+            save_js_counter_instance(&mut counter)?;
+            Ok(counter)
+        }));
+
+        match outcome {
+            Ok(Ok(counter)) => {
+                self.write_register_bytes(dest_register_id, counter.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
     fn crdt_counter_increment(&mut self, counter_id_ptr: u64) -> VMLogicResult<i32> {
         let counter_id = match self.read_map_id(counter_id_ptr)? {
             Ok(id) => id,
@@ -1065,6 +1265,35 @@ impl VMHostFunctions<'_> {
     fn user_storage_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
         let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsUserStorage, String> {
             let mut storage = JsUserStorage::new();
+            save_js_user_storage_instance(&mut storage)?;
+            Ok(storage)
+        }));
+
+        match outcome {
+            Ok(Ok(storage)) => {
+                self.write_register_bytes(dest_register_id, storage.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn user_storage_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsUserStorage, String> {
+            let mut storage = JsUserStorage::new_with_id(id);
             save_js_user_storage_instance(&mut storage)?;
             Ok(storage)
         }));
@@ -1263,6 +1492,36 @@ impl VMHostFunctions<'_> {
         let outcome =
             panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsFrozenStorage, String> {
                 let mut storage = JsFrozenStorage::new();
+                save_js_frozen_storage_instance(&mut storage)?;
+                Ok(storage)
+            }));
+
+        match outcome {
+            Ok(Ok(storage)) => {
+                self.write_register_bytes(dest_register_id, storage.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn frozen_storage_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome =
+            panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsFrozenStorage, String> {
+                let mut storage = JsFrozenStorage::new_with_id(id);
                 save_js_frozen_storage_instance(&mut storage)?;
                 Ok(storage)
             }));
@@ -1807,5 +2066,134 @@ fn save_js_frozen_storage_instance(storage: &mut JsFrozenStorage) -> Result<(), 
             }
         }
         Err(err) => Err(err.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::logic::{
+        tests::{prepare_guest_buf_descriptor, setup_vm, SimpleMockStorage},
+        Cow, VMContext, VMLimits, VMLogic, DIGEST_SIZE,
+    };
+    use wasmer::{AsStoreMut, Store};
+
+    // Guest memory offsets used across the tests below. The `*_desc` offsets hold
+    // 16-byte `{ ptr, len }` buffer descriptors; the `*_data` offsets hold payloads.
+    const ID_DATA_PTR: u64 = 1000;
+    const ID_DESC_PTR: u64 = 100;
+    const KEY_DATA_PTR: u64 = 2000;
+    const KEY_DESC_PTR: u64 = 200;
+    const VALUE_DATA_PTR: u64 = 3000;
+    const VALUE_DESC_PTR: u64 = 300;
+
+    /// A `*_new_with_id` constructor must place the collection at exactly the
+    /// caller-supplied id, and two handles built at the same id must address the
+    /// same storage entity (insert via one, read via another).
+    #[test]
+    fn test_js_crdt_map_new_with_id_is_deterministic_and_shared() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        // A known, non-random 32-byte id both nodes would derive independently.
+        let id: [u8; 32] = [7u8; 32];
+        host.borrow_memory()
+            .write(ID_DATA_PTR, &id)
+            .expect("write id bytes");
+        prepare_guest_buf_descriptor(&host, ID_DESC_PTR, ID_DATA_PTR, id.len() as u64);
+
+        // First handle at the deterministic id.
+        let reg_a = 1u64;
+        let res = host.js_crdt_map_new_with_id(ID_DESC_PTR, reg_a).unwrap();
+        assert_eq!(res, 0, "constructor should succeed");
+        assert_eq!(
+            host.borrow_logic().registers.get(reg_a).unwrap(),
+            &id,
+            "returned id must equal the caller-supplied id"
+        );
+
+        // Second handle at the SAME id (as a different node/logical handle would).
+        let reg_b = 2u64;
+        let res = host.js_crdt_map_new_with_id(ID_DESC_PTR, reg_b).unwrap();
+        assert_eq!(res, 0);
+        assert_eq!(
+            host.borrow_logic().registers.get(reg_b).unwrap(),
+            &id,
+            "second handle must resolve to the same id"
+        );
+
+        // Insert through the id, then read it back: both handles share one entity.
+        let key = b"field";
+        let value = b"payload";
+        host.borrow_memory()
+            .write(KEY_DATA_PTR, key)
+            .expect("write key");
+        prepare_guest_buf_descriptor(&host, KEY_DESC_PTR, KEY_DATA_PTR, key.len() as u64);
+        host.borrow_memory()
+            .write(VALUE_DATA_PTR, value)
+            .expect("write value");
+        prepare_guest_buf_descriptor(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, value.len() as u64);
+
+        let reg_c = 3u64;
+        let res = host
+            .js_crdt_map_insert(ID_DESC_PTR, KEY_DESC_PTR, VALUE_DESC_PTR, reg_c)
+            .unwrap();
+        assert_eq!(res, 0, "inserting a new key returns 0 (no previous value)");
+
+        let reg_d = 4u64;
+        let res = host
+            .js_crdt_map_get(ID_DESC_PTR, KEY_DESC_PTR, reg_d)
+            .unwrap();
+        assert_eq!(res, 1, "value must be found via the shared id");
+        assert_eq!(
+            host.borrow_logic().registers.get(reg_d).unwrap(),
+            value,
+            "round-tripped value must match what was inserted"
+        );
+    }
+
+    /// Same guarantee for a second collection type (set), to cover a different
+    /// save/load helper path.
+    #[test]
+    fn test_js_crdt_set_new_with_id_is_deterministic_and_shared() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let id: [u8; 32] = [42u8; 32];
+        host.borrow_memory()
+            .write(ID_DATA_PTR, &id)
+            .expect("write id bytes");
+        prepare_guest_buf_descriptor(&host, ID_DESC_PTR, ID_DATA_PTR, id.len() as u64);
+
+        let reg_a = 1u64;
+        let res = host.js_crdt_set_new_with_id(ID_DESC_PTR, reg_a).unwrap();
+        assert_eq!(res, 0);
+        assert_eq!(host.borrow_logic().registers.get(reg_a).unwrap(), &id);
+
+        // Second handle at the same id.
+        let reg_b = 2u64;
+        let res = host.js_crdt_set_new_with_id(ID_DESC_PTR, reg_b).unwrap();
+        assert_eq!(res, 0);
+        assert_eq!(host.borrow_logic().registers.get(reg_b).unwrap(), &id);
+
+        let value = b"member";
+        host.borrow_memory()
+            .write(VALUE_DATA_PTR, value)
+            .expect("write value");
+        prepare_guest_buf_descriptor(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, value.len() as u64);
+
+        let res = host
+            .js_crdt_set_insert(ID_DESC_PTR, VALUE_DESC_PTR)
+            .unwrap();
+        assert_eq!(res, 1, "first insert of a value returns 1");
+
+        // Reading membership via the shared id sees the insert.
+        let res = host
+            .js_crdt_set_contains(ID_DESC_PTR, VALUE_DESC_PTR)
+            .unwrap();
+        assert_eq!(res, 1, "value must be visible via the shared id");
     }
 }
