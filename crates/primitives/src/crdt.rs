@@ -179,6 +179,21 @@ impl Default for CrdtType {
     }
 }
 
+/// Wire/persistence marker for a JS SDK app root that carries a guest-provided
+/// `__calimero_merge_root_state` callback.
+///
+/// A JS app's root is not a `#[app::state]` type, so core has no registered
+/// `Mergeable` for it and would otherwise treat the root as opaque
+/// (`crdt_type: None`) and resolve conflicts by Last-Writer-Wins — which cannot
+/// converge concurrent writers. When the guest calls `register_js_sdk_root_merge`,
+/// the runtime stamps the root with `LwwRegister { inner_type: "JsRoot" }` instead
+/// of `None`. That is deliberately distinct from the sync layer's opaque-leaf
+/// marker (`"Opaque"`): a `"JsRoot"` leaf is NOT opaque, so the sync apply path
+/// defers it to the WASM `__calimero_merge_root_state` callback (the same path a
+/// Rust `#[app::state]` root uses) rather than LWW-collapsing it. Reusing the
+/// existing `LwwRegister` variant keeps the pinned borsh discriminants unchanged.
+pub const JS_ROOT_CRDT_TYPE_NAME: &str = "JsRoot";
+
 impl CrdtType {
     /// Create an LwwRegister with a known inner type.
     #[must_use]
@@ -186,6 +201,18 @@ impl CrdtType {
         Self::LwwRegister {
             inner_type: inner_type.into(),
         }
+    }
+
+    /// The JS-SDK root marker (see [`JS_ROOT_CRDT_TYPE_NAME`]).
+    #[must_use]
+    pub fn js_root() -> Self {
+        Self::lww_register(JS_ROOT_CRDT_TYPE_NAME)
+    }
+
+    /// Whether this is the JS-SDK root marker (see [`JS_ROOT_CRDT_TYPE_NAME`]).
+    #[must_use]
+    pub fn is_js_root(&self) -> bool {
+        matches!(self, Self::LwwRegister { inner_type } if inner_type == JS_ROOT_CRDT_TYPE_NAME)
     }
 
     /// Create an UnorderedMap with known key and value types.
@@ -290,6 +317,24 @@ mod tests {
                 inner_type: "String".to_string()
             }
         );
+    }
+
+    #[test]
+    fn test_js_root_marker() {
+        let js_root = CrdtType::js_root();
+        assert_eq!(
+            js_root,
+            CrdtType::LwwRegister {
+                inner_type: JS_ROOT_CRDT_TYPE_NAME.to_string()
+            }
+        );
+        assert!(js_root.is_js_root());
+        // A JsRoot root is NOT the opaque-leaf marker the sync layer uses, so it
+        // is routed to the WASM merge callback rather than opaque LWW; and an
+        // ordinary register is not a JsRoot.
+        assert!(!CrdtType::lww_register("Opaque").is_js_root());
+        assert!(!CrdtType::lww_register("String").is_js_root());
+        assert!(!CrdtType::GCounter.is_js_root());
     }
 
     #[test]

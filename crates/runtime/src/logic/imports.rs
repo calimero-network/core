@@ -133,6 +133,10 @@ impl VMLogic<'_> {
             ) -> i32;
             fn js_frozen_storage_contains(storage_id_ptr: u64, hash_ptr: u64) -> i32;
 
+            // Opts the JS root into the WASM `__calimero_merge_root_state` sync
+            // path (concurrent-writer convergence) instead of opaque LWW.
+            fn register_js_sdk_root_merge();
+
             fn fetch(
                 url_ptr: u64,
                 method_ptr: u64,

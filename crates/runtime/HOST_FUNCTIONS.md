@@ -177,6 +177,7 @@ Node-local storage that is **NOT synchronized** across the network.
 | `read_root_state` | `(register_id: u64) -> i32` | Reads persisted root state. Returns `1` if exists, `0` if not. |
 | `apply_storage_delta` | `(delta_ptr: u64)` | Applies Borsh-encoded `StorageDelta::Actions` from another executor. |
 | `flush_delta` | `() -> i32` | Flushes pending CRDT actions as causal delta. Returns `1` if delta emitted, `0` if nothing to commit. |
+| `register_js_sdk_root_merge` | `()` | Opts the JS app root into the WASM `__calimero_merge_root_state` sync path (concurrent-writer convergence). `persist_root_state` then stamps the root with the `JsRoot` marker instead of `None`. |
 
 ### CRDT Collections (JS)
 

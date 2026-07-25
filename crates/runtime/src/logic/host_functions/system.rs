@@ -1018,6 +1018,23 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
+    /// Opts the JS app's opaque root into the WASM merge sync path.
+    ///
+    /// A JS root is not a `#[app::state]` type, so core has no registered
+    /// `Mergeable` and would treat it as opaque (`crdt_type: None`), resolving
+    /// conflicts by Last-Writer-Wins — which cannot converge concurrent writers.
+    /// The JS SDK calls this from its `__calimero_register_merge` hook (invoked by
+    /// the runtime in this same execution, before the method runs) to declare that
+    /// its module exports `__calimero_merge_root_state`. `persist_root_state` then
+    /// stamps the root with the `JsRoot` marker so the sync apply path defers it to
+    /// that guest merge callback instead of LWW. Idempotent and non-failing.
+    pub fn register_js_sdk_root_merge(&mut self) -> VMLogicResult<()> {
+        self.with_logic_mut(|logic| {
+            logic.js_root_merge = true;
+        });
+        Ok(())
+    }
+
     /// Persists the root state document provided by the guest runtime.
     ///
     /// Instead of writing directly to storage (which would bypass Merkle bookkeeping),
@@ -1078,12 +1095,18 @@ impl VMHostFunctions<'_> {
                 .take()
                 .expect("persist_root_state payload already consumed");
 
+            // A guest that called `register_js_sdk_root_merge` provides a
+            // `__calimero_merge_root_state` callback; stamp the root with the
+            // `JsRoot` marker so the sync apply path defers to that callback
+            // instead of LWW-collapsing concurrent writes. Without the opt-in
+            // the root stays opaque (`crdt_type: None`) exactly as before.
+            let mut metadata = Metadata::new(final_created_at, final_updated_at);
+            if logic.js_root_merge {
+                metadata.crdt_type = Some(calimero_primitives::crdt::CrdtType::js_root());
+            }
+
             with_runtime_env(env, move || {
-                Interface::<MainStorage>::save_raw(
-                    Id::root(),
-                    payload,
-                    Metadata::new(final_created_at, final_updated_at),
-                )
+                Interface::<MainStorage>::save_raw(Id::root(), payload, metadata)
             })
             .map_err(|err| {
                 VMLogicError::from(HostError::Panic {
