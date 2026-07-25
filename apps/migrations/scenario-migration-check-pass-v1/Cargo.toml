@@ -20,3 +20,6 @@ serde_json.workspace = true
 
 [package.metadata.workspaces]
 independent = true
+
+[package.metadata.calimero]
+package = "com.calimero.scenario-migration-check-pass"

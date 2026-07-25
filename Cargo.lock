@@ -10268,6 +10268,8 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
  "serial_test",
 ]
 
@@ -10277,6 +10279,8 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
  "serial_test",
 ]
 
