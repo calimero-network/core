@@ -29,13 +29,25 @@ if [ "${#wasms[@]}" -eq 0 ]; then
     exit 1
 fi
 
+stderr_file="$(mktemp)"
+trap 'rm -f "$stderr_file"' EXIT
+
 missing=0
 for wasm in "${wasms[@]}"; do
     # Capture the full inspect output before grepping. Piping straight into
     # `grep -q` lets grep close the pipe on the first match, killing `cargo run`
     # with SIGPIPE, which `set -o pipefail` then reports as a (false) failure.
-    report="$(cargo run -q -p mero-abi -- inspect "$wasm" 2>/dev/null || true)"
-    if printf '%s' "$report" | grep -q "calimero_abi_v1"; then
+    # A failing inspect means the guard could not run at all, so report it as a
+    # tool error rather than silently calling the section missing.
+    if ! report="$(cargo run -q -p mero-abi -- inspect "$wasm" 2>"$stderr_file")"; then
+        echo "ERROR: could not run mero-abi inspect on $wasm" >&2
+        sed 's/^/  /' "$stderr_file" >&2
+        exit 1
+    fi
+    # Match the section-walk line (`CustomSection: 'calimero_abi_v1' (N bytes)`),
+    # never a bare name: inspect's "section NOT found" advice also contains the
+    # name, so a looser grep passes every wasm and the guard never fires.
+    if printf '%s' "$report" | grep -q "CustomSection: 'calimero_abi_v1'"; then
         echo "ok:      $wasm"
     else
         echo "MISSING: $wasm has no calimero_abi_v1 section" >&2
