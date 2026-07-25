@@ -289,14 +289,14 @@ fn dispatch_key(cmd: KeyCommand) -> eyre::Result<()> {
 }
 
 fn dispatch_sign(args: &SignArgs) -> eyre::Result<()> {
-    let (signing_key, is_dev) = if args.dev {
-        (mero_sign::dev_signing_key(), true)
+    let signing_key = if args.dev {
+        mero_sign::dev_signing_key()
     } else if let Some(key_path) = &args.key {
-        (mero_sign::load_signing_key(key_path)?, false)
+        mero_sign::load_signing_key(key_path)?
     } else {
         bail!("either --key <path> or --dev must be specified")
     };
-    mero_sign::sign_manifest(&args.manifest, &signing_key, is_dev)
+    mero_sign::sign_manifest(&args.manifest, &signing_key)
 }
 
 #[cfg(test)]

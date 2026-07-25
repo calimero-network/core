@@ -145,13 +145,13 @@ fn sign(manifest_path: &Utf8Path, mode: &SignMode) -> Result<Option<String>> {
     match mode {
         SignMode::Key(key) => {
             println!("• signing manifest.json");
-            mero_sign::sign_manifest(manifest_path.as_std_path(), key, false)?;
+            mero_sign::sign_manifest(manifest_path.as_std_path(), key)?;
             Ok(Some(signer_id_of(key)))
         }
         SignMode::Dev(key) => {
             print_dev_warning();
             println!("• signing manifest.json with the DEV key");
-            mero_sign::sign_manifest(manifest_path.as_std_path(), key, true)?;
+            mero_sign::sign_manifest(manifest_path.as_std_path(), key)?;
             Ok(Some(signer_id_of(key)))
         }
         SignMode::Unsigned => {

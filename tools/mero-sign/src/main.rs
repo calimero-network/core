@@ -55,14 +55,14 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Sign { manifest, key, dev } => {
-            let (signing_key, is_dev) = if dev {
-                (mero_sign::dev_signing_key(), true)
+            let signing_key = if dev {
+                mero_sign::dev_signing_key()
             } else if let Some(key_path) = key {
-                (mero_sign::load_signing_key(&key_path)?, false)
+                mero_sign::load_signing_key(&key_path)?
             } else {
                 bail!("either --key <path> or --dev must be specified")
             };
-            mero_sign::sign_manifest(&manifest, &signing_key, is_dev)
+            mero_sign::sign_manifest(&manifest, &signing_key)
         }
         Commands::GenerateKey { output } => mero_sign::generate_key(&output),
         Commands::DeriveSignerId { key } => mero_sign::derive_signer_id(&key),

@@ -127,8 +127,16 @@ pub fn dev_signer_id() -> String {
     derive_signer_id_did_key(key.verifying_key().as_bytes())
 }
 
-/// Sign a manifest file
-pub fn sign_manifest(manifest_path: &Path, signing_key: &SigningKey, is_dev: bool) -> Result<()> {
+/// True when `key` is the well-known development key. Derived from the public
+/// half so the dev warning cannot be suppressed by how a caller invokes signing
+/// (e.g. a MERO_SIGN_KEY file that happens to hold the dev seed).
+pub fn is_dev_key(key: &SigningKey) -> bool {
+    key.verifying_key().as_bytes() == dev_signing_key().verifying_key().as_bytes()
+}
+
+/// Sign a manifest file in place.
+pub fn sign_manifest(manifest_path: &Path, signing_key: &SigningKey) -> Result<()> {
+    let is_dev = is_dev_key(signing_key);
     let verifying_key = signing_key.verifying_key();
     let signer_id = derive_signer_id_did_key(verifying_key.as_bytes());
 
@@ -360,7 +368,7 @@ mod tests {
         .unwrap();
 
         let key = dev_signing_key();
-        sign_manifest(&path, &key, true).unwrap();
+        sign_manifest(&path, &key).unwrap();
 
         let signed: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -385,7 +393,7 @@ mod tests {
         )
         .unwrap();
 
-        sign_manifest(&path, &dev_signing_key(), true).unwrap();
+        sign_manifest(&path, &dev_signing_key()).unwrap();
         let signed: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(verify_manifest(&signed).unwrap());
@@ -487,7 +495,7 @@ mod tests {
         .unwrap();
 
         let signing_key = load_signing_key(&key_path).unwrap();
-        sign_manifest(&manifest_path, &signing_key, false).unwrap();
+        sign_manifest(&manifest_path, &signing_key).unwrap();
 
         let signed_content = std::fs::read_to_string(&manifest_path).unwrap();
         let signed_manifest: serde_json::Value = serde_json::from_str(&signed_content).unwrap();
@@ -503,6 +511,30 @@ mod tests {
         );
         assert!(signature.get("publicKey").is_some());
         assert!(signature.get("signature").is_some());
+    }
+
+    #[test]
+    fn dev_key_is_detected_however_it_was_loaded() {
+        // A dev-seeded key file passed via --key / MERO_SIGN_KEY must still be
+        // reported as the dev key, so the warning cannot be dodged.
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("dev-key.json");
+        let dev = dev_signing_key();
+        std::fs::write(
+            &key_path,
+            serde_json::to_string(&KeyFile {
+                private_key: URL_SAFE_NO_PAD.encode(dev.to_bytes()),
+                public_key: URL_SAFE_NO_PAD.encode(dev.verifying_key().as_bytes()),
+                signer_id: dev_signer_id(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(is_dev_key(&load_signing_key(&key_path).unwrap()));
+
+        let mut rng = rand::thread_rng();
+        assert!(!is_dev_key(&SigningKey::generate(&mut rng)));
     }
 
     #[cfg(unix)]
