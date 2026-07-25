@@ -1,0 +1,88 @@
+use calimero_sdk::app;
+use calimero_sdk::serde::Serialize;
+use calimero_storage::collections::{LwwRegister, UnorderedMap};
+use thiserror::Error;
+
+// The CRDT root. Every field must be a CRDT collection so concurrent edits on
+// different nodes converge.
+#[app::state(emits = for<'a> Event<'a>)]
+pub struct {{name_pascal}} {
+    items: UnorderedMap<String, LwwRegister<String>>,
+}
+
+// Broadcast to peers and subscribers on state changes.
+#[app::event]
+pub enum Event<'a> {
+    Set { key: &'a str, value: &'a str },
+}
+
+// The error side of `app::Result<T>`; `Serialize` lets the node return it.
+#[derive(Debug, Error, Serialize)]
+#[serde(crate = "calimero_sdk::serde")]
+#[serde(tag = "kind", content = "data")]
+pub enum Error<'a> {
+    #[error("key not found: {0}")]
+    NotFound(&'a str),
+}
+
+#[app::logic]
+impl {{name_pascal}} {
+    // Runs once, when the app is first installed on a node.
+    #[app::init]
+    pub fn init() -> {{name_pascal}} {
+        {{name_pascal}} {
+            items: UnorderedMap::new(),
+        }
+    }
+
+    // Mutating: `&mut self`, plus an event so peers learn about the change.
+    pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
+        app::log!("set {:?} = {:?}", key, value);
+        app::emit!(Event::Set {
+            key: &key,
+            value: &value,
+        });
+        self.items.insert(key, LwwRegister::new(value))?;
+        Ok(())
+    }
+
+    // Read-only: served without a state-changing transaction.
+    #[app::view]
+    pub fn get(&self, key: &str) -> app::Result<String> {
+        app::log!("get {:?}", key);
+        let Some(value) = self.items.get(key)? else {
+            app::bail!(Error::NotFound(key));
+        };
+        Ok(value.get().clone())
+    }
+}
+
+// TestHost runs these against a native mock host: real state and events under a
+// plain `cargo test`, no node needed.
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    #[test]
+    fn set_then_get_returns_the_value() {
+        let mut app = TestHost::new({{name_pascal}}::init);
+
+        app.call(|s| s.set("hello".into(), "world".into())).unwrap();
+
+        assert_eq!(
+            app.view(|s| s.get("hello")).unwrap(),
+            "world".to_owned(),
+        );
+    }
+
+    #[test]
+    fn set_emits_one_event() {
+        let mut app = TestHost::new({{name_pascal}}::init);
+
+        app.call(|s| s.set("k".into(), "v".into())).unwrap();
+
+        assert_eq!(app.events().len(), 1);
+    }
+}

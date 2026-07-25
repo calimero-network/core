@@ -340,7 +340,7 @@ opt-in.
 Changing an identity-gated type to a plain one (`AuthoredMap → UnorderedMap`,
 `SharedStorage → UnorderedMap`, `AuthoredVector → Vector`, or dropping the field) strips
 per-entry authorship / the writer ACL across the **whole network**. This is refused
-twice: in CI by `calimero-abi diff` (an `UNSAFE_IDENTITY_DOWNGRADE` finding,
+twice: in CI by `cargo mero abi diff` (an `UNSAFE_IDENTITY_DOWNGRADE` finding,
 `crates/wasm-abi/src/downgrade.rs`), and at the node by the upgrade gate, before the
 upgrade op is even emitted.
 

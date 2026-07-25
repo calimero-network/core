@@ -1,4 +1,4 @@
-//! End-to-end tests for the `calimero-abi diff` CLI: they invoke the built
+//! End-to-end tests for the `mero-abi diff` CLI: they invoke the built
 //! binary against real files and assert the printed output + exit code, covering
 //! the `run_diff` path (file I/O, findings printing, exit-code mapping) that the
 //! library-level unit tests in `diff.rs` do not exercise.
@@ -21,7 +21,7 @@ fn temp_schema(content: &str) -> PathBuf {
     path
 }
 
-/// Run `calimero-abi diff <current> <baseline> [extra]` and return (exit_code, stdout, stderr).
+/// Run `mero-abi diff <current> <baseline> [extra]` and return (exit_code, stdout, stderr).
 fn run_diff(current: &str, baseline: &str, extra: &[&str]) -> (i32, String, String) {
     let cur = temp_schema(current);
     let base = temp_schema(baseline);

@@ -1069,6 +1069,11 @@ pub fn emit_manifest_from_crate_with_features(
     drop(manifest.types.remove("AbiStateExposed"));
     drop(manifest.types.remove("Event"));
 
+    // Emit methods and events name-sorted so the manifest satisfies the same
+    // byte-order ordering `validate_manifest` enforces (see validate.rs).
+    manifest.methods.sort_by(|a, b| a.name.cmp(&b.name));
+    manifest.events.sort_by(|a, b| a.name.cmp(&b.name));
+
     if !emitter.normalize_errors.is_empty() {
         return Err(emitter.normalize_errors.join("\n").into());
     }
@@ -1423,5 +1428,46 @@ mod cfg_tests {
         assert!(feature_active("foo-bar", &set));
         assert!(feature_active("foo_bar", &set));
         assert!(!feature_active("other", &set));
+    }
+}
+
+#[cfg(test)]
+mod sorting_tests {
+    use super::*;
+    use crate::validate::validate_manifest;
+
+    // Methods and events are declared out of order here; emission must sort
+    // them by name so the manifest passes validate_manifest unchanged.
+    #[test]
+    fn emitted_manifest_is_name_sorted() {
+        let lib = r#"
+            #[app::event]
+            pub enum Event { Zebra { a: u32 }, Alpha { b: u32 } }
+            #[app::state(version = 1, emits = Event)]
+            pub struct State { x: u32 }
+            #[app::logic]
+            impl State {
+                #[app::init] pub fn init() -> State { State { x: 0 } }
+                pub fn zebra_method(&mut self) {}
+                pub fn alpha_method(&mut self) {}
+            }
+        "#;
+        let m = emit_manifest(lib).unwrap();
+
+        let method_names: Vec<_> = m.methods.iter().map(|mm| mm.name.as_str()).collect();
+        assert!(
+            method_names.windows(2).all(|w| w[0] <= w[1]),
+            "methods not sorted: {method_names:?}"
+        );
+        let event_names: Vec<_> = m.events.iter().map(|ee| ee.name.as_str()).collect();
+        assert!(
+            event_names.windows(2).all(|w| w[0] <= w[1]),
+            "events not sorted: {event_names:?}"
+        );
+
+        assert!(
+            validate_manifest(&m).is_ok(),
+            "emitted manifest must validate"
+        );
     }
 }

@@ -1,0 +1,24 @@
+//! Concurrent writes on separate replicas must converge once state merges.
+
+use {{name_snake}}::{{name_pascal}};
+
+use calimero_storage::testing::converge_app;
+
+#[test]
+fn distinct_keys_all_survive() {
+    converge_app({{name_pascal}}::init)
+        .replicas(3)
+        .ops(|s| {
+            let _ = s.set("a".into(), "1".into());
+        })
+        .ops(|s| {
+            let _ = s.set("b".into(), "2".into());
+        })
+        .ops(|s| {
+            let _ = s.set("c".into(), "3".into());
+        })
+        .invariant("all three keys present", |s| {
+            ["a", "b", "c"].iter().all(|k| s.get(k).is_ok())
+        })
+        .assert_all_replicas_equal();
+}

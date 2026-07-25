@@ -1,0 +1,30 @@
+[package]
+name = "cargo-mero"
+version = "0.1.0"
+description = "Calimero application toolchain: scaffold, build, test, and bundle WASM apps"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+readme = "README.md"
+publish = true
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+eyre.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+cargo_metadata.workspace = true
+camino.workspace = true
+toml.workspace = true
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+sha2.workspace = true
+tar.workspace = true
+flate2.workspace = true
+wasm-opt.workspace = true
+tempfile.workspace = true
+mero-abi.workspace = true
+mero-sign.workspace = true
+
+[dev-dependencies]
+wasmparser.workspace = true

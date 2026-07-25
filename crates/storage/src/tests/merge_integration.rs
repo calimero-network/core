@@ -3848,3 +3848,189 @@ fn test_kv_map_same_key_concurrent_writes_converge() {
         hex::encode(b_root),
     );
 }
+
+/// An opaque root entity (`crdt_type: None`) — how a JS app's root is stored
+/// (written locally via the host `persist_root_state` → `save_raw` path, which
+/// uses `Metadata::new` and leaves `crdt_type: None`) — has no app-defined
+/// `Mergeable`.
+///
+/// On host production builds the merge registry is deleted entirely, so a local
+/// re-write of the root reaches `merge_root_state`'s `NoMergeFunctionRegistered`
+/// arm. Before the fix that surfaced as `StorageError::MergeFailure` and the
+/// host turned it into a `persist_root_state failed: Merge failed: No merge
+/// function registered for root entity` panic. The fix resolves an opaque root
+/// by direct LWW instead: the write succeeds and the later `updated_at` wins —
+/// mirroring the opaque-root direct-LWW the sync path already applies.
+///
+/// `clear_merge_registry()` reproduces the empty-registry condition of a host
+/// production build within the test binary (where the registry otherwise
+/// exists).
+#[test]
+#[serial]
+fn opaque_root_local_write_falls_back_to_lww_when_unregistered() {
+    use crate::address::Id;
+    use crate::entities::Metadata;
+    use crate::interface::Interface;
+    use crate::store::MockedStorage;
+
+    type NodeStorage = MockedStorage<990>;
+
+    env::reset_for_testing();
+    clear_merge_registry();
+    env::set_executor_id([7; 32]);
+
+    let root = Id::root();
+
+    // Creation (`created_at == updated_at`): no existing entity, stored verbatim.
+    Interface::<NodeStorage>::save_raw(root, b"v1".to_vec(), Metadata::new(100, 100))
+        .expect("initial opaque root write must succeed");
+
+    // First update: the stored root is still in the bootstrap state
+    // (`created_at == updated_at`), so `merge_root_state` accepts incoming via
+    // its bootstrap fast-path. This advances the stored `updated_at` to 200 but
+    // does not yet exercise the fix.
+    Interface::<NodeStorage>::save_raw(root, b"v2".to_vec(), Metadata::new(100, 200))
+        .expect("bootstrap-accepted opaque root update must succeed");
+
+    // Second update: the stored root now has `created_at (100) != updated_at
+    // (200)`, so the bootstrap fast-path no longer applies and
+    // `merge_root_state` reports `NoMergeFunctionRegistered`. This is the write
+    // that panicked pre-fix. With the fix it resolves by LWW, and the newer
+    // payload wins.
+    Interface::<NodeStorage>::save_raw(root, b"v3".to_vec(), Metadata::new(100, 300))
+        .expect("opaque root LWW fallback must succeed, not NoMergeFunctionRegistered");
+
+    let stored = Interface::<NodeStorage>::find_by_id_raw(root)
+        .expect("root entity must be present after LWW writes");
+    assert_eq!(
+        stored, b"v3",
+        "later updated_at must win under opaque-root LWW"
+    );
+}
+
+/// I5 (No Silent Data Loss) preserved for a NON-opaque root: a root whose
+/// stored metadata carries a real `crdt_type` is an app-state root expected to
+/// merge field-by-field via a registered `Mergeable`. Silently overwriting it
+/// by LWW would lose data, so with no merger registered the write must STILL
+/// fail loudly with `NoMergeFunctionRegistered` — exactly as before the
+/// opaque-root fix. Only the opaque (`crdt_type: None`) path changed to LWW.
+#[test]
+#[serial]
+fn non_opaque_root_local_write_still_errors_when_unregistered() {
+    use crate::address::Id;
+    use crate::collections::crdt_meta::{CrdtType, MergeError};
+    use crate::entities::Metadata;
+    use crate::error::StorageError;
+    use crate::interface::Interface;
+    use crate::store::MockedStorage;
+
+    type NodeStorage = MockedStorage<991>;
+
+    env::reset_for_testing();
+    clear_merge_registry();
+    env::set_executor_id([8; 32]);
+
+    let root = Id::root();
+    // A real (non-opaque) crdt_type marks this as an app-state root that is
+    // supposed to merge via a registered `Mergeable`.
+    let crdt = CrdtType::Custom("AppState".to_string());
+
+    Interface::<NodeStorage>::save_raw(
+        root,
+        b"v1".to_vec(),
+        Metadata::with_crdt_type(100, 100, crdt.clone()),
+    )
+    .expect("initial non-opaque root write must succeed");
+
+    // Bootstrap-accepted update (`created_at == updated_at`); no error yet.
+    Interface::<NodeStorage>::save_raw(
+        root,
+        b"v2".to_vec(),
+        Metadata::with_crdt_type(100, 200, crdt.clone()),
+    )
+    .expect("bootstrap-accepted non-opaque root update must succeed");
+
+    // Non-bootstrap update: no merger registered + a non-opaque root => this
+    // must fail loudly, preserving I5. This is the pre-fix behavior, and it is
+    // deliberately unchanged for non-opaque roots.
+    let err = Interface::<NodeStorage>::save_raw(
+        root,
+        b"v3".to_vec(),
+        Metadata::with_crdt_type(100, 300, crdt),
+    )
+    .expect_err("non-opaque root with no registered merger must fail loudly (I5)");
+    assert!(
+        matches!(
+            err,
+            StorageError::MergeFailure(MergeError::NoMergeFunctionRegistered)
+        ),
+        "expected NoMergeFunctionRegistered, got: {err:?}"
+    );
+}
+
+/// A JS-SDK root carries the `JsRoot` marker (stamped by `persist_root_state`
+/// when the guest called `register_js_sdk_root_merge`) rather than `crdt_type:
+/// None`. That marker is what routes the root to the guest
+/// `__calimero_merge_root_state` callback on the SYNC path. On the LOCAL write
+/// path there is no concurrent peer — incoming descends from existing — so a
+/// `JsRoot` root must resolve by LWW just like an opaque root, NOT fail with
+/// `NoMergeFunctionRegistered` (which would break every JS-app local write once
+/// the marker is present). This guards the local-path predicate that treats the
+/// `JsRoot` marker as LWW-eligible.
+#[test]
+#[serial]
+fn js_root_local_write_falls_back_to_lww_when_unregistered() {
+    use crate::address::Id;
+    use crate::collections::crdt_meta::CrdtType;
+    use crate::entities::Metadata;
+    use crate::interface::Interface;
+    use crate::store::MockedStorage;
+
+    type NodeStorage = MockedStorage<992>;
+
+    env::reset_for_testing();
+    clear_merge_registry();
+    env::set_executor_id([9; 32]);
+
+    let root = Id::root();
+    let js_root = CrdtType::js_root();
+    assert!(
+        js_root.is_js_root(),
+        "sanity: js_root() must be the JsRoot marker"
+    );
+
+    // Creation (`created_at == updated_at`): stored verbatim with the marker.
+    Interface::<NodeStorage>::save_raw(
+        root,
+        b"v1".to_vec(),
+        Metadata::with_crdt_type(100, 100, js_root.clone()),
+    )
+    .expect("initial JsRoot root write must succeed");
+
+    // Bootstrap-accepted update (`created_at == updated_at`); accepted via the
+    // bootstrap fast-path, advances `updated_at` to 200.
+    Interface::<NodeStorage>::save_raw(
+        root,
+        b"v2".to_vec(),
+        Metadata::with_crdt_type(100, 200, js_root.clone()),
+    )
+    .expect("bootstrap-accepted JsRoot root update must succeed");
+
+    // Non-bootstrap update: stored root now has `created_at (100) != updated_at
+    // (200)`, so `merge_root_state` reports `NoMergeFunctionRegistered`. A NON-
+    // opaque non-JsRoot root would fail here (I5); a JsRoot root must instead
+    // resolve by LWW (newer wins) so local writes keep working.
+    Interface::<NodeStorage>::save_raw(
+        root,
+        b"v3".to_vec(),
+        Metadata::with_crdt_type(100, 300, js_root),
+    )
+    .expect("JsRoot root local write must LWW-fall-back, not NoMergeFunctionRegistered");
+
+    let stored = Interface::<NodeStorage>::find_by_id_raw(root)
+        .expect("root entity must be present after LWW writes");
+    assert_eq!(
+        stored, b"v3",
+        "later updated_at must win under JsRoot local LWW"
+    );
+}

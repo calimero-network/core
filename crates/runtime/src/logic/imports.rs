@@ -61,6 +61,7 @@ impl VMLogic<'_> {
             fn private_storage_remove(key_ptr: u64, register_id: u64) -> u32;
             fn private_storage_write(key_ptr: u64, value_ptr: u64) -> u32;
             fn js_crdt_map_new(register_id: u64) -> i32;
+            fn js_crdt_map_new_with_id(id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_map_get(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_map_insert(
                 map_id_ptr: u64,
@@ -72,11 +73,13 @@ impl VMLogic<'_> {
             fn js_crdt_map_contains(map_id_ptr: u64, key_ptr: u64) -> i32;
             fn js_crdt_map_iter(map_id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_vector_new(register_id: u64) -> i32;
+            fn js_crdt_vector_new_with_id(id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_vector_len(vector_id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_vector_push(vector_id_ptr: u64, value_ptr: u64) -> i32;
             fn js_crdt_vector_get(vector_id_ptr: u64, index: u64, register_id: u64) -> i32;
             fn js_crdt_vector_pop(vector_id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_set_new(register_id: u64) -> i32;
+            fn js_crdt_set_new_with_id(id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_set_insert(set_id_ptr: u64, value_ptr: u64) -> i32;
             fn js_crdt_set_contains(set_id_ptr: u64, value_ptr: u64) -> i32;
             fn js_crdt_set_remove(set_id_ptr: u64, value_ptr: u64) -> i32;
@@ -84,10 +87,12 @@ impl VMLogic<'_> {
             fn js_crdt_set_iter(set_id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_set_clear(set_id_ptr: u64) -> i32;
             fn js_crdt_lww_new(register_id: u64) -> i32;
+            fn js_crdt_lww_new_with_id(id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_lww_set(register_id_ptr: u64, value_ptr: u64, has_value: u32) -> i32;
             fn js_crdt_lww_get(register_id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_lww_timestamp(register_id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_counter_new(register_id: u64) -> i32;
+            fn js_crdt_counter_new_with_id(id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_counter_increment(counter_id_ptr: u64) -> i32;
             fn js_crdt_counter_value(counter_id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_counter_get_executor_count(
@@ -98,6 +103,7 @@ impl VMLogic<'_> {
             ) -> i32;
 
             fn js_user_storage_new(register_id: u64) -> i32;
+            fn js_user_storage_new_with_id(id_ptr: u64, register_id: u64) -> i32;
             fn js_user_storage_insert(
                 storage_id_ptr: u64,
                 value_ptr: u64,
@@ -114,6 +120,7 @@ impl VMLogic<'_> {
             fn js_user_storage_contains_user(storage_id_ptr: u64, user_key_ptr: u64) -> i32;
 
             fn js_frozen_storage_new(register_id: u64) -> i32;
+            fn js_frozen_storage_new_with_id(id_ptr: u64, register_id: u64) -> i32;
             fn js_frozen_storage_add(
                 storage_id_ptr: u64,
                 value_ptr: u64,
@@ -125,6 +132,10 @@ impl VMLogic<'_> {
                 register_id: u64,
             ) -> i32;
             fn js_frozen_storage_contains(storage_id_ptr: u64, hash_ptr: u64) -> i32;
+
+            // Opts the JS root into the WASM `__calimero_merge_root_state` sync
+            // path (concurrent-writer convergence) instead of opaque LWW.
+            fn register_js_sdk_root_merge();
 
             fn fetch(
                 url_ptr: u64,

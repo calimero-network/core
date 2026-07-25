@@ -1,6 +1,13 @@
-# calimero-abi
+# mero-abi
 
-CLI for working with the Calimero WASM ABI (`abi.json` / `state-schema.json`).
+CLI and library for extracting, embedding, inspecting, and diffing Calimero
+WASM ABI / state schemas (`extract`, `types`, `state`, `inspect`, `embed`,
+`diff`).
+
+App developers should use `cargo mero abi` (via the `cargo-mero` toolchain)
+rather than invoking this binary directly.
+`cargo mero build` already embeds the ABI, and this README also documents the
+`diff` migration-safety lint that core's CI uses directly.
 
 ## Subcommands
 
@@ -11,38 +18,44 @@ CLI for working with the Calimero WASM ABI (`abi.json` / `state-schema.json`).
 | `state <wasm>` | Extract the state schema (state root + its type dependencies). |
 | `inspect <wasm>` | List the wasm's custom sections. |
 | `diff <current> <baseline>` | **Compare two `state-schema.json` versions and flag changes that require (or forbid) a migration.** |
-| `embed <wasm> <state-schema.json>` | **Embed a state schema into a wasm as the `calimero_abi_v1` custom section (in place).** |
+| `embed <wasm> <manifest.json>` | **Embed an ABI manifest (`abi.json` or `state-schema.json`) into a wasm as the `calimero_abi_v1` custom section (in place).** |
 
-## `calimero-abi embed` — ship the schema inside the wasm
+Invoke the installed binary as `mero-abi <command>`, or from the source tree as
+`cargo run -p mero-abi -- <command>`.
 
-Writes `state-schema.json` into `<wasm>` as a `calimero_abi_v1` custom section, so
-the app's state shape travels with its bytecode. Run it in the app's build script
-**after `wasm-opt`** (which would otherwise strip an unknown custom section):
+## `mero-abi embed` - ship the ABI inside the wasm
+
+Writes an ABI manifest into `<wasm>` as a `calimero_abi_v1` custom section, so
+the app's ABI (state schema plus per-method flags) travels with its bytecode.
+`cargo mero build` does this for you (it embeds the canonicalized full
+`abi.json`); invoke `embed` directly only for a manual pipeline, and always run
+it **after `wasm-opt`**, which would otherwise strip an unknown custom section:
 
 ```bash
-cargo build --target wasm32-unknown-unknown --profile app-release
 wasm-opt -Oz --enable-bulk-memory res/app.wasm -o res/app.wasm
-calimero-abi embed res/app.wasm res/state-schema.json
+mero-abi embed res/app.wasm res/abi.json
 ```
 
 Because the section is part of the wasm bytes, it is covered by the app's content
-hash (`blob_id`) — the declared schema cannot be altered without changing the app's
+hash (`blob_id`) - the declared ABI cannot be altered without changing the app's
 identity. The node reads this section at upgrade time to enforce the **L1
 identity-downgrade gate** (it refuses a migration that strips authorship/writer-ACL
-from an identity-gated CRDT). The command is idempotent — re-running replaces any
-existing `calimero_abi_v1` section — and fails closed on a malformed wasm.
+from an identity-gated CRDT). The command is idempotent - re-running replaces any
+existing `calimero_abi_v1` section - and fails closed on a malformed wasm. The
+embedded manifest must be name-sorted; `cargo mero build` canonicalizes before
+embedding.
 
-## `calimero-abi diff` — migration safety lint
+## `mero-abi diff` - migration safety lint
 
 Compares the **current** build's state schema against a **baseline** (the
 previous version) and classifies every top-level state-field change. It is the
 CI (L2) layer of the migration safety rail: it tells a developer *before* shipping
 whether a schema change needs a migration, and refuses the one change that
-silently destroys user data — stripping ownership/authorship from an
+silently destroys user data - stripping ownership/authorship from an
 identity-gated CRDT.
 
 ```bash
-calimero-abi diff res/state-schema.json ../v1/state-schema.json
+mero-abi diff res/state-schema.json ../v1/state-schema.json
 ```
 
 ### Finding classes
@@ -56,16 +69,16 @@ calimero-abi diff res/state-schema.json ../v1/state-schema.json
 Example output for an unsafe downgrade:
 
 ```
-⛔ [UNSAFE_IDENTITY_DOWNGRADE] field 'wiki' AuthoredMap → UnorderedMap — strips authorship / writer-ACL network-wide
+⛔ [UNSAFE_IDENTITY_DOWNGRADE] field 'wiki' AuthoredMap → UnorderedMap - strips authorship / writer-ACL network-wide
     override requires #[migrate(unsafe_strip_identity = "…")] + governance allowance (see #2534)
 ```
 
 ### Exit codes
 
-- `0` — no changes, or only `ADDITIVE` changes.
-- `1` — at least one `BREAKING` or `UNSAFE_IDENTITY_DOWNGRADE` change (or a bad
+- `0` - no changes, or only `ADDITIVE` changes.
+- `1` - at least one `BREAKING` or `UNSAFE_IDENTITY_DOWNGRADE` change (or a bad
   input: missing/non-record state root, a dangling/cyclic `$ref`, a duplicate
-  field — the tool **fails closed** on a corrupt schema rather than silently
+  field - the tool **fails closed** on a corrupt schema rather than silently
   passing).
 - `--exit-zero` reports findings but always exits `0` (for report-only use).
 
@@ -76,7 +89,7 @@ Example output for an unsafe downgrade:
   inline, and a change hidden behind a stable `$ref` name (the referenced type
   mutating) is still detected.
 - **Fail-closed.** A corrupt or unresolvable schema is an error, never a silent
-  "no findings" — a security lint must not pass a downgrade it failed to parse.
+  "no findings" - a security lint must not pass a downgrade it failed to parse.
 - **Top-level scope.** Identity-gating is checked on the top-level type of each
   state field. An identity-gated CRDT nested *inside* a `Record`/`Variant` field
   is not currently inspected (would need a recursive walk).
@@ -88,13 +101,13 @@ Example output for an unsafe downgrade:
 A dedicated guard already runs in CI: the **`schema-downgrade-guard`** job in
 `.github/workflows/app-migration-e2e.yml` builds the `scenario-identity-downgrade-v1`
 (`AuthoredMap`) and `-v2` (`UnorderedMap`) crates, emits their real
-`state-schema.json`, runs `calimero-abi diff v2 v1`, and **fails the build** unless
-the tool exits `1` with an `UNSAFE_IDENTITY_DOWNGRADE` finding — proving the lint
+`state-schema.json`, runs `mero-abi diff v2 v1`, and **fails the build** unless
+the tool exits `1` with an `UNSAFE_IDENTITY_DOWNGRADE` finding - proving the lint
 catches a real, emitter-produced downgrade.
 
-Generalising this to **every** app — diffing each build against its previous
+Generalising this to **every** app - diffing each build against its previous
 release's schema and failing on any `BREAKING`-without-migration or
-`UNSAFE_IDENTITY_DOWNGRADE`-without-override — is the remaining follow-up. It needs
+`UNSAFE_IDENTITY_DOWNGRADE`-without-override - is the remaining follow-up. It needs
 a per-app *baseline* (the previous version's schema) and the `unsafe_strip_identity`
 override to exist (tracked with the `#[derive(Migrate)]` work). The tool's behaviour
 is validated by the unit and end-to-end tests in `src/diff.rs` and `tests/diff_cli.rs`.

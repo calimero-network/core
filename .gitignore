@@ -22,3 +22,10 @@ dist/
 lib/
 node_modules/
 output/*
+
+# cargo-mero fixture build artifacts
+tools/cargo-mero/tests/fixtures/*/target/
+tools/cargo-mero/tests/fixtures/*/res/
+tools/cargo-mero/tests/fixtures/*/dist/
+tools/cargo-mero/tests/fixtures/*/Cargo.lock
+tools/cargo-mero/tests/fixtures/*/crates/*/res/

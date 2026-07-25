@@ -58,6 +58,30 @@ pub use crate::error::StorageError;
 /// Convenient type alias for the main storage system.
 pub type MainInterface = Interface<MainStorage>;
 
+/// Whether a root entity's stored `crdt_type` marks it as *opaque* — a root
+/// with no application-defined `Mergeable` merge dispatch.
+///
+/// An opaque root is one whose metadata carries no `crdt_type` (`None`). This
+/// is how the app-state container is stored for a JS app (written locally via
+/// the host `persist_root_state` → `save_raw` with `Metadata::new`, which
+/// leaves `crdt_type: None`) and for any app that does not use `#[app::state]`.
+/// A `#[app::state]` root registers a field-by-field `Mergeable` via the WASM
+/// module, and its root merge succeeds through the registry rather than being
+/// treated as opaque — so this predicate must never turn such a root into an
+/// LWW fallback. It is consulted only after the merge registry reports no
+/// registered function, so a registered merger always wins first.
+///
+/// The synthetic `LwwRegister { inner_type: "Opaque" }` marker the node sync
+/// layer attaches to opaque leaves *on the wire* is deliberately NOT matched
+/// here: that marker is a HashComparison wire-format concern owned by the node
+/// crate and never reaches a local `save_raw`/`save_internal` write (the sync
+/// apply path persists opaque roots with `crdt_type: None`, not the marker).
+/// The local write path this predicate guards only ever observes `None`.
+#[inline]
+fn is_opaque_root_crdt_type(crdt_type: &Option<crate::collections::crdt_meta::CrdtType>) -> bool {
+    crdt_type.is_none()
+}
+
 /// Apply-time context passed to [`Interface::apply_action`].
 ///
 /// Centralizes apply-time metadata so the call signature doesn't accumulate
@@ -2793,6 +2817,28 @@ impl<S: StorageAdaptor> Interface<S> {
                         incoming_updated_at,
                         "ROOT MERGE: Starting CRDT merge for root entity"
                     );
+                    // An opaque root (no `crdt_type`) has no app-defined
+                    // `Mergeable` to dispatch to. When no merger is registered,
+                    // `try_merge_data` resolves it by LWW instead of erroring;
+                    // a non-opaque root (real `crdt_type`) still errors loudly
+                    // (I5). Read the opaqueness off the STORED entity — its
+                    // metadata is the authoritative record of what kind of root
+                    // this is.
+                    //
+                    // A JS-SDK root (the `JsRoot` marker, stamped when the guest
+                    // called `register_js_sdk_root_merge`) resolves LOCAL writes
+                    // by LWW too: a local write's incoming state always descends
+                    // from the existing state, so incoming-wins is correct here.
+                    // Its field-aware convergence for CONCURRENT writers runs only
+                    // on the sync path, where the marker routes the root to the
+                    // guest `__calimero_merge_root_state` callback. A real
+                    // `#[app::state]` root still merges through the registry
+                    // (checked first) and never reaches the LWW arm.
+                    let is_opaque_root = is_opaque_root_crdt_type(&last_metadata.crdt_type)
+                        || last_metadata
+                            .crdt_type
+                            .as_ref()
+                            .is_some_and(|t| t.is_js_root());
                     let merged = Self::try_merge_data(
                         id,
                         &existing_data,
@@ -2800,6 +2846,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         last_metadata.created_at,
                         *last_metadata.updated_at,
                         *metadata.updated_at,
+                        is_opaque_root,
                     )?;
                     let merged_hash: [u8; 32] = Sha256::digest(&merged).into();
                     info!(
@@ -3100,11 +3147,21 @@ impl<S: StorageAdaptor> Interface<S> {
     /// Returns the merged data, or an error if merge fails.
     /// Merge mode is enabled to prevent timestamp generation during merge operations.
     ///
+    /// `is_opaque_root` is `true` when the stored root entity carries no
+    /// `crdt_type` (an *opaque* root — see [`is_opaque_root_crdt_type`]). Such a
+    /// root has no application-defined `Mergeable` to dispatch to, so when the
+    /// merge registry reports no registered function it falls back to a direct
+    /// last-writer-wins accept instead of failing (see the `# Errors` note).
+    ///
     /// # Errors
     ///
-    /// Returns `StorageError::MergeFailure` if no merge function is registered
-    /// for the root entity type. This enforces I5 (No Silent Data Loss) by failing
-    /// loudly rather than silently falling back to LWW.
+    /// Returns `StorageError::MergeFailure` when the merge registry has no
+    /// function for the root entity type **and** the root is not opaque
+    /// (`is_opaque_root == false`). This enforces I5 (No Silent Data Loss) for a
+    /// real `#[app::state]` root — a type that *should* merge field-by-field
+    /// must fail loudly rather than be silently overwritten by LWW. An opaque
+    /// root (`is_opaque_root == true`) never reaches this error: it resolves by
+    /// LWW, mirroring what the sync path does for opaque root leaves.
     fn try_merge_data(
         _id: Id,
         existing: &[u8],
@@ -3112,7 +3169,9 @@ impl<S: StorageAdaptor> Interface<S> {
         existing_created_at: u64,
         existing_timestamp: u64,
         incoming_timestamp: u64,
+        is_opaque_root: bool,
     ) -> Result<Vec<u8>, StorageError> {
+        use crate::collections::crdt_meta::MergeError;
         use crate::merge::merge_root_state;
 
         // Attempt CRDT merge with merge mode enabled
@@ -3135,11 +3194,45 @@ impl<S: StorageAdaptor> Interface<S> {
             )
         });
 
-        // I5 Enforcement: Propagate merge errors instead of falling back to LWW.
-        // If no merge function is registered and the entity isn't in the
-        // bootstrap-default state, this prevents silent data loss.
-        // The MergeError is preserved for programmatic error handling.
-        result.map_err(StorageError::from)
+        match result {
+            Ok(merged) => Ok(merged),
+            // Opaque root (no `crdt_type`) with no registered merger. Two ways
+            // to reach here for such a root, both benign:
+            //   * Host production builds delete the merge registry entirely, so
+            //     `merge_root_state` always reports `NoMergeFunctionRegistered`.
+            //     This is the local-write path a JS app (or any app that does
+            //     not use `#[app::state]`) takes via `persist_root_state`.
+            //   * A registry exists (WASM/test) but nothing was registered.
+            // Either way there is no `Mergeable` to dispatch to — WASM has no
+            // `__calimero_merge_root_state` for a type without a `Mergeable`
+            // impl — so the only convergent resolution is a direct LWW write.
+            // The enclosing `save_internal` branch is only entered when
+            // `incoming_timestamp >= existing_timestamp`, so incoming is the LWW
+            // winner; the explicit `>=` tie-break keeps this correct if the
+            // function is ever called from elsewhere and matches the opaque-root
+            // direct-LWW the sync path applies. Crucially the merge registry is
+            // consulted FIRST, so a real `#[app::state]` root whose merger IS
+            // registered takes the `Ok` arm above and is never LWW-collapsed.
+            Err(MergeError::NoMergeFunctionRegistered) if is_opaque_root => {
+                tracing::debug!(
+                    target: "storage::root_merge",
+                    existing_ts = existing_timestamp,
+                    incoming_ts = incoming_timestamp,
+                    "opaque root entity with no registered merge function; \
+                     resolving by LWW (incoming wins by updated_at)"
+                );
+                if incoming_timestamp >= existing_timestamp {
+                    Ok(incoming.to_vec())
+                } else {
+                    Ok(existing.to_vec())
+                }
+            }
+            // I5 Enforcement: for a NON-opaque root (a real `crdt_type`) with no
+            // registered merger — and for every other merge failure — propagate
+            // the error instead of falling back to LWW, preventing silent data
+            // loss. The MergeError is preserved for programmatic error handling.
+            Err(e) => Err(StorageError::from(e)),
+        }
     }
 
     /// Attempt to merge two versions of non-root entity data using CRDT semantics.

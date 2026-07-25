@@ -472,7 +472,7 @@ The two sides of that boundary fail in opposite directions on purpose:
 
 ### The identity-downgrade rail
 
-Calimero's upgrade gate (and the `calimero-abi diff` CI lint) compare the old and
+Calimero's upgrade gate (and the `cargo mero abi diff` CI lint) compare the old and
 new manifests to catch a class of silent ACL-stripping upgrades. The
 access-controlled wrappers — `PermissionedStorage` / `Ownable` / `AccessControl`
 (and `SharedStorage`) — all normalize in the ABI to a collection carrying
