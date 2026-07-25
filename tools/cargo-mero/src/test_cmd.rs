@@ -1,6 +1,5 @@
-//! `cargo mero test`: node-free native test runner. Runs the scaffolded
-//! TestHost unit tests + `tests/converge.rs` via a plain `cargo test` -
-//! explicitly no merobox/Docker (spec decision 4).
+//! `cargo mero test`: node-free native test runner. Runs the TestHost unit
+//! tests + `tests/converge.rs` via a plain `cargo test`; no node, no Docker.
 
 use std::process::Command;
 
@@ -8,15 +7,11 @@ use camino::Utf8Path;
 use cargo_metadata::{DependencyKind, Metadata, Package};
 use eyre::{Context, Result};
 
-use crate::TestArgs;
+use crate::{workspace, TestArgs};
 
-/// The exact dev-dep TOML line the scaffold (`templates/Cargo.toml.tmpl`)
-/// generates, with the tag filled in from `cargo mero new`'s default SDK version.
+/// The dev-dep line `cargo mero new` writes, quoted back at the user.
 fn example_dev_dep() -> String {
-    format!(
-        r#"calimero-storage = {{ git = "https://github.com/calimero-network/core", tag = "{}", features = ["testing"] }}"#,
-        crate::DEFAULT_SDK_VERSION
-    )
+    crate::templates::testing_dev_dep(crate::DEFAULT_SDK_VERSION).unwrap_or_default()
 }
 
 pub fn run(args: &TestArgs) -> Result<()> {
@@ -33,13 +28,8 @@ pub fn run(args: &TestArgs) -> Result<()> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
-/// `clap`'s `trailing_var_arg` swallows the user's own `--` separator, so
-/// `args.args` arrives as bare tokens (e.g. `["--nocapture"]`). Forwarding
-/// those to `cargo test` directly makes cargo parse `--nocapture` as one of
-/// its *own* flags (which it isn't) and reject it; re-inserting `--` hands
-/// them to the libtest binary instead, where they belong. A bare name filter
-/// still works after `--` - libtest filters positionals the same way `cargo
-/// test` does.
+/// `trailing_var_arg` strips the user's `--`, so re-insert it: without it cargo
+/// parses forwarded flags like `--nocapture` as its own and rejects them.
 fn assemble_cargo_test_args(manifest_path: Option<&Utf8Path>, user_args: &[String]) -> Vec<String> {
     let mut out = vec!["test".to_string()];
     if let Some(mp) = manifest_path {
@@ -56,36 +46,24 @@ fn assemble_cargo_test_args(manifest_path: Option<&Utf8Path>, user_args: &[Strin
 /// Best-effort warning, never blocks: a missing `testing` feature means the
 /// TestHost tests won't build, but `cargo test` will say so loudly on its own.
 fn preflight(args: &TestArgs) {
-    let mut cmd = cargo_metadata::MetadataCommand::new();
-    if let Some(mp) = &args.manifest_path {
-        let _ = cmd.manifest_path(mp);
-    }
-    if let Ok(metadata) = cmd.exec() {
+    if let Ok(metadata) = workspace::metadata_for(args.manifest_path.as_deref()) {
         if let Some(hint) = missing_testing_feature(&metadata, args.manifest_path.as_deref()) {
             eprintln!("warning: {hint}");
         }
     }
 }
 
-/// The facts `missing_testing_feature_core` needs about one dependency,
-/// projected out of `cargo_metadata::Dependency` so the core logic is
-/// testable without constructing that type's non-`Default` fields (e.g.
-/// `VersionReq`).
+/// Dependency facts projected out of `cargo_metadata::Dependency`, which tests
+/// cannot construct (non-`Default` fields like `VersionReq`).
 struct DepFacts<'a> {
     name: &'a str,
     is_dev: bool,
     has_testing_feature: bool,
 }
 
-/// Returns an actionable hint when the relevant package's dev-dependencies
-/// lack `calimero-storage` with the `testing` feature.
-///
-/// A single-crate app resolves to one package (mirrors `build.rs`'s
-/// `resolve_targets`: match by the manifest's parent dir, else fall back to
-/// `root_package()`). A virtual workspace root has neither, so instead of
-/// silently no-op'ing, every workspace member is checked and every offender
-/// named - the smallest behavior that still catches a multi-service
-/// workspace missing the dev-dep on one of its services.
+/// Hint when the target package's dev-deps lack `calimero-storage`'s `testing`
+/// feature. A virtual workspace root resolves to no package, so check every
+/// member instead of silently passing.
 fn missing_testing_feature(
     metadata: &Metadata,
     manifest_path: Option<&Utf8Path>,
@@ -111,22 +89,15 @@ fn missing_testing_feature(
     ))
 }
 
-/// Same package-resolution order as `build.rs::resolve_targets`: the package
-/// whose manifest lives in `--manifest-path`'s directory, else the resolved
-/// root package. Returns `None` on a virtual workspace root with no
-/// `--manifest-path` given.
+/// Same resolution order as `build`: the package at `--manifest-path`, else the
+/// root package. `None` on a virtual workspace root with no `--manifest-path`.
 fn resolve_package<'a>(
     metadata: &'a Metadata,
     manifest_path: Option<&Utf8Path>,
 ) -> Option<&'a Package> {
-    let manifest_dir = manifest_path.map(crate::meta::canonical_dir);
-    manifest_dir
-        .and_then(|dir| {
-            metadata
-                .packages
-                .iter()
-                .find(|p| crate::meta::same_dir(&p.manifest_path, dir.as_path()))
-        })
+    manifest_path
+        .map(workspace::manifest_dir)
+        .and_then(|dir| workspace::package_in_dir(metadata, &dir))
         .or_else(|| metadata.root_package())
 }
 

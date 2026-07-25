@@ -15,6 +15,7 @@ use flate2::Compression;
 use crate::build::{self, BuiltWasm};
 use crate::manifest::{self, Artifact, StagedArtifact};
 use crate::meta::{self, BundleMeta};
+use crate::workspace;
 use crate::{BuildArgs, BundleArgs};
 
 /// Environment variable naming a signing-key JSON file, used when none of
@@ -29,81 +30,87 @@ enum SignMode {
 }
 
 pub fn run(args: &BundleArgs) -> Result<PathBuf> {
-    // Resolve signing up front: a missing key must fail before a long build, not
-    // after. `run` never silently dev-signs.
+    // Resolve signing first: a missing or bad key must fail before a long build.
     let sign_mode = resolve_sign_mode(args)?;
 
-    let mut cmd = cargo_metadata::MetadataCommand::new();
-    if let Some(mp) = &args.manifest_path {
-        let _ = cmd.manifest_path(mp);
-    }
-    let metadata = cmd.exec().wrap_err("failed to run `cargo metadata`")?;
-
+    let metadata = workspace::metadata_for(args.manifest_path.as_deref())?;
     let base = base_dir(&metadata, args);
-    let mut bundle_meta = meta::load(&metadata, &base)?;
-    if let Some(p) = &args.package {
-        meta::validate_package_id(p)?;
-        bundle_meta.package = p.clone();
-    }
-    if let Some(v) = &args.app_version {
-        bundle_meta.app_version = v.clone();
-    }
-    if bundle_meta.app_version.is_empty() {
-        bail!(
-            "no app version resolved for `{}`. In a multi-service (virtual) workspace, either add\n\n\
-             [workspace.package]\nversion = \"0.1.0\"\n\nto the workspace-root Cargo.toml, or pass `--app-version <version>`.",
-            bundle_meta.package
-        );
-    }
+    let bundle_meta = resolve_meta(&metadata, &base, args)?;
 
-    let build_args = BuildArgs {
+    // Always build every declared service: `stage` writes one entry per service
+    // in the manifest, so a filtered build would silently drop one.
+    let built = build::run_all(&BuildArgs {
         profiling: args.profiling,
         package: None,
         manifest_path: args.manifest_path.clone(),
-    };
-    // bundle must build EVERY declared service (stage() writes services/<name>.*
-    // per manifest entry), so bypass build's -p/--manifest-path selection.
-    let built = build::run_all(&build_args)?;
+    })?;
 
+    let staging = prepare_staging(&base)?;
+    println!("• staging bundle files in {staging}");
+    let staged = stage(&bundle_meta, &built, &staging)?;
+
+    println!("• writing manifest.json");
+    let manifest_path = write_manifest(&staging, &bundle_meta, &staged)?;
+    let signer_id = sign(&manifest_path, &sign_mode)?;
+
+    let output = output_path(args, &base, &bundle_meta.package);
+    println!("• packaging {output}");
+    package(&output, &manifest_path, &staged)?;
+    fs::remove_dir_all(&staging).wrap_err_with(|| format!("failed to remove {staging}"))?;
+
+    println!("\nbundle:     {output}");
+    println!("package:    {}", bundle_meta.package);
+    println!("appVersion: {}", bundle_meta.app_version);
+    println!("signerId:   {}", signer_id.as_deref().unwrap_or("UNSIGNED"));
+
+    Ok(output.into_std_path_buf())
+}
+
+/// Bundle metadata with the `--package` / `--app-version` overrides applied.
+fn resolve_meta(
+    metadata: &cargo_metadata::Metadata,
+    base: &Utf8Path,
+    args: &BundleArgs,
+) -> Result<BundleMeta> {
+    let mut resolved = meta::load(metadata, base)?;
+    if let Some(package) = &args.package {
+        meta::validate_package_id(package)?;
+        resolved.package = package.clone();
+    }
+    if let Some(version) = &args.app_version {
+        resolved.app_version = version.clone();
+    }
+    if resolved.app_version.is_empty() {
+        bail!(
+            "no app version resolved for `{}`. In a multi-service (virtual) workspace, either add\n\n\
+             [workspace.package]\nversion = \"0.1.0\"\n\nto the workspace-root Cargo.toml, or pass `--app-version <version>`.",
+            resolved.package
+        );
+    }
+    Ok(resolved)
+}
+
+/// A clean `res/bundle-temp/`, discarding anything a previous run left behind.
+fn prepare_staging(base: &Utf8Path) -> Result<Utf8PathBuf> {
     let staging = base.join("res").join("bundle-temp");
     if staging.exists() {
         fs::remove_dir_all(&staging)
             .wrap_err_with(|| format!("failed to clear stale {staging}"))?;
     }
     fs::create_dir_all(&staging).wrap_err_with(|| format!("failed to create {staging}"))?;
+    Ok(staging)
+}
 
-    println!("• staging bundle files in {staging}");
-    let staged = stage(&bundle_meta, &built, &staging)?;
-
-    println!("• writing manifest.json");
-    let manifest_path = staging.join("manifest.json");
-    let manifest_value = manifest::render(&bundle_meta, &staged)?;
-    fs::write(
-        &manifest_path,
-        serde_json::to_string_pretty(&manifest_value)?,
-    )
-    .wrap_err_with(|| format!("failed to write {manifest_path}"))?;
-
-    let signer_id = sign(&manifest_path, &sign_mode)?;
-
-    let output = output_path(args, &base, &bundle_meta.package);
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent).wrap_err_with(|| format!("failed to create {parent}"))?;
-    }
-    println!("• packaging {output}");
-    package(&output, &manifest_path, &staged)?;
-
-    fs::remove_dir_all(&staging).wrap_err_with(|| format!("failed to remove {staging}"))?;
-
-    println!("\nbundle:     {output}");
-    println!("package:    {}", bundle_meta.package);
-    println!("appVersion: {}", bundle_meta.app_version);
-    match &signer_id {
-        Some(id) => println!("signerId:   {id}"),
-        None => println!("signerId:   UNSIGNED"),
-    }
-
-    Ok(output.into_std_path_buf())
+fn write_manifest(
+    staging: &Utf8Path,
+    meta: &BundleMeta,
+    staged: &[StagedArtifact],
+) -> Result<Utf8PathBuf> {
+    let path = staging.join("manifest.json");
+    let value = manifest::render(meta, staged)?;
+    fs::write(&path, serde_json::to_string_pretty(&value)?)
+        .wrap_err_with(|| format!("failed to write {path}"))?;
+    Ok(path)
 }
 
 /// Turn the mutually-exclusive flags (plus the `MERO_SIGN_KEY` fallback) into a
@@ -179,15 +186,12 @@ fn print_dev_warning() {
 fn base_dir(metadata: &cargo_metadata::Metadata, args: &BundleArgs) -> Utf8PathBuf {
     args.manifest_path
         .as_ref()
-        .map(|p| meta::canonical_dir(p))
+        .map(|p| workspace::manifest_dir(p))
         .unwrap_or_else(|| metadata.workspace_root.clone())
 }
 
-/// Copy built artifacts into the staging dir and describe them for the manifest.
-///
-/// Single-service (no declared services) lands at `app.wasm` + `abi.json`;
-/// multi-service lands under `services/<name>.wasm` + `services/<name>-abi.json`,
-/// with `<name>` from the workspace `services` table (matched by crate name).
+/// Copy built artifacts into staging and describe them for the manifest: a single
+/// service lands at `app.wasm` + `abi.json`, multi-service under `services/<name>.*`.
 fn stage(
     meta: &BundleMeta,
     built: &[BuiltWasm],
@@ -262,6 +266,9 @@ fn output_path(args: &BundleArgs, base: &Utf8Path, package: &str) -> Utf8PathBuf
 /// Write the tar.gz `.mpk`: `manifest.json` at the root plus each artifact at the
 /// same relative path recorded in the manifest, so the two never disagree.
 fn package(output: &Utf8Path, manifest_path: &Utf8Path, staged: &[StagedArtifact]) -> Result<()> {
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).wrap_err_with(|| format!("failed to create {parent}"))?;
+    }
     let file = File::create(output).wrap_err_with(|| format!("failed to create {output}"))?;
     let encoder = GzEncoder::new(file, Compression::default());
     let mut tar = tar::Builder::new(encoder);

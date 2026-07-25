@@ -7,9 +7,8 @@ use std::process::Command;
 
 use flate2::read::GzDecoder;
 
-/// The #3287 regression guard at its source: a freshly scaffolded app must
-/// walk the whole new -> build -> test -> bundle ladder cleanly, so the
-/// hand-copy onboarding path stays dead.
+/// A freshly scaffolded app must walk the whole new -> build -> test -> bundle
+/// ladder cleanly.
 #[test]
 #[ignore = "slow: scaffolds and compiles a fresh app (needs network for git SDK deps)"]
 fn new_build_test_bundle_ladder() {
@@ -72,11 +71,8 @@ fn build_produces_embedded_abi_wasm() {
         })
         .expect("built wasm must carry calimero_abi_v1");
 
-    // The embedded payload is the full canonicalized ABI, not the state schema:
-    // it must carry a non-empty `methods` array. The demo-app fixture's methods
-    // are genuinely unsorted (update_if_exists before get_or_insert), so this
-    // also proves canonicalization ran (an unsorted full manifest would fail
-    // core's validation and never get embedded).
+    // A non-empty `methods` array proves the full ABI was embedded, and that
+    // canonicalization ran: the fixture's methods are declared unsorted.
     let manifest: serde_json::Value =
         serde_json::from_slice(&section).expect("calimero_abi_v1 section must be valid JSON");
     let methods = manifest["methods"]
@@ -89,11 +85,8 @@ fn build_produces_embedded_abi_wasm() {
     assert!(fixture.join("res/abi.json").exists());
 }
 
-/// Multi-service bundling in the documented virtual-workspace shape, invoked
-/// from the workspace root with NO --manifest-path (the `cd workspace && cargo
-/// mero bundle --dev` path). Guards both defects that concealed this: cwd-based
-/// service discovery and virtual-workspace metadata (app_version from
-/// [workspace.package]).
+/// Multi-service bundling from a virtual workspace root with no --manifest-path,
+/// covering cwd-based service discovery and the workspace-level app version.
 #[test]
 #[ignore = "slow: compiles two fixture service crates"]
 fn multi_service_bundle() {

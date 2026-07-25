@@ -10,7 +10,9 @@ mod guide;
 mod manifest;
 mod meta;
 mod new;
+mod templates;
 mod test_cmd;
+mod workspace;
 
 /// The calimero-sdk / calimero-wasm-abi version the toolchain scaffolds and
 /// tests against. Bumping the SDK touches several pinned copies of this string;

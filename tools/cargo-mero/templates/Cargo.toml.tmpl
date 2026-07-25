@@ -4,59 +4,48 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-# cdylib: the wasm artifact the node loads. rlib: lets `cargo test` and the
-# convergence tests link the app as a normal Rust library (a bare cdylib can't).
+# cdylib for the node's wasm; rlib so `cargo test` can link the app.
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 thiserror = "1"
-# The SDK and storage crates are pinned to a git tag: their ABI and the wasm-abi
-# pin below must move together (see the build-dependencies note).
 calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "{{sdk_tag}}" }
 calimero-storage = { git = "https://github.com/calimero-network/core", tag = "{{sdk_tag}}" }
 
 [build-dependencies]
-# build.rs runs the ABI emitter over src/lib.rs to produce res/abi.json +
-# res/state-schema.json. calimero-wasm-abi ships to crates.io, so it is an
-# exact `=` pin rather than a git tag; keep this version in lock-step with the
-# SDK git tag above - they are released together.
+# Keep this pin in lock-step with the SDK tag above; they release together.
 calimero-wasm-abi = "={{sdk_tag}}"
 serde_json = "1"
 
 [dev-dependencies]
-# The `testing` feature registers the native mock host + CRDT merge so the
-# `#[cfg(test)]` TestHost tests and tests/converge.rs can drive real state
-# under a plain `cargo test`, no node required.
+# `testing` provides the mock host TestHost and tests/converge.rs run against.
 calimero-storage = { git = "https://github.com/calimero-network/core", tag = "{{sdk_tag}}", features = ["testing"] }
 
 [package.metadata.calimero]
-# Reverse-DNS app id: the identity the node installs the bundle under.
+# Reverse-DNS app id the node installs the bundle under.
 package = "com.example.{{name}}"
 name = "{{name}}"
 description = "A Calimero app scaffolded with cargo mero new"
 
-# `cargo mero build` compiles under this profile. It must live in the
-# workspace-root manifest - which, for a standalone app, is this file.
+# Profiles must live in the workspace-root manifest, which for a standalone app
+# is this file.
 [profile.app-release]
 inherits = "release"
 codegen-units = 1
-opt-level = "z"       # optimize for size: wasm ships over the wire
+opt-level = "z"
 lto = true
 debug = false
 strip = "symbols"
-panic = "abort"       # no unwinding in wasm
+panic = "abort"
 overflow-checks = true
 
-# `cargo mero build --profiling` uses this: keeps debug info and skips wasm-opt
-# so you can profile / inspect the artifact.
+# Used by `cargo mero build --profiling`: keeps debug info, skips wasm-opt.
 [profile.app-profiling]
 inherits = "release"
 opt-level = 2
 debug = true
 strip = false
 
-# An explicit empty [workspace] makes this crate its own workspace root. Without
-# it, scaffolding inside another workspace (or under one that lives higher up the
-# path) would fold the app into that workspace and break the app-* profiles,
-# which cargo only reads from the workspace root. Standalone apps are unaffected.
+# Own workspace root: without this, scaffolding inside another workspace would
+# fold the app into it and the app-* profiles above would be ignored.
 [workspace]

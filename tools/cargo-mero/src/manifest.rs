@@ -11,13 +11,9 @@ use crate::meta::BundleMeta;
 /// Manifest schema version; `"1.0"` is the only value the node accepts.
 const MANIFEST_VERSION: &str = "1.0";
 
-/// One bundle file entry: its path relative to the bundle root, its byte size,
-/// and its content hash.
-///
-/// `hash` is a lowercase-hex SHA-256 of the file bytes. The node NEVER verifies
-/// this per-artifact hash (`BundleArtifact.hash` is an unread `Option<String>`;
-/// integrity comes solely from the ed25519 signature over the whole manifest),
-/// so we fill a real hash for forward-compat rather than the heredocs' `null`.
+/// One bundle file: bundle-relative path, byte size, and lowercase-hex SHA-256.
+/// The node does not verify this hash - integrity comes from the manifest
+/// signature - but a real value is recorded rather than a null.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Artifact {
@@ -55,10 +51,8 @@ fn hex_lower(bytes: &[u8]) -> String {
     s
 }
 
-/// The `metadata` block. Core's `BundleMetadata` also carries `icon`/`tags`/
-/// `license`, and has no `author` field, but the struct is not
-/// `deny_unknown_fields`, so `author` round-trips as a recorded (if node-ignored)
-/// field. `name` is required whenever `metadata` is present.
+/// The `metadata` block; `name` is required whenever it is present. The node has
+/// no `author` field but tolerates unknown keys, so it round-trips unread.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MetadataJson {
@@ -105,10 +99,9 @@ struct ManifestJson<'a> {
     links: Option<LinksJson>,
 }
 
-/// Render the `manifest.json` value. A single-service bundle (one artifact with
-/// no service name) uses top-level `wasm`/`abi`; anything else emits `services[]`
-/// and omits the top-level pair, matching the node's `wasm_artifacts()` dispatch.
-/// `signerId`/`signature` are added later by `mero_sign::sign_manifest`.
+/// Render `manifest.json`: a single service uses top-level `wasm`/`abi`, anything
+/// else emits `services[]`, matching how the node reads them. Signing adds
+/// `signerId`/`signature` afterwards.
 pub fn render(meta: &BundleMeta, artifacts: &[StagedArtifact]) -> Result<serde_json::Value> {
     let single = match artifacts {
         [only] if only.service_name.is_none() => Some(only),

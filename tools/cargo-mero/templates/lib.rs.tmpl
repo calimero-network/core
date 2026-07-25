@@ -3,24 +3,20 @@ use calimero_sdk::serde::Serialize;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
 use thiserror::Error;
 
-// The app's persisted state. `#[app::state]` makes it the CRDT root; the
-// `emits` clause names the event type this app can broadcast. Every field must
-// be a CRDT collection so concurrent edits on different nodes converge - here a
-// map of keys to last-writer-wins string registers.
+// The CRDT root. Every field must be a CRDT collection so concurrent edits on
+// different nodes converge.
 #[app::state(emits = for<'a> Event<'a>)]
 pub struct {{name_pascal}} {
     items: UnorderedMap<String, LwwRegister<String>>,
 }
 
-// Events are broadcast to other nodes and to app subscribers when state
-// changes. Borrow (`&'a str`) to avoid cloning into the event.
+// Broadcast to peers and subscribers on state changes.
 #[app::event]
 pub enum Event<'a> {
     Set { key: &'a str, value: &'a str },
 }
 
-// Logic methods return `app::Result<T>`; this is the error side. Deriving
-// `Serialize` lets the node surface it to callers.
+// The error side of `app::Result<T>`; `Serialize` lets the node return it.
 #[derive(Debug, Error, Serialize)]
 #[serde(crate = "calimero_sdk::serde")]
 #[serde(tag = "kind", content = "data")]
@@ -31,7 +27,7 @@ pub enum Error<'a> {
 
 #[app::logic]
 impl {{name_pascal}} {
-    // `#[app::init]` runs once when the app is first installed on a node.
+    // Runs once, when the app is first installed on a node.
     #[app::init]
     pub fn init() -> {{name_pascal}} {
         {{name_pascal}} {
@@ -39,8 +35,7 @@ impl {{name_pascal}} {
         }
     }
 
-    // A mutating method: takes `&mut self`, changes state, and emits an event so
-    // peers learn about the change.
+    // Mutating: `&mut self`, plus an event so peers learn about the change.
     pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
         app::log!("set {:?} = {:?}", key, value);
         app::emit!(Event::Set {
@@ -51,8 +46,7 @@ impl {{name_pascal}} {
         Ok(())
     }
 
-    // `#[app::view]` marks a read-only (`&self`) method the node can serve
-    // without a state-changing transaction.
+    // Read-only: served without a state-changing transaction.
     #[app::view]
     pub fn get(&self, key: &str) -> app::Result<String> {
         app::log!("get {:?}", key);
@@ -63,9 +57,8 @@ impl {{name_pascal}} {
     }
 }
 
-// TestHost drives the app with a native mock host, so state, events, and the
-// CRDT collections all behave as they would on a node - under a plain
-// `cargo test`, no node required. Read this as the app's teaching example.
+// TestHost runs these against a native mock host: real state and events under a
+// plain `cargo test`, no node needed.
 #[cfg(test)]
 mod tests {
     use calimero_sdk::testing::TestHost;

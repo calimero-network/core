@@ -4,11 +4,9 @@ use calimero_wasm_abi::embed::write_embedded_state_schema;
 use calimero_wasm_abi::schema::Manifest;
 use calimero_wasm_abi::validate::validate_manifest;
 
-/// Embed `schema` (an ABI manifest - `cargo mero build` passes the canonicalized
-/// full abi.json; a state-schema.json also works) into `wasm` as the
-/// `calimero_abi_v1` custom section, in place. Idempotent (replaces any existing
-/// section). The manifest's `methods`/`events` must be name-sorted or
-/// `validate_manifest` rejects it (the node would silently ignore the section).
+/// Embed an ABI manifest (full `abi.json` or a state schema) into `wasm` as the
+/// `calimero_abi_v1` section, in place, replacing any existing one. Rejects a
+/// manifest `validate_manifest` would fail, since the node ignores such a section.
 pub fn run_embed(wasm: &Path, schema: &Path) -> eyre::Result<()> {
     let schema_bytes = std::fs::read(schema)
         .map_err(|e| eyre::eyre!("failed to read {}: {e}", schema.display()))?;

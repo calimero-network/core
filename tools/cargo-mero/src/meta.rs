@@ -1,12 +1,14 @@
 //! Bundle metadata parsing from `[package.metadata.calimero]` /
 //! `[workspace.metadata.calimero]` tables.
 
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8Path;
 use eyre::{eyre, Result};
 use serde::Deserialize;
 use serde_json::Value;
 
-/// Resolved bundle metadata, ready for Task 6 (build) / Task 7 (bundle+manifest.json).
+use crate::workspace;
+
+/// Resolved bundle metadata, as `build` and `bundle` consume it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleMeta {
     pub package: String,
@@ -72,67 +74,34 @@ impl std::fmt::Display for MissingCalimeroPackage {
 
 impl std::error::Error for MissingCalimeroPackage {}
 
-/// Canonicalize the directory containing a `--manifest-path` so it can be
-/// compared against cargo_metadata's always-absolute, canonical manifest paths.
-/// A relative or non-canonical path (`./my-app/Cargo.toml`, `a/../a`) would
-/// otherwise never match and silently resolve to the wrong package. Falls back
-/// to the un-canonicalized dir when the path can't be resolved (then it just
-/// won't match, as before).
-pub(crate) fn canonical_dir(manifest_path: &Utf8Path) -> Utf8PathBuf {
-    let parent = match manifest_path.parent() {
-        Some(p) if !p.as_str().is_empty() => p,
-        _ => Utf8Path::new("."),
-    };
-    parent
-        .canonicalize_utf8()
-        .unwrap_or_else(|_| parent.to_owned())
-}
-
-/// True when `pkg_manifest_path`'s parent dir and `query_dir` name the same
-/// directory. cargo_metadata reports paths as cargo resolves them, which keeps
-/// symlinked components (macOS temp dirs live in `/var/folders`, a symlink to
-/// `/private/var/folders`), so BOTH sides must be canonicalized or a
-/// `--manifest-path` through a symlink never matches its own package.
-pub(crate) fn same_dir(pkg_manifest_path: &Utf8Path, query_dir: &Utf8Path) -> bool {
-    fn canon(dir: &Utf8Path) -> Utf8PathBuf {
-        dir.canonicalize_utf8().unwrap_or_else(|_| dir.to_owned())
+/// Reject anything that is not a plain identifier. These values come from a
+/// possibly untrusted `Cargo.toml` and become on-disk paths (`dist/<package>.mpk`,
+/// `services/<name>.wasm`), so a separator or `..` could escape the output dir.
+fn validate_path_safe(kind: &str, value: &str, extra: &[u8]) -> Result<()> {
+    let safe = !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || extra.contains(&b));
+    if !safe {
+        let allowed = if extra.contains(&b'.') { "`.`, " } else { "" };
+        return Err(eyre!(
+            "invalid {kind} `{value}`: may contain only ASCII letters, digits, {allowed}`-`, and `_`"
+        ));
     }
-    pkg_manifest_path
-        .parent()
-        .is_some_and(|dir| canon(dir) == canon(query_dir))
+    Ok(())
 }
 
-/// Service names become on-disk `services/<name>.wasm` staging paths, so a name
-/// must be a simple path-safe identifier. The metadata comes from a possibly
-/// untrusted third-party `Cargo.toml`, so a name with path separators or `..`
-/// could escape the staging dir - reject anything but `[A-Za-z0-9_-]`.
 fn validate_service_name(name: &str) -> Result<()> {
-    let safe = !name.is_empty()
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-    if !safe {
-        return Err(eyre!(
-            "invalid service name `{name}`: service names may contain only ASCII letters, digits, `-`, and `_`"
-        ));
-    }
-    Ok(())
+    validate_path_safe("service name", name, &[])
 }
 
-/// The package id becomes the bundle's output filename (`dist/<package>.mpk`),
-/// and it can arrive from an untrusted `Cargo.toml` or a CLI override, so it
-/// must be path-safe: reverse-DNS characters only, no separators.
+fn parse_table(value: &Value) -> Result<RawCalimeroMeta> {
+    serde_json::from_value(value.clone())
+        .map_err(|e| eyre!("invalid [..metadata.calimero] table: {e}"))
+}
+
 pub(crate) fn validate_package_id(package: &str) -> Result<()> {
-    let safe = !package.is_empty()
-        && package
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_');
-    if !safe {
-        return Err(eyre!(
-            "invalid package id `{package}`: package ids may contain only ASCII letters, digits, `.`, `-`, and `_`"
-        ));
-    }
-    Ok(())
+    validate_path_safe("package id", package, b".")
 }
 
 /// Pull the `calimero` subtable out of a cargo `[*.metadata]` value, which cargo
@@ -151,7 +120,7 @@ pub fn load(metadata: &cargo_metadata::Metadata, manifest_dir: &Utf8Path) -> Res
     let package = metadata
         .packages
         .iter()
-        .find(|p| same_dir(&p.manifest_path, manifest_dir));
+        .find(|p| workspace::same_dir(&p.manifest_path, manifest_dir));
 
     // The calimero table must come from the package actually resolved: deriving
     // it from the dir match alone meant a failed match plus a root-package
@@ -205,37 +174,22 @@ fn load_from_values(
     crate_name: &str,
     crate_version: &str,
 ) -> Result<BundleMeta> {
-    let (value, from_workspace) = match workspace_value {
-        Some(v) => (v, true),
-        None => match package_value {
-            Some(v) => (v, false),
-            None => return Err(MissingCalimeroPackage.into()),
-        },
+    let value = match workspace_value {
+        Some(v) => v,
+        None => package_value.ok_or(MissingCalimeroPackage)?,
     };
 
-    let raw: RawCalimeroMeta = serde_json::from_value(value.clone())
-        .map_err(|e| eyre!("invalid [..metadata.calimero] table: {e}"))?;
-
-    if !from_workspace && !raw.services.is_empty() {
-        return Err(eyre!(
-            "`services` belongs under [workspace.metadata.calimero], not [package.metadata.calimero]"
-        ));
-    }
-
-    // The workspace table wins for actual metadata, but a stray `services` array
-    // under the package table would otherwise go unparsed and unchecked.
-    if from_workspace {
-        if let Some(pv) = package_value {
-            let raw_package: RawCalimeroMeta = serde_json::from_value(pv.clone())
-                .map_err(|e| eyre!("invalid [..metadata.calimero] table: {e}"))?;
-            if !raw_package.services.is_empty() {
-                return Err(eyre!(
-                    "`services` belongs under [workspace.metadata.calimero], not [package.metadata.calimero]"
-                ));
-            }
+    // `services` is workspace-level only. Check the package table whether or not
+    // it won, so a stray array there is rejected instead of silently unread.
+    if let Some(package_table) = package_value {
+        if !parse_table(package_table)?.services.is_empty() {
+            return Err(eyre!(
+                "`services` belongs under [workspace.metadata.calimero], not [package.metadata.calimero]"
+            ));
         }
     }
 
+    let raw = parse_table(value)?;
     let package = raw.package.ok_or(MissingCalimeroPackage)?;
     validate_package_id(&package)?;
 
@@ -432,43 +386,6 @@ mod tests {
 
         let ok = json!({ "package": "com.example.my-app_2" });
         assert!(load_from_values(Some(&ok), None, "app", "1.0.0").is_ok());
-    }
-
-    #[test]
-    fn canonical_dir_resolves_noncanonical_manifest_path() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = Utf8Path::from_path(tmp.path()).unwrap();
-        std::fs::create_dir(dir.join("app")).unwrap();
-        std::fs::write(dir.join("app/Cargo.toml"), "").unwrap();
-
-        // A non-canonical --manifest-path (extra `.`/`..` components, exactly
-        // what a relative invocation from a workspace root produces) must
-        // resolve to the same canonical dir cargo_metadata reports, so the
-        // package-by-dir lookup in `load`/`resolve_targets` matches.
-        let messy = dir.join("app/../app/./Cargo.toml");
-        assert_eq!(
-            canonical_dir(&messy),
-            dir.join("app").canonicalize_utf8().unwrap()
-        );
-        assert!(canonical_dir(&messy).is_absolute());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn same_dir_matches_through_symlinks() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = Utf8Path::from_path(tmp.path()).unwrap();
-        std::fs::create_dir(dir.join("real")).unwrap();
-        std::fs::write(dir.join("real/Cargo.toml"), "").unwrap();
-        std::os::unix::fs::symlink(dir.join("real"), dir.join("link").as_std_path()).unwrap();
-
-        // cargo_metadata may report the package via one spelling while the
-        // query dir arrives via the other (macOS temp dirs: /var/folders is a
-        // symlink to /private/var/folders). Both directions must match, or
-        // `bundle --manifest-path` in a temp dir resolves the wrong package.
-        assert!(same_dir(&dir.join("link/Cargo.toml"), &dir.join("real")));
-        assert!(same_dir(&dir.join("real/Cargo.toml"), &dir.join("link")));
-        assert!(!same_dir(&dir.join("real/Cargo.toml"), dir));
     }
 
     #[test]

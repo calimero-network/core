@@ -1,10 +1,7 @@
 //! `cargo mero build`: compile an app to wasm32, copy it into `res/`, size-
-//! optimize it (release only), and embed the canonicalized full `res/abi.json`
-//! as the `calimero_abi_v1` custom section so the node can read the app's ABI
-//! (state schema plus per-method flags such as `xcall_callable`) off the
-//! bytecode (calimero-network/core#3287). The manifest is canonicalized first
-//! because the emitter writes methods/events in source order while core's
-//! `validate_manifest` requires them name-sorted (see `canonicalize_abi`).
+//! optimize it (release only), and embed the full `res/abi.json` as the
+//! `calimero_abi_v1` section so the node can read the state schema and
+//! per-method flags off the bytecode.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -13,15 +10,12 @@ use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{bail, eyre, Context, Result};
 use wasm_opt::{Feature, OptimizationOptions};
 
-use crate::meta;
-use crate::BuildArgs;
+use crate::{meta, workspace, BuildArgs};
 
 const TARGET: &str = "wasm32-unknown-unknown";
 
-/// One built artifact: the crate it came from, its (optimized, full-ABI-
-/// embedded) wasm in `res/`, and the full `abi.json` beside it (the bundle
-/// carries the as-emitted manifest as a separate file). `bundle` (Task 7)
-/// consumes this.
+/// One built artifact: the crate, its optimized ABI-embedded wasm in `res/`, and
+/// the `abi.json` beside it, which `bundle` ships as a sidecar.
 #[derive(Debug, Clone)]
 pub struct BuiltWasm {
     pub crate_name: String,
@@ -40,20 +34,14 @@ pub fn run(args: &BuildArgs) -> Result<Vec<BuiltWasm>> {
     run_inner(args, false)
 }
 
-/// Build EVERY declared service (or the single package when none are declared),
-/// ignoring `-p`/`--manifest-path` selection. `bundle` stages `services/<name>.*`
-/// for each manifest entry, so it must always compile the full set - a filtered
-/// CLI `run` would silently drop services from the `.mpk`.
+/// Build every declared service, ignoring `-p`/`--manifest-path`: `bundle`
+/// stages one entry per service, so a filtered build would drop one silently.
 pub fn run_all(args: &BuildArgs) -> Result<Vec<BuiltWasm>> {
     run_inner(args, true)
 }
 
 fn run_inner(args: &BuildArgs, all_services: bool) -> Result<Vec<BuiltWasm>> {
-    let mut cmd = cargo_metadata::MetadataCommand::new();
-    if let Some(mp) = &args.manifest_path {
-        let _ = cmd.manifest_path(mp);
-    }
-    let metadata = cmd.exec().wrap_err("failed to run `cargo metadata`")?;
+    let metadata = workspace::metadata_for(args.manifest_path.as_deref())?;
 
     let profiling =
         args.profiling || matches!(std::env::var("WASM_PROFILING").as_deref(), Ok("true"));
@@ -74,28 +62,18 @@ fn run_inner(args: &BuildArgs, all_services: bool) -> Result<Vec<BuiltWasm>> {
     Ok(built)
 }
 
-/// The crates to build. When the workspace declares services, `all_services`
-/// (set by `bundle` via `run_all`) forces the full set; otherwise a CLI build
-/// honors `-p`/`--manifest-path` through `select_service_builds`. With no
-/// services declared it is the single package named by `-p`/`--manifest-path`,
-/// else the resolved root package.
+/// The crates to build: every declared service under `all_services`, otherwise
+/// the selection in `select_service_builds`, else the single resolved package.
 fn resolve_targets(
     metadata: &cargo_metadata::Metadata,
     args: &BuildArgs,
     all_services: bool,
 ) -> Result<Vec<Target>> {
-    // Canonicalize so a relative `--manifest-path` matches cargo_metadata's
-    // absolute package paths (otherwise it silently falls through to root_package).
-    let manifest_dir = args.manifest_path.as_ref().map(|p| meta::canonical_dir(p));
+    let manifest_dir = args.manifest_path.as_deref().map(workspace::manifest_dir);
 
-    // Service discovery must also work from a workspace-root cwd with no
-    // --manifest-path (`cd workspace && cargo mero bundle --dev`): fall back to
-    // the metadata's workspace root so services are still consulted.
-    //
-    // `build` (unlike `bundle`) must also work for a single-crate app that never
-    // declares `[package.metadata.calimero]`. Service discovery only needs the
-    // table when a workspace lists services, so treat meta's missing-table error
-    // as "no services" and fall back to the single resolved package.
+    // Fall back to the workspace root so `cd workspace && cargo mero bundle`
+    // still finds services. A single-crate app declares no table at all, so a
+    // missing one means "no services", not an error.
     let discovery_dir = manifest_dir
         .clone()
         .unwrap_or_else(|| metadata.workspace_root.clone());
@@ -112,12 +90,12 @@ fn resolve_targets(
         } else {
             // A --manifest-path that names the workspace root (or is absent)
             // builds all services; one that names a member builds just it.
-            let root_manifest = manifest_dir
-                .as_ref()
-                .is_none_or(|dir| meta::same_dir(&metadata.workspace_root.join("Cargo.toml"), dir));
+            let root_manifest = manifest_dir.as_ref().is_none_or(|dir| {
+                workspace::same_dir(&metadata.workspace_root.join("Cargo.toml"), dir)
+            });
             let matched_member = manifest_dir
                 .as_deref()
-                .and_then(|dir| package_in_dir(metadata, dir))
+                .and_then(|dir| workspace::package_in_dir(metadata, dir))
                 .map(|p| p.name.to_string());
             select_service_builds(
                 &service_crates,
@@ -140,7 +118,7 @@ fn resolve_targets(
     // package; a non-matching one is an error, NOT a silent root fallback (the
     // fallback is only for the no-flag case).
     let package = match &manifest_dir {
-        Some(dir) => package_in_dir(metadata, dir).ok_or_else(|| {
+        Some(dir) => workspace::package_in_dir(metadata, dir).ok_or_else(|| {
             eyre!("--manifest-path `{dir}` does not match any package in the workspace")
         })?,
         None => metadata.root_package().ok_or_else(|| {
@@ -151,15 +129,9 @@ fn resolve_targets(
     Ok(vec![target_from_package(package)?])
 }
 
-/// Decide which crates a CLI `build` compiles when the workspace declares
-/// `services`. Pure (no cargo_metadata) so the selection rules stay
-/// unit-testable:
-///  - `-p X` builds exactly X;
-///  - a root (or absent) `--manifest-path` builds every service;
-///  - a `--manifest-path` at a member crate builds just that member;
-///  - a `--manifest-path` that is neither is an error, not a silent build-all.
-///
-/// `bundle` bypasses this via `run_all` and always builds every service.
+/// Which services a CLI `build` compiles: `-p` picks one, a root (or absent)
+/// `--manifest-path` builds all, one at a member builds that member, and
+/// anything else errors rather than silently building all.
 fn select_service_builds(
     services: &[String],
     explicit_package: Option<&str>,
@@ -179,17 +151,6 @@ fn select_service_builds(
         "--manifest-path matches no declared service crate: pass `-p <crate>`, point \
          --manifest-path at a service member, or at the workspace root to build all services"
     )
-}
-
-/// The workspace package whose manifest lives directly in `dir`, if any.
-fn package_in_dir<'a>(
-    metadata: &'a cargo_metadata::Metadata,
-    dir: &Utf8Path,
-) -> Option<&'a cargo_metadata::Package> {
-    metadata
-        .packages
-        .iter()
-        .find(|p| meta::same_dir(&p.manifest_path, dir))
 }
 
 /// meta::load's "no calimero table / no package id" error, which `build`
@@ -267,13 +228,8 @@ fn build_one(
         );
     }
 
-    // Embed the full abi.json (carries per-method flags like `xcall_callable`
-    // the node's xcall gate reads) as the `calimero_abi_v1` section. The
-    // emitter writes methods/events in source order but core's
-    // `validate_manifest` requires them name-sorted, so we canonicalize into a
-    // temp file first and let `run_embed` re-validate before writing. The
-    // as-emitted abi.json still ships as a bundle sidecar via
-    // `BuiltWasm.abi_json`.
+    // Embed the full abi.json: it carries the per-method flags the node's xcall
+    // gate reads, which a state schema alone would drop.
     println!("• embedding {abi_json} into {wasm_path}");
     let mut manifest: serde_json::Value = serde_json::from_slice(
         &std::fs::read(&abi_json).wrap_err_with(|| format!("failed to read {abi_json}"))?,
@@ -291,14 +247,8 @@ fn build_one(
     })
 }
 
-/// Sort an ABI manifest's `methods` and `events` arrays by their `name` field
-/// so core's `validate_manifest` (which requires name-sorted arrays) accepts
-/// the emitter's source-order output. Stable sort, and only those two arrays
-/// are touched - `types` and every other field are left as emitted.
-///
-/// This is a workaround for a core validator inconsistency (the emitter and the
-/// validator disagree on ordering); it lives here at the call site, not in
-/// mero-abi, so it is trivial to drop once core is fixed upstream.
+/// Name-sort `methods` and `events` so `validate_manifest` accepts a manifest
+/// an older SDK emitted in source order. Nothing else is touched.
 fn canonicalize_abi(manifest: &mut serde_json::Value) {
     let name_of = |v: &serde_json::Value| {
         v.get("name")

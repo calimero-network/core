@@ -1,6 +1,4 @@
-//! Convergence coverage: distinct keys written concurrently on separate
-//! replicas must all survive once state merges (map union), and `LwwRegister`
-//! values converge by HLC last-writer-wins. Runs under a plain `cargo test`.
+//! Concurrent writes on separate replicas must converge once state merges.
 
 use {{name_snake}}::{{name_pascal}};
 

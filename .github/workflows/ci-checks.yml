@@ -119,8 +119,6 @@ jobs:
           shared-key: cargo-mero-e2e
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      # Fixtures build core's SDK plus binaryen into their own target dirs;
-      # cache them so warm runs are minutes, not tens of minutes.
       - name: Cache fixture build output
         uses: actions/cache@v4
         with:
@@ -131,7 +129,6 @@ jobs:
           restore-keys: |
             cargo-mero-fixtures-${{ runner.os }}-
 
-      # Unset the workflow-level CARGO_TARGET_DIR so each fixture builds into its
-      # own target dir (the cached paths above), not the shared workspace target.
+      # env -u CARGO_TARGET_DIR: each fixture must build into its own cached target dir.
       - name: Run pipeline e2e
         run: env -u CARGO_TARGET_DIR cargo test -p cargo-mero --test pipeline -- --ignored --test-threads 1

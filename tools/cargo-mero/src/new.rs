@@ -7,14 +7,7 @@ use std::fs;
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{bail, Context, Result};
 
-use crate::NewArgs;
-
-const CARGO_TOML: &str = include_str!("../templates/Cargo.toml.tmpl");
-const BUILD_RS: &str = include_str!("../templates/build.rs.tmpl");
-const LIB_RS: &str = include_str!("../templates/lib.rs.tmpl");
-const CONVERGE_RS: &str = include_str!("../templates/converge.rs.tmpl");
-const README_MD: &str = include_str!("../templates/README.md.tmpl");
-const GITIGNORE: &str = include_str!("../templates/gitignore.tmpl");
+use crate::{templates, NewArgs};
 
 pub fn run(args: &NewArgs) -> Result<()> {
     validate_name(&args.name)?;
@@ -34,15 +27,12 @@ pub fn run(args: &NewArgs) -> Result<()> {
         tmpl.replace("{{name}}", &args.name)
             .replace("{{name_snake}}", &name_snake)
             .replace("{{name_pascal}}", &name_pascal)
-            .replace("{{sdk_tag}}", &args.sdk_version)
+            .replace(templates::TAG_PLACEHOLDER, &args.sdk_version)
     };
 
-    write_file(&dir.join("Cargo.toml"), &subst(CARGO_TOML))?;
-    write_file(&dir.join("build.rs"), &subst(BUILD_RS))?;
-    write_file(&dir.join("src/lib.rs"), &subst(LIB_RS))?;
-    write_file(&dir.join("tests/converge.rs"), &subst(CONVERGE_RS))?;
-    write_file(&dir.join("README.md"), &subst(README_MD))?;
-    write_file(&dir.join(".gitignore"), &subst(GITIGNORE))?;
+    for (out, tmpl) in templates::FILES {
+        write_file(&dir.join(out), &subst(tmpl))?;
+    }
 
     println!("Scaffolded `{}` at {dir}", args.name);
     println!();
