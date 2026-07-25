@@ -30,7 +30,7 @@ This app consolidates the following backend features previously tested across mu
 ### Build WASM only
 
 ```bash
-./build.sh
+cargo run -q -p cargo-mero -- mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
 ```
 
 Output: `res/e2e_kv_store.wasm`
@@ -38,7 +38,7 @@ Output: `res/e2e_kv_store.wasm`
 ### Build bundle (.mpk)
 
 ```bash
-./build-bundle.sh
+cargo run -q -p cargo-mero -- mero bundle --dev --manifest-path apps/scaffolding-e2e/Cargo.toml
 ```
 
 Output: `res/e2e-kv-store-1.0.0.mpk`

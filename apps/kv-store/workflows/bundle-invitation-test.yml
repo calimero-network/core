@@ -16,12 +16,13 @@ steps:
   # ============================================
   
   # Step 1: Install bundle application on Node 1
-  # Note: The bundle (.mpk) should be created by build-bundle.sh and placed in res/
+  # Note: build the bundle first with
+  #   cargo run -q -p cargo-mero -- mero bundle --dev --manifest-path apps/kv-store/Cargo.toml
   # Path is relative to where merobox runs (apps/kv-store/)
   - name: Install Bundle Application on Node 1
     type: install_application
     node: calimero-node-1
-    path: res/kv-store-1.0.0.mpk
+    path: dist/com.calimero.kv-store.mpk
     dev: true
     outputs:
       bundle_app_id: applicationId
@@ -43,7 +44,7 @@ steps:
     type: create_mesh
     context_node: calimero-node-1
     application_id: "{{bundle_app_id}}"
-    path: res/kv-store-1.0.0.mpk
+    path: dist/com.calimero.kv-store.mpk
     nodes:
       - calimero-node-2
     capability: member

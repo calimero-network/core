@@ -372,7 +372,7 @@ interface BlobApi {
 ## Building
 
 ```bash
-./build.sh
+cargo run -q -p cargo-mero -- mero build --manifest-path apps/blobs/Cargo.toml
 ```
 
 This will compile the contract to WebAssembly.

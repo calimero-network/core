@@ -4,32 +4,15 @@ A Calimero SSApp designed to exercise the WASM-ABI v1 generator with a comprehen
 
 ## Building
 
-To build the application for WASM:
-
 ```bash
-# Using the build script (recommended)
-cd apps/abi_conformance
-./build.sh
-
-# Or using cargo directly
-rustup target add wasm32-unknown-unknown
-cargo build -p abi_conformance --target wasm32-unknown-unknown
+cargo run -q -p cargo-mero -- mero build --manifest-path apps/abi_conformance/Cargo.toml
 ```
-
-The build script will:
-1. Add the wasm32-unknown-unknown target
-2. Build the app with release optimizations
-3. Copy the WASM file to `res/abi_conformance.wasm`
-4. Optimize the WASM file with wasm-opt if available
 
 ## ABI Extraction
 
 To extract the ABI from the compiled WASM:
 
 ```bash
-# Build the calimero-abi tool first
-cargo build -p calimero-abi
-
 # Extract ABI from the optimized WASM file
 ./target/debug/calimero-abi extract apps/abi_conformance/res/abi_conformance.wasm -o apps/abi_conformance/res/abi.json
 

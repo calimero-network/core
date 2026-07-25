@@ -33,7 +33,7 @@ steps:
   - name: Install scenario-unordered-set-v1 on node 1
     type: install_application
     node: app-migration-uset-1
-    path: apps/migrations/scenario-unordered-set-v1/res/scenario-unordered-set-1.0.0.mpk
+    path: dist/scenario-unordered-set-v1.mpk
     dev: true
     outputs:
       app_v1: applicationId
@@ -164,7 +164,7 @@ steps:
   - name: Install scenario-unordered-set-v2 on node 1
     type: install_application
     node: app-migration-uset-1
-    path: apps/migrations/scenario-unordered-set-v2/res/scenario-unordered-set-2.0.0.mpk
+    path: dist/scenario-unordered-set-v2.mpk
     dev: true
     outputs:
       app_v2: applicationId

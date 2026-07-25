@@ -23,7 +23,7 @@ This application demonstrates conflict-free collaborative editing where multiple
 ## Building
 
 ```bash
-./build.sh
+cargo run -q -p cargo-mero -- mero build --manifest-path apps/collaborative-editor/Cargo.toml
 ```
 
 This will:
@@ -252,7 +252,7 @@ To run tests locally, use merobox directly:
 
 ```bash
 # Build the app first
-./build.sh
+cargo run -q -p cargo-mero -- mero build --manifest-path apps/collaborative-editor/Cargo.toml
 
 # Run the workflow test
 merobox bootstrap run workflows/collaborative-editor.yml \

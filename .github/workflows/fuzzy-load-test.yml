@@ -118,23 +118,17 @@ jobs:
           save-if: "true"
 
       - name: Build kv-store app
-        run: |
-          cd apps/kv-store
-          ./build.sh
+        run: cargo run -q -p cargo-mero -- mero build --manifest-path apps/kv-store/Cargo.toml
         env:
           WASM_PROFILING: "true"
 
       - name: Build kv-store-with-handlers app
-        run: |
-          cd apps/kv-store-with-handlers
-          ./build.sh
+        run: cargo run -q -p cargo-mero -- mero build --manifest-path apps/kv-store-with-handlers/Cargo.toml
         env:
           WASM_PROFILING: "true"
 
       - name: Build scaffolding-e2e app
-        run: |
-          cd apps/scaffolding-e2e
-          ./build.sh
+        run: cargo run -q -p cargo-mero -- mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
         env:
           WASM_PROFILING: "true"
 

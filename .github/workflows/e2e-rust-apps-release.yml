@@ -60,9 +60,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Build scaffolding-e2e app
-        run: |
-          cd apps/scaffolding-e2e
-          ./build.sh
+        run: cargo run -q -p cargo-mero -- mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
 
       - name: Build scaffolding-e2e multi-service bundle
         run: |
@@ -70,9 +68,7 @@ jobs:
           ./build-multi-service-bundle.sh
 
       - name: Build xcall-example app
-        run: |
-          cd apps/xcall-example
-          ./build.sh
+        run: cargo run -q -p cargo-mero -- mero build --manifest-path apps/xcall-example/Cargo.toml
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7

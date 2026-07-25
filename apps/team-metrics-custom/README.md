@@ -57,13 +57,13 @@ End-to-end tests are automatically run via the `merobox-workflows.yml` GitHub Ac
 To build locally:
 
 ```bash
-./build.sh
+cargo run -q -p cargo-mero -- mero build --manifest-path apps/team-metrics-custom/Cargo.toml
 ```
 
 To run workflow tests locally using merobox:
 
 ```bash
-./build.sh
+cargo run -q -p cargo-mero -- mero build --manifest-path apps/team-metrics-custom/Cargo.toml
 merobox bootstrap run workflows/team-metrics-test.yml \
   --no-docker \
   --binary-path ../../target/debug/merod \

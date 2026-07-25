@@ -92,11 +92,13 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: app-migration-wasm-fixtures
-          # The workflows install the signed same-package .mpk bundles; the
-          # raw wasms ride along for the schema-guard job and local rebuilds.
+          # The workflows install the signed same-package .mpk bundles from
+          # dist/; the raw wasms ride along for the schema-guard job and local
+          # rebuilds. Two roots (apps/migrations, dist) make the artifact's
+          # common ancestor the repo root, so paths restore verbatim on download.
           path: |
             apps/migrations/**/res/*.wasm
-            apps/migrations/**/res/*.mpk
+            dist/*.mpk
           retention-days: 1
           if-no-files-found: error
 
@@ -132,8 +134,8 @@ jobs:
 
       - name: Emit downgrade-scenario state schemas
         run: |
-          bash apps/migrations/scenario-identity-downgrade-v1/build.sh
-          bash apps/migrations/scenario-identity-downgrade-v2/build.sh
+          cargo run -q -p cargo-mero -- mero build --manifest-path apps/migrations/scenario-identity-downgrade-v1/Cargo.toml
+          cargo run -q -p cargo-mero -- mero build --manifest-path apps/migrations/scenario-identity-downgrade-v2/Cargo.toml
 
       - name: calimero-abi diff must flag the identity downgrade
         run: |
@@ -229,7 +231,9 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: app-migration-wasm-fixtures
-          path: apps/migrations
+          # No path: the artifact stores repo-root-relative paths
+          # (apps/migrations/**/res/*.wasm and dist/*.mpk), so restore at the
+          # workspace root to put both back where the workflows expect them.
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
