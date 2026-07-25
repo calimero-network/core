@@ -210,6 +210,10 @@ enum KeyCommand {
         /// Output path for the key file
         #[arg(short, long)]
         output: PathBuf,
+
+        /// Replace an existing key file (the old key becomes unrecoverable)
+        #[arg(long)]
+        force: bool,
     },
     /// Derive the did:key signerId from a key file
     DeriveSignerId {
@@ -287,7 +291,7 @@ fn dispatch_abi(cmd: AbiCommand) -> eyre::Result<()> {
 
 fn dispatch_key(cmd: KeyCommand) -> eyre::Result<()> {
     match cmd {
-        KeyCommand::Generate { output } => mero_sign::generate_key(&output),
+        KeyCommand::Generate { output, force } => mero_sign::generate_key(&output, force),
         KeyCommand::DeriveSignerId { key } => mero_sign::derive_signer_id(&key),
     }
 }

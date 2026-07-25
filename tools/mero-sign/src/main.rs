@@ -40,6 +40,10 @@ enum Commands {
         /// Output path for the key file
         #[arg(long, short)]
         output: PathBuf,
+
+        /// Replace an existing key file (the old key becomes unrecoverable)
+        #[arg(long)]
+        force: bool,
     },
 
     /// Derive the did:key signerId from a key file
@@ -64,7 +68,7 @@ fn main() -> Result<()> {
             };
             mero_sign::sign_manifest(&manifest, &signing_key)
         }
-        Commands::GenerateKey { output } => mero_sign::generate_key(&output),
+        Commands::GenerateKey { output, force } => mero_sign::generate_key(&output, force),
         Commands::DeriveSignerId { key } => mero_sign::derive_signer_id(&key),
     }
 }

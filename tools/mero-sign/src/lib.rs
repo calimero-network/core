@@ -270,8 +270,10 @@ pub fn verify_manifest(manifest: &serde_json::Value) -> Result<bool> {
     Ok(true)
 }
 
-/// Generate a new Ed25519 keypair
-pub fn generate_key(output_path: &Path) -> Result<()> {
+/// Generate a new Ed25519 keypair. Refuses to replace an existing file unless
+/// `force`: a signing key is unrecoverable, and losing one means no further
+/// updates can be published for any app already installed under its signerId.
+pub fn generate_key(output_path: &Path, force: bool) -> Result<()> {
     let mut rng = rand::thread_rng();
     let signing_key = SigningKey::generate(&mut rng);
     let verifying_key: VerifyingKey = signing_key.verifying_key();
@@ -287,8 +289,18 @@ pub fn generate_key(output_path: &Path) -> Result<()> {
     };
 
     let key_json = serde_json::to_string_pretty(&key_file)?;
-    write_private_key(output_path, &key_json)
-        .with_context(|| format!("failed to write key file: {}", output_path.display()))?;
+    write_private_key(output_path, &key_json, force).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            eyre::eyre!(
+                "{} already exists, and replacing a signing key is irreversible: apps \
+                 installed under its signerId could never be updated again. Pick another \
+                 path, or pass --force to overwrite it.",
+                output_path.display()
+            )
+        } else {
+            eyre::eyre!("failed to write key file {}: {e}", output_path.display())
+        }
+    })?;
 
     eprintln!("Generated new keypair: {}", output_path.display());
     eprintln!("  signerId: {signer_id}");
@@ -300,14 +312,17 @@ pub fn generate_key(output_path: &Path) -> Result<()> {
 /// already exists: an existing file would keep its old permissions, and
 /// `create_new` refuses to write through a pre-placed symlink. On unix the seed
 /// is owner-only (0600) from its first byte, since `.mode()` applies at creation
-/// only. Other platforms inherit the default ACL, and say so.
-fn write_private_key(path: &Path, contents: &str) -> std::io::Result<()> {
+/// only. Other platforms inherit the default ACL, and say so. Without `force`,
+/// `create_new` leaves an existing key untouched and reports `AlreadyExists`.
+fn write_private_key(path: &Path, contents: &str, force: bool) -> std::io::Result<()> {
     use std::io::Write as _;
 
-    match fs::remove_file(path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
+    if force {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
     }
 
     let mut options = fs::OpenOptions::new();
@@ -481,7 +496,7 @@ mod tests {
         let key_path = dir.path().join("test-key.json");
         let manifest_path = dir.path().join("manifest.json");
 
-        generate_key(&key_path).unwrap();
+        generate_key(&key_path, false).unwrap();
 
         let manifest = json!({
             "version": "1.0",
@@ -542,6 +557,27 @@ mod tests {
         assert!(!is_dev_key(&SigningKey::generate(&mut rng)));
     }
 
+    #[test]
+    fn generate_key_refuses_to_replace_an_existing_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("key.json");
+        generate_key(&key_path, false).unwrap();
+        let original = std::fs::read_to_string(&key_path).unwrap();
+
+        // Losing a signing key is unrecoverable, so a second generate must fail
+        // and leave the first key exactly as it was.
+        let err = generate_key(&key_path, false).unwrap_err().to_string();
+        assert!(err.contains("already exists"), "got: {err}");
+        assert!(
+            err.contains("--force"),
+            "error must name the escape hatch: {err}"
+        );
+        assert_eq!(std::fs::read_to_string(&key_path).unwrap(), original);
+
+        generate_key(&key_path, true).unwrap();
+        assert_ne!(std::fs::read_to_string(&key_path).unwrap(), original);
+    }
+
     #[cfg(unix)]
     #[test]
     fn generate_key_writes_owner_only_perms() {
@@ -550,13 +586,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let key_path = dir.path().join("key.json");
 
-        // Pre-place a world-readable file with junk: overwriting a key must both
-        // replace the content AND end at 0600, never leave the new seed under
-        // the old 0644.
+        // Pre-place a world-readable file with junk: a forced replacement must
+        // both replace the content AND end at 0600, never leave the new seed
+        // under the old 0644.
         std::fs::write(&key_path, "junk, not a key").unwrap();
         std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
 
-        generate_key(&key_path).unwrap();
+        generate_key(&key_path, true).unwrap();
 
         let mode = std::fs::metadata(&key_path).unwrap().permissions().mode();
         assert_eq!(
