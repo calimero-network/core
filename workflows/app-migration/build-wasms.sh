@@ -1,19 +1,10 @@
 #!/usr/bin/env bash
-# Build + bundle every migration-suite fixture used by the workflows in this
-# directory. Each suite is built and packaged in one `cargo mero bundle` call:
-# the tool compiles the wasm, embeds the full ABI as the `calimero_abi_v1`
-# custom section (the node reads it for the upgrade decision table and the
-# identity-downgrade gate), writes and dev-signs manifest.json, and tars the
-# `.mpk` - no separate build.sh / mero-abi embed / hand-rolled tar step.
+# Build + bundle the migration fixtures the workflows in this directory install.
 #
-# v1/v2 of a pair share their `--package`, so they install under the SAME
-# ApplicationId (hash(package, signer)) - the realistic upgrade shape, where
-# only the bytecode blob changes between versions. The distinct app versions
-# come from `--app-version`. Bundles land at dist/<suite-dir>.mpk: the package
-# id alone would collide (every migration-suite vN shares one package), so each
-# suite gets an explicit `-o` with a version-distinct filename.
-#
-# Add new suites here as later PRs introduce them.
+# Each pair shares one `--package` so both versions resolve to the same
+# ApplicationId, which is the upgrade shape under test. That also means the
+# default dist/<package>.mpk path would collide, so each suite passes its own
+# `-o`.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

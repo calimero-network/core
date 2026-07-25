@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
-# Fail if any app wasm is missing the `calimero_abi_v1` custom section - the
-# embedded full ABI the node reads for the xcall gate and the migration /
-# identity-downgrade decisions. `cargo mero build` embeds it on every build;
-# this guards against a regression that ships a wasm the node cannot introspect.
+# Fail if an app wasm lacks the `calimero_abi_v1` section, which the node needs
+# to read an app's ABI. `cargo mero build` embeds it on every build.
 #
-# Usage: check-embedded-abi.sh [wasm ...]
-# With no args, checks every apps/**/res/*.wasm produced by a build.
+# Usage: check-embedded-abi.sh [wasm ...]   (default: every apps/**/res/*.wasm)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

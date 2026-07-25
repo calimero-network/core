@@ -1,12 +1,9 @@
 #!/bin/bash
 
-# Build every in-repo app through `cargo mero build` (compile -> wasm-opt ->
-# embed the full ABI as the wasm `calimero_abi_v1` section), then bundle the
-# ones that ship an installable `.mpk`. Replaces the per-app build.sh /
-# build-bundle.sh scripts.
+# Build every in-repo app through `cargo mero build`, then bundle the ones that
+# ship an installable `.mpk`.
 set -ex
 
-# Apps built to a wasm artifact (res/<name>.wasm + embedded ABI).
 APPS=(
     "apps/abi_conformance/Cargo.toml"
     "apps/blobs/Cargo.toml"
@@ -39,8 +36,7 @@ done
 # Apps that also ship an installable, signed .mpk bundle.
 "$CARGO_MERO" mero bundle --dev --manifest-path apps/kv-store/Cargo.toml
 
-# nested-crdt-test returns a tuple, which the ABI emitter cannot express, so it
-# cannot go through `cargo mero build`. Compile it here anyway to keep it from
-# rotting; the artifact stays in target/ and never reaches a res/ directory, so
-# the embedded-ABI guard's "everything in res/ carries an ABI" rule still holds.
+# nested-crdt-test returns a tuple the ABI emitter cannot express, so it cannot
+# go through `cargo mero build`. Its artifact stays in target/, never res/, so
+# the embedded-ABI guard is unaffected.
 cargo build -q -p nested-crdt-test --target wasm32-unknown-unknown --profile app-release
