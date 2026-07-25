@@ -129,9 +129,13 @@ fn resolve_targets(
     Ok(vec![target_from_package(package)?])
 }
 
-/// Which services a CLI `build` compiles: `-p` picks one, a root (or absent)
-/// `--manifest-path` builds all, one at a member builds that member, and
-/// anything else errors rather than silently building all.
+/// Which crates a CLI `build` compiles: a root (or absent) `--manifest-path`
+/// builds every declared service, one at a member builds that member, and a
+/// path matching no package errors rather than silently building all.
+///
+/// `-p` names a crate directly and is not restricted to the services table, so
+/// it means the same thing whether or not the workspace declares services. A
+/// crate that is not an app then fails on its missing wasm artifact.
 fn select_service_builds(
     services: &[String],
     explicit_package: Option<&str>,
@@ -148,8 +152,8 @@ fn select_service_builds(
         return Ok(vec![member.to_owned()]);
     }
     bail!(
-        "--manifest-path matches no declared service crate: pass `-p <crate>`, point \
-         --manifest-path at a service member, or at the workspace root to build all services"
+        "--manifest-path matches no package in this workspace: point it at a member \
+         crate, or at the workspace root to build all declared services, or pass `-p <crate>`"
     )
 }
 
@@ -399,6 +403,17 @@ mod tests {
         assert_eq!(
             select_service_builds(&services(), Some("api"), Some("worker"), false).unwrap(),
             vec!["api".to_string()]
+        );
+    }
+
+    #[test]
+    fn selection_allows_a_package_outside_the_services_table() {
+        // `-p` means the named crate, in every workspace shape; restricting it to
+        // declared services here would make the same flag behave differently in a
+        // multi-service workspace than in a single-crate one.
+        assert_eq!(
+            select_service_builds(&services(), Some("tooling-helper"), None, false).unwrap(),
+            vec!["tooling-helper".to_string()]
         );
     }
 
