@@ -22,4 +22,6 @@ serde_json.workspace = true
 independent = true
 
 [package.metadata.calimero]
+# Shared across v1-v5 on purpose: ApplicationId = hash(package, signer),
+# so the id must stay stable for the upgrade ladder to resolve.
 package = "com.calimero.migration-suite"
