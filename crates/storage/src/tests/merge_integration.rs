@@ -4034,3 +4034,59 @@ fn js_root_local_write_falls_back_to_lww_when_unregistered() {
         "later updated_at must win under JsRoot local LWW"
     );
 }
+
+/// The `JsRoot` marker must survive a plain hash update, not just creation. A
+/// root first stored opaque (`crdt_type: None`) — exactly what a joiner gets
+/// when it materialises the root via sync before ever writing locally — must be
+/// upgraded to `JsRoot` by a later local write that stamps the marker. Before
+/// the fix, `update_hash_for` dropped the incoming `crdt_type`, so the root
+/// stayed opaque forever, was sent to peers with the `Opaque` wire tag, never
+/// deferred to the guest `__calimero_merge_root_state`, and concurrent writers
+/// never converged.
+#[test]
+#[serial]
+fn js_root_update_reasserts_crdt_type_marker() {
+    use crate::address::Id;
+    use crate::collections::crdt_meta::CrdtType;
+    use crate::entities::Metadata;
+    use crate::index::Index;
+    use crate::interface::Interface;
+    use crate::store::MockedStorage;
+
+    type NodeStorage = MockedStorage<993>;
+
+    env::reset_for_testing();
+    clear_merge_registry();
+    env::set_executor_id([11; 32]);
+
+    let root = Id::root();
+
+    // Root first created OPAQUE (crdt_type: None).
+    Interface::<NodeStorage>::save_raw(root, b"v1".to_vec(), Metadata::new(100, 100))
+        .expect("initial opaque root write must succeed");
+    assert_eq!(
+        <Index<NodeStorage>>::get_metadata(root)
+            .expect("metadata read")
+            .and_then(|m| m.crdt_type),
+        None,
+        "root must start opaque"
+    );
+
+    // A later local write stamps the JsRoot marker (as `persist_root_state`
+    // does once the guest called `register_js_sdk_root_merge`).
+    Interface::<NodeStorage>::save_raw(
+        root,
+        b"v2".to_vec(),
+        Metadata::with_crdt_type(100, 200, CrdtType::js_root()),
+    )
+    .expect("JsRoot root update must succeed");
+
+    let stored = <Index<NodeStorage>>::get_metadata(root)
+        .expect("metadata read")
+        .expect("root metadata present");
+    assert!(
+        stored.crdt_type.as_ref().is_some_and(CrdtType::is_js_root),
+        "a local write must re-assert the JsRoot marker on the stored root, got {:?}",
+        stored.crdt_type
+    );
+}

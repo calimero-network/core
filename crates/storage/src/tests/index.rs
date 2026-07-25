@@ -1111,7 +1111,7 @@ mod hashing {
         // Change greatgrandchild's own_hash. `update_hash_for` rewrites
         // the stored own/full hashes and walks ancestors itself, so no
         // separate `recalculate_ancestor_hashes_for` call is needed.
-        <Index<MainStorage>>::update_hash_for(greatgrandchild_id, [9_u8; 32], None).unwrap();
+        <Index<MainStorage>>::update_hash_for(greatgrandchild_id, [9_u8; 32], None, None).unwrap();
 
         let updated_root_index_with_greatgrandchild =
             <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
@@ -1142,7 +1142,7 @@ mod hashing {
         );
 
         // Same pattern — update_hash_for handles the ancestor walk itself.
-        <Index<MainStorage>>::update_hash_for(greatgrandchild_id, [99_u8; 32], None).unwrap();
+        <Index<MainStorage>>::update_hash_for(greatgrandchild_id, [99_u8; 32], None, None).unwrap();
 
         let updated_root_index_with_greatgrandchild =
             <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
@@ -1203,7 +1203,7 @@ mod hashing {
         assert_eq!(root_index.id, root_id);
         assert_eq!(root_index.full_hash, initial_full_hash);
 
-        assert!(<Index<MainStorage>>::update_hash_for(root_id, root_hash2, None).is_ok());
+        assert!(<Index<MainStorage>>::update_hash_for(root_id, root_hash2, None, None).is_ok());
         let updated_root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         assert_eq!(updated_root_index.id, root_id);
         assert_eq!(updated_root_index.full_hash, root_full_hash);
@@ -1226,7 +1226,7 @@ mod hashing {
         assert_eq!(root_index.id, root_id);
         assert_eq!(root_index.own_hash, root_hash1);
 
-        assert!(<Index<MainStorage>>::update_hash_for(root_id, root_hash2, None).is_ok());
+        assert!(<Index<MainStorage>>::update_hash_for(root_id, root_hash2, None, None).is_ok());
         let updated_root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         assert_eq!(updated_root_index.id, root_id);
         assert_eq!(updated_root_index.own_hash, root_hash2);

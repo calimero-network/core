@@ -2977,7 +2977,18 @@ impl<S: StorageAdaptor> Interface<S> {
         // *does* propagate index-advertised entries through every
         // production caller, so a "hash exists, bytes don't"
         // inconsistency surfaces immediately as a wrong-content read.
-        let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
+        // (Re)assert the root's merge-dispatch tag on every local write. Unlike
+        // creation (`add_root`), a plain hash update never persisted `crdt_type`,
+        // so a root first stored opaque could never be upgraded to `JsRoot` by a
+        // later `persist_root_state` — the write stamped the marker on `metadata`
+        // but it was dropped here. Non-root entities pass `None` (leave unchanged).
+        let root_crdt_type = if crate::collections::is_app_root_entry(id) {
+            metadata.crdt_type.clone()
+        } else {
+            None
+        };
+        let full_hash =
+            <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at), root_crdt_type)?;
 
         // A value write that causally follows an existing tombstone must lift it,
         // or `find_by_id` would keep hiding the bytes we just wrote (the entity's
@@ -3138,7 +3149,17 @@ impl<S: StorageAdaptor> Interface<S> {
         // doesn't serialize concurrent writes anyway — re-checking
         // would just narrow the race window without closing it.
         let _ignored = S::storage_write(Key::Entry(id), merged);
-        let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
+        // Preserve the root's merge-dispatch tag across a sync-applied write so a
+        // `JsRoot` root materialised via sync keeps routing to the guest merge
+        // (see the note in `Index::update_hash_for`). Only the app root carries a
+        // meaningful tag on this path; non-root entities pass `None`.
+        let root_crdt_type = if crate::collections::is_app_root_entry(id) {
+            metadata.crdt_type.clone()
+        } else {
+            None
+        };
+        let full_hash =
+            <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at), root_crdt_type)?;
         Ok(full_hash)
     }
 
