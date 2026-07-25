@@ -1145,7 +1145,7 @@ impl VMHostFunctions<'_> {
                 logic.context.executor_public_key,
             );
 
-            let maybe_bytes = with_runtime_env(env, || Interface::<MainStorage>::read_root_entry());
+            let maybe_bytes = with_runtime_env(env, Interface::<MainStorage>::read_root_entry);
 
             if let Some(bytes) = maybe_bytes {
                 let value_len = bytes.len();
