@@ -1,7 +1,7 @@
 //! Semantic diff of two `state-schema.json` versions.
 //!
 //! Classifies each top-level state-field change as additive, breaking
-//! (migration required), or — the security-relevant one —
+//! (migration required), or - the security-relevant one -
 //! `UNSAFE_IDENTITY_DOWNGRADE`: an identity-gated CRDT (`AuthoredMap`,
 //! `AuthoredVector`, `SharedStorage`) replaced by a non-identity-gated type or
 //! dropped, which silently strips per-entry authorship / the writer-ACL
@@ -19,12 +19,12 @@ use calimero_wasm_abi::schema::{
 /// Classification of a single field-level change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FindingClass {
-    /// A new field that an old state can default-fill — no migration needed.
+    /// A new field that an old state can default-fill - no migration needed.
     Additive,
     /// A change that requires a migration (type change, field removed).
     Breaking,
     /// An identity-gated field downgraded to a non-identity-gated type (or
-    /// dropped) — strips authorship / writer-ACL with no error. Requires an
+    /// dropped) - strips authorship / writer-ACL with no error. Requires an
     /// explicit, reasoned opt-in.
     UnsafeIdentityDowngrade,
 }
@@ -59,7 +59,7 @@ pub struct Finding {
 /// Index record fields by name. Operates on already-validated fields from
 /// [`root_record_fields`] (no silent "missing root → zero fields" path), and
 /// errors on a duplicate field name rather than silently letting one shadow the
-/// other — a duplicate in a record is a malformed schema and could hide a change.
+/// other - a duplicate in a record is a malformed schema and could hide a change.
 fn fields_by_name<'a>(
     fields: &'a [Field],
     which: &str,
@@ -77,14 +77,14 @@ fn fields_by_name<'a>(
 /// value, if its top-level type is a CRDT collection.
 ///
 /// Identity classification reads from the same validated canonical value used for
-/// the equality comparison — there is no second alias-resolution path that could
+/// the equality comparison - there is no second alias-resolution path that could
 /// disagree with it or silently fall through on a cycle (a cyclic/dangling ref
 /// fails closed during canonicalization, before this is ever called).
 ///
 /// Scope: this inspects only the *top-level* type of a state field. A `crdt_type`
 /// lives on a `Collection`, so an inline or aliased identity-gated CRDT is caught;
 /// an identity-gated CRDT nested *inside* a `Record`/`Variant` field is NOT (the
-/// rail guards top-level state fields — nested provenance would need a recursive
+/// rail guards top-level state fields - nested provenance would need a recursive
 /// walk, out of scope here).
 ///
 /// The `.ok()` cannot fail open on an *unknown* CRDT type: `value` is a re-serialized
@@ -92,7 +92,7 @@ fn fields_by_name<'a>(
 /// unrecognised type was already rejected at manifest load (untagged `TypeRef` matches
 /// no variant → parse error → fail-closed before any diff runs; see
 /// `unknown_crdt_type_fails_closed_at_manifest_load`). Here `None` therefore means only
-/// "no `crdt_type` key" — a genuinely plain (non-CRDT) field.
+/// "no `crdt_type` key" - a genuinely plain (non-CRDT) field.
 fn canonical_crdt(value: &serde_json::Value) -> Option<CrdtCollectionType> {
     serde_json::from_value::<CrdtCollectionType>(value.get("crdt_type")?.clone()).ok()
 }
@@ -111,7 +111,7 @@ fn crdt_label(value: &serde_json::Value) -> String {
 /// whose `$ref` name is stable while the referenced `types` entry changes would
 /// look unchanged and hide a downgrade. Cycle-guarded.
 ///
-/// Serialization errors are propagated, never swallowed — in this security-critical
+/// Serialization errors are propagated, never swallowed - in this security-critical
 /// comparison a silent `Null` substitution could make two distinct types compare
 /// equal and miss a downgrade. (For the plain `TypeRef`/`TypeDef` types this never
 /// fails in practice; failing loud is the fail-closed stance regardless.)
@@ -124,7 +124,7 @@ fn canonical(ty: &TypeRef, manifest: &Manifest) -> eyre::Result<serde_json::Valu
 /// `path` is the set of `$ref` names on the *current* DFS expansion path (a stack,
 /// not a global visited set): a name is added before recursing into its definition
 /// and removed after. So a type reachable via several distinct paths (a DAG) is
-/// expanded once per path — correct — while a true cycle (a name reappearing on its
+/// expanded once per path - correct - while a true cycle (a name reappearing on its
 /// own path) is detected and fails closed.
 fn expand_refs(
     value: serde_json::Value,
@@ -144,7 +144,7 @@ fn expand_refs(
                 // two distinct cyclic schemas and mask a change. O(1) check against
                 // the current DFS path.
                 if !path.insert(name.clone()) {
-                    eyre::bail!("$ref '{name}' is part of a reference cycle — cannot canonicalize");
+                    eyre::bail!("$ref '{name}' is part of a reference cycle - cannot canonicalize");
                 }
                 let Some(def) = manifest.types.get(&name) else {
                     // Fail-closed: a `$ref` to a type absent from `types` is a
@@ -154,7 +154,7 @@ fn expand_refs(
                 };
                 // For an alias, expand its *target* (not the `{kind:alias, target}`
                 // wrapper), so an aliased type canonicalizes identically to the same
-                // type written inline — otherwise inline-vs-alias falsely diff as
+                // type written inline - otherwise inline-vs-alias falsely diff as
                 // BREAKING. Structural defs (record/variant/bytes) expand as-is.
                 let def_value = match def {
                     TypeDef::Alias { target } => serde_json::to_value(target),
@@ -239,7 +239,7 @@ pub fn diff_checked(current: &Manifest, baseline: &Manifest) -> eyre::Result<Vec
                         field: (*name).to_owned(),
                         class: FindingClass::UnsafeIdentityDowngrade,
                         detail: format!(
-                            "identity-gated field '{name}' ({}) removed — strips authorship / writer-ACL network-wide",
+                            "identity-gated field '{name}' ({}) removed - strips authorship / writer-ACL network-wide",
                             crdt_label(base_c)
                         ),
                     });
@@ -247,7 +247,7 @@ pub fn diff_checked(current: &Manifest, baseline: &Manifest) -> eyre::Result<Vec
                     findings.push(Finding {
                         field: (*name).to_owned(),
                         class: FindingClass::Breaking,
-                        detail: format!("field '{name}' removed — migration required"),
+                        detail: format!("field '{name}' removed - migration required"),
                     });
                 }
             }
@@ -258,7 +258,7 @@ pub fn diff_checked(current: &Manifest, baseline: &Manifest) -> eyre::Result<Vec
                             field: (*name).to_owned(),
                             class: FindingClass::UnsafeIdentityDowngrade,
                             detail: format!(
-                                "field '{name}' {} → {} — strips authorship / writer-ACL network-wide",
+                                "field '{name}' {} → {} - strips authorship / writer-ACL network-wide",
                                 crdt_label(base_c),
                                 crdt_label(cur_c)
                             ),
@@ -267,7 +267,7 @@ pub fn diff_checked(current: &Manifest, baseline: &Manifest) -> eyre::Result<Vec
                         findings.push(Finding {
                             field: (*name).to_owned(),
                             class: FindingClass::Breaking,
-                            detail: format!("field '{name}' type changed — migration required"),
+                            detail: format!("field '{name}' type changed - migration required"),
                         });
                     }
                 }
@@ -314,7 +314,7 @@ fn load_manifest(path: &Path) -> eyre::Result<Manifest> {
 /// Diff two `state-schema.json` files and print findings. Returns `true` if the
 /// caller should fail (a breaking/unsafe change was found and `exit_zero` is
 /// false). The process exit is left to `main` so I/O flushes and any cleanup run
-/// normally — `run_diff` never calls `std::process::exit`.
+/// normally - `run_diff` never calls `std::process::exit`.
 pub fn run_diff(current: &Path, baseline: &Path, exit_zero: bool) -> eyre::Result<bool> {
     let current = load_manifest(current)?;
     let baseline = load_manifest(baseline)?;
@@ -429,7 +429,7 @@ mod tests {
     fn alias_to_authored_map_downgrade_is_unsafe() {
         // The field is a `$ref` to a newtype alias; the alias target downgrades from
         // AuthoredMap to UnorderedMap. The `$ref` name is stable, so naive top-level
-        // equality would miss it — alias resolution must catch it as an unsafe downgrade.
+        // equality would miss it - alias resolution must catch it as an unsafe downgrade.
         let baseline = manifest_raw(
             r#"{"schema_version":"wasm-abi/1","types":{
                 "Wiki":{"kind":"alias","target":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}},
@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn adding_an_identity_gated_field_is_additive() {
-        // A NEW identity-gated field (absent in baseline) is additive — no existing
+        // A NEW identity-gated field (absent in baseline) is additive - no existing
         // provenance is stripped, so it must not be a false UnsafeIdentityDowngrade.
         let baseline = manifest(&format!("[{COUNTER_U64}]"));
         let current = manifest(&format!("[{COUNTER_U64},{AUTHORED_MAP}]"));
@@ -503,7 +503,7 @@ mod tests {
     #[test]
     fn authored_map_to_authored_vector_is_breaking_not_downgrade() {
         // Both sides stay identity-gated (AuthoredMap → AuthoredVector), so this is a
-        // normal breaking change — NOT an unsafe identity downgrade (no provenance lost).
+        // normal breaking change - NOT an unsafe identity downgrade (no provenance lost).
         let base = r#"{"name":"x","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}}"#;
         let cur = r#"{"name":"x","type":{"kind":"list","items":{"kind":"string"},"crdt_type":"authored_vector"}}"#;
         let findings = diff_checked(
@@ -518,7 +518,7 @@ mod tests {
     #[test]
     fn inline_type_equals_alias_of_same_type_no_finding() {
         // An inline AuthoredMap and a `$ref` to a newtype alias of the *same* map are
-        // semantically identical, so the diff must report no change — the alias
+        // semantically identical, so the diff must report no change - the alias
         // wrapper must not leak into the canonical form.
         let baseline = manifest_raw(
             r#"{"schema_version":"wasm-abi/1","types":{
@@ -615,7 +615,7 @@ mod tests {
         // `Option<CrdtCollectionType>` on an untagged `TypeRef`, so an unrecognised
         // value matches no variant and the whole manifest is rejected. An unknown
         // type therefore never reaches `canonical_crdt`/`is_identity_gated` to be
-        // silently mis-graded as plain — it errors out before any diff runs.
+        // silently mis-graded as plain - it errors out before any diff runs.
         let raw = r#"{"schema_version":"wasm-abi/1","types":{
             "Root":{"kind":"record","fields":[{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_set_v2_future"}}]}
         },"methods":[],"events":[],"state_root":"Root"}"#;
@@ -628,7 +628,7 @@ mod tests {
     #[test]
     fn ref_with_extra_sibling_keys_preserves_both() {
         // A typed `TypeRef::Ref` serializes to exactly `{"$ref": name}`, so the current
-        // schema never emits a `$ref` with sibling keys — but if a future format did,
+        // schema never emits a `$ref` with sibling keys - but if a future format did,
         // `expand_refs` must keep BOTH the resolved target (under `$resolved`) and the
         // siblings, never silently dropping a difference. Exercises the `len() > 1`
         // branch directly (unreachable from a parsed manifest today, fail-closed by design).

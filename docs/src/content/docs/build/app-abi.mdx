@@ -119,14 +119,14 @@ artifacts are assembled.
 
 A frontend, client, or `meroctl` reads the ABI to learn the callable surface
 without any out-of-band knowledge of your app. The embedded section can be pulled
-straight out of a compiled module with the `calimero-abi` tool:
+straight out of a compiled module with `cargo mero abi`:
 
 ```bash
 # Extract the full ABI manifest from a compiled app
-calimero-abi extract app.wasm --output abi.json
+cargo mero abi extract app.wasm --output abi.json
 
 # Or inspect just the state schema embedded in the bytecode
-calimero-abi state app.wasm
+cargo mero abi state app.wasm
 ```
 
 From there a client walks `methods` to build typed requests — picking the method
@@ -142,7 +142,7 @@ version is installed, the **no-silent-downgrade rail** compares the old and new
 embedded schemas to catch unsafe changes — for example replacing an
 identity-gated collection (which carries per-entry authorship or a writer ACL)
 with a plain type that would silently strip that provenance. The same check runs
-in CI (`calimero-abi diff`) and at the node's upgrade gate, both reading the
+in CI (`cargo mero abi diff`) and at the node's upgrade gate, both reading the
 embedded ABI. The migration edges declared in the manifest are what the gate
 replays to carry state forward.
 

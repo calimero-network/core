@@ -9,9 +9,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 The [`apps/`](https://github.com/calimero-network/core/tree/master/apps)
 directory is the best ground truth for writing a Calimero app: every example is
-a real crate that builds to WASM, ships a `build.sh`, and has a native
-[`TestHost`](/build/quickstart/) test suite under `tests/` or in a `#[cfg(test)]`
-module. This page walks the ones worth reading first.
+a real crate that builds to WASM with [`cargo mero build`](/build/cargo-mero/)
+and has a native [`TestHost`](/build/quickstart/) test suite under `tests/` or in
+a `#[cfg(test)]` module. This page walks the ones worth reading first.
 
 ## How to read these
 
@@ -115,9 +115,8 @@ writes to *different* keys all survive a merge.
 | `entries()` | Collect all pairs into a `BTreeMap<String, String>`. |
 | `len()` / `remove(key)` / `clear()` | Count, delete one, delete all (`Cleared`). |
 
-**Build & run.** From the app directory, `./build.sh` runs the load-bearing
-line `cargo build --target wasm32-unknown-unknown --profile app-release` and
-drops `kv_store.wasm` into `res/`. Then follow the
+**Build & run.** From the app directory, `cargo mero build` drops
+`kv_store.wasm` into `res/`. Then follow the
 [Quickstart](/build/quickstart/) to install and call it:
 
 ```sh
@@ -161,7 +160,7 @@ pub struct KvStore {
   bookkeeping. The event→handler routing happens on a real node.
 </Aside>
 
-**Build & run.** `./build.sh` produces `res/kv_store_with_handlers.wasm`;
+**Build & run.** `cargo mero build` produces `res/kv_store_with_handlers.wasm`;
 install and call it as in the [Quickstart](/build/quickstart/).
 
 ## collaborative-editor
@@ -198,7 +197,7 @@ into root state causes data loss under concurrent merges. `metadata` holds
 | `get_text()` / `get_length()` / `is_empty()` | Read the rendered document. |
 | `get_stats()` | Formatted title / length / edit-count / owner summary. |
 
-**Build & run.** `./build.sh` produces `res/collaborative_editor.wasm`. The
+**Build & run.** `cargo mero build` produces `res/collaborative_editor.wasm`. The
 collaborative payoff appears with two nodes editing the same context — install
 on each, then interleave `insert_text` / `delete_text` calls and read
 `get_text()` on both; see [Quickstart](/build/quickstart/) for the install flow.
@@ -242,7 +241,7 @@ reason not to.
 | `record_win(team_id)` / `record_loss` / `record_draw` | `entry(team_id).or_default()`, increment the matching counter, return the new total, emit an event. |
 | `get_wins(team_id)` / `get_losses` / `get_draws` | Read a team's counter; errors if the team is unknown. |
 
-**Build & run.** `./build.sh` produces `res/team_metrics_macro.wasm` (or
+**Build & run.** `cargo mero build` produces `res/team_metrics_macro.wasm` (or
 `team_metrics_custom.wasm`); install and call per the
 [Quickstart](/build/quickstart/).
 
@@ -286,8 +285,8 @@ would have forced every field into its own CRDT wrapper. `blob_id` is the SDK's
   [Blobs](/build/guides/blobs/) for how the blob store and announcement work.
 </Aside>
 
-**Build & run.** `./build.sh` produces `res/blobs.wasm`; install and call per
-the [Quickstart](/build/quickstart/).
+**Build & run.** `cargo mero build` produces `res/blobs.wasm`; install and call
+per the [Quickstart](/build/quickstart/).
 
 ## xcall-example
 
@@ -319,15 +318,14 @@ entry point — an xcall targeting it is denied by the node before it runs.
 | `secret(from_context)` | A normal method (not xcall-able) that bumps `secret_counter`. |
 | `get_counter()` / `get_secret_counter()` | Read each counter. |
 
-<Aside type="caution" title="ABI embedding is required for xcall gating">
-  This app's `build.sh` has an extra step the others don't: after `wasm-opt` it
-  runs `mero-abi embed` to write the ABI (with each method's `xcall_callable`
-  flag) into a custom WASM section, so the node can enforce the entry-point gate.
-  If you build an xcall app by hand, don't skip that step. See
+<Aside type="note" title="ABI embedding is required for xcall gating">
+  The node reads each method's `xcall_callable` flag from the ABI embedded in a
+  custom WASM section to enforce the entry-point gate. `cargo mero build` embeds
+  that ABI on every build, so xcall gating works with no extra step. See
   [Cross-context calls](/build/guides/cross-context/).
 </Aside>
 
-**Build & run.** `./build.sh` produces `res/xcall_example.wasm` with the
+**Build & run.** `cargo mero build` produces `res/xcall_example.wasm` with the
 embedded ABI; install it into two contexts, then `ping` one toward the other and
 watch `get_counter()` move on the target. See [Quickstart](/build/quickstart/)
 for the install flow.

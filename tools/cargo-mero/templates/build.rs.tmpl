@@ -1,0 +1,30 @@
+use std::fs;
+use std::path::Path;
+
+use calimero_wasm_abi::emitter::emit_manifest;
+
+// Emits res/abi.json + res/state-schema.json from the annotated source.
+// `cargo mero build` embeds the ABI into the wasm from there.
+fn main() {
+    println!("cargo:rerun-if-changed=src/lib.rs");
+
+    let src = fs::read_to_string(Path::new("src/lib.rs")).expect("failed to read src/lib.rs");
+    let manifest = emit_manifest(&src).expect("failed to emit the ABI manifest");
+
+    let res_dir = Path::new("res");
+    fs::create_dir_all(res_dir).expect("failed to create res/");
+    fs::write(
+        res_dir.join("abi.json"),
+        serde_json::to_string_pretty(&manifest).expect("failed to serialize the manifest"),
+    )
+    .expect("failed to write res/abi.json");
+
+    if let Ok(mut state_schema) = manifest.extract_state_schema() {
+        state_schema.schema_version = "wasm-abi/1".to_owned();
+        fs::write(
+            res_dir.join("state-schema.json"),
+            serde_json::to_string_pretty(&state_schema).expect("failed to serialize the schema"),
+        )
+        .expect("failed to write res/state-schema.json");
+    }
+}

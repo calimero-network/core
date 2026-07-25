@@ -1,292 +1,117 @@
 # mero-sign
 
-CLI tool for signing Calimero application bundle manifests with Ed25519 keys.
+Ed25519 signing for Calimero application bundle manifests.
 
 ## About
 
-`mero-sign` is a cryptographic signing tool used in the Calimero application build pipeline. It signs bundle manifests with Ed25519 keys and generates `.mpk` (Mero PacKage) files that contain your application's WASM binary, ABI, and cryptographically signed metadata.
+`mero-sign` is the signing library and CLI behind `cargo mero key` and `cargo mero sign`.
+It does three things:
 
-**Purpose:**
-- Sign application manifests for verification and provenance
-- Generate Ed25519 keypairs for signing
-- Create `.mpk` bundle files ready for deployment
-- Derive DID (Decentralized Identifier) keys in `did:key` format
+- **Sign** a bundle `manifest.json` in place - adds `signerId` and a `signature` over the canonical (RFC 8785 JCS) manifest bytes.
+- **Generate** an Ed25519 keypair for production signing.
+- **Derive** the `did:key` signerId from a key file.
 
-**Why signing?** Signed manifests ensure application integrity and provide a chain of trust when deploying to Calimero nodes. The signature verifies that the application bundle hasn't been tampered with and identifies the publisher.
+`mero-sign` does **not** build wasm or package bundles.
+Packaging the signed manifest and its artifacts into a `.mpk` archive is done by `cargo mero bundle`, which calls this crate to sign the manifest as one step of the pipeline.
+See [SIGNING.md](../cargo-mero/SIGNING.md) for the full signing model (dev vs production keys, `MERO_SIGN_KEY`, and how package + signer derive the `ApplicationId`).
 
 ## Installation
 
-```bash
-# Run from workspace (no installation needed)
-$: cargo run -p mero-sign -- <COMMAND>
-
-# Install globally (accessible system-wide)
-$: cd tools/mero-sign
-$: cargo install --path .
-> ...
->     Installed package `mero-sign v0.1.0 (/path/to/core/tools/mero-sign)` (executable `mero-sign`)
-# Or from workspace root:
-$: cargo install --path tools/mero-sign
-> ...
-> Installed package `mero-sign v0.1.0 (/path/to/core/tools/mero-sign)` (executable `mero-sign`)
-
-# Verify installation
-$: mero-sign --version
-> mero-sign 0.1.0
-```
-
-After global installation, `mero-sign` is available as a system command from any directory.
-
-## Bundle Structure
-
-A Calimero application bundle (`.mpk` file) contains:
-
-```
-bundle-temp/
-├── app.wasm          # Compiled WASM binary
-├── abi.json          # Application Binary Interface
-├── state-schema.json # State structure definition (optional)
-└── manifest.json     # Signed metadata
-```
-
-After signing, these files are packaged into a single `.mpk` file (e.g., `kv-store-1.0.0.mpk`).
-
-## Workflow
-
-### 1. Generate a Signing Key (One-time)
+Most users get this through the `cargo mero` CLI and never install it directly.
+To build the standalone binary:
 
 ```bash
-# Generate new Ed25519 keypair
-$: mero-sign generate-key --output my-signing-key.json
-> Generated new keypair: my-signing-key.json
->   signerId: did:key:z6Mkrb81NKkv7Mw4dZAWA5PTuwBhbq9u9eCPuby3icBUdirg
+# Run from the workspace without installing
+cargo run -p mero-sign -- <COMMAND>
+
+# Or install it globally
+cargo install --path tools/mero-sign
+mero-sign --version
 ```
-
-**Security:** Store your signing key securely. Do NOT commit it to version control. Add `*.json` key files to `.gitignore`.
-
-### 2. Build Your WASM Application
-
-```bash
-# Example: kv-store app
-$: cd apps/kv-store
-$: ./build.sh
-> ...
-> Compiling proc-macro2 v1.0.102
-> ...
->  Finished `app-release` profile [optimized] target(s) in 19.47s
-```
-
-### 3. Sign the Manifest and Create Bundle
-
-```bash
-# Sign manifest in-place and package into .mpk.
-# --dev uses the well-known development key (no real key file needed).
-$: mero-sign sign res/bundle-temp/manifest.json \
-  --dev
-> ⚠  Signed with DEVELOPMENT key. This bundle cannot be published to the registry.
->    signerId: did:key:z6Mkm9KCceaDHiwAuYM7y3HteaCHSEkPzACySDkqkXTK6nWd
->  Bundle created: res/kv-store-1.0.0.mpk
-```
-
-### 4. Deploy Bundle (using meroctl)
-
-```bash
-# Install application
-$: meroctl --node node1 app install \
-  --path res/kv-store-1.0.0.mpk \
-  --package com.calimero.kv-store \
-  --version 1.0.0
-> ╭───────────────────────────────────────────────────────────────────────────────────╮
-> │ Application Installed                                                             │
-> ╞═══════════════════════════════════════════════════════════════════════════════════╡
-> │ Successfully installed application '8CtFJJ8GohJLhatFZwfHN8ccyWuUcCTHnDHeZiA2xqHn' │
-> ╰───────────────────────────────────────────────────────────────────────────────────╯
-# Create context
-$: meroctl --node node1 context create --application-id <app_id>
-
-$: meroctl --node node1 context create --application-id 8CtFJJ8GohJLhatFZwfHN8ccyWuUcCTHnDHeZiA2xqHn
-> +------------------------------+
-> | Context Created              |
-> +==============================+
-> | Successfully created context |
-> +------------------------------+
-
-```
-
-See [meroctl README](../../crates/meroctl/README.md) for deployment details.
 
 ## Commands
 
-### `sign` - Sign manifest and create MPK
+### `sign` - sign a manifest in place
 
-Signs a `manifest.json` file in-place and packages the bundle directory into an `.mpk` file.
+Adds `signerId` and `signature` fields to an existing `manifest.json` (as produced by `cargo mero bundle`'s staging step).
 
 ```bash
-# With your own key file:
-$: mero-sign sign <MANIFEST_PATH> --key <KEY_FILE>
+# With a production key file:
+mero-sign sign <MANIFEST_PATH> --key <KEY_FILE>
 
 # Or with the well-known development key (no key file required):
-$: mero-sign sign <MANIFEST_PATH> --dev
-
-# Example:
-$: mero-sign sign apps/kv-store/res/bundle-temp/manifest.json \
-  --dev
-> ⚠  Signed with DEVELOPMENT key. This bundle cannot be published to the registry.
->    signerId: did:key:z6Mkm9KCceaDHiwAuYM7y3HteaCHSEkPzACySDkqkXTK6nWd
->  Bundle created: res/kv-store-1.0.0.mpk
+mero-sign sign <MANIFEST_PATH> --dev
 ```
 
-**What it does:**
-1. Reads the manifest file
-2. Creates a canonical signature using Ed25519
-3. Adds `signature` and `signerId` fields to manifest
-4. Writes signed manifest back to disk
-5. Packages `bundle-temp/` directory into `.mpk` file
+```
+⚠  Signed with DEVELOPMENT key. This bundle cannot be published to the registry.
+   signerId: did:key:z6MknF3p5L5FDHJQ7FREUapuX4Wmp4MtF6WrHYaXS2B3eZQd
+```
 
-**Arguments:**
-- `<MANIFEST_PATH>`: Path to `manifest.json` file
-- `--key <PATH>`: Path to Ed25519 private key (JSON format)
-- `--dev`: Sign with the well-known development key instead of `--key`. This
-  key is public and deterministic (like Android's `debug.keystore`), so it
-  requires no key file and bundles signed with it cannot be published to the
-  registry. Use this for local development and CI.
+What it does:
 
-### `generate-key` - Generate Ed25519 keypair
+1. Reads the manifest file.
+2. Canonicalizes the manifest (RFC 8785 JCS) and computes the SHA-256 signing payload.
+3. Signs the payload with Ed25519.
+4. Writes `signerId` and `signature` back into the manifest on disk.
 
-Creates a new Ed25519 keypair for signing bundles.
+It does not create or modify any bundle archive.
+
+### `generate-key` - create an Ed25519 keypair
 
 ```bash
-$: mero-sign generate-key --output <OUTPUT_PATH>
-
-# Example:
-$: mero-sign generate-key --output my-key.json
-> Generated new keypair: my-key.json
->   signerId: did:key:z6MkuWd7fnCXYaiLNTwf7v9kdyLJjUsRvMAcH7VwvtGNY38N
+mero-sign generate-key --output my-key.json
 ```
 
-**Output format** (JSON):
-```json
-{
-  "privateKey": "base64-encoded-private-key",
-  "publicKey": "base64-encoded-public-key"
-}
+```
+Generated new keypair: my-key.json
+  signerId: did:key:z6MkrV2imerTHzYtPyb2groFVNJSokGX7rpxnuJj8DSEQDnH
 ```
 
-**Security:** The generated key should be kept secret. Use it only for signing your own applications.
+The output is a JSON key file holding the base64url-encoded Ed25519 private-key seed, its public key, and the derived signerId.
+Keep it secret and never commit it (see the security notes below).
 
-### `derive-signer-id` - Get DID from key
-
-Derives the `did:key` identifier from an Ed25519 keypair file.
+### `derive-signer-id` - read the signerId from a key file
 
 ```bash
-$: mero-sign derive-signer-id --key <KEY_FILE>
-
-# Example:
-$: mero-sign derive-signer-id --key my-key.json
-> Output: did:key:z6Mkrb81NKkv7Mw4dZAWA5PTuwBhbq9u9eCPuby3icBUdirg
+mero-sign derive-signer-id --key my-key.json
 ```
 
-Use this to get your signer ID before signing, or to verify which key signed a manifest.
+```
+did:key:z6MkrV2imerTHzYtPyb2groFVNJSokGX7rpxnuJj8DSEQDnH
+```
 
-## Complete Example: Build and Sign kv-store
+Use this to check which signer a key belongs to before signing.
+
+## Where signing fits
+
+The normal path is not to call `mero-sign` by hand.
+`cargo mero bundle` builds the app, stages the wasm/abi, writes `manifest.json`, signs it (via this crate), and packages the `.mpk`:
 
 ```bash
-# 1. Build WASM binary
-$: cd apps/kv-store
-$: ./build.sh
-
-# 2. Generate ABI and bundle (typically done by build-bundle.sh)
-$: cargo run -p calimero-abi-cli -- generate \
-  --input src/lib.rs \
-  --output res/bundle-temp/abi.json
-
-# 3. Create manifest.json (example structure)
-$: cat > res/bundle-temp/manifest.json <<EOF
-{
-  "name": "kv-store",
-  "version": "1.0.0",
-  "description": "Key-value storage application",
-  "repository": "https://github.com/calimero-network/core",
-  "author": "Calimero Network"
-}
-EOF
-
-# 4. Sign and package (--dev uses the well-known development key)
-$: mero-sign sign res/bundle-temp/manifest.json \
-  --dev
-
-# Result: res/kv-store-1.0.0.mpk created
+cargo mero bundle --key my-key.json     # production
+cargo mero bundle --dev                  # local, not publishable
 ```
 
-Or simply run the provided build script:
+Reach for the `mero-sign` binary directly only to re-sign an existing `manifest.json`, or to generate and inspect keys outside a build.
 
-```bash
-$: ./build-bundle.sh
-```
+## Security notes
 
-## Integration with Build Scripts
+1. **Never commit signing keys** to version control.
+2. **Use `--dev` only for local development and CI** - it relies on a public, well-known key, so bundles signed with it are refused by the registry.
+3. **Generate a unique production key** for anything you publish, and store it outside the repository.
+4. **The signer is part of the app identity.** The `ApplicationId` is derived from `(package, signerId)`, so changing the signing key forks the app for every node. See [SIGNING.md](../cargo-mero/SIGNING.md).
 
-Most applications include a `build-bundle.sh` script that automates the entire process:
+## Key file format
 
-1. **`build.rs`** - Cargo build script (generates ABI at compile time)
-2. **`build.sh`** - Shell script to build WASM with optimizations
-3. **`build-bundle.sh`** - Complete bundle creation pipeline:
-   - Builds WASM binary
-   - Generates ABI
-   - Creates state schema
-   - **Signs manifest** (calls `mero-sign`)
-   - Packages into `.mpk` file
-
-Example: See [`apps/kv-store/build-bundle.sh`](../../apps/kv-store/build-bundle.sh) for a reference implementation.
-
-## Security Best Practices
-
-1. **Never commit signing keys** to version control
-2. **Use the `--dev` flag for development** signing — it relies on a public,
-   well-known key embedded in the tool, so no private key is ever committed
-3. **Generate unique keys for production** applications
-4. **Store keys securely** outside the repository for production
-5. **Verify signer IDs** after signing to ensure correctness
-
-## Key File Format
-
-Ed25519 keypair stored as JSON:
+Ed25519 keypair stored as JSON, produced by `generate-key`:
 
 ```json
 {
-  "privateKey": "base64-encoded-32-byte-private-key",
-  "publicKey": "base64-encoded-32-byte-public-key"
+  "private_key": "base64url-encoded-32-byte-private-key-seed",
+  "public_key": "base64url-encoded-32-byte-public-key",
+  "signer_id": "did:key:z6Mk..."
 }
 ```
 
-The public key is used to derive the `did:key` identifier in multibase format.
-
-## Troubleshooting
-
-**Command not found after global install:**
-```bash
-# Ensure cargo bin directory is in PATH
-export PATH="$HOME/.cargo/bin:$PATH"
-
-# Or reinstall
-cargo install --path tools/mero-sign --force
-```
-
-**"Invalid key format" error:**
-- Ensure key file is valid JSON with `privateKey` and `publicKey` fields
-- Keys must be base64-encoded 32-byte values
-- Use `generate-key` to create a properly formatted key
-
-**"Manifest not found" error:**
-- Ensure `manifest.json` exists at the specified path
-- The manifest must be in a `bundle-temp/` directory alongside `app.wasm` and `abi.json`
-
-## Related Tools
-
-- **[meroctl](../../crates/meroctl/)** - CLI for deploying signed bundles to Calimero nodes
-- **[calimero-abi-cli](../calimero-abi/)** - Generate ABI from Rust source code
-- **[merod](../../crates/merod/)** - Calimero node daemon
-
-## See Also
-
-- [Application build examples](../../apps/) - Reference implementations for various app types
+The public key is used to derive the `did:key` signerId in multibase base58btc form.

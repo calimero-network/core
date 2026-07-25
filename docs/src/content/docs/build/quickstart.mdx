@@ -14,39 +14,31 @@ CLI — `app`, `context`, `namespace`, `call`).
 
 <Aside type="note">
   Commands here are grounded in the in-repo CLI definitions
-  (`crates/merod/src/cli/`, `crates/meroctl/src/cli/`) and the example apps'
-  `build.sh` scripts. Calimero is pre-1.0, so flags can still change between
-  releases — run `meroctl <command> --help` to confirm them for your build.
+  (`crates/merod/src/cli/`, `crates/meroctl/src/cli/`) and the
+  [cargo mero toolchain](/build/cargo-mero/) (`tools/cargo-mero/`). Calimero is
+  pre-1.0, so flags can still change between releases — run
+  `meroctl <command> --help` to confirm them for your build.
 </Aside>
 
 ## 1. Write and build the app
 
 <Steps>
 
-1. Create a library crate with a WASM-compatible `crate-type`. A minimal
-   `Cargo.toml`, modelled on `apps/kv-store/Cargo.toml`:
+1. Scaffold an app with the [cargo mero toolchain](/build/cargo-mero/):
 
-   ```toml
-   [lib]
-   crate-type = ["cdylib", "rlib"]
-
-   [dependencies]
-   calimero-sdk = { git = "https://github.com/calimero-network/core" }
-   calimero-storage = { git = "https://github.com/calimero-network/core" }
-
-   [dev-dependencies]
-   # native test harness (TestHost) + CRDT merge under `cargo test`
-   calimero-storage = { git = "https://github.com/calimero-network/core", features = ["testing"] }
+   ```sh
+   cargo mero new my-app
+   cd my-app
    ```
 
-   :::caution
-   The dependency lines above show the crate names; pin them to a tag, rev, or
-   workspace path as appropriate for your setup. The in-repo example apps use
-   `calimero-sdk.workspace = true`.
-   :::
+   This writes a ready-to-build crate: `Cargo.toml` (SDK pins, the app-id
+   metadata, and the build profiles), `build.rs`, a working `src/lib.rs`, and a
+   TestHost test. The [tutorial](/build/tutorial/) walks the generated manifest
+   field by field.
 
-2. Write the smallest possible app — a state struct plus one method. This is the
-   shape every Calimero app follows (see [SDK macros](/build/sdk-macros/)):
+2. The generated `src/lib.rs` is already a working app: a state struct plus
+   methods. This is the shape every Calimero app follows (see
+   [SDK macros](/build/sdk-macros/)):
 
    ```rust
    use calimero_sdk::app;
@@ -76,27 +68,14 @@ CLI — `app`, `context`, `namespace`, `call`).
    }
    ```
 
-3. Build to WASM. The example apps ship a `build.sh`; the load-bearing line is:
+3. Build to WASM with the [cargo mero toolchain](/build/cargo-mero/):
 
    ```sh
-   rustup target add wasm32-unknown-unknown
-   cargo build --target wasm32-unknown-unknown --profile app-release
+   cargo mero build
    ```
 
-   The artifact lands at
-   `target/wasm32-unknown-unknown/app-release/<crate_name>.wasm`. The example
-   scripts then copy it into a local `res/` directory and (if `wasm-opt` is
-   installed) shrink it:
-
-   ```sh
-   wasm-opt -Oz --enable-bulk-memory ./res/my_app.wasm -o ./res/my_app.wasm
-   ```
-
-   :::note
-   The `app-release` (and `app-profiling`) profiles are defined in the workspace.
-   Building a standalone crate outside the workspace? Either copy those profiles
-   into your `Cargo.toml` or use `--release` instead.
-   :::
+   One command compiles, optimizes, and embeds the ABI; the wasm lands at
+   `res/<crate_name>.wasm`, ready to bundle.
 
 </Steps>
 
@@ -134,6 +113,10 @@ configured alias) or `--api <URL>`.
    ```
 
    List what is installed with `meroctl --node node1 app ls`.
+
+   Installing the raw wasm is the fast dev loop; for a signed, distributable
+   `.mpk` run `cargo mero bundle` and pass the bundle to `--path` instead - see
+   [Packaging & signing](/build/packaging-signing/).
 
 2. **Attach the app to a context.** A context is a running instance of an app
    over a shared state. The simplest entry is to create a namespace bound to the

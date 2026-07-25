@@ -1,0 +1,51 @@
+[package]
+name = "{{name}}"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# cdylib for the node's wasm; rlib so `cargo test` can link the app.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+thiserror = "1"
+calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "{{sdk_tag}}" }
+calimero-storage = { git = "https://github.com/calimero-network/core", tag = "{{sdk_tag}}" }
+
+[build-dependencies]
+# Keep this pin in lock-step with the SDK tag above; they release together.
+calimero-wasm-abi = "={{sdk_tag}}"
+serde_json = "1"
+
+[dev-dependencies]
+# `testing` provides the mock host TestHost and tests/converge.rs run against.
+calimero-storage = { git = "https://github.com/calimero-network/core", tag = "{{sdk_tag}}", features = ["testing"] }
+
+[package.metadata.calimero]
+# Reverse-DNS app id the node installs the bundle under.
+package = "com.example.{{name}}"
+name = "{{name}}"
+description = "A Calimero app scaffolded with cargo mero new"
+
+# Profiles must live in the workspace-root manifest, which for a standalone app
+# is this file.
+[profile.app-release]
+inherits = "release"
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+strip = "symbols"
+panic = "abort"
+overflow-checks = true
+
+# Used by `cargo mero build --profiling`: keeps debug info, skips wasm-opt.
+[profile.app-profiling]
+inherits = "release"
+opt-level = 2
+debug = true
+strip = false
+
+# Own workspace root: without this, scaffolding inside another workspace would
+# fold the app into it and the app-* profiles above would be ignored.
+[workspace]

@@ -1,0 +1,18 @@
+# Test fixture, not a user-facing scaffold: it path-depends on this repo's own
+# SDK crates so an SDK change that breaks the toolchain fails in the same PR.
+# `cargo mero new` pins published git tags instead (see templates/Cargo.toml.tmpl).
+[package]
+name = "svc-a"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+calimero-sdk = { path = "../../../../../../../crates/sdk" }
+calimero-storage = { path = "../../../../../../../crates/storage" }
+
+[build-dependencies]
+calimero-wasm-abi = { path = "../../../../../../../crates/wasm-abi" }
+serde_json = "1"

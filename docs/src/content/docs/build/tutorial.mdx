@@ -27,23 +27,21 @@ have a context whose state you can read and write from the command line.
 
 <Steps>
 
-1. **Rust with the WASM target.** Calimero apps compile to
-   `wasm32-unknown-unknown`:
+1. **The `cargo mero` toolchain.** It scaffolds, builds, tests, and bundles
+   Calimero apps:
 
    ```sh
-   rustup target add wasm32-unknown-unknown
+   cargo install cargo-mero
    ```
+
+   See [the cargo mero toolchain](/build/cargo-mero/) for other install methods.
+   `cargo mero build` auto-installs the `wasm32-unknown-unknown` target and has
+   `wasm-opt` built in, so there is nothing else to set up.
 
 2. **A running node.** You need a `merod` node up and a configured `meroctl`
    alias pointing at it. If you have not done this yet, follow
    [Install & run a node](/operate/install/) first. This tutorial assumes the
    alias `node1`.
-
-   :::tip
-   `wasm-opt` (from [Binaryen](https://github.com/WebAssembly/binaryen)) is
-   optional but recommended — it shrinks the release artifact. The build step
-   below uses it only if it is on your `PATH`.
-   :::
 
 </Steps>
 
@@ -51,56 +49,64 @@ have a context whose state you can read and write from the command line.
 
 <Steps>
 
-1. Create a new library crate:
+1. Scaffold the app:
 
    ```sh
-   cargo new --lib kv-store
+   cargo mero new kv-store
    cd kv-store
    ```
 
-2. Replace `Cargo.toml`. The load-bearing parts are the `cdylib` crate type (so
-   the crate compiles to a WASM module), the two Calimero dependencies, and the
-   `app-release` profile that the build step uses:
+   This writes a ready-to-build crate: `Cargo.toml`, `build.rs`, `src/lib.rs`
+   (a working state + logic + a `#[cfg(test)]` TestHost test), and
+   `tests/converge.rs`.
+
+2. Open the generated `Cargo.toml`. The load-bearing parts `cargo mero new`
+   wrote for you:
 
    ```toml
-   [package]
-   name = "kv-store"
-   version = "0.1.0"
-   edition = "2021"
-
    [lib]
+   # cdylib is the wasm the node loads; rlib lets `cargo test` link the app.
    crate-type = ["cdylib", "rlib"]
 
    [dependencies]
-   calimero-sdk = { git = "https://github.com/calimero-network/core" }
-   calimero-storage = { git = "https://github.com/calimero-network/core" }
    thiserror = "1"
+   # SDK crates pinned to a git tag: their ABI and the wasm-abi pin below move together.
+   calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "<sdk-tag>" }
+   calimero-storage = { git = "https://github.com/calimero-network/core", tag = "<sdk-tag>" }
+
+   [build-dependencies]
+   # build.rs emits res/abi.json + res/state-schema.json from src/lib.rs.
+   calimero-wasm-abi = "=<sdk-tag>"
+   serde_json = "1"
 
    [dev-dependencies]
    # Native test harness (TestHost) + CRDT merge under `cargo test`.
-   calimero-storage = { git = "https://github.com/calimero-network/core", features = ["testing"] }
+   calimero-storage = { git = "https://github.com/calimero-network/core", tag = "<sdk-tag>", features = ["testing"] }
 
+   [package.metadata.calimero]
+   # Reverse-DNS app id the node installs the bundle under.
+   package = "com.example.kv-store"
+   name = "kv-store"
+
+   # cargo mero build compiles under this; --profiling uses app-profiling instead.
    [profile.app-release]
    inherits = "release"
-   codegen-units = 1
-   opt-level = "z"
+   opt-level = "z"      # optimize for size: wasm ships over the wire
    lto = true
-   debug = false
-   strip = "symbols"
-   panic = "abort"
+   panic = "abort"      # no unwinding in wasm
    overflow-checks = true
+
+   # Empty [workspace] makes this crate its own workspace root, so cargo reads
+   # the app-* profiles (which only apply at a workspace root).
+   [workspace]
    ```
 
-   :::note
-   The in-repo example apps use `calimero-sdk.workspace = true` and inherit
-   `app-release` from the workspace `Cargo.toml`. Standalone, you pin the
-   dependencies yourself (a tag, rev, or local path) and define the profile in
-   your own `Cargo.toml`, as above.
-   :::
+   The `[package.metadata.calimero]` table is your bundle identity; the full set
+   of keys is in the [toolchain metadata reference](/build/cargo-mero/#metadata-reference).
 
-3. Open `src/lib.rs` and clear it. You will fill it in over the next three
-   steps. The skeleton every Calimero app follows is: imports, a state struct, a
-   logic block with an `init`, and method definitions.
+3. Open `src/lib.rs`. The scaffold already put a working key-value app there.
+   The next sections walk through the shape it follows so you can change it with
+   confidence; every app starts from the same imports:
 
    ```rust
    use calimero_sdk::app;
@@ -191,9 +197,9 @@ next. If your app does not emit events, you can write just `#[app::state]`.
 
 <Aside type="tip" title="Test before you build">
   The SDK ships a native in-process harness — `calimero_sdk::testing::TestHost`,
-  enabled by the `calimero-storage` `testing` feature you added under
+  enabled by the `calimero-storage` `testing` feature the scaffold put under
   `[dev-dependencies]`. You can drive your methods and assert on state under
-  plain `cargo test`, with no node and no WASM build:
+  `cargo mero test` (or plain `cargo test`), with no node and no WASM build:
 
   ```rust
   #[cfg(test)]
@@ -213,31 +219,23 @@ next. If your app does not emit events, you can write just `#[app::state]`.
 
 ## 5. Build to WASM
 
-Compile the crate for the WASM target using the `app-release` profile:
+Build the app with one command:
 
 ```sh
-cargo build --target wasm32-unknown-unknown --profile app-release
+cargo mero build
 ```
 
-The artifact lands at:
+It compiles to `wasm32-unknown-unknown` under the `app-release` profile,
+size-optimizes with `wasm-opt -Oz`, and embeds the ABI. The artifact lands at:
 
 ```
-target/wasm32-unknown-unknown/app-release/kv_store.wasm
+res/kv_store.wasm
 ```
 
 :::note
 The filename is the crate name with hyphens turned into underscores — crate
 `kv-store` produces `kv_store.wasm`.
 :::
-
-Optionally shrink it with `wasm-opt` (this is exactly what the example's
-`build.sh` does when `wasm-opt` is installed):
-
-```sh
-wasm-opt -Oz --enable-bulk-memory \
-  target/wasm32-unknown-unknown/app-release/kv_store.wasm \
-  -o kv_store.wasm
-```
 
 ## 6. Install and run
 
@@ -251,7 +249,7 @@ machine-readable form shown here.
 
    ```sh
    meroctl --node node1 app install \
-     --path ./kv_store.wasm \
+     --path ./res/kv_store.wasm \
      --package com.example.kvstore \
      --version 0.1.0
    ```

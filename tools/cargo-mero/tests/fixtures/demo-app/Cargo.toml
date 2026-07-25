@@ -1,0 +1,45 @@
+# Test fixture, not a user-facing scaffold: it path-depends on this repo's own
+# SDK crates so an SDK change that breaks the toolchain fails in the same PR.
+# `cargo mero new` pins published git tags instead (see templates/Cargo.toml.tmpl).
+[package]
+name = "demo-app"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+thiserror = "1"
+calimero-sdk = { path = "../../../../../crates/sdk" }
+calimero-storage = { path = "../../../../../crates/storage" }
+
+[build-dependencies]
+calimero-wasm-abi = { path = "../../../../../crates/wasm-abi" }
+serde_json = "1"
+
+[dev-dependencies]
+calimero-storage = { path = "../../../../../crates/storage", features = ["testing"] }
+
+[package.metadata.calimero]
+package = "com.example.demo-app"
+name = "Demo App"
+description = "cargo-mero pipeline fixture"
+
+[profile.app-release]
+inherits = "release"
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+strip = "symbols"
+panic = "abort"
+overflow-checks = true
+
+[profile.app-profiling]
+inherits = "release"
+opt-level = 2
+debug = true
+strip = false
+
+[workspace]
