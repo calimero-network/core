@@ -132,6 +132,10 @@ struct BundleArgs {
     manifest_path: Option<Utf8PathBuf>,
 }
 
+// These mirror the standalone mero-abi / mero-sign binaries rather than sharing
+// clap types with them: both are published crates, so clap in their public API
+// would make a clap major bump a breaking release. The arms below are one lib
+// call each, so drift shows up as a missing subcommand, not wrong behavior.
 #[derive(clap::Subcommand)]
 enum AbiCommand {
     /// Extract ABI from a WASM file

@@ -319,8 +319,15 @@ fn write_private_key(path: &Path, contents: &str) -> std::io::Result<()> {
             .open(path)?;
         file.write_all(contents.as_bytes())
     }
+    // No portable way to restrict the file here, and the seed is unencrypted, so
+    // say so rather than leaving the key at whatever the platform defaults to.
     #[cfg(not(unix))]
     {
+        eprintln!(
+            "warning: cannot restrict permissions on {} on this platform; \
+             the private key is written with the default ACL - keep it off shared hosts",
+            path.display()
+        );
         fs::write(path, contents)
     }
 }

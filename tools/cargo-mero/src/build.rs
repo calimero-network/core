@@ -210,6 +210,16 @@ fn build_one(
         .wrap_err_with(|| format!("failed to copy {artifact} -> {wasm_path}"))?;
     println!("• copied wasm to {wasm_path}");
 
+    // Checked before optimizing: a missing ABI is an early-onboarding mistake, and
+    // failing here skips the expensive wasm-opt pass.
+    let abi_json = res_dir.join("abi.json");
+    if !abi_json.exists() {
+        bail!(
+            "app build did not emit {abi_json} - the app's build.rs must emit res/abi.json \
+             (scaffold with `cargo mero new` or copy apps/kv-store/build.rs)"
+        );
+    }
+
     if optimize {
         println!("• optimizing {wasm_path} (wasm-opt -Oz)");
         OptimizationOptions::new_optimize_for_size_aggressively()
@@ -218,14 +228,6 @@ fn build_one(
             .map_err(|e| eyre!("wasm-opt failed on {wasm_path}: {e}"))?;
     } else {
         println!("• skipping wasm-opt (profiling build)");
-    }
-
-    let abi_json = res_dir.join("abi.json");
-    if !abi_json.exists() {
-        bail!(
-            "app build did not emit {abi_json} - the app's build.rs must emit res/abi.json \
-             (scaffold with `cargo mero new` or copy apps/kv-store/build.rs)"
-        );
     }
 
     // Embed the full abi.json: it carries the per-method flags the node's xcall
