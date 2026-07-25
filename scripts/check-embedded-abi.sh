@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Fail if any app wasm is missing the `calimero_abi_v1` custom section - the
 # embedded full ABI the node reads for the xcall gate and the migration /
-# identity-downgrade decisions (calimero-network/core#3287). `cargo mero build`
-# embeds it on every build; this guards against a regression that ships a wasm
-# the node can no longer introspect.
+# identity-downgrade decisions. `cargo mero build` embeds it on every build;
+# this guards against a regression that ships a wasm the node cannot introspect.
 #
 # Usage: check-embedded-abi.sh [wasm ...]
 # With no args, checks every apps/**/res/*.wasm produced by a build.
@@ -57,7 +56,7 @@ done
 
 if [ "$missing" -ne 0 ]; then
     echo "" >&2
-    echo "FAIL: one or more app wasms lack the embedded ABI (see core#3287)." >&2
+    echo "FAIL: one or more app wasms lack the embedded ABI." >&2
     exit 1
 fi
 
