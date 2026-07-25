@@ -1106,7 +1106,13 @@ impl VMHostFunctions<'_> {
             }
 
             with_runtime_env(env, move || {
-                Interface::<MainStorage>::save_raw(Id::root(), payload, metadata)
+                // Store the root document as the ROOT_ENTRY_ID leaf (a child of
+                // Id::root()), NOT on Id::root() itself. A JS root converges only
+                // via the HashComparison deferred-merge path, which fires only for
+                // leaf entries; on Id::root() (an internal Merkle node once the app
+                // owns CRDT collections) it was never deferred. See
+                // Interface::save_root_entry.
+                Interface::<MainStorage>::save_root_entry(payload, metadata)
             })
             .map_err(|err| {
                 VMLogicError::from(HostError::Panic {
@@ -1139,8 +1145,7 @@ impl VMHostFunctions<'_> {
                 logic.context.executor_public_key,
             );
 
-            let maybe_bytes =
-                with_runtime_env(env, || Interface::<MainStorage>::find_by_id_raw(Id::root()));
+            let maybe_bytes = with_runtime_env(env, || Interface::<MainStorage>::read_root_entry());
 
             if let Some(bytes) = maybe_bytes {
                 let value_len = bytes.len();
