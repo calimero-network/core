@@ -207,15 +207,11 @@ fn build_one(
         bail!("expected wasm artifact not found at {artifact}");
     }
 
+    // The app's build.rs emits the ABI during the compile above, so check for it
+    // before anything is written to res/: copying first would leave an
+    // un-embedded wasm behind on failure, which later trips the CI guard that
+    // requires every wasm in res/ to carry an ABI.
     let res_dir = target.crate_dir.join("res");
-    std::fs::create_dir_all(&res_dir).wrap_err_with(|| format!("failed to create {res_dir}"))?;
-    let wasm_path = res_dir.join(format!("{underscored}.wasm"));
-    std::fs::copy(&artifact, &wasm_path)
-        .wrap_err_with(|| format!("failed to copy {artifact} -> {wasm_path}"))?;
-    println!("• copied wasm to {wasm_path}");
-
-    // Checked before optimizing: a missing ABI is an early-onboarding mistake, and
-    // failing here skips the expensive wasm-opt pass.
     let abi_json = res_dir.join("abi.json");
     if !abi_json.exists() {
         bail!(
@@ -223,6 +219,12 @@ fn build_one(
              (scaffold with `cargo mero new` or copy apps/kv-store/build.rs)"
         );
     }
+
+    std::fs::create_dir_all(&res_dir).wrap_err_with(|| format!("failed to create {res_dir}"))?;
+    let wasm_path = res_dir.join(format!("{underscored}.wasm"));
+    std::fs::copy(&artifact, &wasm_path)
+        .wrap_err_with(|| format!("failed to copy {artifact} -> {wasm_path}"))?;
+    println!("• copied wasm to {wasm_path}");
 
     if optimize {
         println!("• optimizing {wasm_path} (wasm-opt -Oz)");

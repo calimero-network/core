@@ -28,6 +28,10 @@ if [ "${#wasms[@]}" -eq 0 ]; then
     exit 1
 fi
 
+# Build the extractor once: `cargo run` per wasm re-checks the workspace each time.
+cargo build -q -p mero-abi
+MERO_ABI="${CARGO_TARGET_DIR:-target}/debug/mero-abi"
+
 stderr_file="$(mktemp)"
 trap 'rm -f "$stderr_file"' EXIT
 
@@ -38,7 +42,7 @@ for wasm in "${wasms[@]}"; do
     # with SIGPIPE, which `set -o pipefail` then reports as a (false) failure.
     # A failing inspect means the guard could not run at all, so report it as a
     # tool error rather than silently calling the section missing.
-    if ! report="$(cargo run -q -p mero-abi -- inspect "$wasm" 2>"$stderr_file")"; then
+    if ! report="$("$MERO_ABI" inspect "$wasm" 2>"$stderr_file")"; then
         echo "ERROR: could not run mero-abi inspect on $wasm" >&2
         sed 's/^/  /' "$stderr_file" >&2
         exit 1

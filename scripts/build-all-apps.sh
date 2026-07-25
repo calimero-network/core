@@ -20,9 +20,6 @@ APPS=(
     "apps/migrations/migration-suite-v3-remove-field/Cargo.toml"
     "apps/migrations/migration-suite-v4-rename-field/Cargo.toml"
     "apps/migrations/migration-suite-v5-change-type/Cargo.toml"
-    # nested-crdt-test is intentionally omitted: its public API returns a tuple,
-    # which the ABI emitter cannot express yet, so it cannot embed an ABI. Build
-    # it directly with `cargo build --target wasm32-unknown-unknown -p nested-crdt-test`.
     "apps/private_data/Cargo.toml"
     "apps/state-schema-conformance/Cargo.toml"
     "apps/team-metrics-custom/Cargo.toml"
@@ -30,9 +27,20 @@ APPS=(
     "apps/xcall-example/Cargo.toml"
 )
 
+# Build the toolchain once: `cargo run` per app re-checks the whole workspace on
+# every iteration.
+cargo build -q -p cargo-mero
+CARGO_MERO="${CARGO_TARGET_DIR:-target}/debug/cargo-mero"
+
 for manifest in "${APPS[@]}"; do
-    cargo run -q -p cargo-mero -- mero build --manifest-path "$manifest"
+    "$CARGO_MERO" mero build --manifest-path "$manifest"
 done
 
 # Apps that also ship an installable, signed .mpk bundle.
-cargo run -q -p cargo-mero -- mero bundle --dev --manifest-path apps/kv-store/Cargo.toml
+"$CARGO_MERO" mero bundle --dev --manifest-path apps/kv-store/Cargo.toml
+
+# nested-crdt-test returns a tuple, which the ABI emitter cannot express, so it
+# cannot go through `cargo mero build`. Compile it here anyway to keep it from
+# rotting; the artifact stays in target/ and never reaches a res/ directory, so
+# the embedded-ABI guard's "everything in res/ carries an ABI" rule still holds.
+cargo build -q -p nested-crdt-test --target wasm32-unknown-unknown --profile app-release
