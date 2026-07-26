@@ -1183,6 +1183,7 @@ impl<S: StorageAdaptor> Index<S> {
         id: Id,
         merkle_hash: [u8; 32],
         updated_at: Option<UpdatedAt>,
+        crdt_type: Option<crate::collections::crdt_meta::CrdtType>,
     ) -> Result<[u8; 32], StorageError> {
         // RMW on this entity's index entry — serialize against a concurrent
         // `add_child_to` on the same entry so neither clobbers the other
@@ -1195,6 +1196,19 @@ impl<S: StorageAdaptor> Index<S> {
         index.full_hash = Self::calculate_full_hash_for_children(index.own_hash, &index.children)?;
         if let Some(updated_at) = updated_at {
             index.metadata.updated_at = updated_at;
+        }
+        // `crdt_type` is set only at `add_root`/`add_child_to` creation; a plain
+        // hash update never carried it, so a root's merge-dispatch tag was frozen
+        // at whatever it was first stored as. A JS app that opts into the WASM
+        // root merge stamps the `JsRoot` marker on every `persist_root_state`
+        // write, but if the root was first created opaque (`None`) — e.g. a joiner
+        // materialises it via sync before ever writing locally — that stamp was
+        // silently dropped here, so the root stayed opaque and never routed to the
+        // guest merge. Threading the update through lets a local write (re)assert
+        // the marker. `None` means "leave unchanged" (every non-root caller);
+        // callers only ever pass `Some` to SET a tag, never to clear one.
+        if let Some(crdt_type) = crdt_type {
+            index.metadata.crdt_type = Some(crdt_type);
         }
 
         // Log detailed info for root entity hash updates

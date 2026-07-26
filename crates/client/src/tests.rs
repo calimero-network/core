@@ -622,6 +622,7 @@ async fn upgrade_group() {
                 target_application_id: ApplicationId::from([0u8; 32]),
                 requester: None,
                 cascade: false,
+                force_code_only: false,
             },
         )
         .await

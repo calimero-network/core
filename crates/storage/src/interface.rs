@@ -1037,6 +1037,100 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(true)
     }
 
+    /// Persists the application root document as a **leaf** entry
+    /// (`ROOT_ENTRY_ID`), linked as a child of the context root
+    /// (`Id::root()`).
+    ///
+    /// # Why a leaf and not `Id::root()`
+    ///
+    /// A JS app's root document has no in-WASM `Mergeable`, so it can converge
+    /// only via the HashComparison **deferred-merge** path
+    /// (`hash_comparison_protocol.rs`): an entry that
+    /// `is_app_root_entry(id) && !is_opaque` is deferred to the guest
+    /// `__calimero_merge_root_state`. That defer fires **only for leaf
+    /// entries**. Written to `Id::root()` the document lived on the context
+    /// root node itself — which, once the app owns any CRDT collections (each a
+    /// child of `Id::root()`), is an **internal** Merkle node, never a leaf, so
+    /// it was never deferred and concurrent JS writers never converged.
+    ///
+    /// Storing it at `ROOT_ENTRY_ID` — a pure leaf child of `Id::root()`,
+    /// sibling of the collections — makes the existing leaf-defer path fire.
+    /// `is_app_root_entry(ROOT_ENTRY_ID)` is already true, so the `JsRoot`
+    /// stamping and the `crdt_type` re-stamp on updates apply unchanged.
+    ///
+    /// # `Id::root()` must have a backing entry (not just an index)
+    ///
+    /// In the JS model `Id::root()` parents BOTH this doc leaf and the app's
+    /// CRDT collections — so once any collection exists it has an index
+    /// (children) but, now that nothing writes its own value, NO
+    /// `Key::Entry`. That is an *orphan index without an entry*, which the
+    /// snapshot generator drops (`orphan_index_without_entry`) and sync then
+    /// never converges. (The Rust SDK never hits this: its `ROOT_ID` is a real
+    /// `Collection<T>` shell created with its own entry via
+    /// `Collection::new(Some(*ROOT_ID))` → `Interface::save`; JS has no such
+    /// shell.)
+    ///
+    /// So on the FIRST write (guarded on `Key::Entry(Id::root())` being absent)
+    /// we give `Id::root()` a stable EMPTY, OPAQUE container blob
+    /// (`crdt_type: None` — this is the container, NOT the merged doc). The blob
+    /// is empty and identical on every node, so its `own_hash` is stable and
+    /// converges trivially; the child hashes (this doc leaf plus the
+    /// collections) fold into `Id::root()`'s `full_hash` via the normal
+    /// ancestor-hash recalculation. The real, merge-dispatched document lives
+    /// in the `ROOT_ENTRY_ID` leaf. Only the first call writes the container so
+    /// later writes don't churn it.
+    ///
+    /// # Linkage
+    ///
+    /// Modeled on `add_child_to` above (ENTRY-BEFORE-PARENT ordering) but for a
+    /// fixed id and idempotent linkage. `Index::add_child_to` dedupes by child
+    /// id (replacing any existing same-id `ChildInfo` in place rather than
+    /// appending a second one), so it is safe to call on **every** write: the
+    /// first write links the leaf into `Id::root()`'s children list, and later
+    /// writes update the leaf's advertised hash in place without duplicating
+    /// the child (a duplicate would hash the child twice and diverge the root).
+    /// The entry bytes are pre-written before the link so a reader that iterates
+    /// `Id::root()`'s children between the index update and the entry write
+    /// never sees an id with no backing entry (`save_raw` below overwrites the
+    /// bytes with the freshly-stamped version).
+    ///
+    /// # Errors
+    /// - `SerializationError` / index errors propagated from `add_child_to`
+    /// - any error from `save_raw`
+    pub fn save_root_entry(
+        payload: Vec<u8>,
+        metadata: Metadata,
+    ) -> Result<Option<[u8; 32]>, StorageError> {
+        let id = crate::collections::ROOT_ENTRY_ID;
+
+        // Ensure `Id::root()` is a well-formed container (has a backing entry),
+        // not an orphan index, BEFORE linking/writing the doc leaf. Guard on the
+        // entry being absent so only the first call writes the empty opaque blob;
+        // later writes leave it untouched. Uses the incoming timestamps so the
+        // container's index metadata is consistent with the doc write.
+        if S::storage_read(Key::Entry(Id::root())).is_none() {
+            let _root_hash = Self::save_raw(
+                Id::root(),
+                Vec::new(),
+                Metadata::new(metadata.created_at, *metadata.updated_at),
+            )?;
+        }
+
+        let own_hash: [u8; 32] = Sha256::digest(&payload).into();
+        let _ignored = S::storage_write(Key::Entry(id), &payload);
+        <Index<S>>::add_child_to(Id::root(), ChildInfo::new(id, own_hash, metadata.clone()))?;
+
+        Self::save_raw(id, payload, metadata)
+    }
+
+    /// Reads the raw bytes of the application root document from its leaf entry
+    /// (`ROOT_ENTRY_ID`). Mirrors `env::read_committed_root_entry`. Returns
+    /// `None` if nothing has been persisted yet.
+    #[must_use]
+    pub fn read_root_entry() -> Option<Vec<u8>> {
+        S::storage_read(Key::Entry(crate::collections::ROOT_ENTRY_ID))
+    }
+
     /// Verify the action's claimed ancestors against the receiver's local
     /// tree state.
     ///
@@ -2977,7 +3071,18 @@ impl<S: StorageAdaptor> Interface<S> {
         // *does* propagate index-advertised entries through every
         // production caller, so a "hash exists, bytes don't"
         // inconsistency surfaces immediately as a wrong-content read.
-        let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
+        // (Re)assert the root's merge-dispatch tag on every local write. Unlike
+        // creation (`add_root`), a plain hash update never persisted `crdt_type`,
+        // so a root first stored opaque could never be upgraded to `JsRoot` by a
+        // later `persist_root_state` — the write stamped the marker on `metadata`
+        // but it was dropped here. Non-root entities pass `None` (leave unchanged).
+        let root_crdt_type = if crate::collections::is_app_root_entry(id) {
+            metadata.crdt_type.clone()
+        } else {
+            None
+        };
+        let full_hash =
+            <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at), root_crdt_type)?;
 
         // A value write that causally follows an existing tombstone must lift it,
         // or `find_by_id` would keep hiding the bytes we just wrote (the entity's
@@ -3138,7 +3243,17 @@ impl<S: StorageAdaptor> Interface<S> {
         // doesn't serialize concurrent writes anyway — re-checking
         // would just narrow the race window without closing it.
         let _ignored = S::storage_write(Key::Entry(id), merged);
-        let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
+        // Preserve the root's merge-dispatch tag across a sync-applied write so a
+        // `JsRoot` root materialised via sync keeps routing to the guest merge
+        // (see the note in `Index::update_hash_for`). Only the app root carries a
+        // meaningful tag on this path; non-root entities pass `None`.
+        let root_crdt_type = if crate::collections::is_app_root_entry(id) {
+            metadata.crdt_type.clone()
+        } else {
+            None
+        };
+        let full_hash =
+            <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at), root_crdt_type)?;
         Ok(full_hash)
     }
 

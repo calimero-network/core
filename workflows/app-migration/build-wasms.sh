@@ -62,6 +62,29 @@ SUITES=(
 
 mkdir -p dist
 
+# Unembedded v2 variant for the missing-ABI refusal scenario
+# (39-missing-abi-refused). `cargo mero bundle` always embeds the ABI (see
+# scripts/check-embedded-abi.sh), so this one wasm is compiled by hand and
+# bundled via bundle-wasm.sh BEFORE migration-suite-v2-add-field is built
+# below - the loop below overwrites this same res/ wasm in place with an
+# embedded copy. An upgrade whose target has no embedded ABI is refused (no
+# migration evidence) unless forceCodeOnly is passed. Distinct package ->
+# distinct ApplicationId, so it never collides with the embedded
+# migration-suite bundles built later.
+NOABI_SUITE="apps/migrations/migration-suite-v2-add-field"
+NOABI_WASM="migration_suite_v2_add_field.wasm"
+NOABI_TARGET="${CARGO_TARGET_DIR:-target}"
+echo ">>> Building unembedded migration-suite-v2 (missing-ABI scenario fixture)"
+cargo build --target wasm32-unknown-unknown --profile app-release -p migration-suite-v2-add-field
+mkdir -p "$NOABI_SUITE/res"
+cp "$NOABI_TARGET/wasm32-unknown-unknown/app-release/$NOABI_WASM" "$NOABI_SUITE/res/$NOABI_WASM"
+if command -v wasm-opt > /dev/null; then
+    wasm-opt -Oz --enable-bulk-memory "$NOABI_SUITE/res/$NOABI_WASM" -o "$NOABI_SUITE/res/$NOABI_WASM"
+fi
+echo ">>> Bundling unembedded migration-suite-v2 (com.calimero.migration-suite-noabi @ 2.0.0)"
+bash apps/migrations/bundle-wasm.sh \
+    "$NOABI_SUITE" "$NOABI_WASM" "com.calimero.migration-suite-noabi" "2.0.0"
+
 for suite in "${SUITES[@]}"; do
     if [ ! -d "$suite" ]; then
         echo "ERROR: $suite not found" >&2
