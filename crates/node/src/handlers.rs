@@ -113,6 +113,28 @@ impl Handler<NodeMessage> for NodeManager {
                     );
                 }
             }
+            NodeMessage::ForwardPendingRepublish {
+                namespace_id,
+                op,
+                invitation,
+            } => {
+                // Same mount-window caveat as the two forwards above. A signal
+                // dropped here costs the retry only; the op is already applied
+                // locally and still reaches peers via namespace sync.
+                if let Some(addr) = &self.readiness_addr {
+                    addr.do_send(crate::readiness::PendingRepublish {
+                        namespace_id,
+                        op,
+                        invitation,
+                    });
+                } else {
+                    debug!(
+                        namespace_id = %hex::encode(namespace_id),
+                        "ForwardPendingRepublish received before ReadinessManager mounted; \
+                         dropping (namespace sync remains the fallback)"
+                    );
+                }
+            }
             NodeMessage::RefreshMigrationFacts { namespace_id } => {
                 // Edge-trigger a fact recompute + emit-on-change for this
                 // namespace (resync-heal path). Same seam the governance-apply

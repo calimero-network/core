@@ -128,6 +128,7 @@ pub struct ReadinessManager {
     pub node_client: NodeClient,              // raw publish (bypasses 10s mesh-wait)
     pub datastore: Store,                     // namespace-identity loading
     pub last_probe_response_at: HashMap<(PeerId, [u8; 32]), Instant>,
+    pub pending_republish: HashMap<[u8; 32], PendingJoin>,  // zero-ack membership ops
 }
 ```
 
@@ -140,6 +141,12 @@ pub struct ReadinessManager {
   `LocalStateChanged` / `ApplyBeaconLocal`).
 - Probe-response rate-limit at `BEACON_INTERVAL / 2` per
   `(peer, namespace)` to close traffic + mailbox amplification.
+- A `MemberJoinedAt` broadcast that collected zero acks is queued via
+  `NodeClient::queue_membership_republish` (`PendingRepublish`) and
+  rebroadcast on the next `EmitOutOfCycleBeacon` for that namespace -
+  i.e. the moment a namespace peer subscribes. Entries expire after
+  `REPUBLISH_CAP` (10 min) and are NOT removed on republish: the stored
+  invitation stays resident until the group confirms membership.
 
 ### J6 namespace-join (Phase 8)
 

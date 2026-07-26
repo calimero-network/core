@@ -218,6 +218,7 @@ impl NodeManager {
             node_client: self.clients.node.clone(),
             datastore: self.datastore.clone(),
             last_probe_response_at: std::collections::HashMap::new(),
+            pending_republish: std::collections::HashMap::new(),
         };
         self.readiness_addr = Some(manager.start());
     }

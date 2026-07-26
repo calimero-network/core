@@ -632,3 +632,66 @@ async fn await_first_fresh_beacon_times_out() {
         .await;
     assert!(got.is_none());
 }
+
+fn test_invitation() -> SignedGroupOpenInvitation {
+    SignedGroupOpenInvitation {
+        invitation: calimero_context_config::types::GroupInvitationFromAdmin {
+            inviter_identity: calimero_context_config::types::SignerId::from([1u8; 32]),
+            group_id: calimero_context_config::types::ContextGroupId::from([7u8; 32]),
+            expiration_timestamp: 0,
+            invitation_nonce: [2u8; 32],
+            invited_role: 1,
+        },
+        inviter_signature: String::new(),
+        application_id: None,
+        app_key: None,
+    }
+}
+
+fn test_signed_op() -> SignedNamespaceOp {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+
+    let member = PublicKey::from([3u8; 32]);
+    SignedNamespaceOp {
+        version: 1,
+        namespace_id: [7u8; 32].into(),
+        parent_op_hashes: Vec::new(),
+        signer: member,
+        nonce: 0,
+        op: NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member,
+            signed_invitation: test_invitation(),
+            joined_at: 0,
+        }),
+        signature: [0u8; 64],
+    }
+}
+
+fn pending_join_at(queued_at: Instant) -> PendingJoin {
+    PendingJoin {
+        op: test_signed_op(),
+        invitation: test_invitation(),
+        queued_at,
+    }
+}
+
+#[test]
+fn pending_republish_expires_after_cap() {
+    let mut pending: HashMap<[u8; 32], PendingJoin> = HashMap::new();
+    let stale = Instant::now() - (REPUBLISH_CAP + Duration::from_secs(1));
+    let _ = pending.insert([7u8; 32], pending_join_at(stale));
+
+    prune_expired_republishes(&mut pending, Instant::now());
+
+    assert!(pending.is_empty(), "entries past the cap must be dropped");
+}
+
+#[test]
+fn pending_republish_survives_within_cap() {
+    let mut pending: HashMap<[u8; 32], PendingJoin> = HashMap::new();
+    let _ = pending.insert([7u8; 32], pending_join_at(Instant::now()));
+
+    prune_expired_republishes(&mut pending, Instant::now());
+
+    assert_eq!(pending.len(), 1);
+}

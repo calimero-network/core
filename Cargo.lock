@@ -1508,6 +1508,7 @@ dependencies = [
  "calimero-blobstore",
  "calimero-context-config",
  "calimero-crypto",
+ "calimero-governance-types",
  "calimero-network-primitives",
  "calimero-primitives",
  "calimero-storage",
