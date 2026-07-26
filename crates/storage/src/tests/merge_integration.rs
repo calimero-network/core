@@ -4034,3 +4034,209 @@ fn js_root_local_write_falls_back_to_lww_when_unregistered() {
         "later updated_at must win under JsRoot local LWW"
     );
 }
+
+/// The `JsRoot` marker must survive a plain hash update, not just creation. A
+/// root first stored opaque (`crdt_type: None`) — exactly what a joiner gets
+/// when it materialises the root via sync before ever writing locally — must be
+/// upgraded to `JsRoot` by a later local write that stamps the marker. Before
+/// the fix, `update_hash_for` dropped the incoming `crdt_type`, so the root
+/// stayed opaque forever, was sent to peers with the `Opaque` wire tag, never
+/// deferred to the guest `__calimero_merge_root_state`, and concurrent writers
+/// never converged.
+#[test]
+#[serial]
+fn js_root_update_reasserts_crdt_type_marker() {
+    use crate::address::Id;
+    use crate::collections::crdt_meta::CrdtType;
+    use crate::entities::Metadata;
+    use crate::index::Index;
+    use crate::interface::Interface;
+    use crate::store::MockedStorage;
+
+    type NodeStorage = MockedStorage<993>;
+
+    env::reset_for_testing();
+    clear_merge_registry();
+    env::set_executor_id([11; 32]);
+
+    let root = Id::root();
+
+    // Root first created OPAQUE (crdt_type: None).
+    Interface::<NodeStorage>::save_raw(root, b"v1".to_vec(), Metadata::new(100, 100))
+        .expect("initial opaque root write must succeed");
+    assert_eq!(
+        <Index<NodeStorage>>::get_metadata(root)
+            .expect("metadata read")
+            .and_then(|m| m.crdt_type),
+        None,
+        "root must start opaque"
+    );
+
+    // A later local write stamps the JsRoot marker (as `persist_root_state`
+    // does once the guest called `register_js_sdk_root_merge`).
+    Interface::<NodeStorage>::save_raw(
+        root,
+        b"v2".to_vec(),
+        Metadata::with_crdt_type(100, 200, CrdtType::js_root()),
+    )
+    .expect("JsRoot root update must succeed");
+
+    let stored = <Index<NodeStorage>>::get_metadata(root)
+        .expect("metadata read")
+        .expect("root metadata present");
+    assert!(
+        stored.crdt_type.as_ref().is_some_and(CrdtType::is_js_root),
+        "a local write must re-assert the JsRoot marker on the stored root, got {:?}",
+        stored.crdt_type
+    );
+}
+
+/// `save_root_entry` must store the JS root document as a **leaf**
+/// (`ROOT_ENTRY_ID`) linked as a child of the context root (`Id::root()`), not
+/// on `Id::root()` itself. Only a leaf entry is deferred to the guest
+/// `__calimero_merge_root_state` by the HashComparison merge path, so this
+/// structural placement is what unblocks concurrent-writer convergence for JS
+/// apps. This test proves: the leaf is linked once (no duplicate on update), the
+/// `JsRoot` marker survives, `is_app_root_entry` recognises it, `Id::root()`'s
+/// hash reflects the child, and the bytes round-trip via `read_root_entry`.
+///
+/// It also reproduces the e2e orphan-index regression: in the JS model
+/// `Id::root()` parents the app's CRDT collections, so it gets an index (with
+/// children) but — because nothing writes its own value — NO `Key::Entry`. That
+/// orphan is dropped by snapshot/sync. `save_root_entry` must give `Id::root()`
+/// a stable empty OPAQUE container entry so it is no longer an orphan, while the
+/// real merge-dispatched doc stays on the `ROOT_ENTRY_ID` leaf.
+#[test]
+#[serial]
+fn save_root_entry_links_leaf_child_of_root() {
+    use crate::address::Id;
+    use crate::collections::crdt_meta::CrdtType;
+    use crate::collections::{is_app_root_entry, ROOT_ENTRY_ID};
+    use crate::entities::{ChildInfo, Metadata};
+    use crate::index::Index;
+    use crate::interface::Interface;
+    use crate::store::MockedStorage;
+
+    type NodeStorage = MockedStorage<994>;
+
+    env::reset_for_testing();
+    clear_merge_registry();
+    env::set_executor_id([13; 32]);
+
+    let root = Id::root();
+    let js_root = CrdtType::js_root();
+
+    // Sanity: the fixed leaf id is recognised as an app-root entry.
+    assert!(
+        is_app_root_entry(ROOT_ENTRY_ID),
+        "ROOT_ENTRY_ID must be an app-root entry"
+    );
+
+    // Reproduce the e2e scenario: an app CRDT collection is linked as a child of
+    // Id::root() FIRST. This auto-vivifies Id::root()'s index (children) but
+    // writes NO entry for it — the exact orphan-index-without-entry condition.
+    let dummy_collection = Id::new([200; 32]);
+    <Index<NodeStorage>>::add_child_to(
+        root,
+        ChildInfo::new(dummy_collection, [7; 32], Metadata::new(50, 50)),
+    )
+    .expect("linking a dummy collection must succeed");
+    assert!(
+        <Index<NodeStorage>>::get_index(root)
+            .expect("root index read")
+            .is_some(),
+        "Id::root() must have an index after a collection is linked"
+    );
+    assert!(
+        Interface::<NodeStorage>::find_by_id_raw(root).is_none(),
+        "precondition: Id::root() is an ORPHAN — index present but no Key::Entry"
+    );
+
+    // First write: creates the leaf and links it into Id::root()'s children.
+    Interface::<NodeStorage>::save_root_entry(
+        b"v1".to_vec(),
+        Metadata::with_crdt_type(100, 100, js_root.clone()),
+    )
+    .expect("initial save_root_entry must succeed");
+
+    // Id::root() is no longer an orphan: it now has a backing entry (the empty
+    // opaque container blob), and that container is NOT stamped JsRoot.
+    assert_eq!(
+        Interface::<NodeStorage>::find_by_id_raw(root).as_deref(),
+        Some([].as_slice()),
+        "Id::root() must have an empty container entry (no longer an orphan)"
+    );
+    let root_meta = <Index<NodeStorage>>::get_metadata(root)
+        .expect("root metadata read")
+        .expect("root metadata present");
+    assert_eq!(
+        root_meta.crdt_type, None,
+        "Id::root() container must be OPAQUE (crdt_type: None), not JsRoot; got {:?}",
+        root_meta.crdt_type
+    );
+
+    // ROOT_ENTRY_ID is now a CHILD of Id::root().
+    let children = <Index<NodeStorage>>::get_children_of(root).expect("root children");
+    let leaf_children: Vec<_> = children
+        .iter()
+        .filter(|c| c.id() == ROOT_ENTRY_ID)
+        .collect();
+    assert_eq!(
+        leaf_children.len(),
+        1,
+        "ROOT_ENTRY_ID must be linked exactly once as a child of Id::root()"
+    );
+
+    // Id::root()'s full_hash reflects the linked leaf (not the empty-children
+    // hash).
+    let (root_full_hash, root_own_hash) = <Index<NodeStorage>>::get_hashes_for(root)
+        .expect("root hashes read")
+        .expect("root index present");
+    assert_ne!(
+        root_full_hash, root_own_hash,
+        "Id::root() full_hash must fold in the ROOT_ENTRY_ID child, so it must \
+         differ from its own_hash"
+    );
+
+    // The stored leaf carries the JsRoot marker.
+    let leaf_meta = <Index<NodeStorage>>::get_metadata(ROOT_ENTRY_ID)
+        .expect("leaf metadata read")
+        .expect("leaf metadata present");
+    assert!(
+        leaf_meta
+            .crdt_type
+            .as_ref()
+            .is_some_and(CrdtType::is_js_root),
+        "ROOT_ENTRY_ID metadata must carry the JsRoot marker, got {:?}",
+        leaf_meta.crdt_type
+    );
+
+    // Round-trips the document bytes.
+    assert_eq!(
+        Interface::<NodeStorage>::read_root_entry().as_deref(),
+        Some(b"v1".as_slice()),
+        "read_root_entry must return the stored document"
+    );
+
+    // Second write (update): must NOT duplicate the child, and must update bytes.
+    Interface::<NodeStorage>::save_root_entry(
+        b"v2".to_vec(),
+        Metadata::with_crdt_type(100, 200, js_root),
+    )
+    .expect("update save_root_entry must succeed");
+
+    let children_after = <Index<NodeStorage>>::get_children_of(root).expect("root children");
+    assert_eq!(
+        children_after
+            .iter()
+            .filter(|c| c.id() == ROOT_ENTRY_ID)
+            .count(),
+        1,
+        "update must not duplicate the ROOT_ENTRY_ID child in Id::root()'s list"
+    );
+    assert_eq!(
+        Interface::<NodeStorage>::read_root_entry().as_deref(),
+        Some(b"v2".as_slice()),
+        "read_root_entry must reflect the updated document"
+    );
+}
