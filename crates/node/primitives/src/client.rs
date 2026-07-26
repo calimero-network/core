@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_stream::stream;
-use calimero_context_config::types::{GovernanceParentEdge, SignedGroupOpenInvitation};
+use calimero_context_config::types::GovernanceParentEdge;
 use calimero_crypto::SharedKey;
 use calimero_governance_types::SignedNamespaceOp;
 use calimero_network_primitives::client::{is_no_peers_subscribed_error, NetworkClient};
@@ -381,19 +381,10 @@ impl NodeClient {
     /// peers learn of the join via namespace sync instead.
     ///
     /// [`notify_namespace_op_applied`]: Self::notify_namespace_op_applied
-    pub fn queue_membership_republish(
-        &self,
-        namespace_id: [u8; 32],
-        op: SignedNamespaceOp,
-        invitation: SignedGroupOpenInvitation,
-    ) {
+    pub fn queue_membership_republish(&self, namespace_id: [u8; 32], op: SignedNamespaceOp) {
         if let Err(err) = self
             .node_manager
-            .try_send(NodeMessage::ForwardPendingRepublish {
-                namespace_id,
-                op,
-                invitation,
-            })
+            .try_send(NodeMessage::ForwardPendingRepublish { namespace_id, op })
         {
             warn!(
                 ?err,

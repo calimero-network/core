@@ -368,7 +368,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // is best-effort on top of that.
                 let member_joined_op = NamespaceOp::Root(RootOp::MemberJoinedAt {
                     member: joiner_identity,
-                    signed_invitation: invitation.clone(),
+                    signed_invitation: invitation,
                     joined_at: now_secs,
                 });
                 match calimero_governance_store::sign_apply_and_publish_namespace_op_returning_op(
@@ -383,7 +383,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 {
                     Ok((report, signed)) if report.acked_by.is_empty() => {
                         // Reached no peer; retry when a namespace peer next subscribes.
-                        node_client.queue_membership_republish(namespace_id, signed, invitation);
+                        node_client.queue_membership_republish(namespace_id, signed);
                     }
                     Ok(_) => {}
                     Err(e) => warn!(?e, "failed to apply/publish MemberJoined locally (non-fatal)"),

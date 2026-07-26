@@ -113,20 +113,12 @@ impl Handler<NodeMessage> for NodeManager {
                     );
                 }
             }
-            NodeMessage::ForwardPendingRepublish {
-                namespace_id,
-                op,
-                invitation,
-            } => {
+            NodeMessage::ForwardPendingRepublish { namespace_id, op } => {
                 // Same mount-window caveat as the two forwards above. A signal
                 // dropped here costs the retry only; the op is already applied
                 // locally and still reaches peers via namespace sync.
                 if let Some(addr) = &self.readiness_addr {
-                    addr.do_send(crate::readiness::PendingRepublish {
-                        namespace_id,
-                        op,
-                        invitation,
-                    });
+                    addr.do_send(crate::readiness::PendingRepublish { namespace_id, op });
                 } else {
                     debug!(
                         namespace_id = %hex::encode(namespace_id),

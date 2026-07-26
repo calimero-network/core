@@ -23,7 +23,6 @@ use actix::{Actor, AsyncContext, Context, Handler, Message};
 use calimero_context_client::local_governance::{
     NamespaceTopicMsg, SignedNamespaceOp, SignedReadinessBeacon,
 };
-use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::identity::PublicKey;
@@ -470,12 +469,11 @@ pub struct ReadinessManager {
 /// peer and namespace sync is the remaining recovery path.
 const REPUBLISH_CAP: Duration = Duration::from_secs(600);
 
-/// A signed `MemberJoinedAt` op whose broadcast reached nobody, kept with
-/// the invitation that admitted the joiner so a later rebroadcast can
-/// still carry the admission proof.
+/// A signed `MemberJoinedAt` op whose broadcast reached nobody. Stored
+/// verbatim: a rebroadcast must be the same bytes, never a re-sign at a
+/// fresh nonce.
 pub struct PendingJoin {
     pub op: SignedNamespaceOp,
-    pub invitation: SignedGroupOpenInvitation,
     pub queued_at: Instant,
 }
 
@@ -816,7 +814,6 @@ pub struct EmitOutOfCycleBeacon {
 pub struct PendingRepublish {
     pub namespace_id: [u8; 32],
     pub op: SignedNamespaceOp,
-    pub invitation: SignedGroupOpenInvitation,
 }
 
 impl Handler<PendingRepublish> for ReadinessManager {
@@ -827,7 +824,6 @@ impl Handler<PendingRepublish> for ReadinessManager {
             msg.namespace_id,
             PendingJoin {
                 op: msg.op,
-                invitation: msg.invitation,
                 queued_at: Instant::now(),
             },
         );

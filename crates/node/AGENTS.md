@@ -144,9 +144,10 @@ pub struct ReadinessManager {
 - A `MemberJoinedAt` broadcast that collected zero acks is queued via
   `NodeClient::queue_membership_republish` (`PendingRepublish`) and
   rebroadcast on the next `EmitOutOfCycleBeacon` for that namespace -
-  i.e. the moment a namespace peer subscribes. Entries expire after
-  `REPUBLISH_CAP` (10 min) and are NOT removed on republish: the stored
-  invitation stays resident until the group confirms membership.
+  i.e. the moment a namespace peer subscribes. The stored op is
+  rebroadcast verbatim, never re-signed. Entries expire after
+  `REPUBLISH_CAP` (10 min) and are NOT removed on republish, so a later
+  subscriber gets another attempt.
 
 ### J6 namespace-join (Phase 8)
 
