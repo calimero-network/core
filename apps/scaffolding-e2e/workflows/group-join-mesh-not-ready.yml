@@ -148,7 +148,7 @@ steps:
     type: wait
     seconds: 20
 
-  - name: Re-establish the namespace mesh (force redial + governance convergence)
+  - name: Wait for governance convergence after heal
     type: wait_for_sync
     group_id: '{{namespace_id}}'
     nodes:

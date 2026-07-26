@@ -44,8 +44,9 @@ runs:
         #     variables (the login path never mints keys; the bootstrap-secret
         #     flow is gone). Without it every fresh-node scenario login fails
         #     "Invalid credentials".
-        # Pin the floor so an older release fails loudly rather than skipping
-        # steps or collecting empty log artifacts.
+        # Pin to exact version so CI behaviour cannot change without a commit.
+        # An older or newer release fails loudly rather than skipping steps or
+        # collecting empty log artifacts.
         MIN_MEROBOX="0.6.43"
         timeout 180 pipx install "merobox==${MIN_MEROBOX}"
         # Ensure the pipx bin dir is on PATH for this step and all that follow.
