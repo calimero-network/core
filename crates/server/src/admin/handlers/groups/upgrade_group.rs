@@ -43,6 +43,7 @@ pub async fn handler(
             target_application_id: req.target_application_id,
             requester,
             cascade: req.cascade,
+            force_code_only: req.force_code_only,
         })
         .await
         .map_err(parse_api_error);
