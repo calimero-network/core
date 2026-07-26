@@ -47,7 +47,7 @@ runs:
         # Pin the floor so an older release fails loudly rather than skipping
         # steps or collecting empty log artifacts.
         MIN_MEROBOX="0.6.43"
-        timeout 180 pipx install "merobox>=${MIN_MEROBOX}"
+        timeout 180 pipx install "merobox==${MIN_MEROBOX}"
         # Ensure the pipx bin dir is on PATH for this step and all that follow.
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
         export PATH="$HOME/.local/bin:$PATH"
