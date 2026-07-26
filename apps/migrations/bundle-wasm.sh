@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# Wrap one migration-fixture wasm into a signed single-service `.mpk` bundle.
+# Wrap one migration-fixture wasm into a signed single-service `.mpk` bundle
+# WITHOUT embedding an ABI. Every other fixture bundles through `cargo mero
+# bundle`, which embeds unconditionally (scripts/check-embedded-abi.sh) - this
+# script exists only because the missing-ABI-refusal scenario needs one bundle
+# that deliberately has no `calimero_abi_v1` section, which cargo-mero cannot
+# produce.
 #
 #   bundle-wasm.sh <suite-dir> <wasm-file> <package> <app-version>
 #
 # v1/v2 of a scenario pair MUST share <package>: a bundle's ApplicationId is
 # hash(package, signer), so the same package yields the SAME id across
-# versions — the realistic shape for app upgrades (the version delta lives in
+# versions - the realistic shape for app upgrades (the version delta lives in
 # the bytecode blob). Output: <suite-dir>/res/<package-leaf>-<app-version>.mpk
 set -euo pipefail
 
