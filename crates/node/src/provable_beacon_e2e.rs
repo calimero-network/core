@@ -1,14 +1,21 @@
-//! Node-level receive-path tests for the provable non-member beacon.
+//! Node-level tests for the provable non-member beacon, both directions.
 //!
-//! These boot a real `NodeManager` over the shared in-process harness and hand
-//! it a synthesized gossipsub `NetworkEvent`, so they cover the wiring the pure
-//! unit tests in `handlers::network_event::readiness` cannot reach: which peer
-//! the unlocked pull targets, that a stale beacon unlocks nothing, and that a
-//! beacon accepted on this path never enters the readiness cache.
-use std::time::Duration;
+//! These boot a real `NodeManager` over the shared in-process harness. The
+//! receive-path cases hand it a synthesized gossipsub `NetworkEvent`, covering
+//! the wiring the pure unit tests in `handlers::network_event::readiness` cannot
+//! reach: which peer the unlocked pull targets, that a stale beacon unlocks
+//! nothing, and that a beacon accepted on this path never enters the readiness
+//! cache. The emit-path case runs a real `ReadinessManager` over the same
+//! harness and decodes what it actually published.
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use calimero_context::group_store::{now_millis, MembershipRepository};
-use calimero_context_client::local_governance::{NamespaceTopicMsg, SignedReadinessBeacon};
+use actix::Actor;
+use calimero_context::group_store::{now_millis, MembershipRepository, NamespaceRepository};
+use calimero_context_client::local_governance::{
+    NamespaceOp, NamespaceTopicMsg, RootOp, SignedNamespaceOp, SignedReadinessBeacon,
+};
 use calimero_context_config::types::{
     ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
@@ -21,12 +28,17 @@ use libp2p::PeerId;
 use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 
+use crate::readiness::{
+    EmitOutOfCycleBeacon, PendingRepublish, ReadinessCache, ReadinessConfig, ReadinessManager,
+    ReadinessState, ReadinessTier,
+};
 use crate::test_node_harness::{boot_test_node, TestNode};
 
 const NS: [u8; 32] = [42u8; 32];
 
-/// Long enough for the actor to run the receive handler and for the future it
-/// spawns to complete its two store reads plus the stubbed stream open.
+/// Long enough for the actor to run a handler and for the future it spawns to
+/// complete - two store reads plus the stubbed stream open on the receive path,
+/// the stubbed publish on the emit path.
 const SETTLE: Duration = Duration::from_millis(300);
 
 fn signed_invitation(
@@ -197,5 +209,147 @@ async fn unprovable_beacon_pulls_nothing() {
             .fresh_peers(NS, Duration::from_secs(60))
             .is_empty(),
         "an unverifiable beacon must not enter the readiness cache"
+    );
+}
+
+/// A real `ReadinessManager` over the harness's store and network stub, pinned
+/// to a ready tier so a probe response emits without waiting out `boot_grace`.
+fn start_readiness_manager(
+    node: &TestNode,
+    joiner_sk: &PrivateKey,
+) -> actix::Addr<ReadinessManager> {
+    NamespaceRepository::new(&node.store)
+        .store_identity(
+            &ContextGroupId::from(NS),
+            &joiner_sk.public_key(),
+            joiner_sk.as_bytes(),
+            &[7u8; 32],
+        )
+        .expect("store namespace identity");
+
+    let mut state_per_namespace = HashMap::new();
+    let _ = state_per_namespace.insert(
+        NS,
+        ReadinessState {
+            tier: ReadinessTier::LocallyReady,
+            local_applied_through: 1,
+            local_pending_ops: 0,
+            subscribed_at: Instant::now(),
+        },
+    );
+
+    ReadinessManager {
+        cache: Arc::new(ReadinessCache::default()),
+        config: ReadinessConfig::default(),
+        state_per_namespace,
+        node_client: node.node_client.clone(),
+        datastore: node.store.clone(),
+        last_probe_response_at: HashMap::new(),
+        pending_republish: HashMap::new(),
+    }
+    .start()
+}
+
+/// The join op a joiner queues for republish when its broadcast reached nobody.
+fn queued_join_op(
+    joiner_sk: &PrivateKey,
+    invitation: SignedGroupOpenInvitation,
+) -> SignedNamespaceOp {
+    SignedNamespaceOp::sign(
+        joiner_sk,
+        NS.into(),
+        Vec::new(),
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: joiner_sk.public_key(),
+            signed_invitation: invitation,
+            joined_at: 0,
+        }),
+    )
+    .expect("sign join op")
+}
+
+/// Every readiness beacon this node published, decoded through the real
+/// namespace-topic envelope. Filters out the republished op the probe handler
+/// also emits.
+fn emitted_beacons(node: &TestNode) -> Vec<SignedReadinessBeacon> {
+    node.publishes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter_map(|bytes| {
+            let BroadcastMessage::NamespaceGovernanceDelta { payload, .. } =
+                borsh::from_slice(bytes).ok()?
+            else {
+                return None;
+            };
+            match borsh::from_slice(&payload).ok()? {
+                NamespaceTopicMsg::ReadinessBeacon(beacon) => Some(beacon),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+async fn emit_beacon(addr: &actix::Addr<ReadinessManager>) {
+    addr.send(EmitOutOfCycleBeacon {
+        namespace_id: NS,
+        requesting_peer: PeerId::random(),
+    })
+    .await
+    .expect("probe reaches the readiness actor");
+    sleep(SETTLE).await;
+}
+
+#[actix::test]
+async fn queued_join_rides_the_next_beacon_as_its_admission_proof() {
+    let node = boot_test_node().await;
+    let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
+    let addr = start_readiness_manager(&node, &joiner_sk);
+
+    let inviter_sk = PrivateKey::random(&mut rand::thread_rng());
+    let invitation = signed_invitation(&inviter_sk, ContextGroupId::from(NS));
+    addr.send(PendingRepublish {
+        namespace_id: NS,
+        op: queued_join_op(&joiner_sk, invitation.clone()),
+    })
+    .await
+    .expect("queue the unacked join op");
+
+    emit_beacon(&addr).await;
+
+    let beacons = emitted_beacons(&node);
+    let [beacon] = beacons.as_slice() else {
+        panic!("expected exactly one emitted beacon, got {}", beacons.len());
+    };
+    let proof = beacon
+        .admission_proof
+        .as_ref()
+        .expect("an unconfirmed joiner's beacon must carry its admission proof");
+    assert_eq!(
+        borsh::to_vec(proof).expect("encode emitted proof"),
+        borsh::to_vec(&invitation).expect("encode invitation"),
+        "the proof must be the invitation embedded in the queued join op"
+    );
+    // The proof is inside the signed body, so a receiver only trusts it if the
+    // beacon still verifies with it attached.
+    assert!(beacon.verify_signature().is_ok());
+}
+
+#[actix::test]
+async fn beacon_carries_no_proof_without_a_queued_join() {
+    let node = boot_test_node().await;
+    let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
+    let addr = start_readiness_manager(&node, &joiner_sk);
+
+    emit_beacon(&addr).await;
+
+    let beacons = emitted_beacons(&node);
+    let [beacon] = beacons.as_slice() else {
+        panic!("expected exactly one emitted beacon, got {}", beacons.len());
+    };
+    assert!(
+        beacon.admission_proof.is_none(),
+        "steady state must stay one byte: no queued join means no proof"
     );
 }

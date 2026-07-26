@@ -50,6 +50,9 @@ struct StubNetworkActor {
     /// Every peer an outbound sync tried to open a stream to, in order. Lets a
     /// test assert *which* peer a pull targeted, not merely that one happened.
     stream_opens: Arc<Mutex<Vec<libp2p::PeerId>>>,
+    /// Raw payload of every gossipsub publish, in order, so a test can decode
+    /// what this node actually put on the wire.
+    publishes: Arc<Mutex<Vec<Vec<u8>>>>,
 }
 
 impl actix::Actor for StubNetworkActor {
@@ -86,7 +89,11 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
             NetworkMessage::PeerCount { outcome, .. } => {
                 let _ = outcome.send(0);
             }
-            NetworkMessage::Publish { outcome, .. } => {
+            NetworkMessage::Publish { request, outcome } => {
+                self.publishes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(request.data);
                 let _ = outcome.send(Ok(MessageId(b"stub".to_vec())));
             }
             // The create-group path subscribes to the namespace governance
@@ -151,6 +158,8 @@ pub(crate) struct TestNode {
     pub(crate) readiness_cache: Arc<crate::readiness::ReadinessCache>,
     /// Peers the node opened a sync stream to. See [`StubNetworkActor`].
     pub(crate) stream_opens: Arc<Mutex<Vec<libp2p::PeerId>>>,
+    /// Gossipsub payloads this node published. See [`StubNetworkActor`].
+    pub(crate) publishes: Arc<Mutex<Vec<Vec<u8>>>>,
 }
 
 /// Boots a `ContextManager` + `NodeManager` against an in-memory store and
@@ -261,6 +270,7 @@ pub(crate) async fn boot_test_node() -> TestNode {
 
     let readiness_cache = node_manager.readiness_cache.clone();
     let stream_opens: Arc<Mutex<Vec<libp2p::PeerId>>> = Arc::new(Mutex::new(Vec::new()));
+    let publishes: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
 
     let arb = pool.get().await.expect("arbiter");
     let _context_addr = Actor::start_in_arbiter(&arb, move |ctx| {
@@ -279,10 +289,12 @@ pub(crate) async fn boot_test_node() -> TestNode {
     // on an uninitialised `LazyRecipient`. See `StubNetworkActor`.
     let arb3 = pool.get().await.expect("arbiter 3");
     let stub_opens = stream_opens.clone();
+    let stub_publishes = publishes.clone();
     let _network_addr = Actor::start_in_arbiter(&arb3, move |ctx| {
         assert!(network_recipient.init(ctx), "network recipient");
         StubNetworkActor {
             stream_opens: stub_opens,
+            publishes: stub_publishes,
         }
     });
 
@@ -297,5 +309,6 @@ pub(crate) async fn boot_test_node() -> TestNode {
         node_addr,
         readiness_cache,
         stream_opens,
+        publishes,
     }
 }

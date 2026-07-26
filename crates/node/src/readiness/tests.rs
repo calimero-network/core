@@ -702,6 +702,30 @@ fn pending_republish_survives_within_cap() {
 }
 
 #[test]
+fn admission_proof_is_the_invitation_inside_the_queued_join() {
+    let proof = admission_proof_from(&test_signed_op()).expect("a queued join carries its proof");
+
+    assert_eq!(
+        borsh::to_vec(&proof).expect("encode proof"),
+        borsh::to_vec(&test_invitation()).expect("encode invitation"),
+        "the beacon must carry the very invitation the join op was built from"
+    );
+}
+
+#[test]
+fn non_join_op_carries_no_admission_proof() {
+    let mut op = test_signed_op();
+    op.op = NamespaceOp::Root(RootOp::NamespaceCreated {
+        founder: PublicKey::from([3u8; 32]),
+    });
+
+    assert!(
+        admission_proof_from(&op).is_none(),
+        "only an invitation-based join yields a proof"
+    );
+}
+
+#[test]
 fn republished_op_is_the_signed_op_verbatim() {
     // The whole point of storing the op: a rebroadcast must be the SAME
     // signed op. Re-signing would mint a second `MemberJoinedAt` at the
