@@ -523,6 +523,7 @@ fn signed_beacon(
         applied_through,
         ts_millis: 1_700_000_000_000,
         strong,
+        admission_proof: None,
         signature: [0u8; 64],
     };
     beacon.signature = sk

@@ -398,6 +398,7 @@ fn make_beacon(pk: PublicKey, applied_through: u64, strong: bool) -> SignedReadi
         applied_through,
         ts_millis: 0,
         strong,
+        admission_proof: None,
         signature: [0u8; 64],
     }
 }

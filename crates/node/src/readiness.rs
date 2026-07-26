@@ -737,6 +737,7 @@ impl ReadinessManager {
             applied_through: state.local_applied_through,
             ts_millis,
             strong,
+            admission_proof: None,
             signature: [0u8; 64],
         };
         let signable = match beacon.signable_bytes() {
