@@ -9,8 +9,6 @@
 //!
 //! Tasks 3.2 — 3.4 add `verify_ack`, `assert_transport_ready`, and
 //! `publish_and_await_ack` on top of this skeleton.
-use crate::{MembershipRepository, NamespaceMembershipService, ReentryRepository};
-use calimero_governance_types::NamespaceId;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -18,6 +16,7 @@ use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, GovernanceError, NamespaceOp, NamespaceTopicMsg, RootOp,
     SignedAck, SignedMigrationHeartbeat, SignedNamespaceOp, SignedReadinessBeacon,
 };
+use calimero_governance_types::NamespaceId;
 use calimero_network_primitives::client::is_no_peers_subscribed_error;
 use calimero_node_primitives::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -26,6 +25,8 @@ use libp2p::gossipsub::TopicHash;
 use thiserror::Error;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
+
+use crate::{MembershipRepository, NamespaceMembershipService, ReentryRepository};
 
 /// Default `min_acks` for governance publishes — at least one peer must
 /// ack before we consider the op delivered. Spec §6.2. Callers that
@@ -230,12 +231,14 @@ pub fn verify_readiness_beacon(store: &Store, beacon: &SignedReadinessBeacon) ->
 /// oracle for which namespaces this node belongs to.
 #[must_use]
 pub fn beacon_admission_provable(store: &Store, beacon: &SignedReadinessBeacon) -> bool {
-    if beacon.verify_signature().is_err() {
-        return false;
-    }
+    // Cheapest guard first: the caller already spent one Ed25519 verify in
+    // `verify_readiness_beacon`, and a proof-less beacon must not cost a second.
     let Some(inv) = beacon.admission_proof.as_ref() else {
         return false;
     };
+    if beacon.verify_signature().is_err() {
+        return false;
+    }
     // Inviter signature, the invited group belonging to this namespace, the
     // inviter holding CAN_INVITE_MEMBERS in our current view, and expiry -
     // the same gate the key-delivery responder applies to this credential.

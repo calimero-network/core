@@ -12,7 +12,7 @@
 //! minting and any `calimero_tee_attestation` mock symbols out of here —
 //! adding one would silently drag `cascade_dispatch_e2e` back behind the
 //! feature gate.
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use actix::Actor;
@@ -46,7 +46,11 @@ use crate::{NodeManager, NodeState};
 /// (no mesh peers, no connected peers, publish "succeeds" with a dummy id) so
 /// the publish path returns promptly and the local apply — the part this test
 /// asserts on — actually runs. It sends nothing on the wire: there is no peer.
-struct StubNetworkActor;
+struct StubNetworkActor {
+    /// Every peer an outbound sync tried to open a stream to, in order. Lets a
+    /// test assert *which* peer a pull targeted, not merely that one happened.
+    stream_opens: Arc<Mutex<Vec<libp2p::PeerId>>>,
+}
 
 impl actix::Actor for StubNetworkActor {
     type Context = actix::Context<Self>;
@@ -97,6 +101,17 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
             NetworkMessage::AnnounceBlob { outcome, .. } => {
                 let _ = outcome.send(Ok(()));
             }
+            // Record the target, then fail the open: there is no transport, so
+            // the caller's best-effort sync ends promptly. `NetworkClient::
+            // open_stream` *expects* on the oneshot, so the error must be sent
+            // rather than the sender dropped. The record is the assertion.
+            NetworkMessage::OpenStream { request, outcome } => {
+                self.stream_opens
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(request.0);
+                let _ = outcome.send(Err(eyre::eyre!("stub network: no transport")));
+            }
             _ => {}
         }
     }
@@ -131,6 +146,11 @@ pub(crate) struct TestNode {
     /// tests. Keeping it is load-bearing, not vestigial.
     #[cfg_attr(not(feature = "mock-attestation"), allow(dead_code))]
     pub(crate) node_addr: actix::Addr<NodeManager>,
+    /// The manager's own beacon cache, so a test can assert what a receive path
+    /// did (or refused to do) to it.
+    pub(crate) readiness_cache: Arc<crate::readiness::ReadinessCache>,
+    /// Peers the node opened a sync stream to. See [`StubNetworkActor`].
+    pub(crate) stream_opens: Arc<Mutex<Vec<libp2p::PeerId>>>,
 }
 
 /// Boots a `ContextManager` + `NodeManager` against an in-memory store and
@@ -239,6 +259,9 @@ pub(crate) async fn boot_test_node() -> TestNode {
         prometheus_client::metrics::counter::Counter::default(),
     );
 
+    let readiness_cache = node_manager.readiness_cache.clone();
+    let stream_opens: Arc<Mutex<Vec<libp2p::PeerId>>> = Arc::new(Mutex::new(Vec::new()));
+
     let arb = pool.get().await.expect("arbiter");
     let _context_addr = Actor::start_in_arbiter(&arb, move |ctx| {
         assert!(context_recipient.init(ctx), "context recipient");
@@ -255,9 +278,12 @@ pub(crate) async fn boot_test_node() -> TestNode {
     // (mesh sampling + best-effort publish) resolves instead of deadlocking
     // on an uninitialised `LazyRecipient`. See `StubNetworkActor`.
     let arb3 = pool.get().await.expect("arbiter 3");
+    let stub_opens = stream_opens.clone();
     let _network_addr = Actor::start_in_arbiter(&arb3, move |ctx| {
         assert!(network_recipient.init(ctx), "network recipient");
-        StubNetworkActor
+        StubNetworkActor {
+            stream_opens: stub_opens,
+        }
     });
 
     sleep(Duration::from_millis(50)).await;
@@ -269,5 +295,7 @@ pub(crate) async fn boot_test_node() -> TestNode {
         context_client,
         node_client,
         node_addr,
+        readiness_cache,
+        stream_opens,
     }
 }

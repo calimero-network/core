@@ -87,17 +87,12 @@ fn beacon_ts_within_drift(ts_millis: u64, now_ms: u64) -> bool {
 pub(super) fn handle_readiness_beacon(
     manager: &mut NodeManager,
     ctx: &mut actix::Context<NodeManager>,
-    _peer_id: PeerId,
+    peer_id: PeerId,
     beacon: SignedReadinessBeacon,
 ) {
     if !verify_readiness_beacon(&manager.datastore, &beacon) {
-        // The signer holds no membership row, so nothing the beacon claims is
-        // trustworthy - but an unexpired invitation signed by an authorised
-        // inviter proves it was admitted, which is the only way to learn about
-        // a peer whose own join broadcast reached nobody. Pull governance from
-        // it instead: no membership row is written and the readiness cache is
-        // left untouched. Every other beacon is dropped exactly as before, so
-        // a peer without a valid invitation observes no new signal.
+        // Pull from a provable non-member instead of dropping it, targeting the
+        // signer: it is the only peer that holds its own not-yet-gossiped join op.
         if beacon_ts_within_drift(beacon.ts_millis, now_millis())
             && beacon_admission_provable(&manager.datastore, &beacon)
         {
@@ -106,6 +101,7 @@ pub(super) fn handle_readiness_beacon(
                 ctx,
                 beacon.namespace_id.to_bytes(),
                 beacon.dag_head,
+                Some(peer_id),
             );
             return;
         }
@@ -132,7 +128,7 @@ pub(super) fn handle_readiness_beacon(
         "readiness beacon received"
     );
 
-    spawn_beacon_divergence_sync(manager, ctx, namespace_id, beacon.dag_head);
+    spawn_beacon_divergence_sync(manager, ctx, namespace_id, beacon.dag_head, None);
 
     if let Some(addr) = &manager.readiness_addr {
         addr.do_send(ApplyBeaconLocal { namespace_id });
@@ -150,14 +146,23 @@ pub(super) fn handle_readiness_beacon(
 /// already-caught-up peer must not burn the per-namespace budget and suppress a
 /// genuinely-divergent beacon from another peer for the next
 /// [`NS_BEACON_SYNC_DEBOUNCE`] window.
+///
+/// `source` targets the pull at the beacon's own publisher. It is `Some` only on
+/// the provable non-member path, where the advertised head op exists nowhere
+/// else yet: that peer's join op has reached no other member, so pulling from an
+/// arbitrary mesh peer would query someone who cannot serve it while still
+/// burning the debounce slot. `None` keeps the established-member path on the
+/// mesh-peer pull, where any member that applied the op can serve it.
 fn spawn_beacon_divergence_sync(
     manager: &mut NodeManager,
     ctx: &mut actix::Context<NodeManager>,
     namespace_id: [u8; 32],
     dag_head: [u8; 32],
+    source: Option<PeerId>,
 ) {
     let datastore = manager.datastore.clone();
     let node_client = manager.clients.node.clone();
+    let sync_manager = manager.managers.sync.clone();
     let debounce = manager.ns_beacon_sync_debounce.clone();
     let _ignored = ctx.spawn(
         async move {
@@ -222,15 +227,28 @@ fn spawn_beacon_divergence_sync(
             info!(
                 namespace_id = %hex::encode(namespace_id),
                 dag_head = %hex::encode(dag_head),
+                ?source,
                 "beacon advertises an unknown namespace DAG head; \
                  triggering governance sync"
             );
-            if let Err(err) = node_client.sync_namespace(namespace_id).await {
-                warn!(
-                    ?err,
-                    namespace_id = %hex::encode(namespace_id),
-                    "beacon-triggered namespace governance sync failed"
-                );
+            match source {
+                // Issues the same `NamespaceBackfillRequest` with empty
+                // `delta_ids` ("give me everything"), but against `source`
+                // directly rather than an arbitrary subscriber.
+                Some(peer) => {
+                    let _ops = sync_manager
+                        .sync_namespace_from_peer(namespace_id, Some(peer))
+                        .await;
+                }
+                None => {
+                    if let Err(err) = node_client.sync_namespace(namespace_id).await {
+                        warn!(
+                            ?err,
+                            namespace_id = %hex::encode(namespace_id),
+                            "beacon-triggered namespace governance sync failed"
+                        );
+                    }
+                }
             }
         }
         .into_actor(manager),
