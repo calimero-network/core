@@ -521,7 +521,7 @@ impl<'a> NamespaceGovernance<'a> {
 
     /// Like [`Self::sign_apply_and_publish`] but also hands back the signed op,
     /// so a caller that needs to rebroadcast it later (e.g. after a publish
-    /// that reached no peer) can do so without re-signing — re-signing would
+    /// that reached no peer) can do so without re-signing - re-signing would
     /// mint a second op at the next nonce.
     pub async fn sign_apply_and_publish_returning_op(
         &self,
@@ -566,7 +566,7 @@ impl<'a> NamespaceGovernance<'a> {
 
         self.apply_signed_op(&signed)?;
 
-        // Kept for the caller's return value — `publish_and_await_ack_namespace`
+        // Kept for the caller's return value - `publish_and_await_ack_namespace`
         // below takes `signed` by value.
         let signed_for_caller = signed.clone();
 
