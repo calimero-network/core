@@ -125,10 +125,8 @@ pub struct SignedReadinessBeacon {
     pub applied_through: u64,
     pub ts_millis: u64,
     pub strong: bool,
-    /// Proof the publisher was admitted to the namespace, carried
-    /// self-contained so a receiver can accept the beacon before it has
-    /// applied the corresponding `MemberJoinedAt` op. `None` for a beacon
-    /// from an already-established member.
+    /// Self-contained proof of admission, so a receiver can accept the
+    /// beacon before applying the corresponding `MemberJoinedAt` op.
     pub admission_proof: Option<SignedGroupOpenInvitation>,
     pub signature: [u8; 64],
 }
@@ -390,7 +388,7 @@ mod tests {
     use super::*;
 
     /// Minimal, structurally-valid invitation for beacon-proof tests. Not
-    /// itself cryptographically verified here — only its presence on the
+    /// itself cryptographically verified here - only its presence on the
     /// wire and coverage by the beacon signature are under test.
     fn test_invitation(sk: &PrivateKey, id: NamespaceId) -> SignedGroupOpenInvitation {
         SignedGroupOpenInvitation {
@@ -648,12 +646,21 @@ mod tests {
 
         assert!(decoded.admission_proof.is_none());
         assert!(decoded.verify_signature().is_ok());
+
+        // Pins the one-byte steady-state cost: namespace_id (32) + peer_pubkey
+        // (32) + dag_head (32) + applied_through (8) + ts_millis (8) + strong
+        // (1) + admission_proof None tag (1) + signature (64).
+        let expected_len = 32 + 32 + 32 + 8 + 8 + 1 + 1 + 64;
+        assert_eq!(bytes.len(), expected_len);
     }
 
     #[test]
     fn old_beacon_layout_rejects_new_encoding() {
         // Pins the mixed-version contract: an un-upgraded node must fail
-        // closed on a new-format beacon rather than misparse it.
+        // closed on a new-format beacon rather than misparse it, whether or
+        // not the beacon carries a proof - `None` is the steady state, every
+        // already-established member's beacon, and the more consequential
+        // case since it means every beacon from an upgraded node is dropped.
         #[derive(BorshDeserialize)]
         #[allow(dead_code)]
         struct OldBeacon {
@@ -668,14 +675,12 @@ mod tests {
 
         let sk = PrivateKey::random(&mut rand::thread_rng());
         let ns: NamespaceId = [3u8; 32].into();
-        let new_bytes = borsh::to_vec(&signed_beacon_with_proof(
-            &sk,
-            ns,
-            Some(test_invitation(&sk, ns)),
-        ))
-        .unwrap();
 
-        assert!(borsh::from_slice::<OldBeacon>(&new_bytes).is_err());
+        for admission_proof in [None, Some(test_invitation(&sk, ns))] {
+            let new_bytes =
+                borsh::to_vec(&signed_beacon_with_proof(&sk, ns, admission_proof)).unwrap();
+            assert!(borsh::from_slice::<OldBeacon>(&new_bytes).is_err());
+        }
     }
 
     #[test]
