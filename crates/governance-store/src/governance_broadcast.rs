@@ -9,7 +9,7 @@
 //!
 //! Tasks 3.2 — 3.4 add `verify_ack`, `assert_transport_ready`, and
 //! `publish_and_await_ack` on top of this skeleton.
-use crate::MembershipRepository;
+use crate::{MembershipRepository, NamespaceMembershipService, ReentryRepository};
 use calimero_governance_types::NamespaceId;
 use std::time::{Duration, Instant};
 
@@ -198,6 +198,60 @@ pub fn verify_readiness_beacon(store: &Store, beacon: &SignedReadinessBeacon) ->
         .namespace_pubkeys(beacon.namespace_id)
         .map(|members| members.contains(&beacon.peer_pubkey))
         .unwrap_or(false)
+}
+
+/// Whether a beacon whose signer is not (yet) a known member carries an
+/// invitation proving it was admitted to the namespace.
+///
+/// Consulted only where [`verify_readiness_beacon`] returns `false`. A node
+/// that joins while its governance broadcast reaches no peer is otherwise
+/// invisible: the beacon is the only pull trigger for an established member,
+/// and the beacon is dropped because no `MemberJoinedAt` op has been applied
+/// for its signer. An open invitation is self-contained and
+/// signature-verifiable, so it breaks that circularity without trusting the
+/// beacon.
+///
+/// This grants nothing. It writes no membership row, never populates the
+/// receiver's `ReadinessCache`, and never lets the beacon's advertised state
+/// into local state - it only tells the caller that pulling governance from
+/// this peer is worth the round trip. Membership still arrives exclusively via
+/// a verified `MemberJoinedAt` op on the normal apply path.
+///
+/// Open invitations carry no invitee field: they are bearer credentials, so a
+/// valid proof establishes that the beacon's signer *possesses* an invitation
+/// for this namespace, not that it was issued to them. The beacon signature
+/// covers `admission_proof`, so possession is at least bound to `peer_pubkey`.
+/// What bounds the rest is that the only unlocked action is an authenticated
+/// pull, rate-limited by the caller's per-namespace debounce.
+///
+/// Returns `false` on any failure (including store errors) so the caller drops
+/// the beacon exactly as it does today - the negative path must stay
+/// indistinguishable from an ordinary unverifiable beacon, or it becomes an
+/// oracle for which namespaces this node belongs to.
+#[must_use]
+pub fn beacon_admission_provable(store: &Store, beacon: &SignedReadinessBeacon) -> bool {
+    if beacon.verify_signature().is_err() {
+        return false;
+    }
+    let Some(inv) = beacon.admission_proof.as_ref() else {
+        return false;
+    };
+    // Inviter signature, the invited group belonging to this namespace, the
+    // inviter holding CAN_INVITE_MEMBERS in our current view, and expiry -
+    // the same gate the key-delivery responder applies to this credential.
+    if NamespaceMembershipService::new(store, beacon.namespace_id)
+        .validate_open_invitation(inv, crate::now_secs())
+        .is_err()
+    {
+        return false;
+    }
+    !ReentryRepository::new(store)
+        .is_invitation_consumed(
+            &inv.invitation.group_id,
+            &beacon.peer_pubkey,
+            inv.invitation.invitation_nonce,
+        )
+        .unwrap_or(true)
 }
 
 /// Verify a [`SignedMigrationHeartbeat`] against the local store's view of
