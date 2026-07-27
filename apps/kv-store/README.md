@@ -7,7 +7,7 @@ A simple key-value store application built with Calimero SDK.
 To build the application for WASM:
 
 ```bash
-cargo mero build --manifest-path apps/kv-store/Cargo.toml
+cargo mero build
 ```
 
 ## ABI Extraction
@@ -27,7 +27,7 @@ The state schema (state root type and all its dependencies) is automatically gen
 The state schema is automatically emitted during build:
 
 ```bash
-cargo mero build --manifest-path apps/kv-store/Cargo.toml
+cargo mero build
 # res/state-schema.json is automatically created
 ```
 
@@ -37,7 +37,7 @@ You can also extract the state schema from a compiled WASM file:
 
 ```bash
 # Extract state schema from WASM
-./target/debug/calimero-abi state apps/kv-store/res/kv-store.wasm -o state-schema.json
+./target/debug/calimero-abi state apps/kv-store/res/kv_store.wasm -o state-schema.json
 ```
 
 Both methods produce the same format, which can be used with `merodb`:

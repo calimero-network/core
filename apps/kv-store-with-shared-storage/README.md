@@ -18,7 +18,7 @@ current writer.
 ## Building
 
 ```bash
-cargo mero build --manifest-path apps/kv-store-with-shared-storage/Cargo.toml
+cargo mero build
 ```
 
 Produces `res/kv_store_with_shared_storage.wasm`.
