@@ -18,7 +18,7 @@ current writer.
 ## Building
 
 ```bash
-./build.sh
+cargo mero build
 ```
 
 Produces `res/kv_store_with_shared_storage.wasm`.

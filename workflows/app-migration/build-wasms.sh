@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Convenience wrapper that builds every migration-suite WASM fixture
-# used by the workflows in this directory. Each suite has its own
-# build.sh; this script just invokes them in order so CI and local
-# devs have one entry-point.
+# Build + bundle the migration fixtures the workflows in this directory install.
 #
-# Add new suites here as later PRs introduce them.
+# Each pair shares one `--package` so both versions resolve to the same
+# ApplicationId, which is the upgrade shape under test. That also means the
+# default dist/<package>.mpk path would collide, so each suite passes its own
+# `-o`.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,7 +52,7 @@ SUITES=(
     "apps/migrations/scenario-identity-downgrade-v1"
     "apps/migrations/scenario-identity-downgrade-v2"
     # migration_check pass/fail pairs (PR-6d task 6d.6): the v2 fixtures export
-    # #[app::migration_check] — the PASS pair carries items faithfully (check
+    # #[app::migration_check] - the PASS pair carries items faithfully (check
     # accepts), the FAIL pair drops one item (check rejects → logical abort).
     "apps/migrations/scenario-migration-check-pass-v1"
     "apps/migrations/scenario-migration-check-pass-v2"
@@ -60,61 +60,42 @@ SUITES=(
     "apps/migrations/scenario-migration-check-fail-v2"
 )
 
+mkdir -p dist
+PATH="$(scripts/setup-cargo-mero.sh):$PATH"
+
+# The missing-ABI scenario needs one bundle with no embedded ABI, which cargo mero
+# cannot produce. Built by hand BEFORE the loop below, which overwrites this same
+# res/ wasm with an embedded copy. Its own package keeps the ApplicationId distinct.
+NOABI_SUITE="apps/migrations/migration-suite-v2-add-field"
+NOABI_WASM="migration_suite_v2_add_field.wasm"
+NOABI_TARGET="${CARGO_TARGET_DIR:-target}"
+echo ">>> Building unembedded migration-suite-v2 (missing-ABI scenario fixture)"
+cargo build --target wasm32-unknown-unknown --profile app-release -p migration-suite-v2-add-field
+mkdir -p "$NOABI_SUITE/res"
+cp "$NOABI_TARGET/wasm32-unknown-unknown/app-release/$NOABI_WASM" "$NOABI_SUITE/res/$NOABI_WASM"
+if command -v wasm-opt > /dev/null; then
+    wasm-opt -Oz --enable-bulk-memory "$NOABI_SUITE/res/$NOABI_WASM" -o "$NOABI_SUITE/res/$NOABI_WASM"
+fi
+echo ">>> Bundling unembedded migration-suite-v2 (com.calimero.migration-suite-noabi @ 2.0.0)"
+bash apps/migrations/bundle-wasm.sh \
+    "$NOABI_SUITE" "$NOABI_WASM" "com.calimero.migration-suite-noabi" "2.0.0"
+
 for suite in "${SUITES[@]}"; do
     if [ ! -d "$suite" ]; then
         echo "ERROR: $suite not found" >&2
         exit 1
     fi
-    if [ ! -x "$suite/build.sh" ]; then
-        echo "ERROR: $suite/build.sh missing or not executable" >&2
-        exit 1
-    fi
-    echo ">>> Building $suite"
-    bash "$suite/build.sh"
-done
-
-# Unembedded v2 variant for the missing-ABI refusal scenario
-# (39-missing-abi-refused). Bundle migration-suite-v2-add-field's wasm HERE,
-# BEFORE the embed loop below, so this bundle's wasm carries NO
-# `calimero_abi_v1` section. An upgrade whose target has no embedded ABI is
-# refused (no migration evidence) unless forceCodeOnly is passed. Distinct
-# package -> distinct ApplicationId, so it never collides with the embedded
-# migration-suite bundles built later.
-echo ">>> Bundling unembedded migration-suite-v2 (com.calimero.migration-suite-noabi @ 2.0.0)"
-bash apps/migrations/bundle-wasm.sh \
-    "apps/migrations/migration-suite-v2-add-field" \
-    "migration_suite_v2_add_field.wasm" \
-    "com.calimero.migration-suite-noabi" \
-    "2.0.0"
-
-# Embed each fixture's state schema as the wasm's `calimero_abi_v1` section
-# (AFTER build.sh so wasm-opt cannot strip it). The node reads this embedded
-# form for the upgrade decision table (state_version + migration edges) and
-# the identity-downgrade gate — without it both are fail-open/unresolvable.
-echo ">>> Building mero-abi (embed tool)"
-cargo build -p mero-abi --release
-ABI_TOOL="${CARGO_TARGET_DIR:-target}/release/mero-abi"
-for suite in "${SUITES[@]}"; do
     dir_name="$(basename "$suite")"
-    wasm_file="${dir_name//-/_}.wasm"
-    "$ABI_TOOL" embed "$suite/res/$wasm_file" "$suite/res/state-schema.json"
-done
-
-# Wrap every fixture into a signed single-service `.mpk`. v1/v2 of a pair
-# share the package name, so they install under the SAME ApplicationId
-# (hash(package, signer)) — the realistic upgrade shape, where only the
-# bytecode blob changes between versions. The workflows install these
-# bundles (not the raw wasms) so the same-id propagation path is exercised.
-for suite in "${SUITES[@]}"; do
-    dir_name="$(basename "$suite")"
-    wasm_file="${dir_name//-/_}.wasm"
-    # `migration-suite-v3-remove-field` → base `migration-suite`, version 3.
-    # `scenario-user-storage-v2`       → base `scenario-user-storage`, version 2.
+    # `migration-suite-v3-remove-field` -> base `migration-suite`, version 3.
+    # `scenario-user-storage-v2`       -> base `scenario-user-storage`, version 2.
     base="${dir_name%%-v[0-9]*}"
     v_num="$(printf '%s' "$dir_name" | sed -E 's/.*-v([0-9]+).*/\1/')"
-    echo ">>> Bundling $suite (com.calimero.${base} @ ${v_num}.0.0)"
-    bash apps/migrations/bundle-wasm.sh \
-        "$suite" "$wasm_file" "com.calimero.${base}" "${v_num}.0.0"
+    echo ">>> Bundling $suite (com.calimero.${base} @ ${v_num}.0.0) -> dist/${dir_name}.mpk"
+    cargo mero bundle --dev \
+        --manifest-path "$suite/Cargo.toml" \
+        --package "com.calimero.${base}" \
+        --app-version "${v_num}.0.0" \
+        -o "dist/${dir_name}.mpk"
 done
 
-echo ">>> All migration-suite fixtures built."
+echo ">>> All migration-suite fixtures built and bundled under dist/."

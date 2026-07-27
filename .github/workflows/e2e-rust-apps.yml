@@ -137,10 +137,11 @@ jobs:
           shared-key: e2e-wasm-apps
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
       - name: Build scaffolding-e2e app
-        run: |
-          cd apps/scaffolding-e2e
-          ./build.sh
+        run: cargo mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
 
       - name: Build scaffolding-e2e multi-service bundle
         run: |
@@ -148,24 +149,19 @@ jobs:
           ./build-multi-service-bundle.sh
 
       - name: Build xcall-example app
-        run: |
-          cd apps/xcall-example
-          ./build.sh
+        run: cargo mero build --manifest-path apps/xcall-example/Cargo.toml
 
       - name: Build kv-store-with-shared-storage app
-        run: |
-          cd apps/kv-store-with-shared-storage
-          ./build.sh
+        run: cargo mero build --manifest-path apps/kv-store-with-shared-storage/Cargo.toml
 
       - name: Build components-demo app
-        run: |
-          cd apps/components-demo
-          ./build.sh
+        run: cargo mero build --manifest-path apps/components-demo/Cargo.toml
 
       - name: Build blobs app
-        run: |
-          cd apps/blobs
-          ./build.sh
+        run: cargo mero build --manifest-path apps/blobs/Cargo.toml
+
+      - name: Verify every built app wasm embeds the ABI (core#3287)
+        run: ./scripts/check-embedded-abi.sh
 
       - name: Upload app artifacts
         uses: actions/upload-artifact@v7

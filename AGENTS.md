@@ -99,6 +99,19 @@ crates/meroctl/src/cli/app/install.rs
 - Avoid `.unwrap()` / `.expect()` - use `.map_err()` or `?`
 - Comment if unwrap is safe: `// SAFETY: guaranteed by X`
 
+### Invoking cargo mero
+
+Put the tool on PATH once, then call it like any cargo subcommand. Never spell out
+`cargo run -q -p cargo-mero -- mero ...` at a call site.
+
+```bash
+PATH="$(scripts/setup-cargo-mero.sh):$PATH"   # in CI: ./.github/actions/setup-cargo-mero
+cargo mero build --manifest-path apps/kv-store/Cargo.toml
+```
+
+Drop `--manifest-path` where the working directory is already the app - a per-app
+README documents `cargo mero build`, not the path to itself.
+
 ### No Dead Code
 
 - **All code in PRs must be used** - no unused functions, variables, imports, or types
@@ -304,12 +317,16 @@ RUST_LOG=debug merod --node node1 run
 
 ## Building WASM Apps
 
+`cargo mero build` compiles to wasm32, size-optimizes, and embeds the ABI as the
+`calimero_abi_v1` section. A bare `cargo build` skips the embed, leaving a wasm
+the node cannot introspect.
+
 ```bash
 # Add WASM target
 rustup target add wasm32-unknown-unknown
 
 # Build specific app
-cargo build -p kv-store --target wasm32-unknown-unknown --release
+cargo mero build --manifest-path apps/kv-store/Cargo.toml
 
 # Build all apps
 ./scripts/build-all-apps.sh

@@ -30,18 +30,18 @@ This app consolidates the following backend features previously tested across mu
 ### Build WASM only
 
 ```bash
-./build.sh
+cargo mero build
 ```
 
-Output: `res/e2e_kv_store.wasm`
+Output: `res/scaffolding_e2e.wasm`
 
 ### Build bundle (.mpk)
 
 ```bash
-./build-bundle.sh
+cargo mero bundle --dev
 ```
 
-Output: `res/e2e-kv-store-1.0.0.mpk`
+Output: `dist/com.calimero.scaffolding-e2e.mpk` (at the repo root)
 
 ## State Structure
 
