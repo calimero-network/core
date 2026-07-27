@@ -695,6 +695,42 @@
       }
     },
     {
+      "name": "list_tuples",
+      "params": [
+        {
+          "name": "xs",
+          "type": {
+            "kind": "list",
+            "items": {
+              "kind": "tuple",
+              "elements": [
+                {
+                  "kind": "string"
+                },
+                {
+                  "kind": "u64"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "returns": {
+        "kind": "list",
+        "items": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "string"
+            },
+            {
+              "kind": "u64"
+            }
+          ]
+        }
+      }
+    },
+    {
       "name": "list_u32",
       "params": [
         {
@@ -951,6 +987,36 @@
       ],
       "returns": {
         "$ref": "UserId32"
+      }
+    },
+    {
+      "name": "tuple_pair",
+      "params": [
+        {
+          "name": "t",
+          "type": {
+            "kind": "tuple",
+            "elements": [
+              {
+                "kind": "string"
+              },
+              {
+                "kind": "u64"
+              }
+            ]
+          }
+        }
+      ],
+      "returns": {
+        "kind": "tuple",
+        "elements": [
+          {
+            "kind": "string"
+          },
+          {
+            "kind": "u64"
+          }
+        ]
       }
     },
     {

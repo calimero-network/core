@@ -249,6 +249,18 @@ impl AbiState {
         m
     }
 
+    // Tuples (positional, heterogeneous). `list_tuples` is the shape a
+    // `SortedMap::range` query returns.
+    #[must_use]
+    pub const fn tuple_pair(t: (String, u64)) -> (String, u64) {
+        t
+    }
+
+    #[must_use]
+    pub const fn list_tuples(xs: Vec<(String, u64)>) -> Vec<(String, u64)> {
+        xs
+    }
+
     // Records
     #[must_use]
     pub const fn make_person(p: Person) -> Person {

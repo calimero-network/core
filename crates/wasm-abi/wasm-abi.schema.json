@@ -218,6 +218,26 @@
               "$ref": "#/definitions/TypeRef"
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "elements"
+          ],
+          "properties": {
+            "kind": {
+              "const": "tuple"
+            },
+            "elements": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/TypeRef"
+              },
+              "minItems": 1
+            }
+          }
         }
       ]
     },
