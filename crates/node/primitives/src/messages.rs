@@ -1,4 +1,5 @@
 use actix::Message;
+use calimero_governance_types::SignedNamespaceOp;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use tokio::sync::oneshot;
@@ -34,6 +35,15 @@ pub enum NodeMessage {
     /// the subscribe path (`join_namespace`) holds a `NodeClient`, not the
     /// actor address.
     ForwardNamespaceSubscribed { namespace_id: [u8; 32] },
+    /// Queue a signed membership op whose publish reached no peer, so the
+    /// readiness FSM rebroadcasts it once a namespace peer subscribes.
+    /// Routed `NodeClient -> NodeManager -> readiness_addr` for the same
+    /// reason as the two variants above: the join path lives in
+    /// `crates/context` and cannot name the node-side actor.
+    ForwardPendingRepublish {
+        namespace_id: [u8; 32],
+        op: Box<SignedNamespaceOp>,
+    },
     /// Edge-trigger the migration-heartbeat emitter to recompute and re-publish
     /// this node's facts for a namespace, out of band of the periodic tick.
     /// Routed `NodeClient -> NodeManager` (the emitter address lives on

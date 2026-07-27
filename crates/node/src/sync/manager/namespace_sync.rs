@@ -1236,7 +1236,7 @@ impl SyncManager {
     /// on any best-effort failure (no peer, stream/​send/​recv error, unexpected
     /// response), so a caller correcting a divergence can tell whether the pull
     /// actually delivered anything rather than treating it as a silent no-op.
-    pub(super) async fn sync_namespace_from_peer(
+    pub(crate) async fn sync_namespace_from_peer(
         &self,
         namespace_id: [u8; 32],
         peer: Option<PeerId>,

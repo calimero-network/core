@@ -1,4 +1,7 @@
 use calimero_context_client::local_governance::SignedReadinessBeacon;
+use calimero_context_config::types::{
+    ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+};
 use calimero_primitives::identity::PrivateKey;
 
 use super::*;
@@ -395,6 +398,7 @@ fn make_beacon(pk: PublicKey, applied_through: u64, strong: bool) -> SignedReadi
         applied_through,
         ts_millis: 0,
         strong,
+        admission_proof: None,
         signature: [0u8; 64],
     }
 }
@@ -631,4 +635,125 @@ async fn await_first_fresh_beacon_times_out() {
         )
         .await;
     assert!(got.is_none());
+}
+
+fn test_invitation() -> SignedGroupOpenInvitation {
+    SignedGroupOpenInvitation {
+        invitation: GroupInvitationFromAdmin {
+            inviter_identity: SignerId::from([1u8; 32]),
+            group_id: ContextGroupId::from([7u8; 32]),
+            expiration_timestamp: 0,
+            invitation_nonce: [2u8; 32],
+            invited_role: 1,
+        },
+        inviter_signature: String::new(),
+        application_id: None,
+        app_key: None,
+    }
+}
+
+fn test_signed_op() -> SignedNamespaceOp {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+
+    let member = PublicKey::from([3u8; 32]);
+    SignedNamespaceOp {
+        version: 1,
+        namespace_id: [7u8; 32].into(),
+        parent_op_hashes: Vec::new(),
+        signer: member,
+        // Distinctive, non-default nonce/signature so the round-trip test
+        // below actually catches a value that got reset or re-signed.
+        nonce: 42,
+        op: NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member,
+            signed_invitation: test_invitation(),
+            joined_at: 0,
+        }),
+        signature: [9u8; 64],
+    }
+}
+
+fn pending_join_at(queued_at: Instant) -> PendingJoin {
+    PendingJoin {
+        op: test_signed_op(),
+        queued_at,
+    }
+}
+
+#[test]
+fn pending_republish_expires_after_cap() {
+    let mut pending: HashMap<[u8; 32], PendingJoin> = HashMap::new();
+    let stale = Instant::now() - (REPUBLISH_CAP + Duration::from_secs(1));
+    let _ = pending.insert([7u8; 32], pending_join_at(stale));
+
+    prune_expired_republishes(&mut pending, Instant::now());
+
+    assert!(pending.is_empty(), "entries past the cap must be dropped");
+}
+
+#[test]
+fn pending_republish_survives_within_cap() {
+    let mut pending: HashMap<[u8; 32], PendingJoin> = HashMap::new();
+    let _ = pending.insert([7u8; 32], pending_join_at(Instant::now()));
+
+    prune_expired_republishes(&mut pending, Instant::now());
+
+    assert_eq!(pending.len(), 1);
+}
+
+#[test]
+fn admission_proof_is_the_invitation_inside_the_queued_join() {
+    let proof = admission_proof_from(&test_signed_op()).expect("a queued join carries its proof");
+
+    assert_eq!(
+        borsh::to_vec(&proof).expect("encode proof"),
+        borsh::to_vec(&test_invitation()).expect("encode invitation"),
+        "the beacon must carry the very invitation the join op was built from"
+    );
+}
+
+#[test]
+fn non_join_op_carries_no_admission_proof() {
+    let mut op = test_signed_op();
+    op.op = NamespaceOp::Root(RootOp::NamespaceCreated {
+        founder: PublicKey::from([3u8; 32]),
+    });
+
+    assert!(
+        admission_proof_from(&op).is_none(),
+        "only an invitation-based join yields a proof"
+    );
+}
+
+#[test]
+fn republished_op_is_the_signed_op_verbatim() {
+    // The whole point of storing the op: a rebroadcast must be the SAME
+    // signed op. Re-signing would mint a second `MemberJoinedAt` at the
+    // next nonce, which is the divergence this task exists to avoid.
+    let original = test_signed_op();
+
+    let bytes = encode_namespace_topic_msg(
+        original.namespace_id.to_bytes(),
+        &NamespaceTopicMsg::Op(original.clone()),
+    )
+    .expect("encode");
+
+    // Decode through the real envelope the receive path unwraps.
+    let BroadcastMessage::NamespaceGovernanceDelta { payload, .. } =
+        borsh::from_slice(&bytes).expect("decode envelope")
+    else {
+        panic!("republish must use the NamespaceGovernanceDelta envelope");
+    };
+    let NamespaceTopicMsg::Op(decoded) = borsh::from_slice(&payload).expect("decode inner") else {
+        panic!("republish must carry a NamespaceTopicMsg::Op");
+    };
+
+    assert_eq!(decoded.nonce, original.nonce);
+    assert_eq!(decoded.signature, original.signature);
+    assert_eq!(decoded.signer, original.signer);
+    assert_eq!(
+        borsh::to_vec(&decoded).expect("re-encode"),
+        borsh::to_vec(&original).expect("re-encode"),
+        "the republished op must be byte-identical to the signed op"
+    );
 }

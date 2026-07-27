@@ -38,7 +38,7 @@ cargo test -p calimero-governance-store tee_member_removed_event_tests -- --test
 | `ops::namespace` (`ops/namespace.rs` + `ops/namespace/*.rs`) | One file per `RootOp` variant (`namespace_created.rs`, `group_created.rs`, `member_joined.rs`, `admin_changed.rs`, ...) |
 | `namespace/` (`core`, `dag`, `governance`, `membership`, `op_log`, `retry`) | `NamespaceGovernance` (namespace-scoped DAG apply/publish), `NamespaceDagService` (head tracking), `NamespaceRepository` (identity/topology), retry of encrypted ops once a key arrives |
 | `membership/` (`core`, `policy`, `policy_rules`, `status`, `view`) | `MembershipRepository` (member rows, ancestor walks, admin/capability checks), `MembershipPolicy`, `GroupMembershipView` |
-| `governance_broadcast.rs` | `publish_and_await_ack_namespace`, `AckRouter`-based ack collection, `PublishReadiness` classification, per-op-kind timeouts |
+| `governance_broadcast.rs` | `publish_and_await_ack_namespace`, `AckRouter`-based ack collection, `PublishReadiness` classification, per-op-kind timeouts, `beacon_admission_provable` (grants a governance pull for a beacon that fails membership but proves admission - never a membership row or a cache entry) |
 | `group_governance_publisher.rs` | `GroupGovernancePublisher` - orchestrates sign + local apply + encrypted namespace publish for group ops, including removal-triggered key rotation |
 | `governance_signer.rs` | `GovernanceSigner` - signing-key resolution for a group/namespace identity |
 | `unified_op_decode.rs` | Decodes an applied `SignedNamespaceOp`/`GroupOp` into a `calimero_op::Op` for the unified causal log, on the same store handle as the gov-DAG write |
@@ -80,7 +80,7 @@ cargo test -p calimero-governance-store tee_member_removed_event_tests -- --test
 | `src/ops/group/member_removed.rs`, `member_left.rs`, `group_key_rotated.rs` | Forward-secrecy-relevant handlers - removal/leave/rotation interplay |
 | `src/namespace/governance.rs` | `NamespaceGovernance::apply_signed_op` - the gossipsub-receive entry point, key unwrap, divergence report plumbing |
 | `src/authorizer.rs` | `AtCutAuthorizer` trait + `LiveFallbackAuthorizer` |
-| `src/governance_broadcast.rs` | Ack collection, `PublishReadiness`, per-op timeouts, `verify_ack`/`sign_ack` |
+| `src/governance_broadcast.rs` | Ack collection, `PublishReadiness`, per-op timeouts, `verify_ack`/`sign_ack`, `beacon_admission_provable` |
 | `src/group_governance_publisher.rs` | `GroupGovernancePublisher` - the sign+apply+publish orchestration entry point most handlers call |
 | `src/unified_op_decode.rs` | `Op` construction for the unified causal log |
 | `src/errors.rs` | All typed error enums and the downcast contract |

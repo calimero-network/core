@@ -49,3 +49,7 @@ calimero-projection.workspace = true
 # Serializes the op-event tests, which observe a process-global broadcast bus
 # (`op_events`) and would otherwise cross-talk / flood under parallel execution.
 serial_test.workspace = true
+# Backs the stub `BlobManager` a real `NodeClient` needs in publish-path tests
+# (unused by the publish path itself, but a required constructor field).
+calimero-blobstore.workspace = true
+tempfile.workspace = true

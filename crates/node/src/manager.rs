@@ -121,6 +121,9 @@ pub struct NodeManager {
     /// from every Ready peer, so an un-debounced behind-node would fire
     /// a sync per beacon per peer.
     ///
+    /// Covers the established-member arm only; the provable-admission arm has
+    /// its own budget in `ns_provable_beacon_sync_debounce`.
+    ///
     /// Shared (`Arc<Mutex<_>>`) because the slot is stamped from inside
     /// the spawned divergence-check future, *after* the async DAG read
     /// confirms a sync is genuinely needed — a beacon from an
@@ -129,6 +132,13 @@ pub struct NodeManager {
     /// Touched only by
     /// `handlers::network_event::readiness::handle_readiness_beacon`.
     pub(crate) ns_beacon_sync_debounce: Arc<Mutex<HashMap<[u8; 32], Instant>>>,
+    /// The same budget, same window, for beacons admitted only by the
+    /// provable-admission path. Separate because such a beacon comes from a
+    /// peer we do not recognise as a member and its advertised head always
+    /// looks divergent, so a shared slot would let it win most windows and
+    /// silence exactly the member anti-entropy above. Still keyed on the
+    /// namespace, never the peer: a Sybil swarm shares one budget.
+    pub(crate) ns_provable_beacon_sync_debounce: Arc<Mutex<HashMap<[u8; 32], Instant>>>,
     /// Shared per-(namespace, peer) migration-heartbeat TTL cache (PR-6c
     /// Task 6c.8). The receiver-side
     /// `network_event::namespace::handle_namespace_governance_delta`
@@ -180,6 +190,7 @@ impl NodeManager {
             divergence_streak: HashMap::new(),
             behind_sync_at: HashMap::new(),
             ns_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
+            ns_provable_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
             migration_status_cache: Arc::new(MigrationStatusCache::default()),
             migration_emitter_addr: None,
         }
@@ -218,6 +229,7 @@ impl NodeManager {
             node_client: self.clients.node.clone(),
             datastore: self.datastore.clone(),
             last_probe_response_at: std::collections::HashMap::new(),
+            pending_republish: std::collections::HashMap::new(),
         };
         self.readiness_addr = Some(manager.start());
     }
