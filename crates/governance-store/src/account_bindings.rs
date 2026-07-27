@@ -70,6 +70,11 @@ pub enum BindingRejected {
     /// A rotation not signed by the outgoing root key.
     #[error("key rotation is not signed by the outgoing root key")]
     RotationSignatureInvalid,
+    /// The account is not a member of this group, so its devices may not link
+    /// themselves in. Raised by the apply handler, not by the repository —
+    /// membership is the caller's question.
+    #[error("account is not a member of this group")]
+    AccountNotMember,
 }
 
 /// A device binding that is currently in force.

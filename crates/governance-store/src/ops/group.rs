@@ -14,6 +14,7 @@
 
 pub(crate) mod context;
 
+mod account_ops;
 mod cascade_group_migration_set;
 mod cascade_target_application_set;
 mod cascade_upgrade;
@@ -79,6 +80,15 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             expected_context_state_hashes,
         )?,
         GroupOp::GroupKeyRotated { departed } => group_key_rotated::apply(ctx, departed)?,
+        GroupOp::AccountDeviceLinked {
+            genesis,
+            chain,
+            cert,
+        } => account_ops::apply_device_linked(ctx, genesis, chain, cert)?,
+        GroupOp::AccountDeviceUnlinked { account, device } => {
+            account_ops::apply_device_unlinked(ctx, account, device)?
+        }
+        GroupOp::AccountKeysRotated { handoff } => account_ops::apply_keys_rotated(ctx, handoff)?,
         GroupOp::MemberRoleSet { member, role } => member_role_set::apply(ctx, member, role)?,
         GroupOp::MemberCapabilitySet {
             member,
