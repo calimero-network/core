@@ -49,6 +49,20 @@ runs:
         components: ${{ inputs.components }}
         targets: ${{ inputs.targets }}
 
+    # rust-toolchain.toml pins the toolchain cargo runs, which is not the one
+    # above; without this a `--target` build cannot find its std.
+    - name: Add targets to the active toolchain
+      if: inputs.targets != ''
+      shell: bash
+      run: |
+        IFS=',' read -ra wanted <<<"${{ inputs.targets }}"
+        for target in "${wanted[@]}"; do
+          target="$(echo "$target" | tr -d '[:space:]')"
+          [ -n "$target" ] || continue
+          echo "rustup target add $target (active: $(rustup show active-toolchain))"
+          rustup target add "$target"
+        done
+
     - name: Setup Rust cache
       uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       with:

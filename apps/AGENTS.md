@@ -20,8 +20,8 @@ cargo build -p kv-store --target wasm32-unknown-unknown --release
 # Build all apps
 ./scripts/build-all-apps.sh
 
-# Run app's build script
-cd apps/kv-store && ./build.sh
+# Build one app via cargo mero
+cargo mero build --manifest-path apps/kv-store/Cargo.toml
 ```
 
 ## Available Apps
@@ -47,7 +47,6 @@ Each app follows this structure:
 ```
 app-name/
 ├── Cargo.toml                # Crate config
-├── build.sh                  # Build script
 ├── build.rs                  # Build-time config (optional)
 ├── README.md                 # App documentation
 ├── src/
@@ -270,14 +269,10 @@ mod tests {
 - `events()` / `logs()` return what `app::emit!` / `app::log!` produced.
 - Unsupported in-process: `env::xcall`, networked blobs, `ed25519_verify` (they panic if hit) - test those paths with merobox workflows.
 
-### Build Script Pattern
+### Building an App
 
 ```bash
-#!/bin/bash
-# build.sh
-set -e
-cd "$(dirname "$0")"
-cargo build --target wasm32-unknown-unknown --release
+cargo mero build --manifest-path apps/<app>/Cargo.toml
 ```
 
 ## Key Reference Files

@@ -74,8 +74,8 @@ else
     while IFS= read -r dir; do
         APP_DIRS+=("$dir")
     done < <(
-        grep -oE 'apps/[^"]*/build\.sh' scripts/build-all-apps.sh \
-            | sed 's#/build\.sh##' | sort -u
+        grep -oE 'apps/[^" ]*/Cargo\.toml' scripts/build-all-apps.sh \
+            | sed 's#/Cargo\.toml##' | sort -u
     )
 fi
 

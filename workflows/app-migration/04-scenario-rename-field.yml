@@ -38,7 +38,7 @@ steps:
   - name: Install migration-suite-v3-remove-field on node 1
     type: install_application
     node: app-migration-rename-1
-    path: apps/migrations/migration-suite-v3-remove-field/res/migration-suite-3.0.0.mpk
+    path: dist/migration-suite-v3-remove-field.mpk
     dev: true
     outputs:
       app_v3: applicationId
@@ -165,7 +165,7 @@ steps:
   - name: Install migration-suite-v4-rename-field on node 1
     type: install_application
     node: app-migration-rename-1
-    path: apps/migrations/migration-suite-v4-rename-field/res/migration-suite-4.0.0.mpk
+    path: dist/migration-suite-v4-rename-field.mpk
     dev: true
     outputs:
       app_v4: applicationId

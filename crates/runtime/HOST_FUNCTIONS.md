@@ -298,6 +298,49 @@ Same byte API and CRDT semantics as the Set operations above, but `iter` yields 
 | `js_crdt_sortedset_iter` | `(set_id_ptr: u64, register_id: u64) -> i32` | Iterates all values in ascending order. |
 | `js_crdt_sortedset_clear` | `(set_id_ptr: u64) -> i32` | Clears all values from the set. |
 
+#### Authored Map Operations
+
+An attributed shared-keyspace map with per-entry ownership. Any context member may `insert` a
+new key, which **stamps the caller (executor) as the entry's owner**; only that owner may later
+`update` or `remove` the entry. Reads are unrestricted. Ownership is derived from the executor
+identity the runtime installs per-execution — no identity argument is passed. A non-owner
+`update`/`remove` returns `-1` with an ownership error message written to the register.
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `js_crdt_authored_map_new` | `(register_id: u64) -> i32` | Creates a new attributed map. |
+| `js_crdt_authored_map_new_with_id` | `(id_ptr: u64, register_id: u64) -> i32` | Creates an attributed map at a caller-supplied deterministic 32-byte ID. |
+| `js_crdt_authored_map_insert` | `(map_id_ptr: u64, key_ptr: u64, value_ptr: u64, register_id: u64) -> i32` | Inserts a new key, stamping the caller as owner. Returns `0` on success; `-1` (error in register) if the key already exists. |
+| `js_crdt_authored_map_update` | `(map_id_ptr: u64, key_ptr: u64, value_ptr: u64, register_id: u64) -> i32` | Owner-only. Replaces the value at a key. Returns `1` on success; `-1` (error in register) for a non-owner or missing key. |
+| `js_crdt_authored_map_remove` | `(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32` | Owner-only. Removes a key, returning the previous value (`1`) or `0` if absent; `-1` (error in register) for a non-owner. |
+| `js_crdt_authored_map_get` | `(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32` | Retrieves a value by key (`1` found, `0` absent). |
+| `js_crdt_authored_map_contains` | `(map_id_ptr: u64, key_ptr: u64) -> i32` | Checks whether a key exists (`1`/`0`). |
+| `js_crdt_authored_map_owner_of` | `(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32` | Writes the entry owner's 32-byte public key to the register (`1`); `0` with a cleared register if the key is absent. |
+| `js_crdt_authored_map_owned_by_me` | `(map_id_ptr: u64, key_ptr: u64) -> i32` | Whether the current executor owns the key (`1`/`0`; `0` for absent keys). |
+| `js_crdt_authored_map_iter` | `(map_id_ptr: u64, register_id: u64) -> i32` | Iterates all entries (`[count][klen,key,vlen,value]...`). |
+| `js_crdt_authored_map_len` | `(map_id_ptr: u64, register_id: u64) -> i32` | Gets the entry count (`u64`, little-endian). |
+
+#### Authored Vector Operations
+
+An attributed ordered shared-keyspace vector with per-slot ownership. Any context member may
+`push` a new entry at the tail, which **stamps the caller (executor) as the slot's owner**; only
+that owner may later `update` or `tombstone` the slot. There is intentionally no physical remove —
+`tombstone` overwrites the slot with an empty value while preserving its position and owner. A
+non-owner `update`/`tombstone` returns `-1` with an ownership error message written to the register.
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `js_crdt_authored_vector_new` | `(register_id: u64) -> i32` | Creates a new attributed vector. |
+| `js_crdt_authored_vector_new_with_id` | `(id_ptr: u64, register_id: u64) -> i32` | Creates an attributed vector at a caller-supplied deterministic 32-byte ID. |
+| `js_crdt_authored_vector_push` | `(vector_id_ptr: u64, value_ptr: u64, register_id: u64) -> i32` | Pushes a value at the tail, stamping the caller as owner. Writes the new index (`u64`, little-endian) to the register; returns `1`. |
+| `js_crdt_authored_vector_update` | `(vector_id_ptr: u64, index: u64, value_ptr: u64, register_id: u64) -> i32` | Owner-only. Replaces the value at a slot. Returns `1` on success; `-1` (error in register) for a non-owner or out-of-bounds index. |
+| `js_crdt_authored_vector_tombstone` | `(vector_id_ptr: u64, index: u64, register_id: u64) -> i32` | Owner-only. Retracts a slot (overwrites with an empty value). Returns `1` on success; `-1` (error in register) for a non-owner or out-of-bounds index. |
+| `js_crdt_authored_vector_get` | `(vector_id_ptr: u64, index: u64, register_id: u64) -> i32` | Retrieves a value by index (`1` found, `0` absent). |
+| `js_crdt_authored_vector_owner_of` | `(vector_id_ptr: u64, index: u64, register_id: u64) -> i32` | Writes the slot owner's 32-byte public key to the register (`1`); `0` with a cleared register if the slot is out of bounds. |
+| `js_crdt_authored_vector_owned_by_me` | `(vector_id_ptr: u64, index: u64) -> i32` | Whether the current executor owns the slot (`1`/`0`; `0` for out-of-bounds slots). |
+| `js_crdt_authored_vector_iter` | `(vector_id_ptr: u64, register_id: u64) -> i32` | Iterates all values in insertion order (`[count][len,value]...`). |
+| `js_crdt_authored_vector_len` | `(vector_id_ptr: u64, register_id: u64) -> i32` | Gets the entry count including tombstoned slots (`u64`, little-endian). |
+
 ### User & Frozen Storage (JS)
 
 #### User Storage

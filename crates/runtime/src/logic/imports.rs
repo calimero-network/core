@@ -147,6 +147,60 @@ impl VMLogic<'_> {
             fn js_crdt_sortedset_iter(set_id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_sortedset_clear(set_id_ptr: u64) -> i32;
 
+            fn js_crdt_authored_map_new(register_id: u64) -> i32;
+            fn js_crdt_authored_map_new_with_id(id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_authored_map_insert(
+                map_id_ptr: u64,
+                key_ptr: u64,
+                value_ptr: u64,
+                register_id: u64,
+            ) -> i32;
+            fn js_crdt_authored_map_update(
+                map_id_ptr: u64,
+                key_ptr: u64,
+                value_ptr: u64,
+                register_id: u64,
+            ) -> i32;
+            fn js_crdt_authored_map_remove(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_authored_map_get(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_authored_map_contains(map_id_ptr: u64, key_ptr: u64) -> i32;
+            fn js_crdt_authored_map_owner_of(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_authored_map_owned_by_me(map_id_ptr: u64, key_ptr: u64) -> i32;
+            fn js_crdt_authored_map_iter(map_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_authored_map_len(map_id_ptr: u64, register_id: u64) -> i32;
+
+            fn js_crdt_authored_vector_new(register_id: u64) -> i32;
+            fn js_crdt_authored_vector_new_with_id(id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_authored_vector_push(
+                vector_id_ptr: u64,
+                value_ptr: u64,
+                register_id: u64,
+            ) -> i32;
+            fn js_crdt_authored_vector_update(
+                vector_id_ptr: u64,
+                index: u64,
+                value_ptr: u64,
+                register_id: u64,
+            ) -> i32;
+            fn js_crdt_authored_vector_tombstone(
+                vector_id_ptr: u64,
+                index: u64,
+                register_id: u64,
+            ) -> i32;
+            fn js_crdt_authored_vector_get(
+                vector_id_ptr: u64,
+                index: u64,
+                register_id: u64,
+            ) -> i32;
+            fn js_crdt_authored_vector_owner_of(
+                vector_id_ptr: u64,
+                index: u64,
+                register_id: u64,
+            ) -> i32;
+            fn js_crdt_authored_vector_owned_by_me(vector_id_ptr: u64, index: u64) -> i32;
+            fn js_crdt_authored_vector_iter(vector_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_authored_vector_len(vector_id_ptr: u64, register_id: u64) -> i32;
+
             fn js_user_storage_new(register_id: u64) -> i32;
             fn js_user_storage_new_with_id(id_ptr: u64, register_id: u64) -> i32;
             fn js_user_storage_insert(

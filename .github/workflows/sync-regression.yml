@@ -78,10 +78,11 @@ jobs:
           CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
       - name: Build kv-store-with-handlers WASM
-        run: |
-          cd apps/kv-store-with-handlers
-          ./build.sh
+        run: cargo mero build --manifest-path apps/kv-store-with-handlers/Cargo.toml
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox

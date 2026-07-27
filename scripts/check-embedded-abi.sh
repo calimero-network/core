@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Fail if an app wasm lacks the `calimero_abi_v1` section, which the node needs
+# to read an app's ABI. `cargo mero build` embeds it on every build.
+#
+# Usage: check-embedded-abi.sh [wasm ...]   (default: every apps/**/res/*.wasm)
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+if [ "$#" -gt 0 ]; then
+    wasms=("$@")
+else
+    # `find`, not a `**/` glob: bash 3.2 (macOS) has no globstar.
+    wasms=()
+    while IFS= read -r w; do
+        wasms+=("$w")
+    done < <(find apps -type f -path '*/res/*.wasm' | sort)
+fi
+
+if [ "${#wasms[@]}" -eq 0 ]; then
+    echo "ERROR: no wasm files to check (build the apps first)" >&2
+    exit 1
+fi
+
+# Built once: `cargo run` per wasm would re-check the workspace each time.
+cargo build -q -p mero-abi
+MERO_ABI="${CARGO_TARGET_DIR:-target}/debug/mero-abi"
+
+stderr_file="$(mktemp)"
+trap 'rm -f "$stderr_file"' EXIT
+
+missing=0
+for wasm in "${wasms[@]}"; do
+    # Captured, not piped: `grep -q` closing the pipe early would surface as a
+    # false pipefail. A failing inspect is a tool error, not a missing section.
+    if ! report="$("$MERO_ABI" inspect "$wasm" 2>"$stderr_file")"; then
+        echo "ERROR: could not run mero-abi inspect on $wasm" >&2
+        sed 's/^/  /' "$stderr_file" >&2
+        exit 1
+    fi
+    # Match the section-walk line, not a bare name: inspect's "NOT found" advice
+    # also contains the name, which would make the guard pass on every wasm.
+    if printf '%s' "$report" | grep -q "CustomSection: 'calimero_abi_v1'"; then
+        echo "ok:      $wasm"
+    else
+        echo "MISSING: $wasm has no calimero_abi_v1 section" >&2
+        missing=1
+    fi
+done
+
+if [ "$missing" -ne 0 ]; then
+    echo "" >&2
+    echo "FAIL: one or more app wasms lack the embedded ABI." >&2
+    exit 1
+fi
+
+echo "All ${#wasms[@]} app wasm(s) carry the calimero_abi_v1 section."
