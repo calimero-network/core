@@ -59,6 +59,9 @@ fn beacon_indicates_divergence(
 /// Per-namespace debounce gate. Returns `true` (and records `now`) when
 /// no beacon-triggered sync fired for `namespace_id` within
 /// [`NS_BEACON_SYNC_DEBOUNCE`]; returns `false` otherwise.
+///
+/// Applied to whichever of the caller's two per-path maps is in play, so the
+/// window is per (namespace, path) without ever being per peer.
 fn debounce_allows_sync(
     debounce: &mut HashMap<[u8; 32], Instant>,
     namespace_id: [u8; 32],
@@ -153,6 +156,11 @@ pub(super) fn handle_readiness_beacon(
 /// arbitrary mesh peer would query someone who cannot serve it while still
 /// burning the debounce slot. `None` keeps the established-member path on the
 /// mesh-peer pull, where any member that applied the op can serve it.
+///
+/// The two paths debounce independently - `ns_beacon_sync_debounce` against
+/// `ns_provable_beacon_sync_debounce`, see those field docs - and the provable
+/// slot is released when the targeted pull returns nothing: a peer that cannot
+/// serve the head it advertised forfeits the window it took.
 fn spawn_beacon_divergence_sync(
     manager: &mut NodeManager,
     ctx: &mut actix::Context<NodeManager>,
@@ -163,7 +171,11 @@ fn spawn_beacon_divergence_sync(
     let datastore = manager.datastore.clone();
     let node_client = manager.clients.node.clone();
     let sync_manager = manager.managers.sync.clone();
-    let debounce = manager.ns_beacon_sync_debounce.clone();
+    let debounce = if source.is_some() {
+        manager.ns_provable_beacon_sync_debounce.clone()
+    } else {
+        manager.ns_beacon_sync_debounce.clone()
+    };
     let _ignored = ctx.spawn(
         async move {
             let handle = datastore.handle();
@@ -213,9 +225,9 @@ fn spawn_beacon_divergence_sync(
             }
             // Divergence confirmed. Claim the debounce slot atomically;
             // if another beacon already triggered a sync for this
-            // namespace within the window, skip. The guard is dropped
-            // before the `.await` below — the lock is never held across
-            // an await point.
+            // namespace on this path within the window, skip. The guard
+            // is dropped before the `.await` below, so the lock is never
+            // held across an await point.
             {
                 let mut guard = debounce
                     .lock()
@@ -236,9 +248,22 @@ fn spawn_beacon_divergence_sync(
                 // `delta_ids` ("give me everything"), but against `source`
                 // directly rather than an arbitrary subscriber.
                 Some(peer) => {
-                    let _ops = sync_manager
+                    let ops = sync_manager
                         .sync_namespace_from_peer(namespace_id, Some(peer))
                         .await;
+                    if ops == 0 {
+                        // The pull delivered nothing, so give the slot back
+                        // rather than making the next genuine beacon wait it out.
+                        let _ = debounce
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .remove(&namespace_id);
+                        debug!(
+                            namespace_id = %hex::encode(namespace_id),
+                            %peer,
+                            "provable-admission pull returned no ops; released the debounce slot"
+                        );
+                    }
                 }
                 None => {
                     if let Err(err) = node_client.sync_namespace(namespace_id).await {
