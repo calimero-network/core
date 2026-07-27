@@ -363,19 +363,15 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 };
 
                 // Announce membership on the namespace DAG. Apply + store it
-                // locally regardless of transport readiness, then publish
-                // best-effort: a thin mesh at join time must not stop the local
-                // DAG head from advancing, or a later `MemberJoinedOpen` for an
-                // Open subgroup won't causally parent onto this op and peers
-                // will apply the child before its prerequisite (the ~23%
-                // migration-e2e sync flake). The stored op reaches peers via
-                // sync even when the immediate publish acks are thin.
+                // locally regardless of transport readiness so a later
+                // `MemberJoinedOpen` can causally parent onto this op; publish
+                // is best-effort on top of that.
                 let member_joined_op = NamespaceOp::Root(RootOp::MemberJoinedAt {
                     member: joiner_identity,
-                    signed_invitation: invitation.clone(),
+                    signed_invitation: invitation,
                     joined_at: now_secs,
                 });
-                if let Err(e) = calimero_governance_store::sign_apply_and_publish_namespace_op(
+                match calimero_governance_store::sign_apply_and_publish_namespace_op_returning_op(
                     &datastore,
                     &node_client,
                     &ack_router,
@@ -385,7 +381,12 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 )
                 .await
                 {
-                    warn!(?e, "failed to apply/publish MemberJoined locally (non-fatal)");
+                    Ok((report, signed)) if report.acked_by.is_empty() => {
+                        // Reached no peer; retry when a namespace peer next subscribes.
+                        node_client.queue_membership_republish(namespace_id, signed);
+                    }
+                    Ok(_) => {}
+                    Err(e) => warn!(?e, "failed to apply/publish MemberJoined locally (non-fatal)"),
                 }
 
                 if let Some(rx) = op_event_rx.as_mut() {

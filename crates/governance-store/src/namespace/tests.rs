@@ -85,6 +85,132 @@ fn test_signed_invitation(
     }
 }
 
+/// Stub `NetworkManager` for tests that call
+/// `NamespaceGovernance::sign_apply_and_publish[_returning_op]` end to end:
+/// resolves only the two `NetworkMessage` variants that path touches
+/// (`Publish`, `MeshPeerCount`) and drops the rest, so the publish step
+/// completes without a live libp2p swarm. Mirrors the `CountingNetworkActor`
+/// pattern in `calimero_node_primitives::client::publish_on_namespace_now_tests`.
+struct StubNetworkActor;
+
+impl actix::Actor for StubNetworkActor {
+    type Context = actix::Context<Self>;
+}
+
+impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for StubNetworkActor {
+    type Result = ();
+
+    fn handle(
+        &mut self,
+        msg: calimero_network_primitives::messages::NetworkMessage,
+        _ctx: &mut Self::Context,
+    ) -> Self::Result {
+        use calimero_network_primitives::messages::{MessageId, NetworkMessage};
+
+        match msg {
+            NetworkMessage::MeshPeerCount { outcome, .. } => {
+                let _ = outcome.send(0);
+            }
+            NetworkMessage::Publish { outcome, .. } => {
+                let _ = outcome.send(Ok(MessageId(b"stub".to_vec())));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Build a real `NodeClient`/`AckRouter` pair for tests that call
+/// `NamespaceGovernance::sign_apply_and_publish[_returning_op]`: a namespace
+/// with a bootstrapped admin (returned as the signing key), and a
+/// `NodeClient` whose network side is wired to `StubNetworkActor` so the
+/// publish step resolves without a swarm. The `TempDir` keeps the stub
+/// blobstore filesystem alive for the caller's duration (`sign_apply_and_publish`
+/// never touches it, but `NodeClient::new` requires a real `BlobManager`).
+async fn namespace_publish_fixture() -> (
+    Store,
+    calimero_node_primitives::client::NodeClient,
+    calimero_context_client::local_governance::AckRouter,
+    NamespaceId,
+    PrivateKey,
+    tempfile::TempDir,
+) {
+    use actix::Actor;
+    use calimero_network_primitives::client::NetworkClient;
+    use calimero_network_primitives::messages::NetworkMessage;
+    use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
+    use calimero_utils_actix::LazyRecipient;
+
+    let store = test_store();
+    let ns_id: [u8; 32] = [0x91; 32];
+    let (sk, _pk) = bootstrap_namespace_with_admin(&store, ns_id);
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let blob_cfg = calimero_blobstore::config::BlobStoreConfig::new(
+        tmp.path().to_path_buf().try_into().expect("utf8 blob path"),
+    );
+    let fs = calimero_blobstore::FileSystem::new(&blob_cfg)
+        .await
+        .expect("blob fs");
+    let blob_manager = BlobManager::new(calimero_blobstore::BlobManager::new(store.clone(), fs));
+
+    let network_recipient = LazyRecipient::<NetworkMessage>::new();
+    let network_client = NetworkClient::new(network_recipient.clone());
+    let _addr = StubNetworkActor::create(move |ctx| {
+        assert!(network_recipient.init(ctx), "network recipient init");
+        StubNetworkActor
+    });
+
+    let (event_sender, _) = tokio::sync::broadcast::channel(16);
+    let (ctx_sync_tx, _ctx_sync_rx) = tokio::sync::mpsc::channel(8);
+    let (ns_sync_tx, _ns_sync_rx) = tokio::sync::mpsc::channel(8);
+    let (ns_join_tx, _ns_join_rx) = tokio::sync::mpsc::channel(8);
+    let (open_subgroup_join_tx, _open_rx) = tokio::sync::mpsc::channel(8);
+    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+
+    let node_client = NodeClient::new(
+        store.clone(),
+        blob_manager,
+        network_client,
+        LazyRecipient::new(),
+        event_sender,
+        sync_client,
+        None,
+    );
+
+    let ack_router = calimero_context_client::local_governance::AckRouter::default();
+
+    (store, node_client, ack_router, ns_id.into(), sk, tmp)
+}
+
+#[actix::test]
+async fn sign_apply_and_publish_returns_the_signed_op() {
+    use calimero_context_client::local_governance::{hash_scoped_namespace, NamespaceOp, RootOp};
+
+    let (store, node_client, ack_router, ns_id, sk, _tmp) = namespace_publish_fixture().await;
+    let op = NamespaceOp::Root(RootOp::MemberJoinedAt {
+        member: sk.public_key(),
+        signed_invitation: test_signed_invitation(&sk, ContextGroupId::from(ns_id.to_bytes()), 0),
+        joined_at: 0,
+    });
+
+    let (report, signed) = NamespaceGovernance::new(&store, ns_id)
+        .sign_apply_and_publish_returning_op(&node_client, &ack_router, &sk, op)
+        .await
+        .expect("publish");
+
+    assert_eq!(
+        report.op_hash,
+        hash_scoped_namespace(
+            crate::governance_broadcast::ns_topic(ns_id)
+                .as_str()
+                .as_bytes(),
+            &signed
+        )
+        .unwrap(),
+        "returned op must be the one the report describes"
+    );
+}
+
 #[test]
 fn validate_open_invitation_rejects_expired() {
     let mut rng = rand::rngs::OsRng;

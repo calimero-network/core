@@ -10,8 +10,8 @@ use calimero_storage::{
     index::Index,
     interface::{Interface, StorageError},
     js::{
-        JsCounter, JsFrozenStorage, JsLwwRegister, JsUnorderedMap, JsUnorderedSet, JsUserStorage,
-        JsVector,
+        JsCounter, JsFrozenStorage, JsLwwRegister, JsPnCounter, JsRga, JsSortedMap, JsSortedSet,
+        JsUnorderedMap, JsUnorderedSet, JsUserStorage, JsVector,
     },
     store::MainStorage,
 };
@@ -410,6 +410,226 @@ impl VMHostFunctions<'_> {
         hash_ptr: u64,
     ) -> VMLogicResult<i32> {
         self.invoke_with_storage_env(|host| host.frozen_storage_contains(storage_id_ptr, hash_ptr))
+    }
+
+    /// Creates a new PN-counter and returns its identifier.
+    pub fn js_crdt_pncounter_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_pncounter_new(dest_register_id))
+    }
+
+    /// Creates a new PN-counter at a caller-supplied deterministic id.
+    pub fn js_crdt_pncounter_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_pncounter_new_with_id(id_ptr, dest_register_id)
+        })
+    }
+
+    pub fn js_crdt_pncounter_increment(&mut self, counter_id_ptr: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_pncounter_increment(counter_id_ptr))
+    }
+
+    pub fn js_crdt_pncounter_decrement(&mut self, counter_id_ptr: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_pncounter_decrement(counter_id_ptr))
+    }
+
+    pub fn js_crdt_pncounter_value(
+        &mut self,
+        counter_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_pncounter_value(counter_id_ptr, dest_register_id)
+        })
+    }
+
+    pub fn js_crdt_pncounter_get_executor_count(
+        &mut self,
+        counter_id_ptr: u64,
+        executor_ptr: u64,
+        has_executor: u32,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_pncounter_get_executor_count(
+                counter_id_ptr,
+                executor_ptr,
+                has_executor,
+                dest_register_id,
+            )
+        })
+    }
+
+    /// Creates a new RGA (collaborative text sequence) and returns its identifier.
+    pub fn js_crdt_rga_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_rga_new(dest_register_id))
+    }
+
+    /// Creates a new RGA at a caller-supplied deterministic id.
+    pub fn js_crdt_rga_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_rga_new_with_id(id_ptr, dest_register_id))
+    }
+
+    pub fn js_crdt_rga_insert(
+        &mut self,
+        rga_id_ptr: u64,
+        index: u64,
+        value_ptr: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_rga_insert(rga_id_ptr, index, value_ptr))
+    }
+
+    pub fn js_crdt_rga_delete(&mut self, rga_id_ptr: u64, index: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_rga_delete(rga_id_ptr, index))
+    }
+
+    pub fn js_crdt_rga_get_text(
+        &mut self,
+        rga_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_rga_get_text(rga_id_ptr, dest_register_id))
+    }
+
+    pub fn js_crdt_rga_len(
+        &mut self,
+        rga_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_rga_len(rga_id_ptr, dest_register_id))
+    }
+
+    /// Creates a new ordered CRDT map and returns its identifier.
+    pub fn js_crdt_sortedmap_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_sortedmap_new(dest_register_id))
+    }
+
+    /// Creates a new ordered CRDT map at a caller-supplied deterministic id.
+    pub fn js_crdt_sortedmap_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_sortedmap_new_with_id(id_ptr, dest_register_id)
+        })
+    }
+
+    pub fn js_crdt_sortedmap_get(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_sortedmap_get(map_id_ptr, key_ptr, dest_register_id)
+        })
+    }
+
+    pub fn js_crdt_sortedmap_insert(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+        value_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_sortedmap_insert(map_id_ptr, key_ptr, value_ptr, dest_register_id)
+        })
+    }
+
+    pub fn js_crdt_sortedmap_remove(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_sortedmap_remove(map_id_ptr, key_ptr, dest_register_id)
+        })
+    }
+
+    pub fn js_crdt_sortedmap_contains(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_sortedmap_contains(map_id_ptr, key_ptr))
+    }
+
+    pub fn js_crdt_sortedmap_iter(
+        &mut self,
+        map_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_sortedmap_iter(map_id_ptr, dest_register_id))
+    }
+
+    /// Creates a new ordered CRDT set and returns its identifier.
+    pub fn js_crdt_sortedset_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_sortedset_new(dest_register_id))
+    }
+
+    /// Creates a new ordered CRDT set at a caller-supplied deterministic id.
+    pub fn js_crdt_sortedset_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_sortedset_new_with_id(id_ptr, dest_register_id)
+        })
+    }
+
+    pub fn js_crdt_sortedset_insert(
+        &mut self,
+        set_id_ptr: u64,
+        value_ptr: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_sortedset_insert(set_id_ptr, value_ptr))
+    }
+
+    pub fn js_crdt_sortedset_contains(
+        &mut self,
+        set_id_ptr: u64,
+        value_ptr: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_sortedset_contains(set_id_ptr, value_ptr))
+    }
+
+    pub fn js_crdt_sortedset_remove(
+        &mut self,
+        set_id_ptr: u64,
+        value_ptr: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_sortedset_remove(set_id_ptr, value_ptr))
+    }
+
+    pub fn js_crdt_sortedset_len(
+        &mut self,
+        set_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_sortedset_len(set_id_ptr, dest_register_id))
+    }
+
+    pub fn js_crdt_sortedset_iter(
+        &mut self,
+        set_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_sortedset_iter(set_id_ptr, dest_register_id))
+    }
+
+    pub fn js_crdt_sortedset_clear(&mut self, set_id_ptr: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_sortedset_clear(set_id_ptr))
     }
 
     fn crdt_map_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
@@ -1633,6 +1853,748 @@ impl VMHostFunctions<'_> {
         }
     }
 
+    fn crdt_pncounter_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsPnCounter, String> {
+            let mut counter = JsPnCounter::new();
+            save_js_pncounter_instance(&mut counter)?;
+            Ok(counter)
+        }));
+
+        match outcome {
+            Ok(Ok(counter)) => {
+                self.write_register_bytes(dest_register_id, counter.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_pncounter_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsPnCounter, String> {
+            let mut counter = JsPnCounter::new_with_id(id);
+            save_js_pncounter_instance(&mut counter)?;
+            Ok(counter)
+        }));
+
+        match outcome {
+            Ok(Ok(counter)) => {
+                self.write_register_bytes(dest_register_id, counter.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_pncounter_increment(&mut self, counter_id_ptr: u64) -> VMLogicResult<i32> {
+        let counter_id = match self.read_map_id(counter_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let mut counter = match load_js_pncounter_instance(counter_id) {
+            Ok(counter) => counter,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match counter.increment() {
+            Ok(()) => match save_js_pncounter_instance(&mut counter) {
+                Ok(()) => Ok(1),
+                Err(message) => self.write_error_message(0, message),
+            },
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    fn crdt_pncounter_decrement(&mut self, counter_id_ptr: u64) -> VMLogicResult<i32> {
+        let counter_id = match self.read_map_id(counter_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let mut counter = match load_js_pncounter_instance(counter_id) {
+            Ok(counter) => counter,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match counter.decrement() {
+            Ok(()) => match save_js_pncounter_instance(&mut counter) {
+                Ok(()) => Ok(1),
+                Err(message) => self.write_error_message(0, message),
+            },
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    fn crdt_pncounter_value(
+        &mut self,
+        counter_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let counter_id = match self.read_map_id(counter_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let counter = match load_js_pncounter_instance(counter_id) {
+            Ok(counter) => counter,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match counter.value() {
+            Ok(value) => {
+                self.write_register_bytes(dest_register_id, &value.to_le_bytes())?;
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_pncounter_get_executor_count(
+        &mut self,
+        counter_id_ptr: u64,
+        executor_ptr: u64,
+        has_executor: u32,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let counter_id = match self.read_map_id(counter_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let executor_bytes: [u8; 32] = if has_executor != 0 {
+            let bytes = self.read_buffer(executor_ptr)?;
+            match <[u8; 32]>::try_from(bytes.as_slice()) {
+                Ok(array) => array,
+                Err(_) => {
+                    return self.write_error_message(
+                        dest_register_id,
+                        "executor id must be exactly 32 bytes",
+                    )
+                }
+            }
+        } else {
+            self.borrow_logic().context.executor_public_key
+        };
+
+        let counter = match load_js_pncounter_instance(counter_id) {
+            Ok(counter) => counter,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match counter.get_executor_count(&executor_bytes) {
+            Ok(value) => {
+                self.write_register_bytes(dest_register_id, &value.to_le_bytes())?;
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_rga_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsRga, String> {
+            let mut rga = JsRga::new();
+            save_js_rga_instance(&mut rga)?;
+            Ok(rga)
+        }));
+
+        match outcome {
+            Ok(Ok(rga)) => {
+                self.write_register_bytes(dest_register_id, rga.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_rga_new_with_id(&mut self, id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsRga, String> {
+            let mut rga = JsRga::new_with_id(id);
+            save_js_rga_instance(&mut rga)?;
+            Ok(rga)
+        }));
+
+        match outcome {
+            Ok(Ok(rga)) => {
+                self.write_register_bytes(dest_register_id, rga.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_rga_insert(
+        &mut self,
+        rga_id_ptr: u64,
+        index: u64,
+        value_ptr: u64,
+    ) -> VMLogicResult<i32> {
+        let rga_id = match self.read_map_id(rga_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let idx = match usize::try_from(index) {
+            Ok(value) => value,
+            Err(_) => {
+                return self
+                    .write_error_message(0, format!("index {index} does not fit into usize"))
+            }
+        };
+
+        let value = self.read_buffer(value_ptr)?;
+
+        let mut rga = match load_js_rga_instance(rga_id) {
+            Ok(rga) => rga,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match rga.insert(idx, &value) {
+            Ok(()) => match save_js_rga_instance(&mut rga) {
+                Ok(()) => Ok(1),
+                Err(message) => self.write_error_message(0, message),
+            },
+            Err(err) => self.write_error_message(0, err.to_string()),
+        }
+    }
+
+    fn crdt_rga_delete(&mut self, rga_id_ptr: u64, index: u64) -> VMLogicResult<i32> {
+        let rga_id = match self.read_map_id(rga_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let idx = match usize::try_from(index) {
+            Ok(value) => value,
+            Err(_) => {
+                return self
+                    .write_error_message(0, format!("index {index} does not fit into usize"))
+            }
+        };
+
+        let mut rga = match load_js_rga_instance(rga_id) {
+            Ok(rga) => rga,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match rga.delete(idx) {
+            Ok(()) => match save_js_rga_instance(&mut rga) {
+                Ok(()) => Ok(1),
+                Err(message) => self.write_error_message(0, message),
+            },
+            Err(err) => self.write_error_message(0, err.to_string()),
+        }
+    }
+
+    fn crdt_rga_get_text(&mut self, rga_id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let rga_id = match self.read_map_id(rga_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let rga = match load_js_rga_instance(rga_id) {
+            Ok(rga) => rga,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match rga.get_text() {
+            Ok(text) => {
+                self.write_register_bytes(dest_register_id, &text)?;
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err.to_string()),
+        }
+    }
+
+    fn crdt_rga_len(&mut self, rga_id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let rga_id = match self.read_map_id(rga_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let rga = match load_js_rga_instance(rga_id) {
+            Ok(rga) => rga,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match rga.len() {
+            Ok(len) => {
+                let len_u64 = u64::try_from(len).map_err(|_| HostError::IntegerOverflow)?;
+                self.write_register_bytes(dest_register_id, &len_u64.to_le_bytes())?;
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err.to_string()),
+        }
+    }
+
+    fn crdt_sortedmap_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsSortedMap, String> {
+            let mut map = JsSortedMap::new();
+            save_js_sortedmap_instance(&mut map)?;
+            Ok(map)
+        }));
+
+        match outcome {
+            Ok(Ok(map)) => {
+                self.write_register_bytes(dest_register_id, map.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_sortedmap_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsSortedMap, String> {
+            let mut map = JsSortedMap::new_with_id(id);
+            save_js_sortedmap_instance(&mut map)?;
+            Ok(map)
+        }));
+
+        match outcome {
+            Ok(Ok(map)) => {
+                self.write_register_bytes(dest_register_id, map.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_sortedmap_get(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let map_id = match self.read_map_id(map_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let key = self.read_buffer(key_ptr)?;
+
+        let map = match load_js_sortedmap_instance(map_id) {
+            Ok(map) => map,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match map.get(&key) {
+            Ok(Some(value)) => {
+                self.write_register_bytes(dest_register_id, &value)?;
+                Ok(1)
+            }
+            Ok(None) => {
+                self.clear_register(dest_register_id)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_sortedmap_insert(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+        value_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let map_id = match self.read_map_id(map_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let key = self.read_buffer(key_ptr)?;
+        let value = self.read_buffer(value_ptr)?;
+
+        let mut map = match load_js_sortedmap_instance(map_id) {
+            Ok(map) => map,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match map.insert(&key, &value) {
+            Ok(previous) => {
+                if let Err(message) = save_js_sortedmap_instance(&mut map) {
+                    return self.write_error_message(dest_register_id, message);
+                }
+
+                if let Some(prev) = previous {
+                    self.write_register_bytes(dest_register_id, &prev)?;
+                    Ok(1)
+                } else {
+                    self.clear_register(dest_register_id)?;
+                    Ok(0)
+                }
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_sortedmap_remove(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let map_id = match self.read_map_id(map_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let key = self.read_buffer(key_ptr)?;
+
+        let mut map = match load_js_sortedmap_instance(map_id) {
+            Ok(map) => map,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match map.remove(&key) {
+            Ok(Some(previous)) => {
+                if let Err(message) = save_js_sortedmap_instance(&mut map) {
+                    return self.write_error_message(dest_register_id, message);
+                }
+                self.write_register_bytes(dest_register_id, &previous)?;
+                Ok(1)
+            }
+            Ok(None) => {
+                self.clear_register(dest_register_id)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_sortedmap_contains(&mut self, map_id_ptr: u64, key_ptr: u64) -> VMLogicResult<i32> {
+        let map_id = match self.read_map_id(map_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let key = self.read_buffer(key_ptr)?;
+
+        let map = match load_js_sortedmap_instance(map_id) {
+            Ok(map) => map,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match map.contains(&key) {
+            Ok(result) => Ok(i32::from(result)),
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    fn crdt_sortedmap_iter(
+        &mut self,
+        map_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let map_id = match self.read_map_id(map_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let map = match load_js_sortedmap_instance(map_id) {
+            Ok(map) => map,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let entries = match map.entries() {
+            Ok(entries) => entries,
+            Err(err) => return self.write_error_message(dest_register_id, err),
+        };
+
+        let count = u32::try_from(entries.len()).map_err(|_| HostError::IntegerOverflow)?;
+
+        let mut total_len: usize = 4;
+        for (key, value) in &entries {
+            let key_len = key.len();
+            let value_len = value.len();
+            u32::try_from(key_len).map_err(|_| HostError::IntegerOverflow)?;
+            u32::try_from(value_len).map_err(|_| HostError::IntegerOverflow)?;
+            total_len = total_len
+                .checked_add(4)
+                .and_then(|acc| acc.checked_add(key_len))
+                .and_then(|acc| acc.checked_add(4))
+                .and_then(|acc| acc.checked_add(value_len))
+                .ok_or(HostError::IntegerOverflow)?;
+        }
+
+        let mut buffer = Vec::with_capacity(total_len);
+        buffer.extend_from_slice(&count.to_le_bytes());
+        for (key, value) in entries {
+            let key_len = u32::try_from(key.len()).map_err(|_| HostError::IntegerOverflow)?;
+            let value_len = u32::try_from(value.len()).map_err(|_| HostError::IntegerOverflow)?;
+            buffer.extend_from_slice(&key_len.to_le_bytes());
+            buffer.extend_from_slice(&key);
+            buffer.extend_from_slice(&value_len.to_le_bytes());
+            buffer.extend_from_slice(&value);
+        }
+
+        self.write_register_bytes(dest_register_id, &buffer)?;
+        Ok(1)
+    }
+
+    fn crdt_sortedset_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsSortedSet, String> {
+            let mut set = JsSortedSet::new();
+            save_js_sortedset_instance(&mut set)?;
+            Ok(set)
+        }));
+
+        match outcome {
+            Ok(Ok(set)) => {
+                self.write_register_bytes(dest_register_id, set.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_sortedset_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsSortedSet, String> {
+            let mut set = JsSortedSet::new_with_id(id);
+            save_js_sortedset_instance(&mut set)?;
+            Ok(set)
+        }));
+
+        match outcome {
+            Ok(Ok(set)) => {
+                self.write_register_bytes(dest_register_id, set.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_sortedset_insert(&mut self, set_id_ptr: u64, value_ptr: u64) -> VMLogicResult<i32> {
+        let set_id = match self.read_map_id(set_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let value = self.read_buffer(value_ptr)?;
+
+        let mut set = match load_js_sortedset_instance(set_id) {
+            Ok(set) => set,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match set.insert(&value) {
+            Ok(inserted) => {
+                if !inserted {
+                    return Ok(0);
+                }
+                if let Err(message) = save_js_sortedset_instance(&mut set) {
+                    return self.write_error_message(0, message);
+                }
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    fn crdt_sortedset_contains(&mut self, set_id_ptr: u64, value_ptr: u64) -> VMLogicResult<i32> {
+        let set_id = match self.read_map_id(set_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let value = self.read_buffer(value_ptr)?;
+
+        let set = match load_js_sortedset_instance(set_id) {
+            Ok(set) => set,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match set.contains(&value) {
+            Ok(result) => Ok(i32::from(result)),
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    fn crdt_sortedset_remove(&mut self, set_id_ptr: u64, value_ptr: u64) -> VMLogicResult<i32> {
+        let set_id = match self.read_map_id(set_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let value = self.read_buffer(value_ptr)?;
+
+        let mut set = match load_js_sortedset_instance(set_id) {
+            Ok(set) => set,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match set.remove(&value) {
+            Ok(removed) => {
+                if !removed {
+                    return Ok(0);
+                }
+                if let Err(message) = save_js_sortedset_instance(&mut set) {
+                    return self.write_error_message(0, message);
+                }
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    fn crdt_sortedset_len(&mut self, set_id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let set_id = match self.read_map_id(set_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let set = match load_js_sortedset_instance(set_id) {
+            Ok(set) => set,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match set.len() {
+            Ok(len) => {
+                let len_u64 = u64::try_from(len).map_err(|_| HostError::IntegerOverflow)?;
+                self.write_register_bytes(dest_register_id, &len_u64.to_le_bytes())?;
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_sortedset_iter(
+        &mut self,
+        set_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let set_id = match self.read_map_id(set_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let set = match load_js_sortedset_instance(set_id) {
+            Ok(set) => set,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let values = match set.values() {
+            Ok(values) => values,
+            Err(err) => return self.write_error_message(dest_register_id, err),
+        };
+
+        let count = u32::try_from(values.len()).map_err(|_| HostError::IntegerOverflow)?;
+
+        let mut total_len: usize = 4;
+        for value in &values {
+            let value_len = value.len();
+            u32::try_from(value_len).map_err(|_| HostError::IntegerOverflow)?;
+            total_len = total_len
+                .checked_add(4)
+                .and_then(|acc| acc.checked_add(value_len))
+                .ok_or(HostError::IntegerOverflow)?;
+        }
+
+        let mut buffer = Vec::with_capacity(total_len);
+        buffer.extend_from_slice(&count.to_le_bytes());
+        for value in values {
+            let value_len = u32::try_from(value.len()).map_err(|_| HostError::IntegerOverflow)?;
+            buffer.extend_from_slice(&value_len.to_le_bytes());
+            buffer.extend_from_slice(&value);
+        }
+
+        self.write_register_bytes(dest_register_id, &buffer)?;
+        Ok(1)
+    }
+
+    fn crdt_sortedset_clear(&mut self, set_id_ptr: u64) -> VMLogicResult<i32> {
+        let set_id = match self.read_map_id(set_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let mut set = match load_js_sortedset_instance(set_id) {
+            Ok(set) => set,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let len_before = match set.len() {
+            Ok(len) => len,
+            Err(err) => return self.write_error_message(0, err),
+        };
+
+        match set.clear() {
+            Ok(()) => {
+                if len_before == 0 {
+                    return Ok(0);
+                }
+                if let Err(message) = save_js_sortedset_instance(&mut set) {
+                    return self.write_error_message(0, message);
+                }
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
     fn read_map_id(&mut self, map_id_ptr: u64) -> VMLogicResult<Result<Id, String>> {
         // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
         //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
@@ -2069,6 +3031,174 @@ fn save_js_frozen_storage_instance(storage: &mut JsFrozenStorage) -> Result<(), 
     }
 }
 
+fn load_js_pncounter_instance(id: Id) -> Result<JsPnCounter, String> {
+    match JsPnCounter::load(id) {
+        Ok(Some(counter)) => {
+            debug!(
+                target: "runtime::pncounter",
+                counter_id = %id.to_string(),
+                "loaded JsPnCounter from storage"
+            );
+            Ok(counter)
+        }
+        Ok(None) => {
+            let missing_id = id.to_string();
+            warn!(
+                target: "runtime::pncounter",
+                counter_id = %missing_id,
+                "JsPnCounter not found in storage"
+            );
+            let mut counter = JsPnCounter::new_with_id(id);
+            match save_js_pncounter_instance(&mut counter) {
+                Ok(()) => Ok(counter),
+                Err(err) => Err(err),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn save_js_pncounter_instance(counter: &mut JsPnCounter) -> Result<(), String> {
+    match counter.save() {
+        Ok(_) => Ok(()),
+        Err(StorageError::CannotCreateOrphan(_)) => {
+            ensure_root_index_internal().map_err(|err| err.to_string())?;
+            match Interface::<MainStorage>::add_child_to(Id::root(), counter) {
+                Ok(_) => Ok(()),
+                Err(StorageError::CannotCreateOrphan(_)) => Err("cannot create orphan".to_owned()),
+                Err(err) => Err(err.to_string()),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn load_js_rga_instance(id: Id) -> Result<JsRga, String> {
+    match JsRga::load(id) {
+        Ok(Some(rga)) => {
+            debug!(
+                target: "runtime::rga",
+                rga_id = %id.to_string(),
+                "loaded JsRga from storage"
+            );
+            Ok(rga)
+        }
+        Ok(None) => {
+            let missing_id = id.to_string();
+            warn!(
+                target: "runtime::rga",
+                rga_id = %missing_id,
+                "JsRga not found in storage"
+            );
+            let mut rga = JsRga::new_with_id(id);
+            match save_js_rga_instance(&mut rga) {
+                Ok(()) => Ok(rga),
+                Err(err) => Err(err),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn save_js_rga_instance(rga: &mut JsRga) -> Result<(), String> {
+    match rga.save() {
+        Ok(_) => Ok(()),
+        Err(StorageError::CannotCreateOrphan(_)) => {
+            ensure_root_index_internal().map_err(|err| err.to_string())?;
+            match Interface::<MainStorage>::add_child_to(Id::root(), rga) {
+                Ok(_) => Ok(()),
+                Err(StorageError::CannotCreateOrphan(_)) => Err("cannot create orphan".to_owned()),
+                Err(err) => Err(err.to_string()),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn load_js_sortedmap_instance(id: Id) -> Result<JsSortedMap, String> {
+    match JsSortedMap::load(id) {
+        Ok(Some(map)) => {
+            debug!(
+                target: "runtime::sortedmap",
+                map_id = %id.to_string(),
+                "loaded JsSortedMap from storage"
+            );
+            Ok(map)
+        }
+        Ok(None) => {
+            let missing_id = id.to_string();
+            warn!(
+                target: "runtime::sortedmap",
+                map_id = %missing_id,
+                "JsSortedMap not found in storage"
+            );
+            let mut map = JsSortedMap::new_with_id(id);
+            match save_js_sortedmap_instance(&mut map) {
+                Ok(()) => Ok(map),
+                Err(err) => Err(err),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn save_js_sortedmap_instance(map: &mut JsSortedMap) -> Result<(), String> {
+    match map.save() {
+        Ok(_) => Ok(()),
+        Err(StorageError::CannotCreateOrphan(_)) => {
+            ensure_root_index_internal().map_err(|err| err.to_string())?;
+            match Interface::<MainStorage>::add_child_to(Id::root(), map) {
+                Ok(_) => Ok(()),
+                Err(StorageError::CannotCreateOrphan(_)) => Err("cannot create orphan".to_owned()),
+                Err(err) => Err(err.to_string()),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn load_js_sortedset_instance(id: Id) -> Result<JsSortedSet, String> {
+    match JsSortedSet::load(id) {
+        Ok(Some(set)) => {
+            debug!(
+                target: "runtime::sortedset",
+                set_id = %id.to_string(),
+                "loaded JsSortedSet from storage"
+            );
+            Ok(set)
+        }
+        Ok(None) => {
+            let missing_id = id.to_string();
+            warn!(
+                target: "runtime::sortedset",
+                set_id = %missing_id,
+                "JsSortedSet not found in storage"
+            );
+            let mut set = JsSortedSet::new_with_id(id);
+            match save_js_sortedset_instance(&mut set) {
+                Ok(()) => Ok(set),
+                Err(err) => Err(err),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn save_js_sortedset_instance(set: &mut JsSortedSet) -> Result<(), String> {
+    match set.save() {
+        Ok(_) => Ok(()),
+        Err(StorageError::CannotCreateOrphan(_)) => {
+            ensure_root_index_internal().map_err(|err| err.to_string())?;
+            match Interface::<MainStorage>::add_child_to(Id::root(), set) {
+                Ok(_) => Ok(()),
+                Err(StorageError::CannotCreateOrphan(_)) => Err("cannot create orphan".to_owned()),
+                Err(err) => Err(err.to_string()),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::logic::{
@@ -2195,5 +3325,348 @@ mod tests {
             .js_crdt_set_contains(ID_DESC_PTR, VALUE_DESC_PTR)
             .unwrap();
         assert_eq!(res, 1, "value must be visible via the shared id");
+    }
+
+    /// Writes `bytes` at `data_ptr` and a `{ptr,len}` descriptor at `desc_ptr`.
+    fn put_buffer(
+        host: &crate::logic::VMHostFunctions<'_>,
+        desc_ptr: u64,
+        data_ptr: u64,
+        bytes: &[u8],
+    ) {
+        host.borrow_memory()
+            .write(data_ptr, bytes)
+            .expect("write bytes");
+        prepare_guest_buf_descriptor(host, desc_ptr, data_ptr, bytes.len() as u64);
+    }
+
+    /// Reads one `[len, bytes]` length-prefixed field starting at `*offset`,
+    /// advancing `*offset` past it.
+    fn read_field(buffer: &[u8], offset: &mut usize) -> Vec<u8> {
+        let len = u32::from_le_bytes(buffer[*offset..*offset + 4].try_into().unwrap()) as usize;
+        *offset += 4;
+        let field = buffer[*offset..*offset + len].to_vec();
+        *offset += len;
+        field
+    }
+
+    /// Decodes the `[count][len,value]...` payload the set `*_iter` host fns emit.
+    fn decode_set_items(buffer: &[u8]) -> Vec<Vec<u8>> {
+        let count = u32::from_le_bytes(buffer[0..4].try_into().unwrap());
+        let mut offset = 4usize;
+        (0..count)
+            .map(|_| read_field(buffer, &mut offset))
+            .collect()
+    }
+
+    /// Decodes the `[count][klen,key,vlen,value]...` payload the map `*_iter` host
+    /// fns emit (`count` is the number of entries, two fields each).
+    fn decode_map_items(buffer: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let count = u32::from_le_bytes(buffer[0..4].try_into().unwrap());
+        let mut offset = 4usize;
+        (0..count)
+            .map(|_| {
+                let key = read_field(buffer, &mut offset);
+                let value = read_field(buffer, &mut offset);
+                (key, value)
+            })
+            .collect()
+    }
+
+    /// PN-counter must support increment AND decrement, and report a signed net.
+    #[test]
+    fn test_js_crdt_pncounter_increment_decrement_value() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let id: [u8; 32] = [11u8; 32];
+        put_buffer(&host, ID_DESC_PTR, ID_DATA_PTR, &id);
+
+        assert_eq!(
+            host.js_crdt_pncounter_new_with_id(ID_DESC_PTR, 1).unwrap(),
+            0
+        );
+
+        // +3, then -1 → net +2 for this (single) executor.
+        for _ in 0..3 {
+            assert_eq!(host.js_crdt_pncounter_increment(ID_DESC_PTR).unwrap(), 1);
+        }
+        assert_eq!(host.js_crdt_pncounter_decrement(ID_DESC_PTR).unwrap(), 1);
+
+        let reg = 5u64;
+        assert_eq!(host.js_crdt_pncounter_value(ID_DESC_PTR, reg).unwrap(), 1);
+        let bytes = host.borrow_logic().registers.get(reg).unwrap();
+        let value = i64::from_le_bytes(bytes.try_into().unwrap());
+        assert_eq!(value, 2, "signed PN-counter value must be 3 - 1 = 2");
+
+        // The per-executor net should match the total for a single writer.
+        let reg2 = 6u64;
+        assert_eq!(
+            host.js_crdt_pncounter_get_executor_count(ID_DESC_PTR, 0, 0, reg2)
+                .unwrap(),
+            1
+        );
+        let bytes = host.borrow_logic().registers.get(reg2).unwrap();
+        assert_eq!(i64::from_le_bytes(bytes.try_into().unwrap()), 2);
+    }
+
+    /// A second handle built at the same deterministic id must observe a mutation
+    /// made through the first handle (the `*_new_with_id` determinism contract).
+    #[test]
+    fn test_js_crdt_pncounter_new_with_id_is_deterministic_and_shared() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let id: [u8; 32] = [13u8; 32];
+        put_buffer(&host, ID_DESC_PTR, ID_DATA_PTR, &id);
+
+        assert_eq!(
+            host.js_crdt_pncounter_new_with_id(ID_DESC_PTR, 1).unwrap(),
+            0
+        );
+        assert_eq!(host.borrow_logic().registers.get(1).unwrap(), &id);
+
+        // Second handle at the SAME id.
+        assert_eq!(
+            host.js_crdt_pncounter_new_with_id(ID_DESC_PTR, 2).unwrap(),
+            0
+        );
+        assert_eq!(host.borrow_logic().registers.get(2).unwrap(), &id);
+
+        // Increment through the id, then read the value back via the shared id.
+        assert_eq!(host.js_crdt_pncounter_increment(ID_DESC_PTR).unwrap(), 1);
+
+        let reg = 5u64;
+        assert_eq!(host.js_crdt_pncounter_value(ID_DESC_PTR, reg).unwrap(), 1);
+        let bytes = host.borrow_logic().registers.get(reg).unwrap();
+        assert_eq!(
+            i64::from_le_bytes(bytes.try_into().unwrap()),
+            1,
+            "value must be visible via the shared id"
+        );
+    }
+
+    /// RGA insert then read-back the whole text as UTF-8 bytes; length reflects
+    /// the visible character count.
+    #[test]
+    fn test_js_crdt_rga_insert_get_text() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let id: [u8; 32] = [21u8; 32];
+        put_buffer(&host, ID_DESC_PTR, ID_DATA_PTR, &id);
+        assert_eq!(host.js_crdt_rga_new_with_id(ID_DESC_PTR, 1).unwrap(), 0);
+
+        // Insert "Hello" at position 0.
+        put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"Hello");
+        assert_eq!(
+            host.js_crdt_rga_insert(ID_DESC_PTR, 0, VALUE_DESC_PTR)
+                .unwrap(),
+            1
+        );
+
+        // Append "!" at position 5 → "Hello!".
+        put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"!");
+        assert_eq!(
+            host.js_crdt_rga_insert(ID_DESC_PTR, 5, VALUE_DESC_PTR)
+                .unwrap(),
+            1
+        );
+
+        let reg = 5u64;
+        assert_eq!(host.js_crdt_rga_get_text(ID_DESC_PTR, reg).unwrap(), 1);
+        assert_eq!(
+            host.borrow_logic().registers.get(reg).unwrap(),
+            b"Hello!",
+            "RGA text round-trip must match inserts"
+        );
+
+        let reg2 = 6u64;
+        assert_eq!(host.js_crdt_rga_len(ID_DESC_PTR, reg2).unwrap(), 1);
+        let bytes = host.borrow_logic().registers.get(reg2).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes.try_into().unwrap()), 6);
+
+        // Delete the first char → "ello!".
+        assert_eq!(host.js_crdt_rga_delete(ID_DESC_PTR, 0).unwrap(), 1);
+        let reg3 = 7u64;
+        assert_eq!(host.js_crdt_rga_get_text(ID_DESC_PTR, reg3).unwrap(), 1);
+        assert_eq!(host.borrow_logic().registers.get(reg3).unwrap(), b"ello!");
+    }
+
+    /// RGA `index`/`len` count Unicode scalar values (codepoints), NOT bytes.
+    /// Exercises multi-byte characters (`é` = 2 bytes, `🎉` = 4 bytes) so a
+    /// byte-indexed implementation would either land mid-codepoint (error) or
+    /// miscount — this locks the documented codepoint semantics that the JS
+    /// SDK wrapper depends on.
+    #[test]
+    fn test_js_crdt_rga_multibyte_codepoint_indexing() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let id: [u8; 32] = [22u8; 32];
+        put_buffer(&host, ID_DESC_PTR, ID_DATA_PTR, &id);
+        assert_eq!(host.js_crdt_rga_new_with_id(ID_DESC_PTR, 1).unwrap(), 0);
+
+        // "café" — 4 codepoints but 5 UTF-8 bytes (é is 2 bytes).
+        put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, "café".as_bytes());
+        assert_eq!(
+            host.js_crdt_rga_insert(ID_DESC_PTR, 0, VALUE_DESC_PTR)
+                .unwrap(),
+            1
+        );
+
+        // len must be 4 (codepoints), not 5 (bytes).
+        let reg = 5u64;
+        assert_eq!(host.js_crdt_rga_len(ID_DESC_PTR, reg).unwrap(), 1);
+        let bytes = host.borrow_logic().registers.get(reg).unwrap();
+        assert_eq!(
+            u64::from_le_bytes(bytes.try_into().unwrap()),
+            4,
+            "len counts codepoints, not bytes"
+        );
+
+        // Insert an astral-plane emoji (4 bytes, 1 codepoint) at codepoint
+        // offset 4 (the end). Byte-index 4 would be mid-`é` and fail.
+        put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, "🎉".as_bytes());
+        assert_eq!(
+            host.js_crdt_rga_insert(ID_DESC_PTR, 4, VALUE_DESC_PTR)
+                .unwrap(),
+            1
+        );
+
+        let reg2 = 6u64;
+        assert_eq!(host.js_crdt_rga_get_text(ID_DESC_PTR, reg2).unwrap(), 1);
+        assert_eq!(
+            host.borrow_logic().registers.get(reg2).unwrap(),
+            "café🎉".as_bytes(),
+            "insert at codepoint offset 4 lands after é, before nothing"
+        );
+
+        // Delete codepoint 3 (`é`) → "caf🎉".
+        assert_eq!(host.js_crdt_rga_delete(ID_DESC_PTR, 3).unwrap(), 1);
+        let reg3 = 7u64;
+        assert_eq!(host.js_crdt_rga_get_text(ID_DESC_PTR, reg3).unwrap(), 1);
+        assert_eq!(
+            host.borrow_logic().registers.get(reg3).unwrap(),
+            "caf🎉".as_bytes(),
+            "delete removes one codepoint by codepoint offset"
+        );
+    }
+
+    /// SortedMap insert/get, and iteration must be in ascending key order
+    /// regardless of insertion order.
+    #[test]
+    fn test_js_crdt_sortedmap_insert_get_and_ordered_iter() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let id: [u8; 32] = [31u8; 32];
+        put_buffer(&host, ID_DESC_PTR, ID_DATA_PTR, &id);
+        assert_eq!(
+            host.js_crdt_sortedmap_new_with_id(ID_DESC_PTR, 1).unwrap(),
+            0
+        );
+
+        // Insert keys out of order: banana, apple, cherry.
+        for (key, value) in [
+            (b"banana".as_slice(), b"2".as_slice()),
+            (b"apple".as_slice(), b"1".as_slice()),
+            (b"cherry".as_slice(), b"3".as_slice()),
+        ] {
+            put_buffer(&host, KEY_DESC_PTR, KEY_DATA_PTR, key);
+            put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, value);
+            assert_eq!(
+                host.js_crdt_sortedmap_insert(ID_DESC_PTR, KEY_DESC_PTR, VALUE_DESC_PTR, 9)
+                    .unwrap(),
+                0,
+                "inserting a new key returns 0"
+            );
+        }
+
+        // Point lookup.
+        put_buffer(&host, KEY_DESC_PTR, KEY_DATA_PTR, b"apple");
+        let reg = 5u64;
+        assert_eq!(
+            host.js_crdt_sortedmap_get(ID_DESC_PTR, KEY_DESC_PTR, reg)
+                .unwrap(),
+            1
+        );
+        assert_eq!(host.borrow_logic().registers.get(reg).unwrap(), b"1");
+
+        // Ordered iteration: keys come back apple < banana < cherry.
+        let reg2 = 6u64;
+        assert_eq!(host.js_crdt_sortedmap_iter(ID_DESC_PTR, reg2).unwrap(), 1);
+        let buffer = host.borrow_logic().registers.get(reg2).unwrap().to_vec();
+        let entries = decode_map_items(&buffer);
+        assert_eq!(
+            entries,
+            vec![
+                (b"apple".to_vec(), b"1".to_vec()),
+                (b"banana".to_vec(), b"2".to_vec()),
+                (b"cherry".to_vec(), b"3".to_vec()),
+            ],
+            "SortedMap iteration must be in ascending key order"
+        );
+    }
+
+    /// SortedSet insert then membership check via the shared id.
+    #[test]
+    fn test_js_crdt_sortedset_insert_contains() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let id: [u8; 32] = [41u8; 32];
+        put_buffer(&host, ID_DESC_PTR, ID_DATA_PTR, &id);
+        assert_eq!(
+            host.js_crdt_sortedset_new_with_id(ID_DESC_PTR, 1).unwrap(),
+            0
+        );
+
+        // Insert out of order: gamma, alpha, beta.
+        for value in [b"gamma".as_slice(), b"alpha".as_slice(), b"beta".as_slice()] {
+            put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, value);
+            assert_eq!(
+                host.js_crdt_sortedset_insert(ID_DESC_PTR, VALUE_DESC_PTR)
+                    .unwrap(),
+                1,
+                "first insert of a value returns 1"
+            );
+        }
+
+        // Membership.
+        put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"alpha");
+        assert_eq!(
+            host.js_crdt_sortedset_contains(ID_DESC_PTR, VALUE_DESC_PTR)
+                .unwrap(),
+            1
+        );
+        put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"missing");
+        assert_eq!(
+            host.js_crdt_sortedset_contains(ID_DESC_PTR, VALUE_DESC_PTR)
+                .unwrap(),
+            0
+        );
+
+        // Ordered iteration: alpha < beta < gamma.
+        let reg = 6u64;
+        assert_eq!(host.js_crdt_sortedset_iter(ID_DESC_PTR, reg).unwrap(), 1);
+        let buffer = host.borrow_logic().registers.get(reg).unwrap().to_vec();
+        assert_eq!(
+            decode_set_items(&buffer),
+            vec![b"alpha".to_vec(), b"beta".to_vec(), b"gamma".to_vec()],
+            "SortedSet iteration must be in ascending order"
+        );
     }
 }
