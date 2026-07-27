@@ -239,6 +239,59 @@ These functions support JavaScript SDK CRDT collections. All return `i32` status
 | `js_crdt_counter_value` | `(counter_id_ptr: u64, register_id: u64) -> i32` | Gets current counter value. |
 | `js_crdt_counter_get_executor_count` | `(counter_id_ptr: u64, executor_ptr: u64, has_executor: u32, register_id: u64) -> i32` | Gets per-executor count. `has_executor` indicates if executor provided. |
 
+The counter operations above wrap a G-Counter (grow-only, unsigned). The PN-Counter operations below add decrement and report a signed (`i64`) value.
+
+#### PN-Counter Operations
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `js_crdt_pncounter_new` | `(register_id: u64) -> i32` | Creates new PN-counter (increment/decrement). |
+| `js_crdt_pncounter_new_with_id` | `(id_ptr: u64, register_id: u64) -> i32` | Creates PN-counter at a caller-supplied deterministic 32-byte ID. |
+| `js_crdt_pncounter_increment` | `(counter_id_ptr: u64) -> i32` | Increments counter for the current executor. |
+| `js_crdt_pncounter_decrement` | `(counter_id_ptr: u64) -> i32` | Decrements counter for the current executor. |
+| `js_crdt_pncounter_value` | `(counter_id_ptr: u64, register_id: u64) -> i32` | Gets current signed value (`i64`, little-endian). |
+| `js_crdt_pncounter_get_executor_count` | `(counter_id_ptr: u64, executor_ptr: u64, has_executor: u32, register_id: u64) -> i32` | Gets a single executor's net contribution (`positive - negative`, `i64`). `has_executor` indicates if executor provided. |
+
+#### RGA Operations (Collaborative Text)
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `js_crdt_rga_new` | `(register_id: u64) -> i32` | Creates a new Replicated Growable Array. |
+| `js_crdt_rga_new_with_id` | `(id_ptr: u64, register_id: u64) -> i32` | Creates an RGA at a caller-supplied deterministic 32-byte ID. |
+| `js_crdt_rga_insert` | `(rga_id_ptr: u64, index: u64, value_ptr: u64) -> i32` | Inserts UTF-8 `value` at character `index`. |
+| `js_crdt_rga_delete` | `(rga_id_ptr: u64, index: u64) -> i32` | Deletes the character at `index`. |
+| `js_crdt_rga_get_text` | `(rga_id_ptr: u64, register_id: u64) -> i32` | Gets the full document as UTF-8 bytes. |
+| `js_crdt_rga_len` | `(rga_id_ptr: u64, register_id: u64) -> i32` | Gets the visible character count (`u64`, little-endian). |
+
+#### Sorted Map Operations
+
+Same byte API and CRDT semantics as the Map operations above, but `iter` yields entries in ascending key (byte) order.
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `js_crdt_sortedmap_new` | `(register_id: u64) -> i32` | Creates a new ordered CRDT map. |
+| `js_crdt_sortedmap_new_with_id` | `(id_ptr: u64, register_id: u64) -> i32` | Creates an ordered map at a caller-supplied deterministic 32-byte ID. |
+| `js_crdt_sortedmap_get` | `(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32` | Retrieves a value by key. |
+| `js_crdt_sortedmap_insert` | `(map_id_ptr: u64, key_ptr: u64, value_ptr: u64, register_id: u64) -> i32` | Inserts/replaces a value, returning any previous value. |
+| `js_crdt_sortedmap_remove` | `(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32` | Removes a value, returning the previous value. |
+| `js_crdt_sortedmap_contains` | `(map_id_ptr: u64, key_ptr: u64) -> i32` | Checks whether a key exists. |
+| `js_crdt_sortedmap_iter` | `(map_id_ptr: u64, register_id: u64) -> i32` | Iterates all entries in ascending key order. |
+
+#### Sorted Set Operations
+
+Same byte API and CRDT semantics as the Set operations above, but `iter` yields values in ascending (byte) order.
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `js_crdt_sortedset_new` | `(register_id: u64) -> i32` | Creates a new ordered CRDT set. |
+| `js_crdt_sortedset_new_with_id` | `(id_ptr: u64, register_id: u64) -> i32` | Creates an ordered set at a caller-supplied deterministic 32-byte ID. |
+| `js_crdt_sortedset_insert` | `(set_id_ptr: u64, value_ptr: u64) -> i32` | Inserts a value (returns 1 if newly added, 0 if already present). |
+| `js_crdt_sortedset_contains` | `(set_id_ptr: u64, value_ptr: u64) -> i32` | Checks membership. |
+| `js_crdt_sortedset_remove` | `(set_id_ptr: u64, value_ptr: u64) -> i32` | Removes a value (returns 1 if present, 0 otherwise). |
+| `js_crdt_sortedset_len` | `(set_id_ptr: u64, register_id: u64) -> i32` | Gets the element count (`u64`, little-endian). |
+| `js_crdt_sortedset_iter` | `(set_id_ptr: u64, register_id: u64) -> i32` | Iterates all values in ascending order. |
+| `js_crdt_sortedset_clear` | `(set_id_ptr: u64) -> i32` | Clears all values from the set. |
+
 ### User & Frozen Storage (JS)
 
 #### User Storage
