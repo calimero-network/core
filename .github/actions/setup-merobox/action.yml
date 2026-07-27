@@ -1,29 +1,30 @@
 name: Setup Merobox
-description: "Install merobox from PyPI via pipx (Linux only)"
+description: "Install the merobox release binary (Linux only)"
 
 runs:
   using: "composite"
   steps:
-    - name: Install merobox (pipx)
+    - name: Install merobox
       shell: bash
-      # Install merobox from PyPI in an isolated pipx venv. This replaces the
-      # previous apt-from-GitHub-Pages path (#2180): that repo's prebuilt
-      # `.deb` was served from a Pages deploy (calimero-network.github.io/
-      # merobox), a single point of failure — a 404 on its `gpg.key` took
-      # down all e2e repo-wide. PyPI has no such dependency.
+      # Install the standalone binary merobox publishes with every release.
+      # This replaces a pipx install from PyPI, which resolved and downloaded
+      # a whole dependency tree per job and timed out at 180s often enough to
+      # redden unrelated e2e jobs.
       #
-      # Each network step gets its own bounded timeout. Without these, a
-      # stalled index / pip on a slow runner can wedge the job toward the
-      # runner-wide 6h limit — one such hang on PR #2472 ran 90 min in the
-      # old apt step alone (see also #2807).
+      # Not a return to the apt path removed in #2180: that served a `.deb`
+      # from a GitHub Pages deploy, so a 404 on its `gpg.key` took down all
+      # e2e repo-wide. These assets come from the releases CDN the workflow
+      # already depends on for checkout and artifacts, and each is verified
+      # against the sha256 published beside it.
+      #
+      # Each network step keeps a bounded timeout. Without them a stalled
+      # index or CDN on a slow runner can wedge the job toward the runner-wide
+      # 6h limit - one such hang on PR #2472 ran 90 min in the old apt step
+      # alone (see also #2807).
       run: |
         set -euo pipefail
-        # pipx is preinstalled on ubuntu GitHub runners; install it if absent.
-        if ! command -v pipx >/dev/null 2>&1; then
-          timeout 120 python3 -m pip install --user pipx
-        fi
         # Floor: the e2e workflows depend on merobox features that only a
-        # new-enough release provides —
+        # new-enough release provides -
         #   * native per-container log persistence to data/container-logs/
         #     (merobox#207, 0.6.34),
         #   * the partition_peers/heal_peers surgical libp2p partition steps
@@ -33,9 +34,9 @@ runs:
         #     31-admin-abort-logical, and
         #   * the migrations-v2 steps (resync_context / get_migration_status /
         #     assert_migration_complete, merobox#282; get_application,
-        #     merobox#283 — 0.6.38), and
+        #     merobox#283 - 0.6.38), and
         #   * the `delete_blob` step (admin-API blob delete that cascades
-        #     parent+chunks+metadata, merobox#285 — 0.6.39) used by
+        #     parent+chunks+metadata, merobox#285 - 0.6.39) used by
         #     37-stranded-resync (the old delete_blob_on_disk rm was a no-op for
         #     chunked blobs, so it could not stage the strand), and
         #   * forwarding of MERO_AUTH_ADMIN_USER / MERO_AUTH_ADMIN_PASSWORD
@@ -44,12 +45,42 @@ runs:
         #     variables (the login path never mints keys; the bootstrap-secret
         #     flow is gone). Without it every fresh-node scenario login fails
         #     "Invalid credentials".
-        # A floor, not a pin: newer releases are picked up automatically so
-        # merobox fixes land without a bump here. The check below rejects an
-        # older one loudly rather than skipping steps or collecting empty logs.
+        # A floor, not a pin: the newest release is taken so merobox fixes
+        # land without a bump here, and the check below rejects an older one.
         MIN_MEROBOX="0.6.43"
-        timeout 180 pipx install "merobox>=${MIN_MEROBOX}"
-        # Ensure the pipx bin dir is on PATH for this step and all that follow.
+
+        case "$(uname -m)" in
+          x86_64) MEROBOX_ARCH="linux-x86-64" ;;
+          aarch64 | arm64) MEROBOX_ARCH="linux-aarch64" ;;
+          *) echo "::error::no merobox release binary for $(uname -m)"; exit 1 ;;
+        esac
+
+        # Resolve the newest tag from the releases redirect rather than the
+        # API: no token to plumb through, and no shared API rate limit to hit.
+        TAG="$(timeout 60 curl -fsSLI -o /dev/null -w '%{url_effective}' \
+          --retry 3 --retry-all-errors \
+          https://github.com/calimero-network/merobox/releases/latest | sed 's#.*/tag/##')"
+        if [ -z "$TAG" ]; then
+          echo "::error::could not resolve the latest merobox release tag"
+          exit 1
+        fi
+
+        ASSET="https://github.com/calimero-network/merobox/releases/download/${TAG}/merobox-${TAG}-${MEROBOX_ARCH}"
+        timeout 180 curl -fsSL --retry 3 --retry-all-errors -o /tmp/merobox "$ASSET"
+        timeout 60 curl -fsSL --retry 3 --retry-all-errors -o /tmp/merobox.sha256 "${ASSET}.sha256"
+
+        # The published checksum names a build-relative path, so compare the
+        # digest itself rather than feeding the file to `sha256sum -c`.
+        EXPECTED_SHA="$(awk '{print $1}' /tmp/merobox.sha256)"
+        ACTUAL_SHA="$(sha256sum /tmp/merobox | awk '{print $1}')"
+        if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
+          echo "::error::merobox ${TAG} checksum mismatch: expected ${EXPECTED_SHA}, got ${ACTUAL_SHA}"
+          exit 1
+        fi
+
+        mkdir -p "$HOME/.local/bin"
+        install -m 0755 /tmp/merobox "$HOME/.local/bin/merobox"
+        # Ensure the bin dir is on PATH for this step and all that follow.
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
         export PATH="$HOME/.local/bin:$PATH"
         merobox --version
