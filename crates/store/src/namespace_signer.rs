@@ -84,7 +84,6 @@ mod tests {
     use super::resolve_owned_namespace_signer;
     use crate::db::InMemoryDB;
     use crate::key;
-    use crate::layer::LayerExt;
     use crate::Store;
 
     const MAX_DEPTH: usize = 16;
@@ -182,7 +181,7 @@ mod tests {
     fn errors_on_a_cyclic_parent_chain_rather_than_resolving_wrongly() {
         let store = store();
         let context_id = ContextId::from([1u8; 32]);
-        let mut handle = (&store).handle();
+        let mut handle = store.handle();
         handle
             .put(&key::ContextGroupRef::new(context_id), &[2u8; 32])
             .unwrap();
