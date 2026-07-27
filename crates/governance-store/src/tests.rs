@@ -9854,12 +9854,9 @@ mod account_plane_apply {
             "a device must not link into a group its account does not belong to"
         );
 
-        // Granting the underlying KEY does not help, and that is the point.
-        // Membership rows are still keyed by member key, so the account the
-        // gate derives is `legacy_account_id(key)` — a bare hash with no
-        // genesis, and therefore no root key that could ever have signed this
-        // certificate. Until membership is re-keyed onto `AccountId`, there is
-        // no way to grant a real account, so no device can link.
+        // Grant the key that is this account's genesis root. That key IS the
+        // member, and the account is certifiable because its holder signs with
+        // the same private half — so the same op now lands.
         MembershipRepository::new(&store)
             .add_member(&gid, &key(9).public_key(), GroupMemberRole::Member)
             .unwrap();
@@ -9874,15 +9871,150 @@ mod account_plane_apply {
             },
         )
         .unwrap();
+
+        let live = repo.live_bindings(&gid).unwrap();
+        assert_eq!(live.len(), 1, "the device must now be bound");
+        assert_eq!(live[0].account, account);
+        assert_eq!(live[0].device, device);
+    }
+
+    #[test]
+    fn a_second_device_links_with_no_further_grant() {
+        // The property the whole feature exists for, through the real pipeline:
+        // one grant, two devices, one identity, distinct replica ids.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &key(9).public_key(), GroupMemberRole::Member)
+            .unwrap();
+
+        for seed in [5u8, 6] {
+            let device = DeviceId::mint(account, [seed; 16]);
+            let cert = sign_device_cert(
+                &key(9),
+                account,
+                device,
+                &key(seed).public_key(),
+                &KemPublicKey::from([seed; 32]),
+                0,
+                0,
+            )
+            .unwrap();
+            sign_apply_local_group_op_borsh(
+                &store,
+                &gid,
+                &admin_sk,
+                GroupOp::AccountDeviceLinked {
+                    genesis,
+                    chain: vec![],
+                    cert,
+                },
+            )
+            .unwrap();
+        }
+
+        let devices = AccountBindingRepository::new(&store)
+            .devices_of(&gid, account)
+            .unwrap();
+        assert_eq!(devices.len(), 2, "a second device needs no new grant");
         assert_ne!(
-            calimero_op_adapter::legacy_account_id(&key(9).public_key()),
-            account,
-            "a key-derived account is never a real, certifiable account"
+            devices[0].device, devices[1].device,
+            "one account, two devices — the replica ids must stay distinct"
         );
+    }
+
+    #[test]
+    fn a_device_cannot_link_into_an_account_whose_root_is_not_a_member() {
+        // The gate. A stranger may construct a genesis naming any public key,
+        // but linking into a group requires that key to be a member of it.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let genesis = AccountGenesis::new(key(20).public_key(), [20u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [21u8; 16]);
+        let cert = sign_device_cert(
+            &key(20),
+            account,
+            device,
+            &key(21).public_key(),
+            &KemPublicKey::from([21u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+            },
+        )
+        .unwrap();
+        assert!(AccountBindingRepository::new(&store)
+            .live_bindings(&gid)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn constructing_an_account_over_someone_elses_member_key_enrolls_nothing() {
+        // The gate passes — the genesis names a real member — but enrolling a
+        // device needs a signature from that member's private key, which the
+        // attacker does not have. Passing the gate is not the same as gaining
+        // anything.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+        MembershipRepository::new(&store)
+            .add_member(&gid, &key(9).public_key(), GroupMemberRole::Member)
+            .unwrap();
+
+        // Mallory names Alice's member key as his account's root...
+        let genesis = AccountGenesis::new(key(9).public_key(), [77u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [78u8; 16]);
+        // ...but must sign the certificate with his own key, which is not it.
+        let cert = sign_device_cert(
+            &key(78),
+            account,
+            device,
+            &key(78).public_key(),
+            &KemPublicKey::from([78u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+            },
+        )
+        .unwrap();
         assert!(
-            repo.live_bindings(&gid).unwrap().is_empty(),
-            "granting a member KEY cannot authorize a device for a real account — \
-             this is what the membership re-key onto AccountId unblocks"
+            AccountBindingRepository::new(&store)
+                .live_bindings(&gid)
+                .unwrap()
+                .is_empty(),
+            "passing the membership gate must not enroll a device without the root key"
         );
     }
 

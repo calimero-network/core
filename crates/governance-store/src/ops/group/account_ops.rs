@@ -14,7 +14,6 @@
 use super::context::GroupApplyCtx;
 use crate::{AccountBindingRepository, BindingRejected, MembershipRepository};
 use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyHandoff};
-use calimero_op_adapter::legacy_account_id;
 use eyre::Result as EyreResult;
 
 /// `GroupOp::AccountDeviceLinked` — record a device as speaking for an account.
@@ -39,16 +38,25 @@ pub(crate) fn apply_device_linked(
     let group_id = *ctx.group_id();
     let store = ctx.store();
 
-    // The one policy gate. Membership rows are still keyed by member key while
-    // the re-key onto `AccountId` lands, so the comparison maps the member list
-    // FORWARD into account space rather than trying to invert the account —
-    // an account is a one-way hash, and caching the reverse would not survive a
-    // rebuild from the op log.
-    let is_member = MembershipRepository::new(store)
+    // The one policy gate: **is this account's root key a member of the group?**
+    //
+    // Membership rows are keyed by member key, and an `AccountId` is a one-way
+    // hash, so the account cannot be looked up in them directly. What ties the
+    // two together is the genesis: an account whose epoch-0 root key is a
+    // granted member key is that member's account, because only the holder of
+    // that key's private half can sign certificates under it.
+    //
+    // Anyone may *construct* a genesis naming someone else's member key — the
+    // genesis is public data — and such an account passes this gate. It gains
+    // them nothing: enrolling a device into it requires signing a certificate
+    // with the root key, which they do not hold. The gate keeps strangers from
+    // writing link rows for accounts unrelated to the group; the signature
+    // keeps them from enrolling into accounts that are not theirs.
+    let root_is_member = MembershipRepository::new(store)
         .list(&group_id, 0, usize::MAX)?
         .into_iter()
-        .any(|(member, _)| legacy_account_id(&member) == cert.account);
-    if !is_member {
+        .any(|(member, _)| member == genesis.root_sign_pk);
+    if !root_is_member {
         log_refusal(&group_id, "device link", &BindingRejected::AccountNotMember);
         return Ok(());
     }
