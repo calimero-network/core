@@ -102,6 +102,47 @@ impl VMLogic<'_> {
                 register_id: u64,
             ) -> i32;
 
+            fn js_crdt_pncounter_new(register_id: u64) -> i32;
+            fn js_crdt_pncounter_new_with_id(id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_pncounter_increment(counter_id_ptr: u64) -> i32;
+            fn js_crdt_pncounter_decrement(counter_id_ptr: u64) -> i32;
+            fn js_crdt_pncounter_value(counter_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_pncounter_get_executor_count(
+                counter_id_ptr: u64,
+                executor_ptr: u64,
+                has_executor: u32,
+                register_id: u64,
+            ) -> i32;
+
+            fn js_crdt_rga_new(register_id: u64) -> i32;
+            fn js_crdt_rga_new_with_id(id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_rga_insert(rga_id_ptr: u64, index: u64, value_ptr: u64) -> i32;
+            fn js_crdt_rga_delete(rga_id_ptr: u64, index: u64) -> i32;
+            fn js_crdt_rga_get_text(rga_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_rga_len(rga_id_ptr: u64, register_id: u64) -> i32;
+
+            fn js_crdt_sortedmap_new(register_id: u64) -> i32;
+            fn js_crdt_sortedmap_new_with_id(id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_sortedmap_get(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_sortedmap_insert(
+                map_id_ptr: u64,
+                key_ptr: u64,
+                value_ptr: u64,
+                register_id: u64,
+            ) -> i32;
+            fn js_crdt_sortedmap_remove(map_id_ptr: u64, key_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_sortedmap_contains(map_id_ptr: u64, key_ptr: u64) -> i32;
+            fn js_crdt_sortedmap_iter(map_id_ptr: u64, register_id: u64) -> i32;
+
+            fn js_crdt_sortedset_new(register_id: u64) -> i32;
+            fn js_crdt_sortedset_new_with_id(id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_sortedset_insert(set_id_ptr: u64, value_ptr: u64) -> i32;
+            fn js_crdt_sortedset_contains(set_id_ptr: u64, value_ptr: u64) -> i32;
+            fn js_crdt_sortedset_remove(set_id_ptr: u64, value_ptr: u64) -> i32;
+            fn js_crdt_sortedset_len(set_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_sortedset_iter(set_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_sortedset_clear(set_id_ptr: u64) -> i32;
+
             fn js_user_storage_new(register_id: u64) -> i32;
             fn js_user_storage_new_with_id(id_ptr: u64, register_id: u64) -> i32;
             fn js_user_storage_insert(
