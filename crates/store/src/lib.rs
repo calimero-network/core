@@ -11,6 +11,8 @@ pub mod handle;
 pub mod iter;
 pub mod key;
 pub mod layer;
+#[cfg(feature = "datatypes")]
+pub mod namespace_signer;
 pub mod slice;
 pub mod tx;
 
