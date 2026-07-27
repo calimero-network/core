@@ -182,11 +182,43 @@ in production, and a fan-out reading it would wrap for zero recipients.
 | A | Types, op envelope, projection planes, authz precondition, legacy bridge | **done** |
 | B1 | Native X25519 agreement (`calimero-crypto`) | **done** |
 | B2 | Key-rotation recipients as an input | **done** |
-| **C** | **Device provisioning** — per-device X25519 secret stored beside the member identity, `DeviceId` minted, root-signed cert, and the code that authors `DeviceLinked` | **next** |
-| D | `KeyEnvelope` → `recipient: DeviceId`, X25519 ephemeral; fan-out from `AclView.devices`; backfill on link, rotate on revoke | blocked on C |
+| B3 | Account ops on the **`GroupOp` wire** (tags 27–29), device-binding rows, apply handlers | **done** |
+| **C** | **Node device identity** — per-device X25519 secret and `DeviceId` stored beside the member identity | **next** |
+| D | `KeyEnvelope` → `recipient: DeviceId`, X25519 ephemeral; fan-out over `AccountBindingRepository::devices_of`; backfill on link, rotate on revoke | needs C |
 | E | Runtime: `executor_id()`→account, `device_id()`, SDK aggregation | after D |
 | F | `meroctl account create / link / revoke`, pairing UX | after E |
-| G | `merod export` / `import` | **independent — split to its own issue** |
+| G | `merod export` / `import` | **independent — deferred by decision** |
+
+### Why the wire changed, and what it cost
+
+Accounts have to travel on the transport that exists. `BroadcastMessage` carries
+`NamespaceGovernanceDelta`, not unified ops, so a `DeviceLinked` authored into
+the unified log reaches no peer. The account ops therefore ship as `GroupOp`
+variants, and the fold is the governance apply path writing materialized rows.
+
+The unified-log work (phase A) is **not wasted**: it is correct, tested, and
+becomes live at cutover — and it was the specification for the governance path.
+Every ordering rule below was found by its 120-permutation test before the
+governance implementation existed.
+
+### Membership is NOT re-keyed, and does not need to be
+
+The plan assumed granting an account required re-keying membership onto
+`AccountId` — 96 files on the authorization path. It does not.
+
+An account whose **epoch-0 root key is a granted member key** belongs to that
+member, because only the holder of that key's private half can sign
+certificates under it. So the gate is *"is this account's root key a member of
+the group?"*, answerable against the key-keyed rows that already exist.
+
+Anyone may construct a genesis naming someone else's member key — the genesis is
+public — and such an account passes the gate. It gains them nothing: enrolling a
+device needs a signature from the root key they do not hold. The gate keeps
+strangers from writing link rows for unrelated accounts; the signature keeps
+them out of accounts that are not theirs.
+
+Re-keying membership onto `AccountId` remains the cleaner end state and lands
+with the cutover, but it is cleanup, not a prerequisite.
 
 For D, the envelope's recipient is `DeviceId` and nothing else: an unwrapping
 device already holds its own X25519 secret, and ECDH needs only the
