@@ -24,6 +24,22 @@ impl PredefinedEntry for key::GroupInheritedDeniedMember {
     type DataType<'a> = ();
 }
 
+impl PredefinedEntry for key::GroupDeviceBinding {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupDeviceBindingValue;
+}
+
+// Value-less: presence of the row IS the revocation, and it is terminal.
+impl PredefinedEntry for key::GroupRevokedDevice {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
+impl PredefinedEntry for key::GroupAccountKey {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupAccountKeyValue;
+}
+
 impl PredefinedEntry for key::GroupReentryBlock {
     type Codec = Borsh;
     type DataType<'a> = key::GroupReentryBlockValue;

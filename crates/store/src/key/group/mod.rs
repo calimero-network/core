@@ -1900,6 +1900,15 @@ pub const GROUP_DENIED_MEMBER_PREFIX: u8 = 0x3B;
 /// deny-list.
 pub const GROUP_INHERITED_DENIED_MEMBER_PREFIX: u8 = 0x40;
 
+/// Device→account bindings (see [`GroupDeviceBinding`]).
+pub const GROUP_DEVICE_BINDING_PREFIX: u8 = 0x41;
+
+/// Revocation tombstones for devices (see [`GroupRevokedDevice`]).
+pub const GROUP_REVOKED_DEVICE_PREFIX: u8 = 0x42;
+
+/// Per-account current root key (see [`GroupAccountKey`]).
+pub const GROUP_ACCOUNT_KEY_PREFIX: u8 = 0x43;
+
 /// Prefix for the pending-key-rotation worklist. A row marks: `group_id` still
 /// owes a forward-secrecy key rotation because `departed` left, and no rotation
 /// has landed yet.
@@ -2079,6 +2088,231 @@ impl Debug for GroupDeniedMember {
             .field("identity", &self.identity())
             .finish()
     }
+}
+
+/// Device→account binding for a group (see [`GROUP_DEVICE_BINDING_PREFIX`]).
+///
+/// One row per enrolled device. Key layout `prefix(1) + group_id(32) +
+/// device_id(32)` = 65 bytes, the same shape as [`GroupMember`], so prefix
+/// scans over `(group_id, *)` enumerate a group's devices exactly the way they
+/// enumerate its members.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupDeviceBinding(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupDeviceBinding {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], device_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_DEVICE_BINDING_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(device_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn device_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupDeviceBinding {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupDeviceBinding {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupDeviceBinding {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupDeviceBinding")
+            .field("group_id", &self.group_id())
+            .field("device_id", &self.device_id())
+            .finish()
+    }
+}
+
+/// The binding a [`GroupDeviceBinding`] row carries.
+///
+/// `key_epoch` is retained deliberately. Whether the account has since rotated
+/// past the root key that signed this device's certificate cannot be decided
+/// when the link applies — at that moment only the rotations seen so far are
+/// known, so the answer would depend on delivery order. Storing the signing
+/// epoch lets the read side drop superseded bindings once the account's current
+/// epoch is known, which makes the result a function of the op *set* rather
+/// than its arrival order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupDeviceBindingValue {
+    /// The account this device speaks for.
+    pub account: [u8; 32],
+    /// Ed25519 key whose signature counts as this device's.
+    pub sign_pk: [u8; 32],
+    /// X25519 key wrapped scope keys are delivered to.
+    pub kem_pk: [u8; 32],
+    /// Device key-rotation epoch; a link must strictly exceed it to supersede.
+    pub device_epoch: u32,
+    /// Account root-key epoch that signed this device's certificate.
+    pub key_epoch: u32,
+}
+
+/// Revocation tombstone for a device (see [`GROUP_REVOKED_DEVICE_PREFIX`]).
+///
+/// A separate row family from [`GroupDeviceBinding`], not a flag on it. That is
+/// what makes revocation order-independent: a revocation that applies *before*
+/// the link it withdraws still wins, because every link consults this family
+/// first. As a flag on the binding, a revoke-then-link arrival order would
+/// silently resurrect the device.
+///
+/// Terminal — re-enrolling a machine mints a fresh device id — so a replica id
+/// is never reused and the CRDT planes keep one writer per replica across a
+/// revoke/re-add cycle.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupRevokedDevice(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupRevokedDevice {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], device_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_REVOKED_DEVICE_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(device_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn device_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupRevokedDevice {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupRevokedDevice {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupRevokedDevice {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupRevokedDevice")
+            .field("group_id", &self.group_id())
+            .field("device_id", &self.device_id())
+            .finish()
+    }
+}
+
+/// An account's current root key within a group (see [`GROUP_ACCOUNT_KEY_PREFIX`]).
+///
+/// Written the first time the group sees any credential for the account, and
+/// advanced by each rotation. Key layout `prefix(1) + group_id(32) +
+/// account_id(32)`.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountKey(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupAccountKey {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], account_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_ACCOUNT_KEY_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(account_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn account_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupAccountKey {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupAccountKey {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupAccountKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupAccountKey")
+            .field("group_id", &self.group_id())
+            .field("account_id", &self.account_id())
+            .finish()
+    }
+}
+
+/// The root key an account currently holds in a group.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountKeyValue {
+    /// Highest root-key epoch this group has established for the account.
+    pub epoch: u32,
+    /// The root key at `epoch` — the only key whose device certificates this
+    /// group still accepts.
+    pub root_pk: [u8; 32],
 }
 
 /// Namespace-root inherited-deny entry (see [`GROUP_INHERITED_DENIED_MEMBER_PREFIX`]).

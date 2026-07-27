@@ -39,6 +39,7 @@ pub mod registration_notify;
 
 pub mod absorb;
 pub mod absorb_record;
+mod account_bindings;
 pub mod authorizer;
 mod capabilities;
 pub mod cascade;
@@ -76,6 +77,7 @@ pub use self::authorizer::{
 };
 pub use self::capabilities::CapabilitiesRepository;
 
+pub use self::account_bindings::{AccountBindingRepository, BindingRejected, DeviceBinding};
 pub use self::context_registration::ContextRegistrationService;
 pub use self::context_tree::ContextTreeService;
 pub use self::contexts::{
