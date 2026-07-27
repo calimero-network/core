@@ -4917,4 +4917,82 @@ mod tests {
             b"payload"
         );
     }
+
+    /// Regression for calimero-sdk-js#88 (`allPosts failed: BorshReader:
+    /// unexpected end of input`): a value pushed to an `AuthoredVector` must
+    /// come back byte-identical through `iter`, with the `[count][len,value]`
+    /// framing wrapping exactly the pushed bytes (no owner/metadata bleed).
+    #[test]
+    fn test_js_crdt_authored_vector_iter_roundtrips_value_bytes() {
+        // Exact bytes `serialize("hello")` produces on the JS side (borsh
+        // string: len:u32 LE + utf8 bytes).
+        const HELLO_BORSH: &[u8] = &[0x05, 0x00, 0x00, 0x00, b'h', b'e', b'l', b'l', b'o'];
+
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let id: [u8; 32] = [91u8; 32];
+        put_buffer(&host, ID_DESC_PTR, ID_DATA_PTR, &id);
+        assert_eq!(
+            host.js_crdt_authored_vector_new_with_id(ID_DESC_PTR, 1)
+                .unwrap(),
+            0
+        );
+
+        put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, HELLO_BORSH);
+        assert_eq!(
+            host.js_crdt_authored_vector_push(ID_DESC_PTR, VALUE_DESC_PTR, 2)
+                .unwrap(),
+            1
+        );
+
+        let reg = 3u64;
+        assert_eq!(
+            host.js_crdt_authored_vector_iter(ID_DESC_PTR, reg).unwrap(),
+            1
+        );
+        let buffer = host.borrow_logic().registers.get(reg).unwrap().to_vec();
+        let items = decode_set_items(&buffer);
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].as_slice(),
+            HELLO_BORSH,
+            "AuthoredVector iter must return exactly the pushed value bytes"
+        );
+
+        // --- Root cause of calimero-sdk-js#88 -------------------------------
+        // `deletePost` -> `tombstone`, which core implements as
+        // `update(index, V::default())`. For the byte-oriented wrapper
+        // (`AuthoredVector<Vec<u8>>`) `Vec::<u8>::default()` is the EMPTY byte
+        // string, so the slot is overwritten with zero bytes. `iter` faithfully
+        // returns that empty slot — a byte-identical round-trip — but the JS
+        // `deserialize` then reads a self-describing value out of ZERO bytes and
+        // throws `BorshReader: unexpected end of input`. This asserts the exact
+        // empty-slot bytes that the JS decoder chokes on; the corruption is NOT
+        // in the value round-trip, it is the empty tombstone representation.
+        assert_eq!(
+            host.js_crdt_authored_vector_tombstone(ID_DESC_PTR, 0, 4)
+                .unwrap(),
+            1,
+            "owner tombstone must succeed"
+        );
+
+        let reg2 = 5u64;
+        assert_eq!(
+            host.js_crdt_authored_vector_iter(ID_DESC_PTR, reg2)
+                .unwrap(),
+            1
+        );
+        let buffer = host.borrow_logic().registers.get(reg2).unwrap().to_vec();
+        let items = decode_set_items(&buffer);
+        assert_eq!(items.len(), 1, "tombstoned slot is retained by iter");
+        assert!(
+            items[0].is_empty(),
+            "tombstoned slot is returned as ZERO value bytes — JS deserialize \
+             then hits end-of-input trying to decode a self-describing value \
+             out of nothing (calimero-sdk-js#88)"
+        );
+    }
 }
