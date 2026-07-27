@@ -274,6 +274,48 @@ fn hlc_zero_golden_bytes_are_self_consistent() {
 /// GroupOp ordinal 25 — CascadeUpgrade (all zero fields; HybridTimestamp::zero() via GOLDEN_HLC_ZERO)
 /// `GroupKeyRotated { departed }` — appended at the END of `GroupOp`, so every
 /// pre-existing ordinal is preserved. Discriminant 26 + a 32-byte `departed` key.
+const GOLDEN_GROUP_OP_ACCOUNT_DEVICE_LINKED: &[u8] = &[
+    27, // discriminant
+    1,  // genesis.version
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // genesis.root_sign_pk
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // genesis.nonce
+    0, 0, 0, 0, // chain: empty vec
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.account
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.device
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.sign_pk
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.kem_pk
+    0, 0, 0, 0, // cert.key_epoch
+    0, 0, 0, 0, // cert.device_epoch
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.signature
+];
+
+const GOLDEN_GROUP_OP_ACCOUNT_DEVICE_UNLINKED: &[u8] = &[
+    28, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // account
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // device
+];
+
+const GOLDEN_GROUP_OP_ACCOUNT_KEYS_ROTATED: &[u8] = &[
+    29, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // handoff.account
+    0, 0, 0, 0, // handoff.from_epoch
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // handoff.new_root_sign_pk
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // handoff.signature
+];
+
 const GOLDEN_GROUP_OP_GROUP_KEY_ROTATED: &[u8] = &[
     26, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -446,6 +488,21 @@ fn group_op_discriminants_are_golden() {
         GOLDEN_GROUP_OP_GROUP_KEY_ROTATED,
         GroupOp::GroupKeyRotated { .. },
         26
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_ACCOUNT_DEVICE_LINKED,
+        GroupOp::AccountDeviceLinked { .. },
+        27
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_ACCOUNT_DEVICE_UNLINKED,
+        GroupOp::AccountDeviceUnlinked { .. },
+        28
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_ACCOUNT_KEYS_ROTATED,
+        GroupOp::AccountKeysRotated { .. },
+        29
     );
 
     assert!(

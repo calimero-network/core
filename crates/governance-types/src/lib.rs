@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 use std::io;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyHandoff};
 use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_primitives::application::ApplicationId;
@@ -490,6 +491,60 @@ pub enum GroupOp {
         /// excludes.
         departed: PublicKey,
     },
+
+    // ---- account plane ----
+    //
+    // Appended at the END, like every variant before them: borsh tags by source
+    // order, so slotting one in beside the membership ops it belongs with would
+    // renumber every later variant and silently change the content hash — and
+    // therefore the signature — of every already-stored op that used one.
+    //
+    // `SIGNED_GROUP_OP_SCHEMA_VERSION` deliberately does NOT change. It is
+    // enforced strictly-equal on decode, so bumping it would make peers reject
+    // *every* op rather than just the ones they don't understand. Peers that
+    // predate these variants decode everything they already knew and fail only
+    // on an account op itself.
+    /// Bind a device to an account within this group.
+    ///
+    /// Self-contained: `genesis` hashes to `cert.account`, and `chain` carries
+    /// the signed root-key rollovers up to `cert.key_epoch`, so a verifier needs
+    /// no prior op. That is what lets a freshly paired device link *itself*
+    /// rather than the account root having to author a grant per group.
+    ///
+    /// Authored by the new device, with no admin action: linking a device to an
+    /// account that is **already a member** grants nothing the account did not
+    /// already hold, so it is not a privilege escalation. The apply path
+    /// enforces exactly that.
+    AccountDeviceLinked {
+        /// The account's self-certifying root.
+        genesis: AccountGenesis,
+        /// Signed root-key rollovers, epoch 0 upward. Empty when the
+        /// certificate was signed by the genesis key.
+        chain: Vec<RootKeyHandoff>,
+        /// The root-signed grant being recorded.
+        cert: DeviceCert,
+    },
+    /// Withdraw a device from an account.
+    ///
+    /// Terminal for this `DeviceId` — re-enrolling the machine mints a fresh
+    /// one. Permanence is what keeps a replica id from ever being reused, so the
+    /// CRDT planes hold their one-writer-per-replica invariant across a
+    /// revoke/re-add cycle.
+    AccountDeviceUnlinked {
+        /// Account the device is being removed from.
+        account: AccountId,
+        /// The device losing its binding.
+        device: DeviceId,
+    },
+    /// Roll an account's root key.
+    ///
+    /// Raises the account's key epoch, after which a certificate signed by any
+    /// superseded key is refused — which is how a rotation withdraws the old
+    /// key's authority instead of merely adding a new one beside it.
+    AccountKeysRotated {
+        /// The handoff, signed by the outgoing key.
+        handoff: RootKeyHandoff,
+    },
 }
 
 impl GroupOp {
@@ -507,6 +562,9 @@ impl GroupOp {
             GroupOp::MemberRemoved { .. } => "member_removed",
             GroupOp::MemberLeft { .. } => "member_left",
             GroupOp::GroupKeyRotated { .. } => "group_key_rotated",
+            GroupOp::AccountDeviceLinked { .. } => "account_device_linked",
+            GroupOp::AccountDeviceUnlinked { .. } => "account_device_unlinked",
+            GroupOp::AccountKeysRotated { .. } => "account_keys_rotated",
             GroupOp::MemberRoleSet { .. } => "member_role_set",
             GroupOp::MemberCapabilitySet { .. } => "member_capability_set",
             GroupOp::DefaultCapabilitiesSet { .. } => "default_capabilities_set",
