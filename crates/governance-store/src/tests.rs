@@ -9544,17 +9544,22 @@ mod self_leave_rotation_crypto {
 
         let new_key: [u8; 32] = OsRng.gen();
         let keyring = GroupKeyring::new(&store, ns_gid);
-        let recipients: Vec<PublicKey> = keyring
-            .current_member_recipients()
+        let recipients: Vec<KeyRecipient> = keyring
+            .current_key_recipients()
             .expect("list recipients")
             .into_iter()
-            .filter(|m| *m != leaver)
+            .filter(|entitled| entitled.member != leaver)
+            .map(|entitled| entitled.recipient)
             .collect();
         let rotation = keyring
             .build_rotation(&new_key, &admin_sk, &recipients)
             .expect("build rotation excluding the leaver");
 
-        let recipients: Vec<PublicKey> = rotation.envelopes.iter().map(|e| e.recipient).collect();
+        let recipients: Vec<PublicKey> = rotation
+            .envelopes
+            .iter()
+            .filter_map(|e| e.recipient.member_identity())
+            .collect();
 
         assert!(
             !recipients.contains(&leaver),
@@ -9590,7 +9595,7 @@ mod self_leave_rotation_crypto {
         let stayer_envelope = rotation
             .envelopes
             .iter()
-            .find(|e| e.recipient == stayer)
+            .find(|e| e.recipient.member_identity() == Some(stayer))
             .expect("the stayer has an envelope");
         let unwrapped = GroupKeyring::unwrap_for_recipient(
             &stayer_sk,

@@ -34,6 +34,7 @@ use calimero_store::key::{
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
+use std::collections::BTreeMap;
 use thiserror::Error as ThisError;
 
 use crate::collect_keys_with_prefix;
@@ -185,6 +186,50 @@ impl<'a> AccountBindingRepository<'a> {
                 kem_pk: value.kem_pk,
                 device_epoch: value.device_epoch,
             });
+        }
+        Ok(out)
+    }
+
+    /// Every account this group knows, grouped by the member key currently
+    /// rooting it.
+    ///
+    /// This is the member→account direction the scope-key fan-out needs, and it
+    /// is **re-derived on every call, never cached**. `AccountId` is a one-way
+    /// hash of the genesis, so the only way to build a reverse index is to
+    /// observe accounts while their genesis passes through — and a node rebuilds
+    /// its state from the op log, which carries accounts, not genesis-by-member.
+    /// A cache would therefore come back empty after a rebuild, silently
+    /// reverting every member to the identity fallback and undoing device
+    /// revocation. Scanning the rows has no state to lose.
+    ///
+    /// Keyed by the account's *current* root key, not its epoch-0 one, so an
+    /// account that rotated its root onto a different member key follows that
+    /// key. An account whose current root is nobody's member key appears under
+    /// no member and receives nothing.
+    ///
+    /// # Errors
+    /// Propagates the store scan failure.
+    pub fn accounts_rooted_at_members(
+        &self,
+        group: &ContextGroupId,
+    ) -> EyreResult<BTreeMap<PublicKey, Vec<AccountId>>> {
+        let gid = group.to_bytes();
+        let keys = collect_keys_with_prefix(
+            self.store,
+            GroupAccountKey::new(gid, [0u8; 32]),
+            calimero_store::key::GROUP_ACCOUNT_KEY_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
+
+        let handle = self.store.handle();
+        let mut out: BTreeMap<PublicKey, Vec<AccountId>> = BTreeMap::new();
+        for key in keys {
+            let Some(value): Option<GroupAccountKeyValue> = handle.get(&key)? else {
+                continue;
+            };
+            out.entry(PublicKey::from(value.root_pk))
+                .or_default()
+                .push(AccountId::from(key.account_id()));
         }
         Ok(out)
     }

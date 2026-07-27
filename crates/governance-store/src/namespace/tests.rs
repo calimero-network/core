@@ -3862,11 +3862,12 @@ fn build_rotation_op(
     };
     let encrypted = GroupKeyring::encrypt_op(old_key, &inner).unwrap();
     let keyring = GroupKeyring::new(store, ns_gid);
-    let recipients: Vec<PublicKey> = keyring
-        .current_member_recipients()
+    let recipients: Vec<crate::KeyRecipient> = keyring
+        .current_key_recipients()
         .unwrap()
         .into_iter()
-        .filter(|m| m != removed_pk)
+        .filter(|entitled| entitled.member != *removed_pk)
+        .map(|entitled| entitled.recipient)
         .collect();
     let mut rotation = keyring
         .build_rotation(new_group_key, signer_sk, &recipients)

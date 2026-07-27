@@ -1,5 +1,6 @@
 use crate::{
-    CapabilitiesRepository, GroupKeyring, MetaRepository, NamespaceRepository, PermissionChecker,
+    CapabilitiesRepository, GroupKeyring, KeyRecipient, MetaRepository, NamespaceRepository,
+    PermissionChecker,
 };
 use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp};
 use calimero_context_config::types::ContextGroupId;
@@ -344,10 +345,16 @@ impl<'a> GroupGovernancePublisher<'a> {
                 // Build the recipient list here, where the reason for the
                 // exclusion is visible: the removed member must not receive the
                 // key they are being rotated out of.
-                let recipients: Vec<PublicKey> = keyring
-                    .current_member_recipients()?
+                // Filtering by `member` — not by recipient — is what makes the
+                // removed member's *devices* go with them. A device-addressed
+                // recipient carries no member key of its own, so dropping only
+                // the identity-addressed entry would leave their devices holding
+                // the fresh key.
+                let recipients: Vec<KeyRecipient> = keyring
+                    .current_key_recipients()?
                     .into_iter()
-                    .filter(|member| member != removed)
+                    .filter(|entitled| entitled.member != *removed)
+                    .map(|entitled| entitled.recipient)
                     .collect();
                 Some(keyring.build_rotation(&new_group_key, &rotation_sender_sk, &recipients)?)
             } else {

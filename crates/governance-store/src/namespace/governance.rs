@@ -5,8 +5,8 @@ use crate::{
     NamespaceRepository, PermissionChecker,
 };
 use calimero_context_client::local_governance::{
-    hash_scoped_namespace, AckRouter, EncryptedGroupOp, GroupOp, KeyEnvelope, KeyRotation,
-    NamespaceOp, RootOp, SignedGroupOp, SignedNamespaceOp,
+    hash_scoped_namespace, AckRouter, EncryptedGroupOp, EnvelopeRecipient, GroupOp, KeyEnvelope,
+    KeyRotation, NamespaceOp, RootOp, SignedGroupOp, SignedNamespaceOp,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
@@ -1192,7 +1192,13 @@ impl<'a> NamespaceGovernance<'a> {
         // with, but a misbehaving/stale peer could send an envelope for
         // someone else. Storing a key we can't actually use would be
         // harmless but pointless; reject it.
-        if envelope.recipient != recipient_sk.public_key() {
+        //
+        // Member-addressed only, and that is inherent to this path rather than a
+        // gap: a pull request names the requester's identity key, so a responder
+        // has nothing to address a device with. It is also the path a node with
+        // no key at all must use, which is precisely the state in which it has no
+        // device the group has heard of.
+        if envelope.recipient.member_identity() != Some(recipient_sk.public_key()) {
             return Ok(None);
         }
 
@@ -1539,9 +1545,20 @@ impl<'a> NamespaceGovernance<'a> {
         };
         let recipient_sk = PrivateKey::from(identity.private_key);
         let recipient_pk = recipient_sk.public_key();
+        // A rotation bundle can carry both addressing modes at once: members who
+        // have enrolled a device get device envelopes, members who have not are
+        // still addressed by identity. So the receiver checks for both, and a
+        // node with no enrolled device simply matches none of the device ones.
+        let node_device = crate::NodeDeviceRepository::new(self.store).get(&ns_id)?;
 
         for envelope in &rotation.envelopes {
-            if envelope.recipient != recipient_pk {
+            let addressed_to_us = match envelope.recipient {
+                EnvelopeRecipient::Member { identity, .. } => identity == recipient_pk,
+                EnvelopeRecipient::Device { device, .. } => {
+                    node_device.as_ref().is_some_and(|own| own.device == device)
+                }
+            };
+            if !addressed_to_us {
                 continue;
             }
             // Invariant: `op.signer` MUST be the same identity that wrapped the
@@ -1552,8 +1569,9 @@ impl<'a> NamespaceGovernance<'a> {
             // outer op with a different key than it wraps with, this
             // `expected_sender` check will reject the rotation rather than
             // silently accept a mismatched wrapper — fail-closed by design.
-            match GroupKeyring::unwrap_for_recipient(
+            match GroupKeyring::unwrap_any(
                 &recipient_sk,
+                node_device.as_ref(),
                 &group_id.to_bytes(),
                 Some(&op.signer),
                 envelope,
