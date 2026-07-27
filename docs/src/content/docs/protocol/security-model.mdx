@@ -111,9 +111,9 @@ Confidentiality is selective and enforced by payload-layer encryption *before* d
 | Delta envelope: `parent_ids`, `hlc`, `author_id`, `delta_id`, `key_id`, `governance_position` | **No** | Cleartext routing/causality metadata |
 | Governance **Group** ops (`EncryptedGroupOp.ciphertext`) | **Yes** | Group key (`from_sk`); `group_id` / `key_id` / `signer` stay cleartext as routing tags |
 | Governance **Root** ops (`GroupCreated`, `MemberJoined`, `KeyDelivery`, …) | **No** | Cleartext by design, visible to all namespace members |
-| Key delivery (`KeyEnvelope.ciphertext`) | **Yes** | ECDH `SharedKey::new(sender_sk, recipient_pk)` over the 32-byte group key |
+| Key delivery (`KeyEnvelope.ciphertext`) | **Yes** | ECDH from a per-envelope ephemeral over the 32-byte group key: `SharedKey::new` to a member identity, `SharedKey::from_x25519` to a device's certified KEM key |
 
-All payload-layer encryption goes through one type, `calimero_crypto::SharedKey`: AES-256-GCM, 12-byte nonce, empty AAD. The symmetric variant (`from_sk`) moves *data* under a key the whole group already shares; the ECDH variant (`new`) moves *the key itself* to one recipient. A delta is tagged on the wire by `key_id = SHA-256(group_key)` (`crates/governance-store/src/group_keys.rs`) so receivers pick the right key without it ever appearing in cleartext.
+All payload-layer encryption goes through one type, `calimero_crypto::SharedKey`: AES-256-GCM, 12-byte nonce, empty AAD. The symmetric variant (`from_sk`) moves *data* under a key the whole group already shares; the two ECDH variants move *the key itself* to one recipient — `new` over the Curve25519 form of an Ed25519 identity, `from_x25519` over a device's dedicated agreement key. The two use distinct HKDF labels, so the same raw point can never derive the same AES key under both. A delta is tagged on the wire by `key_id = SHA-256(group_key)` (`crates/governance-store/src/group_keys.rs`) so receivers pick the right key without it ever appearing in cleartext.
 
 The pattern: **bulk group-private payloads are encrypted under the group key; the metadata that makes routing, causal ordering, and authorization work is cleartext.** Confidentiality protects *what changed*, not *that something changed, by whom, and in what shape*.
 

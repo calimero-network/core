@@ -57,37 +57,40 @@ Every encrypted group op travels as `NamespaceOp::Group { group_id, key_id, encr
 `key_id` is a non-secret label: it is a hash of the key, not the key. It leaks nothing usable — you cannot invert SHA-256 to recover the 32-byte key — but it lets every node agree on epoch boundaries without a separate counter.
 </Aside>
 
-## How the scope key is wrapped: ECDH per member
+## How the scope key is wrapped: ECDH per recipient
 
-The new key is never broadcast in the clear. It is wrapped once **per remaining member** using an ECDH-derived shared secret, so only the intended recipient can unwrap it. The wrap and unwrap are duals over the same curve25519 agreement (`crates/crypto`, `SharedKey::new`):
-
-```rust
-// sender side: wrap the scope key for one recipient
-let shared = SharedKey::new(sender_sk, recipient_pk)?;   // ECDH(sender_sk, recipient_pk)
-let ciphertext = shared.encrypt(group_key.to_vec(), nonce)?;
-KeyEnvelope { recipient, ephemeral_pk: sender_sk.public_key(), nonce, ciphertext }
-
-// recipient side: unwrap with the mirror agreement
-let shared = SharedKey::new(recipient_sk, &envelope.ephemeral_pk)?;  // same shared secret
-let key = shared.decrypt(envelope.ciphertext.clone(), envelope.nonce)?;
-```
-
-`SharedKey::new` decompresses the peer's Ed25519 public key to its Edwards point and multiplies by our scalar; both sides reach the identical shared secret, which is then used as an AES-256-GCM key. The result is a `KeyEnvelope`:
+The new key is never broadcast in the clear. It is wrapped once **per recipient** using an ECDH-derived shared secret, so only the intended recipient can unwrap it, and each envelope is signed by whoever wrapped it:
 
 ```rust
 pub struct KeyEnvelope {
-    pub recipient: PublicKey,     // the member this envelope is for
-    pub ephemeral_pk: PublicKey,  // the sender's public key (the ECDH counterpart)
+    pub recipient: EnvelopeRecipient,  // who it is for, and the key that opens it
+    pub sender: PublicKey,             // authenticated by `signature`
     pub nonce: [u8; 12],
-    pub ciphertext: Vec<u8>,      // AES-256-GCM(group_key) under the ECDH secret
+    pub ciphertext: Vec<u8>,           // AES-256-GCM(scope_key) under the ECDH secret
+    pub signature: [u8; 64],           // Ed25519 by `sender` over the canonical payload
 }
 ```
 
-<Aside type="caution">
-Despite the field name `ephemeral_pk`, the wrap uses the sender's **namespace identity** public key, not a freshly-generated ephemeral key — `wrap_for_member` sets `ephemeral_pk: sender_sk.public_key()` where `sender_sk` is the sender's identity. The recipient needs that public key to reconstruct the shared secret. Read it as "the sender's ECDH public key for this envelope," not as a per-message ephemeral.
-</Aside>
+A recipient is either a **member** or a single **device**, and the variant carries its own ECDH public key, because the addressing mode *is* the agreement mode:
 
-The scope-key-to-data step is plain symmetric AES-256-GCM: `encrypt_op` builds `SharedKey::from_sk(group_key)`, which uses the 32-byte scope key directly as the AES key, then seals the borsh-encoded op. ECDH is used only to _wrap the scope key for a member_; the scope key itself encrypts the bulk data symmetrically.
+```rust
+pub enum EnvelopeRecipient {
+    // Bootstrap: ECDH over the Curve25519 form of the member's Ed25519 identity.
+    Member { identity: PublicKey, ephemeral_pk: PublicKey },
+    // Post-enrollment: native X25519 to the key in the device's certificate.
+    Device { device: DeviceId, ephemeral_pk: KemPublicKey },
+}
+```
+
+Both forms exist permanently. A device link travels as an *encrypted* group op, so a node must already hold the scope key to enroll a device — if the only way to receive a key were device-addressed, a new member could never obtain the first one. Member addressing is therefore the bootstrap path, not a legacy one.
+
+The wrap generates a **fresh ephemeral keypair per envelope** and derives the secret from that ephemeral against the recipient's key, which is what gives the wrap forward secrecy: compromising the sender's long-term key later does not decrypt past envelopes. The sender then signs the canonical envelope bytes, bound to the `group_id`, so a recipient can reject a forged or cross-group-replayed envelope before doing any ECDH work. The variant tag is inside those signed bytes, so the two addressing modes cannot be swapped by rewriting the discriminant.
+
+The scope-key-to-data step is plain symmetric AES-256-GCM: `encrypt_op` builds `SharedKey::from_sk(group_key)`, which uses the 32-byte scope key directly as the AES key, then seals the borsh-encoded op. ECDH is used only to _wrap the scope key for a recipient_; the scope key itself encrypts the bulk data symmetrically.
+
+<Aside type="note">
+A device's KEM public key is never carried on an envelope. The unwrapping device already holds the matching secret, and ECDH needs only `ephemeral_pk`. Only the *sender* needs it, and reads it from the folded device binding — the same row that says the device is still authorized, which is what makes it impossible to wrap for a revoked device.
+</Aside>
 
 ## The rotation mechanism on `MemberRemoved`
 
@@ -95,35 +98,45 @@ Rotation is built and attached at publish time, not in the generic apply handler
 
 ```rust
 let new_group_key: [u8; 32] = OsRng.gen();
-let _ = GroupKeyring::new(self.store, self.group_id).store_key(&new_group_key)?;
-Some(GroupKeyring::new(self.store, self.group_id).build_rotation(
-    &new_group_key,
-    signer_sk,
-    Some(removed),   // the removed member is excluded
-)?)
+let _ = GroupKeyring::new(self.store, self.group_id).store_key_with_epoch(&new_group_key, epoch)?;
+// Who is entitled is decided here, where the reason for the exclusion is visible.
+let recipients: Vec<KeyRecipient> = keyring
+    .current_key_recipients()?
+    .into_iter()
+    .filter(|entitled| entitled.member != *removed)
+    .map(|entitled| entitled.recipient)
+    .collect();
+Some(keyring.build_rotation(&new_group_key, &rotation_sender_sk, &recipients)?)
 ```
 
-`build_rotation` lists the scope's members, skips the `excluded_member`, and emits one `KeyEnvelope` per survivor:
+`build_rotation` takes its recipient list as an **input** and only wraps — there is no `excluded_member` parameter, because removing someone is now simply leaving them out, which cannot be silently forgotten the way an unpassed exclusion could.
+
+`current_key_recipients` is what decides the list, per member, device-first:
+
+- a member the scope knows an account for is addressed **only** through that account's live devices — no identity fallback, because the identity key lives on the same node as a revoked device and would hand the key straight back;
+- a member with no account is addressed by identity.
+
+Each entry is paired with the member it rests on, which is why filtering by `member` above drops **every device** of the removed member rather than just their identity entry.
+
+The bundle rides on the same `NamespaceOp::Group { .. , key_rotation: Some(rotation) }` that carries the encrypted `MemberRemoved` op. A single bundle may mix both addressing modes, so on apply each receiver checks for an envelope addressed to its namespace identity *or* to its own enrolled device, then unwraps with whichever credential the envelope names (`crates/governance-store/src/namespace/governance.rs`):
 
 ```rust
-for (member_pk, _) in &members {
-    if excluded_member == Some(member_pk) {
-        continue;                         // the removed member gets no envelope
-    }
-    envelopes.push(Self::wrap_for_member(sender_sk, member_pk, new_group_key)?);
-}
-Ok(KeyRotation { new_key_id, envelopes })
-```
-
-The bundle rides on the same `NamespaceOp::Group { .. , key_rotation: Some(rotation) }` that carries the encrypted `MemberRemoved` op. On apply, each receiver scans the envelopes for the one addressed to _its_ namespace identity, unwraps it, and stores the new key (`crates/governance-store/src/namespace/governance.rs`):
-
-```rust
+let node_device = NodeDeviceRepository::new(self.store).get(&ns_id)?;
 for envelope in &rotation.envelopes {
-    if envelope.recipient == recipient_sk.public_key() {
-        let new_key = GroupKeyring::unwrap_for_recipient(&recipient_sk, envelope)?;
-        let _ = GroupKeyring::new(self.store, group_id_typed).store_key(&new_key)?;
-        break;
-    }
+    let for_us = match envelope.recipient {
+        EnvelopeRecipient::Member { identity, .. } => identity == recipient_pk,
+        EnvelopeRecipient::Device { device, .. } => {
+            node_device.as_ref().is_some_and(|own| own.device == device)
+        }
+    };
+    if !for_us { continue; }
+    // `expected_sender = op.signer`: the identity that signed the outer op MUST be
+    // the one that wrapped the envelopes, so a mismatched wrapper fails closed.
+    let new_key = GroupKeyring::unwrap_any(
+        &recipient_sk, node_device.as_ref(), &group_id, Some(&op.signer), envelope,
+    )?;
+    let _ = GroupKeyring::new(self.store, group_id_typed).store_key_with_epoch(&new_key, epoch)?;
+    break;
 }
 ```
 
@@ -138,11 +151,11 @@ for envelope in &rotation.envelopes {
   ]}
   steps={[
     { from: 0, to: 0, label: 'mint new_group_key = OsRng; store_key → new_key_id = sha256(key)' },
-    { from: 0, to: 0, label: 'build_rotation: one KeyEnvelope per member EXCEPT the removed one' },
+    { from: 0, to: 0, label: 'current_key_recipients minus the removed member (and every device of theirs)' },
     { from: 0, to: 1, label: 'publish NamespaceOp::Group { MemberRemoved, key_rotation }', color: '#a5ff11' },
     { from: 1, to: 2, label: 'apply MemberRemoved (drop row + deny-list)' },
-    { from: 1, to: 2, label: 'find envelope for my identity → unwrap → store new key', color: '#3fb950' },
-    { from: 1, to: 3, label: 'apply MemberRemoved; NO envelope addressed to me', color: '#f85149' },
+    { from: 1, to: 2, label: 'find envelope for my identity or my device → unwrap → store new key', color: '#3fb950' },
+    { from: 1, to: 3, label: 'apply MemberRemoved; NO envelope addressed to me or my devices', color: '#f85149' },
     { type: 'divider', label: 'new writes encrypt under new_key_id — removed member holds only the old key' },
   ]}
 />

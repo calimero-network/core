@@ -26,12 +26,15 @@ cargo test -p calimero-crypto test_kdf_derivation_is_deterministic_and_interoper
 | Item | Kind | Purpose |
 | --- | --- | --- |
 | `SharedKey` | struct | Holds a zeroized 32-byte AEAD key; `Clone`, `Zeroize`, `ZeroizeOnDrop`, redacted `Debug` |
-| `SharedKey::new(sk, pk)` | fn | X25519-style ECDH between a `PrivateKey` and peer `PublicKey`, HKDF-derived into an AES key |
+| `SharedKey::new(sk, pk)` | fn | ECDH over the Curve25519 form of an Ed25519 `PrivateKey`/peer `PublicKey`, HKDF-derived into an AES key |
+| `SharedKey::from_x25519(sk, pk)` | fn | ECDH over a **native** X25519 keypair (`X25519SecretKey`/`X25519PublicKey`), HKDF-derived under a *separate* label |
 | `SharedKey::from_sk(sk)` | fn | Uses the raw private key bytes directly as the AEAD key (no ECDH) |
+| `X25519SecretKey` | struct | Agreement-only secret, `ZeroizeOnDrop`, redacted `Debug`; `random`, `public_key`, `as_bytes` |
+| `X25519PublicKey` | struct | The peer half of a native X25519 agreement |
 | `SharedKey::encrypt(payload)` | fn | AES-256-GCM seal with an internally generated random nonce; returns `(Nonce, Vec<u8>)` |
 | `SharedKey::encrypt_with_nonce(payload, nonce)` | fn | Seal with a caller-supplied nonce; caller must guarantee single-use |
 | `SharedKey::decrypt(cipher_text, nonce)` | fn | AES-256-GCM open; returns `None` on any authentication failure |
-| `SharedKeyError` | enum (`#[non_exhaustive]`) | Currently one variant: `InvalidPublicKey` |
+| `SharedKeyError` | enum (`#[non_exhaustive]`) | `InvalidPublicKey` (bad Edwards Y / small-order point) and the X25519 identity-point case |
 | `NONCE_LEN` | const | `12` (AES-GCM standard nonce size) |
 | `Nonce` | type alias | `[u8; NONCE_LEN]` |
 
@@ -40,6 +43,8 @@ All fallible AEAD operations return `Option`, not `Result` - there is no distinc
 ## Mental Model
 
 `SharedKey::new` is the normal path: it treats `sk` as an Ed25519 signing key, converts it to its underlying scalar (`SigningKey::to_scalar`), decompresses the peer's Edwards Y-coordinate public key, and multiplies scalar * point to get a raw ECDH secret. A raw curve point is not uniformly distributed over 256 bits, so it is never used directly as a key - it is fed as IKM into HKDF-SHA256 (`hkdf::Salt::new` with an empty salt, then `expand` with the fixed info string `AEAD_KDF_INFO = b"calimero.sharedkey.aead.v2"`) to produce the actual 32-byte AES-256-GCM key. Both peers derive the same key because ECDH is commutative: `signer_sk * verifier_pk == verifier_sk * signer_pk`.
+
+`SharedKey::from_x25519` is the same shape over a native X25519 keypair, for parties whose agreement key is deliberately *not* their signing key - a device's KEM key, which must be revocable independently of the identity that certified it. Its HKDF label (`X25519_KDF_INFO`) is distinct from `AEAD_KDF_INFO`, so even the same raw point reached through the two paths can never derive the same AES key. Its guard is the X25519 analogue of the small-order check: an agreement that collapses to the identity point is rejected, because it would make the output independent of the caller's secret and therefore predictable.
 
 Before doing any of that, `new` rejects public keys that decompress to a small-order (torsion) point via `is_small_order()`. A small-order peer key would collapse the ECDH output into a tiny subgroup independent of the caller's own scalar, defeating the "shared" part of the secret - this is the standard X25519/Ed25519 small-subgroup attack guard.
 

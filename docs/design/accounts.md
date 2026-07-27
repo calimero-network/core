@@ -144,13 +144,75 @@ its certificate. Flat per-device wrapping is correct and unavoidable for
 device-granular revocation; MLS-style tree wrapping is orthogonal and not needed
 at current group sizes.
 
-- **On link:** an existing device of the same account wraps the current scope
-  keys for the new one. Self-service — no admin, no key rotation.
-- **On revoke:** the scope key **must** rotate; the revoked device holds it.
-
 `build_rotation` takes its recipient list as an input rather than reading
-membership rows, so entitlement — an authorization decision — is answered by the
-projection like every other one, instead of inside a wrapping helper.
+membership rows, so entitlement — an authorization decision — is answered by
+folded state like every other one, instead of inside a wrapping helper.
+
+### Divergence from the plan: the envelope addresses a member *or* a device
+
+The plan had `KeyEnvelope.recipient` simply become a `DeviceId`. That cannot
+work, and the reason is a bootstrap deadlock rather than a migration
+inconvenience:
+
+`AccountDeviceLinked` is an **encrypted `GroupOp`**. Publishing one therefore
+requires already holding the scope key. If the only way to *receive* a scope key
+were an envelope addressed to a device, a new member could never obtain the first
+key — it would need a link to receive a key, and a key to publish a link.
+
+So `recipient` is an `EnvelopeRecipient`, a discriminated address that carries
+its own agreement key:
+
+- `Member { identity, ephemeral_pk }` — ECDH over the Curve25519 form of the
+  Ed25519 namespace identity. The **bootstrap** form, and permanent: key
+  delivery, the sync pull path, and invitation/TEE admission have nothing else to
+  address. Not legacy — necessary.
+- `Device { device, ephemeral_pk }` — native X25519 to the certified KEM key.
+  Everything after bootstrap.
+
+Addressing and agreement are one field on purpose. Split across two fields, a
+`DeviceId` could be paired with an Ed25519 ephemeral — a state no sender produces
+and no unwrap path services. The variant tag is also inside the **signed**
+payload, so rewriting the borsh discriminant cannot reinterpret a member
+envelope's identity as a device id while the signature still verifies.
+
+### Who gets addressed how
+
+`current_key_recipients` resolves per member, device-first:
+
+- A member this group knows an account for is addressed **only** through that
+  account's live devices. There is no identity fallback for them, and that is the
+  security property, not a gap: the revoked device runs on a node that still
+  holds the member key, so an identity-addressed envelope would hand the key
+  straight back. A member whose every device is revoked or superseded receives
+  nothing until they enroll again.
+- A member with no account here is addressed by identity — the bootstrap case,
+  and the only one, since an account cannot exist for someone who never held the
+  key long enough to publish a link.
+
+Each entry is paired with the member it rests on (`EntitledRecipient`), which is
+what makes excluding a removed member take **every device of theirs** with them.
+Filtering by recipient alone could only drop the identity entry.
+
+The member→account direction is re-derived per call by scanning account rows and
+matching each one's current root key — see *Forward mapping* above for why a
+cache would silently disable revocation after a restart.
+
+### Not yet wired: the ops that trigger delivery
+
+Two behaviours from the plan are **not** implemented, for the same reason: no
+code path publishes an account op yet.
+
+- **On link, an existing device backfills the new one.** Needs a publisher of
+  `AccountDeviceLinked` to hang off. That publisher is the pairing flow in phase
+  F; a listener built now would react to an event nothing emits.
+- **On revoke, the scope key must rotate.** Same — plus the non-admin case needs
+  a rotation debt the current ledger cannot express (it is keyed by member
+  identity, and `GroupKeyRotated { departed }` excludes that member, which would
+  cut the account's *other* devices off the key too).
+
+The delivery *machinery* both need is complete and tested: the envelope, both
+wrap/unwrap modes, the recipient resolution, and a receive path that accepts a
+rotation bundle carrying both addressing modes at once.
 
 ## Runtime and SDK
 
@@ -169,6 +231,15 @@ by `DeviceId`; the mapping is handed *up* to the app, never down into the CRDT.
 - **Root-key compromise is not recoverable.** A stolen root key can sign its own
   handoff. Recovery needs a separate authority, which stays reachable because
   `AccountId` is not the key.
+- **The sync pull path can hand the current key back to a revoked device.** A
+  `GroupKeyRequest` names the requester's *identity* key, so the responder wraps
+  for the member, and a node whose device was revoked is still that member. The
+  rotation fan-out excludes the device correctly; this path routes around it.
+  Closing it means the request must prove a live device binding, which changes the
+  sync request/response wire — the same surface as the open "pull responder
+  `responder_identity` is unauthenticated" gap, and best fixed with it. Until
+  then, revoking a device revokes *authorization* immediately and cryptographic
+  *read access* only against peers that do not serve it a pull.
 
 ## Phasing, corrected
 
@@ -183,11 +254,19 @@ in production, and a fan-out reading it would wrap for zero recipients.
 | B1 | Native X25519 agreement (`calimero-crypto`) | **done** |
 | B2 | Key-rotation recipients as an input | **done** |
 | B3 | Account ops on the **`GroupOp` wire** (tags 27–29), device-binding rows, apply handlers | **done** |
-| **C** | **Node device identity** — per-device X25519 secret and `DeviceId` stored beside the member identity | **next** |
-| D | `KeyEnvelope` → `recipient: DeviceId`, X25519 ephemeral; fan-out over `AccountBindingRepository::devices_of`; backfill on link, rotate on revoke | needs C |
+| C | **Node device identity** — `NodeDeviceIdentity` row family (`0x44`), per-namespace `DeviceId` + X25519 secret | **done** |
+| D | `KeyEnvelope` → `EnvelopeRecipient{Member,Device}`, native X25519 wrap, device-first fan-out, both-modes receive | **done** |
+| D′ | On-link backfill and revoke-triggered rotation | **folded into F** — needs an account-op publisher |
 | E | Runtime: `executor_id()`→account, `device_id()`, SDK aggregation | after D |
-| F | `meroctl account create / link / revoke`, pairing UX | after E |
+| F | `meroctl account create / link / revoke`, pairing UX, **plus D′** | after E |
 | G | `merod export` / `import` | **independent — deferred by decision** |
+
+`NodeDeviceIdentity` is an additive row family rather than two more fields on
+`ContextIdentity`: that struct is `#[expect(clippy::exhaustive_structs)]` with
+construction sites throughout the node, and a device secret has its own lifetime
+anyway — minted once at enrollment, never rotated in place, dropped with the
+namespace. It is keyed per namespace so one machine presents neither the same
+replica id nor the same agreement key in two of them.
 
 ### Why the wire changed, and what it cost
 
