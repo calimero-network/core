@@ -315,7 +315,7 @@ impl DiscoveryState {
 
     /// Called from `SwarmEvent::ConnectionClosed` when the last
     /// connection to a regular peer (not a relay, not a rendezvous
-    /// peer, not an mdns-discovered peer) drops.
+    /// peer) drops.
     ///
     /// The post-`docker restart` / post-pause / post-partition
     /// scenarios all hit the same shape: peer A's connection to

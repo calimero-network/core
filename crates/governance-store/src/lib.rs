@@ -116,10 +116,10 @@ pub use self::namespace::{
     known_namespace_identities, namespace_group_keys_awaiting, namespace_groups_awaiting_key,
     namespace_groups_member_but_keyless, namespace_groups_with_held_key_buffered_ops,
     redrive_buffered_ops_for_group, retry_encrypted_ops_for_group, sign_and_publish_namespace_op,
-    sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure,
-    NamespaceDagService, NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord,
-    NamespaceMembershipService, NamespaceOpLogService, NamespaceRetryService, ReparentOutcome,
-    ResolvedNamespaceIdentity,
+    sign_apply_and_publish_namespace_op, sign_apply_and_publish_namespace_op_returning_op,
+    ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure, NamespaceDagService,
+    NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord, NamespaceMembershipService,
+    NamespaceOpLogService, NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
 };
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::PermissionChecker;
