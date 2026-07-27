@@ -29,6 +29,7 @@ url.workspace = true
 
 calimero-context-config.workspace = true
 calimero-crypto.workspace = true
+calimero-governance-types.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-blobstore.workspace = true
 calimero-network-primitives.workspace = true

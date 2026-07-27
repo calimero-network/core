@@ -20,8 +20,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message};
-use calimero_context_client::local_governance::SignedReadinessBeacon;
+use calimero_context_client::local_governance::{
+    NamespaceOp, NamespaceTopicMsg, RootOp, SignedNamespaceOp, SignedReadinessBeacon,
+};
+use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_node_primitives::client::NodeClient;
+use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use libp2p::PeerId;
@@ -456,6 +460,37 @@ pub struct ReadinessManager {
     /// rate-limit probe responses at `BEACON_INTERVAL / 2` and close the
     /// unsigned-probe traffic-amplification path.
     pub last_probe_response_at: HashMap<(PeerId, [u8; 32]), Instant>,
+    /// Membership ops that reached no peer at join time, retried when a
+    /// namespace peer next subscribes. Bounded by `REPUBLISH_CAP`.
+    pub pending_republish: HashMap<[u8; 32], PendingJoin>,
+}
+
+/// How long a membership op stays queued for rebroadcast before it is
+/// dropped. Past this the joiner's op has had many chances to reach a
+/// peer and namespace sync is the remaining recovery path.
+const REPUBLISH_CAP: Duration = Duration::from_secs(600);
+
+/// A signed `MemberJoinedAt` op whose broadcast reached nobody. Stored
+/// verbatim: a rebroadcast must be the same bytes, never a re-sign at a
+/// fresh nonce.
+pub struct PendingJoin {
+    pub op: SignedNamespaceOp,
+    pub queued_at: Instant,
+}
+
+fn prune_expired_republishes(pending: &mut HashMap<[u8; 32], PendingJoin>, now: Instant) {
+    pending.retain(|_, p| now.duration_since(p.queued_at) < REPUBLISH_CAP);
+}
+
+/// The invitation embedded in a queued join op. Stapled to our beacons so a
+/// peer that does not yet know us as a member can verify we were admitted.
+fn admission_proof_from(op: &SignedNamespaceOp) -> Option<SignedGroupOpenInvitation> {
+    match &op.op {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            signed_invitation, ..
+        }) => Some(signed_invitation.clone()),
+        _ => None,
+    }
 }
 
 impl Actor for ReadinessManager {
@@ -544,6 +579,25 @@ pub(crate) fn read_local_applied_through(store: &Store, ns_id: [u8; 32], fallbac
     }
 }
 
+/// Wrap a [`NamespaceTopicMsg`] in the `BroadcastMessage` envelope used on
+/// `ns/<id>` topics. The receiver-side dispatch in
+/// `network_event::handle_namespace_governance_delta` unwraps
+/// `NamespaceGovernanceDelta` and decodes the inner message. `delta_id` /
+/// `parent_ids` are zero/empty: the envelope is a carrier here, not DAG content
+/// (a republished op already carries its own parents inside the signed body).
+fn encode_namespace_topic_msg(
+    ns_id: [u8; 32],
+    msg: &NamespaceTopicMsg,
+) -> std::io::Result<Vec<u8>> {
+    let payload = borsh::to_vec(msg)?;
+    borsh::to_vec(&BroadcastMessage::NamespaceGovernanceDelta {
+        namespace_id: ns_id,
+        delta_id: [0u8; 32],
+        parent_ids: Vec::new(),
+        payload,
+    })
+}
+
 impl ReadinessManager {
     fn emit_periodic_beacons(&mut self) {
         // The freshness tick is the natural FSM-recompute checkpoint.
@@ -569,6 +623,10 @@ impl ReadinessManager {
         const PROBE_RESPONSE_TTL: Duration = Duration::from_secs(300);
         self.last_probe_response_at
             .retain(|_, at| now.duration_since(*at) < PROBE_RESPONSE_TTL);
+
+        // Enforce the queue cap on the tick too: a namespace that never sees a
+        // peer subscribe would otherwise hold its entry past `REPUBLISH_CAP`.
+        prune_expired_republishes(&mut self.pending_republish, now);
 
         let ttl = self.config.ttl_heartbeat;
         let cfg = self.config;
@@ -641,9 +699,6 @@ impl ReadinessManager {
     /// field-substitution replays (proven by the tamper tests in
     /// that module).
     fn publish_beacon(&self, ns_id: [u8; 32], state: &ReadinessState) {
-        use calimero_context_client::local_governance::{NamespaceTopicMsg, SignedReadinessBeacon};
-        use calimero_node_primitives::sync::BroadcastMessage;
-
         let group_id = calimero_context_config::types::ContextGroupId::from(ns_id);
         let identity = match NamespaceRepository::new(&self.datastore).identity(&group_id) {
             Ok(Some(id)) => id,
@@ -685,6 +740,15 @@ impl ReadinessManager {
             }
         };
 
+        // A queued join op is the only local signal that no peer has confirmed
+        // our membership yet, so its invitation rides every beacon until the
+        // `REPUBLISH_CAP` pruner drops the entry. Stopping at "seen in a peer's
+        // state" is not observable: membership rows carry no provenance.
+        let admission_proof = self
+            .pending_republish
+            .get(&ns_id)
+            .and_then(|p| admission_proof_from(&p.op));
+
         // Build with a placeholder signature, sign over the canonical
         // signable_bytes(), then write the real signature back.
         let mut beacon = SignedReadinessBeacon {
@@ -694,6 +758,7 @@ impl ReadinessManager {
             applied_through: state.local_applied_through,
             ts_millis,
             strong,
+            admission_proof,
             signature: [0u8; 64],
         };
         let signable = match beacon.signable_bytes() {
@@ -718,31 +783,14 @@ impl ReadinessManager {
         beacon.signature = signature;
 
         let topic = calimero_context::governance_broadcast::ns_topic(ns_id.into());
-        // Wrap the NamespaceTopicMsg in the BroadcastMessage envelope used
-        // on `ns/<id>` topics — the receiver-side dispatch in
-        // `network_event::handle_namespace_governance_delta` unwraps
-        // NamespaceGovernanceDelta and decodes the inner NamespaceTopicMsg.
-        // delta_id/parent_ids are zero/empty since beacons are not DAG content.
-        let inner = match borsh::to_vec(&NamespaceTopicMsg::ReadinessBeacon(beacon)) {
-            Ok(b) => b,
-            Err(err) => {
-                tracing::debug!(?err, "ReadinessBeacon: borsh encode (inner) failed");
-                return;
-            }
-        };
-        let envelope = BroadcastMessage::NamespaceGovernanceDelta {
-            namespace_id: ns_id,
-            delta_id: [0u8; 32],
-            parent_ids: Vec::new(),
-            payload: inner,
-        };
-        let bytes = match borsh::to_vec(&envelope) {
-            Ok(b) => b,
-            Err(err) => {
-                tracing::debug!(?err, "ReadinessBeacon: borsh encode (envelope) failed");
-                return;
-            }
-        };
+        let bytes =
+            match encode_namespace_topic_msg(ns_id, &NamespaceTopicMsg::ReadinessBeacon(beacon)) {
+                Ok(b) => b,
+                Err(err) => {
+                    tracing::debug!(?err, "ReadinessBeacon: borsh encode failed");
+                    return;
+                }
+            };
 
         // Detached publish — the caller (`emit_periodic_beacons` /
         // edge-trigger) doesn't await; gossipsub publish failures are
@@ -778,6 +826,30 @@ impl ReadinessManager {
 pub struct EmitOutOfCycleBeacon {
     pub namespace_id: [u8; 32],
     pub requesting_peer: PeerId,
+}
+
+/// Register a signed membership op whose publish reached no peer, so it is
+/// rebroadcast the moment a namespace peer next subscribes. Routed from the
+/// join path via `NodeClient::queue_membership_republish`.
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct PendingRepublish {
+    pub namespace_id: [u8; 32],
+    pub op: SignedNamespaceOp,
+}
+
+impl Handler<PendingRepublish> for ReadinessManager {
+    type Result = ();
+
+    fn handle(&mut self, msg: PendingRepublish, _ctx: &mut Self::Context) {
+        let _ = self.pending_republish.insert(
+            msg.namespace_id,
+            PendingJoin {
+                op: msg.op,
+                queued_at: Instant::now(),
+            },
+        );
+    }
 }
 
 impl Handler<NamespaceOpApplied> for ReadinessManager {
@@ -888,6 +960,19 @@ impl Handler<EmitOutOfCycleBeacon> for ReadinessManager {
         if let Some(snapshot) = snapshot {
             self.publish_beacon(msg.namespace_id, &snapshot);
         }
+
+        // A namespace peer just became reachable: the one moment a
+        // membership op that originally reached nobody can still land.
+        // Runs outside the tier gate above: a joiner whose op was lost is
+        // exactly the node that has not reached a *Ready tier yet.
+        prune_expired_republishes(&mut self.pending_republish, now);
+        if let Some(op) = self
+            .pending_republish
+            .get(&msg.namespace_id)
+            .map(|p| p.op.clone())
+        {
+            self.republish_membership_op(msg.namespace_id, op);
+        }
     }
 }
 
@@ -899,6 +984,32 @@ impl ReadinessManager {
     fn clear_probe_window_for(&mut self, ns_id: [u8; 32]) {
         self.last_probe_response_at
             .retain(|(_, key_ns), _| *key_ns != ns_id);
+    }
+
+    /// Rebroadcast a queued membership op on the namespace topic. Detached
+    /// and best-effort, mirroring [`Self::publish_beacon`]; the entry stays
+    /// queued so a later subscriber gets another attempt.
+    fn republish_membership_op(&self, ns_id: [u8; 32], op: SignedNamespaceOp) {
+        let bytes = match encode_namespace_topic_msg(ns_id, &NamespaceTopicMsg::Op(op)) {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::debug!(?err, "membership republish: borsh encode failed");
+                return;
+            }
+        };
+        let net = self.node_client.network_client().clone();
+        let topic = calimero_context::governance_broadcast::ns_topic(ns_id.into());
+        actix::spawn(async move {
+            match net.publish(topic, bytes).await {
+                Ok(_) => tracing::info!(
+                    namespace_id = %hex::encode(ns_id),
+                    "membership op republished after peer subscribed"
+                ),
+                Err(err) => {
+                    tracing::debug!(?err, "membership republish failed (non-fatal)");
+                }
+            }
+        });
     }
 }
 

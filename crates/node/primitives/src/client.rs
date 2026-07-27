@@ -6,6 +6,7 @@ use std::sync::Arc;
 use async_stream::stream;
 use calimero_context_config::types::GovernanceParentEdge;
 use calimero_crypto::SharedKey;
+use calimero_governance_types::SignedNamespaceOp;
 use calimero_network_primitives::client::{is_no_peers_subscribed_error, NetworkClient};
 use calimero_network_primitives::config::GOSSIPSUB_MESH_N_LOW;
 use calimero_primitives::context::{Context, ContextId};
@@ -366,6 +367,33 @@ impl NodeClient {
                 namespace_id = %hex::encode(namespace_id),
                 "failed to enqueue NamespaceSubscribed signal — readiness FSM will \
                  seed subscribed_at at the first applied op instead"
+            );
+        }
+    }
+
+    /// Queue an already-signed membership op for rebroadcast because its
+    /// publish collected no acks. The readiness FSM retries it when a
+    /// namespace peer next subscribes, which is the first moment a member
+    /// that was unreachable at join time becomes reachable.
+    ///
+    /// Best-effort, mirroring [`notify_namespace_op_applied`]: the op is
+    /// already applied and stored locally, so a dropped signal only means
+    /// peers learn of the join via namespace sync instead.
+    ///
+    /// [`notify_namespace_op_applied`]: Self::notify_namespace_op_applied
+    pub fn queue_membership_republish(&self, namespace_id: [u8; 32], op: SignedNamespaceOp) {
+        if let Err(err) = self
+            .node_manager
+            .try_send(NodeMessage::ForwardPendingRepublish {
+                namespace_id,
+                op: Box::new(op),
+            })
+        {
+            warn!(
+                ?err,
+                namespace_id = %hex::encode(namespace_id),
+                "failed to enqueue membership republish - peers will learn of this \
+                 join via namespace sync instead"
             );
         }
     }

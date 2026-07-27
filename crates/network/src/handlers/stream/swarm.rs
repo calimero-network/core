@@ -7,7 +7,7 @@ use multiaddr::{Multiaddr, Protocol};
 use tracing::{debug, info, trace, warn};
 
 use crate::behaviour::BehaviourEvent;
-use crate::discovery::state::{PeerDiscoveryMechanism, RelayReservationStatus};
+use crate::discovery::state::RelayReservationStatus;
 use crate::NetworkManager;
 
 mod autonat;
@@ -174,31 +174,24 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                     //      is idempotent for already-Expired peers, so
                     //      it's safe to call multiple times for the
                     //      same disconnect cascade.
-                    //   2. Regular calimero peer (not relay, not
-                    //      rendezvous, not mdns-discovered): the peer
-                    //      may have restarted with a fresh libp2p
-                    //      identity state. Issue a throttle-bypassed
-                    //      rendezvous re-query to discover the new
-                    //      registration. See the inline comment on
+                    //   2. Everything else (not relay, not rendezvous):
+                    //      the peer may have restarted with a fresh
+                    //      libp2p identity state. Issue a throttle-
+                    //      bypassed rendezvous re-query to discover the
+                    //      new registration. See the inline comment on
                     //      `for delay_secs in ...` for the retry
                     //      schedule rationale.
                     //
-                    // The branches were previously a duplicated
-                    // `is_peer_relay` predicate plus a long
-                    // `&& !is_peer_relay && !is_peer_rendezvous && !mdns`
-                    // compound on the regular branch. Restructured as
-                    // explicit if/else if to make the mutual exclusion
-                    // visible and survive future role-classification
-                    // refactors without the predicates drifting.
+                    // Restructured as explicit if/else if (rather than a
+                    // duplicated `is_peer_relay` predicate plus a long
+                    // compound condition on the regular branch) to make
+                    // the mutual exclusion visible and survive future
+                    // role-classification refactors without the
+                    // predicates drifting.
                     if self.discovery.state.is_peer_relay(&peer_id) {
                         let actions = self.discovery.state.on_relay_reservation_lost(&peer_id);
                         self.execute_reachability_actions(actions);
-                    } else if !self.discovery.state.is_peer_rendezvous(&peer_id)
-                        && !self
-                            .discovery
-                            .state
-                            .is_peer_discovered_via(&peer_id, PeerDiscoveryMechanism::Mdns)
-                    {
+                    } else if !self.discovery.state.is_peer_rendezvous(&peer_id) {
                         // Capture the peer's known DIRECT addresses BEFORE
                         // `remove_peer` drops them. A peer we hold a confirmed
                         // direct address for (same-LAN, or any previously

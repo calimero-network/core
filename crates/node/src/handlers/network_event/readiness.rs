@@ -8,7 +8,9 @@
 //!   synchronised, so we bypass the `ReadinessManager` mailbox here
 //!   to avoid a per-beacon hop), then notifies the manager via
 //!   [`ApplyBeaconLocal`] so the FSM can re-evaluate against the new
-//!   `peer_summary`.
+//!   `peer_summary`. A beacon that fails verification but carries a
+//!   verifiable admission proof still triggers a governance pull (see
+//!   [`beacon_admission_provable`]) without entering the cache.
 //! - `handle_readiness_probe` forwards the probe to the manager which
 //!   rate-limits the per-(peer, namespace) response at
 //!   `BEACON_INTERVAL / 2` — see
@@ -17,12 +19,13 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use actix::{AsyncContext, WrapFuture};
-use calimero_context::governance_broadcast::verify_readiness_beacon;
+use calimero_context::governance_broadcast::{beacon_admission_provable, verify_readiness_beacon};
+use calimero_context::group_store::now_millis;
 use calimero_context_client::local_governance::{ReadinessProbe, SignedReadinessBeacon};
 use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
-use crate::readiness::{ApplyBeaconLocal, EmitOutOfCycleBeacon};
+use crate::readiness::{ApplyBeaconLocal, EmitOutOfCycleBeacon, MAX_BEACON_CLOCK_DRIFT_MS};
 use crate::NodeManager;
 
 /// Per-namespace debounce window for beacon-triggered governance syncs.
@@ -56,6 +59,9 @@ fn beacon_indicates_divergence(
 /// Per-namespace debounce gate. Returns `true` (and records `now`) when
 /// no beacon-triggered sync fired for `namespace_id` within
 /// [`NS_BEACON_SYNC_DEBOUNCE`]; returns `false` otherwise.
+///
+/// Applied to whichever of the caller's two per-path maps is in play, so the
+/// window is per (namespace, path) without ever being per peer.
 fn debounce_allows_sync(
     debounce: &mut HashMap<[u8; 32], Instant>,
     namespace_id: [u8; 32],
@@ -70,13 +76,38 @@ fn debounce_allows_sync(
     }
 }
 
+/// Whether a beacon's self-reported wall-clock is close enough to ours for it
+/// to be a live signal rather than a replayed one.
+///
+/// Reuses [`MAX_BEACON_CLOCK_DRIFT_MS`], symmetrically. `ReadinessCache::insert`
+/// only needs the far-future half of that bound because its per-peer monotonic
+/// filter already discards old beacons; a beacon that never reaches the cache
+/// has no stored entry to compare against, so it needs both halves.
+fn beacon_ts_within_drift(ts_millis: u64, now_ms: u64) -> bool {
+    ts_millis.abs_diff(now_ms) <= MAX_BEACON_CLOCK_DRIFT_MS
+}
+
 pub(super) fn handle_readiness_beacon(
     manager: &mut NodeManager,
     ctx: &mut actix::Context<NodeManager>,
-    _peer_id: PeerId,
+    peer_id: PeerId,
     beacon: SignedReadinessBeacon,
 ) {
     if !verify_readiness_beacon(&manager.datastore, &beacon) {
+        // Pull from a provable non-member instead of dropping it, targeting the
+        // signer: it is the only peer that holds its own not-yet-gossiped join op.
+        if beacon_ts_within_drift(beacon.ts_millis, now_millis())
+            && beacon_admission_provable(&manager.datastore, &beacon)
+        {
+            spawn_beacon_divergence_sync(
+                manager,
+                ctx,
+                beacon.namespace_id.to_bytes(),
+                beacon.dag_head,
+                Some(peer_id),
+            );
+            return;
+        }
         debug!(
             namespace_id = %hex::encode(beacon.namespace_id.as_bytes()),
             "ReadinessBeacon failed verification; dropping"
@@ -100,22 +131,51 @@ pub(super) fn handle_readiness_beacon(
         "readiness beacon received"
     );
 
-    // #2367 — receiver-side anti-entropy. The beacon advertises the
-    // peer's namespace governance DAG head; if that head names an op we
-    // have not applied, the peer is ahead and we pull the namespace DAG
-    // from it via the real governance sync protocol (ops applied in DAG
-    // order, side-effects run). A spurious sync is only wasted work,
-    // never wrong state.
-    //
-    // The debounce slot is stamped *inside* the spawned future, after
-    // the DAG read confirms divergence — never at receive time. A beacon
-    // from an already-caught-up peer must not burn the per-namespace
-    // budget and suppress a genuinely-divergent beacon from another peer
-    // for the next `NS_BEACON_SYNC_DEBOUNCE` window.
-    let dag_head = beacon.dag_head;
+    spawn_beacon_divergence_sync(manager, ctx, namespace_id, beacon.dag_head, None);
+
+    if let Some(addr) = &manager.readiness_addr {
+        addr.do_send(ApplyBeaconLocal { namespace_id });
+    }
+}
+
+/// Receiver-side anti-entropy. The beacon advertises the peer's namespace
+/// governance DAG head; if that head names an op we have not applied, the peer
+/// is ahead and we pull the namespace DAG from it via the real governance sync
+/// protocol (ops applied in DAG order, side-effects run). A spurious sync is
+/// only wasted work, never wrong state.
+///
+/// The debounce slot is stamped *inside* the spawned future, after the DAG read
+/// confirms divergence - never at receive time. A beacon from an
+/// already-caught-up peer must not burn the per-namespace budget and suppress a
+/// genuinely-divergent beacon from another peer for the next
+/// [`NS_BEACON_SYNC_DEBOUNCE`] window.
+///
+/// `source` targets the pull at the beacon's own publisher. It is `Some` only on
+/// the provable non-member path, where the advertised head op exists nowhere
+/// else yet: that peer's join op has reached no other member, so pulling from an
+/// arbitrary mesh peer would query someone who cannot serve it while still
+/// burning the debounce slot. `None` keeps the established-member path on the
+/// mesh-peer pull, where any member that applied the op can serve it.
+///
+/// The two paths debounce independently - `ns_beacon_sync_debounce` against
+/// `ns_provable_beacon_sync_debounce`, see those field docs - and the provable
+/// slot is released when the targeted pull returns nothing: a peer that cannot
+/// serve the head it advertised forfeits the window it took.
+fn spawn_beacon_divergence_sync(
+    manager: &mut NodeManager,
+    ctx: &mut actix::Context<NodeManager>,
+    namespace_id: [u8; 32],
+    dag_head: [u8; 32],
+    source: Option<PeerId>,
+) {
     let datastore = manager.datastore.clone();
     let node_client = manager.clients.node.clone();
-    let debounce = manager.ns_beacon_sync_debounce.clone();
+    let sync_manager = manager.managers.sync.clone();
+    let debounce = if source.is_some() {
+        manager.ns_provable_beacon_sync_debounce.clone()
+    } else {
+        manager.ns_beacon_sync_debounce.clone()
+    };
     let _ignored = ctx.spawn(
         async move {
             let handle = datastore.handle();
@@ -165,9 +225,9 @@ pub(super) fn handle_readiness_beacon(
             }
             // Divergence confirmed. Claim the debounce slot atomically;
             // if another beacon already triggered a sync for this
-            // namespace within the window, skip. The guard is dropped
-            // before the `.await` below — the lock is never held across
-            // an await point.
+            // namespace on this path within the window, skip. The guard
+            // is dropped before the `.await` below, so the lock is never
+            // held across an await point.
             {
                 let mut guard = debounce
                     .lock()
@@ -179,23 +239,45 @@ pub(super) fn handle_readiness_beacon(
             info!(
                 namespace_id = %hex::encode(namespace_id),
                 dag_head = %hex::encode(dag_head),
+                ?source,
                 "beacon advertises an unknown namespace DAG head; \
                  triggering governance sync"
             );
-            if let Err(err) = node_client.sync_namespace(namespace_id).await {
-                warn!(
-                    ?err,
-                    namespace_id = %hex::encode(namespace_id),
-                    "beacon-triggered namespace governance sync failed"
-                );
+            match source {
+                // Issues the same `NamespaceBackfillRequest` with empty
+                // `delta_ids` ("give me everything"), but against `source`
+                // directly rather than an arbitrary subscriber.
+                Some(peer) => {
+                    let ops = sync_manager
+                        .sync_namespace_from_peer(namespace_id, Some(peer))
+                        .await;
+                    if ops == 0 {
+                        // The pull delivered nothing, so give the slot back
+                        // rather than making the next genuine beacon wait it out.
+                        let _ = debounce
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .remove(&namespace_id);
+                        debug!(
+                            namespace_id = %hex::encode(namespace_id),
+                            %peer,
+                            "provable-admission pull returned no ops; released the debounce slot"
+                        );
+                    }
+                }
+                None => {
+                    if let Err(err) = node_client.sync_namespace(namespace_id).await {
+                        warn!(
+                            ?err,
+                            namespace_id = %hex::encode(namespace_id),
+                            "beacon-triggered namespace governance sync failed"
+                        );
+                    }
+                }
             }
         }
         .into_actor(manager),
     );
-
-    if let Some(addr) = &manager.readiness_addr {
-        addr.do_send(ApplyBeaconLocal { namespace_id });
-    }
 }
 
 pub(super) fn handle_readiness_probe(
@@ -269,6 +351,23 @@ mod tests {
             &mut d,
             [1u8; 32],
             t0 + NS_BEACON_SYNC_DEBOUNCE + Duration::from_millis(1)
+        ));
+    }
+
+    #[test]
+    fn beacon_ts_drift_window_is_symmetric() {
+        let now = 1_700_000_000_000u64;
+        assert!(beacon_ts_within_drift(now, now));
+        assert!(beacon_ts_within_drift(now - MAX_BEACON_CLOCK_DRIFT_MS, now));
+        assert!(beacon_ts_within_drift(now + MAX_BEACON_CLOCK_DRIFT_MS, now));
+        // A replayed beacon from outside the window, and a far-future one.
+        assert!(!beacon_ts_within_drift(
+            now - MAX_BEACON_CLOCK_DRIFT_MS - 1,
+            now
+        ));
+        assert!(!beacon_ts_within_drift(
+            now + MAX_BEACON_CLOCK_DRIFT_MS + 1,
+            now
         ));
     }
 

@@ -56,6 +56,10 @@ mod delta_store_batch_test;
 mod delta_store_head_hashes_test;
 #[cfg(all(test, feature = "mock-attestation"))]
 mod local_governance_node_e2e;
+// Also on the ungated harness: no mock attestation, runs in the default
+// `cargo test`.
+#[cfg(test)]
+mod provable_beacon_e2e;
 /// Feature-ungated (`#[cfg(test)]`-only) in-process node harness shared by
 /// `local_governance_node_e2e` and `cascade_dispatch_e2e`. Contains no mock
 /// attestation code — see the module docs before adding any.
