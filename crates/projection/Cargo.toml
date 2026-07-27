@@ -16,6 +16,15 @@ testing = []
 [dependencies]
 sha2.workspace = true
 
+calimero-account.workspace = true
+calimero-authz.workspace = true
+calimero-context-config.workspace = true
+calimero-op.workspace = true
+calimero-primitives.workspace = true
+calimero-storage.workspace = true
+
+[dev-dependencies]
+calimero-account.workspace = true
 calimero-authz.workspace = true
 calimero-context-config.workspace = true
 calimero-op.workspace = true
