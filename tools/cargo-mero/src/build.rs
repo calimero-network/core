@@ -348,18 +348,27 @@ fn emit_abi(
 
     // Tolerated but never silent: without a state schema the node's upgrade gates
     // fail open, so say so loudly rather than shipping a quietly incomplete pair.
+    let schema_path = res_dir.join("state-schema.json");
     match manifest.extract_state_schema() {
-        Err(e) => eprintln!(
-            "warning: no state schema for {crate_dir}: {e}\n\
-             warning: res/state-schema.json was not written; the node cannot check \
-             upgrades against this app's state"
-        ),
+        Err(e) => {
+            // res/ is not cleaned between builds, so an earlier build's schema would
+            // otherwise linger and describe an abi.json it no longer matches - and
+            // `bundle` ships res/ as-is.
+            if schema_path.is_file() {
+                std::fs::remove_file(&schema_path)
+                    .wrap_err_with(|| format!("failed to remove stale {schema_path}"))?;
+            }
+            eprintln!(
+                "warning: no state schema for {crate_dir}: {e}\n\
+                 warning: res/state-schema.json was not written; the node cannot check \
+                 upgrades against this app's state"
+            );
+        }
         Ok(mut state_schema) => {
             state_schema.schema_version = "wasm-abi/1".to_owned();
-            let path = res_dir.join("state-schema.json");
-            std::fs::write(&path, serde_json::to_string_pretty(&state_schema)?)
-                .wrap_err_with(|| format!("failed to write {path}"))?;
-            println!("• emitted {path}");
+            std::fs::write(&schema_path, serde_json::to_string_pretty(&state_schema)?)
+                .wrap_err_with(|| format!("failed to write {schema_path}"))?;
+            println!("• emitted {schema_path}");
         }
     }
 
@@ -693,6 +702,36 @@ mod tests {
         assert_eq!(names, vec!["lib.rs".to_owned()], "got {names:?}");
     }
 
+    /// Apps only build for wasm32, so a module gated to another target is not in
+    /// the wasm and must not be walked into the ABI.
+    #[test]
+    fn crate_sources_skips_modules_gated_to_another_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            format!(
+                "#[cfg(not(target_arch = \"wasm32\"))]\nmod native_only;\n\
+                 #[cfg(target_os = \"linux\")]\nmod linux_only;\n\
+                 #[cfg(unix)]\nmod unix_only;\n\
+                 #[cfg(target_arch = \"wasm32\")]\nmod wasm_only;\n{MINIMAL_APP}"
+            ),
+        )
+        .unwrap();
+        for m in ["native_only", "linux_only", "unix_only", "wasm_only"] {
+            std::fs::write(root.join(format!("src/{m}.rs")), "pub struct T;").unwrap();
+        }
+
+        let mut names = collected(&root, &BTreeSet::new());
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["lib.rs".to_owned(), "wasm_only.rs".to_owned()],
+            "only the wasm32-gated module joins lib.rs, got {names:?}"
+        );
+    }
+
     /// `cfg(test)` also has to be decided inside `all(..)` / `any(..)`, and
     /// `not(test)` must stay included.
     #[test]
@@ -754,6 +793,37 @@ mod tests {
         let names = collected(&root, &on);
         assert!(names.contains(&"gated.rs".to_owned()), "got {names:?}");
         assert!(!names.contains(&"stray.rs".to_owned()), "got {names:?}");
+    }
+
+    /// res/ is not cleaned between builds, so a schema left by an earlier build
+    /// must not survive a build whose extraction fails - `bundle` ships res/ as-is,
+    /// and it would describe an abi.json it no longer matches.
+    #[test]
+    fn emit_abi_removes_a_stale_state_schema_when_extraction_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        // Emits a manifest, but has no `#[app::state]`, so there is no state root
+        // to extract a schema from.
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub struct NotState { x: u32 }\n#[app::logic]\nimpl NotState { pub fn peek(&self) {} }",
+        )
+        .unwrap();
+        let res = root.join("res");
+        std::fs::create_dir_all(&res).unwrap();
+        let stale = res.join("state-schema.json");
+        std::fs::write(&stale, "{\"stale\":true}").unwrap();
+
+        emit_abi(&root, &res, &BTreeSet::new()).expect("abi.json is still emitted");
+        assert!(
+            res.join("abi.json").is_file(),
+            "abi.json must still be written"
+        );
+        assert!(
+            !stale.exists(),
+            "a stale state-schema.json must not survive a failed extraction"
+        );
     }
 
     #[test]
