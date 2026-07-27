@@ -10053,6 +10053,169 @@ mod account_plane_apply {
     }
 
     #[test]
+    fn a_plain_member_cannot_revoke_another_members_device() {
+        // A revocation is terminal — the DeviceId is spent for good — so an
+        // ungated one is a permanent denial of service any member could inflict
+        // on any other. Membership is not authority over other members' devices.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let victim_sk = key(9);
+        let attacker_sk = key(7);
+        let repo = MembershipRepository::new(&store);
+        repo.add_member(&gid, &victim_sk.public_key(), GroupMemberRole::Member)
+            .unwrap();
+        repo.add_member(&gid, &attacker_sk.public_key(), GroupMemberRole::Member)
+            .unwrap();
+
+        // The victim enrolls a device, admin-signed so the link itself lands.
+        let genesis = AccountGenesis::new(victim_sk.public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [5u8; 16]);
+        let cert = sign_device_cert(
+            &victim_sk,
+            account,
+            device,
+            &key(5).public_key(),
+            &KemPublicKey::from([5u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+            },
+        )
+        .unwrap();
+        let bindings = AccountBindingRepository::new(&store);
+        assert_eq!(bindings.live_bindings(&gid).unwrap().len(), 1);
+
+        // A fellow member signs the revocation. Refused deterministically — the
+        // apply returns Ok (every replica reaches the same verdict, and erroring
+        // would stall on an op that can never succeed) but records nothing.
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &attacker_sk,
+            GroupOp::AccountDeviceUnlinked { account, device },
+        )
+        .unwrap();
+        assert!(
+            !bindings.is_revoked(&gid, device).unwrap(),
+            "a non-admin must not be able to spend another member's device id"
+        );
+        assert_eq!(
+            bindings.live_bindings(&gid).unwrap().len(),
+            1,
+            "the victim's device must still be in force"
+        );
+
+        // The admin can.
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceUnlinked { account, device },
+        )
+        .unwrap();
+        assert!(bindings.is_revoked(&gid, device).unwrap());
+    }
+
+    #[test]
+    fn an_unresolvable_cut_parks_an_unlink_instead_of_denying_it() {
+        // The load-bearing direction of the at-cut rule. This replica has not
+        // folded the op's ancestry, so its live rows are a DIFFERENT cut. Reading
+        // "not an admin" off them would harden into a permanent refusal here while
+        // peers that had folded the cut applied the revocation — a split on who
+        // may author, with no later op to reconcile it. It must park instead.
+        let store = test_store();
+        let gid = test_group_id();
+        let signer = key(7);
+        group_with_admin(&store, &gid, &key(1));
+
+        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [5u8; 16]);
+
+        let err = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &signer.public_key(),
+            &GroupOp::AccountDeviceUnlinked { account, device },
+            &crate::test_fixtures::TEST_CUT,
+            &crate::test_fixtures::UnresolvableAuthorizer,
+        )
+        .expect_err("an unresolvable cut must not harden into a permanent refusal");
+        assert!(
+            format!("{err:#}").contains("authority undecidable"),
+            "expected AuthorityUndecidable (a retryable park), got: {err:#}"
+        );
+        assert!(
+            !AccountBindingRepository::new(&store)
+                .is_revoked(&gid, device)
+                .unwrap(),
+            "a parked op must not mutate state — it has not been authorized yet"
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_cut_parks_a_link_instead_of_refusing_it() {
+        // Same rule on the link gate. Live rows would say "not a member" and a
+        // refusal writes nothing while the op keeps its place in the DAG, so the
+        // disagreement would be permanent and invisible.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        let cert = sign_device_cert(
+            &key(9),
+            account,
+            DeviceId::mint(account, [5u8; 16]),
+            &key(5).public_key(),
+            &KemPublicKey::from([5u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+
+        let err = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &admin_sk.public_key(),
+            &GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+            },
+            &crate::test_fixtures::TEST_CUT,
+            &crate::test_fixtures::UnresolvableAuthorizer,
+        )
+        .expect_err("an unresolvable cut must not decide the membership gate");
+        assert!(
+            format!("{err:#}").contains("authority undecidable"),
+            "expected AuthorityUndecidable (a retryable park), got: {err:#}"
+        );
+        assert!(
+            AccountBindingRepository::new(&store)
+                .account_key(&gid, account)
+                .unwrap()
+                .is_none(),
+            "a parked link must not even absorb the genesis"
+        );
+    }
+
+    #[test]
     fn a_rotation_through_the_apply_path_advances_the_epoch_once() {
         let store = test_store();
         let gid = test_group_id();

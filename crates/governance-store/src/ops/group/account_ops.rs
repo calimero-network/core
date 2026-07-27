@@ -12,6 +12,8 @@
 //! are the authorization gate plus the call.
 
 use super::context::GroupApplyCtx;
+use crate::authorizer::AtCutMembershipPath;
+use crate::membership::MembershipPath;
 use crate::{AccountBindingRepository, BindingRejected, MembershipRepository};
 use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyHandoff};
 use eyre::Result as EyreResult;
@@ -36,7 +38,6 @@ pub(crate) fn apply_device_linked(
     cert: &DeviceCert,
 ) -> EyreResult<()> {
     let group_id = *ctx.group_id();
-    let store = ctx.store();
 
     // The one policy gate: **is this account's root key a member of the group?**
     //
@@ -52,14 +53,19 @@ pub(crate) fn apply_device_linked(
     // with the root key, which they do not hold. The gate keeps strangers from
     // writing link rows for accounts unrelated to the group; the signature
     // keeps them from enrolling into accounts that are not theirs.
-    let root_is_member = MembershipRepository::new(store)
-        .list(&group_id, 0, usize::MAX)?
-        .into_iter()
-        .any(|(member, _)| member == genesis.root_sign_pk);
-    if !root_is_member {
+    //
+    // Resolved at the op's causal cut, like every other apply-time authority
+    // question. Reading live membership rows here would decide against whatever
+    // this replica has folded so far, so a node that had already applied a
+    // concurrent removal of the root-key holder would refuse a link its peers
+    // recorded — and since a refusal writes nothing while the op still occupies
+    // its place in the DAG, the two would disagree about who may author with no
+    // later op to reconcile them.
+    if !root_key_is_member(ctx, &genesis.root_sign_pk)? {
         log_refusal(&group_id, "device link", &BindingRejected::AccountNotMember);
         return Ok(());
     }
+    let store = ctx.store();
 
     let outcome =
         AccountBindingRepository::new(store).apply_link(&group_id, genesis, chain, cert)?;
@@ -86,10 +92,20 @@ pub(crate) fn apply_device_linked(
 
 /// `GroupOp::AccountDeviceUnlinked` — withdraw a device.
 ///
-/// Either the account withdraws its own device (the lost-laptop case, which
-/// must not need an admin — the owner may be the only one who knows) or a group
-/// admin ejects it (the compromised-member case, which the account may be
-/// unable or unwilling to handle).
+/// **A group admin at the op's cut, and nobody else.** A revocation is terminal
+/// — the `DeviceId` is spent for good — so an ungated one is a permanent denial
+/// of service any member could inflict on any other. Membership in a group is
+/// not authority over other members' devices.
+///
+/// The account owner revoking *their own* device without an admin is the case
+/// this deliberately does **not** cover yet, even though it is the motivating one
+/// (a lost laptop, where the owner may be the only person who knows). It cannot
+/// be gated on folded state: "is the signer this account's current root key"
+/// depends on which rotations this replica has folded, so two replicas would
+/// disagree about one op. Doing it right means the op carries a **root-signed
+/// revocation proof**, self-certifying exactly as `DeviceCert` is — a wire
+/// addition that belongs with the CLI that mints it (phase F), not a gate that
+/// looks correct and diverges.
 ///
 /// Applied unconditionally once authorized, including for a device this group
 /// has never seen linked: the tombstone is what a later link consults, so
@@ -100,9 +116,25 @@ pub(crate) fn apply_device_unlinked(
     device: &DeviceId,
 ) -> EyreResult<()> {
     let group_id = *ctx.group_id();
-    let store = ctx.store();
 
-    AccountBindingRepository::new(store).apply_revocation(&group_id, *device)?;
+    // `?` rather than a swallowed `false`: `is_admin` returns
+    // `AuthorityUndecidable` when the op's cut is real but unfolded here, and that
+    // must park the apply for retry rather than be read as "not an admin". A
+    // genuine non-admin is a deterministic refusal every replica reaches
+    // identically, so it records nothing and returns `Ok` — erroring would stall
+    // the apply forever on an op that can never succeed.
+    if !ctx.permissions().is_admin(ctx.signer())? {
+        tracing::warn!(
+            group_id = ?group_id,
+            signer = %ctx.signer(),
+            account = %account,
+            device = %device,
+            "account device unlink not recorded: signer is not an admin at the op's cut"
+        );
+        return Ok(());
+    }
+
+    AccountBindingRepository::new(ctx.store()).apply_revocation(&group_id, *device)?;
 
     tracing::info!(
         group_id = ?group_id,
@@ -113,12 +145,49 @@ pub(crate) fn apply_device_unlinked(
     Ok(())
 }
 
+/// Is `root_pk` a member of this group at the op's causal cut?
+///
+/// Direct or inherited both count: an account whose root key reaches the group
+/// through an Open-subgroup chain holds every right its devices would gain, which
+/// is the whole basis for the link needing no admin.
+///
+/// The live resolver is used only when the projection has no cut to resolve
+/// against at all, and `ensure_live_fallback_is_sound` is what separates that
+/// from an unfolded cut — where falling back would answer against a different
+/// cut and let two replicas decide the same op differently.
+fn root_key_is_member(
+    ctx: &GroupApplyCtx<'_>,
+    root_pk: &calimero_primitives::identity::PublicKey,
+) -> EyreResult<bool> {
+    let path = match ctx.projection_membership_path(root_pk) {
+        Some(projected) => projected,
+        None => {
+            ctx.ensure_live_fallback_is_sound(root_pk)?;
+            match MembershipRepository::new(ctx.store()).check_path(ctx.group_id(), root_pk)? {
+                MembershipPath::None => AtCutMembershipPath::None,
+                MembershipPath::Direct => AtCutMembershipPath::Direct,
+                MembershipPath::Inherited { .. } => AtCutMembershipPath::Inherited,
+            }
+        }
+    };
+    Ok(path != AtCutMembershipPath::None)
+}
+
 /// `GroupOp::AccountKeysRotated` — roll an account's root key.
 ///
 /// Raises the account's epoch, after which certificates signed by any
 /// superseded key stop being honoured. The handoff's own signature is verified
 /// by the repository against the key currently in force, so a rotation cannot
 /// be forged by anyone who does not hold that key.
+///
+/// Deliberately ungated, unlike its two siblings, and for a reason rather than by
+/// omission: the handoff is self-certifying against state the group already holds.
+/// A rotation for an account this group has never learned is refused outright
+/// (`RotationNotContinuous`, since there is no root key to continue from), and the
+/// only way the group learns an account is through a link that already passed the
+/// membership gate. So relaying someone else's rotation writes nothing an
+/// attacker chose, and gating it on the relayer would only break legitimate
+/// re-gossip.
 pub(crate) fn apply_keys_rotated(
     ctx: &mut GroupApplyCtx<'_>,
     handoff: &RootKeyHandoff,

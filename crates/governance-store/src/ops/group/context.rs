@@ -22,11 +22,21 @@ use crate::{
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
+use eyre::{bail, Result as EyreResult};
 
 pub(crate) struct GroupApplyCtx<'a> {
     store: &'a Store,
     group_id: &'a ContextGroupId,
     signer: &'a PublicKey,
+    /// The op's causal cut, and the source that resolves authority against it.
+    ///
+    /// Held directly — not only baked into the sub-services below — because a gate
+    /// may need to ask about an identity that is neither the signer nor a
+    /// membership mutation target. The account plane's link gate is the case:
+    /// it asks whether an *account's root key* is a member, which is nobody's
+    /// `PermissionChecker` question.
+    parents: &'a [[u8; 32]],
+    authorizer: &'a dyn crate::authorizer::AtCutAuthorizer,
     permissions: PermissionChecker<'a>,
     membership_policy: MembershipPolicy<'a>,
     settings: GroupSettingsService<'a>,
@@ -62,6 +72,8 @@ impl<'a> GroupApplyCtx<'a> {
             store,
             group_id,
             signer,
+            parents,
+            authorizer,
             permissions: PermissionChecker::new(store, *group_id)
                 .with_apply_auth(parents, authorizer),
             membership_policy: MembershipPolicy::new(store, *group_id)
@@ -104,5 +116,45 @@ impl<'a> GroupApplyCtx<'a> {
 
     pub(crate) fn context_registration(&self) -> &ContextRegistrationService<'a> {
         &self.context_registration
+    }
+
+    /// The projection's at-cut membership path for `member` in this group.
+    ///
+    /// `None` means the projection has no verdict — either there is no cut to
+    /// resolve against, or its ancestry is not folded here. The two are NOT
+    /// interchangeable, so a caller that falls back to live MUST first call
+    /// [`ensure_live_fallback_is_sound`](Self::ensure_live_fallback_is_sound).
+    ///
+    /// Returns the `Option` rather than taking an eagerly-computed live path so
+    /// the caller can compute live lazily, and a live store error cannot abort an
+    /// apply the projection would have decided on its own.
+    pub(crate) fn projection_membership_path(
+        &self,
+        member: &PublicKey,
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        self.authorizer
+            .membership_path_at_cut(self.group_id, member, self.parents)
+    }
+
+    /// Guard a fall-back to the live resolver, mirroring
+    /// `PermissionChecker::ensure_live_fallback_is_sound`.
+    ///
+    /// The at-cut resolver abstains for two reasons and collapsing them is what
+    /// makes apply-time authority replica-dependent. When there is no cut (a
+    /// genesis op, or a construction with no apply-auth context at all — the emit
+    /// path, local apply, tests) live is the right answer, because no causal
+    /// context contradicts it. When the cut is real but unfolded here, live is a
+    /// *different* cut, so the verdict would turn on how much this replica
+    /// happens to have folded and two replicas would decide the same op
+    /// differently. In that case refuse to answer; the op is retried once the
+    /// missing history arrives.
+    pub(crate) fn ensure_live_fallback_is_sound(&self, identity: &PublicKey) -> EyreResult<()> {
+        if self.authorizer.can_resolve_cut(self.group_id, self.parents) {
+            return Ok(());
+        }
+        bail!(crate::ApplyError::AuthorityUndecidable {
+            group_id: format!("{:?}", self.group_id),
+            signer: format!("{identity}"),
+        });
     }
 }

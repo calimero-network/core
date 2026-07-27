@@ -88,6 +88,40 @@ escalation, because the account holds every right the device gains. That is why
 the flow needs no admin approval and no per-scope root-key use — and it is also
 the only thing between a stranger and unlimited link ops in a scope.
 
+### On the governance path, all three gates resolve at the cut
+
+The same rule the projection follows, for the same reason, and it took a second
+pass to get right — the first implementation of these handlers read **live**
+membership rows:
+
+- **`AccountDeviceLinked`** — "is the account's root key a member" via
+  `membership_path_at_cut` (direct or inherited). A live read decides against
+  whatever this replica has folded, so a node that had already applied a
+  concurrent removal of the root-key holder would refuse a link its peers
+  recorded. A refusal writes nothing while the op keeps its place in the DAG, so
+  the disagreement is permanent and has no later op to reconcile it.
+- **`AccountDeviceUnlinked`** — **a group admin at the cut, and nobody else.**
+  Revocation is terminal, so an ungated one is a permanent denial of service any
+  member could inflict on any other; membership is not authority over other
+  members' devices.
+- **`AccountKeysRotated`** — deliberately ungated. The handoff is self-certifying
+  against state the group already holds: a rotation for an account it has never
+  learned is refused outright, and the only way it learns an account is a link
+  that already passed the membership gate. Gating the relayer would only break
+  legitimate re-gossip.
+
+When the cut is real but unfolded here, the gates raise
+`ApplyError::AuthorityUndecidable` and park for retry rather than guess from live
+rows. A deterministic refusal, by contrast, returns `Ok` and records nothing —
+erroring would stall forever on an op that can never succeed.
+
+**The self-service revocation is not implemented, and cannot be gated on folded
+state.** "Is the signer this account's current root key" depends on which
+rotations this replica has folded, so two replicas would disagree about one op.
+The lost-laptop case therefore needs the op to carry a **root-signed revocation
+proof**, self-certifying exactly as `DeviceCert` is — a wire addition that belongs
+with the CLI that mints it (phase F), not a gate that looks correct and diverges.
+
 ## Projection
 
 The account plane carries **no LWW stamps**: a grow-only map of self-certifying
@@ -209,6 +243,10 @@ code path publishes an account op yet.
   a rotation debt the current ledger cannot express (it is keyed by member
   identity, and `GroupKeyRotated { departed }` excludes that member, which would
   cut the account's *other* devices off the key too).
+
+Phase F therefore carries three things, not one: the CLI, the two deliveries
+above, and the root-signed revocation proof that makes self-service revocation
+possible without an order-dependent gate.
 
 The delivery *machinery* both need is complete and tested: the envelope, both
 wrap/unwrap modes, the recipient resolution, and a receive path that accepts a
