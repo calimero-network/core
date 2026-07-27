@@ -355,20 +355,21 @@ jobs:
           - workflow: blob-announce-membership
             file: workflows/blob-announce-namespace-membership.yml
             app: blobs
-          # Waiting on merobox 0.6.44 + a MIN_MEROBOX bump, then uncomment both.
-          # `blob-cross-node-transfer` asserts the received bytes on small
-          # fixtures; `blob-cross-node-sizes` sweeps 1/8/32/100 MiB against
-          # generated random fixtures (the "Generate blob fixtures" step below
-          # builds them, and only fires for that workflow). 100 MiB is the CI
-          # ceiling on purpose — the hard limit is 500 MiB
+          # The byte-transfer half of #3317, live as of merobox 0.6.44 (which
+          # ships the `download_blob` step — nothing before it could assert that
+          # a blob's bytes actually arrived). `blob-cross-node-transfer` checks
+          # the received bytes on small fixtures; `blob-cross-node-sizes` sweeps
+          # 1/8/32/100 MiB against generated random fixtures (the "Generate blob
+          # fixtures" step below builds them, and only fires for that workflow).
+          # 100 MiB is the CI ceiling on purpose — the hard limit is 500 MiB
           # (MAX_BLOB_SIZE_BYTES), and anything past it is refused by design, so
           # a >500 MiB case must assert the refusal rather than a success.
-          # - workflow: blob-cross-node-transfer
-          #   file: workflows/blob-cross-node-transfer.yml
-          #   app: blobs
-          # - workflow: blob-cross-node-sizes
-          #   file: workflows/blob-cross-node-sizes.yml
-          #   app: blobs
+          - workflow: blob-cross-node-transfer
+            file: workflows/blob-cross-node-transfer.yml
+            app: blobs
+          - workflow: blob-cross-node-sizes
+            file: workflows/blob-cross-node-sizes.yml
+            app: blobs
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml
             app: scaffolding-e2e

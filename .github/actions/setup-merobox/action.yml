@@ -8,9 +8,14 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        # Floor, not a pin: 0.6.43 forwards MERO_AUTH_ADMIN_* into the node and
+        # Floor, not a pin. 0.6.43 forwards MERO_AUTH_ADMIN_* into the node and
         # auth containers, without which every fresh-node scenario login fails.
-        MIN_MEROBOX="0.6.43"
+        # 0.6.44 adds the `download_blob` step, the only way to assert that a
+        # blob's BYTES reached a second node — apps/blobs/workflows/
+        # blob-cross-node-{transfer,sizes}.yml are built on it. Without the floor
+        # an older binary would fail those two with "unknown type: download_blob"
+        # instead of saying what is actually wrong.
+        MIN_MEROBOX="0.6.44"
 
         case "$(uname -m)" in
           x86_64) MEROBOX_ARCH="linux-x86-64" ;;
