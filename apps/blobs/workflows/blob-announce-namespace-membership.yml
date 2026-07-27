@@ -93,11 +93,13 @@ steps:
       blob_id: blob_id
       blob_size: size
 
+  # Numeric comparison is infix with spaces around the operator; there is no
+  # gt()/lt() call form in the assert grammar.
   - name: Assert the upload reported a blob
     type: assert
     statements:
       - "is_set({{blob_id}})"
-      - "gt({{blob_size}}, 0)"
+      - "{{blob_size}} > 0"
 
   # A second upload, different file. The membership lookup runs per request, so
   # two announces make a one-off pass less likely to be luck.

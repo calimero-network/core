@@ -47,7 +47,29 @@ runs:
         # Pin the floor so an older release fails loudly rather than skipping
         # steps or collecting empty log artifacts.
         MIN_MEROBOX="0.6.43"
-        timeout 180 pipx install "merobox>=${MIN_MEROBOX}"
+        # Retry the install: a bare `timeout 180 pipx install` is the single most
+        # common red run in this suite. merobox pulls calimero-client-py, whose
+        # maturin build fetches from crates.io, so one slow PyPI or crates.io
+        # response blows the budget and kills a job that had nothing wrong with
+        # it — three separate scenarios died this way in one afternoon
+        # (exit 124 in `Setup merobox`, before any node booted). Three attempts
+        # with a widening budget and a short backoff; the pip cache makes a
+        # second attempt cheap when the first got part-way.
+        install_merobox() {
+          local attempt budget
+          for attempt in 1 2 3; do
+            budget=$((180 * attempt))
+            echo "installing merobox from spec 'merobox>=${MIN_MEROBOX}' (attempt ${attempt}/3, ${budget}s budget)..."
+            if timeout "$budget" pipx install --force "merobox>=${MIN_MEROBOX}"; then
+              return 0
+            fi
+            echo "::warning::merobox install attempt ${attempt} failed or timed out"
+            sleep $((attempt * 10))
+          done
+          echo "::error::merobox install failed after 3 attempts (PyPI/crates.io unreachable or too slow)"
+          return 1
+        }
+        install_merobox
         # Ensure the pipx bin dir is on PATH for this step and all that follow.
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
         export PATH="$HOME/.local/bin:$PATH"
