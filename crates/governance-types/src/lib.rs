@@ -24,7 +24,9 @@ use std::collections::BTreeMap;
 use std::io;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyHandoff};
+use calimero_account::{
+    AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff,
+};
 use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_primitives::application::ApplicationId;
@@ -824,24 +826,128 @@ pub struct EncryptedGroupOp {
 /// envelope signature can never be replayed as an op signature or vice versa.
 pub const KEY_ENVELOPE_SIGN_DOMAIN: &[u8] = b"calimero.keyenvelope.v1";
 
+/// Who a [`KeyEnvelope`] is addressed to, and the ECDH public key the recipient
+/// must combine with their own secret to open it.
+///
+/// Addressing and key agreement are one field because they are one decision.
+/// A member is reached by ECDH over the Curve25519 form of their Ed25519
+/// namespace identity; a device is reached by native X25519 to the key its
+/// certificate published. Splitting them into a recipient field and an
+/// ephemeral field would make it possible to pair a `DeviceId` with an Ed25519
+/// ephemeral — a combination no correct sender produces and no unwrap path can
+/// service, which is exactly the kind of state a type should not be able to
+/// represent.
+///
+/// Deliberately **not** `#[non_exhaustive]`: every unwrap site matches this
+/// exhaustively, and a third addressing mode must be a compile error at each of
+/// them rather than silently taking a wildcard arm that reports "not for us".
+/// The append-only borsh discriminant rule still applies — `Member` is tag 0 and
+/// `Device` is tag 1, permanently.
+#[derive(Clone, Copy, Debug, BorshSerialize, BorshDeserialize)]
+pub enum EnvelopeRecipient {
+    /// Addressed to a member's namespace identity key.
+    ///
+    /// This is the **bootstrap** form, and it cannot be retired. A device link
+    /// travels as an encrypted `GroupOp`, so a node must already hold the scope
+    /// key to enroll a device — if the only way to receive a key were
+    /// device-addressed, a new member could never obtain the first one. Key
+    /// delivery, the sync pull path, and invitation/TEE admission therefore stay
+    /// member-addressed by necessity, not by legacy.
+    Member {
+        /// The member's Ed25519 namespace identity.
+        identity: PublicKey,
+        /// Per-envelope ephemeral Ed25519 key; ECDH runs over its Curve25519
+        /// form.
+        ephemeral_pk: PublicKey,
+    },
+    /// Addressed to one device, under the X25519 key in its certificate.
+    ///
+    /// The device's own public key is **not** carried here. The unwrapping
+    /// device already holds the matching secret and ECDH needs only
+    /// `ephemeral_pk`, so it never has to travel. Only the sender needs it, and
+    /// the sender reads it from the folded device binding — the same row that
+    /// decides whether the device is still authorized, which is what makes it
+    /// impossible to wrap for a device the projection says is revoked.
+    Device {
+        /// The device this envelope is for.
+        device: DeviceId,
+        /// Per-envelope ephemeral X25519 public key.
+        ephemeral_pk: KemPublicKey,
+    },
+}
+
+impl EnvelopeRecipient {
+    /// Tag distinguishing the addressing modes inside the signed bytes.
+    const MEMBER_TAG: u8 = 0;
+    /// See [`Self::MEMBER_TAG`].
+    const DEVICE_TAG: u8 = 1;
+
+    /// The member identity this envelope is for, if it is member-addressed.
+    #[must_use]
+    pub const fn member_identity(&self) -> Option<PublicKey> {
+        match *self {
+            Self::Member { identity, .. } => Some(identity),
+            Self::Device { .. } => None,
+        }
+    }
+
+    /// The device this envelope is for, if it is device-addressed.
+    #[must_use]
+    pub const fn device(&self) -> Option<DeviceId> {
+        match *self {
+            Self::Device { device, .. } => Some(device),
+            Self::Member { .. } => None,
+        }
+    }
+
+    /// Bytes this addressing contributes to the envelope signature.
+    ///
+    /// The leading tag is load-bearing: without it, rewriting the borsh
+    /// discriminant would reinterpret a member envelope's 32-byte identity as a
+    /// device id (and its ephemeral as an X25519 key) while the signature still
+    /// verified. With the tag inside the signed bytes, that swap fails
+    /// verification.
+    fn extend_signing_bytes(&self, out: &mut Vec<u8>) {
+        match *self {
+            Self::Member {
+                identity,
+                ephemeral_pk,
+            } => {
+                out.push(Self::MEMBER_TAG);
+                out.extend_from_slice(identity.as_ref());
+                out.extend_from_slice(ephemeral_pk.as_ref());
+            }
+            Self::Device {
+                device,
+                ephemeral_pk,
+            } => {
+                out.push(Self::DEVICE_TAG);
+                out.extend_from_slice(device.as_bytes());
+                out.extend_from_slice(ephemeral_pk.as_bytes());
+            }
+        }
+    }
+}
+
 /// Authenticated, forward-secret ECDH-wrapped group key for a recipient.
 ///
 /// The sender generates a fresh ephemeral keypair per envelope and encrypts the
-/// group key under `SharedKey::new(ephemeral_sk, recipient_pk)`; the recipient
-/// decrypts with `SharedKey::new(recipient_sk, ephemeral_pk)`. Because the
-/// ephemeral key is discarded after wrapping, compromising the sender's
-/// long-term key does not retroactively decrypt past envelopes. The `signature`
-/// authenticates `sender` over the whole envelope (bound to a `group_id`), so a
-/// recipient rejects forged or cross-group-replayed envelopes.
+/// group key under the ECDH secret between that ephemeral and the recipient's
+/// key; the recipient re-derives the same secret from its own key and the
+/// envelope's `ephemeral_pk`. Because the ephemeral key is discarded after
+/// wrapping, compromising the sender's long-term key does not retroactively
+/// decrypt past envelopes. The `signature` authenticates `sender` over the whole
+/// envelope (bound to a `group_id`), so a recipient rejects forged or
+/// cross-group-replayed envelopes.
+///
+/// [`EnvelopeRecipient`] decides both who the envelope is for and which
+/// agreement opens it.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct KeyEnvelope {
-    /// Recipient's namespace identity public key.
-    pub recipient: PublicKey,
+    /// Who this is for, and the ephemeral public key that opens it.
+    pub recipient: EnvelopeRecipient,
     /// Identity that wrapped this key, authenticated by `signature`.
     pub sender: PublicKey,
-    /// Per-envelope ephemeral public key used for ECDH key agreement. Fresh for
-    /// every wrap — this is what gives the wrap forward secrecy.
-    pub ephemeral_pk: PublicKey,
     /// 12-byte AES-GCM nonce.
     pub nonce: [u8; 12],
     /// `AES-256-GCM(group_key)` using the ECDH shared secret.
@@ -858,19 +964,17 @@ impl KeyEnvelope {
     #[must_use]
     pub fn signing_payload(
         group_id: &[u8; 32],
-        recipient: &PublicKey,
+        recipient: &EnvelopeRecipient,
         sender: &PublicKey,
-        ephemeral_pk: &PublicKey,
         nonce: &[u8; 12],
         ciphertext: &[u8],
     ) -> Vec<u8> {
         let mut out =
-            Vec::with_capacity(KEY_ENVELOPE_SIGN_DOMAIN.len() + 32 * 4 + 12 + ciphertext.len());
+            Vec::with_capacity(KEY_ENVELOPE_SIGN_DOMAIN.len() + 32 * 4 + 13 + ciphertext.len());
         out.extend_from_slice(KEY_ENVELOPE_SIGN_DOMAIN);
         out.extend_from_slice(group_id);
-        out.extend_from_slice(recipient.as_ref());
+        recipient.extend_signing_bytes(&mut out);
         out.extend_from_slice(sender.as_ref());
-        out.extend_from_slice(ephemeral_pk.as_ref());
         out.extend_from_slice(nonce);
         out.extend_from_slice(ciphertext);
         out
@@ -927,7 +1031,13 @@ pub struct SignedNamespaceOp {
 /// authenticated `sender` + `signature` fields (and its `ephemeral_pk` became a
 /// true per-envelope ephemeral). That changes the borsh layout of every group
 /// op that carries a rotation, so every op id changes — another flag-day.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 3;
+///
+/// v4: `KeyEnvelope::recipient` became [`EnvelopeRecipient`], a discriminated
+/// member-or-device address that carries its own ephemeral key (so the separate
+/// `ephemeral_pk` field is gone). Both `RootOp::KeyDelivery` and the rotation on
+/// `NamespaceOp::Group` embed an envelope, so every namespace op's layout and id
+/// changes — another flag-day.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 4;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 pub const NAMESPACE_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.namespace.v1";

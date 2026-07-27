@@ -592,18 +592,44 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
 
 /// NamespaceOp::Root(RootOp::KeyDelivery) — RootOp ordinal 6
 ///
-/// `KeyEnvelope` field order: recipient, sender, ephemeral_pk, nonce,
-/// ciphertext, signature (the authenticated + forward-secret envelope).
+/// `KeyEnvelope` field order: recipient, sender, nonce, ciphertext, signature.
+/// `recipient` is an [`EnvelopeRecipient`], so it contributes its own
+/// discriminant followed by that variant's fields — here `Member` (tag 0) with
+/// `identity` then `ephemeral_pk`.
 const GOLDEN_ROOT_OP_KEY_DELIVERY: &[u8] = &[
     0, // NamespaceOp::Root
     6, // RootOp::KeyDelivery discriminant
     // group_id [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // envelope.recipient [0u8;32]:
+    0, // envelope.recipient = EnvelopeRecipient::Member discriminant:
+    0, // envelope.recipient.identity [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // envelope.recipient.ephemeral_pk [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // envelope.sender [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // envelope.ephemeral_pk [0u8;32]:
+    0, // envelope.nonce [0u8;12]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // envelope.ciphertext vec len = 0:
+    0, 0, 0, 0, // envelope.signature [0u8;64]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+
+/// The same op with a **device**-addressed envelope — `EnvelopeRecipient::Device`
+/// is tag 1, and that tag is permanent. Pinned separately from the `Member` case
+/// because a golden vector for one variant cannot catch a renumbering of the
+/// other, and the two are indistinguishable on the wire apart from this byte.
+const GOLDEN_ROOT_OP_KEY_DELIVERY_TO_DEVICE: &[u8] = &[
+    0, // NamespaceOp::Root
+    6, // RootOp::KeyDelivery discriminant
+    // group_id [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // envelope.recipient = EnvelopeRecipient::Device discriminant:
+    1, // envelope.recipient.device [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // envelope.recipient.ephemeral_pk [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // envelope.sender [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // envelope.nonce [0u8;12]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // envelope.ciphertext vec len = 0:
@@ -725,6 +751,69 @@ fn root_op_discriminants_are_golden() {
         "RootOp discriminant golden failures ({} total):\n{}",
         failures.len(),
         failures.join("\n")
+    );
+}
+
+/// Freeze the [`EnvelopeRecipient`] discriminants.
+///
+/// Decode-only, like every golden test here: re-encoding in the same binary
+/// cannot catch a swap, because both sides would agree on the swapped ordinals.
+/// The consequence of a swap is specific and severe — a `Member` envelope's
+/// 32-byte identity would be read as a `DeviceId` and vice versa — so the tags
+/// are pinned rather than left to source order.
+#[test]
+fn envelope_recipient_discriminants_are_frozen() {
+    let member = borsh::from_slice::<NamespaceOp>(GOLDEN_ROOT_OP_KEY_DELIVERY).expect("decode");
+    let NamespaceOp::Root(RootOp::KeyDelivery { envelope, .. }) = member else {
+        panic!("golden vector is not a KeyDelivery");
+    };
+    assert!(
+        matches!(envelope.recipient, EnvelopeRecipient::Member { .. }),
+        "tag 0 must stay EnvelopeRecipient::Member, got {:?}",
+        envelope.recipient
+    );
+
+    let device =
+        borsh::from_slice::<NamespaceOp>(GOLDEN_ROOT_OP_KEY_DELIVERY_TO_DEVICE).expect("decode");
+    let NamespaceOp::Root(RootOp::KeyDelivery { envelope, .. }) = device else {
+        panic!("golden vector is not a KeyDelivery");
+    };
+    assert!(
+        matches!(envelope.recipient, EnvelopeRecipient::Device { .. }),
+        "tag 1 must stay EnvelopeRecipient::Device, got {:?}",
+        envelope.recipient
+    );
+}
+
+/// The addressing tag is inside the signed payload, so the two modes cannot be
+/// swapped by rewriting the borsh discriminant and reusing the signature.
+#[test]
+fn the_signing_payload_separates_the_two_addressing_modes() {
+    let zero = PublicKey::from([0u8; 32]);
+    let as_member = KeyEnvelope::signing_payload(
+        &[0u8; 32],
+        &EnvelopeRecipient::Member {
+            identity: zero,
+            ephemeral_pk: zero,
+        },
+        &zero,
+        &[0u8; 12],
+        &[],
+    );
+    let as_device = KeyEnvelope::signing_payload(
+        &[0u8; 32],
+        &EnvelopeRecipient::Device {
+            device: DeviceId::from([0u8; 32]),
+            ephemeral_pk: KemPublicKey::from([0u8; 32]),
+        },
+        &zero,
+        &[0u8; 12],
+        &[],
+    );
+
+    assert_ne!(
+        as_member, as_device,
+        "identical key bytes under the two addressing modes must not sign the same payload"
     );
 }
 
