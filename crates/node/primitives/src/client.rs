@@ -384,7 +384,10 @@ impl NodeClient {
     pub fn queue_membership_republish(&self, namespace_id: [u8; 32], op: SignedNamespaceOp) {
         if let Err(err) = self
             .node_manager
-            .try_send(NodeMessage::ForwardPendingRepublish { namespace_id, op })
+            .try_send(NodeMessage::ForwardPendingRepublish {
+                namespace_id,
+                op: Box::new(op),
+            })
         {
             warn!(
                 ?err,

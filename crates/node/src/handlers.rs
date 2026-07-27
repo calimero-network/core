@@ -118,7 +118,10 @@ impl Handler<NodeMessage> for NodeManager {
                 // dropped here costs the retry only; the op is already applied
                 // locally and still reaches peers via namespace sync.
                 if let Some(addr) = &self.readiness_addr {
-                    addr.do_send(crate::readiness::PendingRepublish { namespace_id, op });
+                    addr.do_send(crate::readiness::PendingRepublish {
+                        namespace_id,
+                        op: *op,
+                    });
                 } else {
                     debug!(
                         namespace_id = %hex::encode(namespace_id),

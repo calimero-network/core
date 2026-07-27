@@ -42,7 +42,7 @@ pub enum NodeMessage {
     /// `crates/context` and cannot name the node-side actor.
     ForwardPendingRepublish {
         namespace_id: [u8; 32],
-        op: SignedNamespaceOp,
+        op: Box<SignedNamespaceOp>,
     },
     /// Edge-trigger the migration-heartbeat emitter to recompute and re-publish
     /// this node's facts for a namespace, out of band of the periodic tick.
