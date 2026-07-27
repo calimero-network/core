@@ -1909,6 +1909,10 @@ pub const GROUP_REVOKED_DEVICE_PREFIX: u8 = 0x42;
 /// Per-account current root key (see [`GroupAccountKey`]).
 pub const GROUP_ACCOUNT_KEY_PREFIX: u8 = 0x43;
 
+/// This node's own device identity for a namespace (see
+/// [`NodeDeviceIdentity`]).
+pub const NODE_DEVICE_IDENTITY_PREFIX: u8 = 0x44;
+
 /// Prefix for the pending-key-rotation worklist. A row marks: `group_id` still
 /// owes a forward-secrecy key rotation because `departed` left, and no rotation
 /// has landed yet.
@@ -2313,6 +2317,82 @@ pub struct GroupAccountKeyValue {
     /// The root key at `epoch` — the only key whose device certificates this
     /// group still accepts.
     pub root_pk: [u8; 32],
+}
+
+/// This node's own device identity within one namespace (see
+/// [`NODE_DEVICE_IDENTITY_PREFIX`]). Key layout `prefix(1) + namespace_id(32)`
+/// = 33 bytes; one row per namespace, because a node is a distinct replica in
+/// each namespace it participates in and must not reuse one KEM secret across
+/// them.
+///
+/// Deliberately a row family of its own rather than two more fields on
+/// `ContextIdentity`. That struct is `#[expect(clippy::exhaustive_structs)]`
+/// with construction sites all over the node, so widening it would touch every
+/// one of them — and a device secret has a different lifetime anyway: it is
+/// minted once when the device enrolls, never rotated in place, and deleted
+/// when the namespace is purged.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeDeviceIdentity(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl NodeDeviceIdentity {
+    #[must_use]
+    pub fn new(namespace_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([NODE_DEVICE_IDENTITY_PREFIX])
+            .concat(GenericArray::from(namespace_id))))
+    }
+
+    #[must_use]
+    pub fn namespace_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for NodeDeviceIdentity {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NodeDeviceIdentity {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for NodeDeviceIdentity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NodeDeviceIdentity")
+            .field("namespace_id", &self.namespace_id())
+            .finish()
+    }
+}
+
+/// The device identity a [`NodeDeviceIdentity`] row carries.
+///
+/// `kem_secret` is the private half of the X25519 key published in this
+/// device's certificate, and it is the **only** thing that can unwrap a scope
+/// key addressed to this device. It is stored, not derived from the namespace
+/// signing key, because the whole point of a device KEM key is that it is
+/// revocable independently of the identity that certified it — deriving it
+/// would tie the two lifetimes back together.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeDeviceIdentityValue {
+    /// The `DeviceId` this node speaks as in the namespace.
+    pub device_id: [u8; 32],
+    /// X25519 secret matching the certificate's `kem_pk`.
+    pub kem_secret: [u8; 32],
 }
 
 /// Namespace-root inherited-deny entry (see [`GROUP_INHERITED_DENIED_MEMBER_PREFIX`]).

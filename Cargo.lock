@@ -1351,6 +1351,7 @@ dependencies = [
  "async-trait",
  "borsh",
  "bs58",
+ "calimero-account",
  "calimero-blobstore",
  "calimero-context-client",
  "calimero-context-config",
@@ -1388,6 +1389,7 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "borsh",
+ "calimero-account",
  "calimero-context-config",
  "calimero-primitives",
  "calimero-storage",
