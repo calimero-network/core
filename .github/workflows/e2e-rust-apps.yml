@@ -343,6 +343,32 @@ jobs:
           - workflow: blobs-api-example
             file: workflows/blobs-example.yml
             app: blobs
+          # #3317 regression: uploading with a context_id must publish a provider
+          # record. It silently did not for any namespace-backed context — i.e.
+          # every context — and blobs.yml stayed green because its only
+          # second-node step is `list_files`, which reads CRDT metadata and
+          # replicates independently of the blob. Asserts the membership bail is
+          # absent from the node log. The byte-transfer half of #3317 lives in
+          # blob-cross-node-transfer.yml and is NOT listed here yet: it needs
+          # merobox's `download_blob` step (0.6.44) plus a MIN_MEROBOX bump in
+          # .github/actions/setup-merobox/action.yml.
+          - workflow: blob-announce-membership
+            file: workflows/blob-announce-namespace-membership.yml
+            app: blobs
+          # Waiting on merobox 0.6.44 + a MIN_MEROBOX bump, then uncomment both.
+          # `blob-cross-node-transfer` asserts the received bytes on small
+          # fixtures; `blob-cross-node-sizes` sweeps 1/8/32/100 MiB against
+          # generated random fixtures (the "Generate blob fixtures" step below
+          # builds them, and only fires for that workflow). 100 MiB is the CI
+          # ceiling on purpose — the hard limit is 500 MiB
+          # (MAX_BLOB_SIZE_BYTES), and anything past it is refused by design, so
+          # a >500 MiB case must assert the refusal rather than a success.
+          # - workflow: blob-cross-node-transfer
+          #   file: workflows/blob-cross-node-transfer.yml
+          #   app: blobs
+          # - workflow: blob-cross-node-sizes
+          #   file: workflows/blob-cross-node-sizes.yml
+          #   app: blobs
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml
             app: scaffolding-e2e
@@ -457,6 +483,18 @@ jobs:
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
+
+      # Only the size sweep needs these, and they are 141 MiB of /dev/urandom —
+      # not worth generating for every other workflow in the matrix. Random
+      # content is required, not incidental: blobs are content-addressed, so a
+      # predictable fixture would already sit on the fetching node and the
+      # cross-node path under test would be skipped.
+      - name: Generate blob fixtures
+        if: matrix.workflow == 'blob-cross-node-sizes'
+        run: |
+          cd apps/blobs
+          chmod +x scripts/gen-blob-fixtures.sh
+          ./scripts/gen-blob-fixtures.sh
 
       - name: Run ${{ matrix.workflow }}
         env:
