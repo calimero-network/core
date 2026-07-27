@@ -5,7 +5,7 @@ A Calimero SSApp designed to exercise the WASM-ABI v1 generator with a comprehen
 ## Building
 
 ```bash
-cargo run -q -p cargo-mero -- mero build --manifest-path apps/abi_conformance/Cargo.toml
+cargo mero build --manifest-path apps/abi_conformance/Cargo.toml
 ```
 
 ## ABI Extraction

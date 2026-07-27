@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# Wrap one migration-fixture wasm into a signed single-service `.mpk` bundle
-# WITHOUT embedding an ABI. Every other fixture bundles through `cargo mero
-# bundle`, which embeds unconditionally (scripts/check-embedded-abi.sh) - this
-# script exists only because the missing-ABI-refusal scenario needs one bundle
-# that deliberately has no `calimero_abi_v1` section, which cargo-mero cannot
-# produce.
+# Bundle one migration-fixture wasm WITHOUT embedding an ABI - the one thing
+# `cargo mero bundle` cannot do, and what the missing-ABI-refusal scenario needs.
 #
 #   bundle-wasm.sh <suite-dir> <wasm-file> <package> <app-version>
 #

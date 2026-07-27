@@ -12,8 +12,7 @@ cd "$REPO_ROOT"
 if [ "$#" -gt 0 ]; then
     wasms=("$@")
 else
-    # `find` (not a **/ glob) so this works on bash 3.2 (macOS) too; an unbuilt
-    # tree yields an empty list and fails the "none found" check below.
+    # `find`, not a `**/` glob: bash 3.2 (macOS) has no globstar.
     wasms=()
     while IFS= read -r w; do
         wasms+=("$w")
@@ -25,7 +24,7 @@ if [ "${#wasms[@]}" -eq 0 ]; then
     exit 1
 fi
 
-# Build the extractor once: `cargo run` per wasm re-checks the workspace each time.
+# Built once: `cargo run` per wasm would re-check the workspace each time.
 cargo build -q -p mero-abi
 MERO_ABI="${CARGO_TARGET_DIR:-target}/debug/mero-abi"
 
@@ -34,19 +33,15 @@ trap 'rm -f "$stderr_file"' EXIT
 
 missing=0
 for wasm in "${wasms[@]}"; do
-    # Capture the full inspect output before grepping. Piping straight into
-    # `grep -q` lets grep close the pipe on the first match, killing `cargo run`
-    # with SIGPIPE, which `set -o pipefail` then reports as a (false) failure.
-    # A failing inspect means the guard could not run at all, so report it as a
-    # tool error rather than silently calling the section missing.
+    # Captured, not piped: `grep -q` closing the pipe early would surface as a
+    # false pipefail. A failing inspect is a tool error, not a missing section.
     if ! report="$("$MERO_ABI" inspect "$wasm" 2>"$stderr_file")"; then
         echo "ERROR: could not run mero-abi inspect on $wasm" >&2
         sed 's/^/  /' "$stderr_file" >&2
         exit 1
     fi
-    # Match the section-walk line (`CustomSection: 'calimero_abi_v1' (N bytes)`),
-    # never a bare name: inspect's "section NOT found" advice also contains the
-    # name, so a looser grep passes every wasm and the guard never fires.
+    # Match the section-walk line, not a bare name: inspect's "NOT found" advice
+    # also contains the name, which would make the guard pass on every wasm.
     if printf '%s' "$report" | grep -q "CustomSection: 'calimero_abi_v1'"; then
         echo "ok:      $wasm"
     else

@@ -85,6 +85,9 @@ jobs:
           shared-key: e2e-rust-apps
           save-if: false
 
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
       - name: Build all WASM fixtures
         run: bash workflows/app-migration/build-wasms.sh
 
@@ -92,10 +95,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: app-migration-wasm-fixtures
-          # Multiple roots keep the artifact's common ancestor at the repo root, so
-          # paths restore verbatim on download. `bundle-wasm.sh` writes the one
-          # unembedded fixture beside its suite rather than into dist/, so that
-          # path is listed too or 39-missing-abi-refused has nothing to install.
+          # Repo-root-relative roots so paths restore verbatim. The unembedded
+          # fixture lands beside its suite, not in dist/.
           path: |
             apps/migrations/**/res/*.wasm
             apps/migrations/**/res/*.mpk
@@ -133,10 +134,13 @@ jobs:
       - name: Build calimero-abi
         run: cargo build -p mero-abi
 
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
       - name: Emit downgrade-scenario state schemas
         run: |
-          cargo run -q -p cargo-mero -- mero build --manifest-path apps/migrations/scenario-identity-downgrade-v1/Cargo.toml
-          cargo run -q -p cargo-mero -- mero build --manifest-path apps/migrations/scenario-identity-downgrade-v2/Cargo.toml
+          cargo mero build --manifest-path apps/migrations/scenario-identity-downgrade-v1/Cargo.toml
+          cargo mero build --manifest-path apps/migrations/scenario-identity-downgrade-v2/Cargo.toml
 
       - name: calimero-abi diff must flag the identity downgrade
         run: |
@@ -233,7 +237,6 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: app-migration-wasm-fixtures
-          # No path: the artifact's paths are repo-root-relative already.
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox

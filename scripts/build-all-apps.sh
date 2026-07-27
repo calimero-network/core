@@ -24,19 +24,15 @@ APPS=(
     "apps/xcall-example/Cargo.toml"
 )
 
-# Build the toolchain once: `cargo run` per app re-checks the whole workspace on
-# every iteration.
-cargo build -q -p cargo-mero
-CARGO_MERO="${CARGO_TARGET_DIR:-target}/debug/cargo-mero"
+PATH="$(scripts/setup-cargo-mero.sh):$PATH"
 
 for manifest in "${APPS[@]}"; do
-    "$CARGO_MERO" mero build --manifest-path "$manifest"
+    cargo mero build --manifest-path "$manifest"
 done
 
 # Apps that also ship an installable, signed .mpk bundle.
-"$CARGO_MERO" mero bundle --dev --manifest-path apps/kv-store/Cargo.toml
+cargo mero bundle --dev --manifest-path apps/kv-store/Cargo.toml
 
-# nested-crdt-test returns a tuple the ABI emitter cannot express, so it cannot
-# go through `cargo mero build`. Its artifact stays in target/, never res/, so
-# the embedded-ABI guard is unaffected.
+# nested-crdt-test returns a tuple the ABI emitter cannot express, so it stays on
+# a plain cargo build. Its artifact never reaches res/, so the ABI guard is unaffected.
 cargo build -q -p nested-crdt-test --target wasm32-unknown-unknown --profile app-release

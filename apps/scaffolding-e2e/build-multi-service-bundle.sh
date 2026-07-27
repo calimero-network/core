@@ -3,10 +3,10 @@ set -e
 
 cd "$(dirname $0)"
 
-# Build the WASM first (compile -> wasm-opt -> embed ABI into res/scaffolding_e2e.wasm).
-# This bundle hand-rolls a two-service manifest from the same crate, which a
-# workspace-level services table cannot express, so it stays outside the tool.
-cargo run -q -p cargo-mero -- mero build --manifest-path Cargo.toml
+# Hand-rolls a two-service manifest from one crate, which a workspace-level
+# services table cannot express, so it stays outside the tool.
+PATH="$(../../scripts/setup-cargo-mero.sh):$PATH"
+cargo mero build --manifest-path Cargo.toml
 
 mkdir -p res/multi-bundle-temp
 

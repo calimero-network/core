@@ -59,8 +59,11 @@ jobs:
           shared-key: e2e-rust-apps-release
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
       - name: Build scaffolding-e2e app
-        run: cargo run -q -p cargo-mero -- mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
+        run: cargo mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
 
       - name: Build scaffolding-e2e multi-service bundle
         run: |
@@ -68,7 +71,7 @@ jobs:
           ./build-multi-service-bundle.sh
 
       - name: Build xcall-example app
-        run: cargo run -q -p cargo-mero -- mero build --manifest-path apps/xcall-example/Cargo.toml
+        run: cargo mero build --manifest-path apps/xcall-example/Cargo.toml
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7

@@ -61,16 +61,11 @@ SUITES=(
 )
 
 mkdir -p dist
+PATH="$(scripts/setup-cargo-mero.sh):$PATH"
 
-# Unembedded v2 variant for the missing-ABI refusal scenario
-# (39-missing-abi-refused). `cargo mero bundle` always embeds the ABI (see
-# scripts/check-embedded-abi.sh), so this one wasm is compiled by hand and
-# bundled via bundle-wasm.sh BEFORE migration-suite-v2-add-field is built
-# below - the loop below overwrites this same res/ wasm in place with an
-# embedded copy. An upgrade whose target has no embedded ABI is refused (no
-# migration evidence) unless forceCodeOnly is passed. Distinct package ->
-# distinct ApplicationId, so it never collides with the embedded
-# migration-suite bundles built later.
+# The missing-ABI scenario needs one bundle with no embedded ABI, which cargo mero
+# cannot produce. Built by hand BEFORE the loop below, which overwrites this same
+# res/ wasm with an embedded copy. Its own package keeps the ApplicationId distinct.
 NOABI_SUITE="apps/migrations/migration-suite-v2-add-field"
 NOABI_WASM="migration_suite_v2_add_field.wasm"
 NOABI_TARGET="${CARGO_TARGET_DIR:-target}"
@@ -96,7 +91,7 @@ for suite in "${SUITES[@]}"; do
     base="${dir_name%%-v[0-9]*}"
     v_num="$(printf '%s' "$dir_name" | sed -E 's/.*-v([0-9]+).*/\1/')"
     echo ">>> Bundling $suite (com.calimero.${base} @ ${v_num}.0.0) -> dist/${dir_name}.mpk"
-    cargo run -q -p cargo-mero -- mero bundle --dev \
+    cargo mero bundle --dev \
         --manifest-path "$suite/Cargo.toml" \
         --package "com.calimero.${base}" \
         --app-version "${v_num}.0.0" \

@@ -21,7 +21,7 @@ cargo build -p kv-store --target wasm32-unknown-unknown --release
 ./scripts/build-all-apps.sh
 
 # Build one app via cargo mero
-cargo run -q -p cargo-mero -- mero build --manifest-path apps/kv-store/Cargo.toml
+cargo mero build --manifest-path apps/kv-store/Cargo.toml
 ```
 
 ## Available Apps
@@ -272,7 +272,7 @@ mod tests {
 ### Building an App
 
 ```bash
-cargo run -q -p cargo-mero -- mero build --manifest-path apps/<app>/Cargo.toml
+cargo mero build --manifest-path apps/<app>/Cargo.toml
 ```
 
 ## Key Reference Files

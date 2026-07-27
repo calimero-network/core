@@ -84,7 +84,7 @@ This application includes an automated workflow for end-to-end testing across mu
 
 ```bash
 # Build the application first
-cargo run -q -p cargo-mero -- mero build --manifest-path apps/xcall-example/Cargo.toml
+cargo mero build --manifest-path apps/xcall-example/Cargo.toml
 
 # Run the workflow using merobox
 merobox bootstrap run workflows/xcall-example.yml
