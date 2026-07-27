@@ -1,0 +1,179 @@
+name: 39 - Missing target ABI refuses the upgrade (L0 evidence gate, 1-node)
+description: >
+  Single-node negative-path test for the missing-ABI upgrade refusal
+  (core#3285). Node 1 installs migration-suite-v1 (which embeds a
+  `calimero_abi_v1` state schema), creates a namespace + Open subgroup +
+  context, writes v1 state, and sets the upgrade policy to lazy_on_access.
+  It then attempts to upgrade to an UNEMBEDDED v2 build (the
+  `com.calimero.migration-suite-noabi` bundle, whose wasm carries no
+  `calimero_abi_v1` section - built before the embed step in build-wasms.sh).
+
+  With no embedded ABI on the target, the node cannot prove the swap is a
+  code-only activation rather than a needed migration, so
+  `resolve_upgrade_from_abis` refuses: the upgrade_group RPC returns an error
+  and the step is expected to fail. Previously the node warned and proceeded
+  code-only, which would install new bytecode over existing state and corrupt
+  it if a migration was actually required.
+
+  Acts as the regression guard for core#3285: if the refusal is removed or
+  reopened to the old fail-open, the upgrade_group call succeeds -> the
+  expected_failure step is not satisfied -> the workflow fails.
+
+  Note: merobox 0.4.x's upgrade_group step has no forceCodeOnly field yet, so
+  this scenario covers refusal only. The forceCodeOnly=true code-only-success
+  path is exercised by the calimero-context unit tests
+  (decide_proceeds_code_only_when_forced) until the merobox step schema gains
+  the field.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-missing-abi
+  base_port: 9400
+  base_rpc_port: 9500
+
+steps:
+  # Phase 1: Install the embedded v1 (state_version 1, has calimero_abi_v1).
+  - name: Install migration-suite-v1 on node 1
+    type: install_application
+    node: app-migration-missing-abi-1
+    path: apps/migrations/migration-suite-v1/res/migration-suite-1.0.0.mpk
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  # Phase 2: Node 1 builds namespace + Open subgroup + context on v1.
+  - name: Create namespace on node 1
+    type: create_namespace
+    node: app-migration-missing-abi-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key (for teardown)
+    type: get_namespace_identity
+    node: app-migration-missing-abi-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create Open subgroup on node 1
+    type: create_group_in_namespace
+    node: app-migration-missing-abi-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "missing-abi-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-missing-abi-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
+    type: create_context
+    node: app-migration-missing-abi-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Phase 3: Write v1 state so the context holds live data the refusal protects.
+  - name: Set description (v1)
+    type: call
+    node: app-migration-missing-abi-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "set-before-upgrade"
+
+  # LazyOnAccess routes the upgrade through plan_emit_ladder ->
+  # resolve_upgrade_from_abis, where the missing-ABI refusal fires.
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-missing-abi-1
+    group_id: "{{group_id}}"
+    upgrade_policy: lazy_on_access
+
+  # Phase 4: Install the UNEMBEDDED v2 build (distinct package -> distinct
+  # application id; its wasm has no calimero_abi_v1 section).
+  - name: Install unembedded migration-suite-v2 (no ABI) on node 1
+    type: install_application
+    node: app-migration-missing-abi-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration-suite-noabi-2.0.0.mpk
+    dev: true
+    outputs:
+      app_v2_noabi: applicationId
+
+  # Note: the no-ABI build uses a distinct package, so its application id
+  # differs from v1's (unlike the same-package scenarios). The point here is
+  # only the absent target ABI, not the same-id propagation path.
+
+  # Phase 5: The upgrade must be REFUSED - the target has no migration evidence.
+  # expected_failure: true makes the step PASS on refusal and FAIL if the
+  # upgrade unexpectedly succeeds (fail-open regression).
+  - name: Attempt upgrade to the no-ABI target (must be refused)
+    type: upgrade_group
+    node: app-migration-missing-abi-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2_noabi}}"
+    expected_failure: true
+
+  - name: Wait for log flush
+    type: wait
+    seconds: 5
+
+  # Confirm the refusal fired for the RIGHT reason (missing ABI), not some
+  # other error.
+  - name: Assert the node refused for a missing target ABI
+    type: assert_log_present
+    nodes:
+      - app-migration-missing-abi-1
+    patterns:
+      - "no embedded ABI"
+    min_matches: 1
+
+  # And the app still serves v1 (the refused upgrade changed nothing).
+  - name: Read schema_info after the refused upgrade
+    type: call
+    node: app-migration-missing-abi-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      schema_after: result
+
+  - name: Assert the context still runs v1
+    type: json_assert
+    statements:
+      - 'json_subset({{schema_after}}, {"output": {"schema_version": "1.0.0", "description": "set-before-upgrade"}})'
+
+  # Phase 6: Teardown.
+  - name: Delete context
+    type: delete_context
+    node: app-migration-missing-abi-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-missing-abi-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-missing-abi-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1 on node 1
+    type: uninstall_application
+    node: app-migration-missing-abi-1
+    application_id: "{{app_v1}}"
+
+stop_all_nodes: false
