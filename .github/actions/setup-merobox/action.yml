@@ -47,7 +47,18 @@ runs:
         # Pin the floor so an older release fails loudly rather than skipping
         # steps or collecting empty log artifacts.
         MIN_MEROBOX="0.6.43"
-        timeout 180 pipx install "merobox>=${MIN_MEROBOX}"
+        # 180s was too tight — the install (a PyPI fetch plus a venv build) has
+        # been hitting it, and the failure surfaces on the *scenario* job rather
+        # than here, so a red matrix reads as "the change broke migrations" when
+        # merobox never installed. Retry once before giving up: the usual cause
+        # is a slow or flaky PyPI response, which a second attempt clears.
+        pipx_install() {
+          timeout 300 pipx install "merobox>=${MIN_MEROBOX}"
+        }
+        pipx_install || {
+          echo "::warning::merobox install timed out or failed; retrying once"
+          pipx_install
+        }
         # Ensure the pipx bin dir is on PATH for this step and all that follow.
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
         export PATH="$HOME/.local/bin:$PATH"
