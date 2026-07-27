@@ -30,6 +30,7 @@
 use std::borrow::Cow;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_account::DeviceId;
 use calimero_crypto::Nonce;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
@@ -401,9 +402,23 @@ pub enum InitPayload {
     GroupKeyRequest {
         namespace_id: [u8; 32],
         group_id: [u8; 32],
-        /// The requester's namespace identity public key, used both for
-        /// the membership check and as the ECDH wrap recipient.
+        /// The requester's namespace identity public key, used for the
+        /// membership check — and as the ECDH wrap recipient only while the
+        /// responder knows no account for it (the bootstrap case).
         requester_public_key: PublicKey,
+        /// The device the requester is asking as, when it has enrolled one.
+        ///
+        /// Deliberately **unauthenticated**: the reply is sealed to this
+        /// device's certified X25519 key, so naming someone else's device
+        /// yields an envelope the caller cannot open. The wrap is the
+        /// authentication, which is why the request needs no proof and no
+        /// signature of its own.
+        ///
+        /// Once the responder knows an account for `requester_public_key`, this
+        /// is the *only* way to be served: without it a revoked device would
+        /// still be its member, and would be handed the very key the rotation
+        /// excluded it from.
+        requester_device: Option<DeviceId>,
         /// The specific key epoch the requester needs (the `key_id` of a
         /// buffered op it can't decrypt), or `None` to ask for the group's
         /// current key (a keyless joiner bootstrapping). Serving the exact

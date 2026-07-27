@@ -1,8 +1,8 @@
 use calimero_governance_types::NamespaceId;
 
 use crate::{
-    CapabilitiesRepository, DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository,
-    NamespaceRepository, PermissionChecker,
+    CapabilitiesRepository, DenyListRepository, GroupKeyring, KeyRequester, MembershipRepository,
+    MetaRepository, NamespaceRepository, PermissionChecker,
 };
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, EncryptedGroupOp, EnvelopeRecipient, GroupOp, KeyEnvelope,
@@ -1031,16 +1031,22 @@ impl<'a> NamespaceGovernance<'a> {
     ///
     /// Returns `(envelope_bytes, responder_identity)`. `envelope_bytes` is
     /// **empty** for every non-deliverable case — `group_id` not in this
-    /// namespace (cross-namespace pin), `requester` not a member, key not
-    /// held locally, no namespace identity, or a wrap failure — so the
-    /// requester simply tries another peer; an empty reply leaks no
-    /// membership oracle. `responder_identity` is our namespace identity
-    /// (the wrap sender / bootstrap trust anchor) when we wrapped; for an
-    /// empty envelope it is irrelevant (the joiner ignores it).
+    /// namespace (cross-namespace pin), `requester` not a member, no live device
+    /// of theirs matching `requester_device`, key not held locally, no namespace
+    /// identity, or a wrap failure — so the requester simply tries another peer;
+    /// an empty reply leaks no membership oracle. `responder_identity` is our
+    /// namespace identity (the wrap sender / bootstrap trust anchor) when we
+    /// wrapped; for an empty envelope it is irrelevant (the joiner ignores it).
+    ///
+    /// `requester_device` is the device the requester claims to be, and it is
+    /// deliberately unauthenticated — the reply is sealed to that device's
+    /// certified X25519 key, so claiming another device yields an envelope the
+    /// caller cannot open. It is `None` from a node that has enrolled none, which
+    /// is served member-addressed only while its member has no account here.
     pub(crate) fn build_group_key_delivery(
         &self,
         group_id: [u8; 32],
-        requester: PublicKey,
+        requester: KeyRequester,
         requested_key_id: Option<[u8; 32]>,
     ) -> EyreResult<(Vec<u8>, PublicKey)> {
         let group_gid = ContextGroupId::from(group_id);
@@ -1055,9 +1061,9 @@ impl<'a> NamespaceGovernance<'a> {
             Ok(ns) if ns.to_bytes() == self.namespace_id.to_bytes()
         );
         if !group_in_namespace
-            || !MembershipRepository::new(self.store).is_member(&group_gid, &requester)?
+            || !MembershipRepository::new(self.store).is_member(&group_gid, &requester.identity)?
         {
-            return Ok((Vec::new(), requester));
+            return Ok((Vec::new(), requester.identity));
         }
 
         // Serve the EXACT key the requester named when it named one (a buffered
@@ -1072,7 +1078,7 @@ impl<'a> NamespaceGovernance<'a> {
                 let Some(group_key) =
                     GroupKeyring::new(self.store, group_gid).load_key_by_id(&key_id)?
                 else {
-                    return Ok((Vec::new(), requester));
+                    return Ok((Vec::new(), requester.identity));
                 };
                 group_key
             }
@@ -1080,7 +1086,7 @@ impl<'a> NamespaceGovernance<'a> {
                 let Some((_key_id, group_key)) =
                     GroupKeyring::new(self.store, group_gid).load_current_key()?
                 else {
-                    return Ok((Vec::new(), requester));
+                    return Ok((Vec::new(), requester.identity));
                 };
                 group_key
             }
@@ -1091,11 +1097,30 @@ impl<'a> NamespaceGovernance<'a> {
                 namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                 "no namespace identity, cannot wrap group key"
             );
-            return Ok((Vec::new(), requester));
+            return Ok((Vec::new(), requester.identity));
         };
         let sender_sk = PrivateKey::from(record.private_key);
         let responder_identity = sender_sk.public_key();
-        match GroupKeyring::wrap_for_member(&sender_sk, &requester, &group_id, &group_key) {
+
+        // Address the reply by the same rule the rotation fan-out uses. Wrapping
+        // for the requester's identity unconditionally is what let this path
+        // route around that rule: a revoked device is still its member, so it was
+        // served the current key on its next sync round no matter how carefully
+        // the rotation had excluded it.
+        let Some(recipient) =
+            GroupKeyring::new(self.store, group_gid).key_recipient_for_requester(&requester)?
+        else {
+            tracing::debug!(
+                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                group_id = %hex::encode(group_id),
+                requester = %requester.identity,
+                "not serving group key: the requester's account has no live device matching \
+                 the one it named"
+            );
+            return Ok((Vec::new(), responder_identity));
+        };
+
+        match GroupKeyring::wrap_for_recipient(&sender_sk, &recipient, &group_id, &group_key) {
             Ok(envelope) => Ok((
                 borsh::to_vec(&envelope).unwrap_or_default(),
                 responder_identity,
@@ -1188,25 +1213,31 @@ impl<'a> NamespaceGovernance<'a> {
             return Ok(None);
         };
         let recipient_sk = PrivateKey::from(identity.private_key);
-        // Defensive: the responder wraps for the public key we asked
-        // with, but a misbehaving/stale peer could send an envelope for
-        // someone else. Storing a key we can't actually use would be
-        // harmless but pointless; reject it.
+        // Defensive: the responder wraps for what we asked with, but a
+        // misbehaving/stale peer could send an envelope for someone else.
+        // Storing a key we can't actually use would be harmless but pointless;
+        // reject it.
         //
-        // Member-addressed only, and that is inherent to this path rather than a
-        // gap: a pull request names the requester's identity key, so a responder
-        // has nothing to address a device with. It is also the path a node with
-        // no key at all must use, which is precisely the state in which it has no
-        // device the group has heard of.
-        if envelope.recipient.member_identity() != Some(recipient_sk.public_key()) {
+        // Either addressing may arrive here. A responder that knows an account
+        // for us answers our device; one that does not answers our identity, which
+        // is what lets a node holding no key at all get started.
+        let node_device = crate::NodeDeviceRepository::new(self.store).get(&ns_id)?;
+        let addressed_to_us = match envelope.recipient {
+            EnvelopeRecipient::Member { identity, .. } => identity == recipient_sk.public_key(),
+            EnvelopeRecipient::Device { device, .. } => {
+                node_device.as_ref().is_some_and(|own| own.device == device)
+            }
+        };
+        if !addressed_to_us {
             return Ok(None);
         }
 
         // Authenticate the envelope against the peer that served it: only a
         // key-holding member of this namespace can mint a valid wrap, so the
         // `sender` must be the `responder_identity` we transacted with.
-        let group_key = match GroupKeyring::unwrap_for_recipient(
+        let group_key = match GroupKeyring::unwrap_any(
             &recipient_sk,
+            node_device.as_ref(),
             &group_id,
             Some(&responder_identity),
             envelope,
@@ -1949,7 +1980,7 @@ pub fn build_group_key_delivery(
     store: &Store,
     namespace_id: NamespaceId,
     group_id: [u8; 32],
-    requester: PublicKey,
+    requester: KeyRequester,
     requested_key_id: Option<[u8; 32]>,
 ) -> EyreResult<(Vec<u8>, PublicKey)> {
     NamespaceGovernance::new(store, namespace_id).build_group_key_delivery(

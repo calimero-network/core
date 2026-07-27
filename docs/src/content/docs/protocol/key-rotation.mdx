@@ -205,9 +205,13 @@ The requester enumerates the scopes it is a member of but holds no key for (`nam
 InitPayload::GroupKeyRequest {
     namespace_id,
     group_id,
-    requester_public_key,   // membership-checked AND the ECDH wrap recipient
+    requester_public_key,   // membership-checked; the wrap recipient only while
+                            // the responder knows no account for it
+    requester_device,       // the device it asks as, when it has enrolled one
 }
 ```
+
+`requester_device` is deliberately **unauthenticated**. The reply is sealed to that device's certified X25519 key, so naming someone else's device yields an envelope the caller cannot open — the wrap *is* the authentication, which is why this request needs no signed proof of its own.
 
 The responder authorizes the request before serving anything (`build_group_key_delivery`). Two gates must both pass:
 
@@ -230,7 +234,7 @@ Only then does the responder load the current key, ECDH-wrap it for the requeste
   ]}
   steps={[
     { from: 0, to: 0, label: 'namespace_groups_awaiting_key → scopes I am in but lack a key for' },
-    { from: 0, to: 1, label: 'GroupKeyRequest { namespace_id, group_id, requester_public_key }', dashed: true },
+    { from: 0, to: 1, label: 'GroupKeyRequest { namespace_id, group_id, requester_public_key, requester_device }', dashed: true },
     { from: 1, to: 1, label: 'gate 1: group_id resolves to this namespace (cross-namespace pin)' },
     { from: 1, to: 1, label: 'gate 2: is_member(group_id, requester)?' },
     { from: 1, to: 1, label: 'both pass → wrap_for_member(responder_sk, requester, group_key)' },
@@ -248,8 +252,19 @@ A keyless bootstrap joiner does **not** trust the key deliverer as the namespace
 The same pull answers the rotation case too. A member that was _offline_ during a `MemberRemoved` rotation comes back lacking the new key; on its next sync it appears in `namespace_groups_awaiting_key` and pulls the new epoch key from any current holder. Recovery is one self-healing loop, not a special path per delivery type.
 </Aside>
 
+### Why the pull is device-addressed once accounts exist
+
+The pull is the one path that can undo device-granular revocation, and it did: a request named only `requester_public_key`, so a node whose device had just been revoked was still that member and was served the current key on its next sync round — routing straight around the exclusion the rotation had enforced.
+
+So the responder resolves the reply by the same rule the rotation fan-out uses:
+
+- The requester's member key has **no account** in the scope → wrap to its identity. This is the bootstrap case and cannot be retired: enrolling a device needs an encrypted group op, hence the key, so a keyless joiner has no device the scope has heard of.
+- It **has an account** → serve only a live device of that account, and only the one the request named. Identity addressing is no longer available, which is what closes the leak: a revoked device cannot simply omit its id and be served as its member.
+
+A member whose every device is revoked or superseded therefore receives **nothing** from the pull. That is deliberate, not a dead end. Re-enrolling needs an encrypted group op and so needs the key, so recovery is **admin-mediated**: an admin re-delivers the key with `RootOp::KeyDelivery`, or publishes the replacement link on the member's behalf (a link op need not be signed by the device it enrolls). If a member in that state could re-key itself, revocation would mean nothing.
+
 :::caution[Normative]
-A `GroupKeyRequest` responder MUST verify both that the requested group belongs to the named namespace and that the requester is a current member before wrapping the key. A request that fails either check MUST be answered with an empty envelope (indistinguishable from "I don't hold the key"), never with an error that confirms membership status.
+A `GroupKeyRequest` responder MUST verify that the requested group belongs to the named namespace and that the requester is a current member before wrapping the key. When the scope holds any account rooted at the requester's member key, the responder MUST additionally serve only a **live device** of that account, matching `requester_device`, and MUST NOT fall back to identity addressing. A request that fails any check MUST be answered with an empty envelope (indistinguishable from "I don't hold the key"), never with an error that confirms membership or device status.
 :::
 
 ## Related

@@ -5593,7 +5593,10 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
         &responder_store,
         namespace_id.into(),
         subgroup_id,
-        joiner_pk,
+        crate::KeyRequester {
+            identity: joiner_pk,
+            device: None,
+        },
         None,
     )
     .unwrap();
@@ -5717,7 +5720,10 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
         &responder_store,
         namespace_id.into(),
         subgroup_id,
-        joiner_pk,
+        crate::KeyRequester {
+            identity: joiner_pk,
+            device: None,
+        },
         None,
     )
     .unwrap();
@@ -5818,13 +5824,187 @@ fn responder_refuses_delivery_to_non_member() {
 
     // The requester is NOT a member of the subgroup → empty envelope: no key
     // wrapped, and no membership oracle leaked (same reply as "key not held").
-    let (envelope_bytes, _responder_identity) =
-        build_group_key_delivery(&store, namespace_id.into(), subgroup_id, stranger_pk, None)
-            .unwrap();
+    let (envelope_bytes, _responder_identity) = build_group_key_delivery(
+        &store,
+        namespace_id.into(),
+        subgroup_id,
+        crate::KeyRequester {
+            identity: stranger_pk,
+            device: None,
+        },
+        None,
+    )
+    .unwrap();
     assert!(
         envelope_bytes.is_empty(),
         "responder must not wrap a key for a non-member"
     );
+}
+
+/// The pull path must obey the same device rule the rotation fan-out does.
+///
+/// Before this, a `GroupKeyRequest` named only the requester's identity key, so a
+/// node whose device had been revoked was still that member and was served the
+/// current key on its next sync round — routing straight around the exclusion the
+/// rotation had just enforced.
+#[test]
+fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
+    use calimero_account::{sign_device_cert, AccountGenesis, DeviceId, KemPublicKey};
+    use calimero_crypto::X25519SecretKey;
+    use calimero_governance_types::{EnvelopeRecipient, KeyEnvelope};
+
+    let ns_gid = ContextGroupId::from([0x51u8; 32]);
+    let namespace_id: [u8; 32] = ns_gid.to_bytes();
+    let responder_sk = PrivateKey::from([0x52u8; 32]);
+    let responder_pk = responder_sk.public_key();
+    let member_sk = PrivateKey::from([0x53u8; 32]);
+
+    let store = test_store();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &responder_pk, &[0x52u8; 32], &[0u8; 32])
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(responder_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &member_sk.public_key(), GroupMemberRole::Member)
+        .unwrap();
+    let group_key = [0x6Eu8; 32];
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    // No account yet: the bootstrap case must keep working, member-addressed.
+    let (bytes, _) = build_group_key_delivery(
+        &store,
+        namespace_id.into(),
+        namespace_id,
+        crate::KeyRequester {
+            identity: member_sk.public_key(),
+            device: None,
+        },
+        None,
+    )
+    .unwrap();
+    let envelope: KeyEnvelope = borsh::from_slice(&bytes).unwrap();
+    assert_eq!(
+        envelope.recipient.member_identity(),
+        Some(member_sk.public_key()),
+        "a member with no account must still be served by identity, or a keyless          joiner could never get started"
+    );
+
+    // Enroll a device for an account rooted at that member key.
+    let kem_secret = X25519SecretKey::from([0x54u8; 32]);
+    let genesis = AccountGenesis::new(member_sk.public_key(), [0x54u8; 16]);
+    let account = genesis.account_id();
+    let device = DeviceId::mint(account, [0x54u8; 16]);
+    let cert = sign_device_cert(
+        &member_sk,
+        account,
+        device,
+        &PrivateKey::from([0x55u8; 32]).public_key(),
+        &KemPublicKey::from(*kem_secret.public_key().as_bytes()),
+        0,
+        0,
+    )
+    .unwrap();
+    let bindings = crate::AccountBindingRepository::new(&store);
+    let _ = bindings
+        .apply_link(&ns_gid, &genesis, &[], &cert)
+        .unwrap()
+        .expect("admitted");
+
+    // Now that an account is known, the identity form is gone: asking without a
+    // device gets nothing. This is the leak being closed — a revoked device would
+    // otherwise just omit its id and be served as its member.
+    let (bytes, _) = build_group_key_delivery(
+        &store,
+        namespace_id.into(),
+        namespace_id,
+        crate::KeyRequester {
+            identity: member_sk.public_key(),
+            device: None,
+        },
+        None,
+    )
+    .unwrap();
+    assert!(
+        bytes.is_empty(),
+        "once the group knows an account for a member, identity addressing must not          be available as a fallback"
+    );
+
+    // Asking as the live device is served, device-addressed, and opens.
+    let (bytes, responder_identity) = build_group_key_delivery(
+        &store,
+        namespace_id.into(),
+        namespace_id,
+        crate::KeyRequester {
+            identity: member_sk.public_key(),
+            device: Some(device),
+        },
+        None,
+    )
+    .unwrap();
+    let envelope: KeyEnvelope = borsh::from_slice(&bytes).unwrap();
+    assert!(matches!(
+        envelope.recipient,
+        EnvelopeRecipient::Device { .. }
+    ));
+    assert_eq!(
+        GroupKeyring::unwrap_for_device(
+            device,
+            &kem_secret,
+            &namespace_id,
+            Some(&responder_identity),
+            &envelope,
+        )
+        .unwrap(),
+        group_key
+    );
+
+    // Claiming a device that is not ours needs no rejection to be safe — but it
+    // is not a live device here either, so nothing is served at all.
+    let someone_elses = DeviceId::mint(account, [0x99u8; 16]);
+    let (bytes, _) = build_group_key_delivery(
+        &store,
+        namespace_id.into(),
+        namespace_id,
+        crate::KeyRequester {
+            identity: member_sk.public_key(),
+            device: Some(someone_elses),
+        },
+        None,
+    )
+    .unwrap();
+    assert!(bytes.is_empty(), "an unknown device id must not be served");
+
+    // Revoke it. The member is untouched — still a member, still holding the
+    // member key — and that is exactly why the old behaviour leaked.
+    bindings.apply_revocation(&ns_gid, device).unwrap();
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&ns_gid, &member_sk.public_key())
+            .unwrap(),
+        "the member must still be a member, or this test proves nothing"
+    );
+
+    for claimed in [None, Some(device)] {
+        let (bytes, _) = build_group_key_delivery(
+            &store,
+            namespace_id.into(),
+            namespace_id,
+            crate::KeyRequester {
+                identity: member_sk.public_key(),
+                device: claimed,
+            },
+            None,
+        )
+        .unwrap();
+        assert!(
+            bytes.is_empty(),
+            "a revoked device must not be able to pull the key back, with or without              naming itself"
+        );
+    }
 }
 
 /// #2848 Part C — curative startup sweep, gov-store level.

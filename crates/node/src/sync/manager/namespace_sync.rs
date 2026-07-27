@@ -1465,6 +1465,23 @@ impl SyncManager {
             }
         };
 
+        // The device we ask as, when this node has enrolled one. Once a peer
+        // knows an account for our identity this is the only way it will serve
+        // us — without it, a revoked device would still be its member and would
+        // be handed the very key the rotation excluded it from. `None` on a node
+        // that has enrolled no device, which is served member-addressed only
+        // while its member has no account in the group (the bootstrap case).
+        let requester = calimero_context::group_store::KeyRequester {
+            identity: requester_public_key,
+            device: calimero_context::group_store::NodeDeviceRepository::new(&store)
+                .get(&ns_gid)
+                .unwrap_or_else(|err| {
+                    debug!(%err, "failed to read node device identity for key recovery");
+                    None
+                })
+                .map(|own| own.device),
+        };
+
         // `(group_id, key_id)` pairs we're stranded on — we ask each peer for
         // the EXACT key epoch a buffered op needs, so a rotated-out key can be
         // recovered (a current-key-only request could not deliver it).
@@ -1535,13 +1552,7 @@ impl SyncManager {
         for (group_id, key_id) in requests {
             for peer in &candidates {
                 let Some((envelope_bytes, responder_identity)) = self
-                    .request_group_key_from_peer(
-                        *peer,
-                        namespace_id,
-                        group_id,
-                        requester_public_key,
-                        key_id,
-                    )
+                    .request_group_key_from_peer(*peer, namespace_id, group_id, requester, key_id)
                     .await
                 else {
                     continue;
@@ -1630,7 +1641,7 @@ impl SyncManager {
         peer: PeerId,
         namespace_id: [u8; 32],
         group_id: [u8; 32],
-        requester_public_key: PublicKey,
+        requester: calimero_context::group_store::KeyRequester,
         key_id: Option<[u8; 32]>,
     ) -> Option<(Vec<u8>, PublicKey)> {
         use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
@@ -1645,21 +1656,24 @@ impl SyncManager {
 
         let msg = StreamMessage::Init {
             context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
-            party_id: requester_public_key,
+            party_id: requester.identity,
             payload: InitPayload::GroupKeyRequest {
                 namespace_id,
                 group_id,
-                requester_public_key,
+                requester_public_key: requester.identity,
+                requester_device: requester.device,
                 key_id,
             },
             next_nonce: {
                 use rand::Rng;
                 rand::thread_rng().gen()
             },
-            // The response is an ECDH key envelope wrapped to
-            // `requester_public_key`; only the holder of its private key can
-            // unwrap it, so possession is proven implicitly and no signed proof
-            // is required on this path.
+            // The response is an ECDH key envelope sealed either to
+            // `requester_public_key` or to `requester_device`'s certified KEM
+            // key; only the holder of the matching secret can unwrap it, so
+            // possession is proven implicitly and no signed proof is required on
+            // this path — including for `requester_device`, which is why it needs
+            // no authentication of its own.
             pop: None,
         };
 
@@ -1701,7 +1715,7 @@ impl SyncManager {
         &self,
         namespace_id: [u8; 32],
         group_id: [u8; 32],
-        requester_public_key: PublicKey,
+        requester: calimero_context::group_store::KeyRequester,
         requested_key_id: Option<[u8; 32]>,
         stream: &mut Stream,
         nonce: Nonce,
@@ -1714,7 +1728,7 @@ impl SyncManager {
                 &store,
                 namespace_id.into(),
                 group_id,
-                requester_public_key,
+                requester,
                 requested_key_id,
             ) {
                 Ok(pair) => pair,
@@ -1725,7 +1739,7 @@ impl SyncManager {
                         %err,
                         "failed to build group-key delivery"
                     );
-                    (Vec::new(), requester_public_key)
+                    (Vec::new(), requester.identity)
                 }
             };
         drop(store);

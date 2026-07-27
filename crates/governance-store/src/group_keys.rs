@@ -43,6 +43,23 @@ impl KeyRecipient {
     }
 }
 
+/// Who is asking for a scope key on the pull path.
+///
+/// The two halves travel together and must be interpreted together — device
+/// first, identity only while the group knows no account for it — so they are one
+/// value. Passing them separately invites a caller to use the identity alone,
+/// which is precisely the bug that let a revoked device pull its key back.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KeyRequester {
+    /// The requester's namespace identity, used for the membership check.
+    pub identity: PublicKey,
+    /// The device it claims to be, when it has enrolled one.
+    ///
+    /// Unauthenticated by design: the reply is sealed to that device's certified
+    /// X25519 key, so a false claim yields an envelope the caller cannot open.
+    pub device: Option<DeviceId>,
+}
+
 /// A [`KeyRecipient`] together with the member whose entitlement it rests on.
 ///
 /// The pairing is what lets a caller exclude a member and have every one of that
@@ -702,6 +719,84 @@ impl<'a> GroupKeyring<'a> {
         Ok(out)
     }
 
+    /// How to address a scope key to one requester who is asking for it, rather
+    /// than to everyone entitled.
+    ///
+    /// Same rule as [`current_key_recipients`](Self::current_key_recipients),
+    /// narrowed to a single member — and it has to be the same rule, or the pull
+    /// path would route around the exclusion the fan-out enforces. That is exactly
+    /// what it did before this existed: a request names the requester's *identity*
+    /// key, so a node whose device had been revoked was still that member and was
+    /// served the current key on its next sync round.
+    ///
+    /// [`KeyRequester::device`] is what the requester says it is. It is **not**
+    /// authenticated, and does not need to be: the reply is sealed to that
+    /// device's certified X25519 key, so naming someone else's device yields an
+    /// envelope the caller cannot open. The wrap is the authentication.
+    ///
+    /// Returns `None` when nothing may be delivered:
+    ///
+    /// - the member has an account here and named no device, or named one that is
+    ///   not a live device of theirs — the revoked case, and the one this exists
+    ///   to close;
+    /// - the member has an account here whose devices are all revoked or
+    ///   superseded. Recovery is deliberately **not** self-service: re-enrolling
+    ///   needs an encrypted `GroupOp`, which needs the key, so a member in this
+    ///   state needs an admin to re-deliver it (`RootOp::KeyDelivery`) or to
+    ///   publish the link on their behalf. If they could re-key themselves,
+    ///   revocation would mean nothing.
+    ///
+    /// A member with no account here is addressed by identity — the bootstrap
+    /// case, and the reason a keyless joiner can still get started.
+    ///
+    /// # Errors
+    /// Propagates the account-row scan failure.
+    pub fn key_recipient_for_requester(
+        &self,
+        requester: &KeyRequester,
+    ) -> EyreResult<Option<KeyRecipient>> {
+        let bindings = AccountBindingRepository::new(self.store);
+        let accounts = bindings.accounts_rooted_at_members(&self.group_id)?;
+        let Some(member_accounts) = accounts.get(&requester.identity) else {
+            return Ok(Some(KeyRecipient::Member(requester.identity)));
+        };
+
+        let Some(claimed) = requester.device else {
+            return Ok(None);
+        };
+        for account in member_accounts {
+            for binding in bindings.devices_of(&self.group_id, *account)? {
+                if binding.device == claimed {
+                    return Ok(Some(KeyRecipient::Device {
+                        device: binding.device,
+                        kem_pk: X25519PublicKey::from(binding.kem_pk),
+                    }));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Wrap `group_key` for one [`KeyRecipient`], whichever kind it is.
+    ///
+    /// # Errors
+    /// Propagates the wrap failure.
+    pub fn wrap_for_recipient(
+        sender_sk: &PrivateKey,
+        recipient: &KeyRecipient,
+        group_id: &[u8; 32],
+        group_key: &[u8; 32],
+    ) -> EyreResult<KeyEnvelope> {
+        match recipient {
+            KeyRecipient::Member(identity) => {
+                Self::wrap_for_member(sender_sk, identity, group_id, group_key)
+            }
+            KeyRecipient::Device { device, kem_pk } => {
+                Self::wrap_for_device(sender_sk, *device, kem_pk, group_id, group_key)
+            }
+        }
+    }
+
     /// Wrap `new_group_key` once per recipient.
     ///
     /// `recipients` is an input rather than something this function discovers,
@@ -727,14 +822,12 @@ impl<'a> GroupKeyring<'a> {
         let mut envelopes = Vec::with_capacity(recipients.len());
 
         for recipient in recipients {
-            envelopes.push(match recipient {
-                KeyRecipient::Member(identity) => {
-                    Self::wrap_for_member(sender_sk, identity, &group_id, new_group_key)?
-                }
-                KeyRecipient::Device { device, kem_pk } => {
-                    Self::wrap_for_device(sender_sk, *device, kem_pk, &group_id, new_group_key)?
-                }
-            });
+            envelopes.push(Self::wrap_for_recipient(
+                sender_sk,
+                recipient,
+                &group_id,
+                new_group_key,
+            )?);
         }
 
         Ok(KeyRotation {

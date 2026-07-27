@@ -231,6 +231,24 @@ The member→account direction is re-derived per call by scanning account rows a
 matching each one's current root key — see *Forward mapping* above for why a
 cache would silently disable revocation after a restart.
 
+### The pull path obeys the same rule
+
+`GroupKeyRequest` originally named only the requester's identity key, which made
+the pull the one path that could undo device-granular revocation: a node whose
+device had just been revoked was still that member, so it was served the current
+key on its next sync round.
+
+The request now also carries the device it asks as, and the responder resolves the
+reply with `key_recipient_for_requester` — the same device-first rule as the
+fan-out, narrowed to one member. `requester_device` is deliberately
+unauthenticated: the reply is sealed to that device's certified X25519 key, so a
+false claim yields an envelope the caller cannot open. The wrap is the
+authentication, which is why the request needs no signed proof.
+
+The bootstrap case is unchanged and cannot be retired — a member with no account
+in the scope is still served by identity, which is what lets a keyless joiner
+start at all.
+
 ### Not yet wired: the ops that trigger delivery
 
 Two behaviours from the plan are **not** implemented, for the same reason: no
@@ -269,15 +287,18 @@ by `DeviceId`; the mapping is handed *up* to the app, never down into the CRDT.
 - **Root-key compromise is not recoverable.** A stolen root key can sign its own
   handoff. Recovery needs a separate authority, which stays reachable because
   `AccountId` is not the key.
-- **The sync pull path can hand the current key back to a revoked device.** A
-  `GroupKeyRequest` names the requester's *identity* key, so the responder wraps
-  for the member, and a node whose device was revoked is still that member. The
-  rotation fan-out excludes the device correctly; this path routes around it.
-  Closing it means the request must prove a live device binding, which changes the
-  sync request/response wire — the same surface as the open "pull responder
-  `responder_identity` is unauthenticated" gap, and best fixed with it. Until
-  then, revoking a device revokes *authorization* immediately and cryptographic
-  *read access* only against peers that do not serve it a pull.
+- **A member with no live device cannot recover a key on its own, by design.**
+  Re-enrolling needs an encrypted `GroupOp` and so needs the key, so a member
+  whose every device is revoked or superseded depends on an admin to re-deliver
+  it (`RootOp::KeyDelivery`) or to publish the replacement link on its behalf — a
+  link op need not be signed by the device it enrolls. If such a member could
+  re-key itself, revocation would mean nothing. The cost is that a legitimate
+  "all my devices were lost" recovery is not self-service.
+- **Member-addressed delivery remains reachable by admin action.** Re-admission
+  (`add_group_members`) and an explicit `RootOp::KeyDelivery` both wrap to a
+  member identity, so an admin can hand a key to a node that still runs a revoked
+  device. That is an explicit privileged act, not an automatic path, but it means
+  revocation is not proof against a careless admin.
 
 ## Phasing, corrected
 
@@ -295,6 +316,7 @@ in production, and a fan-out reading it would wrap for zero recipients.
 | C | **Node device identity** — `NodeDeviceIdentity` row family (`0x44`), per-namespace `DeviceId` + X25519 secret | **done** |
 | D | `KeyEnvelope` → `EnvelopeRecipient{Member,Device}`, native X25519 wrap, device-first fan-out, both-modes receive | **done** |
 | D′ | On-link backfill and revoke-triggered rotation | **folded into F** — needs an account-op publisher |
+| D″ | Device-addressed sync pull (`GroupKeyRequest.requester_device`) | **done** |
 | E | Runtime: `executor_id()`→account, `device_id()`, SDK aggregation | after D |
 | F | `meroctl account create / link / revoke`, pairing UX, **plus D′** | after E |
 | G | `merod export` / `import` | **independent — deferred by decision** |
