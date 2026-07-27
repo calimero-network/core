@@ -1015,13 +1015,29 @@ impl JsRga {
         self.storage.id()
     }
 
-    /// Inserts the UTF-8 `value` at character position `index`.
+    /// Inserts the UTF-8 `value` at codepoint position `index`.
     ///
     /// # Errors
     ///
     /// Returns [`StoreError`] if `value` is not valid UTF-8, if `index` is out of
     /// bounds, or if the underlying storage operation fails.
+    ///
+    /// Also returns [`StorageError::InvalidData`] if called during a state
+    /// migration / merge (`env::in_merge_mode()`): the underlying
+    /// [`ReplicatedGrowableArray::insert_str`] stamps a node-local HLC
+    /// timestamp that would diverge across replicas, so it must not run in
+    /// merge mode. Surfacing this as a typed error (rather than the `panic!`
+    /// the inner method raises) gives the JS host boundary a clean failure
+    /// instead of a caught `HostError::Panic`.
     pub fn insert(&mut self, index: usize, value: &[u8]) -> Result<(), StoreError> {
+        if crate::env::in_merge_mode() {
+            return Err(StorageError::InvalidData(
+                "RGA insert is not allowed during a state migration/merge: it stamps a \
+                 node-local HLC timestamp that would diverge across replicas"
+                    .to_owned(),
+            )
+            .into());
+        }
         let text = core::str::from_utf8(value).map_err(|_| {
             StorageError::InvalidData("RGA insert value must be valid UTF-8".to_owned())
         })?;
