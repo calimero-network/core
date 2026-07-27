@@ -1,0 +1,250 @@
+//! This node's own device identity, per namespace.
+//!
+//! Every other account row in this crate is *replicated* state — what the group
+//! collectively knows about who may author. This one is the opposite: it is the
+//! secret half, node-local, never gossiped, and the only thing that can open a
+//! scope key wrapped for this device.
+//!
+//! One row per namespace rather than one per node. A node is a distinct CRDT
+//! replica in each namespace it joins, and reusing one agreement secret across
+//! namespaces would let a peer in one namespace test whether a device in
+//! another is the same machine — a correlation the per-namespace identity model
+//! otherwise denies them.
+//!
+//! The `DeviceId` is stored alongside the secret instead of being recomputed
+//! because it cannot be recomputed: it is `H(account ‖ nonce)` over a nonce
+//! drawn once at enrollment. Losing it would orphan the device's replica
+//! lineage — its counter slots and HLC seed — even though the machine and its
+//! keys were unchanged.
+
+use calimero_account::{AccountId, DeviceId, KemPublicKey};
+use calimero_context_config::types::ContextGroupId;
+use calimero_crypto::X25519SecretKey;
+use calimero_store::key::{NodeDeviceIdentity, NodeDeviceIdentityValue};
+use calimero_store::Store;
+use eyre::Result as EyreResult;
+use rand::Rng as _;
+
+/// This node's device credentials for one namespace.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct NodeDevice {
+    /// The replica this node speaks as.
+    pub device: DeviceId,
+    /// The agreement secret matching the certificate's `kem_pk`.
+    pub kem_secret: X25519SecretKey,
+}
+
+impl NodeDevice {
+    /// The public half to publish in this device's certificate.
+    #[must_use]
+    pub fn kem_public_key(&self) -> KemPublicKey {
+        KemPublicKey::from(*self.kem_secret.public_key().as_bytes())
+    }
+}
+
+/// Reads and writes this node's per-namespace device identity.
+pub struct NodeDeviceRepository<'a> {
+    store: &'a Store,
+}
+
+impl<'a> NodeDeviceRepository<'a> {
+    /// Bind to `store`.
+    #[must_use]
+    pub const fn new(store: &'a Store) -> Self {
+        Self { store }
+    }
+
+    /// This node's device identity for `namespace`, if it has enrolled one.
+    ///
+    /// `None` means this node has no device in the namespace, which is not an
+    /// error: it is the state of every node that has not yet enrolled, and the
+    /// unwrap path uses it to decide that a device-addressed envelope cannot be
+    /// for us.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn get(&self, namespace: &ContextGroupId) -> EyreResult<Option<NodeDevice>> {
+        let key = NodeDeviceIdentity::new(namespace.to_bytes());
+        Ok(self
+            .store
+            .handle()
+            .get(&key)?
+            .map(|value: NodeDeviceIdentityValue| NodeDevice {
+                device: DeviceId::from(value.device_id),
+                kem_secret: X25519SecretKey::from(value.kem_secret),
+            }))
+    }
+
+    /// This node's device identity for `namespace`, minting one for `account` if
+    /// absent.
+    ///
+    /// Idempotent, and that matters more than it looks: minting twice would mint
+    /// two `DeviceId`s for one machine, and the second would start with empty
+    /// counter slots and a fresh HLC lineage while the first still held the
+    /// group's history under the old id. Callers may therefore invoke this on
+    /// every enrollment attempt without checking first.
+    ///
+    /// A stored identity is returned **as is**, even when it was minted for a
+    /// different account. Re-minting would be the wrong repair: the old device
+    /// id is already the replica id in this namespace's CRDT state, and
+    /// silently replacing it would strand that state. Moving a machine to
+    /// another account is a fresh enrollment after the old device is revoked,
+    /// which is what makes the revocation tombstone terminal.
+    ///
+    /// # Errors
+    /// Propagates the store read or write failure.
+    pub fn ensure_for_account(
+        &self,
+        namespace: &ContextGroupId,
+        account: AccountId,
+    ) -> EyreResult<NodeDevice> {
+        if let Some(existing) = self.get(namespace)? {
+            return Ok(existing);
+        }
+
+        let mut rng = rand::thread_rng();
+        let device = DeviceId::mint(account, rng.gen::<[u8; 16]>());
+        let kem_secret = X25519SecretKey::random(&mut rng);
+
+        let key = NodeDeviceIdentity::new(namespace.to_bytes());
+        self.store.handle().put(
+            &key,
+            &NodeDeviceIdentityValue {
+                device_id: *device.as_bytes(),
+                kem_secret: *kem_secret.as_bytes(),
+            },
+        )?;
+
+        Ok(NodeDevice { device, kem_secret })
+    }
+
+    /// Drop this node's device identity for `namespace`. Idempotent.
+    ///
+    /// Called by the namespace teardown for the same reason the group keyring is
+    /// dropped there: the secret is the only thing that can open scope keys
+    /// wrapped for this device, so leaving it behind after the node has left
+    /// keeps a decryption capability alive for state it is no longer entitled
+    /// to.
+    ///
+    /// # Errors
+    /// Propagates the store write failure.
+    pub fn delete(&self, namespace: &ContextGroupId) -> EyreResult<()> {
+        let key = NodeDeviceIdentity::new(namespace.to_bytes());
+        self.store.handle().delete(&key)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_fixtures::{test_group_id, test_store};
+    use calimero_account::AccountGenesis;
+    use calimero_crypto::SharedKey;
+    use calimero_primitives::identity::PrivateKey;
+
+    fn account(seed: u8) -> AccountId {
+        AccountGenesis::new(PrivateKey::from([seed; 32]).public_key(), [seed; 16]).account_id()
+    }
+
+    #[test]
+    fn a_namespace_with_no_enrolled_device_reports_none() {
+        let store = test_store();
+        assert!(NodeDeviceRepository::new(&store)
+            .get(&test_group_id())
+            .expect("read")
+            .is_none());
+    }
+
+    #[test]
+    fn ensure_is_idempotent_and_keeps_the_first_device_id() {
+        // The invariant the whole repository exists for. A second mint would
+        // hand this machine a new replica id and strand the CRDT state held
+        // under the old one.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let first = repo.ensure_for_account(&ns, account(1)).expect("mint");
+        let second = repo.ensure_for_account(&ns, account(1)).expect("mint");
+
+        assert_eq!(first.device, second.device);
+        assert_eq!(first.kem_secret.as_bytes(), second.kem_secret.as_bytes());
+    }
+
+    #[test]
+    fn a_stored_identity_survives_a_different_account_asking() {
+        // Re-minting for a new account would strand replica state, so the
+        // stored identity wins and re-enrollment is an explicit revoke-then-add.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let original = repo.ensure_for_account(&ns, account(1)).expect("mint");
+        let asked_again = repo.ensure_for_account(&ns, account(2)).expect("mint");
+        assert_eq!(original.device, asked_again.device);
+    }
+
+    #[test]
+    fn each_namespace_gets_its_own_device_and_secret() {
+        // Cross-namespace correlation guard: one machine must not present the
+        // same replica id or the same agreement key in two namespaces.
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let acct = account(1);
+
+        let a = repo
+            .ensure_for_account(&ContextGroupId::from([0xAAu8; 32]), acct)
+            .expect("mint");
+        let b = repo
+            .ensure_for_account(&ContextGroupId::from([0xBBu8; 32]), acct)
+            .expect("mint");
+
+        assert_ne!(a.device, b.device);
+        assert_ne!(a.kem_secret.as_bytes(), b.kem_secret.as_bytes());
+    }
+
+    #[test]
+    fn the_stored_secret_agrees_with_the_published_public_key() {
+        // The reason the secret is stored at all: it must reproduce the exact
+        // agreement a sender performed against the certificate's `kem_pk`.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let minted = repo.ensure_for_account(&ns, account(1)).expect("mint");
+        let published = minted.kem_public_key();
+
+        // A sender wraps to the published key...
+        let sender = X25519SecretKey::random(&mut rand::thread_rng());
+        let sender_side = SharedKey::from_x25519(
+            &sender,
+            &calimero_crypto::X25519PublicKey::from(*published.as_bytes()),
+        )
+        .expect("agree");
+
+        // ...and the identity reloaded from the store opens it.
+        let reloaded = repo.get(&ns).expect("read").expect("present");
+        let device_side =
+            SharedKey::from_x25519(&reloaded.kem_secret, &sender.public_key()).expect("agree");
+
+        let (nonce, ciphertext) = sender_side.encrypt(b"scope key".to_vec()).expect("seal");
+        assert_eq!(
+            device_side.decrypt(ciphertext, nonce).expect("open"),
+            b"scope key".to_vec()
+        );
+    }
+
+    #[test]
+    fn delete_removes_the_secret_and_is_idempotent() {
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let _ = repo.ensure_for_account(&ns, account(1)).expect("mint");
+        repo.delete(&ns).expect("delete");
+        assert!(repo.get(&ns).expect("read").is_none());
+        repo.delete(&ns).expect("delete again");
+    }
+}

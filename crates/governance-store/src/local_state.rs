@@ -549,5 +549,11 @@ pub fn delete_namespace_local_state(
     let mut handle = store.handle();
     handle.delete(&NamespaceGovHead::new(ns_bytes))?;
     handle.delete(&NamespaceIdentity::new(ns_bytes))?;
+    drop(handle);
+
+    // Forward secrecy, same reasoning as the group keyring delete above: this
+    // node's device agreement secret is the only thing that can open scope keys
+    // wrapped for it, so it must not outlive the node's membership.
+    crate::NodeDeviceRepository::new(store).delete(namespace_id)?;
     Ok(())
 }

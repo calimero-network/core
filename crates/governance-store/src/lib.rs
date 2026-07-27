@@ -57,6 +57,7 @@ mod membership;
 mod meta;
 mod metadata;
 mod namespace;
+mod node_device;
 pub mod nonce_window;
 mod ops;
 mod pending_rotation;
@@ -93,7 +94,7 @@ pub use self::reentry::ReentryRepository;
 pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;
 
-pub use self::group_keys::{GroupKeyring, StoredGroupKey};
+pub use self::group_keys::{EntitledRecipient, GroupKeyring, KeyRecipient, StoredGroupKey};
 pub use self::group_settings::GroupSettingsService;
 pub use self::local_state::{
     delete_group_local_rows, delete_namespace_local_state, get_local_gov_nonce,
@@ -123,6 +124,7 @@ pub use self::namespace::{
     NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord, NamespaceMembershipService,
     NamespaceOpLogService, NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
 };
+pub use self::node_device::{NodeDevice, NodeDeviceRepository};
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::PermissionChecker;
 pub use self::signing_keys::SigningKeysRepository;
