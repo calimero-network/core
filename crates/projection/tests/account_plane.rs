@@ -28,7 +28,7 @@ use calimero_authz::{authorize, Rejected};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PrivateKey;
 use calimero_projection::ScopeState;
 use calimero_storage::address::Id;
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
@@ -208,7 +208,6 @@ fn decide(log: &[Op], op: &Op) -> Result<(), Rejected> {
 /// A scope bootstrapped with an admin account whose device is linked, so tests
 /// can start from "there is somebody who can grant membership".
 struct Fixture {
-    admin_account: Account,
     admin: Device,
     log: Vec<Op>,
     head: Vec<[u8; 32]>,
@@ -235,12 +234,7 @@ impl Fixture {
         head = vec![admin_op.id()];
         log.push(admin_op);
 
-        Self {
-            admin_account,
-            admin,
-            log,
-            head,
-        }
+        Self { admin, log, head }
     }
 
     fn push(&mut self, op: Op) {
