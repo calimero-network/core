@@ -545,7 +545,10 @@ fn item_attrs(item: &Item) -> &[syn::Attribute] {
 /// Whether a top-level item survives cfg filtering. Multiple `#[cfg]` attrs are
 /// a conjunction; an item is dropped only when some `#[cfg]` is a definite
 /// False (Unknown and True keep it).
-fn item_cfg_active(item: &Item, features: &BTreeSet<String>) -> bool {
+///
+/// Public so a caller walking the module tree can ask whether a `mod x;`
+/// declaration is compiled in before it reads that file.
+pub fn item_cfg_active(item: &Item, features: &BTreeSet<String>) -> bool {
     item_attrs(item).iter().all(|attr| {
         !attr.path().is_ident("cfg")
             || attr

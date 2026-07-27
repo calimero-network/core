@@ -23,10 +23,6 @@ hex.workspace = true
 bs58.workspace = true
 tracing.workspace = true
 
-[build-dependencies]
-calimero-wasm-abi.workspace = true
-serde_json.workspace = true
-
 [package.metadata.workspaces]
 independent = true
 

@@ -3,7 +3,6 @@
 /// Output path (relative to the new app) and template body, in write order.
 pub const FILES: &[(&str, &str)] = &[
     ("Cargo.toml", include_str!("../templates/Cargo.toml.tmpl")),
-    ("build.rs", include_str!("../templates/build.rs.tmpl")),
     ("src/lib.rs", include_str!("../templates/lib.rs.tmpl")),
     (
         "tests/converge.rs",

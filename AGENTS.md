@@ -317,9 +317,9 @@ RUST_LOG=debug merod --node node1 run
 
 ## Building WASM Apps
 
-`cargo mero build` compiles to wasm32, size-optimizes, and embeds the ABI as the
-`calimero_abi_v1` section. A bare `cargo build` skips the embed, leaving a wasm
-the node cannot introspect.
+`cargo mero build` emits the app's ABI and embeds it as the `calimero_abi_v1`
+section. A bare `cargo build` does neither, leaving a wasm the node cannot
+introspect.
 
 ```bash
 # Add WASM target

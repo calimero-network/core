@@ -83,6 +83,7 @@ fn build_produces_embedded_abi_wasm() {
         "embedded ABI must carry a non-empty methods array (full ABI, not state schema)"
     );
     assert!(fixture.join("res/abi.json").exists());
+    assert!(fixture.join("res/state-schema.json").exists());
 }
 
 /// Multi-service bundling from a virtual workspace root with no --manifest-path,

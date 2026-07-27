@@ -56,7 +56,7 @@ have a context whose state you can read and write from the command line.
    cd kv-store
    ```
 
-   This writes a ready-to-build crate: `Cargo.toml`, `build.rs`, `src/lib.rs`
+   This writes a ready-to-build crate: `Cargo.toml`, `src/lib.rs`
    (a working state + logic + a `#[cfg(test)]` TestHost test), and
    `tests/converge.rs`.
 
@@ -70,14 +70,9 @@ have a context whose state you can read and write from the command line.
 
    [dependencies]
    thiserror = "1"
-   # SDK crates pinned to a git tag: their ABI and the wasm-abi pin below move together.
+   # SDK crates pinned to a git tag.
    calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "<sdk-tag>" }
    calimero-storage = { git = "https://github.com/calimero-network/core", tag = "<sdk-tag>" }
-
-   [build-dependencies]
-   # build.rs emits res/abi.json + res/state-schema.json from src/lib.rs.
-   calimero-wasm-abi = "=<sdk-tag>"
-   serde_json = "1"
 
    [dev-dependencies]
    # Native test harness (TestHost) + CRDT merge under `cargo test`.
