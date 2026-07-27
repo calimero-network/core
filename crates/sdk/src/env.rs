@@ -815,6 +815,54 @@ pub fn storage_index_last(lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
     }
 }
 
+/// Write the node-local ordered-index validity marker `key -> value`. Node-local
+/// and NOT synchronized (routed to the non-synced marker column), so a peer
+/// never observes a marker for an index it did not build. Returns whether the
+/// host persisted the write.
+#[inline]
+pub fn storage_index_meta_set(key: &[u8], value: &[u8]) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            sys::storage_index_meta_set(
+                Ref::new(&Buffer::from(key)),
+                Ref::new(&Buffer::from(value)),
+            )
+        }
+        .try_into()
+        .unwrap_or_else(expected_boolean)
+    }
+    // Off-wasm, `calimero_storage`'s native mock serves the marker directly, so
+    // this SDK-level host hook is never reached (see `storage_index_set`).
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (key, value);
+        unsupported_native("storage_index_meta_set")
+    }
+}
+
+/// Read the node-local ordered-index validity marker for `key`, or `None` if
+/// absent (see [`storage_index_meta_set`]).
+#[inline]
+pub fn storage_index_meta_get(key: &[u8]) -> Option<Vec<u8>> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let found: bool =
+            unsafe { sys::storage_index_meta_get(Ref::new(&Buffer::from(key)), DATA_REGISTER) }
+                .try_into()
+                .unwrap_or_else(expected_boolean);
+        if !found {
+            return None;
+        }
+        Some(read_register(DATA_REGISTER).unwrap_or_else(expected_register))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = key;
+        unsupported_native("storage_index_meta_get")
+    }
+}
+
 /// Decode the length-prefixed scan reply produced by the host's
 /// `encode_index_pairs`. Malformed/truncated input yields what was parsed so
 /// far (the host controls this buffer, so it's well-formed in practice).
