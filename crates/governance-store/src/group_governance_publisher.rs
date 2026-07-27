@@ -340,11 +340,16 @@ impl<'a> GroupGovernancePublisher<'a> {
                 // signer must be the same identity (the local per-group signing
                 // key used elsewhere can differ from the namespace identity).
                 let rotation_sender_sk = PrivateKey::from(namespace_identity.private_key);
-                Some(GroupKeyring::new(self.store, self.group_id).build_rotation(
-                    &new_group_key,
-                    &rotation_sender_sk,
-                    Some(removed),
-                )?)
+                let keyring = GroupKeyring::new(self.store, self.group_id);
+                // Build the recipient list here, where the reason for the
+                // exclusion is visible: the removed member must not receive the
+                // key they are being rotated out of.
+                let recipients: Vec<PublicKey> = keyring
+                    .current_member_recipients()?
+                    .into_iter()
+                    .filter(|member| member != removed)
+                    .collect();
+                Some(keyring.build_rotation(&new_group_key, &rotation_sender_sk, &recipients)?)
             } else {
                 None
             }

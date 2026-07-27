@@ -9543,8 +9543,15 @@ mod self_leave_rotation_crypto {
             .unwrap();
 
         let new_key: [u8; 32] = OsRng.gen();
-        let rotation = GroupKeyring::new(&store, ns_gid)
-            .build_rotation(&new_key, &admin_sk, Some(&leaver))
+        let keyring = GroupKeyring::new(&store, ns_gid);
+        let recipients: Vec<PublicKey> = keyring
+            .current_member_recipients()
+            .expect("list recipients")
+            .into_iter()
+            .filter(|m| *m != leaver)
+            .collect();
+        let rotation = keyring
+            .build_rotation(&new_key, &admin_sk, &recipients)
             .expect("build rotation excluding the leaver");
 
         let recipients: Vec<PublicKey> = rotation.envelopes.iter().map(|e| e.recipient).collect();

@@ -431,24 +431,57 @@ impl<'a> GroupKeyring<'a> {
         Ok(key)
     }
 
+    /// Who is entitled to this group's key right now.
+    ///
+    /// Split out of [`build_rotation`](Self::build_rotation) so the *policy*
+    /// question — who may hold the key — is asked explicitly by the caller,
+    /// rather than decided inside a wrapping helper. That matters beyond
+    /// tidiness: entitlement is an authorization decision, and every other one
+    /// in this system is answered from the projection at a causal cut. Keeping
+    /// it a separate, named step is what lets a caller supply that answer
+    /// instead, which is exactly what per-device delivery will need — one
+    /// envelope per *device* of each member account, read from the folded
+    /// device bindings rather than from live membership rows.
+    ///
+    /// # Errors
+    /// Propagates the membership scan failure.
+    pub fn current_member_recipients(&self) -> EyreResult<Vec<PublicKey>> {
+        Ok(MembershipRepository::new(self.store)
+            .list(&self.group_id, 0, usize::MAX)?
+            .into_iter()
+            .map(|(member_pk, _)| member_pk)
+            .collect())
+    }
+
+    /// Wrap `new_group_key` once per recipient.
+    ///
+    /// `recipients` is an input rather than something this function discovers,
+    /// so the function does only what its name says: wrap. Deciding who belongs
+    /// in the list is [`current_member_recipients`](Self::current_member_recipients)
+    /// or, once delivery is per-device, the projection.
+    ///
+    /// This is also why there is no `excluded_member` parameter. Exclusion only
+    /// existed because the caller had no other way to influence a list the
+    /// function built for itself; now removing someone is simply leaving them
+    /// out — which cannot be forgotten silently the way an unpassed exclusion
+    /// could.
+    ///
+    /// # Errors
+    /// Propagates a wrap failure for any recipient.
     pub fn build_rotation(
         &self,
         new_group_key: &[u8; 32],
         sender_sk: &PrivateKey,
-        excluded_member: Option<&PublicKey>,
+        recipients: &[PublicKey],
     ) -> EyreResult<KeyRotation> {
-        let members = MembershipRepository::new(self.store).list(&self.group_id, 0, usize::MAX)?;
         let group_id = self.group_id.to_bytes();
         let new_key_id = Self::key_id_for(new_group_key);
-        let mut envelopes = Vec::new();
+        let mut envelopes = Vec::with_capacity(recipients.len());
 
-        for (member_pk, _) in &members {
-            if excluded_member == Some(member_pk) {
-                continue;
-            }
+        for recipient in recipients {
             envelopes.push(Self::wrap_for_member(
                 sender_sk,
-                member_pk,
+                recipient,
                 &group_id,
                 new_group_key,
             )?);
@@ -458,6 +491,98 @@ impl<'a> GroupKeyring<'a> {
             new_key_id: new_key_id.into(),
             envelopes,
         })
+    }
+}
+
+#[cfg(test)]
+mod recipient_tests {
+    use super::*;
+    use crate::test_fixtures::{test_group_id, test_store};
+    use calimero_primitives::context::GroupMemberRole;
+
+    fn member(seed: u8) -> PublicKey {
+        PrivateKey::from([seed; 32]).public_key()
+    }
+
+    #[test]
+    fn build_rotation_wraps_exactly_the_recipients_it_is_given() {
+        // The point of taking a list rather than discovering one: what goes out
+        // is what the caller asked for, with no hidden policy in between.
+        let store = test_store();
+        let gid = test_group_id();
+        let sender = PrivateKey::from([1u8; 32]);
+
+        let recipients = vec![member(2), member(3)];
+        let rotation = GroupKeyring::new(&store, gid)
+            .build_rotation(&[9u8; 32], &sender, &recipients)
+            .expect("build rotation");
+
+        let wrapped: Vec<PublicKey> = rotation.envelopes.iter().map(|e| e.recipient).collect();
+        assert_eq!(wrapped, recipients);
+    }
+
+    #[test]
+    fn build_rotation_ignores_membership_rows_entirely() {
+        // Regression guard for the split. Membership in the store must NOT leak
+        // into the fan-out any more — otherwise a caller that deliberately
+        // narrows the recipient list (a removal, or later a per-device list)
+        // would silently have members added back behind its back.
+        let store = test_store();
+        let gid = test_group_id();
+        let sender = PrivateKey::from([1u8; 32]);
+
+        let stored = member(7);
+        MembershipRepository::new(&store)
+            .add_member(&gid, &stored, GroupMemberRole::Member)
+            .expect("add member");
+
+        let asked_for = vec![member(2)];
+        let rotation = GroupKeyring::new(&store, gid)
+            .build_rotation(&[9u8; 32], &sender, &asked_for)
+            .expect("build rotation");
+
+        assert_eq!(rotation.envelopes.len(), 1);
+        assert_eq!(rotation.envelopes[0].recipient, member(2));
+        assert!(
+            rotation.envelopes.iter().all(|e| e.recipient != stored),
+            "a member row must not add itself to a caller-supplied list"
+        );
+    }
+
+    #[test]
+    fn current_member_recipients_reports_the_live_membership() {
+        let store = test_store();
+        let gid = test_group_id();
+        let repo = MembershipRepository::new(&store);
+        repo.add_member(&gid, &member(2), GroupMemberRole::Member)
+            .expect("add");
+        repo.add_member(&gid, &member(3), GroupMemberRole::Admin)
+            .expect("add");
+
+        let mut got = GroupKeyring::new(&store, gid)
+            .current_member_recipients()
+            .expect("list");
+        got.sort_unstable();
+        let mut want = vec![member(2), member(3)];
+        want.sort_unstable();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn an_empty_recipient_list_produces_no_envelopes() {
+        // Degenerate but reachable: the last member leaves. A rotation with no
+        // recipients must be an empty envelope set, not an error and not a
+        // silent fall-back to "everyone".
+        let store = test_store();
+        let gid = test_group_id();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &member(7), GroupMemberRole::Member)
+            .expect("add member");
+
+        let rotation = GroupKeyring::new(&store, gid)
+            .build_rotation(&[9u8; 32], &PrivateKey::from([1u8; 32]), &[])
+            .expect("build rotation");
+        assert!(rotation.envelopes.is_empty());
     }
 }
 

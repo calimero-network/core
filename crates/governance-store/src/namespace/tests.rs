@@ -3735,8 +3735,15 @@ fn build_rotation_op(
         expected_context_state_hashes: vec![],
     };
     let encrypted = GroupKeyring::encrypt_op(old_key, &inner).unwrap();
-    let mut rotation = GroupKeyring::new(store, ns_gid)
-        .build_rotation(new_group_key, signer_sk, Some(removed_pk))
+    let keyring = GroupKeyring::new(store, ns_gid);
+    let recipients: Vec<PublicKey> = keyring
+        .current_member_recipients()
+        .unwrap()
+        .into_iter()
+        .filter(|m| m != removed_pk)
+        .collect();
+    let mut rotation = keyring
+        .build_rotation(new_group_key, signer_sk, &recipients)
         .unwrap();
     if tamper_new_key_id {
         rotation.new_key_id = [0xFFu8; 32].into();
