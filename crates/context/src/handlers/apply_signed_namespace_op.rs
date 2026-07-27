@@ -163,12 +163,29 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                         // history is fully readable.
                         if fed && decoded {
                             if let Some((group, member)) = membership {
-                                let live = calimero_governance_store::MembershipRepository::new(
-                                    &compare_store,
-                                )
-                                .role_of(&group, &member)
-                                .ok()
-                                .flatten();
+                                // `member` came off the op payload, so it is an
+                                // account; the live repository is keyed by member
+                                // key. Recover the key from the live rows rather
+                                // than caching a reverse map — an account is a
+                                // one-way hash, and a cache built while decoding
+                                // ops would be empty after a projection rebuild
+                                // from the persisted (account-only) op log.
+                                let live = crate::scope_projection::ScopeProjections::
+                                    accounts_to_member_keys(
+                                        &compare_store,
+                                        &group,
+                                        &core::iter::once(member).collect(),
+                                    )
+                                    .into_iter()
+                                    .next()
+                                    .and_then(|pk| {
+                                        calimero_governance_store::MembershipRepository::new(
+                                            &compare_store,
+                                        )
+                                        .role_of(&group, &pk)
+                                        .ok()
+                                        .flatten()
+                                    });
                                 if live.is_some() && projected != live {
                                     tracing::warn!(
                                         marker = "unified_projection_divergence",

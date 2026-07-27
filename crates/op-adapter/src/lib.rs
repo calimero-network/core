@@ -17,12 +17,59 @@
 
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::{GroupOp, RootOp};
-use calimero_op::{OpPayload, ScopeId};
+use sha2::{Digest, Sha256};
+
+use calimero_account::{AccountId, DeviceId};
+use calimero_op::{Authorship, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::rotation_log::RotationLogEntry;
+
+/// Domain separator for the adapter's stand-in account derivation. Distinct
+/// from every domain in `calimero-account` so a value minted here can never be
+/// mistaken for — or collide with — a real account id.
+const LEGACY_ACCOUNT_DOMAIN: &[u8] = b"calimero.op-adapter.legacy-account.v1";
+
+/// The stand-in account for a legacy member key.
+///
+/// **Adapter-local, and not a protocol concept.** Per-plane ops name a bare
+/// member key because they predate accounts; the unified planes are keyed by
+/// [`AccountId`]. This derivation is the seam between the two, and it exists
+/// only so the fold-equivalence proofs can compare like with like.
+///
+/// It is deliberately *not* something `calimero-account` offers. A real account
+/// is the content address of a genesis whose root key can rotate and whose
+/// devices can be revoked; a value derived from a bare key has none of those
+/// properties, and exposing one as a first-class account would quietly
+/// reintroduce the id-equals-key conflation the account model exists to remove.
+/// Living in the adapter — the crate that is deleted at cutover — is what keeps
+/// it from outliving the transition.
+#[must_use]
+pub fn legacy_account_id(member: &PublicKey) -> AccountId {
+    let mut hasher = Sha256::new();
+    hasher.update((LEGACY_ACCOUNT_DOMAIN.len() as u64).to_le_bytes());
+    hasher.update(LEGACY_ACCOUNT_DOMAIN);
+    hasher.update(AsRef::<[u8; 32]>::as_ref(member));
+    let digest: [u8; 32] = hasher.finalize().into();
+    AccountId::from(digest)
+}
+
+/// The [`Authorship`] a bridged legacy op carries.
+///
+/// Legacy ops name only a signing key, so the device is derived from the
+/// stand-in account rather than enrolled. Like [`legacy_account_id`], this is a
+/// transition artifact: natively authored ops carry a real enrolled device.
+#[must_use]
+pub fn legacy_authorship(signer: PublicKey) -> Authorship {
+    let account = legacy_account_id(&signer);
+    Authorship {
+        account,
+        device: DeviceId::from(*account.as_bytes()),
+        device_key: signer,
+    }
+}
 
 /// Encode a storage data [`Action`] as an [`OpPayload`].
 ///
@@ -51,7 +98,11 @@ pub fn payload_from_action(action: &Action) -> Option<OpPayload> {
 pub fn set_writers_payload(object: Id, entry: &RotationLogEntry) -> OpPayload {
     OpPayload::SetWriters {
         object,
-        writers: entry.new_writers.clone(),
+        writers: entry
+            .new_writers
+            .iter()
+            .map(|(member, mask)| (legacy_account_id(member), *mask))
+            .collect(),
     }
 }
 
@@ -104,18 +155,18 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
         | GroupOp::MemberJoinedViaTeeAttestation { member, role, .. } => {
             Some(OpPayload::MemberAdded {
                 group,
-                member: *member,
+                member: legacy_account_id(member),
                 role: role.clone(),
             })
         }
         GroupOp::MemberRemoved { member, .. } | GroupOp::MemberLeft { member, .. } => {
             Some(OpPayload::MemberRemoved {
                 group,
-                member: *member,
+                member: legacy_account_id(member),
             })
         }
         GroupOp::TransferOwnership { new_owner } => Some(OpPayload::AdminChanged {
-            new_admin: *new_owner,
+            new_admin: legacy_account_id(new_owner),
         }),
         // Capability plane — folded so the projection can resolve inherited
         // membership (the `CAN_JOIN_OPEN_SUBGROUPS` bit) at the cut.
@@ -130,7 +181,7 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
             capabilities,
         } => Some(OpPayload::MemberCapabilitySet {
             group,
-            member: *member,
+            member: legacy_account_id(member),
             capabilities: *capabilities,
         }),
         // Visibility plane — the Open/Restricted wall that gates inheritance.
@@ -176,7 +227,7 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
 pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload> {
     match op {
         RootOp::AdminChanged { new_admin } => Some(OpPayload::AdminChanged {
-            new_admin: *new_admin,
+            new_admin: legacy_account_id(new_admin),
         }),
         RootOp::PolicyUpdated { policy_bytes } => Some(OpPayload::PolicyUpdated {
             policy_bytes: policy_bytes.clone(),
@@ -191,12 +242,12 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
             ..
         } => Some(OpPayload::MemberAdded {
             group: signed_invitation.invitation.group_id,
-            member: *member,
+            member: legacy_account_id(member),
             role: GroupMemberRole::from_invited_role(signed_invitation.invitation.invited_role),
         }),
         RootOp::MemberJoinedOpen { member, group_id } => Some(OpPayload::MemberAdded {
             group: *group_id,
-            member: *member,
+            member: legacy_account_id(member),
             role: GroupMemberRole::Member,
         }),
         RootOp::GroupCreated {
@@ -211,7 +262,7 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
             // This aligns the projection-plane `SubgroupCreated.restricted`
             // with the live op instead of hardcoding Restricted.
             restricted: *restricted,
-            admin: signer,
+            admin: legacy_account_id(&signer),
         }),
         RootOp::GroupReparented {
             child_group_id,
@@ -333,14 +384,12 @@ mod tests {
                 new_writers: writers.clone(),
                 writers_nonce: i as u64 + 1,
             });
-            let payload = OpPayload::SetWriters {
-                object,
-                writers: writers.clone(),
-            };
+            let payload = set_writers_payload(object, entries.last().expect("just pushed"));
             let parents: Vec<[u8; 32]> = prev_id.into_iter().collect();
-            let id = Op::compute_id(scope, &parents, &admin, &h, &payload);
+            let authorship = legacy_authorship(admin);
+            let id = Op::compute_id(scope, &parents, &authorship, &h, &payload);
             ops.push(Op::from_parts(
-                id, scope, parents, admin, h, payload, [0u8; 32], [0u8; 64],
+                id, scope, parents, authorship, h, payload, [0u8; 32], [0u8; 64],
             ));
             prev_id = Some(id);
         }
@@ -360,12 +409,28 @@ mod tests {
             .cloned()
             .unwrap_or_default();
 
+        // Fold-equivalence still holds under the account model, modulo the
+        // one derivation the bridge applies: `resolve_local` answers in member
+        // keys, the projection answers in the self-accounts those keys speak
+        // for. Mapping the expectation through `account_of` — rather than
+        // loosening the assertion — keeps this a real equivalence proof and
+        // would catch the bridge dropping or renaming a writer.
+        let expected: BTreeMap<AccountId, OpMask> = expected
+            .iter()
+            .map(|(member, mask)| (legacy_account_id(member), *mask))
+            .collect();
         assert_eq!(
             resolved, expected,
             "ScopeState ACL fold must resolve the same writer set as resolve_local"
         );
         // Sanity: the latest rotation ({w2}) wins.
-        assert_eq!(resolved, sets[2]);
+        assert_eq!(
+            resolved,
+            sets[2]
+                .iter()
+                .map(|(member, mask)| (legacy_account_id(member), *mask))
+                .collect::<BTreeMap<_, _>>()
+        );
     }
 
     /// Encoding a rotation's payload then folding it yields the rotation's
@@ -392,7 +457,7 @@ mod tests {
         let op = Op::new(
             scope,
             vec![],
-            admin,
+            legacy_authorship(admin),
             entry.delta_hlc,
             payload,
             [0u8; 32],
@@ -405,7 +470,13 @@ mod tests {
             .get(&object)
             .cloned()
             .unwrap_or_default();
-        assert_eq!(resolved, writers);
+        assert_eq!(
+            resolved,
+            writers
+                .iter()
+                .map(|(member, mask)| (legacy_account_id(member), *mask))
+                .collect::<BTreeMap<_, _>>()
+        );
     }
 
     #[test]
@@ -423,7 +494,7 @@ mod tests {
             ),
             Some(OpPayload::MemberAdded {
                 group,
-                member: m,
+                member: legacy_account_id(&m),
                 role: GroupMemberRole::Member,
             })
         );
@@ -438,7 +509,7 @@ mod tests {
             ),
             Some(OpPayload::MemberAdded {
                 group,
-                member: m,
+                member: legacy_account_id(&m),
                 role: GroupMemberRole::Admin,
             })
         );
@@ -461,7 +532,7 @@ mod tests {
             ),
             Some(OpPayload::MemberAdded {
                 group,
-                member: m,
+                member: legacy_account_id(&m),
                 role: GroupMemberRole::ReadOnlyTee,
             })
         );
@@ -470,7 +541,7 @@ mod tests {
         assert_eq!(
             payload_from_group_op(group, &GroupOp::TransferOwnership { new_owner }),
             Some(OpPayload::AdminChanged {
-                new_admin: new_owner,
+                new_admin: legacy_account_id(&new_owner),
             })
         );
         // Out-of-model ops (metadata, config, …) → None.
@@ -503,7 +574,9 @@ mod tests {
                 &RootOp::AdminChanged { new_admin: admin },
                 PublicKey::from([1u8; 32])
             ),
-            Some(OpPayload::AdminChanged { new_admin: admin })
+            Some(OpPayload::AdminChanged {
+                new_admin: legacy_account_id(&admin),
+            })
         );
         assert_eq!(
             payload_from_root_op(
@@ -526,7 +599,7 @@ mod tests {
             ),
             Some(OpPayload::MemberAdded {
                 group: ContextGroupId::from(gid),
-                member: m,
+                member: legacy_account_id(&m),
                 role: GroupMemberRole::Member,
             })
         );
@@ -556,7 +629,7 @@ mod tests {
             ),
             Some(OpPayload::MemberAdded {
                 group: ContextGroupId::from(gid),
-                member: m,
+                member: legacy_account_id(&m),
                 role: GroupMemberRole::Admin,
             })
         );
@@ -573,7 +646,7 @@ mod tests {
             ),
             Some(OpPayload::MemberAdded {
                 group: ContextGroupId::from(gid),
-                member: m,
+                member: legacy_account_id(&m),
                 role: GroupMemberRole::Admin,
             })
         );
@@ -591,7 +664,7 @@ mod tests {
                 child: ScopeId::from(gid),
                 parent: ScopeId::from(parent),
                 restricted: true,
-                admin: PublicKey::from([1u8; 32]),
+                admin: legacy_account_id(&PublicKey::from([1u8; 32])),
             })
         );
         // Scope-tree restructure ops now map to the structural OpPayload arms.
@@ -635,7 +708,15 @@ mod tests {
 
         let build = |ns: u64, payload: OpPayload| -> Op {
             let h = hlc(ns);
-            Op::new(scope, vec![], admin, h, payload, [0u8; 32], [0u8; 64])
+            Op::new(
+                scope,
+                vec![],
+                legacy_authorship(admin),
+                h,
+                payload,
+                [0u8; 32],
+                [0u8; 64],
+            )
         };
 
         // Add(Member)@10 → Remove@20 → Add(Admin)@30 → present as Admin.
@@ -644,33 +725,49 @@ mod tests {
                 10,
                 OpPayload::MemberAdded {
                     group,
-                    member: m,
+                    member: legacy_account_id(&m),
                     role: GroupMemberRole::Member,
                 },
             ),
-            build(20, OpPayload::MemberRemoved { group, member: m }),
+            build(
+                20,
+                OpPayload::MemberRemoved {
+                    group,
+                    member: legacy_account_id(&m),
+                },
+            ),
             build(
                 30,
                 OpPayload::MemberAdded {
                     group,
-                    member: m,
+                    member: legacy_account_id(&m),
                     role: GroupMemberRole::Admin,
                 },
             ),
         ];
         let groups = ScopeState::from_ops(&ops).acl_view().groups;
         assert_eq!(
-            groups.get(&group).and_then(|g| g.get(&m)),
+            groups
+                .get(&group)
+                .and_then(|g| g.get(&legacy_account_id(&m))),
             Some(&GroupMemberRole::Admin),
             "re-add after remove wins with the new role"
         );
 
         // Same set ending in Remove@40 → member absent.
         let mut ops2 = ops;
-        ops2.push(build(40, OpPayload::MemberRemoved { group, member: m }));
+        ops2.push(build(
+            40,
+            OpPayload::MemberRemoved {
+                group,
+                member: legacy_account_id(&m),
+            },
+        ));
         let groups2 = ScopeState::from_ops(&ops2).acl_view().groups;
         assert_eq!(
-            groups2.get(&group).and_then(|g| g.get(&m)),
+            groups2
+                .get(&group)
+                .and_then(|g| g.get(&legacy_account_id(&m))),
             None,
             "final removal drops the member"
         );

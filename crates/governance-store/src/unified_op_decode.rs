@@ -11,7 +11,7 @@
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_dag::CausalDelta;
 use calimero_op::{Op, OpPayload, ScopeId};
-use calimero_op_adapter::{payload_from_group_op, payload_from_root_op};
+use calimero_op_adapter::{legacy_authorship, payload_from_group_op, payload_from_root_op};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::logical_clock::HybridTimestamp;
 
@@ -37,7 +37,7 @@ fn build_op(
         id,
         scope,
         parents.to_vec(),
-        author,
+        legacy_authorship(author),
         hlc,
         payload,
         [0u8; 32],

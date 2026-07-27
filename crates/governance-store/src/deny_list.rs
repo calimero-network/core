@@ -231,6 +231,40 @@ impl<'a> DenyListRepository<'a> {
         self.is_inherited_denied(&root, author)
     }
 
+    /// Every directly-denied member key under `group_id`.
+    ///
+    /// Exists so a caller holding **accounts** can answer "is this member
+    /// denied?" without ever needing to turn an account back into a key.
+    /// `AccountId` is a one-way hash of a member key, so the reverse lookup is
+    /// not computable; the only sound comparison is to read the deny list —
+    /// which is authoritative and always keyed by real keys — and map it
+    /// *forward* into account space.
+    ///
+    /// The alternative, caching a key-per-account map as ops are decoded, looks
+    /// cheaper but is not: a node rebuilds its projection from the persisted
+    /// op log, and those ops carry only accounts, so the cache would come back
+    /// empty after a restart and the deny check would silently stop matching.
+    /// Re-deriving from the live list has no such state to lose.
+    ///
+    /// Returns direct denials only; inherited denials are a separate row family
+    /// with their own accessor.
+    ///
+    /// # Errors
+    /// Propagates the underlying store scan failure.
+    pub fn denied_members(&self, group_id: &ContextGroupId) -> EyreResult<Vec<PublicKey>> {
+        let gid = group_id.to_bytes();
+        // Same scan-from-minimum convention as `clear_all_for_group`: `[0u8;
+        // 32]` is the lexicographic floor of the identity space, so a forward
+        // iterator seeded there visits every row whose `group_id` matches.
+        let keys = collect_keys_with_prefix(
+            self.store,
+            GroupDeniedMember::new(gid, PublicKey::from([0u8; 32])),
+            GROUP_DENIED_MEMBER_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
+        Ok(keys.iter().map(GroupDeniedMember::identity).collect())
+    }
+
     /// Remove every deny-list entry under `group_id`. Used during group
     /// teardown (`delete_group_local_rows`) so the deny set doesn't
     /// outlive the group it describes.
