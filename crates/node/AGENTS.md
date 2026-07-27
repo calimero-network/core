@@ -133,9 +133,15 @@ pub struct ReadinessManager {
 ```
 
 - Beacons signed via `READINESS_BEACON_SIGN_DOMAIN` (canonical
-  `signable_bytes`) and verified by
+  `signable_bytes`, which also covers an optional
+  `admission_proof: Option<SignedGroupOpenInvitation>` field) and
+  verified by
   `calimero_context::governance_broadcast::verify_readiness_beacon`
-  (signature + namespace member set).
+  (signature + namespace member set). A beacon that fails the
+  membership check falls through to `beacon_admission_provable`, which
+  grants a governance pull targeted at the beacon's own signer when the
+  beacon carries a verifiable admission proof - never a membership row
+  or a cache entry.
 - Periodic emission on `beacon_interval` ticks for `*Ready` tiers.
 - Edge-trigger emission on tier transition into `*Ready` (via
   `LocalStateChanged` / `ApplyBeaconLocal`).
@@ -144,10 +150,16 @@ pub struct ReadinessManager {
 - A `MemberJoinedAt` broadcast that collected zero acks is queued via
   `NodeClient::queue_membership_republish` (`PendingRepublish`) and
   rebroadcast on the next `EmitOutOfCycleBeacon` for that namespace -
-  i.e. the moment a namespace peer subscribes. The stored op is
-  rebroadcast verbatim, never re-signed. Entries expire after
-  `REPUBLISH_CAP` (10 min) and are NOT removed on republish, so a later
-  subscriber gets another attempt.
+  fired both when a namespace peer subscribes and when one sends a
+  `ReadinessProbe`. The handler's per-(peer, namespace) rate-limit
+  check returns before reaching the republish drain, so a
+  subscribe/probe that lands inside that window does not retry until
+  the next one outside it. The stored op is rebroadcast verbatim, never
+  re-signed. While an entry is queued, every outgoing beacon for that
+  namespace also carries its invitation as `admission_proof`, so a peer
+  that has not yet seen the membership op can still verify the joiner
+  belongs. Entries expire after `REPUBLISH_CAP` (10 min) and are NOT
+  removed on republish, so a later subscriber gets another attempt.
 
 ### J6 namespace-join (Phase 8)
 
