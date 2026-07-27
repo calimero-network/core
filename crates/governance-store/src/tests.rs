@@ -9781,3 +9781,170 @@ mod parked_op_retries_to_success {
         );
     }
 }
+
+/// The account plane, driven through the **real apply pipeline** rather than
+/// the repository directly.
+///
+/// The repository has its own unit tests, but they call it in-process; these
+/// go through `sign_apply_local_group_op_borsh` → signature check → nonce
+/// window → dispatch → handler, which is the path a gossiped op actually
+/// takes. That is where a mis-wired dispatch arm or a handler that is not
+/// idempotent under replay shows up.
+mod account_plane_apply {
+    use super::*;
+    use calimero_account::{
+        sign_device_cert, sign_root_key_handoff, AccountGenesis, DeviceId, KemPublicKey,
+    };
+    use calimero_context_client::local_governance::GroupOp;
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_store::Store;
+
+    use crate::AccountBindingRepository;
+
+    fn key(seed: u8) -> PrivateKey {
+        PrivateKey::from([seed; 32])
+    }
+
+    /// A group with `admin` as its sole admin — the minimum for signing ops.
+    fn group_with_admin(store: &Store, gid: &ContextGroupId, admin: &PrivateKey) {
+        MetaRepository::new(store).save(gid, &test_meta()).unwrap();
+        MembershipRepository::new(store)
+            .add_member(gid, &admin.public_key(), GroupMemberRole::Admin)
+            .unwrap();
+    }
+
+    #[test]
+    fn linking_a_device_through_the_apply_path_records_a_binding() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        // The admin's own key is the member, so its derived account is what a
+        // device may link to while membership is still key-keyed.
+        let account_genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let account = account_genesis.account_id();
+        let device = DeviceId::mint(account, [5u8; 16]);
+        let cert = sign_device_cert(
+            &key(9),
+            account,
+            device,
+            &key(5).public_key(),
+            &KemPublicKey::from([5u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+
+        // Not a member yet → refused, and nothing recorded.
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis: account_genesis,
+                chain: vec![],
+                cert,
+            },
+        )
+        .unwrap();
+        let repo = AccountBindingRepository::new(&store);
+        assert!(
+            repo.live_bindings(&gid).unwrap().is_empty(),
+            "a device must not link into a group its account does not belong to"
+        );
+
+        // Granting the underlying KEY does not help, and that is the point.
+        // Membership rows are still keyed by member key, so the account the
+        // gate derives is `legacy_account_id(key)` — a bare hash with no
+        // genesis, and therefore no root key that could ever have signed this
+        // certificate. Until membership is re-keyed onto `AccountId`, there is
+        // no way to grant a real account, so no device can link.
+        MembershipRepository::new(&store)
+            .add_member(&gid, &key(9).public_key(), GroupMemberRole::Member)
+            .unwrap();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis: account_genesis,
+                chain: vec![],
+                cert,
+            },
+        )
+        .unwrap();
+        assert_ne!(
+            calimero_op_adapter::legacy_account_id(&key(9).public_key()),
+            account,
+            "a key-derived account is never a real, certifiable account"
+        );
+        assert!(
+            repo.live_bindings(&gid).unwrap().is_empty(),
+            "granting a member KEY cannot authorize a device for a real account — \
+             this is what the membership re-key onto AccountId unblocks"
+        );
+    }
+
+    #[test]
+    fn revocation_through_the_apply_path_is_idempotent_under_replay() {
+        // The apply pipeline re-runs a mutation before the op-log dedup gate,
+        // so every handler is applied at least twice in practice. A revocation
+        // that errored or flip-flopped on the second run would stall the node.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [5u8; 16]);
+
+        for _ in 0..2 {
+            sign_apply_local_group_op_borsh(
+                &store,
+                &gid,
+                &admin_sk,
+                GroupOp::AccountDeviceUnlinked { account, device },
+            )
+            .unwrap();
+        }
+
+        let repo = AccountBindingRepository::new(&store);
+        assert!(repo.is_revoked(&gid, device).unwrap());
+        assert!(repo.live_bindings(&gid).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_rotation_through_the_apply_path_advances_the_epoch_once() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        let repo = AccountBindingRepository::new(&store);
+        repo.absorb_genesis(&gid, &genesis).unwrap();
+
+        let handoff = sign_root_key_handoff(&key(9), account, 0, &key(10).public_key()).unwrap();
+
+        // Applied twice: the second is a no-op because `from_epoch` no longer
+        // matches, which is exactly the idempotence replay depends on.
+        for _ in 0..2 {
+            sign_apply_local_group_op_borsh(
+                &store,
+                &gid,
+                &admin_sk,
+                GroupOp::AccountKeysRotated { handoff },
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            repo.account_key(&gid, account).unwrap().map(|r| r.0),
+            Some(1),
+            "a replayed rotation must not advance the epoch twice"
+        );
+    }
+}
