@@ -79,14 +79,13 @@ impl Account {
     /// Roll the root key, returning the handoff to publish.
     fn rotate_to(&mut self, new_seed: u8) -> RootKeyHandoff {
         let new_root = key(new_seed);
-        let new_root_sign_pk = new_root.public_key();
-        let payload = RootKeyHandoff::signing_payload(self.id, self.epoch, &new_root_sign_pk);
-        let handoff = RootKeyHandoff {
-            account: self.id,
-            from_epoch: self.epoch,
-            new_root_sign_pk,
-            signature: self.root.sign(&payload).expect("sign").to_bytes(),
-        };
+        let handoff = calimero_account::sign_root_key_handoff(
+            &self.root,
+            self.id,
+            self.epoch,
+            &new_root.public_key(),
+        )
+        .expect("sign handoff");
         self.chain.push(handoff);
         self.root = new_root;
         self.epoch += 1;
@@ -109,26 +108,18 @@ impl Account {
     ) -> Device {
         let sk = key(device_seed);
         let id = DeviceId::mint(self.id, [device_seed; 16]);
-        let kem_pk = KemPublicKey::from([device_seed; 32]);
-        let payload = DeviceCert::signing_payload(
-            self.id,
-            id,
-            &sk.public_key(),
-            &kem_pk,
-            key_epoch,
-            device_epoch,
-        );
         Device {
             id,
-            cert: DeviceCert {
-                account: self.id,
-                device: id,
-                sign_pk: sk.public_key(),
-                kem_pk,
+            cert: calimero_account::sign_device_cert(
+                signer,
+                self.id,
+                id,
+                &sk.public_key(),
+                &KemPublicKey::from([device_seed; 32]),
                 key_epoch,
                 device_epoch,
-                signature: signer.sign(&payload).expect("sign").to_bytes(),
-            },
+            )
+            .expect("sign cert"),
             sk,
             account: self.id,
         }

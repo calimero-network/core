@@ -46,7 +46,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error as ThisError;
 
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 
 /// Version tag written into [`AccountGenesis`]. It is part of the preimage of
 /// [`AccountId`], so bumping it makes every id under the new version distinct
@@ -378,6 +378,79 @@ impl DeviceCert {
     }
 }
 
+/// Mint a root-key handoff, signed by the **outgoing** key.
+///
+/// Pairs with [`resolve_root_keys`], which is the only consumer of the format.
+/// Exists so no caller ever assembles the signing preimage by hand: a
+/// hand-rolled payload that omits a field still produces a signature that
+/// *verifies*, while silently leaving that field unauthenticated — and the
+/// omission is invisible at the call site. Routing every signer through the
+/// same `signing_payload` the verifier uses makes that class of bug
+/// unexpressible.
+///
+/// `from_epoch` must be the epoch of `current_root_sk`; the resulting handoff
+/// establishes `from_epoch + 1`.
+///
+/// # Errors
+/// [`AccountError::SigningFailed`] if the key refuses to sign.
+pub fn sign_root_key_handoff(
+    current_root_sk: &PrivateKey,
+    account: AccountId,
+    from_epoch: u32,
+    new_root_sign_pk: &PublicKey,
+) -> Result<RootKeyHandoff, AccountError> {
+    let payload = RootKeyHandoff::signing_payload(account, from_epoch, new_root_sign_pk);
+    Ok(RootKeyHandoff {
+        account,
+        from_epoch,
+        new_root_sign_pk: *new_root_sign_pk,
+        signature: current_root_sk
+            .sign(&payload)
+            .map_err(|_| AccountError::SigningFailed)?
+            .to_bytes(),
+    })
+}
+
+/// Mint a device certificate, signed by the account root key at `key_epoch`.
+///
+/// Same reasoning as [`sign_root_key_handoff`]: one place assembles the
+/// preimage, so signer and verifier cannot drift.
+///
+/// `device_epoch` must strictly exceed any epoch already folded for this device
+/// — the projection refuses a link that does not advance it, so a re-issued
+/// certificate that reuses an epoch is inert rather than a rollback.
+///
+/// Takes one parameter per signed field rather than a builder: the argument
+/// list *is* the list of fields the signature covers, and hiding it behind
+/// optional setters would make an unsigned field easy to miss.
+///
+/// # Errors
+/// [`AccountError::SigningFailed`] if the key refuses to sign.
+pub fn sign_device_cert(
+    root_sk: &PrivateKey,
+    account: AccountId,
+    device: DeviceId,
+    sign_pk: &PublicKey,
+    kem_pk: &KemPublicKey,
+    key_epoch: u32,
+    device_epoch: u32,
+) -> Result<DeviceCert, AccountError> {
+    let payload =
+        DeviceCert::signing_payload(account, device, sign_pk, kem_pk, key_epoch, device_epoch);
+    Ok(DeviceCert {
+        account,
+        device,
+        sign_pk: *sign_pk,
+        kem_pk: *kem_pk,
+        key_epoch,
+        device_epoch,
+        signature: root_sk
+            .sign(&payload)
+            .map_err(|_| AccountError::SigningFailed)?
+            .to_bytes(),
+    })
+}
+
 /// A [`DeviceCert`] whose genesis anchor, key chain, and signature have all
 /// been checked.
 ///
@@ -459,6 +532,9 @@ pub enum AccountError {
     /// epoch.
     #[error("certificate has an invalid signature for its claimed key epoch")]
     CertSignatureInvalid,
+    /// The signing key refused to produce a signature.
+    #[error("signing failed")]
+    SigningFailed,
 }
 
 /// Walk a handoff chain from `genesis` and return the root key at each epoch.
@@ -1010,6 +1086,125 @@ mod tests {
             verify_device_cert(account, &g, &[], &cert),
             Err(AccountError::CertSignatureInvalid)
         );
+    }
+
+    // ---- minting ----
+
+    #[test]
+    fn a_minted_cert_verifies() {
+        // The round trip that matters: whatever the signer produces, the
+        // verifier must accept. If the two ever assemble the preimage
+        // differently, this is what catches it.
+        let (root, dev) = (key(1), key(5));
+        let g = genesis_for(&root);
+        let account = g.account_id();
+        let device = DeviceId::mint(account, [3u8; 16]);
+
+        let cert = sign_device_cert(
+            &root,
+            account,
+            device,
+            &dev.public_key(),
+            &KemPublicKey::from([9u8; 32]),
+            0,
+            0,
+        )
+        .expect("sign");
+
+        let verified = verify_device_cert(account, &g, &[], &cert).expect("verify");
+        assert_eq!(verified.device, device);
+        assert_eq!(verified.sign_pk, dev.public_key());
+    }
+
+    #[test]
+    fn a_minted_handoff_chain_verifies() {
+        let (r0, r1, r2) = (key(1), key(2), key(3));
+        let g = genesis_for(&r0);
+        let account = g.account_id();
+
+        let chain = [
+            sign_root_key_handoff(&r0, account, 0, &r1.public_key()).expect("sign"),
+            sign_root_key_handoff(&r1, account, 1, &r2.public_key()).expect("sign"),
+        ];
+
+        assert_eq!(
+            resolve_root_keys(&g, &chain).expect("resolve"),
+            vec![r0.public_key(), r1.public_key(), r2.public_key()]
+        );
+    }
+
+    #[test]
+    fn a_cert_minted_under_a_rotated_key_verifies_against_the_chain() {
+        // End to end through both minters: rotate the root, then certify a
+        // device with the new key.
+        let (r0, r1, dev) = (key(1), key(2), key(5));
+        let g = genesis_for(&r0);
+        let account = g.account_id();
+        let chain = [sign_root_key_handoff(&r0, account, 0, &r1.public_key()).expect("sign")];
+
+        let cert = sign_device_cert(
+            &r1,
+            account,
+            DeviceId::mint(account, [3u8; 16]),
+            &dev.public_key(),
+            &KemPublicKey::from([9u8; 32]),
+            1,
+            0,
+        )
+        .expect("sign");
+
+        assert!(verify_device_cert(account, &g, &chain, &cert).is_ok());
+    }
+
+    #[test]
+    fn minting_with_the_wrong_key_for_the_claimed_epoch_fails_verification() {
+        // The minter does not check that the signer matches `key_epoch` — it
+        // signs what it is told. The verifier is what enforces the pairing, so
+        // a caller that passes the stale key gets a cert that simply does not
+        // verify, rather than one that quietly works.
+        let (r0, r1, dev) = (key(1), key(2), key(5));
+        let g = genesis_for(&r0);
+        let account = g.account_id();
+        let chain = [sign_root_key_handoff(&r0, account, 0, &r1.public_key()).expect("sign")];
+
+        let cert = sign_device_cert(
+            &r0, // superseded key...
+            account,
+            DeviceId::mint(account, [3u8; 16]),
+            &dev.public_key(),
+            &KemPublicKey::from([9u8; 32]),
+            1, // ...claiming the new epoch
+            0,
+        )
+        .expect("sign");
+
+        assert_eq!(
+            verify_device_cert(account, &g, &chain, &cert),
+            Err(AccountError::CertSignatureInvalid)
+        );
+    }
+
+    #[test]
+    fn minted_credentials_are_deterministic() {
+        // Ed25519 signatures here are deterministic, so the same inputs give
+        // byte-identical output. Worth pinning: a nondeterministic credential
+        // would change an op's content address on every re-issue.
+        let root = key(1);
+        let g = genesis_for(&root);
+        let account = g.account_id();
+        let mint = || {
+            sign_device_cert(
+                &root,
+                account,
+                DeviceId::mint(account, [3u8; 16]),
+                &key(5).public_key(),
+                &KemPublicKey::from([9u8; 32]),
+                0,
+                0,
+            )
+            .expect("sign")
+        };
+        assert_eq!(mint(), mint());
     }
 
     // ---- wire format ----
