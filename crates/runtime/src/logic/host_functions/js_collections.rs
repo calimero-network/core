@@ -3499,6 +3499,68 @@ mod tests {
         assert_eq!(host.borrow_logic().registers.get(reg3).unwrap(), b"ello!");
     }
 
+    /// RGA `index`/`len` count Unicode scalar values (codepoints), NOT bytes.
+    /// Exercises multi-byte characters (`é` = 2 bytes, `🎉` = 4 bytes) so a
+    /// byte-indexed implementation would either land mid-codepoint (error) or
+    /// miscount — this locks the documented codepoint semantics that the JS
+    /// SDK wrapper depends on.
+    #[test]
+    fn test_js_crdt_rga_multibyte_codepoint_indexing() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let id: [u8; 32] = [22u8; 32];
+        put_buffer(&host, ID_DESC_PTR, ID_DATA_PTR, &id);
+        assert_eq!(host.js_crdt_rga_new_with_id(ID_DESC_PTR, 1).unwrap(), 0);
+
+        // "café" — 4 codepoints but 5 UTF-8 bytes (é is 2 bytes).
+        put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, "café".as_bytes());
+        assert_eq!(
+            host.js_crdt_rga_insert(ID_DESC_PTR, 0, VALUE_DESC_PTR)
+                .unwrap(),
+            1
+        );
+
+        // len must be 4 (codepoints), not 5 (bytes).
+        let reg = 5u64;
+        assert_eq!(host.js_crdt_rga_len(ID_DESC_PTR, reg).unwrap(), 1);
+        let bytes = host.borrow_logic().registers.get(reg).unwrap();
+        assert_eq!(
+            u64::from_le_bytes(bytes.try_into().unwrap()),
+            4,
+            "len counts codepoints, not bytes"
+        );
+
+        // Insert an astral-plane emoji (4 bytes, 1 codepoint) at codepoint
+        // offset 4 (the end). Byte-index 4 would be mid-`é` and fail.
+        put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, "🎉".as_bytes());
+        assert_eq!(
+            host.js_crdt_rga_insert(ID_DESC_PTR, 4, VALUE_DESC_PTR)
+                .unwrap(),
+            1
+        );
+
+        let reg2 = 6u64;
+        assert_eq!(host.js_crdt_rga_get_text(ID_DESC_PTR, reg2).unwrap(), 1);
+        assert_eq!(
+            host.borrow_logic().registers.get(reg2).unwrap(),
+            "café🎉".as_bytes(),
+            "insert at codepoint offset 4 lands after é, before nothing"
+        );
+
+        // Delete codepoint 3 (`é`) → "caf🎉".
+        assert_eq!(host.js_crdt_rga_delete(ID_DESC_PTR, 3).unwrap(), 1);
+        let reg3 = 7u64;
+        assert_eq!(host.js_crdt_rga_get_text(ID_DESC_PTR, reg3).unwrap(), 1);
+        assert_eq!(
+            host.borrow_logic().registers.get(reg3).unwrap(),
+            "caf🎉".as_bytes(),
+            "delete removes one codepoint by codepoint offset"
+        );
+    }
+
     /// SortedMap insert/get, and iteration must be in ascending key order
     /// regardless of insertion order.
     #[test]

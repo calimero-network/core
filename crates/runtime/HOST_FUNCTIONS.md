@@ -258,10 +258,16 @@ The counter operations above wrap a G-Counter (grow-only, unsigned). The PN-Coun
 |----------|-----------|-------------|
 | `js_crdt_rga_new` | `(register_id: u64) -> i32` | Creates a new Replicated Growable Array. |
 | `js_crdt_rga_new_with_id` | `(id_ptr: u64, register_id: u64) -> i32` | Creates an RGA at a caller-supplied deterministic 32-byte ID. |
-| `js_crdt_rga_insert` | `(rga_id_ptr: u64, index: u64, value_ptr: u64) -> i32` | Inserts UTF-8 `value` at character `index`. |
-| `js_crdt_rga_delete` | `(rga_id_ptr: u64, index: u64) -> i32` | Deletes the character at `index`. |
+| `js_crdt_rga_insert` | `(rga_id_ptr: u64, index: u64, value_ptr: u64) -> i32` | Inserts the UTF-8 `value` (a run of one or more codepoints) at codepoint offset `index`. |
+| `js_crdt_rga_delete` | `(rga_id_ptr: u64, index: u64) -> i32` | Deletes the codepoint at offset `index`. |
 | `js_crdt_rga_get_text` | `(rga_id_ptr: u64, register_id: u64) -> i32` | Gets the full document as UTF-8 bytes. |
-| `js_crdt_rga_len` | `(rga_id_ptr: u64, register_id: u64) -> i32` | Gets the visible character count (`u64`, little-endian). |
+| `js_crdt_rga_len` | `(rga_id_ptr: u64, register_id: u64) -> i32` | Gets the codepoint count (`u64`, little-endian). |
+
+`index`/`len` count **Unicode scalar values (codepoints)** — not bytes, and not UTF-16
+code units. RGA elements are `char`s, so a multi-byte UTF-8 sequence (e.g. `é`, or an
+emoji) is one position. JS SDK wrappers that receive a JS `string` index (which counts
+UTF-16 code units) must convert to a codepoint offset before calling these; for
+astral-plane characters the two differ.
 
 #### Sorted Map Operations
 
