@@ -216,17 +216,6 @@ fn resolved_features(
     Ok(node.features.iter().map(ToString::to_string).collect())
 }
 
-/// Whether these attributes carry a plain `#[cfg(test)]` - never in the shipped
-/// wasm, and the emitter only reasons about features. Narrow so `not(test)` stays.
-fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        attr.path().is_ident("cfg")
-            && attr
-                .parse_args::<syn::Meta>()
-                .is_ok_and(|meta| matches!(meta, syn::Meta::Path(p) if p.is_ident("test")))
-    })
-}
-
 /// The `#[path = "..."]` override on a `mod` declaration, if present.
 fn mod_path_attr(attrs: &[syn::Attribute]) -> Option<String> {
     attrs.iter().find_map(|attr| {
@@ -272,7 +261,7 @@ fn queue_module_files(
 ) {
     for item in items {
         let syn::Item::Mod(m) = item else { continue };
-        if is_cfg_test(&m.attrs) || !calimero_wasm_abi::emitter::item_cfg_active(item, features) {
+        if !calimero_wasm_abi::emitter::item_cfg_active(item, features) {
             continue;
         }
         let name = m.ident.to_string();
@@ -357,14 +346,21 @@ fn emit_abi(
         .wrap_err_with(|| format!("failed to write {abi_json}"))?;
     println!("• emitted {abi_json}");
 
-    // Tolerated, not ignored: an inexpressible state root still yields a usable
-    // abi.json. No in-repo app takes this path.
-    if let Ok(mut state_schema) = manifest.extract_state_schema() {
-        state_schema.schema_version = "wasm-abi/1".to_owned();
-        let path = res_dir.join("state-schema.json");
-        std::fs::write(&path, serde_json::to_string_pretty(&state_schema)?)
-            .wrap_err_with(|| format!("failed to write {path}"))?;
-        println!("• emitted {path}");
+    // Tolerated but never silent: without a state schema the node's upgrade gates
+    // fail open, so say so loudly rather than shipping a quietly incomplete pair.
+    match manifest.extract_state_schema() {
+        Err(e) => eprintln!(
+            "warning: no state schema for {crate_dir}: {e}\n\
+             warning: res/state-schema.json was not written; the node cannot check \
+             upgrades against this app's state"
+        ),
+        Ok(mut state_schema) => {
+            state_schema.schema_version = "wasm-abi/1".to_owned();
+            let path = res_dir.join("state-schema.json");
+            std::fs::write(&path, serde_json::to_string_pretty(&state_schema)?)
+                .wrap_err_with(|| format!("failed to write {path}"))?;
+            println!("• emitted {path}");
+        }
     }
 
     Ok(abi_json)
@@ -695,6 +691,38 @@ mod tests {
 
         let names = collected(&root, &BTreeSet::new());
         assert_eq!(names, vec!["lib.rs".to_owned()], "got {names:?}");
+    }
+
+    /// `cfg(test)` also has to be decided inside `all(..)` / `any(..)`, and
+    /// `not(test)` must stay included.
+    #[test]
+    fn crate_sources_decides_cfg_test_in_compound_predicates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            format!(
+                "#[cfg(all(test, feature = \"extras\"))]\nmod all_test;\n\
+                 #[cfg(any(test, feature = \"absent\"))]\nmod any_test;\n\
+                 #[cfg(not(test))]\nmod shipped;\n{MINIMAL_APP}"
+            ),
+        )
+        .unwrap();
+        for m in ["all_test", "any_test", "shipped"] {
+            std::fs::write(root.join(format!("src/{m}.rs")), "pub struct T;").unwrap();
+        }
+
+        // `extras` on: all(test, extras) is still test-only, and any(test, absent)
+        // has no other way in, so only `shipped` joins lib.rs.
+        let on: BTreeSet<String> = ["extras".to_owned()].into_iter().collect();
+        let mut names = collected(&root, &on);
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["lib.rs".to_owned(), "shipped.rs".to_owned()],
+            "got {names:?}"
+        );
     }
 
     /// A file the module tree never pulls in is not compiled into the wasm, so its

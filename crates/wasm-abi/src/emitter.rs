@@ -469,6 +469,11 @@ where
 /// or any other atom) with Kleene logic against the active feature set.
 fn eval_cfg_meta(meta: &syn::Meta, features: &BTreeSet<String>) -> CfgTruth {
     match meta {
+        // The ABI describes the shipped wasm, which is never built with --cfg test,
+        // so this is definitely False rather than Unknown. That also decides the
+        // compound forms: `all(test, ..)` is False, `any(test, ..)` rests on the
+        // other predicates, and `not(test)` is True.
+        syn::Meta::Path(p) if p.is_ident("test") => CfgTruth::False,
         syn::Meta::NameValue(nv) if nv.path.is_ident("feature") => {
             if let syn::Expr::Lit(syn::ExprLit {
                 lit: syn::Lit::Str(s),
