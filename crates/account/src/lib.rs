@@ -1,0 +1,1061 @@
+//! **Account identity** — one identity, many devices.
+//!
+//! The unified causal log authenticates an op with the key that signed it and
+//! authorizes it against a folded ACL. Historically those were the *same* key:
+//! a per-namespace member key that simultaneously served as the signing key,
+//! the ACL subject, the scope-key delivery recipient, and the CRDT replica id.
+//! One key doing four jobs is why a person could not hold two devices — sharing
+//! the key corrupts the CRDT planes (counter slots and HLC seeds are keyed by
+//! replica id and assume one writer each), and *not* sharing it splits one
+//! person into two unrelated members.
+//!
+//! This crate introduces the two ids that break the conflation:
+//!
+//! - [`AccountId`] — the person. The **only** authorization subject, and the
+//!   app-visible "who wrote this". Never signs anything itself.
+//! - [`DeviceId`] — one installation. The CRDT replica id, and the holder of
+//!   the keypair that actually signs ops. **Never** an authorization input.
+//!
+//! # Ids are not keys
+//!
+//! The governing principle: *every identity is a stable id whose current key
+//! set is projected state*. Both ids are content addresses, not public keys, so
+//! every key in the system can rotate without the identity changing. Making
+//! `AccountId` the account's public key — the obvious shortcut — would mean the
+//! root key can never rotate (rotating would mean becoming a different person
+//! and losing all membership and authorship), and it would force the root key
+//! out of cold storage for routine work.
+//!
+//! # Self-certifying anchor
+//!
+//! [`AccountId`] is the content address of the account's [`AccountGenesis`],
+//! and the genesis names the epoch-0 root key. So *the initial root key is
+//! recoverable from the account id itself*: a verifier handed a
+//! [`DeviceCert`] can check `AccountGenesis::account_id() == cert.account` and
+//! then walk a signed [`RootKeyHandoff`] chain up to the cert's epoch, with **no
+//! prior state and no ordering dependency**. That is what lets a device link
+//! itself into a scope in a single self-contained op.
+//!
+//! What this crate does *not* do is decide anything. It is pure verification of
+//! self-contained credentials; the at-cut checks that make a credential
+//! *authoritative* (has this root key been superseded? has this device been
+//! revoked? is the account even a member here?) belong to the projection and
+//! `calimero-authz`, because only those see the causal cut.
+
+use borsh::{BorshDeserialize, BorshSerialize};
+use sha2::{Digest, Sha256};
+use thiserror::Error as ThisError;
+
+use calimero_primitives::identity::PublicKey;
+
+/// Version tag written into [`AccountGenesis`]. It is part of the preimage of
+/// [`AccountId`], so bumping it makes every id under the new version distinct
+/// from every id under the old one — a deliberate hard fork of the namespace
+/// rather than a silent reinterpretation of existing ids.
+pub const ACCOUNT_GENESIS_VERSION: u8 = 1;
+
+/// Domain separator for the [`AccountId`] content address.
+const ACCOUNT_ID_DOMAIN: &[u8] = b"calimero.account.genesis.v1";
+/// Domain separator for the [`DeviceId`] content address.
+const DEVICE_ID_DOMAIN: &[u8] = b"calimero.device.id.v1";
+/// Domain separator for the bytes a root key signs to hand off to its successor.
+const HANDOFF_SIGN_DOMAIN: &[u8] = b"calimero.account.handoff.v1";
+/// Domain separator for the bytes a root key signs to grant a device.
+const DEVICE_CERT_SIGN_DOMAIN: &[u8] = b"calimero.device.cert.v1";
+
+/// Every signing domain used by this crate, for the test that asserts they are
+/// pairwise distinct. A collision here would let a signature minted for one
+/// purpose be replayed as another.
+#[cfg(test)]
+const ALL_DOMAINS: &[&[u8]] = &[
+    ACCOUNT_ID_DOMAIN,
+    DEVICE_ID_DOMAIN,
+    HANDOFF_SIGN_DOMAIN,
+    DEVICE_CERT_SIGN_DOMAIN,
+];
+
+/// Hash `domain ‖ parts` — the one hashing helper, so every content address and
+/// signing preimage in this crate is domain-separated the same way.
+///
+/// The domain is length-prefixed rather than merely concatenated: with a bare
+/// concatenation, a shorter domain whose bytes are a prefix of a longer one
+/// could be made to produce the same digest by shifting bytes between the
+/// domain and the body.
+fn domain_hash(domain: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update((domain.len() as u64).to_le_bytes());
+    hasher.update(domain);
+    for part in parts {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    hasher.finalize().into()
+}
+
+/// Serialize with borsh into a `Vec<u8>`.
+///
+/// # Panics
+/// Never in practice — borsh-serializing these plain-data types into an
+/// in-memory buffer is infallible; the `expect` documents that invariant.
+fn borsh_bytes<T: BorshSerialize>(value: &T) -> Vec<u8> {
+    borsh::to_vec(value).expect("borsh serialization of a plain-data type is infallible")
+}
+
+macro_rules! content_address_id {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(
+            Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash,
+            BorshSerialize, BorshDeserialize,
+        )]
+        pub struct $name([u8; 32]);
+
+        impl $name {
+            /// The raw 32 bytes of this id.
+            #[must_use]
+            pub const fn as_bytes(&self) -> &[u8; 32] {
+                &self.0
+            }
+        }
+
+        impl From<[u8; 32]> for $name {
+            fn from(value: [u8; 32]) -> Self {
+                Self(value)
+            }
+        }
+
+        impl AsRef<[u8]> for $name {
+            fn as_ref(&self) -> &[u8] {
+                &self.0
+            }
+        }
+
+        impl core::fmt::Display for $name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(f, "{}", hex::encode(self.0))
+            }
+        }
+    };
+}
+
+content_address_id! {
+    /// Stable identity of a person or agent — the **only** authorization
+    /// subject in the system, and what an app sees as "who wrote this".
+    ///
+    /// This is the content address of the account's [`AccountGenesis`], not a
+    /// public key. See the crate docs for why that distinction is load-bearing.
+    AccountId
+}
+
+content_address_id! {
+    /// Stable identity of one installation belonging to an account.
+    ///
+    /// This is the **CRDT replica id**: counter slots and HLC seeds key on it,
+    /// and both require one writer per id. It is never an authorization input —
+    /// authority always resolves through the [`AccountId`] the device is bound
+    /// to.
+    DeviceId
+}
+
+/// An X25519 public key used only as a scope-key delivery recipient.
+///
+/// Deliberately a distinct type from [`PublicKey`] (Ed25519). A device carries
+/// **two** keys — one that signs, one that receives wrapped keys — rather than
+/// reusing a single Ed25519 key for both signing and key agreement. Single-key
+/// dual-use across a signature scheme and a Diffie-Hellman is a well-known
+/// footgun with no compensating benefit, and the type split makes it impossible
+/// to pass one where the other belongs.
+///
+/// This crate only carries the bytes; the wrapping itself lives with scope-key
+/// delivery.
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, BorshSerialize, BorshDeserialize,
+)]
+pub struct KemPublicKey([u8; 32]);
+
+impl KemPublicKey {
+    /// The raw 32 bytes of this key.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl From<[u8; 32]> for KemPublicKey {
+    fn from(value: [u8; 32]) -> Self {
+        Self(value)
+    }
+}
+
+impl core::fmt::Display for KemPublicKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", hex::encode(self.0))
+    }
+}
+
+/// The immutable root of an account. Hashing it yields the [`AccountId`], which
+/// is why a verifier can recover the epoch-0 root key from the id alone.
+///
+/// `nonce` exists so two accounts created with the same root key are still
+/// distinct identities, and so an account id cannot be predicted from a public
+/// key alone.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct AccountGenesis {
+    /// Always [`ACCOUNT_GENESIS_VERSION`] for accounts this build mints.
+    pub version: u8,
+    /// The account's epoch-0 root signing key.
+    pub root_sign_pk: PublicKey,
+    /// Random, chosen once at account creation.
+    pub nonce: [u8; 16],
+}
+
+impl AccountGenesis {
+    /// Build a genesis at the current [`ACCOUNT_GENESIS_VERSION`].
+    #[must_use]
+    pub const fn new(root_sign_pk: PublicKey, nonce: [u8; 16]) -> Self {
+        Self {
+            version: ACCOUNT_GENESIS_VERSION,
+            root_sign_pk,
+            nonce,
+        }
+    }
+
+    /// The [`AccountId`] this genesis addresses.
+    #[must_use]
+    pub fn account_id(&self) -> AccountId {
+        AccountId(domain_hash(ACCOUNT_ID_DOMAIN, &[&borsh_bytes(self)]))
+    }
+}
+
+impl DeviceId {
+    /// Mint a device id. Called once per installation, before the device has
+    /// any certificate.
+    ///
+    /// Derived from the account and a fresh nonce rather than from the device's
+    /// keys, so rotating a device's keypair keeps its replica identity — and
+    /// therefore its counter slots and HLC lineage — intact.
+    #[must_use]
+    pub fn mint(account: AccountId, nonce: [u8; 16]) -> Self {
+        Self(domain_hash(DEVICE_ID_DOMAIN, &[account.as_bytes(), &nonce]))
+    }
+
+    /// The 16-byte prefix used as this device's HLC instance seed.
+    ///
+    /// RGA character ids are minted from this seed, and two replicas sharing a
+    /// seed mint colliding ids — which loses characters silently. The
+    /// projection therefore **rejects** a device link whose prefix collides
+    /// with an already-linked device in the same scope, so uniqueness is
+    /// checked rather than assumed. (Scope-local is sufficient: character ids
+    /// only need to be unique within the scope that stores them.)
+    #[must_use]
+    pub fn hlc_seed(&self) -> [u8; 16] {
+        let mut seed = [0u8; 16];
+        seed.copy_from_slice(&self.0[..16]);
+        seed
+    }
+}
+
+/// Rolls an account's root key from epoch `from_epoch` to `from_epoch + 1`.
+///
+/// Signed by the **outgoing** key, so the chain from the genesis forward is a
+/// standard forward key-rollover: each key authorizes its own successor. A
+/// verifier that trusts the genesis (and it can, because the genesis *is* the
+/// account id) can therefore verify any later key without external input.
+///
+/// Note what this does not give you: an attacker holding a stolen root key can
+/// sign a handoff of their own. Recovering from root-key compromise needs a
+/// separate recovery authority and is deliberately out of scope here — but
+/// because `AccountId` is not the key, adding one later is a key-set change
+/// rather than a new identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct RootKeyHandoff {
+    /// The account whose key is rolling. Bound into the signature so a handoff
+    /// cannot be replayed onto a different account.
+    pub account: AccountId,
+    /// Epoch of the key that signs this handoff.
+    pub from_epoch: u32,
+    /// The incoming key, which becomes epoch `from_epoch + 1`.
+    pub new_root_sign_pk: PublicKey,
+    /// Signature by the epoch-`from_epoch` root key over
+    /// [`RootKeyHandoff::signing_payload`].
+    pub signature: [u8; 64],
+}
+
+impl RootKeyHandoff {
+    /// Canonical bytes the outgoing root key signs. Covers every field except
+    /// the signature itself.
+    #[must_use]
+    pub fn signing_payload(
+        account: AccountId,
+        from_epoch: u32,
+        new_root_sign_pk: &PublicKey,
+    ) -> [u8; 32] {
+        domain_hash(
+            HANDOFF_SIGN_DOMAIN,
+            &[
+                account.as_bytes(),
+                &from_epoch.to_le_bytes(),
+                new_root_sign_pk.as_ref(),
+            ],
+        )
+    }
+
+    /// The bytes this handoff's signature covers.
+    #[must_use]
+    pub fn payload(&self) -> [u8; 32] {
+        Self::signing_payload(self.account, self.from_epoch, &self.new_root_sign_pk)
+    }
+}
+
+/// A root-signed grant binding a device to an account.
+///
+/// There is deliberately **no expiry field**. Expiry requires participants to
+/// agree on wall-clock time, which a causally-ordered system does not provide;
+/// a certificate that expires "at" some timestamp would be valid on one node
+/// and invalid on another, and authorization would stop converging. Withdrawal
+/// is expressed as a revocation op instead, which is causally ordered like
+/// every other decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct DeviceCert {
+    /// The account this device speaks for.
+    pub account: AccountId,
+    /// The device being granted.
+    pub device: DeviceId,
+    /// Ed25519 key the device signs ops with.
+    pub sign_pk: PublicKey,
+    /// X25519 key wrapped scope keys are delivered to.
+    pub kem_pk: KemPublicKey,
+    /// Which account root-key epoch signed this certificate.
+    pub key_epoch: u32,
+    /// Monotone per device. A higher value supersedes lower ones and expresses
+    /// **device key rotation** — the same device with fresh keys, keeping its
+    /// replica identity — as distinct from enrolling a new device.
+    pub device_epoch: u32,
+    /// Signature by the epoch-`key_epoch` root key over
+    /// [`DeviceCert::signing_payload`].
+    pub signature: [u8; 64],
+}
+
+impl DeviceCert {
+    /// Canonical bytes the root key signs. Covers every field except the
+    /// signature itself.
+    ///
+    /// Both keys are covered, so neither the signing key nor the delivery key
+    /// can be substituted in a certificate that otherwise verifies.
+    #[must_use]
+    pub fn signing_payload(
+        account: AccountId,
+        device: DeviceId,
+        sign_pk: &PublicKey,
+        kem_pk: &KemPublicKey,
+        key_epoch: u32,
+        device_epoch: u32,
+    ) -> [u8; 32] {
+        domain_hash(
+            DEVICE_CERT_SIGN_DOMAIN,
+            &[
+                account.as_bytes(),
+                device.as_bytes(),
+                sign_pk.as_ref(),
+                kem_pk.as_bytes(),
+                &key_epoch.to_le_bytes(),
+                &device_epoch.to_le_bytes(),
+            ],
+        )
+    }
+
+    /// The bytes this certificate's signature covers.
+    #[must_use]
+    pub fn payload(&self) -> [u8; 32] {
+        Self::signing_payload(
+            self.account,
+            self.device,
+            &self.sign_pk,
+            &self.kem_pk,
+            self.key_epoch,
+            self.device_epoch,
+        )
+    }
+}
+
+/// A [`DeviceCert`] whose genesis anchor, key chain, and signature have all
+/// been checked.
+///
+/// Holding one means the credential is **internally** valid. It does **not**
+/// mean the binding is currently in force: whether the signing epoch has since
+/// been superseded, whether the device was revoked, and whether the account is
+/// even a member of the scope are all at-cut questions that only the projection
+/// can answer. Those checks are the projection's, and this type exists so the
+/// two stages can't be confused for one another.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifiedDeviceCert {
+    /// Account the device is bound to.
+    pub account: AccountId,
+    /// The bound device.
+    pub device: DeviceId,
+    /// The device's op-signing key.
+    pub sign_pk: PublicKey,
+    /// The device's scope-key delivery key.
+    pub kem_pk: KemPublicKey,
+    /// Root-key epoch that signed the certificate.
+    pub key_epoch: u32,
+    /// The device's key-rotation epoch.
+    pub device_epoch: u32,
+}
+
+/// Why a credential failed verification.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ThisError)]
+pub enum AccountError {
+    /// The genesis does not hash to the account id it claims.
+    #[error("genesis hashes to {actual}, not the claimed account {claimed}")]
+    GenesisMismatch {
+        /// The account id the credential claims.
+        claimed: AccountId,
+        /// The account id the supplied genesis actually addresses.
+        actual: AccountId,
+    },
+    /// The genesis carries a version this build does not understand.
+    #[error("unsupported account genesis version {found} (this build supports {supported})")]
+    UnsupportedVersion {
+        /// Version read from the genesis.
+        found: u8,
+        /// Version this build mints and accepts.
+        supported: u8,
+    },
+    /// A handoff in the chain is not the immediate successor of the previous
+    /// one. The chain must start at epoch 0 and step by exactly one.
+    #[error("handoff chain not contiguous: expected from_epoch {expected}, found {found}")]
+    ChainNotContiguous {
+        /// The epoch the chain position requires.
+        expected: u32,
+        /// The epoch the handoff actually declares.
+        found: u32,
+    },
+    /// A handoff names a different account than the one being verified.
+    #[error("handoff at epoch {epoch} is for a different account")]
+    HandoffAccountMismatch {
+        /// Chain position of the offending handoff.
+        epoch: u32,
+    },
+    /// A handoff is not validly signed by the outgoing root key.
+    #[error("handoff at epoch {epoch} has an invalid signature")]
+    HandoffSignatureInvalid {
+        /// Chain position of the offending handoff.
+        epoch: u32,
+    },
+    /// The certificate claims a root-key epoch the supplied chain does not
+    /// reach.
+    #[error("certificate claims key epoch {key_epoch} but the chain only reaches {reachable}")]
+    EpochOutOfRange {
+        /// Epoch the certificate claims.
+        key_epoch: u32,
+        /// Highest epoch the supplied chain establishes.
+        reachable: u32,
+    },
+    /// The certificate names a different account than the genesis.
+    #[error("certificate is for a different account than the supplied genesis")]
+    CertAccountMismatch,
+    /// The certificate is not validly signed by the root key at its claimed
+    /// epoch.
+    #[error("certificate has an invalid signature for its claimed key epoch")]
+    CertSignatureInvalid,
+}
+
+/// Walk a handoff chain from `genesis` and return the root key at each epoch.
+///
+/// Index `i` of the returned vector is the root key at epoch `i`; index 0 is
+/// always the genesis key, so the result is never empty. The chain must start
+/// at epoch 0 and step by exactly one — a gap would mean accepting a key whose
+/// authorization was never demonstrated, and a repeat would make "the key at
+/// epoch n" ambiguous.
+///
+/// # Errors
+/// [`AccountError::UnsupportedVersion`] for an unknown genesis version, and the
+/// `Chain*` / `Handoff*` variants for a chain that is discontinuous, addressed
+/// to another account, or not properly signed.
+pub fn resolve_root_keys(
+    genesis: &AccountGenesis,
+    chain: &[RootKeyHandoff],
+) -> Result<Vec<PublicKey>, AccountError> {
+    if genesis.version != ACCOUNT_GENESIS_VERSION {
+        return Err(AccountError::UnsupportedVersion {
+            found: genesis.version,
+            supported: ACCOUNT_GENESIS_VERSION,
+        });
+    }
+
+    let account = genesis.account_id();
+    let mut keys = vec![genesis.root_sign_pk];
+
+    for (index, handoff) in chain.iter().enumerate() {
+        // `index` is bounded by the chain length; a chain long enough to
+        // overflow u32 cannot be held in memory.
+        let expected = u32::try_from(index).unwrap_or(u32::MAX);
+        if handoff.from_epoch != expected {
+            return Err(AccountError::ChainNotContiguous {
+                expected,
+                found: handoff.from_epoch,
+            });
+        }
+        if handoff.account != account {
+            return Err(AccountError::HandoffAccountMismatch { epoch: expected });
+        }
+        // Signed by the OUTGOING key — the one already established at this
+        // position — which is what makes the chain an authorization chain
+        // rather than a list of assertions.
+        let outgoing = keys[index];
+        if outgoing
+            .verify_raw_signature(&handoff.payload(), &handoff.signature)
+            .is_err()
+        {
+            return Err(AccountError::HandoffSignatureInvalid { epoch: expected });
+        }
+        keys.push(handoff.new_root_sign_pk);
+    }
+
+    Ok(keys)
+}
+
+/// Verify a device certificate end to end against a self-certifying genesis.
+///
+/// Checks, in order: the genesis addresses `claimed_account`; the certificate
+/// is for that same account; the handoff chain is valid and reaches the
+/// certificate's epoch; and the certificate is signed by the root key at that
+/// epoch.
+///
+/// The `claimed_account` parameter is what ties the whole credential to
+/// something the caller already trusts — typically `op.author`. Without it a
+/// caller could verify a perfectly well-formed credential for an account nobody
+/// asked about.
+///
+/// # Errors
+/// See [`AccountError`]; every variant is reachable from this function.
+pub fn verify_device_cert(
+    claimed_account: AccountId,
+    genesis: &AccountGenesis,
+    chain: &[RootKeyHandoff],
+    cert: &DeviceCert,
+) -> Result<VerifiedDeviceCert, AccountError> {
+    let derived = genesis.account_id();
+    if derived != claimed_account {
+        return Err(AccountError::GenesisMismatch {
+            claimed: claimed_account,
+            actual: derived,
+        });
+    }
+    if cert.account != derived {
+        return Err(AccountError::CertAccountMismatch);
+    }
+
+    let keys = resolve_root_keys(genesis, chain)?;
+
+    let epoch_index = usize::try_from(cert.key_epoch).unwrap_or(usize::MAX);
+    let Some(signer) = keys.get(epoch_index) else {
+        // `keys` is non-empty, so `len() - 1` cannot underflow.
+        let reachable = u32::try_from(keys.len() - 1).unwrap_or(u32::MAX);
+        return Err(AccountError::EpochOutOfRange {
+            key_epoch: cert.key_epoch,
+            reachable,
+        });
+    };
+
+    if signer
+        .verify_raw_signature(&cert.payload(), &cert.signature)
+        .is_err()
+    {
+        return Err(AccountError::CertSignatureInvalid);
+    }
+
+    Ok(VerifiedDeviceCert {
+        account: cert.account,
+        device: cert.device,
+        sign_pk: cert.sign_pk,
+        kem_pk: cert.kem_pk,
+        key_epoch: cert.key_epoch,
+        device_epoch: cert.device_epoch,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calimero_primitives::identity::PrivateKey;
+    use std::collections::HashSet;
+
+    /// Deterministic keypair, so failures reproduce exactly.
+    fn key(seed: u8) -> PrivateKey {
+        PrivateKey::from([seed; 32])
+    }
+
+    fn genesis_for(root: &PrivateKey) -> AccountGenesis {
+        AccountGenesis::new(root.public_key(), [7u8; 16])
+    }
+
+    fn sign_handoff(
+        signer: &PrivateKey,
+        account: AccountId,
+        from_epoch: u32,
+        new_root: &PrivateKey,
+    ) -> RootKeyHandoff {
+        let new_root_sign_pk = new_root.public_key();
+        let payload = RootKeyHandoff::signing_payload(account, from_epoch, &new_root_sign_pk);
+        RootKeyHandoff {
+            account,
+            from_epoch,
+            new_root_sign_pk,
+            signature: signer.sign(&payload).expect("sign").to_bytes(),
+        }
+    }
+
+    fn sign_cert(
+        signer: &PrivateKey,
+        account: AccountId,
+        device: DeviceId,
+        device_sign: &PrivateKey,
+        key_epoch: u32,
+        device_epoch: u32,
+    ) -> DeviceCert {
+        let sign_pk = device_sign.public_key();
+        let kem_pk = KemPublicKey::from([9u8; 32]);
+        let payload = DeviceCert::signing_payload(
+            account,
+            device,
+            &sign_pk,
+            &kem_pk,
+            key_epoch,
+            device_epoch,
+        );
+        DeviceCert {
+            account,
+            device,
+            sign_pk,
+            kem_pk,
+            key_epoch,
+            device_epoch,
+            signature: signer.sign(&payload).expect("sign").to_bytes(),
+        }
+    }
+
+    // ---- ids ----
+
+    #[test]
+    fn account_id_is_the_content_address_of_its_genesis() {
+        let root = key(1);
+        let g = genesis_for(&root);
+        assert_eq!(
+            g.account_id(),
+            g.account_id(),
+            "derivation is deterministic"
+        );
+
+        // The whole point of the anchor: the id commits to the epoch-0 key.
+        let mut other = g;
+        other.root_sign_pk = key(2).public_key();
+        assert_ne!(g.account_id(), other.account_id());
+    }
+
+    #[test]
+    fn same_root_key_with_different_nonce_is_a_different_account() {
+        let root = key(1);
+        let a = AccountGenesis::new(root.public_key(), [1u8; 16]);
+        let b = AccountGenesis::new(root.public_key(), [2u8; 16]);
+        assert_ne!(a.account_id(), b.account_id());
+    }
+
+    #[test]
+    fn genesis_version_is_part_of_the_account_id() {
+        let root = key(1);
+        let mut v1 = genesis_for(&root);
+        let id_v1 = v1.account_id();
+        v1.version = ACCOUNT_GENESIS_VERSION + 1;
+        assert_ne!(id_v1, v1.account_id());
+    }
+
+    #[test]
+    fn device_id_is_stable_across_device_key_rotation() {
+        // The reason DeviceId is minted from a nonce rather than from the
+        // device's keys: rotating keys must not orphan the replica's CRDT state.
+        let account = genesis_for(&key(1)).account_id();
+        let device = DeviceId::mint(account, [3u8; 16]);
+        assert_eq!(device, DeviceId::mint(account, [3u8; 16]));
+    }
+
+    #[test]
+    fn device_ids_differ_by_account_and_by_nonce() {
+        let a = genesis_for(&key(1)).account_id();
+        let b = genesis_for(&key(2)).account_id();
+        assert_ne!(DeviceId::mint(a, [1u8; 16]), DeviceId::mint(a, [2u8; 16]));
+        assert_ne!(DeviceId::mint(a, [1u8; 16]), DeviceId::mint(b, [1u8; 16]));
+    }
+
+    #[test]
+    fn hlc_seed_is_the_device_id_prefix() {
+        let account = genesis_for(&key(1)).account_id();
+        let device = DeviceId::mint(account, [4u8; 16]);
+        assert_eq!(&device.hlc_seed()[..], &device.as_bytes()[..16]);
+    }
+
+    #[test]
+    fn distinct_devices_get_distinct_hlc_seeds() {
+        // Not a proof of uniqueness — that is enforced at link time by the
+        // projection. This only guards against a derivation that collapses.
+        let account = genesis_for(&key(1)).account_id();
+        let seeds: HashSet<[u8; 16]> = (0..64u8)
+            .map(|n| DeviceId::mint(account, [n; 16]).hlc_seed())
+            .collect();
+        assert_eq!(seeds.len(), 64);
+    }
+
+    #[test]
+    fn signing_domains_are_pairwise_distinct() {
+        let unique: HashSet<&[u8]> = ALL_DOMAINS.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            ALL_DOMAINS.len(),
+            "a shared domain would let a signature be replayed across purposes"
+        );
+    }
+
+    #[test]
+    fn domain_hash_is_not_confusable_by_shifting_bytes() {
+        // Length-prefixing is what stops ("ab", "c") and ("a", "bc") colliding.
+        assert_ne!(domain_hash(b"ab", &[b"c"]), domain_hash(b"a", &[b"bc"]),);
+        assert_ne!(
+            domain_hash(b"d", &[b"ab", b"c"]),
+            domain_hash(b"d", &[b"a", b"bc"]),
+        );
+    }
+
+    // ---- key chain ----
+
+    #[test]
+    fn empty_chain_resolves_to_the_genesis_key() {
+        let root = key(1);
+        let g = genesis_for(&root);
+        let keys = resolve_root_keys(&g, &[]).expect("valid");
+        assert_eq!(keys, vec![root.public_key()]);
+    }
+
+    #[test]
+    fn chain_resolves_each_epoch_in_order() {
+        let (r0, r1, r2) = (key(1), key(2), key(3));
+        let g = genesis_for(&r0);
+        let account = g.account_id();
+        let chain = [
+            sign_handoff(&r0, account, 0, &r1),
+            sign_handoff(&r1, account, 1, &r2),
+        ];
+        let keys = resolve_root_keys(&g, &chain).expect("valid");
+        assert_eq!(
+            keys,
+            vec![r0.public_key(), r1.public_key(), r2.public_key()]
+        );
+    }
+
+    #[test]
+    fn handoff_must_be_signed_by_the_outgoing_key() {
+        let (r0, r1, imposter) = (key(1), key(2), key(9));
+        let g = genesis_for(&r0);
+        let account = g.account_id();
+        // Signed by a key that was never the account's root.
+        let chain = [sign_handoff(&imposter, account, 0, &r1)];
+        assert_eq!(
+            resolve_root_keys(&g, &chain),
+            Err(AccountError::HandoffSignatureInvalid { epoch: 0 })
+        );
+    }
+
+    #[test]
+    fn a_superseded_key_cannot_re_sign_a_later_handoff() {
+        // Epoch 0 authorizes epoch 1; epoch 0 must not then authorize epoch 2.
+        let (r0, r1, r2) = (key(1), key(2), key(3));
+        let g = genesis_for(&r0);
+        let account = g.account_id();
+        let chain = [
+            sign_handoff(&r0, account, 0, &r1),
+            sign_handoff(&r0, account, 1, &r2), // wrong signer for this position
+        ];
+        assert_eq!(
+            resolve_root_keys(&g, &chain),
+            Err(AccountError::HandoffSignatureInvalid { epoch: 1 })
+        );
+    }
+
+    #[test]
+    fn chain_must_start_at_epoch_zero() {
+        let (r0, r1) = (key(1), key(2));
+        let g = genesis_for(&r0);
+        let account = g.account_id();
+        let chain = [sign_handoff(&r0, account, 1, &r1)];
+        assert_eq!(
+            resolve_root_keys(&g, &chain),
+            Err(AccountError::ChainNotContiguous {
+                expected: 0,
+                found: 1
+            })
+        );
+    }
+
+    #[test]
+    fn chain_must_not_skip_an_epoch() {
+        let (r0, r1, r2) = (key(1), key(2), key(3));
+        let g = genesis_for(&r0);
+        let account = g.account_id();
+        let chain = [
+            sign_handoff(&r0, account, 0, &r1),
+            sign_handoff(&r1, account, 2, &r2),
+        ];
+        assert_eq!(
+            resolve_root_keys(&g, &chain),
+            Err(AccountError::ChainNotContiguous {
+                expected: 1,
+                found: 2
+            })
+        );
+    }
+
+    #[test]
+    fn handoff_cannot_be_replayed_onto_another_account() {
+        let (r0, r1) = (key(1), key(2));
+        let g = genesis_for(&r0);
+        let other = AccountGenesis::new(r0.public_key(), [99u8; 16]);
+        // Validly signed by r0, but minted for a different account id.
+        let stolen = sign_handoff(&r0, other.account_id(), 0, &r1);
+        assert_eq!(
+            resolve_root_keys(&g, &[stolen]),
+            Err(AccountError::HandoffAccountMismatch { epoch: 0 })
+        );
+    }
+
+    #[test]
+    fn unknown_genesis_version_is_rejected() {
+        let mut g = genesis_for(&key(1));
+        g.version = 200;
+        assert_eq!(
+            resolve_root_keys(&g, &[]),
+            Err(AccountError::UnsupportedVersion {
+                found: 200,
+                supported: ACCOUNT_GENESIS_VERSION
+            })
+        );
+    }
+
+    // ---- certificates ----
+
+    #[test]
+    fn valid_cert_verifies_and_reports_its_fields() {
+        let (root, dev) = (key(1), key(5));
+        let g = genesis_for(&root);
+        let account = g.account_id();
+        let device = DeviceId::mint(account, [3u8; 16]);
+        let cert = sign_cert(&root, account, device, &dev, 0, 0);
+
+        let verified = verify_device_cert(account, &g, &[], &cert).expect("valid");
+        assert_eq!(verified.account, account);
+        assert_eq!(verified.device, device);
+        assert_eq!(verified.sign_pk, dev.public_key());
+        assert_eq!(verified.key_epoch, 0);
+        assert_eq!(verified.device_epoch, 0);
+    }
+
+    #[test]
+    fn cert_signed_by_a_rotated_key_verifies_against_the_chain() {
+        let (r0, r1, dev) = (key(1), key(2), key(5));
+        let g = genesis_for(&r0);
+        let account = g.account_id();
+        let device = DeviceId::mint(account, [3u8; 16]);
+        let chain = [sign_handoff(&r0, account, 0, &r1)];
+        let cert = sign_cert(&r1, account, device, &dev, 1, 0);
+        assert!(verify_device_cert(account, &g, &chain, &cert).is_ok());
+    }
+
+    #[test]
+    fn genesis_must_address_the_claimed_account() {
+        // The anchor check: a well-formed credential for account X must not
+        // verify when the caller asked about account Y.
+        let (root, dev) = (key(1), key(5));
+        let g = genesis_for(&root);
+        let account = g.account_id();
+        let other = AccountGenesis::new(root.public_key(), [42u8; 16]).account_id();
+        let cert = sign_cert(
+            &root,
+            account,
+            DeviceId::mint(account, [3u8; 16]),
+            &dev,
+            0,
+            0,
+        );
+
+        assert_eq!(
+            verify_device_cert(other, &g, &[], &cert),
+            Err(AccountError::GenesisMismatch {
+                claimed: other,
+                actual: account
+            })
+        );
+    }
+
+    #[test]
+    fn cert_for_a_different_account_than_the_genesis_is_rejected() {
+        let (root, dev) = (key(1), key(5));
+        let g = genesis_for(&root);
+        let account = g.account_id();
+        let foreign = AccountGenesis::new(key(8).public_key(), [1u8; 16]).account_id();
+        let cert = sign_cert(
+            &root,
+            foreign,
+            DeviceId::mint(foreign, [3u8; 16]),
+            &dev,
+            0,
+            0,
+        );
+        assert_eq!(
+            verify_device_cert(account, &g, &[], &cert),
+            Err(AccountError::CertAccountMismatch)
+        );
+    }
+
+    #[test]
+    fn cert_claiming_an_epoch_beyond_the_chain_is_rejected() {
+        let (root, dev) = (key(1), key(5));
+        let g = genesis_for(&root);
+        let account = g.account_id();
+        let device = DeviceId::mint(account, [3u8; 16]);
+        let cert = sign_cert(&root, account, device, &dev, 3, 0);
+        assert_eq!(
+            verify_device_cert(account, &g, &[], &cert),
+            Err(AccountError::EpochOutOfRange {
+                key_epoch: 3,
+                reachable: 0
+            })
+        );
+    }
+
+    #[test]
+    fn cert_signed_by_the_wrong_epoch_key_is_rejected() {
+        // r0 signs but claims epoch 1, whose key is r1.
+        let (r0, r1, dev) = (key(1), key(2), key(5));
+        let g = genesis_for(&r0);
+        let account = g.account_id();
+        let device = DeviceId::mint(account, [3u8; 16]);
+        let chain = [sign_handoff(&r0, account, 0, &r1)];
+        let cert = sign_cert(&r0, account, device, &dev, 1, 0);
+        assert_eq!(
+            verify_device_cert(account, &g, &chain, &cert),
+            Err(AccountError::CertSignatureInvalid)
+        );
+    }
+
+    #[test]
+    fn substituting_the_device_signing_key_invalidates_the_cert() {
+        let (root, dev, attacker) = (key(1), key(5), key(6));
+        let g = genesis_for(&root);
+        let account = g.account_id();
+        let device = DeviceId::mint(account, [3u8; 16]);
+        let mut cert = sign_cert(&root, account, device, &dev, 0, 0);
+        cert.sign_pk = attacker.public_key();
+        assert_eq!(
+            verify_device_cert(account, &g, &[], &cert),
+            Err(AccountError::CertSignatureInvalid)
+        );
+    }
+
+    #[test]
+    fn substituting_the_kem_key_invalidates_the_cert() {
+        // Otherwise an attacker could redirect wrapped scope keys to themselves
+        // while leaving a valid-looking signing binding in place.
+        let (root, dev) = (key(1), key(5));
+        let g = genesis_for(&root);
+        let account = g.account_id();
+        let device = DeviceId::mint(account, [3u8; 16]);
+        let mut cert = sign_cert(&root, account, device, &dev, 0, 0);
+        cert.kem_pk = KemPublicKey::from([0xAAu8; 32]);
+        assert_eq!(
+            verify_device_cert(account, &g, &[], &cert),
+            Err(AccountError::CertSignatureInvalid)
+        );
+    }
+
+    #[test]
+    fn substituting_the_device_id_invalidates_the_cert() {
+        let (root, dev) = (key(1), key(5));
+        let g = genesis_for(&root);
+        let account = g.account_id();
+        let mut cert = sign_cert(
+            &root,
+            account,
+            DeviceId::mint(account, [3u8; 16]),
+            &dev,
+            0,
+            0,
+        );
+        cert.device = DeviceId::mint(account, [4u8; 16]);
+        assert_eq!(
+            verify_device_cert(account, &g, &[], &cert),
+            Err(AccountError::CertSignatureInvalid)
+        );
+    }
+
+    #[test]
+    fn bumping_the_device_epoch_invalidates_the_cert() {
+        // device_epoch drives supersession at the projection, so it must be
+        // signed — otherwise anyone could replay an old cert at a higher epoch.
+        let (root, dev) = (key(1), key(5));
+        let g = genesis_for(&root);
+        let account = g.account_id();
+        let device = DeviceId::mint(account, [3u8; 16]);
+        let mut cert = sign_cert(&root, account, device, &dev, 0, 0);
+        cert.device_epoch = 7;
+        assert_eq!(
+            verify_device_cert(account, &g, &[], &cert),
+            Err(AccountError::CertSignatureInvalid)
+        );
+    }
+
+    // ---- wire format ----
+
+    #[test]
+    fn credentials_round_trip_through_borsh() {
+        let (root, r1, dev) = (key(1), key(2), key(5));
+        let g = genesis_for(&root);
+        let account = g.account_id();
+        let device = DeviceId::mint(account, [3u8; 16]);
+        let handoff = sign_handoff(&root, account, 0, &r1);
+        let cert = sign_cert(&root, account, device, &dev, 0, 0);
+
+        for (label, bytes, ok) in [
+            (
+                "genesis",
+                borsh_bytes(&g),
+                borsh::from_slice::<AccountGenesis>(&borsh_bytes(&g)).map(|v| v == g),
+            ),
+            (
+                "handoff",
+                borsh_bytes(&handoff),
+                borsh::from_slice::<RootKeyHandoff>(&borsh_bytes(&handoff)).map(|v| v == handoff),
+            ),
+            (
+                "cert",
+                borsh_bytes(&cert),
+                borsh::from_slice::<DeviceCert>(&borsh_bytes(&cert)).map(|v| v == cert),
+            ),
+        ] {
+            assert!(!bytes.is_empty(), "{label} encodes to nothing");
+            assert_eq!(ok.ok(), Some(true), "{label} did not round-trip");
+        }
+    }
+
+    #[test]
+    fn ids_round_trip_through_borsh() {
+        let account = genesis_for(&key(1)).account_id();
+        let device = DeviceId::mint(account, [3u8; 16]);
+        assert_eq!(
+            borsh::from_slice::<AccountId>(&borsh_bytes(&account)).expect("decode"),
+            account
+        );
+        assert_eq!(
+            borsh::from_slice::<DeviceId>(&borsh_bytes(&device)).expect("decode"),
+            device
+        );
+    }
+}

@@ -1,0 +1,17 @@
+[package]
+name = "calimero-account"
+version.workspace = true
+description.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+borsh = { workspace = true, features = ["derive"] }
+hex.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+calimero-primitives = { workspace = true, features = ["borsh"] }
