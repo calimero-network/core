@@ -225,6 +225,9 @@ pub fn verify_readiness_beacon(store: &Store, beacon: &SignedReadinessBeacon) ->
 /// What bounds the rest is that the only unlocked action is an authenticated
 /// pull, rate-limited by the caller's per-namespace debounce.
 ///
+/// Nothing here reads a clock, so what bounds replay is the caller's own
+/// staleness check on `beacon.ts_millis` - a caller that omits it loses it.
+///
 /// Returns `false` on any failure (including store errors) so the caller drops
 /// the beacon exactly as it does today - the negative path must stay
 /// indistinguishable from an ordinary unverifiable beacon, or it becomes an

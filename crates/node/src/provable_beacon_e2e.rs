@@ -366,6 +366,25 @@ fn emitted_beacons(node: &TestNode) -> Vec<SignedReadinessBeacon> {
         .collect()
 }
 
+/// The single gossipsub payload this node put on the wire, decoded through the
+/// real namespace-topic envelope.
+fn only_published_msg(node: &TestNode) -> NamespaceTopicMsg {
+    let published = node
+        .publishes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let [bytes] = published.as_slice() else {
+        panic!("expected exactly one publish, got {}", published.len());
+    };
+    let BroadcastMessage::NamespaceGovernanceDelta { payload, .. } =
+        borsh::from_slice(bytes).expect("decode published envelope")
+    else {
+        panic!("a republish must use the namespace governance envelope");
+    };
+    borsh::from_slice(&payload).expect("decode namespace topic msg")
+}
+
 async fn emit_beacon(addr: &actix::Addr<ReadinessManager>) {
     addr.send(EmitOutOfCycleBeacon {
         namespace_id: NS,
@@ -374,6 +393,44 @@ async fn emit_beacon(addr: &actix::Addr<ReadinessManager>) {
     .await
     .expect("probe reaches the readiness actor");
     sleep(SETTLE).await;
+}
+
+/// The join path's own entry point, over the `ReadinessManager` the node mounts
+/// itself: `NodeClient` -> `NodeManager` -> retry registry -> the wire. The
+/// tests above start their own actor and post `PendingRepublish` directly, so a
+/// break anywhere in that routing would leave every one of them green.
+#[actix::test]
+async fn a_queued_join_reaches_the_wire_through_the_node_client() {
+    let node = boot_test_node().await;
+    let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
+    let inviter_sk = PrivateKey::random(&mut rand::thread_rng());
+    let op = queued_join_op(
+        &joiner_sk,
+        signed_invitation(&inviter_sk, ContextGroupId::from(NS)),
+    );
+
+    node.node_client.queue_membership_republish(NS, op.clone());
+
+    // A namespace peer subscribing is what drains the registry in production.
+    node.node_addr
+        .send(NetworkEvent::Subscribed {
+            peer_id: PeerId::random(),
+            topic: IdentTopic::new(format!("ns/{}", hex::encode(NS))).hash(),
+        })
+        .await
+        .expect("deliver Subscribed to node actor");
+    sleep(SETTLE).await;
+
+    // This node holds no readiness state for NS, so no beacon is due: the one
+    // publish can only be the drain.
+    let NamespaceTopicMsg::Op(republished) = only_published_msg(&node) else {
+        panic!("the drained publish must carry the queued namespace op");
+    };
+    assert_eq!(
+        borsh::to_vec(&republished).expect("encode republished op"),
+        borsh::to_vec(&op).expect("encode queued op"),
+        "the queued op must go back out verbatim, never re-signed"
+    );
 }
 
 #[actix::test]
