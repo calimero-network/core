@@ -340,6 +340,14 @@ where
         S::index_meta_get(self.inner.id()).as_deref() == Some(&self.current_full_hash()[..])
     }
 
+    /// The number of entries currently persisted in the node-local ordered
+    /// index. Compared against [`len`](Self::len) (the authoritative live
+    /// element count) as a staleness cross-check the `full_hash` marker cannot
+    /// provide reliably — see [`ensure_index`](Self::ensure_index).
+    fn index_len(&self) -> usize {
+        S::index_range(self.inner.id(), Bound::Unbounded, Bound::Unbounded, 0, None).len()
+    }
+
     /// Reconcile the index with the authoritative element set, then stamp the
     /// marker — writes only the diff (`O(changed)` writes; the entry read is
     /// `O(n)`). Used when a remote sync left the index stale.
@@ -382,7 +390,22 @@ where
         if !S::index_supported() {
             return Ok(false);
         }
-        if !self.index_marker_current() {
+        // The `full_hash` validity marker alone is an unreliable staleness
+        // signal. A remote sync mutates the element set host-side (never through
+        // `insert`), and a rebuild that ran while this node's child list was
+        // momentarily stale can stamp the marker to the *converged* full_hash
+        // while the index still holds only a subset of the elements. The marker
+        // then equals the current full_hash, `index_marker_current()` returns a
+        // false positive, and the stale index is served forever — the element is
+        // present and enumerable (`contains`/`len` converge) yet the ordered
+        // readers return a subset (sdk-js#87). So also cross-check the index
+        // against the authoritative element set: if the number of persisted
+        // index entries disagrees with the live element count, the index is
+        // provably stale and must be rebuilt regardless of the marker. The count
+        // read only runs when the marker looks current (`||` short-circuits when
+        // it is already stale), so a stale marker still triggers a rebuild for
+        // one meta read, not an index scan.
+        if !self.index_marker_current() || self.index_len() != self.len()? {
             self.rebuild_index()?;
         }
         Ok(true)

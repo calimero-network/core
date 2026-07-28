@@ -404,6 +404,17 @@ pub fn clear_sorted_index_for_testing() {
     mocked::clear_sorted_index_for_testing();
 }
 
+/// Drops the single node-local ordered-index entry for `order_key`, leaving the
+/// index's validity marker and all synced state intact. Test-only seam for
+/// reproducing a node whose ordered index holds a stale subset of the converged
+/// element set while its marker still equals the converged `full_hash` — the
+/// false positive an ordered read must detect and rebuild past (sdk-js#87).
+/// Native-only.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn drop_sorted_index_entry_for_testing(order_key: &[u8]) {
+    mocked::drop_sorted_index_entry_for_testing(order_key);
+}
+
 /// Set executor ID. `pub(crate)` because the only sanctioned way to mutate
 /// executor identity from outside the crate is the scoped [`with_executor_id`]
 /// guard below — that guard guarantees restoration on panic, whereas a raw
@@ -793,6 +804,21 @@ mod mocked {
     pub(super) fn clear_sorted_index_for_testing() {
         INDEX.with(|index| index.borrow_mut().clear());
         INDEX_META.with(|meta| meta.borrow_mut().clear());
+    }
+
+    /// Drop the single node-local ordered-index entry for `order_key` (matched
+    /// as the suffix of the `collection_id ‖ order_key` composite), leaving the
+    /// validity marker and all state untouched. Models a node whose index holds
+    /// a stale subset of the converged element set while its marker still equals
+    /// the converged `full_hash` — the false positive the rebuild trigger must
+    /// catch (sdk-js#87).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn drop_sorted_index_entry_for_testing(order_key: &[u8]) {
+        INDEX.with(|index| {
+            index
+                .borrow_mut()
+                .retain(|k, _| !(k.len() == 32 + order_key.len() && k.ends_with(order_key)));
+        });
     }
 
     // Why these don't consult `RUNTIME_ENV` like their main-storage
