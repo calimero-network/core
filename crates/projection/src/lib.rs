@@ -69,6 +69,11 @@ struct SubgroupSlot {
     exists: Option<(Stamp, bool)>,
 }
 
+/// Candidate handoffs at one `(account, epoch)` slot, keyed by
+/// `(new_root_sign_pk, signature)` so no candidate can ever displace another —
+/// see `absorb_handoff` for why displacement was exploitable.
+type HandoffCandidates = BTreeMap<([u8; 32], [u8; 64]), RootKeyHandoff>;
+
 /// The deterministic projection of one scope's op-log: values + ACL + groups,
 /// each slot resolved last-writer-wins by `(hlc, op_id)`.
 #[derive(Clone, Debug, Default)]
@@ -115,7 +120,7 @@ pub struct ScopeState {
     /// what makes rotations order-independent: a handoff always lands in its
     /// own slot, so folding epoch 1 before epoch 0 converges to the same chain
     /// as the reverse.
-    handoffs: BTreeMap<(AccountId, u32), BTreeMap<[u8; 32], RootKeyHandoff>>,
+    handoffs: BTreeMap<(AccountId, u32), HandoffCandidates>,
     /// Device bindings currently in force.
     devices: BTreeMap<DeviceId, DeviceBinding>,
     /// Withdrawn devices and the account they were withdrawn from. Terminal and
@@ -313,10 +318,23 @@ impl ScopeState {
                 // would make the accounts map depend on delivery order: link
                 // then revoke would learn the account, revoke then link would
                 // not, and the two nodes' `scope_root` would disagree.
-                if genesis.account_id() == cert.account {
+                // Absorption runs before the credential is verified, so the cap
+                // inside `resolve_root_keys` does not protect it: without one here,
+                // a single op could grow `handoffs` without limit, and this crate
+                // has no wire-bounds layer to lean on. Refusing the whole op's
+                // absorption (rather than truncating) keeps the decision a function
+                // of the op, so every replica absorbs the same set.
+                if genesis.account_id() == cert.account
+                    && chain.len() <= calimero_account::MAX_ROOT_KEY_HANDOFFS
+                {
                     let _ = self.account_genesis.entry(cert.account).or_insert(*genesis);
                     for handoff in chain {
-                        self.absorb_handoff(*handoff);
+                        // A credential's chain speaks only for the account it
+                        // names. Absorbing entries for other accounts let one op
+                        // write into slots of accounts it has no relationship to.
+                        if handoff.account == cert.account {
+                            self.absorb_handoff(*handoff);
+                        }
                     }
                 }
 
@@ -383,7 +401,18 @@ impl ScopeState {
     /// the incoming key's bytes, which is arbitrary but identical everywhere.
     fn absorb_handoff(&mut self, handoff: RootKeyHandoff) {
         let key = (handoff.account, handoff.from_epoch);
-        let candidate = *AsRef::<[u8; 32]>::as_ref(&handoff.new_root_sign_pk);
+        // Keyed by new-root key AND signature, so a candidate can never DISPLACE
+        // another. Keying on the new-root key alone was not enough: that key is
+        // broadcast in the clear, so an attacker could author a handoff reusing it
+        // with a garbage signature, land on the identical map key, overwrite the
+        // legitimate correctly-signed entry, and put the rollback straight back.
+        // Nothing is overwritten now, so the walk always still has the real one to
+        // find. New-root key first in the tuple keeps the ascending tie-break
+        // between two rotations an account genuinely signed itself.
+        let candidate = (
+            *AsRef::<[u8; 32]>::as_ref(&handoff.new_root_sign_pk),
+            handoff.signature,
+        );
         let _ = self
             .handoffs
             .entry(key)

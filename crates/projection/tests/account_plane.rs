@@ -483,6 +483,94 @@ fn a_stranger_cannot_suppress_another_accounts_root_key_rotation() {
     );
 }
 
+#[test]
+fn an_overlong_handoff_chain_absorbs_nothing() {
+    // Absorption runs BEFORE the credential is verified, so the cap inside
+    // `resolve_root_keys` does not protect it — without one in the fold, a single
+    // op grows `handoffs` without limit, and this crate has no wire-bounds layer.
+    // Refusing the whole op's absorption rather than truncating keeps the decision
+    // a function of the op, so every replica absorbs the same set.
+    let mut fx = Fixture::new();
+    let mut alice = Account::new(10);
+    let phone = alice.enroll(11, 0);
+    fx.push(grant_membership(&fx.admin, alice.id, 30, fx.head.clone()));
+
+    let real = alice.rotate_to(12);
+    let padded = vec![real; calimero_account::MAX_ROOT_KEY_HANDOFFS + 1];
+    let link = phone.sign_op(
+        40,
+        fx.head.clone(),
+        OpPayload::DeviceLinked {
+            genesis: alice.genesis,
+            chain: padded,
+            cert: phone.cert,
+        },
+    );
+    fx.push(link);
+
+    let after = ScopeState::from_ops(&fx.log);
+    assert!(
+        !after.acl_view().accounts.contains_key(&alice.id),
+        "an op whose chain exceeds the cap must absorb nothing at all — not its \
+         genesis, and not a truncated prefix of its handoffs"
+    );
+}
+
+#[test]
+fn a_forged_handoff_reusing_the_real_new_key_cannot_displace_it() {
+    // The gap the first rollback fix left. Candidates were keyed by the new-root
+    // key alone — but that key is broadcast in the clear, so an attacker can
+    // author a handoff reusing it with a GARBAGE signature, land on the identical
+    // map key, and overwrite the legitimate correctly-signed entry. The walk then
+    // finds only the corrupted candidate, fails to verify it, and stops — the same
+    // rollback, straight through the defence.
+    //
+    // The earlier test only covered a forged key that DIFFERED from the real one,
+    // which lands in its own slot and was already handled.
+    let mut fx = Fixture::new();
+    let mut victim = Account::new(10);
+    let phone = victim.enroll(11, 0);
+    fx.push(grant_membership(&fx.admin, victim.id, 30, fx.head.clone()));
+    fx.push(victim.link_op(&phone, 40, fx.head.clone()));
+
+    let real = victim.rotate_to(12);
+    fx.push(phone.sign_op(
+        50,
+        fx.head.clone(),
+        OpPayload::AccountKeysRotated { handoff: real },
+    ));
+
+    let mallory = Account::new(20);
+    let mallory_device = mallory.enroll(21, 0);
+    fx.push(grant_membership(&fx.admin, mallory.id, 60, fx.head.clone()));
+    fx.push(mallory.link_op(&mallory_device, 70, fx.head.clone()));
+
+    // Same account, same from_epoch, SAME new_root_sign_pk — only the signature
+    // differs. This is what collided.
+    let mut forged = real;
+    forged.signature = [0u8; 64];
+    fx.push(mallory_device.sign_op(
+        80,
+        fx.head.clone(),
+        OpPayload::DeviceLinked {
+            genesis: victim.genesis,
+            chain: vec![forged],
+            cert: phone.cert,
+        },
+    ));
+
+    let after = ScopeState::from_ops(&fx.log);
+    assert!(
+        after
+            .acl_view()
+            .accounts
+            .get(&victim.id)
+            .is_some_and(|a| a.epoch == 1),
+        "a forged handoff reusing the real new-root key must not displace the \
+         legitimate one and roll the account back"
+    );
+}
+
 // ------------------------------------------------------------- revocation --
 
 #[test]

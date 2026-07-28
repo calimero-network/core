@@ -182,16 +182,22 @@ impl SharedKey {
     /// predictable — the X25519 analogue of the small-order check
     /// [`SharedKey::new`] performs on the Edwards side.
     pub fn from_x25519(sk: &X25519SecretKey, pk: &X25519PublicKey) -> Result<Self, SharedKeyError> {
-        let shared = curve25519_dalek::montgomery::MontgomeryPoint(*pk.as_bytes())
-            .mul_clamped(*sk.as_bytes());
-        if shared.to_bytes() == [0u8; 32] {
+        // Wrapped on the way out of the multiply, not after a named binding has
+        // already held it: the agreement bytes ARE the shared secret, so an
+        // un-zeroized local leaves them in the stack frame after the function
+        // returns. Same discipline the Edwards path applies to its scalar.
+        let shared = Zeroizing::new(
+            curve25519_dalek::montgomery::MontgomeryPoint(*pk.as_bytes())
+                .mul_clamped(*sk.as_bytes())
+                .to_bytes(),
+        );
+        if *shared == [0u8; 32] {
             return Err(SharedKeyError::DegenerateAgreement);
         }
 
         // A raw curve point is not a uniform 256-bit key (NIST SP 800-56C), so
         // run it through HKDF-SHA256 exactly as the Edwards path does.
-        let ikm = Zeroizing::new(shared.to_bytes());
-        let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(&*ikm);
+        let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(&*shared);
         let mut key = Zeroizing::new([0u8; 32]);
         prk.expand(&[X25519_KDF_INFO], hkdf::HKDF_SHA256)
             .and_then(|okm| okm.fill(&mut *key))
