@@ -479,7 +479,7 @@ mod tests {
             .raw_delete_range(Column::SortedIndex, &ctx, &index_prefix_upper_bound(&ctx))
             .unwrap();
         assert!(
-            store
+            !store
                 .raw_scan(
                     Column::SortedIndexMeta,
                     &ctx,
@@ -487,8 +487,7 @@ mod tests {
                     None
                 )
                 .unwrap()
-                .len()
-                > 0,
+                .is_empty(),
             "marker must survive the index wipe (this is the false-positive state)"
         );
 
