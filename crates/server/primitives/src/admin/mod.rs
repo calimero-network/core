@@ -226,6 +226,26 @@ impl GetApplicationResponse {
         }
     }
 }
+
+// No `rename_all`: the query key on the wire is `service_name`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct GetApplicationAbiQuery {
+    pub service_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetApplicationAbiResponse {
+    /// The application's `wasm-abi/1` manifest, verbatim.
+    pub data: serde_json::Value,
+}
+
+impl GetApplicationAbiResponse {
+    #[must_use]
+    pub const fn new(data: serde_json::Value) -> Self {
+        Self { data }
+    }
+}
 // -------------------------------------------- Context API --------------------------------------------
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
