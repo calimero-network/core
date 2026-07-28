@@ -54,6 +54,14 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 /// rather than a silent reinterpretation of existing ids.
 pub const ACCOUNT_GENESIS_VERSION: u8 = 1;
 
+/// Max root-key handoffs in one credential chain.
+///
+/// Each entry costs an Ed25519 verification in [`resolve_root_keys`], on a path
+/// reachable from untrusted bytes, so an uncapped chain is verification
+/// amplification. Generous against real use: an account rotating its root key
+/// daily would take over two years to reach it.
+pub const MAX_ROOT_KEY_HANDOFFS: usize = 1_024;
+
 /// Domain separator for the [`AccountId`] content address.
 const ACCOUNT_ID_DOMAIN: &[u8] = b"calimero.account.genesis.v1";
 /// Domain separator for the [`DeviceId`] content address.
@@ -502,6 +510,14 @@ pub enum AccountError {
         /// Version this build mints and accepts.
         supported: u8,
     },
+    /// The supplied chain is longer than [`MAX_ROOT_KEY_HANDOFFS`].
+    #[error("handoff chain has {found} entries, over the {limit} cap")]
+    ChainTooLong {
+        /// Length of the supplied chain.
+        found: usize,
+        /// The cap.
+        limit: usize,
+    },
     /// A handoff in the chain is not the immediate successor of the previous
     /// one. The chain must start at epoch 0 and step by exactly one.
     #[error("handoff chain not contiguous: expected from_epoch {expected}, found {found}")]
@@ -567,8 +583,21 @@ pub fn resolve_root_keys(
         });
     }
 
+    // Cap before allocating or verifying anything. Each entry costs an Ed25519
+    // verification, and this function is reachable from the wire — the governance
+    // path bounds the field at decode, but `calimero-op` has no bounds layer at
+    // all, so the check has to exist here too rather than relying on every caller
+    // to have one.
+    if chain.len() > MAX_ROOT_KEY_HANDOFFS {
+        return Err(AccountError::ChainTooLong {
+            found: chain.len(),
+            limit: MAX_ROOT_KEY_HANDOFFS,
+        });
+    }
+
     let account = genesis.account_id();
-    let mut keys = vec![genesis.root_sign_pk];
+    let mut keys = Vec::with_capacity(chain.len().saturating_add(1));
+    keys.push(genesis.root_sign_pk);
 
     for (index, handoff) in chain.iter().enumerate() {
         // `index` is bounded by the chain length; a chain long enough to
@@ -769,6 +798,33 @@ mod tests {
         let b = genesis_for(&key(2)).account_id();
         assert_ne!(DeviceId::mint(a, [1u8; 16]), DeviceId::mint(a, [2u8; 16]));
         assert_ne!(DeviceId::mint(a, [1u8; 16]), DeviceId::mint(b, [1u8; 16]));
+    }
+
+    #[test]
+    fn an_overlong_handoff_chain_is_refused_before_any_verification() {
+        // Each entry costs an Ed25519 verification, and this is reachable from
+        // untrusted bytes, so the cap has to be checked before the walk rather
+        // than relying on every caller to bound the field first.
+        let g = genesis_for(&key(1));
+        let bogus =
+            sign_root_key_handoff(&key(1), g.account_id(), 0, &key(2).public_key()).expect("sign");
+        let chain = vec![bogus; MAX_ROOT_KEY_HANDOFFS + 1];
+        assert_eq!(
+            resolve_root_keys(&g, &chain),
+            Err(AccountError::ChainTooLong {
+                found: MAX_ROOT_KEY_HANDOFFS + 1,
+                limit: MAX_ROOT_KEY_HANDOFFS,
+            }),
+            "an overlong chain must be refused by length, not by the first bad link"
+        );
+
+        // A chain exactly at the cap is still refused on its merits (this one is
+        // not contiguous), not by the length gate.
+        let at_cap = vec![bogus; MAX_ROOT_KEY_HANDOFFS];
+        assert!(!matches!(
+            resolve_root_keys(&g, &at_cap),
+            Err(AccountError::ChainTooLong { .. })
+        ));
     }
 
     #[test]

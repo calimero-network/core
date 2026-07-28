@@ -1663,12 +1663,26 @@ impl Debug for NamespaceIdentity {
 
 /// Value for [`NamespaceIdentity`]. The Ed25519 keypair this node uses as its
 /// member identity within the namespace, plus a sender key for encrypted sync.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NamespaceIdentityValue {
     pub public_key: [u8; 32],
     pub private_key: [u8; 32],
     pub sender_key: [u8; 32],
+}
+
+/// Redacted by hand, never derived. `private_key` is this node's namespace
+/// member identity — the key it signs every governance op and state delta with.
+/// A derived `Debug` puts it one `tracing` field or one error context away from a
+/// log file.
+impl Debug for NamespaceIdentityValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NamespaceIdentityValue")
+            .field("public_key", &self.public_key)
+            .field("private_key", &"[redacted]")
+            .field("sender_key", &"[redacted]")
+            .finish()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2386,13 +2400,26 @@ impl Debug for NodeDeviceIdentity {
 /// signing key, because the whole point of a device KEM key is that it is
 /// revocable independently of the identity that certified it — deriving it
 /// would tie the two lifetimes back together.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NodeDeviceIdentityValue {
     /// The `DeviceId` this node speaks as in the namespace.
     pub device_id: [u8; 32],
     /// X25519 secret matching the certificate's `kem_pk`.
     pub kem_secret: [u8; 32],
+}
+
+/// Redacted by hand, never derived. `kem_secret` is the only thing that can
+/// unwrap a scope key addressed to this device, and a derived `Debug` prints it
+/// — one `tracing` field, one `dbg!`, one error context and the secret is in a
+/// log. Mirrors the same discipline `calimero_crypto::SharedKey` applies.
+impl Debug for NodeDeviceIdentityValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NodeDeviceIdentityValue")
+            .field("device_id", &self.device_id)
+            .field("kem_secret", &"[redacted]")
+            .finish()
+    }
 }
 
 /// Namespace-root inherited-deny entry (see [`GROUP_INHERITED_DENIED_MEMBER_PREFIX`]).

@@ -1234,6 +1234,14 @@ pub mod bounds {
     pub const MAX_TEE_ALLOWED_ENTRIES: usize = 1_024;
     /// Max byte length of each string entry in a TEE allow-list.
     pub const MAX_TEE_ALLOWED_STRING_LEN: usize = 1_024;
+    /// Max root-key handoffs in one device-link credential chain.
+    ///
+    /// Each entry costs an Ed25519 verification in `resolve_root_keys`, on a
+    /// path reachable from the wire before any authorization runs, so an
+    /// uncapped chain is a verification-amplification DoS. The cap is generous
+    /// against real use: an account rotating its root key once a day would take
+    /// well over two years to reach it.
+    pub const MAX_ROOT_KEY_HANDOFFS: usize = 1_024;
     /// Max entries in a metadata map (`GroupOp::*MetadataSet.data`).
     pub const MAX_METADATA_ENTRIES: usize = 1_024;
     /// Max byte length of a metadata name / key / value string.
@@ -1324,6 +1332,14 @@ impl GroupOp {
             | Self::CascadeUpgrade {
                 migration: Some(m), ..
             } => check_bound("group_op.migration", m.len(), bounds::MAX_BLOB_BYTES),
+            // Each handoff costs an Ed25519 verification in `resolve_root_keys`,
+            // reached from the wire before any authorization runs, so an
+            // uncapped chain is verification amplification.
+            Self::AccountDeviceLinked { chain, .. } => check_bound(
+                "group_op.account_device_linked.chain",
+                chain.len(),
+                bounds::MAX_ROOT_KEY_HANDOFFS,
+            ),
             Self::GroupMetadataSet { name, data } => {
                 check_metadata("group_op.group_metadata", name.as_ref(), data)
             }
