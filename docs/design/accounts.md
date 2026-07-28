@@ -173,6 +173,33 @@ it is a function of the op set and cannot depend on arrival order.
 Dropping the link-time check also removed a full device scan from every link
 apply, on a path any member can drive.
 
+### Handoff candidates coexist; the walk picks the one that verifies
+
+Absorbing a credential's handoff chain happens **before** the credential is
+verified, and is gated only on the genesis matching the claimed account — which
+anyone can satisfy, because a genesis is public data. So whoever can author an op
+in the scope can put a handoff into any account's `(account, epoch)` slot.
+
+If one candidate could occupy a slot, that is a **rotation rollback**: forge a
+handoff the victim's key cannot have signed, win the slot, and `resolved_accounts`
+stops there — reverting the account to the root key it deliberately rotated away
+from. Rotation exists because that key was compromised. And it converges, so it
+never shows up as a divergence.
+
+Every candidate is therefore retained, keyed by `(new_root_sign_pk, signature)`,
+and the walk takes the first that **verifies** in ascending new-key order.
+Both halves of the key matter: keying on the new root key alone still allowed
+displacement, because that key is broadcast in the clear, so a forged handoff
+reusing it with a garbage signature landed on the identical key and overwrote the
+real one. Ascending order preserves the tie-break between two rotations an account
+genuinely signed itself.
+
+Absorption is additionally confined to `handoff.account == cert.account` and to
+chains within `MAX_ROOT_KEY_HANDOFFS`. Neither prevents the rollback on its own —
+an attacker names the victim in both fields — but cross-account writes have no
+legitimate use, and an uncapped chain grows this map without limit on a crate with
+no wire-bounds layer.
+
 ### Divergence from the plan: supersession is checked at read time
 
 The plan had one admission rule shared by `authorize` and the fold. Implementation
