@@ -172,6 +172,8 @@ pub fn admin_router() -> Router<AppState> {
 }
 ```
 
+When adding a new `.route(...)`, regenerate `crates/server/endpoints.json` via `UPDATE_MANIFEST=1 cargo test -p calimero-server --test route_manifest`, and cover the endpoint with a mero-js e2e hit or a reasoned entry in coverage-baseline.json.
+
 ## Key Files
 
 | File                                                     | Purpose                 |
