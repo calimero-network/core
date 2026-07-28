@@ -34,6 +34,12 @@ description: >
 # turn the assertion below into a no-op.
 log_level: debug
 
+# Required for the `login` steps below: the CI job exports
+# MERO_AUTH_ADMIN_USER/PASSWORD, which merobox forwards into the node containers
+# so `merod init` mints the admin root key. Without embedded auth there is no
+# account to log in as and every login fails AUTHENTICATION_FAILED.
+auth_mode: embedded
+
 nodes:
   count: 2
   image: merod:local
