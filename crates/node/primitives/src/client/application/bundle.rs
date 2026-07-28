@@ -289,6 +289,14 @@ fn take_artifact(found: &HashMap<&str, Arc<[u8]>>, path: &str) -> eyre::Result<A
     })
 }
 
+/// One digest-checked wasm artifact out of a [`VerifiedBundle`], the owned
+/// counterpart to the manifest's [`crate::bundle::WasmArtifact`].
+pub struct VerifiedWasm {
+    /// Service name. `None` for single-service bundles.
+    pub name: Option<String>,
+    pub bytes: Arc<[u8]>,
+}
+
 /// A bundle whose manifest signature has been verified. The only way to obtain
 /// artifact bytes: every accessor checks the artifact digest against the signed
 /// manifest first, so unverified bytes have no representation.
@@ -336,7 +344,7 @@ impl VerifiedBundle {
     /// Every declared wasm artifact, digest-checked, paired with its service
     /// name. One walk covers every path, and a path named by several services
     /// is read once and shared.
-    pub fn all_wasm(&self) -> eyre::Result<Vec<(Option<String>, Arc<[u8]>)>> {
+    pub fn all_wasm(&self) -> eyre::Result<Vec<VerifiedWasm>> {
         let artifacts = self.manifest.wasm_artifacts();
         let wanted = artifacts
             .iter()
@@ -350,7 +358,10 @@ impl VerifiedBundle {
             // Per artifact, never per read: two services may declare different
             // digests for one path, and sharing the bytes must not share the check.
             verify_artifact_digest(artifact.wasm, &bytes)?;
-            all.push((artifact.name.map(str::to_owned), bytes));
+            all.push(VerifiedWasm {
+                name: artifact.name.map(str::to_owned),
+                bytes,
+            });
         }
         Ok(all)
     }

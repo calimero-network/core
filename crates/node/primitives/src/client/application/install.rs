@@ -213,16 +213,16 @@ impl NodeClient {
     ) -> eyre::Result<ApplicationId> {
         // Every artifact, including the unnamed single-service one that gets no
         // blob of its own, so substituted bytes are refused before first execution.
-        let (verified, wasm_bytes) = tokio::task::spawn_blocking(move || -> eyre::Result<_> {
+        let (verified, wasm) = tokio::task::spawn_blocking(move || -> eyre::Result<_> {
             let verified = bundle::VerifiedBundle::open(bundle_data)?;
-            let wasm_bytes = verified.all_wasm()?;
-            Ok((verified, wasm_bytes))
+            let wasm = verified.all_wasm()?;
+            Ok((verified, wasm))
         })
         .await??;
 
         // Otherwise the application row is written with no bytecode and the
         // bundle only reads as malformed at its first execution.
-        if wasm_bytes.is_empty() {
+        if wasm.is_empty() {
             bail!("bundle manifest declares no wasm artifact: expected a top-level 'wasm' or a non-empty 'services' list");
         }
 
@@ -231,10 +231,14 @@ impl NodeClient {
         let version = &manifest.app_version;
 
         let mut services = Vec::new();
-        for (name, wasm) in &wasm_bytes {
-            let Some(name) = name else { continue };
+        for artifact in &wasm {
+            let Some(name) = &artifact.name else { continue };
             let (svc_blob_id, _svc_size) = self
-                .add_blob(Cursor::new(&wasm[..]), Some(wasm.len() as u64), None)
+                .add_blob(
+                    Cursor::new(&artifact.bytes[..]),
+                    Some(artifact.bytes.len() as u64),
+                    None,
+                )
                 .await?;
             services.push(types::ServiceMeta {
                 name: name.as_str().into(),
