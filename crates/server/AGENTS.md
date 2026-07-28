@@ -109,6 +109,7 @@ DELETE /admin-api/contexts/:id        # Delete context
 GET  /admin-api/applications          # List apps
 POST /admin-api/install-application   # Install app
 GET  /admin-api/applications/:id      # Get app
+GET  /admin-api/applications/:id/abi  # Embedded WASM ABI manifest (optional ?service_name=)
 
 POST /admin-api/contexts/:id/join     # Join context
 ```
