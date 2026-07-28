@@ -17,26 +17,35 @@ impl KeyManager {
         Self { storage }
     }
 
+    /// Check validity of key
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - an immutable referecnce to the raw key
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Option<Key>, StorageError>` - The key if valid
+    fn check_key_validity(data: &[u8]) -> Result<Option<Key>, StorageError> {
+        let key: Key = deserialize(data)?;
+        if key.is_valid() {
+            return Ok(Some(key));
+        }
+        Ok(None)
+    }
+
     /// Get a key by ID
     pub async fn get_key(&self, key_id: &str) -> Result<Option<Key>, StorageError> {
         // Try root key prefix first
         let root_key = format!("{}{}", prefixes::ROOT_KEY, key_id);
         if let Some(data) = self.storage.get(&root_key).await? {
-            let key: Key = deserialize(&data)?;
-            if key.is_valid() {
-                return Ok(Some(key));
-            }
-            return Ok(None);
+            return Self::check_key_validity(&data);
         }
 
         // Try client key prefix
         let client_key = format!("{}{}", prefixes::CLIENT_KEY, key_id);
         if let Some(data) = self.storage.get(&client_key).await? {
-            let key: Key = deserialize(&data)?;
-            if key.is_valid() {
-                return Ok(Some(key));
-            }
-            return Ok(None);
+            return Self::check_key_validity(&data);
         }
 
         Ok(None)
@@ -239,12 +248,10 @@ impl KeyManager {
         // Iterate through keys, deserializing one at a time until we find a match
         for key_path in keys {
             if let Some(data) = self.storage.get(&key_path).await? {
-                let key_data: Key = deserialize(&data)?;
-
                 // Skip revoked/invalid keys (consistent with get_key() behavior)
-                if !key_data.is_valid() {
+                let Some(key_data) = Self::check_key_validity(&data)? else {
                     continue;
-                }
+                };
 
                 // If no auth_method filter, any valid key counts as a match
                 let matches = if let Some(auth_methods) = auth_methods {
