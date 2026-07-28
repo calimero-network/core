@@ -48,6 +48,14 @@ pub(super) fn build_runtime_env(
     //         this `RuntimeEnv` is installed via `with_runtime_env`, which
     //         happens strictly within the host call that created it (see the
     //         per-closure safety notes below).
+    // Whether this backend actually persists the ordered index (only the real
+    // `ContextStorage` does). Captured via the `&mut` borrow before it is erased
+    // into the raw pointer below, so the bridge is installed only when it has a
+    // real target — test mocks (`SimpleMockStorage`, which implements just
+    // get/set/remove/has) return `false` and keep using `calimero-storage`'s
+    // process-thread-local index mock, exactly as before this bridge existed.
+    let wants_index = storage.supports_index();
+
     let raw_ptr: *mut dyn RuntimeStorage = storage;
     let raw_static: *mut (dyn RuntimeStorage + 'static) = unsafe { mem::transmute(raw_ptr) };
     let storage_cell = Rc::new(Cell::new(raw_static));
@@ -93,6 +101,17 @@ pub(super) fn build_runtime_env(
     //   the storage crate falls back to its default environment, so subsequent
     //   calls that do not install an override will continue to use the mock /
     //   WASM backends.
+
+    let base = RuntimeEnv::new(reader, writer, remover, context_id, executor_id);
+
+    // Only bridge the ordered index when the backend actually persists it (the
+    // real `ContextStorage`). A backend that doesn't (test mocks) leaves the
+    // bridge off, so native `SortedSet`/`SortedMap` index ops fall back to
+    // `calimero-storage`'s process-thread-local mock — the pre-bridge behaviour
+    // the runtime unit tests rely on.
+    if !wants_index {
+        return base;
+    }
 
     // Ordered-index bridge: route the node-local ordered index + validity marker
     // to the SAME `ContextStorage` (its `Column::SortedIndex`/`SortedIndexMeta`).
@@ -148,7 +167,7 @@ pub(super) fn build_runtime_env(
         }
     };
 
-    RuntimeEnv::new(reader, writer, remover, context_id, executor_id).with_index(index)
+    base.with_index(index)
 }
 
 thread_local! {

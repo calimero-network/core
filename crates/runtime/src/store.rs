@@ -16,6 +16,18 @@ pub trait Storage: Reflect {
     fn remove(&mut self, key: &Key) -> Option<Vec<u8>>;
     fn has(&self, key: &Key) -> bool;
 
+    /// Whether this backend actually persists the ordered-index methods below
+    /// (as opposed to inheriting their inert defaults). Gates whether the
+    /// runtime installs the `RuntimeEnv` ordered-index bridge: only a backend
+    /// that returns `true` (the real `ContextStorage`) routes native
+    /// `SortedSet`/`SortedMap` index ops to this store; everything else (test
+    /// mocks that only implement `get`/`set`/`remove`/`has`) leaves the bridge
+    /// off so those ops fall back to `calimero-storage`'s process-thread-local
+    /// index mock. Default `false`.
+    fn supports_index(&self) -> bool {
+        false
+    }
+
     // === Ordered secondary index (SortedMap, core#2559) ===
     //
     // A separate, byte-ordered keyspace (the backend keeps keys in sorted
