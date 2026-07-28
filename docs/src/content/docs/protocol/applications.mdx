@@ -47,7 +47,7 @@ How the **application id** is derived depends on how the application entered the
 | Install kind | Application id is | Stability |
 | --- | --- | --- |
 | Raw `.wasm` | `hash_borsh(bytecode, size, source, metadata)` | tied to the exact bytes — any change is a new id |
-| Signed/dev bundle | `hash_borsh(package, signer_id)` | **version-stable** — same `package` + signer keeps one id across releases |
+| Signed bundle | `hash_borsh(package, signer_id)` | **version-stable** — same `package` + signer keeps one id across releases |
 
 Both are computed at install time in
 `crates/node/primitives/src/client/application/install.rs`. The raw-`.wasm` id folds
@@ -68,13 +68,13 @@ migration.
 
 An application is published as an **`.mpk` bundle** (Mero Package Kit): a
 gzip-compressed tar of a `manifest.json`, the WASM / ABI / migration artifacts it
-references, and an optional Ed25519 signature. Installing a bundle is what *produces*
+references, and a required Ed25519 signature. Installing a bundle is what *produces*
 an application — the manifest's `package` and `signerId` fix the application id, and
 the artifacts become the stored bytecode and service blobs.
 
 The manifest format, the signing payload (RFC 8785 canonicalization + SHA-256), and
-the install trust split (signature required from a registry, optional for a local dev
-path) are documented in full under
+the verification rules on install - a valid signature on every path, plus a SHA-256
+check of each wasm artifact against the signed manifest - are documented in full under
 [Application Upgrades & Migration → Bundles, signing & install](/protocol/upgrades/).
 This page does not repeat that detail; it picks up at what the bundle *contains*.
 

@@ -1,0 +1,214 @@
+name: Blob Cross-Node Transfer — Bytes Actually Arrive
+description: >
+  The other half of the #3317 regression: a blob's BYTES must reach a second
+  node. Announce -> DHT provider lookup -> signed member request -> chunked
+  transfer, asserted on the received bytes rather than on metadata.
+
+  Defect 2 of #3317: `create_blob_auth_for_context` returned None for every
+  namespace-backed context, so every outgoing blob request went out with
+  `auth: None`; the serving node's `is_signed_context_member` returned false
+  (crates/node/src/handlers/blob_protocol.rs) and it replied `found: false`,
+  surfacing as "404 Blob not found locally or in network". The serving node
+  never even logged "Processing blob request stream" — it bailed at the auth
+  gate before looking for a blob it was holding.
+
+  NOT IN THE CI MATRIX YET. It needs merobox's `download_blob` step
+  (calimero-network/merobox#306), which is unreleased. To activate:
+    1. bump MIN_MEROBOX to 0.6.44 in .github/actions/setup-merobox/action.yml
+    2. add to the matrix in .github/workflows/e2e-rust-apps.yml:
+         - workflow: blob-cross-node-transfer
+           file: workflows/blob-cross-node-transfer.yml
+           app: blobs
+
+  Run locally against a merobox that has the step:
+    cd apps/blobs && merobox bootstrap run workflows/blob-cross-node-transfer.yml \
+      --image merod:local
+
+  ON THE NEGATIVE CONTROLS: blobs are content-addressed, so a node already
+  holding identical bytes serves them from local storage and never touches the
+  network. Every cross-node fetch below is therefore preceded by a local-only
+  read that MUST fail. Without that, a passing fetch proves nothing — this is
+  the trap that makes blob transfer tests quietly vacuous.
+
+force_pull_image: true
+
+auth_mode: embedded
+
+nodes:
+  chain_id: calimero-testnet
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: rust-blob-xfer
+
+steps:
+  - name: Login on rust-blob-xfer-1
+    type: login
+    node: rust-blob-xfer-1
+    username: dev
+    password: dev-password
+
+  - name: Login on rust-blob-xfer-2
+    type: login
+    node: rust-blob-xfer-2
+    username: dev
+    password: dev-password
+
+  - name: Install Rust blobs app on inviter
+    type: install_application
+    node: rust-blob-xfer-1
+    path: "res/blobs.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: rust-blob-xfer-1
+    application_id: "{{app_id}}"
+    path: "res/blobs.wasm"
+    nodes:
+      - rust-blob-xfer-2
+    capability: member
+    outputs:
+      context_id: contextId
+      inviter_key: memberPublicKey
+
+  - name: Assert the mesh came up
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+
+  # ── Blob 1 ─────────────────────────────────────────────────────────────
+  - name: Upload the PNG on node 1
+    type: upload_blob
+    node: rust-blob-xfer-1
+    file_path: static/sample.png
+    context_id: "{{context_id}}"
+    outputs:
+      png_blob_id: blob_id
+      png_blob_size: size
+
+  # Read it back locally for the authoritative hash of what node 1 holds.
+  # Comparing node 2 against this, rather than a hardcoded digest, keeps the
+  # workflow honest if the fixture ever changes.
+  - name: Read the PNG locally on node 1
+    type: download_blob
+    node: rust-blob-xfer-1
+    blob_id: "{{png_blob_id}}"
+    expected_size: "{{png_blob_size}}"
+    outputs:
+      png_source_sha256: sha256
+
+  - name: Node 2 must not already hold the PNG
+    type: download_blob
+    node: rust-blob-xfer-2
+    blob_id: "{{png_blob_id}}"
+    expected_failure: true
+
+  - name: Let the announce propagate
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - rust-blob-xfer-1
+      - rust-blob-xfer-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # The assertion that was impossible before merobox#306: with context_id set,
+  # node 2 discovers a peer that announced the blob and requests it. Size and
+  # sha256 are both checked before any variable is exported, so a truncated or
+  # corrupt transfer cannot be laundered into a passing later assert.
+  - name: Node 2 fetches the PNG over the network
+    type: download_blob
+    node: rust-blob-xfer-2
+    blob_id: "{{png_blob_id}}"
+    context_id: "{{context_id}}"
+    expected_size: "{{png_blob_size}}"
+    expected_sha256: "{{png_source_sha256}}"
+    outputs:
+      png_received_size: size
+      png_received_sha256: sha256
+
+  - name: Assert node 2's bytes are byte-identical to node 1's
+    type: assert
+    statements:
+      - "equal({{png_received_size}}, {{png_blob_size}})"
+      - "equal({{png_received_sha256}}, {{png_source_sha256}})"
+
+  # ── Blob 2, different size ─────────────────────────────────────────────
+  # One size passing can be luck in a chunked transfer (CHUNK_SIZE is 1 MiB, so
+  # the chunk-graph walk differs with length). Two sizes is a narrower
+  # coincidence.
+  - name: Upload the TXT on node 1
+    type: upload_blob
+    node: rust-blob-xfer-1
+    file_path: static/test.txt
+    context_id: "{{context_id}}"
+    outputs:
+      txt_blob_id: blob_id
+      txt_blob_size: size
+
+  - name: Read the TXT locally on node 1
+    type: download_blob
+    node: rust-blob-xfer-1
+    blob_id: "{{txt_blob_id}}"
+    expected_size: "{{txt_blob_size}}"
+    outputs:
+      txt_source_sha256: sha256
+
+  - name: Node 2 must not already hold the TXT
+    type: download_blob
+    node: rust-blob-xfer-2
+    blob_id: "{{txt_blob_id}}"
+    expected_failure: true
+
+  - name: Let the second announce propagate
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - rust-blob-xfer-1
+      - rust-blob-xfer-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node 2 fetches the TXT over the network
+    type: download_blob
+    node: rust-blob-xfer-2
+    blob_id: "{{txt_blob_id}}"
+    context_id: "{{context_id}}"
+    expected_size: "{{txt_blob_size}}"
+    expected_sha256: "{{txt_source_sha256}}"
+    outputs:
+      txt_received_sha256: sha256
+
+  - name: Assert both transfers delivered their own correct bytes
+    type: assert
+    statements:
+      - "equal({{txt_received_sha256}}, {{txt_source_sha256}})"
+      - "not_equal({{txt_received_sha256}}, {{png_received_sha256}})"
+
+  # ── Log-level corroboration ────────────────────────────────────────────
+  # The serving side must have actually served. Before the fix node 1 bailed at
+  # the auth gate and never reached this line, so its presence is the positive
+  # signal that the signed request was accepted.
+  - name: Node 1 served a blob request
+    type: assert_log_present
+    nodes:
+      - rust-blob-xfer-1
+    patterns:
+      - "Processing blob request stream"
+    tail_lines: 5000
+
+  - name: Neither node reported a failed blob download
+    type: assert_log_absent
+    nodes:
+      - rust-blob-xfer-2
+    patterns:
+      - "Blob not found on peer"
+    tail_lines: 5000
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120

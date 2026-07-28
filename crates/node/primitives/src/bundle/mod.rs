@@ -9,11 +9,14 @@ pub use signature::{
 use serde::{Deserialize, Serialize};
 
 /// Represents an artifact within a bundle (WASM, ABI, migration)
+///
+/// `hash` is what binds the artifact bytes to the manifest signature, so a
+/// manifest that omits it is malformed rather than merely unhashed.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BundleArtifact {
     pub path: String,
-    pub hash: Option<String>,
+    pub hash: String,
     pub size: u64,
 }
 
@@ -126,7 +129,6 @@ pub struct WasmArtifact<'a> {
     /// Service name. `None` for single-service bundles.
     pub name: Option<&'a str>,
     pub wasm: &'a BundleArtifact,
-    pub abi: Option<&'a BundleArtifact>,
 }
 
 impl BundleManifest {
@@ -148,7 +150,7 @@ impl BundleManifest {
     ///
     /// - Multi-service (`services` non-empty): yields one `WasmArtifact` per service.
     /// - Single-service: yields one `WasmArtifact` with `name: None` from the
-    ///   top-level `wasm`/`abi` fields.
+    ///   top-level `wasm` field.
     pub fn wasm_artifacts(&self) -> Vec<WasmArtifact<'_>> {
         match &self.services {
             Some(svcs) if !svcs.is_empty() => svcs
@@ -156,7 +158,6 @@ impl BundleManifest {
                 .map(|s| WasmArtifact {
                     name: Some(&s.name),
                     wasm: &s.wasm,
-                    abi: s.abi.as_ref(),
                 })
                 .collect(),
             _ => self
@@ -166,11 +167,48 @@ impl BundleManifest {
                     vec![WasmArtifact {
                         name: None,
                         wasm: w,
-                        abi: self.abi.as_ref(),
                     }]
                 })
                 .unwrap_or_default(),
         }
+    }
+
+    /// Every artifact the manifest declares, paired with its manifest field. The
+    /// `..`-free destructure stops compiling until a new field is classified.
+    pub fn artifacts(&self) -> Vec<(String, &BundleArtifact)> {
+        let Self {
+            wasm,
+            abi,
+            services,
+            migrations,
+            version: _,
+            package: _,
+            app_version: _,
+            signer_id: _,
+            min_runtime_version: _,
+            metadata: _,
+            interfaces: _,
+            links: _,
+            signature: _,
+        } = self;
+
+        let mut artifacts = Vec::new();
+        if let Some(wasm) = wasm {
+            artifacts.push(("wasm".to_owned(), wasm));
+        }
+        if let Some(abi) = abi {
+            artifacts.push(("abi".to_owned(), abi));
+        }
+        for (i, service) in services.iter().flatten().enumerate() {
+            artifacts.push((format!("services[{i}].wasm"), &service.wasm));
+            if let Some(abi) = &service.abi {
+                artifacts.push((format!("services[{i}].abi"), abi));
+            }
+        }
+        for (i, migration) in migrations.iter().enumerate() {
+            artifacts.push((format!("migrations[{i}]"), migration));
+        }
+        artifacts
     }
 
     /// Serialize the manifest's display metadata to JSON bytes for storage.
