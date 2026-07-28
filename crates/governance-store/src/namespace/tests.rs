@@ -6356,6 +6356,87 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
 // capability revoke therefore rejected a `GroupCreated` its peers accepted — and
 // since the reject path never advances the DAG head, every op descending from that
 // `GroupCreated` stalled on the rejecting replica. These pin both directions.
+/// `MemberJoinedOpen` fell straight through to the live resolver whenever the
+/// projection abstained, collapsing the two very different reasons it can.
+///
+/// When the cut is real but unfolded here, the live rows are a DIFFERENT cut, so
+/// this replica could reject a self-join its peers admitted — and permanently,
+/// because the reject path never advances the DAG head, so everything descending
+/// from that op stalls on this replica alone. It must park for retry instead.
+#[test]
+fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    use super::super::test_fixtures::{UnresolvableAuthorizer, TEST_CUT};
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner = owner_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut rng);
+    let joiner = joiner_sk.public_key();
+
+    let namespace_id = [0xE5u8; 32];
+    let subgroup_id = [0xE6u8; 32];
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+
+    let signed_genesis = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id.into(),
+        vec![],
+        0,
+        NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner }),
+    )
+    .expect("owner signs genesis");
+    gov.apply_signed_op(&signed_genesis)
+        .expect("genesis must apply");
+
+    // The subgroup has to exist under this namespace, or an earlier gate refuses
+    // the join before authorization is ever consulted.
+    let head = gov.read_head_record().expect("read head");
+    let create = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id.into(),
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: subgroup_id.into(),
+            parent_id: namespace_id.into(),
+            restricted: false,
+        }),
+    )
+    .expect("owner signs GroupCreated");
+    gov.apply_signed_op(&create)
+        .expect("the owner may create a subgroup");
+
+    // The joiner has no membership path at all, so LIVE would say `None` and the
+    // apply would harden into a permanent rejection.
+    let head = gov.read_head_record().expect("read head");
+    let join = SignedNamespaceOp::sign(
+        &joiner_sk,
+        namespace_id.into(),
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        NamespaceOp::Root(RootOp::MemberJoinedOpen {
+            member: joiner,
+            group_id: subgroup_id.into(),
+        }),
+    )
+    .expect("joiner signs MemberJoinedOpen");
+
+    let err = NamespaceGovernance::new(&store, namespace_id.into())
+        .with_apply_auth(&TEST_CUT, &UnresolvableAuthorizer)
+        .apply_signed_op(&join)
+        .expect_err("an unresolvable cut must not be answered from the live rows");
+    assert!(
+        format!("{err:#}").contains("authority undecidable"),
+        "expected AuthorityUndecidable (a retryable park), got: {err:#}"
+    );
+}
+
 #[test]
 fn group_created_honors_at_cut_grant_over_live_denial() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};

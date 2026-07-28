@@ -497,6 +497,12 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     // membership-removal precondition.
     GroupKeyring::new(store, *group_id).delete_all_for_group()?;
     DenyListRepository::new(store).clear_all_for_group(group_id)?;
+    // The account plane goes with the group. Revocation tombstones are terminal,
+    // so leaving them behind would hand a group later recreated under the same id
+    // a set of device ids it can never enroll, with nothing in its own history to
+    // explain why; stale bindings would additionally make scope-key delivery wrap
+    // for devices of the previous occupants.
+    crate::AccountBindingRepository::new(store).clear_all_for_group(group_id)?;
     // Drop any rotation the group still owed. There is nothing left to rotate — the
     // keyring is gone — and leaving the rows behind would have the rotation listener
     // retry forever against a group that no longer exists.

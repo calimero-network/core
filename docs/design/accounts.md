@@ -323,6 +323,11 @@ by `DeviceId`; the mapping is handed *up* to the app, never down into the CRDT.
 - **Root-key compromise is not recoverable.** A stolen root key can sign its own
   handoff. Recovery needs a separate authority, which stays reachable because
   `AccountId` is not the key.
+- **A group teardown clears the account plane with it.** `delete_group_local_rows`
+  drops bindings, tombstones and per-account root keys, because a revocation
+  tombstone is terminal: a group recreated under the same id would otherwise
+  inherit device ids it can never enroll, with nothing in its own history to
+  explain why.
 - **A member with no live device cannot recover a key on its own, by design.**
   Re-enrolling needs an encrypted `GroupOp` and so needs the key, so a member
   whose every device is revoked or superseded depends on an admin to re-deliver

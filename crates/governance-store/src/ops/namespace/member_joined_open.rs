@@ -87,7 +87,15 @@ pub(crate) fn apply(
     // decided. The live read retires when `check_path` is deleted.
     let path = match ctx.projection_membership_path(&gid, &member) {
         Some(projected) => projected,
-        None => membership_path_kind(&MembershipRepository::new(store).check_path(&gid, &member)?),
+        None => {
+            // Falling straight through to live collapsed the two reasons the
+            // projection can abstain. When the cut is real but unfolded here, the
+            // live rows are a DIFFERENT cut, so this replica could reject a join
+            // its peers admitted — permanently, since the reject never advances
+            // the head. Park for retry instead.
+            ctx.ensure_live_fallback_is_sound(&gid, &member)?;
+            membership_path_kind(&MembershipRepository::new(store).check_path(&gid, &member)?)
+        }
     };
     match path {
         AtCutMembershipPath::Inherited => {

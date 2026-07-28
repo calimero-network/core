@@ -429,6 +429,52 @@ impl<'a> AccountBindingRepository<'a> {
         }))
     }
 
+    /// Remove every account row under `group` — bindings, revocation
+    /// tombstones, and per-account root keys.
+    ///
+    /// Used by the group teardown so the account plane does not outlive the group
+    /// it describes. The tombstones matter most: they are **terminal**, so a group
+    /// later recreated under the same id would otherwise inherit a set of device
+    /// ids it can never enroll, with nothing in the new group's history to explain
+    /// why. Stale bindings are the milder half of the same problem — they would
+    /// make the fan-out wrap scope keys for devices of the previous occupants.
+    ///
+    /// # Errors
+    /// Propagates the store scan or delete failure.
+    pub fn clear_all_for_group(&self, group: &ContextGroupId) -> EyreResult<()> {
+        let gid = group.to_bytes();
+        let bindings = collect_keys_with_prefix(
+            self.store,
+            GroupDeviceBinding::new(gid, [0u8; 32]),
+            calimero_store::key::GROUP_DEVICE_BINDING_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
+        let revoked = collect_keys_with_prefix(
+            self.store,
+            GroupRevokedDevice::new(gid, [0u8; 32]),
+            calimero_store::key::GROUP_REVOKED_DEVICE_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
+        let accounts = collect_keys_with_prefix(
+            self.store,
+            GroupAccountKey::new(gid, [0u8; 32]),
+            calimero_store::key::GROUP_ACCOUNT_KEY_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
+
+        let mut handle = self.store.handle();
+        for key in bindings {
+            handle.delete(&key)?;
+        }
+        for key in revoked {
+            handle.delete(&key)?;
+        }
+        for key in accounts {
+            handle.delete(&key)?;
+        }
+        Ok(())
+    }
+
     /// Withdraw a device.
     ///
     /// Writes the tombstone **unconditionally**, even for a device this group
@@ -701,6 +747,51 @@ mod tests {
             .expect("store")
             .expect("admitted");
         assert_eq!(repo.live_bindings(&gid).expect("read").len(), 1);
+    }
+
+    #[test]
+    fn clearing_a_group_removes_every_account_row_and_only_that_group_s() {
+        // The tombstones are the reason this matters: they are terminal, so a
+        // group recreated under the same id would inherit device ids it can never
+        // enroll, with nothing in its own history to explain why.
+        let store = test_store();
+        let gid = test_group_id();
+        let other = ContextGroupId::from([0x99u8; 32]);
+        let repo = AccountBindingRepository::new(&store);
+        let g = genesis_for(1);
+
+        let live = cert_for(&g, &key(1), 5, 0, 0);
+        let doomed = cert_for(&g, &key(1), 6, 0, 0);
+        for cert in [&live, &doomed] {
+            let _ = repo.apply_link(&gid, &g, &[], cert).expect("store");
+            let _ = repo.apply_link(&other, &g, &[], cert).expect("store");
+        }
+        repo.apply_revocation(&gid, doomed.device).expect("revoke");
+        repo.apply_revocation(&other, doomed.device)
+            .expect("revoke");
+
+        repo.clear_all_for_group(&gid).expect("clear");
+
+        assert!(repo.live_bindings(&gid).expect("read").is_empty());
+        assert!(
+            !repo.is_revoked(&gid, doomed.device).expect("read"),
+            "a terminal tombstone must not outlive the group it describes"
+        );
+        assert!(repo
+            .account_key(&gid, g.account_id())
+            .expect("read")
+            .is_none());
+
+        // The other group is untouched.
+        assert_eq!(repo.live_bindings(&other).expect("read").len(), 1);
+        assert!(repo.is_revoked(&other, doomed.device).expect("read"));
+        assert!(repo
+            .account_key(&other, g.account_id())
+            .expect("read")
+            .is_some());
+
+        // Idempotent.
+        repo.clear_all_for_group(&gid).expect("clear again");
     }
 
     #[test]
