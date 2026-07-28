@@ -10,7 +10,7 @@ runs:
         set -euo pipefail
         # Floor, not a pin: 0.6.43 forwards MERO_AUTH_ADMIN_* into the node and
         # auth containers, without which every fresh-node scenario login fails.
-        MIN_MEROBOX="0.6.44"
+        MIN_MEROBOX="0.6.43"
 
         case "$(uname -m)" in
           x86_64) MEROBOX_ARCH="linux-x86-64" ;;

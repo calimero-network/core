@@ -29,5 +29,3 @@ tools/cargo-mero/tests/fixtures/*/res/
 tools/cargo-mero/tests/fixtures/*/dist/
 tools/cargo-mero/tests/fixtures/*/Cargo.lock
 tools/cargo-mero/tests/fixtures/*/crates/*/res/
-
-apps/blobs/static/generated/

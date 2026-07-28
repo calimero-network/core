@@ -382,18 +382,43 @@ fn resolve_owned_namespace_signer(
     store: &Store,
     context_id: &ContextId,
 ) -> eyre::Result<Option<(PublicKey, [u8; 32])>> {
-    // Implementation lives in `calimero-store` so `calimero-node-primitives` can
-    // share it: it signs blob requests against the same two identity shapes, but
-    // cannot depend on this crate (this crate depends on it). See
-    // `calimero_store::namespace_signer`.
-    Ok(
-        calimero_store::namespace_signer::resolve_owned_namespace_signer(
-            store,
-            context_id,
-            calimero_context_config::MAX_NAMESPACE_DEPTH,
-        )?
-        .map(|(pk, sk)| (PublicKey::from(pk), sk)),
-    )
+    let handle = store.handle();
+
+    let Some(group_id) = handle.get(&key::ContextGroupRef::new(*context_id))? else {
+        return Ok(None);
+    };
+
+    // The namespace identity is keyed at the namespace root; walk up to it.
+    // Bound and semantics mirror `NamespaceRepository::resolve` exactly (shared
+    // `MAX_NAMESPACE_DEPTH`, inclusive loop). Fail loud on an over-deep or cyclic
+    // chain rather than silently resolving against a non-root ancestor — the
+    // canonical resolver bails `DepthExceeded` in the same case.
+    let mut ns_root = group_id;
+    let mut reached_root = false;
+    for _ in 0..=calimero_context_config::MAX_NAMESPACE_DEPTH {
+        match handle.get(&key::GroupParentRef::new(ns_root))? {
+            Some(parent) => ns_root = parent,
+            None => {
+                reached_root = true;
+                break;
+            }
+        }
+    }
+    if !reached_root {
+        eyre::bail!(
+            "namespace parent chain for context {context_id} exceeds \
+             MAX_NAMESPACE_DEPTH (too deep or cyclic GroupParentRef data)"
+        );
+    }
+
+    let Some(identity) = handle.get(&key::NamespaceIdentity::new(ns_root))? else {
+        return Ok(None); // this node holds no identity for the namespace
+    };
+    let identity: key::NamespaceIdentityValue = identity;
+    Ok(Some((
+        PublicKey::from(identity.public_key),
+        identity.private_key,
+    )))
 }
 
 impl ContextRegistry {

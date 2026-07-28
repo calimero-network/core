@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use calimero_blobstore::{Blob, BlobManager as BlobStore, Size};
-use calimero_context_config::MAX_NAMESPACE_DEPTH;
 use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload};
 use calimero_primitives::{
     blobs::{BlobId, BlobInfo, BlobMetadata},
@@ -12,7 +11,6 @@ use calimero_primitives::{
 };
 use calimero_store::key;
 use calimero_store::layer::LayerExt;
-use calimero_store::namespace_signer::resolve_owned_namespace_signer;
 use camino::Utf8PathBuf;
 use eyre::bail;
 use futures_util::{AsyncRead, StreamExt};
@@ -591,22 +589,6 @@ impl NodeClient {
     }
 
     /// Helper to find an identity in the datastore for which the node possesses the private key.
-    ///
-    /// Two shapes of ownership must both resolve:
-    ///  * **Stored key** — a standalone / `new_identity` context keeps its own
-    ///    `private_key` on the [`key::ContextIdentity`] row.
-    ///  * **Keyless marker** — in a namespace-backed context (every context
-    ///    created under the group model) the member row carries no key; the node
-    ///    signs with its single namespace identity, resolved live via
-    ///    [`resolve_owned_namespace_signer`].
-    ///
-    /// Handling only the first case made this return `None` for contexts the node
-    /// is genuinely a member of, which skipped blob announce and left every
-    /// outgoing blob request unsigned — so peers refused to serve blobs to a
-    /// legitimate member. [`ContextClient::get_identity`] resolves the same two
-    /// shapes; both now share one implementation.
-    ///
-    /// [`ContextClient::get_identity`]: https://docs.rs/calimero-context-client
     pub fn find_owned_identity(
         &self,
         context_id: &ContextId,
@@ -615,12 +597,6 @@ impl NodeClient {
         let start_key = key::ContextIdentity::new(*context_id, [0u8; DIGEST_SIZE].into());
         let mut iter = handle.iter::<key::ContextIdentity>()?;
         let first = iter.seek(start_key).transpose();
-
-        // The namespace signer, resolved at most once and only once a keyless
-        // marker row is actually met. `PrivateKey` is deliberately not `Clone`, so
-        // it is held by value and moved out on the matching return.
-        let mut ns_signer: Option<(PublicKey, PrivateKey)> = None;
-        let mut ns_resolved = false;
 
         for key in first.into_iter().chain(iter.keys()) {
             let key = key?;
@@ -631,23 +607,6 @@ impl NodeClient {
             if let Some(val) = handle.get(&key)? {
                 if let Some(pk_bytes) = val.private_key {
                     return Ok(Some((key.public_key(), PrivateKey::from(pk_bytes))));
-                }
-
-                // Keyless marker: ours only if it names our namespace identity.
-                if !ns_resolved {
-                    ns_signer = resolve_owned_namespace_signer(
-                        &self.datastore,
-                        context_id,
-                        MAX_NAMESPACE_DEPTH,
-                    )?
-                    .map(|(pk, sk)| (PublicKey::from(pk), PrivateKey::from(sk)));
-                    ns_resolved = true;
-                }
-                if ns_signer
-                    .as_ref()
-                    .is_some_and(|(ns_pk, _)| *ns_pk == key.public_key())
-                {
-                    return Ok(ns_signer);
                 }
             }
         }

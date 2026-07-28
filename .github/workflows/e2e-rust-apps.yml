@@ -346,13 +346,6 @@ jobs:
           - workflow: blobs-api-example
             file: workflows/blobs-example.yml
             app: blobs
-          # BORROWED FROM #3317 for verification — see the commit message.
-          - workflow: blob-cross-node-transfer
-            file: workflows/blob-cross-node-transfer.yml
-            app: blobs
-          - workflow: blob-cross-node-sizes
-            file: workflows/blob-cross-node-sizes.yml
-            app: blobs
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml
             app: scaffolding-e2e
@@ -467,13 +460,6 @@ jobs:
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
-
-      - name: Generate blob fixtures
-        if: matrix.workflow == 'blob-cross-node-sizes'
-        run: |
-          cd apps/blobs
-          chmod +x scripts/gen-blob-fixtures.sh
-          ./scripts/gen-blob-fixtures.sh
 
       - name: Run ${{ matrix.workflow }}
         env:
