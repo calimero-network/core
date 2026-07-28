@@ -22,6 +22,11 @@
 //!    root key been rotated past" reads only the rotations seen so far, which
 //!    makes admission depend on delivery order. The signing epoch is stored and
 //!    the question is answered once the account's current epoch is known.
+//! 4. **Replica-seed uniqueness is decided on read too**, and for the same
+//!    reason. Rejecting a link because an already-stored device with the same
+//!    HLC seed had a lower id is order-dependent in the direction it does not
+//!    check: high-then-low left both devices live. The rule is a filter over the
+//!    stored set instead.
 
 use calimero_account::{
     verify_device_cert, AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyHandoff,
@@ -61,9 +66,6 @@ pub enum BindingRejected {
         /// Epoch already recorded.
         stored: u32,
     },
-    /// Another device in this group already claims the same replica seed.
-    #[error("device id collides with an existing device's replica seed")]
-    SeedCollision,
     /// A rotation for an account this group has never seen, or one that does
     /// not continue the established chain.
     #[error("key rotation does not continue this account's chain")]
@@ -187,7 +189,32 @@ impl<'a> AccountBindingRepository<'a> {
                 device_epoch: value.device_epoch,
             });
         }
-        Ok(out)
+
+        // Replica-seed uniqueness, resolved HERE rather than at apply time, for
+        // the same reason supersession is (rule 3 in the module docs). Two
+        // devices sharing an HLC seed mint colliding RGA ids and lose characters
+        // silently, so at most one of a colliding pair may be live — and which
+        // one cannot be decided as each link arrives.
+        //
+        // The apply-time version rejected an incoming device only when an
+        // already-stored one had a *lower* id, which is order-dependent in the
+        // direction it does not check: low-then-high left one device live, but
+        // high-then-low left BOTH, because the stored high id does not compare
+        // lower than the incoming low one. As a filter over the stored set the
+        // rule is a function of the set, so every replica reaches the same live
+        // view no matter what order the links arrived in.
+        let mut by_seed: BTreeMap<[u8; 16], DeviceBinding> = BTreeMap::new();
+        for binding in out {
+            by_seed
+                .entry(binding.device.hlc_seed())
+                .and_modify(|kept| {
+                    if binding.device < kept.device {
+                        *kept = binding;
+                    }
+                })
+                .or_insert(binding);
+        }
+        Ok(by_seed.into_values().collect())
     }
 
     /// Every account this group knows, grouped by the member key currently
@@ -368,19 +395,16 @@ impl<'a> AccountBindingRepository<'a> {
                 }
             }
             None => {
-                // Replica-seed uniqueness, checked rather than assumed. Two
-                // devices sharing an HLC seed mint colliding RGA ids and lose
-                // characters silently. Lower id wins, so the outcome does not
-                // depend on which link applied first.
-                let seed = verified.device.hlc_seed();
-                for other in self.live_bindings(group)? {
-                    if other.device != verified.device
-                        && other.device.hlc_seed() == seed
-                        && other.device < verified.device
-                    {
-                        return Ok(Err(BindingRejected::SeedCollision));
-                    }
-                }
+                // No first-link check. Replica-seed uniqueness is decided by
+                // `live_bindings` over the stored set, because "which of two
+                // colliding devices is live" cannot be answered as each link
+                // arrives — see the comment there. Storing the loser costs one
+                // row and keeps the verdict a function of the op set; rejecting
+                // it here made the live view depend on arrival order.
+                //
+                // Dropping the check also removes a full `live_bindings` scan
+                // from every link apply, which was O(devices) store reads on a
+                // path any member can drive.
             }
         }
 
@@ -570,6 +594,75 @@ mod tests {
             link_then_revoke.1, revoke_then_link.1,
             "account key diverged — the genesis must be absorbed even when the \
              link it arrived on is refused"
+        );
+    }
+
+    #[test]
+    fn two_devices_sharing_a_replica_seed_converge_on_the_lower_id_either_order() {
+        // The seed rule has to be a function of the stored SET, not of arrival
+        // order. Rejecting the newcomer only when an existing device has a lower
+        // id is order-dependent: low-then-high leaves one device live, but
+        // high-then-low leaves BOTH live, because the existing high id does not
+        // compare lower than the incoming low one. Two replicas sharing an HLC
+        // seed mint colliding RGA ids and lose characters silently, which is the
+        // whole reason the rule exists.
+        let g = genesis_for(1);
+        let account = g.account_id();
+
+        // Two certs whose device ids share an hlc_seed. The seed is the id's
+        // first 16 bytes, so forge the ids directly rather than hunting for a
+        // `mint` nonce collision.
+        let mut low = [0u8; 32];
+        low[..16].copy_from_slice(&[0xAA; 16]);
+        let mut high = low;
+        high[31] = 0xFF;
+        let (low, high) = (DeviceId::from(low), DeviceId::from(high));
+        assert_eq!(low.hlc_seed(), high.hlc_seed());
+        assert!(low < high);
+
+        let cert_for_device = |device: DeviceId, seed: u8| {
+            sign_device_cert(
+                &key(1),
+                account,
+                device,
+                &key(seed).public_key(),
+                &KemPublicKey::from([seed; 32]),
+                0,
+                0,
+            )
+            .expect("sign")
+        };
+        let low_cert = cert_for_device(low, 5);
+        let high_cert = cert_for_device(high, 6);
+
+        let live_after = |order: [&DeviceCert; 2]| {
+            let store = test_store();
+            let gid = test_group_id();
+            let repo = AccountBindingRepository::new(&store);
+            for cert in order {
+                let _ = repo.apply_link(&gid, &g, &[], cert).expect("store");
+            }
+            let mut live: Vec<DeviceId> = repo
+                .live_bindings(&gid)
+                .expect("read")
+                .into_iter()
+                .map(|b| b.device)
+                .collect();
+            live.sort_unstable();
+            live
+        };
+
+        let low_first = live_after([&low_cert, &high_cert]);
+        let high_first = live_after([&high_cert, &low_cert]);
+
+        assert_eq!(
+            low_first, high_first,
+            "the live set must not depend on which link applied first"
+        );
+        assert_eq!(
+            low_first,
+            vec![low],
+            "the lower device id must be the one left live"
         );
     }
 

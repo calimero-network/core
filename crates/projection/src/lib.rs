@@ -10,7 +10,7 @@
 //! per-slot last-writer-wins keyed on `(hlc, op_id)`, so the fold is
 //! order-independent.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use sha2::{Digest, Sha256};
 
@@ -121,7 +121,7 @@ pub struct ScopeState {
     /// Withdrawn devices and the account they were withdrawn from. Terminal and
     /// grow-only — see `AclView::revoked_devices` for why revocation lives in
     /// its own set instead of as a flag on the binding.
-    revoked_devices: BTreeMap<DeviceId, AccountId>,
+    revoked_devices: BTreeSet<DeviceId>,
 }
 
 impl ScopeState {
@@ -348,17 +348,24 @@ impl ScopeState {
                     },
                 );
             }
-            OpPayload::DeviceRevoked { account, device } => {
+            OpPayload::DeviceRevoked { device, .. } => {
                 // Written unconditionally, even for a device this scope has
                 // never seen linked. A revocation that folds before its link
                 // must still win: the tombstone is what the link consults.
                 // Silently dropping an early revocation would make the outcome
                 // depend on arrival order, which is a split-brain.
-                let bound = self
-                    .devices
-                    .get(device)
-                    .map_or(*account, |binding| binding.account);
-                let _ = self.revoked_devices.insert(*device, bound);
+                //
+                // A *set*, carrying no value at all. It previously recorded the
+                // revoked device's account, resolved as
+                // `devices.get(device).map_or(payload.account, ..)` — which reads
+                // whether the link had folded yet, so link-then-revoke stored the
+                // binding's account while revoke-then-link stored the payload's
+                // claim. That value is hashed into `governance_hash`, so an op
+                // naming an account that disagreed with the binding split the
+                // root by arrival order. Nothing ever read the value (both
+                // consumers ask only `contains`), so the fix is to not have one:
+                // set union is a join by construction.
+                let _ = self.revoked_devices.insert(*device);
                 let _ = self.devices.remove(device);
             }
             OpPayload::AccountKeysRotated { handoff } => {
@@ -398,15 +405,34 @@ impl ScopeState {
     /// seen makes the answer a function of the op *set*, not its order.
     fn live_devices(&self) -> BTreeMap<DeviceId, DeviceBinding> {
         let accounts = self.resolved_accounts();
-        self.devices
-            .iter()
-            .filter(|(_, binding)| {
-                accounts
-                    .get(&binding.account)
-                    .is_none_or(|account| binding.key_epoch >= account.epoch)
-            })
-            .map(|(device, binding)| (*device, *binding))
-            .collect()
+        let unsuperseded = self.devices.iter().filter(|(_, binding)| {
+            accounts
+                .get(&binding.account)
+                .is_none_or(|account| binding.key_epoch >= account.epoch)
+        });
+
+        // Replica-seed uniqueness, applied HERE for the same reason supersession
+        // is: the answer depends on the whole folded set, not on what had folded
+        // when each link arrived. Two devices sharing an HLC seed mint colliding
+        // RGA ids and lose characters silently, so at most one of a colliding
+        // pair may be live, and the lower id is the arbitrary-but-fixed winner.
+        //
+        // `admit_device_link` used to reject the newcomer when an already-folded
+        // device compared lower, which is order-dependent in the direction it did
+        // not check — high-then-low admitted both. As a filter over the folded
+        // set the rule cannot depend on arrival order.
+        let mut by_seed: BTreeMap<[u8; 16], (DeviceId, DeviceBinding)> = BTreeMap::new();
+        for (device, binding) in unsuperseded {
+            by_seed
+                .entry(device.hlc_seed())
+                .and_modify(|kept| {
+                    if *device < kept.0 {
+                        *kept = (*device, *binding);
+                    }
+                })
+                .or_insert((*device, *binding));
+        }
+        by_seed.into_values().collect()
     }
 
     /// Resolve every known account's current root key by walking its handoff
@@ -747,9 +773,8 @@ impl ScopeState {
             hasher.update(binding.kem_pk.as_bytes());
             hasher.update(binding.device_epoch.to_le_bytes());
         }
-        for (device, account) in &self.revoked_devices {
+        for device in &self.revoked_devices {
             hasher.update(device.as_bytes());
-            hasher.update(account.as_bytes());
         }
         for (group, admin) in &self.group_admin {
             hasher.update(group.to_bytes());

@@ -329,6 +329,89 @@ fn a_second_device_links_with_no_further_grant() {
     );
 }
 
+#[test]
+fn two_devices_sharing_a_replica_seed_converge_on_the_lower_id() {
+    // The seed rule must be a function of the folded SET, not of arrival order.
+    // `admit_device_link` used to reject an incoming device only when an
+    // already-folded one compared LOWER, which is order-dependent in the
+    // direction it did not check: low-then-high left one device live, but
+    // high-then-low admitted BOTH — and two replicas sharing an HLC seed mint
+    // colliding RGA ids and lose characters silently, which is the whole reason
+    // the rule exists.
+    let alice = Account::new(10);
+
+    // Forge two ids sharing an hlc_seed (the id's first 16 bytes) rather than
+    // hunting for a `mint` nonce collision.
+    let mut low_id = [0u8; 32];
+    low_id[..16].copy_from_slice(&[0xAA; 16]);
+    let mut high_id = low_id;
+    high_id[31] = 0xFF;
+    let (low_id, high_id) = (DeviceId::from(low_id), DeviceId::from(high_id));
+    assert_eq!(low_id.hlc_seed(), high_id.hlc_seed());
+    assert!(low_id < high_id);
+
+    let forge = |device_seed: u8, id: DeviceId| {
+        let sk = key(device_seed);
+        Device {
+            id,
+            cert: calimero_account::sign_device_cert(
+                &alice.root,
+                alice.id,
+                id,
+                &sk.public_key(),
+                &KemPublicKey::from([device_seed; 32]),
+                alice.epoch,
+                0,
+            )
+            .expect("sign cert"),
+            sk,
+            account: alice.id,
+        }
+    };
+    let low = forge(11, low_id);
+    let high = forge(12, high_id);
+
+    // Fold both links in each order and compare the resulting live view. Using
+    // `root()` compares the whole account plane, not just the device map, so a
+    // divergence anywhere in the fold shows up.
+    let live_and_root = |first: &Device, second: &Device| {
+        let mut fx = Fixture::new();
+        fx.push(grant_membership(&fx.admin, alice.id, 30, fx.head.clone()));
+        let a = alice.link_op(first, 40, fx.head.clone());
+        fx.push(a);
+        let b = alice.link_op(second, 50, fx.head.clone());
+        fx.push(b);
+
+        let view = ScopeState::acl_view_at(&fx.log, &fx.head);
+        let mut devices: Vec<DeviceId> = view
+            .devices
+            .keys()
+            .copied()
+            .filter(|d| *d == low_id || *d == high_id)
+            .collect();
+        devices.sort_unstable();
+        (devices, fx.root())
+    };
+
+    let (low_first, root_low_first) = live_and_root(&low, &high);
+    let (high_first, root_high_first) = live_and_root(&high, &low);
+
+    assert_eq!(
+        low_first, high_first,
+        "the live device set must not depend on which link folded first"
+    );
+    assert_eq!(
+        low_first,
+        vec![low_id],
+        "the lower device id is the arbitrary-but-fixed winner"
+    );
+    assert_eq!(
+        root_low_first, root_high_first,
+        "the account plane folds into the root hash, so an order-dependent live \
+         set would also split the root"
+    );
+}
+
 // ------------------------------------------------------------- revocation --
 
 #[test]
@@ -443,6 +526,116 @@ fn a_revocation_that_arrives_before_its_link_still_wins() {
         !revoke_then_link.acl_view().devices.contains_key(&phone.id),
         "an early revocation must not be undone by the link it withdraws"
     );
+}
+
+#[test]
+fn a_revocation_naming_the_wrong_account_still_converges() {
+    // The tombstone used to record the revoked device's account, resolved as
+    // `devices.get(device).map_or(payload.account, ..)` — which reads whether the
+    // link had folded yet. Link-then-revoke stored the binding's account,
+    // revoke-then-link stored the payload's claim, and that value was hashed into
+    // governance_hash. So an op naming an account that disagreed with the binding
+    // split the root purely by arrival order.
+    //
+    // Nothing ever read the value, so the tombstone is now a set. This test names
+    // a deliberately wrong account, which is what the old code needed to diverge.
+    let mut fx = Fixture::new();
+    let alice = Account::new(10);
+    let mallory = Account::new(20);
+    let phone = alice.enroll(11, 0);
+
+    fx.push(grant_membership(&fx.admin, alice.id, 30, fx.head.clone()));
+    let link = alice.link_op(&phone, 40, fx.head.clone());
+    let revoke = fx.admin.sign_op(
+        50,
+        fx.head.clone(),
+        OpPayload::DeviceRevoked {
+            account: mallory.id, // NOT the account the device is bound to
+            device: phone.id,
+        },
+    );
+
+    let link_then_revoke = {
+        let mut s = ScopeState::from_ops(&fx.log);
+        s.apply(&link);
+        s.apply(&revoke);
+        s
+    };
+    let revoke_then_link = {
+        let mut s = ScopeState::from_ops(&fx.log);
+        s.apply(&revoke);
+        s.apply(&link);
+        s
+    };
+
+    assert_eq!(
+        link_then_revoke.root(),
+        revoke_then_link.root(),
+        "a revocation naming the wrong account must not split the root by arrival order"
+    );
+    assert!(!revoke_then_link.acl_view().devices.contains_key(&phone.id));
+}
+
+#[test]
+fn a_member_cannot_revoke_an_unbound_device_by_claiming_it() {
+    // Self-service revocation needs a folded binding that PROVES the device
+    // speaks for the author. Trusting the payload's own `account` field when no
+    // binding exists made the claim unfalsifiable: any linked member could name
+    // its own account beside an arbitrary unbound device id and be authorized.
+    // A tombstone is terminal AND an early revocation beats the link it
+    // withdraws, so that permanently spent a device id the attacker had no
+    // relationship to — observe a link op, revoke at an earlier cut, done.
+    let mut fx = Fixture::new();
+    let mallory = Account::new(20);
+    let mallory_device = mallory.enroll(21, 0);
+    let victim = Account::new(10);
+    let victim_phone = victim.enroll(11, 0);
+
+    fx.push(grant_membership(&fx.admin, mallory.id, 30, fx.head.clone()));
+    fx.push(mallory.link_op(&mallory_device, 40, fx.head.clone()));
+
+    // The victim's device id is public the moment its link op is gossiped, but
+    // at THIS cut it has no binding.
+    let poison = mallory_device.sign_op(
+        50,
+        fx.head.clone(),
+        OpPayload::DeviceRevoked {
+            account: mallory.id, // Mallory's own account — the unfalsifiable claim
+            device: victim_phone.id,
+        },
+    );
+    assert_eq!(
+        decide(&fx.log, &poison),
+        Err(Rejected::NotRootAdmin),
+        "a self-service revocation must not authorize against a device with no binding"
+    );
+
+    // Revoking a device that IS bound to the author still works.
+    let own = mallory_device.sign_op(
+        51,
+        fx.head.clone(),
+        OpPayload::DeviceRevoked {
+            account: mallory.id,
+            device: mallory_device.id,
+        },
+    );
+    assert_eq!(
+        decide(&fx.log, &own),
+        Ok(()),
+        "an account must still be able to withdraw its own device without an admin"
+    );
+
+    // And an admin may still eject a device this cut has not folded a link for —
+    // which is why 'no binding' is not simply a refusal.
+    let by_admin = fx.admin.sign_op(
+        52,
+        fx.head.clone(),
+        OpPayload::DeviceRevoked {
+            account: victim.id,
+            device: victim_phone.id,
+        },
+    );
+    assert_eq!(decide(&fx.log, &by_admin), Ok(()));
 }
 
 #[test]

@@ -133,9 +133,45 @@ Revocation lives in its **own tombstone set**, not as a flag on the binding. Tha
 is what makes a revocation folding *before* its link still win; as a flag, a
 revoke-then-link arrival order would silently resurrect the device.
 
+It is literally a **set**, carrying no value. It first recorded the revoked
+device's account, resolved as `devices.get(device).map_or(payload.account, ..)` —
+which reads whether the link had folded yet, so link-then-revoke stored the
+binding's account while revoke-then-link stored the payload's claim. That value is
+hashed into `governance_hash`, so an op naming an account that disagreed with the
+binding split the root purely by arrival order. Nothing ever read the value, so
+the fix was to not have one: set union is a join by construction.
+
+**Self-service revocation needs a binding that proves the claim.** `authorize`
+resolved the revoker as `devices.get(device).map_or(payload.account, ..)` too,
+which made the claim unfalsifiable when the device had no binding: any linked
+member could name its own account beside an arbitrary device id and be
+authorized. Since a tombstone is terminal *and* an early revocation beats the
+link it withdraws, that permanently spent a device id the attacker had no
+relationship to — observe a link op, revoke at an earlier cut, done. A
+self-service revocation now requires a folded binding whose account is both the
+author and the payload's claim; "no binding" leaves only the admin path, which is
+still needed to eject a device whose link a cut has not folded.
+
 The plane folds into `governance_hash`. Otherwise a link or revoke would be
 hash-neutral and sync could report convergence while nodes disagreed about who
 may author.
+
+### The same shape again: seed collisions are checked at read time
+
+`DeviceId::hlc_seed()` is the device's RGA/HLC instance seed, and two live replicas
+sharing one mint colliding character ids — losing writes silently. So at most one
+of a colliding pair may be live, lower id wins.
+
+The first implementation enforced that at link time, rejecting an incoming device
+when an already-linked one compared lower. That is order-dependent in the one
+direction it does not check: low-then-high left a single device live, but
+high-then-low admitted **both**, because a stored high id does not compare lower
+than an incoming low one. Both planes now apply the rule where supersession is
+applied — over the stored/folded set, in `live_bindings` and `live_devices` — where
+it is a function of the op set and cannot depend on arrival order.
+
+Dropping the link-time check also removed a full device scan from every link
+apply, on a path any member can drive.
 
 ### Divergence from the plan: supersession is checked at read time
 

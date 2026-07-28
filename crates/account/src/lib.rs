@@ -242,11 +242,18 @@ impl DeviceId {
     /// The 16-byte prefix used as this device's HLC instance seed.
     ///
     /// RGA character ids are minted from this seed, and two replicas sharing a
-    /// seed mint colliding ids — which loses characters silently. The
-    /// projection therefore **rejects** a device link whose prefix collides
-    /// with an already-linked device in the same scope, so uniqueness is
-    /// checked rather than assumed. (Scope-local is sufficient: character ids
+    /// seed mint colliding ids — which loses characters silently. So at most one
+    /// of a colliding pair may be live in a scope, and the **lower** device id is
+    /// the arbitrary-but-fixed winner. (Scope-local is sufficient: character ids
     /// only need to be unique within the scope that stores them.)
+    ///
+    /// That rule is applied when the device set is **read**, not when a link is
+    /// admitted — see `ScopeState::live_devices`. Deciding it per link cannot
+    /// work: "is there a lower colliding id" reads only what has folded so far,
+    /// so the live set would depend on arrival order. Minting the id from a fresh
+    /// nonce makes a collision vanishingly unlikely in any case; the rule is
+    /// there so that a deliberate one is resolved identically everywhere rather
+    /// than corrupting the CRDT planes.
     #[must_use]
     pub fn hlc_seed(&self) -> [u8; 16] {
         let mut seed = [0u8; 16];

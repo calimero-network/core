@@ -12,7 +12,7 @@
 //! The caller produces the [`AclView`] via `ScopeState::acl_view_at(op.parents)`
 //! (see `calimero-projection`); this crate is the pure decision over that view.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error as ThisError;
 
@@ -125,9 +125,6 @@ pub enum Rejected {
     /// A device may not be moved between accounts; enroll a fresh device id.
     #[error("device is already bound to a different account")]
     DeviceAccountReassignment,
-    /// Another device in this scope already claims the same replica seed prefix.
-    #[error("device id collides with an existing device's replica seed")]
-    DeviceSeedCollision,
     /// The account is not a member of this scope, so its devices may not link
     /// themselves in.
     #[error("account is not a member of this scope at the cut")]
@@ -187,7 +184,7 @@ pub struct AclView {
     /// *before* the link it withdraws still wins, because every link consults
     /// this set. Were revocation merely a flag on the binding, a
     /// revoke-then-link arrival order would silently resurrect the device.
-    pub revoked_devices: BTreeMap<DeviceId, AccountId>,
+    pub revoked_devices: BTreeSet<DeviceId>,
 }
 
 /// An account's resolved root key at a cut.
@@ -567,7 +564,7 @@ impl AclView {
 pub fn admit_device_link(
     accounts: &BTreeMap<AccountId, AccountBinding>,
     devices: &BTreeMap<DeviceId, DeviceBinding>,
-    revoked: &BTreeMap<DeviceId, AccountId>,
+    revoked: &BTreeSet<DeviceId>,
     genesis: &AccountGenesis,
     chain: &[RootKeyHandoff],
     cert: &DeviceCert,
@@ -608,7 +605,7 @@ pub fn admit_device_link(
 /// [`Rejected::CredentialSuperseded`] — see [`admit_device_link`].
 pub fn fold_device_link(
     devices: &BTreeMap<DeviceId, DeviceBinding>,
-    revoked: &BTreeMap<DeviceId, AccountId>,
+    revoked: &BTreeSet<DeviceId>,
     genesis: &AccountGenesis,
     chain: &[RootKeyHandoff],
     cert: &DeviceCert,
@@ -616,7 +613,7 @@ pub fn fold_device_link(
     let verified = calimero_account::verify_device_cert(cert.account, genesis, chain, cert)
         .map_err(|reason| Rejected::CredentialInvalid { reason })?;
 
-    if revoked.contains_key(&verified.device) {
+    if revoked.contains(&verified.device) {
         return Err(Rejected::DeviceRevoked {
             device: verified.device,
         });
@@ -635,17 +632,14 @@ pub fn fold_device_link(
             }
         }
         None => {
-            // On a prefix collision the LOWER device id wins. An arbitrary but
-            // fixed rule, rather than "whichever folded first" — the latter
-            // would make two nodes disagree about which device is live purely
-            // from delivery order.
-            let seed = verified.device.hlc_seed();
-            if devices
-                .keys()
-                .any(|d| *d != verified.device && d.hlc_seed() == seed && *d < verified.device)
-            {
-                return Err(Rejected::DeviceSeedCollision);
-            }
+            // No seed-collision check here. On a prefix collision the LOWER
+            // device id wins, but *which* device that is cannot be decided as
+            // each link folds: rejecting the newcomer only when an already-folded
+            // device compares lower is order-dependent in the direction it does
+            // not check, so low-then-high left one device live while
+            // high-then-low left both. `ScopeState::live_devices` applies the
+            // rule over the folded set instead, where it is a function of the op
+            // set and every replica reaches the same view.
         }
     }
 
@@ -837,14 +831,26 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
             // case, which needs no admin), or a scope admin ejects it (the
             // compromised-member case, which the account may be unable or
             // unwilling to handle itself).
-            let bound_account = acl_at_cut
-                .devices
-                .get(device)
-                .map_or(*account, |binding| binding.account);
-            if op.author() == bound_account || acl_at_cut.is_root_admin(&op.author()) {
-                Ok(())
-            } else {
-                Err(Rejected::NotRootAdmin)
+            //
+            // Self-service requires a folded binding that *proves* the device
+            // speaks for the author. Trusting the payload's own `account` field
+            // when no binding exists made the claim unfalsifiable: any linked
+            // member could name its own account beside an arbitrary unbound
+            // device id and be authorized. Because a tombstone is terminal —
+            // and because an early revocation deliberately beats the link it
+            // withdraws — that spent the id for good, so an attacker could
+            // permanently lock out a device it had no relationship to simply by
+            // observing its link op and revoking at an earlier cut.
+            match acl_at_cut.devices.get(device) {
+                Some(binding) if binding.account == op.author() && binding.account == *account => {
+                    Ok(())
+                }
+                // "No binding at this cut" is not a refusal, because an admin
+                // must still be able to eject a device whose link this cut has
+                // not folded. It only means the *self-service* claim cannot be
+                // checked, so it does not authorize.
+                _ if acl_at_cut.is_root_admin(&op.author()) => Ok(()),
+                _ => Err(Rejected::NotRootAdmin),
             }
         }
         OpPayload::AccountKeysRotated { handoff } => {
@@ -895,7 +901,7 @@ fn check_device_speaks_for_author(op: &Op, acl_at_cut: &AclView) -> Result<(), R
             // A revoked device has no binding either, but the tombstone
             // distinguishes "never linked" from "withdrawn" — worth separating
             // so whoever reads a rejection knows which happened.
-            if acl_at_cut.revoked_devices.contains_key(&device) {
+            if acl_at_cut.revoked_devices.contains(&device) {
                 return Err(Rejected::DeviceRevoked { device });
             }
             Err(Rejected::DeviceNotLinked { device })
