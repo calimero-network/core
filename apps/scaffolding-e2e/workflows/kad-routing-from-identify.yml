@@ -1,0 +1,130 @@
+name: Kademlia Routing Table Populates From Identify
+description: >
+  Regression guard for the fix in `crates/network/src/handlers/stream/swarm/
+  identify.rs`: a peer discovered over mDNS must end up in the Kademlia routing
+  table, not only in the local address book.
+
+  Before the fix, kad learned peers ONLY from `discovery.bootstrap.nodes`,
+  seeded once at behaviour construction. If those initial dials lost the startup
+  race — two nodes booting 1.6s apart is enough — nothing re-seeded the table:
+  `discovery::redial_direct` fires on ConnectionClosed and so needs a prior
+  connection, kad's automatic bootstrap triggers on a peer ENTERING the table,
+  and libp2p-kad 0.48's periodic bootstrap runs on a 5-minute default interval.
+
+  The observable consequence was that the fleet gossiped and replicated CRDT
+  state perfectly well while every DHT query returned
+  `NotFound { closest_peers: [] }` with `requests: 0` — nobody in the table to
+  ask. That is why blob METADATA crossed between nodes while blob BYTES could
+  not: metadata rides gossipsub, bytes ride the kad provider lookup.
+
+  THE ASSERTION: `RoutingUpdated` must appear in both nodes' logs. That event is
+  emitted by libp2p-kad exactly when a peer enters the routing table, and is
+  dumped verbatim by the kad handler's `debug!("{}: {:?}", "kad", event)`. On
+  the failing build this count was measured at **0** on both containers for a
+  whole run (core run 30271797358); with the fix it must be non-zero.
+
+  Deliberately does no DHT query of its own. The routing table is the thing that
+  was empty, so asserting on it directly keeps this test honest about what it
+  proves and fast — no waiting on provider-record propagation. The end-to-end
+  consequence (byte-exact cross-node blob transfer) is covered by
+  apps/blobs/workflows/blob-cross-node-{transfer,sizes}.yml.
+
+# `RoutingUpdated` is a DEBUG-level event dump, so the level matters. This is
+# merobox's default, set explicitly so a change to that default cannot silently
+# turn the assertion below into a no-op.
+log_level: debug
+
+# Required for the `login` steps below: the CI job exports
+# MERO_AUTH_ADMIN_USER/PASSWORD, which merobox forwards into the node containers
+# so `merod init` mints the admin root key. Without embedded auth there is no
+# account to log in as and every login fails AUTHENTICATION_FAILED.
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: kad-identify-node
+
+steps:
+  - name: Login on kad-identify-node-1
+    type: login
+    node: kad-identify-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on kad-identify-node-2
+    type: login
+    node: kad-identify-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install application on node-1
+    type: install_application
+    node: kad-identify-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # create_mesh is what makes the two nodes actually connect, which is what
+  # makes identify fire. Without a connection there is no identify exchange and
+  # nothing to feed kad — so this step is the precondition under test, not
+  # incidental setup.
+  - name: Create mesh (node-2 joins node-1's namespace)
+    type: create_mesh
+    context_node: kad-identify-node-1
+    application_id: "{{app_id}}"
+    path: res/scaffolding_e2e.wasm
+    nodes:
+      - kad-identify-node-2
+    capability: member
+    outputs:
+      context_id: contextId
+
+  - name: Assert the mesh came up
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+
+  # Gives identify a moment to complete on both sides after the connection is
+  # established. This is NOT waiting out a 5-minute kad bootstrap — the fix
+  # makes the routing table populate on the identify exchange itself, so a few
+  # seconds is enough. If this needed minutes, the fix would not be working.
+  - name: Let identify settle on both sides
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - kad-identify-node-1
+      - kad-identify-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Extra settle margin for the identify exchange
+    type: wait
+    seconds: 10
+
+  # ── The assertion ──────────────────────────────────────────────────────
+  # Measured 0 on both nodes before the fix. Asserted per node rather than
+  # across the union, because one node populating its table while the other
+  # stays empty is still a broken DHT — a lookup from the empty side reaches
+  # nobody.
+  - name: Node-1's kad routing table gained a peer
+    type: assert_log_present
+    nodes:
+      - kad-identify-node-1
+    patterns:
+      - "RoutingUpdated"
+    tail_lines: 20000
+
+  - name: Node-2's kad routing table gained a peer
+    type: assert_log_present
+    nodes:
+      - kad-identify-node-2
+    patterns:
+      - "RoutingUpdated"
+    tail_lines: 20000
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
