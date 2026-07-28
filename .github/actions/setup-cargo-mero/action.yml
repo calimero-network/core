@@ -1,0 +1,9 @@
+name: Setup cargo mero
+description: "Put cargo-mero on PATH so steps can run `cargo mero <cmd>`"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Build and expose cargo-mero
+      shell: bash
+      run: scripts/setup-cargo-mero.sh >> "$GITHUB_PATH"

@@ -20,16 +20,6 @@ pub enum Key {
 
     /// Sync state key for tracking last sync time with a remote node.
     SyncState(Id),
-
-    /// Validity marker for a `SortedMap`'s ordered secondary index (core#2559).
-    ///
-    /// Stores the collection's `full_hash` at the moment its `Column::SortedIndex`
-    /// entries were last (re)built. An ordered read compares this to the
-    /// collection's current `full_hash`: equal ⇒ the index is current and can be
-    /// queried directly; different (a local write or a remote sync changed the
-    /// entry set) ⇒ rebuild the index once, then serve. Node-local, not synced.
-    /// Tag `4` keeps the existing byte layout stable.
-    SortedIndexMeta(Id),
 }
 
 impl Key {
@@ -48,10 +38,6 @@ impl Key {
             }
             Self::SyncState(id) => {
                 bytes[0] = 2;
-                bytes[1..33].copy_from_slice(id.as_bytes());
-            }
-            Self::SortedIndexMeta(id) => {
-                bytes[0] = 4;
                 bytes[1..33].copy_from_slice(id.as_bytes());
             }
         }
@@ -182,6 +168,28 @@ pub trait StorageAdaptor: 'static {
     /// Return the `(order_key, entry_id)` with the largest order key in
     /// `collection` — a reverse seek for `SortedMap::last` (`O(log n)`).
     fn index_last(collection: Id) -> Option<(Vec<u8>, Id)> {
+        let _ = collection;
+        None
+    }
+
+    /// Write `collection`'s ordered-index validity marker (its `full_hash` at
+    /// the moment the index was last (re)built). This is node-local bookkeeping
+    /// that MUST live in the same non-synced keyspace as [`index_put`] and
+    /// friends — never in the synced state — so a peer never observes a marker
+    /// for an index it did not build (a marker in synced state made peers serve
+    /// a stale ordered view of converged data). Returns whether it persisted.
+    /// The inert default is never reached on the stamping path (gated on
+    /// [`index_supported`](Self::index_supported)).
+    ///
+    /// [`index_put`]: Self::index_put
+    fn index_meta_put(collection: Id, marker: &[u8]) -> bool {
+        let _ = (collection, marker);
+        false
+    }
+
+    /// Read `collection`'s ordered-index validity marker written by
+    /// [`index_meta_put`](Self::index_meta_put), or `None` if absent.
+    fn index_meta_get(collection: Id) -> Option<Vec<u8>> {
         let _ = collection;
         None
     }
@@ -329,6 +337,17 @@ impl StorageAdaptor for MainStorage {
         let order_key = composite.strip_prefix(prefix)?.to_vec();
         let id: [u8; 32] = entry_bytes.as_slice().try_into().ok()?;
         Some((order_key, Id::new(id)))
+    }
+
+    // The validity marker rides the SAME node-local index keyspace (a dedicated
+    // non-synced column), keyed by the raw `collection_id`. It is deliberately
+    // NOT `storage_write`/`storage_read` (those reach the synced `State`).
+    fn index_meta_put(collection: Id, marker: &[u8]) -> bool {
+        crate::env::storage_index_meta_set(collection.as_bytes(), marker)
+    }
+
+    fn index_meta_get(collection: Id) -> Option<Vec<u8>> {
+        crate::env::storage_index_meta_get(collection.as_bytes())
     }
 }
 
@@ -507,6 +526,11 @@ pub mod mocked {
         /// Counts index entries *examined* by the most recent ordered query.
         /// Lets tests prove range/page/last touch `O(window)` items, not `O(n)`.
         static INDEX_ITEMS: Cell<usize> = const { Cell::new(0) };
+        /// Node-local ordered-index validity markers: `(scope, collection) -> marker`.
+        /// A sibling of `INDEX` (never `STORAGE`), so the marker is node-local
+        /// exactly like the index it guards — mirroring the real adaptor's
+        /// dedicated `SortedIndexMeta` column vs. the synced `State`.
+        static INDEX_META: RefCell<BTreeMap<(Scope, Id), Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
     }
 
     /// Reset the "items examined" counter (call before an instrumented query).
@@ -704,6 +728,19 @@ pub mod mocked {
                         (key.clone(), *entry)
                     })
             })
+        }
+
+        fn index_meta_put(collection: Id, marker: &[u8]) -> bool {
+            INDEX_META.with(|meta| {
+                let _ = meta
+                    .borrow_mut()
+                    .insert((SCOPE, collection), marker.to_vec());
+            });
+            true
+        }
+
+        fn index_meta_get(collection: Id) -> Option<Vec<u8>> {
+            INDEX_META.with(|meta| meta.borrow().get(&(SCOPE, collection)).cloned())
         }
     }
 

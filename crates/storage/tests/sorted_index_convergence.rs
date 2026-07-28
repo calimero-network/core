@@ -1,0 +1,163 @@
+//! Cross-node convergence regression for `SortedSet` / `SortedMap` ordered reads
+//! (core#2559 follow-up; surfaced via calimero-network/calimero-sdk-js#87).
+//!
+//! # The bug
+//!
+//! `SortedSet`/`SortedMap` keep a **node-local** ordered index (RocksDB
+//! `Column::SortedIndex`) that sync never touches, guarded by a validity marker
+//! holding the collection's `full_hash` when the index was last (re)built. An
+//! ordered read (`iter`/`keys`/`range`/`first`/`last`) rebuilds the index only
+//! when that marker != the collection's current `full_hash`.
+//!
+//! The marker used to be written through the **synced** state path
+//! (`storage_write` → `Column::State`). So a node that built its index and
+//! stamped `marker = H({a,b})` could make that marker observable to a peer whose
+//! own node-local index was still stale — the peer saw `marker == full_hash`,
+//! skipped the rebuild, and served a **stale subset** of converged data. `len()`
+//! / `contains()` read children directly and converged; only the index-backed
+//! ordered readers diverged. The fix relocates the marker to a dedicated
+//! node-local keyspace (`Column::SortedIndexMeta`) that mirrors the index it
+//! guards, so a peer never inherits another node's marker.
+//!
+//! # Why this lives in `calimero-storage`, not the node-sync harness
+//!
+//! A faithful reproduction needs two properties at once: (1) two nodes that have
+//! **converged state**, and (2) **per-node** ordered indexes (one node built its
+//! index, the other has not). The in-process node-sync simulator
+//! (`crates/node/tests/sync_sim`) deliberately skips WASM execution and drives
+//! storage via `Interface::apply_action` — it never exercises `SortedSet::insert`
+//! or the ordered-index/marker path at all — and its native ordered-index mock
+//! is a single process-wide thread-local shared across simulated nodes, so it
+//! cannot represent a per-node stale index. This test therefore models the two
+//! nodes at the storage layer, which is where the marker/index code actually
+//! lives: **shared (converged) synced state** via a common `RuntimeEnv` store,
+//! plus a **node-local** ordered index that we reset between the two nodes to
+//! model a peer that received the data via sync but has not yet built its index.
+//! Whether resetting the node-local index also drops the marker is exactly what
+//! the fix changes — before it, the marker survived in synced state and lied.
+
+#![allow(clippy::unwrap_used)]
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use calimero_storage::collections::{Root, SortedMap, SortedSet};
+use calimero_storage::env::{
+    clear_sorted_index_for_testing, reset_environment, with_runtime_env, RuntimeEnv,
+};
+use calimero_storage::store::{Key, MainStorage};
+
+/// A shared, synced state store — models state that both nodes have converged on.
+type SharedState = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
+
+const CONTEXT_ID: [u8; 32] = [7u8; 32];
+
+/// Build a `RuntimeEnv` routing all `MainStorage` state I/O into `state` under
+/// `executor`. The node-local ordered index is NOT part of `RuntimeEnv` — it
+/// stays in the process's native index mock, which is what makes "reset the
+/// index between nodes, keep the state" a faithful per-node model.
+fn env_for(state: &SharedState, executor: [u8; 32]) -> RuntimeEnv {
+    let r = Rc::clone(state);
+    let reader = Rc::new(move |key: &Key| r.borrow().get(&key.to_bytes()).cloned());
+    let w = Rc::clone(state);
+    let writer = Rc::new(move |key: Key, value: &[u8]| {
+        w.borrow_mut()
+            .insert(key.to_bytes(), value.to_vec())
+            .is_some()
+    });
+    let rm = Rc::clone(state);
+    let remover = Rc::new(move |key: &Key| rm.borrow_mut().remove(&key.to_bytes()).is_some());
+    RuntimeEnv::new(reader, writer, remover, CONTEXT_ID, executor)
+}
+
+/// SortedSet: node A builds the set + its index; node B shares node A's converged
+/// state but has a fresh (unbuilt) node-local index. Node B's ordered `iter()`
+/// MUST return the full set — it must notice its own index is stale and rebuild,
+/// not trust a marker node A stamped.
+#[test]
+fn sorted_set_ordered_read_converges_on_second_node() {
+    reset_environment();
+    let state: SharedState = Rc::new(RefCell::new(HashMap::new()));
+
+    // Node A: build the set and warm its node-local index + marker.
+    with_runtime_env(env_for(&state, [1u8; 32]), || {
+        let mut set = Root::new(SortedSet::<String, MainStorage>::new);
+        assert!(set.insert("a".to_owned()).unwrap());
+        assert!(set.insert("b".to_owned()).unwrap());
+        // Node A itself reads correctly.
+        assert_eq!(
+            set.iter().unwrap().collect::<Vec<_>>(),
+            vec!["a".to_owned(), "b".to_owned()]
+        );
+        set.commit();
+    });
+
+    // Model node B: same converged synced state, but a fresh node-local index
+    // (sync delivers state, never the index). Before the fix the marker lived in
+    // the synced state and survived this reset, so node B skipped its rebuild and
+    // served a stale subset; after the fix the marker is node-local and is reset
+    // with the index, so node B rebuilds.
+    clear_sorted_index_for_testing();
+
+    with_runtime_env(env_for(&state, [2u8; 32]), || {
+        let set = Root::<SortedSet<String, MainStorage>>::fetch().expect("node B sees state");
+        let got: Vec<String> = set.iter().unwrap().collect();
+        assert_eq!(
+            got,
+            vec!["a".to_owned(), "b".to_owned()],
+            "node B's ordered iter() diverged from converged state — the sorted \
+             index marker leaked across nodes (regression: marker must be node-local)"
+        );
+        // first/last are index-backed too — they must also see the full set.
+        assert_eq!(set.first().unwrap(), Some("a".to_owned()));
+        assert_eq!(set.last().unwrap(), Some("b".to_owned()));
+    });
+}
+
+/// SortedMap: same shape — node B (converged state, fresh index) must see every
+/// key in order via `keys()` / `entries()`.
+#[test]
+fn sorted_map_ordered_read_converges_on_second_node() {
+    reset_environment();
+    let state: SharedState = Rc::new(RefCell::new(HashMap::new()));
+
+    with_runtime_env(env_for(&state, [1u8; 32]), || {
+        let mut map = Root::new(SortedMap::<String, String, MainStorage>::new);
+        assert!(map
+            .insert("a".to_owned(), "A".to_owned())
+            .unwrap()
+            .is_none());
+        assert!(map
+            .insert("b".to_owned(), "B".to_owned())
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            map.keys().unwrap().collect::<Vec<_>>(),
+            vec!["a".to_owned(), "b".to_owned()]
+        );
+        map.commit();
+    });
+
+    clear_sorted_index_for_testing();
+
+    with_runtime_env(env_for(&state, [2u8; 32]), || {
+        let map =
+            Root::<SortedMap<String, String, MainStorage>>::fetch().expect("node B sees state");
+        let keys: Vec<String> = map.keys().unwrap().collect();
+        assert_eq!(
+            keys,
+            vec!["a".to_owned(), "b".to_owned()],
+            "node B's ordered keys() diverged from converged state — sorted index \
+             marker leaked across nodes (regression: marker must be node-local)"
+        );
+        let entries: Vec<(String, String)> = map.entries().unwrap().collect();
+        assert_eq!(
+            entries,
+            vec![
+                ("a".to_owned(), "A".to_owned()),
+                ("b".to_owned(), "B".to_owned())
+            ]
+        );
+    });
+}

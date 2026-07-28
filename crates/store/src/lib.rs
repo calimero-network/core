@@ -92,6 +92,17 @@ impl Store {
         self.db.put(col, Slice::from(key), Slice::from(value))
     }
 
+    /// Point-read a raw `key` from `col`, returning the owned value bytes if
+    /// present. Used for node-local single-key lookups (e.g. the `SortedMap`
+    /// ordered-index validity marker in `Column::SortedIndexMeta`) where the
+    /// variable-length key can't go through the typed `Handle`/`Entry` API.
+    pub fn raw_get(&self, col: Column, key: &[u8]) -> EyreResult<Option<Vec<u8>>> {
+        Ok(self
+            .db
+            .get(col, Slice::from(key))?
+            .map(|slice| slice.into_boxed().into_vec()))
+    }
+
     /// Delete a raw `key` from `col`.
     pub fn raw_delete(&self, col: Column, key: &[u8]) -> EyreResult<()> {
         self.db.delete(col, Slice::from(key))

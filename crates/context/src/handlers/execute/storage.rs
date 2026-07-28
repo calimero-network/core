@@ -297,6 +297,26 @@ impl Storage for ContextStorage {
         // Strip the context-id prefix.
         Some((k.get(self.index_prefix_len()..)?.to_vec(), v))
     }
+
+    // Ordered-index validity marker — node-local, written to the dedicated,
+    // non-synced `Column::SortedIndexMeta` via the same second store handle as
+    // the index it guards (NOT the temporal transaction, NOT the synced
+    // `State`). Key is `context_id ‖ collection_id`; value is the collection's
+    // `full_hash` when its `SortedIndex` was last (re)built.
+
+    fn index_meta_set(&mut self, key: &[u8], value: &[u8]) -> bool {
+        let full = self.index_key(key);
+        self.borrow_index_store()
+            .raw_put(Column::SortedIndexMeta, &full, value)
+            .is_ok()
+    }
+
+    fn index_meta_get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        let full = self.index_key(key);
+        self.borrow_index_store()
+            .raw_get(Column::SortedIndexMeta, &full)
+            .ok()?
+    }
 }
 
 // Same safety reasoning as ContextStorage
@@ -446,6 +466,10 @@ impl<S: Storage> Storage for ReadOnlyContextStorage<'_, S> {
         self.0.index_last(lo, hi)
     }
 
+    fn index_meta_get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.0.index_meta_get(key)
+    }
+
     // Write methods are suppressed — a read-only execution must not mutate state.
     // A debug trace makes misbehaving #[app::view] methods observable; the post-exec
     // assertion in `internal_execute` catches any that still produce a root_hash.
@@ -471,6 +495,11 @@ impl<S: Storage> Storage for ReadOnlyContextStorage<'_, S> {
 
     fn index_del_prefix(&mut self, _prefix: &[u8]) -> bool {
         tracing::debug!("ReadOnlyContextStorage: write suppressed (index_del_prefix)");
+        false
+    }
+
+    fn index_meta_set(&mut self, _key: &[u8], _value: &[u8]) -> bool {
+        tracing::debug!("ReadOnlyContextStorage: write suppressed (index_meta_set)");
         false
     }
 }

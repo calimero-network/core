@@ -8,8 +8,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
  "thiserror 1.0.69",
 ]
 
@@ -894,9 +892,7 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
  "hex",
- "serde_json",
  "sha2 0.10.9",
  "thiserror 1.0.69",
 ]
@@ -1912,6 +1908,7 @@ dependencies = [
 name = "cargo-mero"
 version = "0.1.0"
 dependencies = [
+ "calimero-wasm-abi",
  "camino",
  "cargo_metadata",
  "clap",
@@ -1923,6 +1920,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "syn 2.0.117",
  "tar",
  "tempfile",
  "toml 0.8.23",
@@ -2174,8 +2172,6 @@ dependencies = [
  "bs58",
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
  "thiserror 1.0.69",
 ]
 
@@ -2239,8 +2235,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -2719,8 +2713,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
  "thiserror 1.0.69",
 ]
 
@@ -5158,8 +5150,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
  "thiserror 1.0.69",
 ]
 
@@ -5169,8 +5159,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
  "thiserror 1.0.69",
 ]
 
@@ -5180,8 +5168,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
  "thiserror 1.0.69",
 ]
 
@@ -5191,8 +5177,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
  "thiserror 1.0.69",
 ]
 
@@ -5202,9 +5186,7 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
  "hex",
- "serde_json",
  "thiserror 1.0.69",
 ]
 
@@ -6322,8 +6304,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -6332,8 +6312,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -6342,8 +6320,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -6352,8 +6328,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -6362,8 +6336,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -6598,8 +6570,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -7563,9 +7533,7 @@ dependencies = [
  "bs58",
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
  "hex",
- "serde_json",
  "sha2 0.10.9",
  "thiserror 1.0.69",
 ]
@@ -8654,9 +8622,7 @@ dependencies = [
  "calimero-sdk",
  "calimero-storage",
  "calimero-storage-macros",
- "calimero-wasm-abi",
  "hex",
- "serde_json",
  "sha2 0.10.9",
  "thiserror 1.0.69",
  "tracing",
@@ -8702,8 +8668,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8712,8 +8676,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8722,8 +8684,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8732,8 +8692,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8742,8 +8700,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8752,8 +8708,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8762,8 +8716,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8772,8 +8724,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8782,8 +8732,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8792,8 +8740,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8802,8 +8748,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8812,8 +8756,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8822,8 +8764,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8832,8 +8772,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8842,8 +8780,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8852,8 +8788,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8862,8 +8796,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8872,8 +8804,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8882,8 +8812,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8892,8 +8820,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8902,8 +8828,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8912,8 +8836,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8922,8 +8844,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8932,8 +8852,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8942,8 +8860,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8952,8 +8868,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8962,8 +8876,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8972,8 +8884,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8982,8 +8892,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -8992,8 +8900,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -9002,8 +8908,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -9012,8 +8916,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -9022,8 +8924,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -9032,8 +8932,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -9042,8 +8940,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -9052,8 +8948,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
 ]
 
 [[package]]
@@ -9767,8 +9661,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
  "thiserror 1.0.69",
 ]
 
@@ -9778,8 +9670,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
  "thiserror 1.0.69",
 ]
 
@@ -9999,8 +9889,6 @@ dependencies = [
  "calimero-sdk",
  "calimero-storage",
  "calimero-storage-macros",
- "calimero-wasm-abi",
- "serde_json",
  "thiserror 1.0.69",
 ]
 
@@ -12443,8 +12331,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
  "thiserror 1.0.69",
 ]
 

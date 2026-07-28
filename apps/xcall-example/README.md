@@ -84,7 +84,7 @@ This application includes an automated workflow for end-to-end testing across mu
 
 ```bash
 # Build the application first
-./build.sh
+cargo mero build
 
 # Run the workflow using merobox
 merobox bootstrap run workflows/xcall-example.yml

@@ -48,6 +48,10 @@ echo "==> Building ABI extractor (mero-abi)"
 cargo build --manifest-path tools/calimero-abi/Cargo.toml
 EXTRACTOR="$ROOT/target/debug/mero-abi"
 
+# The corpus builds through `cargo mero`, which is what emits the ABI at all.
+echo "==> Building the app toolchain (cargo-mero)"
+PATH="$(scripts/setup-cargo-mero.sh):$PATH"
+
 echo "==> Ensuring abi-codegen is built ($CODEGEN_DIR)"
 if [ ! -f "$CLI" ]; then
     (
@@ -74,8 +78,8 @@ else
     while IFS= read -r dir; do
         APP_DIRS+=("$dir")
     done < <(
-        grep -oE 'apps/[^"]*/build\.sh' scripts/build-all-apps.sh \
-            | sed 's#/build\.sh##' | sort -u
+        grep -oE 'apps/[^" ]*/Cargo\.toml' scripts/build-all-apps.sh \
+            | sed 's#/Cargo\.toml##' | sort -u
     )
 fi
 
@@ -120,40 +124,39 @@ skip=0
 FAILED=()
 
 for pkg in "${PKGS[@]}"; do
-    echo "==> [$pkg] build debug wasm (ABI custom section intact; no wasm-opt)"
-    # A compile failure must FAIL the contract, not be mistaken for "no ABI" and
-    # skipped — otherwise a broken app silently drops out of validation and the
-    # coverage gate while the job still passes. Capture cargo's JSON to a file and
-    # its stderr to a log; a non-zero exit is a hard error.
-    cargo_json="$OUT_DIR/$pkg.cargo.json"
+    echo "==> [$pkg] build wasm through cargo mero (--profiling: no wasm-opt)"
+    # A build failure is a hard error, never a skip: a broken app must not drop
+    # out of the coverage gate while the job still passes. --profiling only skips
+    # wasm-opt to save CI time; the embed runs after it either way.
     build_log="$OUT_DIR/$pkg.build.log"
-    if ! cargo build -p "$pkg" --target wasm32-unknown-unknown \
-        --message-format=json >"$cargo_json" 2>"$build_log"; then
+    if ! cargo mero build -p "$pkg" --profiling >"$build_log" 2>&1; then
         echo "    BUILD FAILED:"
         sed 's/^/      /' "$build_log"
         FAILED+=("$pkg(build)")
         fail=$((fail + 1))
         continue
     fi
-    # Read the exact produced .wasm path from the artifact messages rather than
-    # guessing the filename from the package name.
-    wasm="$(jq -r 'select(.reason=="compiler-artifact") | .filenames[]?' "$cargo_json" \
-        | grep '\.wasm$' | head -1 || true)"
-    if [ -z "$wasm" ] || [ ! -f "$wasm" ]; then
-        echo "    build OK but no wasm artifact (not a cdylib app?) — skipping"
-        skip=$((skip + 1))
+    # cargo mero writes res/<underscored>.wasm beside the crate manifest.
+    crate_dir="$(echo "$META" | jq -r --arg p "$pkg" \
+        '.packages[] | select(.name==$p) | .manifest_path' | head -1)"
+    crate_dir="$(dirname "$crate_dir")"
+    wasm="$crate_dir/res/$(echo "$pkg" | tr '-' '_').wasm"
+    # A missing wasm after a successful build means the tool and this script
+    # disagree on the name - a fault, not an app without a cdylib.
+    if [ ! -f "$wasm" ]; then
+        echo "    BUILD OK BUT NO WASM AT $wasm"
+        FAILED+=("$pkg(wasm-path)")
+        fail=$((fail + 1))
         continue
     fi
 
-    # Extraction: the extractor reads the calimero_abi_v1 section and, absent it,
-    # reports "No abi.json file found" — that (and only that) means the app emits
-    # no ABI and is a legitimate skip. Any other extractor error is a real fault
-    # (corrupt wasm, extractor bug) and must fail, not silently skip.
+    # The extractor resolves the abi.json beside the wasm. Only "No abi.json file
+    # found" is a legitimate skip; any other error is a fault and must fail.
     abi="$ABI_DIR/$pkg.json"
     extract_log="$OUT_DIR/$pkg.extract.log"
     if ! "$EXTRACTOR" extract "$wasm" -o "$abi" >"$extract_log" 2>&1; then
         if grep -q "No abi.json file found" "$extract_log"; then
-            echo "    no calimero_abi_v1 section — app emits no ABI, skipping"
+            echo "    no abi.json emitted — app has no ABI, skipping"
             skip=$((skip + 1))
             continue
         fi

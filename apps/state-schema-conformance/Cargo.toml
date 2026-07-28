@@ -17,9 +17,5 @@ calimero-storage.workspace = true
 calimero-storage-macros.workspace = true
 thiserror.workspace = true
 
-[build-dependencies]
-calimero-wasm-abi.workspace = true
-serde_json.workspace = true
-
 [package.metadata.workspaces]
 independent = true

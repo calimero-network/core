@@ -693,6 +693,61 @@ impl VMHostFunctions<'_> {
         self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, encoded))?;
         Ok(1)
     }
+
+    /// Write the node-local ordered-index validity marker `key -> value`. Routed
+    /// to the non-synced `Column::SortedIndexMeta` sibling of the ordered index,
+    /// so a peer never observes a marker for an index it did not build. Returns
+    /// `1` if persisted, `0` otherwise.
+    pub fn storage_index_meta_set(&mut self, key_ptr: u64, value_ptr: u64) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
+        let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(key_ptr)? };
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
+        let value = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(value_ptr)? };
+        let logic = self.borrow_logic();
+        if key.len() > logic.limits.max_storage_key_size.get() {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
+        if value.len() > logic.limits.max_storage_value_size.get() {
+            return Err(HostError::ValueLengthOverflow.into());
+        }
+        let key = self.read_guest_memory_slice(&key)?.to_vec();
+        let value = self.read_guest_memory_slice(&value)?.to_vec();
+        trace!(target: "runtime::host::storage", op = "index_meta_set", key_len = key.len(), "storage_index_meta_set");
+        // Same per-execution write budget as the ordered index it mirrors.
+        let ok = self.with_logic_mut(|logic| -> VMLogicResult<bool> {
+            logic.charge_storage_write(key.len() as u64 + value.len() as u64)?;
+            Ok(logic.storage.index_meta_set(&key, &value))
+        })?;
+        Ok(ok.into())
+    }
+
+    /// Read the node-local ordered-index validity marker for `key` into
+    /// `register_id`. Returns `1` if present (value written to the register),
+    /// `0` if absent.
+    pub fn storage_index_meta_get(&mut self, key_ptr: u64, register_id: u64) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
+        let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(key_ptr)? };
+        let logic = self.borrow_logic();
+        if key.len() > logic.limits.max_storage_key_size.get() {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
+        let key = self.read_guest_memory_slice(&key)?.to_vec();
+        trace!(target: "runtime::host::storage", op = "index_meta_get", key_len = key.len(), "storage_index_meta_get");
+        if let Some(value) = self.borrow_logic().storage.index_meta_get(&key) {
+            self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, value))?;
+            return Ok(1);
+        }
+        Ok(0)
+    }
 }
 
 /// Encode ordered-index scan results into the length-prefixed wire format the

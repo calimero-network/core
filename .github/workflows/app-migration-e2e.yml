@@ -85,6 +85,9 @@ jobs:
           shared-key: e2e-rust-apps
           save-if: false
 
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
       - name: Build all WASM fixtures
         run: bash workflows/app-migration/build-wasms.sh
 
@@ -92,11 +95,12 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: app-migration-wasm-fixtures
-          # The workflows install the signed same-package .mpk bundles; the
-          # raw wasms ride along for the schema-guard job and local rebuilds.
+          # Repo-root-relative roots so paths restore verbatim. The unembedded
+          # fixture lands beside its suite, not in dist/.
           path: |
             apps/migrations/**/res/*.wasm
             apps/migrations/**/res/*.mpk
+            dist/*.mpk
           retention-days: 1
           if-no-files-found: error
 
@@ -130,10 +134,13 @@ jobs:
       - name: Build calimero-abi
         run: cargo build -p mero-abi
 
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
       - name: Emit downgrade-scenario state schemas
         run: |
-          bash apps/migrations/scenario-identity-downgrade-v1/build.sh
-          bash apps/migrations/scenario-identity-downgrade-v2/build.sh
+          cargo mero build --manifest-path apps/migrations/scenario-identity-downgrade-v1/Cargo.toml
+          cargo mero build --manifest-path apps/migrations/scenario-identity-downgrade-v2/Cargo.toml
 
       - name: calimero-abi diff must flag the identity downgrade
         run: |
@@ -230,7 +237,6 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: app-migration-wasm-fixtures
-          path: apps/migrations
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox

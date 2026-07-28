@@ -25,6 +25,8 @@ wasm-opt.workspace = true
 tempfile.workspace = true
 mero-abi.workspace = true
 mero-sign.workspace = true
+calimero-wasm-abi.workspace = true
+syn.workspace = true
 
 [dev-dependencies]
 wasmparser.workspace = true

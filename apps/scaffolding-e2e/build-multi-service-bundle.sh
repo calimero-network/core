@@ -3,9 +3,10 @@ set -e
 
 cd "$(dirname $0)"
 
-# Build the WASM first
-# Note: wasm-opt validation errors are non-fatal
-./build.sh 2>&1 | grep -v "wasm-validator error" || true
+# Hand-rolls a two-service manifest from one crate, which a workspace-level
+# services table cannot express, so it stays outside the tool.
+PATH="$(../../scripts/setup-cargo-mero.sh):$PATH"
+cargo mero build --manifest-path Cargo.toml
 
 mkdir -p res/multi-bundle-temp
 

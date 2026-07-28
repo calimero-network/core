@@ -1,8 +1,12 @@
-//! `cargo mero build`: compile an app to wasm32, copy it into `res/`, size-
-//! optimize it (release only), and embed the full `res/abi.json` as the
-//! `calimero_abi_v1` section so the node can read the state schema and
-//! per-method flags off the bytecode.
+//! `cargo mero build`: emit the app's ABI from its sources, compile it to wasm32,
+//! copy it into `res/`, size-optimize it (release only), and embed the full
+//! `res/abi.json` as the `calimero_abi_v1` section so the node can read the state
+//! schema and per-method flags off the bytecode.
+//!
+//! The ABI emit lives here rather than in each app's `build.rs` so one
+//! implementation owns it; an app needs no build script to carry an ABI.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -185,6 +189,192 @@ fn target_from_package(package: &cargo_metadata::Package) -> Result<Target> {
     })
 }
 
+/// The features cargo resolves for `crate_name`, standing in for the
+/// `CARGO_FEATURE_*` vars only a build script gets. Errors rather than returning
+/// an empty set, which would quietly drop feature-gated items from the ABI.
+fn resolved_features(
+    metadata: &cargo_metadata::Metadata,
+    crate_name: &str,
+) -> Result<BTreeSet<String>> {
+    let pkg = metadata
+        .packages
+        .iter()
+        .find(|p| p.name.as_str() == crate_name)
+        .ok_or_else(|| eyre!("package `{crate_name}` not found in cargo metadata"))?;
+
+    let resolve = metadata
+        .resolve
+        .as_ref()
+        .ok_or_else(|| eyre!("cargo metadata carries no resolve graph"))?;
+
+    let node = resolve
+        .nodes
+        .iter()
+        .find(|n| n.id == pkg.id)
+        .ok_or_else(|| eyre!("no resolve node for `{crate_name}` ({})", pkg.id))?;
+
+    Ok(node.features.iter().map(ToString::to_string).collect())
+}
+
+/// The `#[path = "..."]` override on a `mod` declaration, if present.
+fn mod_path_attr(attrs: &[syn::Attribute]) -> Option<String> {
+    attrs.iter().find_map(|attr| {
+        let syn::Meta::NameValue(nv) = &attr.meta else {
+            return None;
+        };
+        if !nv.path.is_ident("path") {
+            return None;
+        }
+        match &nv.value {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(s),
+                ..
+            }) => Some(s.value()),
+            _ => None,
+        }
+    })
+}
+
+/// Where `mod <name>;` declared in a file whose module directory is `dir`
+/// resolves. `name.rs` and `name/mod.rs` are both accepted.
+fn module_file(dir: &Utf8Path, name: &str, path_attr: Option<&str>) -> Option<Utf8PathBuf> {
+    if let Some(rel) = path_attr {
+        let candidate = dir.join(rel);
+        return candidate.is_file().then_some(candidate);
+    }
+    [
+        dir.join(format!("{name}.rs")),
+        dir.join(name).join("mod.rs"),
+    ]
+    .into_iter()
+    .find(|p| p.is_file())
+}
+
+/// Queue every file `items` pulls in via `mod name;`, as (file, its module dir).
+/// Descends into inline `mod name { .. }` bodies, whose own `mod x;` children
+/// resolve one directory deeper.
+fn queue_module_files(
+    items: &[syn::Item],
+    dir: &Utf8Path,
+    features: &BTreeSet<String>,
+    out: &mut Vec<(Utf8PathBuf, Utf8PathBuf)>,
+) {
+    for item in items {
+        let syn::Item::Mod(m) = item else { continue };
+        if !calimero_wasm_abi::emitter::item_cfg_active(item, features) {
+            continue;
+        }
+        let name = m.ident.to_string();
+        let path_attr = mod_path_attr(&m.attrs);
+        match &m.content {
+            // Inline body: already part of the enclosing file's contents, but its
+            // own `mod x;` children still resolve one level down.
+            Some((_, inner)) => {
+                let child_dir = path_attr
+                    .as_ref()
+                    .map_or_else(|| dir.join(&name), |p| dir.join(p));
+                queue_module_files(inner, &child_dir, features, out);
+            }
+            // A declared module with no file on disk would not compile at all, so
+            // cargo's own error is the better one to surface - don't mask it here.
+            None => {
+                if let Some(file) = module_file(dir, &name, path_attr.as_deref()) {
+                    out.push((file, dir.join(&name)));
+                }
+            }
+        }
+    }
+}
+
+/// The crate's sources, found by following `mod` declarations from `src/lib.rs`.
+/// Not a glob: a file the module tree does not pull in is never compiled into the
+/// wasm, so its types must not reach the ABI either.
+fn crate_sources(src_dir: &Utf8Path, features: &BTreeSet<String>) -> Result<Vec<(String, String)>> {
+    let root = src_dir.join("lib.rs");
+    if !root.is_file() {
+        bail!("no lib.rs found under {src_dir}");
+    }
+
+    let mut sources = Vec::new();
+    let mut queue = vec![(root, src_dir.to_owned())];
+    let mut seen = std::collections::BTreeSet::new();
+
+    while let Some((path, dir)) = queue.pop() {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let content =
+            std::fs::read_to_string(&path).wrap_err_with(|| format!("failed to read {path}"))?;
+        let parsed = syn::parse_file(&content)
+            .map_err(|e| eyre!("failed to parse {path} while collecting sources: {e}"))?;
+
+        queue_module_files(&parsed.items, &dir, features, &mut queue);
+
+        let name = path
+            .strip_prefix(src_dir)
+            .map(Utf8Path::as_str)
+            .unwrap_or(path.as_str())
+            .to_owned();
+        sources.push((name, content));
+    }
+
+    // Deterministic order regardless of traversal order.
+    sources.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(sources)
+}
+
+/// Emit `res/abi.json` and `res/state-schema.json` from the crate's own sources,
+/// so an app needs no build script of its own. Returns the `abi.json` path the
+/// embed step consumes.
+fn emit_abi(
+    crate_dir: &Utf8Path,
+    res_dir: &Utf8Path,
+    features: &BTreeSet<String>,
+) -> Result<Utf8PathBuf> {
+    let src_dir = crate_dir.join("src");
+    let sources = crate_sources(&src_dir, features)?;
+    if sources.is_empty() {
+        bail!("no .rs sources found under {src_dir}");
+    }
+
+    let manifest =
+        calimero_wasm_abi::emitter::emit_manifest_from_crate_with_features(&sources, features)
+            .map_err(|e| eyre!("failed to emit ABI manifest for {crate_dir}: {e}"))?;
+
+    let abi_json = res_dir.join("abi.json");
+    std::fs::write(&abi_json, serde_json::to_string_pretty(&manifest)?)
+        .wrap_err_with(|| format!("failed to write {abi_json}"))?;
+    println!("• emitted {abi_json}");
+
+    // Tolerated but never silent: without a state schema the node's upgrade gates
+    // fail open, so say so loudly rather than shipping a quietly incomplete pair.
+    let schema_path = res_dir.join("state-schema.json");
+    match manifest.extract_state_schema() {
+        Err(e) => {
+            // res/ is not cleaned between builds, so an earlier build's schema would
+            // otherwise linger and describe an abi.json it no longer matches - and
+            // `bundle` ships res/ as-is.
+            if schema_path.is_file() {
+                std::fs::remove_file(&schema_path)
+                    .wrap_err_with(|| format!("failed to remove stale {schema_path}"))?;
+            }
+            eprintln!(
+                "warning: no state schema for {crate_dir}: {e}\n\
+                 warning: res/state-schema.json was not written; the node cannot check \
+                 upgrades against this app's state"
+            );
+        }
+        Ok(mut state_schema) => {
+            state_schema.schema_version = "wasm-abi/1".to_owned();
+            std::fs::write(&schema_path, serde_json::to_string_pretty(&state_schema)?)
+                .wrap_err_with(|| format!("failed to write {schema_path}"))?;
+            println!("• emitted {schema_path}");
+        }
+    }
+
+    Ok(abi_json)
+}
+
 fn build_one(
     metadata: &cargo_metadata::Metadata,
     target: &Target,
@@ -207,22 +397,17 @@ fn build_one(
         bail!("expected wasm artifact not found at {artifact}");
     }
 
+    // Before anything lands in res/: emitting later would leave an un-embedded
+    // wasm behind on failure, which trips the CI ABI guard.
     let res_dir = target.crate_dir.join("res");
     std::fs::create_dir_all(&res_dir).wrap_err_with(|| format!("failed to create {res_dir}"))?;
+    let features = resolved_features(metadata, crate_name)?;
+    let abi_json = emit_abi(&target.crate_dir, &res_dir, &features)?;
+
     let wasm_path = res_dir.join(format!("{underscored}.wasm"));
     std::fs::copy(&artifact, &wasm_path)
         .wrap_err_with(|| format!("failed to copy {artifact} -> {wasm_path}"))?;
     println!("• copied wasm to {wasm_path}");
-
-    // Checked before optimizing: a missing ABI is an early-onboarding mistake, and
-    // failing here skips the expensive wasm-opt pass.
-    let abi_json = res_dir.join("abi.json");
-    if !abi_json.exists() {
-        bail!(
-            "app build did not emit {abi_json} - the app's build.rs must emit res/abi.json \
-             (scaffold with `cargo mero new` or copy apps/kv-store/build.rs)"
-        );
-    }
 
     if optimize {
         println!("• optimizing {wasm_path} (wasm-opt -Oz)");
@@ -373,8 +558,283 @@ strip = false"#;
 
 #[cfg(test)]
 mod tests {
-    use super::{canonicalize_abi, select_service_builds};
+    use std::collections::BTreeSet;
+
+    use camino::Utf8PathBuf;
     use serde_json::json;
+
+    use super::{canonicalize_abi, emit_abi, select_service_builds};
+
+    const MINIMAL_APP: &str = r#"
+        #[app::state(version = 1)]
+        pub struct State { x: u32 }
+        #[app::logic]
+        impl State {
+            #[app::init] pub fn init() -> State { State { x: 0 } }
+            pub fn bump(&mut self) {}
+        }
+    "#;
+
+    /// Write `sources` into `<root>/src` and emit into `<root>/res`.
+    fn emit_into(root: &Utf8PathBuf, sources: &[(&str, &str)]) -> Utf8PathBuf {
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for (name, body) in sources {
+            std::fs::write(root.join("src").join(name), body).unwrap();
+        }
+        let res = root.join("res");
+        std::fs::create_dir_all(&res).unwrap();
+        emit_abi(root, &res, &BTreeSet::new()).expect("emit_abi");
+        res
+    }
+
+    #[test]
+    fn emit_abi_writes_both_artifacts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let res = emit_into(&root, &[("lib.rs", MINIMAL_APP)]);
+
+        let abi: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(res.join("abi.json")).unwrap()).unwrap();
+        assert!(
+            abi["methods"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|x| x["name"] == "bump")),
+            "abi.json must carry the app's methods"
+        );
+
+        let schema: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(res.join("state-schema.json")).unwrap()).unwrap();
+        assert_eq!(
+            schema["schema_version"], "wasm-abi/1",
+            "state schema must be stamped with the version the node reads"
+        );
+    }
+
+    fn collected(root: &Utf8PathBuf, features: &BTreeSet<String>) -> Vec<String> {
+        super::crate_sources(&root.join("src"), features)
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    /// A module declared with `mod x;` is part of the crate, so it is collected.
+    #[test]
+    fn crate_sources_follows_mod_declarations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            format!("pub mod extra;\n{MINIMAL_APP}"),
+        )
+        .unwrap();
+        std::fs::write(root.join("src/extra.rs"), "pub struct Extra { pub a: u32 }").unwrap();
+
+        let names = collected(&root, &BTreeSet::new());
+        assert!(names.contains(&"extra.rs".to_owned()), "got {names:?}");
+    }
+
+    /// `src/foo.rs` declaring `mod bar;` resolves to `src/foo/bar.rs`.
+    #[test]
+    fn crate_sources_follows_nested_modules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(root.join("src/outer")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            format!("pub mod outer;\n{MINIMAL_APP}"),
+        )
+        .unwrap();
+        std::fs::write(root.join("src/outer.rs"), "pub mod deep;").unwrap();
+        std::fs::write(
+            root.join("src/outer/deep.rs"),
+            "pub struct Deep { pub a: u32 }",
+        )
+        .unwrap();
+
+        let names = collected(&root, &BTreeSet::new());
+        assert!(
+            names.iter().any(|n| n.ends_with("deep.rs")),
+            "nested module must be collected, got {names:?}"
+        );
+    }
+
+    /// `mod outer { mod inner; }` still loads `src/outer/inner.rs`, so the walk has
+    /// to descend through the inline body rather than skip it.
+    #[test]
+    fn crate_sources_follows_mods_nested_in_inline_blocks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(root.join("src/outer")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            format!("pub mod outer {{ pub mod inner; }}\n{MINIMAL_APP}"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/outer/inner.rs"),
+            "pub struct Inner { pub a: u32 }",
+        )
+        .unwrap();
+
+        let names = collected(&root, &BTreeSet::new());
+        assert!(
+            names.iter().any(|n| n.ends_with("inner.rs")),
+            "a mod declared inside an inline block must still be followed, got {names:?}"
+        );
+    }
+
+    /// A `#[cfg(test)]` inline block must not drag its file-backed children in.
+    #[test]
+    fn crate_sources_skips_mods_under_a_cfg_test_inline_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(root.join("src/harness")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            format!("#[cfg(test)]\nmod harness {{ pub mod fixtures; }}\n{MINIMAL_APP}"),
+        )
+        .unwrap();
+        std::fs::write(root.join("src/harness/fixtures.rs"), "pub struct Fixture;").unwrap();
+
+        let names = collected(&root, &BTreeSet::new());
+        assert_eq!(names, vec!["lib.rs".to_owned()], "got {names:?}");
+    }
+
+    /// Apps only build for wasm32, so a module gated to another target is not in
+    /// the wasm and must not be walked into the ABI.
+    #[test]
+    fn crate_sources_skips_modules_gated_to_another_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            format!(
+                "#[cfg(not(target_arch = \"wasm32\"))]\nmod native_only;\n\
+                 #[cfg(target_os = \"linux\")]\nmod linux_only;\n\
+                 #[cfg(unix)]\nmod unix_only;\n\
+                 #[cfg(target_arch = \"wasm32\")]\nmod wasm_only;\n{MINIMAL_APP}"
+            ),
+        )
+        .unwrap();
+        for m in ["native_only", "linux_only", "unix_only", "wasm_only"] {
+            std::fs::write(root.join(format!("src/{m}.rs")), "pub struct T;").unwrap();
+        }
+
+        let mut names = collected(&root, &BTreeSet::new());
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["lib.rs".to_owned(), "wasm_only.rs".to_owned()],
+            "only the wasm32-gated module joins lib.rs, got {names:?}"
+        );
+    }
+
+    /// `cfg(test)` also has to be decided inside `all(..)` / `any(..)`, and
+    /// `not(test)` must stay included.
+    #[test]
+    fn crate_sources_decides_cfg_test_in_compound_predicates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            format!(
+                "#[cfg(all(test, feature = \"extras\"))]\nmod all_test;\n\
+                 #[cfg(any(test, feature = \"absent\"))]\nmod any_test;\n\
+                 #[cfg(not(test))]\nmod shipped;\n{MINIMAL_APP}"
+            ),
+        )
+        .unwrap();
+        for m in ["all_test", "any_test", "shipped"] {
+            std::fs::write(root.join(format!("src/{m}.rs")), "pub struct T;").unwrap();
+        }
+
+        // `extras` on: all(test, extras) is still test-only, and any(test, absent)
+        // has no other way in, so only `shipped` joins lib.rs.
+        let on: BTreeSet<String> = ["extras".to_owned()].into_iter().collect();
+        let mut names = collected(&root, &on);
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["lib.rs".to_owned(), "shipped.rs".to_owned()],
+            "got {names:?}"
+        );
+    }
+
+    /// A file the module tree never pulls in is not compiled into the wasm, so its
+    /// types must not reach the ABI. Same for a module gated off by features.
+    #[test]
+    fn crate_sources_ignores_unreferenced_and_gated_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            format!(
+                "#[cfg(feature = \"extras\")]\npub mod gated;\n#[cfg(test)]\nmod harness;\n{MINIMAL_APP}"
+            ),
+        )
+        .unwrap();
+        std::fs::write(root.join("src/stray.rs"), "pub struct Stray;").unwrap();
+        std::fs::write(root.join("src/gated.rs"), "pub struct Gated;").unwrap();
+        std::fs::write(root.join("src/harness.rs"), "pub struct Harness;").unwrap();
+
+        let names = collected(&root, &BTreeSet::new());
+        assert_eq!(
+            names,
+            vec!["lib.rs".to_owned()],
+            "only lib.rs is reachable with `extras` off"
+        );
+
+        let on: BTreeSet<String> = ["extras".to_owned()].into_iter().collect();
+        let names = collected(&root, &on);
+        assert!(names.contains(&"gated.rs".to_owned()), "got {names:?}");
+        assert!(!names.contains(&"stray.rs".to_owned()), "got {names:?}");
+    }
+
+    /// res/ is not cleaned between builds, so a schema left by an earlier build
+    /// must not survive a build whose extraction fails - `bundle` ships res/ as-is,
+    /// and it would describe an abi.json it no longer matches.
+    #[test]
+    fn emit_abi_removes_a_stale_state_schema_when_extraction_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        // Emits a manifest, but has no `#[app::state]`, so there is no state root
+        // to extract a schema from.
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub struct NotState { x: u32 }\n#[app::logic]\nimpl NotState { pub fn peek(&self) {} }",
+        )
+        .unwrap();
+        let res = root.join("res");
+        std::fs::create_dir_all(&res).unwrap();
+        let stale = res.join("state-schema.json");
+        std::fs::write(&stale, "{\"stale\":true}").unwrap();
+
+        emit_abi(&root, &res, &BTreeSet::new()).expect("abi.json is still emitted");
+        assert!(
+            res.join("abi.json").is_file(),
+            "abi.json must still be written"
+        );
+        assert!(
+            !stale.exists(),
+            "a stale state-schema.json must not survive a failed extraction"
+        );
+    }
+
+    #[test]
+    fn emit_abi_fails_without_a_lib_rs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let res = root.join("res");
+        std::fs::create_dir_all(&res).unwrap();
+        assert!(emit_abi(&root, &res, &BTreeSet::new()).is_err());
+    }
 
     fn services() -> Vec<String> {
         vec!["api".to_string(), "worker".to_string()]

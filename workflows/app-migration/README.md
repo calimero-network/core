@@ -136,7 +136,7 @@ bash workflows/app-migration/build-wasms.sh
 Or build a single suite:
 
 ```bash
-bash apps/migrations/migration-suite-v1/build.sh
+cargo mero build --manifest-path apps/migrations/migration-suite-v1/Cargo.toml
 ```
 
 ## Running locally

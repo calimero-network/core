@@ -15,17 +15,14 @@ set -euo pipefail
 NODE="${NODE:-node1}"
 MEROCTL="${MEROCTL:-./target/debug/meroctl}"
 
-BUNDLE_V1_MPK="apps/migrations/migration-suite-v1/res/migration-suite-1.0.0.mpk"
-BUNDLE_V2_MPK="apps/migrations/migration-suite-v2-add-field/res/migration-suite-2.0.0.mpk"
-BUNDLE_V3_MPK="apps/migrations/migration-suite-v3-remove-field/res/migration-suite-3.0.0.mpk"
-BUNDLE_V4_MPK="apps/migrations/migration-suite-v4-rename-field/res/migration-suite-4.0.0.mpk"
-BUNDLE_V5_MPK="apps/migrations/migration-suite-v5-change-type/res/migration-suite-5.0.0.mpk"
+BUNDLE_V1_MPK="dist/migration-suite-v1.mpk"
+BUNDLE_V2_MPK="dist/migration-suite-v2-add-field.mpk"
+BUNDLE_V3_MPK="dist/migration-suite-v3-remove-field.mpk"
+BUNDLE_V4_MPK="dist/migration-suite-v4-rename-field.mpk"
+BUNDLE_V5_MPK="dist/migration-suite-v5-change-type.mpk"
 
-BUILD_V1_SCRIPT="apps/migrations/migration-suite-v1/build-bundle.sh"
-BUILD_V2_SCRIPT="apps/migrations/migration-suite-v2-add-field/build-bundle.sh"
-BUILD_V3_SCRIPT="apps/migrations/migration-suite-v3-remove-field/build-bundle.sh"
-BUILD_V4_SCRIPT="apps/migrations/migration-suite-v4-rename-field/build-bundle.sh"
-BUILD_V5_SCRIPT="apps/migrations/migration-suite-v5-change-type/build-bundle.sh"
+# All fixtures are built + bundled by one tool-driven script.
+BUILD_WASMS_SCRIPT="workflows/app-migration/build-wasms.sh"
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -45,30 +42,23 @@ call() {
     "$MEROCTL" --node "$NODE" call "$@" --context "$CONTEXT_ID" --as "$MEMBER_PUBLIC_KEY"
 }
 
-ensure_mpk() {
-    local mpk_path="$1"
-    local build_script="$2"
-    local label="$3"
-
-    if [[ -f "$mpk_path" ]]; then
-        echo "Found $label bundle: $mpk_path"
+# Build + bundle every migration fixture through cargo mero if any is missing.
+ensure_bundles() {
+    if [[ -f "$BUNDLE_V1_MPK" && -f "$BUNDLE_V2_MPK" && -f "$BUNDLE_V3_MPK" \
+          && -f "$BUNDLE_V4_MPK" && -f "$BUNDLE_V5_MPK" ]]; then
+        echo "Found all migration-suite bundles under dist/"
         return 0
     fi
 
-    echo "Missing $label bundle: $mpk_path"
-    echo "Building $label bundle via: $build_script"
+    echo "Building migration-suite bundles via: $BUILD_WASMS_SCRIPT"
+    bash "$BUILD_WASMS_SCRIPT"
 
-    if [[ ! -f "$build_script" ]]; then
-        echo "FAIL: build script not found: $build_script" >&2
-        exit 1
-    fi
-
-    bash "$build_script"
-
-    if [[ ! -f "$mpk_path" ]]; then
-        echo "FAIL: bundle still missing after build: $mpk_path" >&2
-        exit 1
-    fi
+    for mpk in "$BUNDLE_V1_MPK" "$BUNDLE_V2_MPK" "$BUNDLE_V3_MPK" "$BUNDLE_V4_MPK" "$BUNDLE_V5_MPK"; do
+        if [[ ! -f "$mpk" ]]; then
+            echo "FAIL: bundle still missing after build: $mpk" >&2
+            exit 1
+        fi
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -80,11 +70,7 @@ echo "====================================================="
 
 echo ""
 echo "--- 1.0  Ensure migration suite bundles exist ---"
-ensure_mpk "$BUNDLE_V1_MPK" "$BUILD_V1_SCRIPT" "Migration Suite v1"
-ensure_mpk "$BUNDLE_V2_MPK" "$BUILD_V2_SCRIPT" "Migration Suite v2 (add field)"
-ensure_mpk "$BUNDLE_V3_MPK" "$BUILD_V3_SCRIPT" "Migration Suite v3 (remove field)"
-ensure_mpk "$BUNDLE_V4_MPK" "$BUILD_V4_SCRIPT" "Migration Suite v4 (rename field)"
-ensure_mpk "$BUNDLE_V5_MPK" "$BUILD_V5_SCRIPT" "Migration Suite v5 (change type)"
+ensure_bundles
 
 echo ""
 echo "--- 1.1  Install Migration Suite v1 ---"
