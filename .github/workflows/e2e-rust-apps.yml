@@ -209,6 +209,13 @@ jobs:
           - workflow: group-join-mesh-not-ready
             file: workflows/group-join-mesh-not-ready.yml
             app: scaffolding-e2e
+          # Asserts a peer discovered over mDNS reaches the KAD ROUTING TABLE
+          # (`RoutingUpdated` in both nodes' logs), which was measured at 0 for
+          # a whole run before the identify fix. Without it the fleet gossips
+          # fine while every DHT query returns closest_peers: [] / requests: 0.
+          - workflow: kad-routing-from-identify
+            file: workflows/kad-routing-from-identify.yml
+            app: scaffolding-e2e
           - workflow: group-3node
             file: workflows/group-3node.yml
             app: scaffolding-e2e
