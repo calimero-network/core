@@ -346,6 +346,49 @@ jobs:
           - workflow: blobs-api-example
             file: workflows/blobs-example.yml
             app: blobs
+          # #3317 regression: uploading with a context_id must publish a provider
+          # record. It silently did not for any namespace-backed context — i.e.
+          # every context — and blobs.yml stayed green because its only
+          # second-node step is `list_files`, which reads CRDT metadata and
+          # replicates independently of the blob. Asserts the membership bail is
+          # absent from the node log. The byte-transfer half of #3317 lives in
+          # blob-cross-node-transfer.yml and is NOT listed here yet: it needs
+          # merobox's `download_blob` step (0.6.44) plus a MIN_MEROBOX bump in
+          # .github/actions/setup-merobox/action.yml.
+          - workflow: blob-announce-membership
+            file: workflows/blob-announce-namespace-membership.yml
+            app: blobs
+          # blob-cross-node-{transfer,sizes} are written and merobox 0.6.44 ships
+          # the `download_blob` step they need — but they CANNOT PASS in this
+          # harness, for a reason unrelated to #3317, so they stay out of the
+          # matrix. Evidence from a real run (run 30271797358):
+          #
+          #   node 1: "Successfully stored blob record in DHT"
+          #           "Blob announced to network"          <- the fix works
+          #   node 2: GetRecord Err(NotFound { closest_peers: [] })
+          #           QueryStats { requests: 0, ... }      <- asked nobody
+          #
+          # `requests: 0` with an empty `closest_peers` means node 2's Kademlia
+          # routing table is empty, and `grep -c RoutingUpdated` over both
+          # containers' logs is 0 for the entire run. The peers are connected at
+          # the swarm level (gossipsub subscribes, create_mesh converges, CRDT
+          # state replicates) but kad is never populated, so a DHT provider
+          # lookup can never reach anyone. That is why blobs.yml only ever
+          # asserted `list_files`: metadata rides gossipsub, blob bytes ride kad,
+          # and only the former works in a two-node docker fleet with no
+          # bootstrap node.
+          #
+          # Unblocking them needs the harness to seed kad (a bootstrap/relay node
+          # in the fleet, or explicit peer addresses into the routing table) — or
+          # confirmation that kad populates given more time than these workflows
+          # allow. NOT a merobox version problem: 0.6.44 is installed and the
+          # step runs correctly right up to the lookup.
+          # - workflow: blob-cross-node-transfer
+          #   file: workflows/blob-cross-node-transfer.yml
+          #   app: blobs
+          # - workflow: blob-cross-node-sizes
+          #   file: workflows/blob-cross-node-sizes.yml
+          #   app: blobs
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml
             app: scaffolding-e2e
@@ -460,6 +503,18 @@ jobs:
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
+
+      # Only the size sweep needs these, and they are 141 MiB of /dev/urandom —
+      # not worth generating for every other workflow in the matrix. Random
+      # content is required, not incidental: blobs are content-addressed, so a
+      # predictable fixture would already sit on the fetching node and the
+      # cross-node path under test would be skipped.
+      - name: Generate blob fixtures
+        if: matrix.workflow == 'blob-cross-node-sizes'
+        run: |
+          cd apps/blobs
+          chmod +x scripts/gen-blob-fixtures.sh
+          ./scripts/gen-blob-fixtures.sh
 
       - name: Run ${{ matrix.workflow }}
         env:
