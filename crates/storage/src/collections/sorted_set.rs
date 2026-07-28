@@ -50,7 +50,7 @@ use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::Data;
 use crate::index::Index;
-use crate::store::{Key, MainStorage, StorageAdaptor};
+use crate::store::{MainStorage, StorageAdaptor};
 
 /// A set collection that keeps its elements ordered, enabling range and prefix
 /// queries plus pagination. See the [module docs](self) and
@@ -328,18 +328,16 @@ where
             .unwrap_or([0u8; 32])
     }
 
-    /// Stamp the index validity marker with the current `full_hash`.
+    /// Stamp the index validity marker with the current `full_hash`. Routed to
+    /// the node-local index-meta keyspace (mirroring the index it guards), never
+    /// the synced state — so a peer never inherits this node's marker.
     fn stamp_index_marker(&self) {
-        let _ = S::storage_write(
-            Key::SortedIndexMeta(self.inner.id()),
-            &self.current_full_hash(),
-        );
+        let _ = S::index_meta_put(self.inner.id(), &self.current_full_hash());
     }
 
     /// `true` if the stamped marker equals the current `full_hash`.
     fn index_marker_current(&self) -> bool {
-        S::storage_read(Key::SortedIndexMeta(self.inner.id())).as_deref()
-            == Some(&self.current_full_hash()[..])
+        S::index_meta_get(self.inner.id()).as_deref() == Some(&self.current_full_hash()[..])
     }
 
     /// Reconcile the index with the authoritative element set, then stamp the

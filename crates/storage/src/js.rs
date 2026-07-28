@@ -8,9 +8,9 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate as calimero_storage;
 use crate::collections::{
-    error::StoreError, Counter as StorageCounter, FrozenStorage, LwwRegister as StorageLwwRegister,
-    ReplicatedGrowableArray, SortedMap as StorageSortedMap, SortedSet as StorageSortedSet,
-    UnorderedMap, UnorderedSet, UserStorage, Vector,
+    error::StoreError, AuthoredMap, AuthoredVector, Counter as StorageCounter, FrozenStorage,
+    LwwRegister as StorageLwwRegister, ReplicatedGrowableArray, SortedMap as StorageSortedMap,
+    SortedSet as StorageSortedSet, UnorderedMap, UnorderedSet, UserStorage, Vector,
 };
 use crate::entities::{Element, Metadata};
 use crate::store::MainStorage;
@@ -1351,6 +1351,325 @@ impl JsSortedSet {
 }
 
 impl Default for JsSortedSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A byte-oriented attributed map that integrates with Calimero storage.
+///
+/// Wraps [`AuthoredMap`], a shared-keyspace map with per-entry ownership. Any
+/// context member may [`insert`](Self::insert) a new key, which stamps the
+/// current executor as the entry's owner; only that owner may later
+/// [`update`](Self::update) or [`remove`](Self::remove) the entry. Reads are
+/// unrestricted. Ownership is resolved from `env::executor_id()`, which the
+/// runtime installs per-execution — no identity argument is threaded through
+/// the byte API.
+#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
+pub struct JsAuthoredMap {
+    map: AuthoredMap<Vec<u8>, Vec<u8>>,
+
+    #[storage]
+    storage: Element,
+}
+
+impl JsAuthoredMap {
+    /// Creates a new JS authored map backed by the main storage backend.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            map: AuthoredMap::new(),
+            storage: Element::new(None),
+        }
+    }
+
+    /// Rehydrates an authored map using a known identifier.
+    #[must_use]
+    pub fn new_with_id(id: Id) -> Self {
+        Self {
+            map: AuthoredMap::new(),
+            storage: Element::new(Some(id)),
+        }
+    }
+
+    /// Returns the unique identifier of this collection.
+    #[must_use]
+    pub fn id(&self) -> Id {
+        self.storage.id()
+    }
+
+    /// Inserts a new key/value pair, stamping the current executor as owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if `key` already exists (ownership transfer is not
+    /// supported) or if the underlying storage write fails.
+    pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
+        self.map.insert(key.to_vec(), value.to_vec())
+    }
+
+    /// Replaces the value at `key`. Only the entry's owner may call this.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] with `ActionNotAllowed` if the current executor is
+    /// not the stored owner, `NotFound` if `key` is absent, or any underlying
+    /// storage error.
+    pub fn update(&mut self, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
+        self.map.update(&key.to_vec(), value.to_vec())
+    }
+
+    /// Removes `key`, returning the previous value if it existed. Only the
+    /// entry's owner may call this.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] with `ActionNotAllowed` if the current executor is
+    /// not the stored owner, or any underlying storage error. Returns `Ok(None)`
+    /// if `key` is absent.
+    pub fn remove(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        self.map.remove(&key.to_vec())
+    }
+
+    /// Retrieves the value for `key`, if present.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] when the underlying map read fails.
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        self.map.get(&key.to_vec())
+    }
+
+    /// Checks whether `key` exists within the map.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if the existence check fails.
+    pub fn contains(&self, key: &[u8]) -> Result<bool, StoreError> {
+        self.map.contains(&key.to_vec())
+    }
+
+    /// Returns the 32-byte public key of the owner of `key`, if present.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if reading entry metadata fails.
+    pub fn owner_of(&self, key: &[u8]) -> Result<Option<[u8; 32]>, StoreError> {
+        Ok(self.map.owner_of(&key.to_vec())?.map(|pk| *pk.as_ref()))
+    }
+
+    /// Returns whether the current executor owns `key`. False for absent keys.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if reading entry metadata fails.
+    pub fn owned_by_me(&self, key: &[u8]) -> Result<bool, StoreError> {
+        self.map.owned_by_me(&key.to_vec())
+    }
+
+    /// Returns all key/value pairs currently stored in the map.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if reading from storage fails.
+    pub fn entries(&self) -> Result<JsByteEntries, StoreError> {
+        Ok(self.map.entries()?.collect())
+    }
+
+    /// Returns the number of entries in the map.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if the length query cannot be satisfied.
+    pub fn len(&self) -> Result<usize, StoreError> {
+        self.map.len()
+    }
+
+    /// Returns `true` if the map is empty.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] through the underlying [`len`](Self::len) call.
+    pub fn is_empty(&self) -> Result<bool, StoreError> {
+        Ok(self.len()? == 0)
+    }
+
+    /// Persists the map using the provided interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] produced by the storage interface.
+    pub fn save(&mut self) -> Result<bool, StorageError> {
+        Interface::<MainStorage>::save(self)
+    }
+
+    /// Loads a map by identifier using the provided interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if the map cannot be fetched from storage.
+    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
+        Interface::<MainStorage>::find_by_id::<Self>(id)
+    }
+}
+
+impl Default for JsAuthoredMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A byte-oriented attributed vector that integrates with Calimero storage.
+///
+/// Wraps [`AuthoredVector`], an ordered shared-keyspace vector with per-slot
+/// ownership. Any context member may [`push`](Self::push) a new entry at the
+/// tail, which stamps the current executor as the slot's owner; only that owner
+/// may later [`update`](Self::update) or [`tombstone`](Self::tombstone) the
+/// slot. There is intentionally no physical remove — `tombstone` overwrites the
+/// slot with an empty value while preserving its position and owner. Ownership
+/// is resolved from `env::executor_id()`, which the runtime installs
+/// per-execution — no identity argument is threaded through the byte API.
+#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
+pub struct JsAuthoredVector {
+    vector: AuthoredVector<Vec<u8>>,
+
+    #[storage]
+    storage: Element,
+}
+
+impl JsAuthoredVector {
+    /// Creates a new JS authored vector backed by the main storage backend.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            vector: AuthoredVector::new(),
+            storage: Element::new(None),
+        }
+    }
+
+    /// Rehydrates an authored vector using a known identifier.
+    #[must_use]
+    pub fn new_with_id(id: Id) -> Self {
+        Self {
+            vector: AuthoredVector::new(),
+            storage: Element::new(Some(id)),
+        }
+    }
+
+    /// Returns the unique identifier of this collection.
+    #[must_use]
+    pub fn id(&self) -> Id {
+        self.storage.id()
+    }
+
+    /// Pushes a new value at the tail, stamping the current executor as owner.
+    ///
+    /// Returns the index of the newly appended slot.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if the storage write fails.
+    pub fn push(&mut self, value: &[u8]) -> Result<usize, StoreError> {
+        self.vector.push(value.to_vec())
+    }
+
+    /// Replaces the value at `index`. Only the slot's owner may call this.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] with `ActionNotAllowed` if the current executor is
+    /// not the stored owner, `InvalidData` if `index` is out of bounds, or any
+    /// underlying storage error.
+    pub fn update(&mut self, index: usize, value: &[u8]) -> Result<(), StoreError> {
+        self.vector.update(index, value.to_vec())
+    }
+
+    /// Tombstones the slot at `index` (overwrites it with an empty value). Only
+    /// the slot's owner may call this; the slot's position and owner are kept.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`update`](Self::update).
+    pub fn tombstone(&mut self, index: usize) -> Result<(), StoreError> {
+        self.vector.tombstone(index)
+    }
+
+    /// Retrieves the value at `index`, if it exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the underlying vector read fails.
+    pub fn get(&self, index: usize) -> Result<Option<Vec<u8>>, StoreError> {
+        self.vector.get(index)
+    }
+
+    /// Returns the 32-byte public key of the owner at `index`, if the slot
+    /// exists.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if reading slot metadata fails.
+    pub fn owner_of(&self, index: usize) -> Result<Option<[u8; 32]>, StoreError> {
+        Ok(self.vector.owner_of(index)?.map(|pk| *pk.as_ref()))
+    }
+
+    /// Returns whether the current executor owns the slot at `index`. False for
+    /// out-of-bounds slots.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if reading slot metadata fails.
+    pub fn owned_by_me(&self, index: usize) -> Result<bool, StoreError> {
+        self.vector.owned_by_me(index)
+    }
+
+    /// Returns all values in insertion order (including tombstoned slots).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if reading from storage fails.
+    pub fn iter(&self) -> Result<Vec<Vec<u8>>, StoreError> {
+        Ok(self.vector.iter()?.collect())
+    }
+
+    /// Returns the number of entries (including tombstoned slots).
+    ///
+    /// # Errors
+    ///
+    /// Returns any [`StoreError`] emitted by the underlying vector.
+    pub fn len(&self) -> Result<usize, StoreError> {
+        self.vector.len()
+    }
+
+    /// Returns `true` if there are no entries.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system.
+    pub fn is_empty(&self) -> Result<bool, StoreError> {
+        Ok(self.len()? == 0)
+    }
+
+    /// Persists the vector to storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] raised by the persistence layer.
+    pub fn save(&mut self) -> Result<bool, StorageError> {
+        Interface::<MainStorage>::save(self)
+    }
+
+    /// Loads a vector instance by identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if the vector cannot be located in storage.
+    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
+        Interface::<MainStorage>::find_by_id::<Self>(id)
+    }
+}
+
+impl Default for JsAuthoredVector {
     fn default() -> Self {
         Self::new()
     }

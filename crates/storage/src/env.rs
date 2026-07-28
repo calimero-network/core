@@ -269,6 +269,21 @@ pub fn storage_index_last(lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
     imp::storage_index_last(lo, hi)
 }
 
+/// Write the node-local ordered-index validity marker `key -> value`. Node-local
+/// and NOT synced (it lives beside the index it guards, never in synced state).
+/// Returns whether the write was persisted.
+#[must_use]
+pub fn storage_index_meta_set(key: &[u8], value: &[u8]) -> bool {
+    imp::storage_index_meta_set(key, value)
+}
+
+/// Read the node-local ordered-index validity marker for `key` (see
+/// [`storage_index_meta_set`]).
+#[must_use]
+pub fn storage_index_meta_get(key: &[u8]) -> Option<Vec<u8>> {
+    imp::storage_index_meta_get(key)
+}
+
 /// Reads data from node-local (private) persistent storage.
 ///
 /// Private storage is **NOT synchronised across nodes** — entries
@@ -377,6 +392,16 @@ pub fn reset_for_testing() {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn reset_environment() {
     mocked::reset_environment();
+}
+
+/// Clears ONLY the native node-local ordered index (and its validity markers),
+/// leaving synced state intact. Test-only seam for reproducing a node that has
+/// converged state (via sync) but an unbuilt/stale node-local `SortedMap`
+/// index — the marker must then be node-local so the next ordered read rebuilds
+/// rather than trusting a peer-derived "index current" signal. Native-only.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn clear_sorted_index_for_testing() {
+    mocked::clear_sorted_index_for_testing();
 }
 
 /// Set executor ID. `pub(crate)` because the only sanctioned way to mutate
@@ -523,6 +548,14 @@ mod calimero_vm {
 
     pub(super) fn storage_index_last(lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
         env::storage_index_last(lo, hi)
+    }
+
+    pub(super) fn storage_index_meta_set(key: &[u8], value: &[u8]) -> bool {
+        env::storage_index_meta_set(key, value)
+    }
+
+    pub(super) fn storage_index_meta_get(key: &[u8]) -> Option<Vec<u8>> {
+        env::storage_index_meta_get(key)
     }
 
     /// Fills the buffer with random bytes.
@@ -684,6 +717,12 @@ mod mocked {
     thread_local! {
         static INDEX: RefCell<std::collections::BTreeMap<Vec<u8>, Vec<u8>>> =
             const { RefCell::new(std::collections::BTreeMap::new()) };
+        /// Node-local ordered-index validity markers, keyed by `collection_id`.
+        /// A sibling of `INDEX` (never the synced state store), mirroring the
+        /// RocksDB `SortedIndexMeta` column — so a marker is node-local exactly
+        /// like the index it guards.
+        static INDEX_META: RefCell<std::collections::BTreeMap<Vec<u8>, Vec<u8>>> =
+            const { RefCell::new(std::collections::BTreeMap::new()) };
     }
 
     pub(super) fn storage_index_set(key: &[u8], value: &[u8]) -> bool {
@@ -733,6 +772,27 @@ mod mocked {
                 .next_back()
                 .map(|(k, v)| (k.clone(), v.clone()))
         })
+    }
+
+    pub(super) fn storage_index_meta_set(key: &[u8], value: &[u8]) -> bool {
+        INDEX_META.with(|meta| {
+            let _ = meta.borrow_mut().insert(key.to_vec(), value.to_vec());
+        });
+        true
+    }
+
+    pub(super) fn storage_index_meta_get(key: &[u8]) -> Option<Vec<u8>> {
+        INDEX_META.with(|meta| meta.borrow().get(key).cloned())
+    }
+
+    /// Clear ONLY the node-local ordered index and its validity markers, leaving
+    /// state (entities) intact. Models a node that received converged state via
+    /// sync but has not yet (re)built its node-local `SortedMap` index — the
+    /// exact condition the marker's node-locality must handle correctly.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn clear_sorted_index_for_testing() {
+        INDEX.with(|index| index.borrow_mut().clear());
+        INDEX_META.with(|meta| meta.borrow_mut().clear());
     }
 
     // Why these don't consult `RUNTIME_ENV` like their main-storage
@@ -899,8 +959,9 @@ mod mocked {
         crate::store::mocked::STORAGE.with(|storage| {
             storage.borrow_mut().clear();
         });
-        // Clear the native ordered-index mock too.
+        // Clear the native ordered-index mock too (entries + validity markers).
         INDEX.with(|index| index.borrow_mut().clear());
+        INDEX_META.with(|meta| meta.borrow_mut().clear());
         LAST_ARTIFACT.with(|a| {
             *a.borrow_mut() = None;
         });

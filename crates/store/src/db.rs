@@ -39,6 +39,21 @@ pub enum Column {
     /// byte order = key order), values are the entry's 32-byte id. Enables
     /// `O(log n + k)` range/prefix/pagination over `SortedMap` (core#2559).
     SortedIndex,
+    /// Node-local validity marker for the `SortedIndex` above. NOT synchronized
+    /// across nodes — it is a per-node derived value that MUST mirror the
+    /// (also node-local) ordered index it guards, never the synced state. One
+    /// row per `SortedMap`/`SortedSet` collection: key is `context_id(32) ‖
+    /// collection_id(32)`, value is the collection's `full_hash` at the moment
+    /// its `SortedIndex` entries were last (re)built. An ordered read compares
+    /// this to the collection's current `full_hash`: equal ⇒ the local index is
+    /// current; different (a local write or a remote sync changed the entry set)
+    /// ⇒ rebuild the local index once, then serve. Its own column so a node's
+    /// index-rebuild bookkeeping can never leak into the synced `State` deltas —
+    /// putting it in `State` made peers observe a marker they never built the
+    /// index for, so they served a stale ordered view of converged data
+    /// (core#2559 follow-up). Auto-created from `Column::iter()` at `open_cf`
+    /// (no DB migration); rebuilt on demand, so no data migration either.
+    SortedIndexMeta,
     /// Node-local durable buffer for absorbed straggler deltas (PR-6b). Holds
     /// the original signed bytes of a state delta that arrived under a schema
     /// the locally-loaded binary cannot yet read, so it is replayed verbatim
