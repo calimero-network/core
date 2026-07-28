@@ -68,9 +68,28 @@ fn bounded_archive(data: &[u8], limit: u64) -> Archive<Capped<GzDecoder<&[u8]>>>
     })
 }
 
-/// One rule for both archive scans, so they cannot be edited apart.
+/// One rule for both archive scans, so they cannot be edited apart. Exact and
+/// top-level: a nested `old/manifest.json` can carry an authentic older release.
 fn is_manifest_entry(path: &Path) -> bool {
-    path.file_name().and_then(|n| n.to_str()) == Some("manifest.json")
+    path == Path::new("manifest.json")
+}
+
+/// A second `manifest.json` leaves an unpacker holding one the signature never
+/// covered, so the archive is refused rather than resolved by entry order.
+fn ensure_single_manifest(bundle_data: &[u8]) -> eyre::Result<()> {
+    let mut archive = bounded_archive(bundle_data, MAX_ARCHIVE_BYTES);
+    let mut seen = false;
+    for entry in archive.entries()? {
+        let entry = entry?;
+        if !is_manifest_entry(&entry.path()?) {
+            continue;
+        }
+        if seen {
+            bail!("bundle archive has more than one entry at 'manifest.json'");
+        }
+        seen = true;
+    }
+    Ok(())
 }
 
 /// Validates that a string is safe for use as a filesystem path component.
@@ -185,11 +204,13 @@ pub fn extract_bundle_manifest(
     bail!("manifest.json not found in bundle")
 }
 
-/// Whether a blob is a bundle archive: any tar entry named `manifest.json`.
+/// Whether a blob is a bundle archive: a tar entry at `manifest.json`.
 ///
 /// Same walk, same bound and same predicate as [`extract_bundle_manifest`], since
 /// this is the only signature gate on the execution-time read: where the two
 /// disagree, one path installs a verified bundle the other serves as raw bytes.
+/// [`VerifiedBundle::open`] is stricter still, refusing a duplicated manifest;
+/// stricter here would instead mean serving the archive as raw bytes.
 pub fn is_bundle_blob(blob_bytes: &[u8]) -> bool {
     let mut archive = bounded_archive(blob_bytes, MAX_MANIFEST_SCAN_BYTES);
 
@@ -282,6 +303,9 @@ impl VerifiedBundle {
     pub fn open(data: Arc<[u8]>) -> eyre::Result<Self> {
         let (manifest_json, manifest) = extract_bundle_manifest(&data)?;
         let ManifestVerification { signer_id, .. } = verify_manifest_signature(&manifest_json)?;
+        // After the signature, not during the scan: reaching the end of a large
+        // archive needs the archive cap, which the pre-auth scan must not spend.
+        ensure_single_manifest(&data)?;
         debug!(%signer_id, package = %manifest.package, "bundle manifest signature verified");
         Ok(Self {
             data,

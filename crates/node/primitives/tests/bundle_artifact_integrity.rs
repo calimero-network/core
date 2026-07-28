@@ -21,6 +21,16 @@ use common::{hex_lower, node_client, pack_entries};
 /// Sign a manifest exactly the way `cargo mero bundle` does: real lowercase-hex
 /// SHA-256 per artifact, then an Ed25519 signature over the canonical manifest.
 fn signed_manifest(package: &str, version: &str, wasm: &[u8], key: &SigningKey) -> Vec<u8> {
+    signed_manifest_at(package, version, "app.wasm", wasm, key)
+}
+
+fn signed_manifest_at(
+    package: &str,
+    version: &str,
+    wasm_path: &str,
+    wasm: &[u8],
+    key: &SigningKey,
+) -> Vec<u8> {
     let signer_id = derive_signer_id_did_key(key.verifying_key().as_bytes());
     let mut manifest = serde_json::json!({
         "version": "1.0",
@@ -29,7 +39,7 @@ fn signed_manifest(package: &str, version: &str, wasm: &[u8], key: &SigningKey) 
         "signerId": signer_id,
         "minRuntimeVersion": "0.1.0",
         "wasm": {
-            "path": "app.wasm",
+            "path": wasm_path,
             "size": wasm.len(),
             "hash": hex_lower(&Sha256::digest(wasm)),
         },
@@ -473,6 +483,142 @@ async fn install_writes_no_extracted_directory() {
         !applications.exists(),
         "no artifacts should be unpacked to disk, found {}",
         applications.display()
+    );
+}
+
+/// The rollback in its bare form: the archive's only manifest is nested, and it
+/// is authentically signed, so nothing but the exact path can refuse it.
+#[tokio::test]
+async fn a_nested_manifest_is_never_the_bundle_manifest() {
+    let dir = TempDir::new().unwrap();
+    let key = SigningKey::generate(&mut OsRng);
+    let old_wasm = b"wasm bytecode of the superseded release".as_slice();
+    let old = signed_manifest_at(
+        "com.example.nested",
+        "1.0.0",
+        "old/app.wasm",
+        old_wasm,
+        &key,
+    );
+
+    let bundle = pack_entries(
+        &dir,
+        "nested.mpk",
+        &[("old/manifest.json", &old), ("old/app.wasm", old_wasm)],
+    );
+
+    let (node, _d, _b) = node_client().await;
+    let err = install(&node, bundle)
+        .await
+        .expect_err("a bundle whose only manifest is nested must not install");
+    assert!(
+        err.to_string()
+            .contains("manifest.json not found in bundle"),
+        "the nested manifest must not be selected at all, got: {err}"
+    );
+}
+
+/// A nested `old/manifest.json` holds a genuinely signed older release, so no
+/// signature check can catch it: only selecting the exact top-level path can.
+/// Both manifests here install cleanly, so which one wins is the whole test.
+#[tokio::test]
+async fn a_nested_manifest_cannot_roll_the_install_back_to_an_older_release() {
+    let dir = TempDir::new().unwrap();
+    let key = SigningKey::generate(&mut OsRng);
+
+    let old_wasm = b"wasm bytecode of the superseded release".as_slice();
+    let new_wasm = b"wasm bytecode of the current release !!".as_slice();
+
+    // Same publisher key, each manifest committing to its own artifact.
+    let old = signed_manifest_at(
+        "com.example.rollback",
+        "1.0.0",
+        "old/app.wasm",
+        old_wasm,
+        &key,
+    );
+    let new = signed_manifest_at("com.example.rollback", "2.0.0", "app.wasm", new_wasm, &key);
+
+    // The old pair leads, so a basename-and-first-match selection installs 1.0.0.
+    let bundle = pack_entries(
+        &dir,
+        "rollback.mpk",
+        &[
+            ("old/manifest.json", &old),
+            ("old/app.wasm", old_wasm),
+            ("manifest.json", &new),
+            ("app.wasm", new_wasm),
+        ],
+    );
+
+    let (node, _d, _b) = node_client().await;
+    let (app_id, served) = install(&node, bundle).await.expect("install");
+    assert_eq!(
+        served, new_wasm,
+        "ROLLBACK: the nested manifest was selected and the superseded release installed"
+    );
+    let app = node.get_application(&app_id).unwrap().expect("application");
+    assert_eq!(
+        app.version.map(|v| v.to_string()).as_deref(),
+        Some("2.0.0"),
+        "the installed version must come from the top-level manifest"
+    );
+}
+
+/// Two entries at the manifest's own path: whichever one an unpacker keeps, the
+/// signature was checked against the other. Both are authentic, so nothing but
+/// the duplicate rule can separate them.
+#[tokio::test]
+async fn duplicate_top_level_manifest_entries_are_refused() {
+    let dir = TempDir::new().unwrap();
+    let key = SigningKey::generate(&mut OsRng);
+    let wasm = b"wasm behind two manifests".as_slice();
+
+    let first = signed_manifest("com.example.twomanifests", "1.0.0", wasm, &key);
+    let second = signed_manifest("com.example.twomanifests", "2.0.0", wasm, &key);
+
+    let bundle = pack_entries(
+        &dir,
+        "twomanifests.mpk",
+        &[
+            ("manifest.json", &first),
+            ("app.wasm", wasm),
+            ("manifest.json", &second),
+        ],
+    );
+
+    let (node, _d, _b) = node_client().await;
+    let err = install(&node, bundle)
+        .await
+        .expect_err("a duplicated manifest entry must not install");
+    assert!(
+        err.to_string()
+            .contains("more than one entry at 'manifest.json'"),
+        "the duplicate must be refused as such, not left to entry order, got: {err}"
+    );
+}
+
+/// Finding the duplicate means walking to the end of the archive, so the cap
+/// that bounds the pre-signature manifest scan must not bound the whole bundle.
+#[tokio::test]
+async fn a_bundle_larger_than_the_manifest_scan_cap_still_installs() {
+    let dir = TempDir::new().unwrap();
+    let key = SigningKey::generate(&mut OsRng);
+
+    // Past the 8 MiB scan cap, and compressible enough to stay quick.
+    let wasm = vec![0xABu8; 12 * 1024 * 1024];
+    let manifest = signed_manifest("com.example.large", "1.0.0", &wasm, &key);
+    let bundle = pack_entries(
+        &dir,
+        "large.mpk",
+        &[("manifest.json", &manifest), ("app.wasm", &wasm)],
+    );
+
+    let (node, _d, _b) = node_client().await;
+    let (_app_id, served) = install(&node, bundle).await.expect("install");
+    assert!(
+        served == wasm,
+        "a bundle whose artifacts outweigh the manifest scan cap must still install"
     );
 }
 
