@@ -236,7 +236,8 @@ pub struct GetApplicationAbiQuery {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetApplicationAbiResponse {
-    /// The application's `wasm-abi/1` manifest, verbatim.
+    /// The application's `wasm-abi/1` manifest, verbatim - read from the app
+    /// row's latest-fetched bytecode, not any context's pinned version.
     pub data: serde_json::Value,
 }
 

@@ -17,7 +17,7 @@ pub async fn handler(
     Query(query): Query<GetApplicationAbiQuery>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    info!(application_id=%application_id, "Getting application ABI");
+    info!(application_id=%application_id, service_name=?query.service_name, "Getting application ABI");
 
     let application = match state.node_client.get_application(&application_id) {
         Ok(Some(application)) => application,
@@ -83,7 +83,7 @@ pub async fn handler(
         .into_response(),
         EmbeddedSchema::Absent => ApiError {
             status_code: StatusCode::BAD_REQUEST,
-            message: "application has no embedded ABI; rebuild it with `cargo mero build`"
+            message: "application has no usable embedded ABI (absent or malformed); rebuild it with `cargo mero build`"
                 .to_owned(),
         }
         .into_response(),
