@@ -32,8 +32,9 @@ use std::rc::Rc;
 
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_storage::env::RuntimeEnv;
+use calimero_storage::env::{IndexCallbacks, RuntimeEnv};
 use calimero_storage::store::Key;
+use calimero_store::db::Column;
 use calimero_store::{key, types, Store};
 use tracing::warn;
 
@@ -70,6 +71,145 @@ pub fn create_runtime_env(
         *context_id.as_ref(),
         *executor_id.as_ref(),
     )
+    .with_index(create_index_callbacks(store, context_id))
+}
+
+/// The exclusive upper bound for a byte prefix (smallest key not starting with
+/// `prefix`) — mirrors `ContextStorage`'s helper for range-clearing a prefix.
+fn index_prefix_upper_bound(prefix: &[u8]) -> Vec<u8> {
+    let mut end = prefix.to_vec();
+    while let Some(&last) = end.last() {
+        if last == 0xFF {
+            let _ = end.pop();
+        } else {
+            *end.last_mut().expect("non-empty") += 1;
+            return end;
+        }
+    }
+    vec![0xFF; prefix.len() + 1]
+}
+
+/// Build ordered-index host callbacks bridging `calimero-storage`'s node-local
+/// index + validity marker to this context's RocksDB `Column::SortedIndex` /
+/// `Column::SortedIndexMeta`.
+///
+/// This is the sync-side twin of the runtime's `build_runtime_env` bridge: it
+/// makes host-side `SortedSet`/`SortedMap` ops during native apply
+/// (`Interface::apply_action` on the HashComparison / delta-apply path) target
+/// the SAME durable, context-scoped columns the guest and JS read paths use —
+/// so an apply-time marker clear (invalidate-on-sync) is seen by the next
+/// ordered read instead of landing in a per-thread mock (sdk-js#87).
+///
+/// Keys mirror `ContextStorage::index_key`: the adaptor-level `collection ‖
+/// order_key` (marker: `collection_id`) is prefixed with the 32-byte context id
+/// to keep contexts disjoint in the shared columns.
+fn create_index_callbacks(store: &Store, context_id: ContextId) -> IndexCallbacks {
+    // `context ‖ key` — the column-scoped key for this context.
+    fn scoped(ctx: &[u8; 32], key: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(ctx.len() + key.len());
+        out.extend_from_slice(ctx);
+        out.extend_from_slice(key);
+        out
+    }
+
+    let ctx = *context_id.as_ref();
+
+    let set = {
+        let store = store.clone();
+        Rc::new(move |key: &[u8], value: &[u8]| {
+            store
+                .raw_put(Column::SortedIndex, &scoped(&ctx, key), value)
+                .is_ok()
+        }) as Rc<dyn Fn(&[u8], &[u8]) -> bool>
+    };
+    let remove = {
+        let store = store.clone();
+        Rc::new(move |key: &[u8]| {
+            store
+                .raw_delete(Column::SortedIndex, &scoped(&ctx, key))
+                .is_ok()
+        }) as Rc<dyn Fn(&[u8]) -> bool>
+    };
+    let remove_prefix = {
+        let store = store.clone();
+        Rc::new(move |prefix: &[u8]| {
+            let lo = scoped(&ctx, prefix);
+            let hi = index_prefix_upper_bound(&lo);
+            store
+                .raw_delete_range(Column::SortedIndex, &lo, &hi)
+                .is_ok()
+        }) as Rc<dyn Fn(&[u8]) -> bool>
+    };
+    let scan = {
+        let store = store.clone();
+        Rc::new(
+            move |lo: &[u8], hi: &[u8], offset: usize, limit: Option<usize>| {
+                let full_lo = scoped(&ctx, lo);
+                let full_hi = scoped(&ctx, hi);
+                // Walk O(offset + limit), matching ContextStorage.
+                let max = limit.map(|n| offset.saturating_add(n));
+                let pairs = store
+                    .raw_scan(Column::SortedIndex, &full_lo, &full_hi, max)
+                    .unwrap_or_default();
+                let stripped = pairs
+                    .into_iter()
+                    .filter_map(|(k, v)| k.get(ctx.len()..).map(|key| (key.to_vec(), v)))
+                    .skip(offset);
+                match limit {
+                    Some(n) => stripped.take(n).collect(),
+                    None => stripped.collect(),
+                }
+            },
+        ) as Rc<dyn Fn(&[u8], &[u8], usize, Option<usize>) -> Vec<(Vec<u8>, Vec<u8>)>>
+    };
+    let last = {
+        let store = store.clone();
+        Rc::new(move |lo: &[u8], hi: &[u8]| {
+            let full_lo = scoped(&ctx, lo);
+            let full_hi = scoped(&ctx, hi);
+            store
+                .raw_last(Column::SortedIndex, &full_lo, &full_hi)
+                .ok()
+                .flatten()
+                .and_then(|(k, v)| k.get(ctx.len()..).map(|key| (key.to_vec(), v)))
+        }) as Rc<dyn Fn(&[u8], &[u8]) -> Option<(Vec<u8>, Vec<u8>)>>
+    };
+    let meta_set = {
+        let store = store.clone();
+        Rc::new(move |key: &[u8], value: &[u8]| {
+            store
+                .raw_put(Column::SortedIndexMeta, &scoped(&ctx, key), value)
+                .is_ok()
+        }) as Rc<dyn Fn(&[u8], &[u8]) -> bool>
+    };
+    let meta_get = {
+        let store = store.clone();
+        Rc::new(move |key: &[u8]| {
+            store
+                .raw_get(Column::SortedIndexMeta, &scoped(&ctx, key))
+                .ok()
+                .flatten()
+        }) as Rc<dyn Fn(&[u8]) -> Option<Vec<u8>>>
+    };
+    let meta_clear = {
+        let store = store.clone();
+        Rc::new(move |key: &[u8]| {
+            store
+                .raw_delete(Column::SortedIndexMeta, &scoped(&ctx, key))
+                .is_ok()
+        }) as Rc<dyn Fn(&[u8]) -> bool>
+    };
+
+    IndexCallbacks {
+        set,
+        remove,
+        remove_prefix,
+        scan,
+        last,
+        meta_set,
+        meta_get,
+        meta_clear,
+    }
 }
 
 /// Storage callback closures that bridge `calimero-storage` Key API to the Store.
