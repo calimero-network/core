@@ -45,6 +45,7 @@ calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
 calimero-store = { workspace = true, features = ["serde"] }
 calimero-tee-attestation.workspace = true
+calimero-wasm-abi.workspace = true
 mero-auth.workspace = true
 
 [features]
