@@ -1,0 +1,54 @@
+name: "Auth revocation — revoked-token 403 e2e"
+description: >
+  Proves that a token whose key has been revoked is rejected with HTTP 403
+  and `X-Auth-Error: token_revoked` through every request-auth path merod
+  exposes — not the generic 401 it used to collapse into (issue #3069).
+
+  Before the fix, `KeyManager::get_key` hid a revoked key (returned `None`),
+  so verification reported "key not found" (401) and `AuthError::TokenRevoked`
+  (→ 403) was unreachable. The seam mints a client token, revokes its key via
+  the admin API, then re-presents the same token to the calimero-server guard
+  (/admin-api/*), the embedded auth middleware (/admin/*) and the proxy-shaped
+  validate_handler (/auth/validate), asserting 403 + token_revoked on each.
+
+  The assertions live in scripts/e2e-auth-revocation.sh — they need raw HTTP
+  with a specific token per request and header inspection, which the step
+  vocabulary doesn't cover, hence a script step. In-process pins:
+  crates/auth/src/auth/token/jwt.rs (verify_token_string_* tests),
+  crates/auth/src/auth/middleware.rs (test_revoked_key_token_verification),
+  crates/server/src/auth.rs (revoked_token_verification_yields_forbidden_end_to_end).
+
+# Embedded auth is binary-mode only (the auth router is mounted inside merod
+# itself; docker-mode `auth_service` boots a prebuilt mero-auth image — the
+# wrong artifact for a PR gate).
+no_docker: true
+auth_mode: embedded
+
+nuke_on_start: true
+
+nodes:
+  count: 1
+  prefix: auth-revocation
+  base_port: 5002
+  base_rpc_port: 5001
+
+steps:
+  # No `login` step needed: the script performs the root login itself and node
+  # teardown is process-level, not HTTP. The admin root key is minted at
+  # `merod init` from MERO_AUTH_ADMIN_USER / MERO_AUTH_ADMIN_PASSWORD; binary
+  # mode starts merod with the inherited environment and local script steps
+  # inherit it too (the script logs in with MERO_E2E_USER / MERO_E2E_PASS,
+  # which must match) — one export, both ends.
+  - name: "Run the revoked-token 403 assertions"
+    type: script
+    script: scripts/e2e-auth-revocation.sh
+    target: local
+
+stop_all_nodes: true
+nuke_on_end: true
+
+# How to run (from the repo root):
+#   export MERO_AUTH_ADMIN_USER=dev MERO_AUTH_ADMIN_PASSWORD=dev-password
+#   export MERO_E2E_USER=dev MERO_E2E_PASS=dev-password
+#   merobox bootstrap run workflows/auth-revocation.yml --no-docker \
+#     --binary-path ./target/debug/merod

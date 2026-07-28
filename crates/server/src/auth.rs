@@ -27,11 +27,10 @@ use crate::config::ServerConfig;
 /// - [`AuthError::TokenRevoked`] → `403` with `token_revoked`
 /// - everything else → bare `401`
 ///
-/// Note that a revoked key often still surfaces as a generic "key not found"
-/// because [`KeyManager::get_key`] filters revoked keys out before the
-/// `is_valid` check can run; the dedicated arm here ensures that any path which
-/// *does* produce [`AuthError::TokenRevoked`] is reported as `403` rather than
-/// being collapsed into the generic `401`.
+/// The verification path resolves the key with
+/// `KeyManager::get_key_including_invalid`, so a revoked token now produces
+/// [`AuthError::TokenRevoked`] rather than being collapsed into a generic "key
+/// not found" `401` (issue #3069); this arm maps that variant to `403`.
 fn unauthorized_response(err: &AuthError) -> Response {
     match err {
         AuthError::TokenExpired => {
@@ -378,6 +377,69 @@ mod tests {
         use mero_auth::AuthError;
 
         let resp = super::unauthorized_response(&AuthError::TokenRevoked);
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.headers().get("X-Auth-Error").unwrap(), "token_revoked",);
+    }
+
+    /// End-to-end for the reachability gap (issue #3069): a genuinely
+    /// revoked-key token, driven through the real verification path, must yield
+    /// `AuthError::TokenRevoked` and therefore a `403 token_revoked` out of
+    /// `unauthorized_response`. `revoked_token_maps_to_forbidden` above only
+    /// proves the mapping in isolation; this proves verification actually
+    /// produces that variant instead of collapsing a revoked token into `401`.
+    #[tokio::test]
+    async fn revoked_token_verification_yields_forbidden_end_to_end() {
+        use std::sync::Arc;
+
+        use axum::http::StatusCode;
+        use mero_auth::auth::token::TokenManager;
+        use mero_auth::config::JwtConfig;
+        use mero_auth::secrets::SecretManager;
+        use mero_auth::storage::{Key, KeyManager, MemoryStorage, Storage};
+
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        secret_manager.initialize().await.unwrap();
+        let token_manager = TokenManager::new(
+            JwtConfig {
+                issuer: "server-test".to_owned(),
+                access_token_expiry: 3600,
+                refresh_token_expiry: 86_400,
+                node_host: None,
+            },
+            Arc::clone(&storage),
+            secret_manager,
+        );
+
+        // Store a root key and mint an access token bound to it.
+        let key_manager = KeyManager::new(Arc::clone(&storage));
+        let mut key = Key::new_root_key_with_permissions(
+            "pk".to_owned(),
+            "user_password".to_owned(),
+            vec!["admin".to_owned()],
+            None,
+        );
+        key_manager.set_key("root-1", &key).await.unwrap();
+        let (access, _refresh) = token_manager
+            .generate_mock_token_pair(
+                "root-1".to_owned(),
+                vec!["admin".to_owned()],
+                None,
+                Some(3600),
+            )
+            .await
+            .unwrap();
+
+        // Revoke the key, then verify the previously-minted token.
+        key.revoke();
+        key_manager.set_key("root-1", &key).await.unwrap();
+
+        let err = token_manager
+            .verify_token_string(&access, None)
+            .await
+            .expect_err("a revoked-key token must be rejected");
+
+        let resp = super::unauthorized_response(&err);
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         assert_eq!(resp.headers().get("X-Auth-Error").unwrap(), "token_revoked",);
     }

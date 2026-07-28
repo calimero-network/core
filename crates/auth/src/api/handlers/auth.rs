@@ -526,10 +526,18 @@ pub async fn validate_handler(
                 }
             }
 
-            // Verify the key exists and is valid
-            let _key = match state.0.key_manager.get_key(&claims.sub).await {
-                Ok(Some(key)) if key.is_valid() => key,
-                Ok(Some(_)) => {
+            // Verify the key exists and is valid. Raw lookup so a revoked key is
+            // told apart from an absent one — `get_key` filters both to `None`,
+            // which would collapse a revoked token into the `401` "key not found"
+            // arm and make the `403 token_revoked` arm below unreachable
+            // (issue #3069).
+            let _key = match state
+                .0
+                .key_manager
+                .get_key_including_invalid(&claims.sub)
+                .await
+            {
+                Ok(Some(key)) if key.is_revoked() => {
                     let mut error_headers = HeaderMap::new();
                     error_headers.insert("X-Auth-Error", "token_revoked".parse().unwrap());
                     return error_response(
@@ -538,6 +546,16 @@ pub async fn validate_handler(
                         Some(error_headers),
                     );
                 }
+                Ok(Some(key)) if key.is_expired() => {
+                    let mut error_headers = HeaderMap::new();
+                    error_headers.insert("X-Auth-Error", "token_expired".parse().unwrap());
+                    return error_response(
+                        StatusCode::UNAUTHORIZED,
+                        "Key has expired",
+                        Some(error_headers),
+                    );
+                }
+                Ok(Some(key)) => key,
                 Ok(None) => {
                     let mut error_headers = HeaderMap::new();
                     error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
