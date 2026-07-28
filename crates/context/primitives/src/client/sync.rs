@@ -202,7 +202,6 @@ impl ContextClient {
             );
             // Blob doesn't exist yet - create ApplicationMeta entry anyway
             // The blob will be shared later in initiate_sync_inner
-            // When blob arrives, get_application_bytes will handle extraction on-demand
             self.install_regular_application(blob_id, size, source, metadata)
                 .await
         }

@@ -17,6 +17,7 @@ APP_VERSION="$4"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PATH="$("$REPO_ROOT/scripts/setup-cargo-mero.sh"):$PATH"
 
 cd "$SUITE_DIR"
 
@@ -34,8 +35,24 @@ if [ -f res/abi.json ]; then
 fi
 
 size() { stat -f%z "$1" 2>/dev/null || stat -c%s "$1"; }
+sha256() { shasum -a 256 "$1" | cut -d' ' -f1; }
+
 WASM_SIZE=$(size res/bundle-temp/app.wasm)
-ABI_SIZE=$( [ -f res/bundle-temp/abi.json ] && size res/bundle-temp/abi.json || echo 0)
+WASM_HASH=$(sha256 res/bundle-temp/app.wasm)
+
+# Declared only when the file was actually staged: a required hash cannot
+# describe an artifact that is not in the archive.
+ABI_BLOCK=""
+if [ -f res/bundle-temp/abi.json ]; then
+    ABI_BLOCK=$(cat <<ABI
+  "abi": {
+    "path": "abi.json",
+    "size": $(size res/bundle-temp/abi.json),
+    "hash": "$(sha256 res/bundle-temp/abi.json)"
+  },
+ABI
+)
+fi
 
 cat > res/bundle-temp/manifest.json <<EOF
 {
@@ -46,20 +63,14 @@ cat > res/bundle-temp/manifest.json <<EOF
   "wasm": {
     "path": "app.wasm",
     "size": ${WASM_SIZE},
-    "hash": null
+    "hash": "${WASM_HASH}"
   },
-  "abi": {
-    "path": "abi.json",
-    "size": ${ABI_SIZE},
-    "hash": null
-  },
+${ABI_BLOCK}
   "migrations": []
 }
 EOF
 
-cargo run --manifest-path "$REPO_ROOT/Cargo.toml" -p mero-sign --quiet -- \
-    sign res/bundle-temp/manifest.json \
-    --dev
+cargo mero sign res/bundle-temp/manifest.json --dev
 
 LEAF="${PACKAGE##*.}"
 OUT="${LEAF}-${APP_VERSION}.mpk"

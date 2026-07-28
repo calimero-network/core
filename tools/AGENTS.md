@@ -47,7 +47,7 @@ cargo mero bundle --dev      # -> dist/<package>.mpk (dev key; --key <file> for 
 
 # CI signing without a checked-in key
 export MERO_SIGN_KEY="$RUNNER_TEMP/mero-key.json"
-cargo mero bundle            # reads MERO_SIGN_KEY when no --key/--dev/--unsigned
+cargo mero bundle            # reads MERO_SIGN_KEY when no --key/--dev
 ```
 
 ### File Organization
