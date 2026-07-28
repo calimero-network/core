@@ -15,7 +15,7 @@ use eyre::bail;
 use flate2::read::GzDecoder;
 use semver::Version;
 use sha2::{Digest, Sha256};
-use tar::Archive;
+use tar::{Archive, Entry};
 use tracing::{debug, warn};
 
 /// How far the manifest scan may decompress. It runs before any signature is
@@ -68,10 +68,15 @@ fn bounded_archive(data: &[u8], limit: u64) -> Archive<Capped<GzDecoder<&[u8]>>>
     })
 }
 
-/// One rule for both archive scans, so they cannot be edited apart. Exact and
+/// One rule for every archive scan, so they cannot be edited apart. Exact and
 /// top-level: a nested `old/manifest.json` can carry an authentic older release.
-fn is_manifest_entry(path: &Path) -> bool {
-    path == Path::new("manifest.json")
+/// It takes the entry, not a path, so that resolving the path is part of the
+/// shared rule: an unresolvable one is a non-match here and must never abort a
+/// scan, since [`is_bundle_blob`] can only fail by falling back to raw bytes.
+fn is_manifest_entry<R: Read>(entry: &Entry<'_, R>) -> bool {
+    entry
+        .path()
+        .is_ok_and(|path| path == Path::new("manifest.json"))
 }
 
 /// A second `manifest.json` leaves an unpacker holding one the signature never
@@ -81,7 +86,7 @@ fn ensure_single_manifest(bundle_data: &[u8]) -> eyre::Result<()> {
     let mut seen = false;
     for entry in archive.entries()? {
         let entry = entry?;
-        if !is_manifest_entry(&entry.path()?) {
+        if !is_manifest_entry(&entry) {
             continue;
         }
         if seen {
@@ -147,9 +152,8 @@ pub fn extract_bundle_manifest(
 
     for entry in archive.entries()? {
         let entry = entry?;
-        let path = entry.path()?;
 
-        if is_manifest_entry(&path) {
+        if is_manifest_entry(&entry) {
             let mut manifest_bytes = Vec::new();
             let _ = entry
                 .take(MAX_MANIFEST_BYTES + 1)
@@ -206,9 +210,12 @@ pub fn extract_bundle_manifest(
 
 /// Whether a blob is a bundle archive: a tar entry at `manifest.json`.
 ///
-/// Same walk, same bound and same predicate as [`extract_bundle_manifest`], since
-/// this is the only signature gate on the execution-time read: where the two
-/// disagree, one path installs a verified bundle the other serves as raw bytes.
+/// Same walk, same bound and the same [`is_manifest_entry`] predicate as
+/// [`extract_bundle_manifest`], since this is the only signature gate on the
+/// execution-time read: where the two disagree, one path installs a verified
+/// bundle the other serves as raw bytes. The one asymmetry left is an entry that
+/// will not decode at all, which ends this walk as `false` where the verified
+/// read raises it; neither reaches a manifest sitting behind it.
 /// [`VerifiedBundle::open`] is stricter still, refusing a duplicated manifest;
 /// stricter here would instead mean serving the archive as raw bytes.
 pub fn is_bundle_blob(blob_bytes: &[u8]) -> bool {
@@ -230,7 +237,7 @@ pub fn is_bundle_blob(blob_bytes: &[u8]) -> bool {
             Ok(entry) => {
                 // Existential: one hit is decisive, so stopping here cannot
                 // change the answer the way the old entry-count cap could.
-                if entry.path().is_ok_and(|p| is_manifest_entry(&p)) {
+                if is_manifest_entry(&entry) {
                     return true;
                 }
             }
@@ -255,7 +262,9 @@ pub fn is_bundle_archive(path: &camino::Utf8Path) -> bool {
 /// disk), in one walk. Paths are manifest-relative and matched exactly against
 /// the whole archive: a basename or first-hit match would let a decoy entry pass
 /// the digest check for the entry an unpacker later writes. Paths the archive
-/// does not hold are simply absent from the result.
+/// does not hold are simply absent from the result. A path that will not decode
+/// is a non-match rather than an abort, as everywhere else: a manifest declares
+/// its paths as JSON strings, so one that is not valid UTF-8 is never sought.
 ///
 /// One walk for every path, not one per path: skipping an entry still
 /// decompresses it, so a walk per artifact would multiply the archive's whole
@@ -268,7 +277,11 @@ fn extract_bundle_files<'a>(
     let mut found = HashMap::new();
     for entry in archive.entries()? {
         let mut entry = entry?;
-        let Some(&path) = entry.path()?.to_str().and_then(|p| wanted.get(p)) else {
+        let Some(&path) = entry
+            .path()
+            .ok()
+            .and_then(|p| p.to_str().and_then(|p| wanted.get(p)))
+        else {
             continue;
         };
         if found.contains_key(path) {

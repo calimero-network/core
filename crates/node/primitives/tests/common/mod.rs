@@ -1,6 +1,7 @@
 //! Fixtures shared by the bundle integration tests.
 
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 use calimero_blobstore::config::BlobStoreConfig;
@@ -56,8 +57,9 @@ pub async fn node_client() -> (NodeClient, TempDir, TempDir) {
 }
 
 /// Pack a `.mpk` from an explicit list of tar entries, so a test can ship a
-/// decoy or duplicate entry the way a hostile mirror would.
-pub fn pack_entries(dir: &TempDir, name: &str, entries: &[(&str, &[u8])]) -> Vec<u8> {
+/// decoy or duplicate entry the way a hostile mirror would. Generic over the
+/// path so a test can also ship one no `str` can hold.
+pub fn pack_entries<P: AsRef<Path>>(dir: &TempDir, name: &str, entries: &[(P, &[u8])]) -> Vec<u8> {
     let path = dir.path().join(name);
     let encoder = GzEncoder::new(fs::File::create(&path).unwrap(), Compression::default());
     let mut tar = Builder::new(encoder);

@@ -419,6 +419,43 @@ async fn manifest_past_the_tenth_entry_is_a_bundle_on_both_paths() {
     );
 }
 
+/// An entry no walk can match says nothing about the manifest's authenticity, so
+/// every walk must step over it rather than end there. It leads the archive, so a
+/// walk that stopped would leave the manifest and the artifact behind it unread.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unmatchable_entry_ahead_of_the_manifest_installs_on_both_paths() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    let dir = TempDir::new().unwrap();
+    let key = SigningKey::generate(&mut OsRng);
+    let wasm = b"wasm behind an entry no path can name".as_slice();
+    let manifest = signed_manifest("com.example.oddentry", "1.0.0", wasm, &key);
+
+    // Not valid UTF-8: no manifest-declared path can name it here, and on a
+    // platform whose paths must be Unicode it will not resolve at all.
+    let entries: [(&Path, &[u8]); 3] = [
+        (Path::new(OsStr::from_bytes(b"\xff\xfe.bin")), b"opaque"),
+        (Path::new("manifest.json"), &manifest),
+        (Path::new("app.wasm"), wasm),
+    ];
+    let bundle = pack_entries(&dir, "oddentry.mpk", &entries);
+
+    assert!(
+        NodeClient::is_bundle_blob(&bundle),
+        "detection must step over an entry it cannot match, not answer `false`"
+    );
+
+    let (node, _d, _b) = node_client().await;
+    let (_app_id, served) = install(&node, bundle).await.expect("install");
+    assert_eq!(
+        served, wasm,
+        "the verified read must agree with detection and serve the digest-checked artifact"
+    );
+}
+
 /// The bytes whose digest was checked must be the bytes the node later serves: a
 /// decoy sharing the manifest path's basename must not satisfy the check for it.
 #[tokio::test]
