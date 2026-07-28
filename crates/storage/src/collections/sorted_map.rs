@@ -584,14 +584,6 @@ where
         S::index_meta_get(self.inner.id()).as_deref() == Some(&self.current_full_hash()[..])
     }
 
-    /// The number of entries currently persisted in the node-local ordered
-    /// index. Compared against [`len`](Self::len) (the authoritative live entry
-    /// count) as a staleness cross-check the `full_hash` marker cannot provide
-    /// reliably — see [`ensure_index`](Self::ensure_index).
-    fn index_len(&self) -> usize {
-        S::index_range(self.inner.id(), Bound::Unbounded, Bound::Unbounded, 0, None).len()
-    }
-
     /// Reconcile the ordered index with the authoritative entry set, then stamp
     /// the validity marker. Used when a remote sync (or an untracked local edit)
     /// left the index stale.
@@ -657,22 +649,17 @@ where
         if !S::index_supported() {
             return Ok(false);
         }
-        // The `full_hash` validity marker alone is an unreliable staleness
-        // signal. A remote sync mutates the entry set host-side (never through
-        // `insert`), and a rebuild that ran while this node's child list was
-        // momentarily stale can stamp the marker to the *converged* full_hash
-        // while the index still holds only a subset of the entries. The marker
-        // then equals the current full_hash, `index_marker_current()` returns a
-        // false positive, and the stale index is served forever — the entry is
-        // present and enumerable (`contains`/`len` converge) yet the ordered
-        // readers return a subset (sdk-js#87). So also cross-check the index
-        // against the authoritative entry set: if the number of persisted index
-        // entries disagrees with the live entry count, the index is provably
-        // stale and must be rebuilt regardless of the marker. The count read
-        // only runs when the marker looks current (`||` short-circuits when it
-        // is already stale), so a stale marker still triggers a rebuild for one
-        // meta read, not an index scan.
-        if !self.index_marker_current() || self.index_len() != self.len()? {
+        // O(1) marker check: rebuild only when the node-local validity marker
+        // disagrees with the collection's current `full_hash`. This read pays a
+        // single meta read — no index scan, no child-list load. The marker is
+        // kept honest from the *write* side: the sync/apply path clears it
+        // whenever it links or unlinks a child of this collection (see
+        // `Interface::apply_action` / `apply_delete_ref_action`), so a converged-
+        // but-unindexed collection has its marker invalidated and rebuilds here
+        // on the next ordered read. The local `insert` path likewise leaves the
+        // marker stale, so both mutation paths funnel back through this one
+        // rebuild.
+        if !self.index_marker_current() {
             self.rebuild_index()?;
         }
         Ok(true)

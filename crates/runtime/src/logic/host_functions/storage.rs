@@ -748,6 +748,26 @@ impl VMHostFunctions<'_> {
         }
         Ok(0)
     }
+
+    /// Clear the node-local ordered-index validity marker for `key`, forcing the
+    /// next ordered read to rebuild the index. The invalidate-on-sync primitive:
+    /// the storage apply/merge path calls this whenever it links or unlinks a
+    /// child of a collection. Returns `1` if the write was persisted, `0`
+    /// otherwise.
+    pub fn storage_index_meta_clear(&mut self, key_ptr: u64) -> VMLogicResult<u32> {
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
+        let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(key_ptr)? };
+        if key.len() > self.borrow_logic().limits.max_storage_key_size.get() {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
+        let key = self.read_guest_memory_slice(&key)?.to_vec();
+        trace!(target: "runtime::host::storage", op = "index_meta_clear", key_len = key.len(), "storage_index_meta_clear");
+        let ok = self.with_logic_mut(|logic| logic.storage.index_meta_del(&key));
+        Ok(ok.into())
+    }
 }
 
 /// Encode ordered-index scan results into the length-prefixed wire format the

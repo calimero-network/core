@@ -43,10 +43,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use calimero_storage::collections::{Root, SortedMap, SortedSet};
+use calimero_storage::delta::StorageDelta;
 use calimero_storage::env::{
     clear_sorted_index_for_testing, drop_sorted_index_entry_for_testing, reset_environment,
-    with_runtime_env, RuntimeEnv,
+    take_last_artifact, with_runtime_env, RuntimeEnv,
 };
+use calimero_storage::interface::{ApplyContext, Interface};
 use calimero_storage::store::{Key, MainStorage};
 
 /// A shared, synced state store — models state that both nodes have converged on.
@@ -163,40 +165,74 @@ fn sorted_map_ordered_read_converges_on_second_node() {
     });
 }
 
-// === Stale-index-with-matching-marker (the deeper bug #3323 did not fix) ===
+// === Invalidate-on-sync: the apply path must clear the ordered-index marker ===
 //
 // #3323 made the validity marker node-local, so a peer no longer inherits
 // another node's marker. But that only fixes the case where the receiving node's
 // index is *fresh* (marker absent → rebuild fires). The real 2-node merobox run
 // (sdk-js#87, AFTER #3323 merged) showed a subtler state on the receiving node:
-// its index had been built for a *subset* of the element set (`{b}`) and its
+// its index had been built for a *subset* of the element set (`{b}`) while its
 // marker had been stamped to the *converged* `full_hash` (`H({a,b})`). So
-// `index_marker_current()` returned `true` even though the index content
-// (`{b}`) disagreed with the live, fully-synced element set (`{a,b}`):
+// `index_marker_current()` returned `true` even though the index content (`{b}`)
+// disagreed with the live, fully-synced element set (`{a,b}`):
 //   - `contains('a')` = true   (direct child lookup)
 //   - `len()`         = 2      (children linked & enumerable)
 //   - `iter()`        = ['b']  (stale ordered index served forever)
-// The `full_hash` marker is therefore an unreliable staleness signal: the index
-// can be stale while the marker matches. The fix cross-checks the persisted
-// index entry count against the live element count and rebuilds on disagreement.
 //
-// These tests construct that faithful state directly: build the full collection
-// + index + marker, then drop ONE index entry while leaving the marker and the
-// synced children intact (`drop_sorted_index_entry_for_testing`). That is the
-// exact "index = {b}, children = {a,b}, marker == current full_hash" condition;
-// it exercises the real `ensure_index` trigger rather than a cleared index.
+// The `full_hash` marker can therefore run ahead of the enumerable child list,
+// and a read-side check cannot both stay O(1) and catch this (`len()` is itself
+// O(n)). The fix keeps ordered reads O(1) (marker-only) and moves correctness to
+// the *write* side: `Interface::apply_action` / `apply_delete_ref_action` clear
+// the parent collection's node-local marker whenever a synced delta links or
+// unlinks a child (the non-`insert` path), so the next ordered read rebuilds the
+// index once from the converged child set.
+//
+// These tests reproduce the exact false-positive state
+// (`drop_sorted_index_entry_for_testing` leaves index = {b}, children = {a,b},
+// marker == current full_hash), assert the O(1) read serves the stale subset
+// while the marker matches (the CONTROL — this is what the read alone can never
+// fix), then drive the REAL apply choke point by replaying the collection's own
+// delta through `Interface::apply_action` (exactly what `Root::sync` does per
+// action on the receive path). The child-link apply clears the marker, so the
+// next ordered read heals to the full converged set. Remove the
+// `index_meta_clear` call from `apply_action` and these tests fail: the read
+// stays stale because the marker still matches.
+//
+// The replay is idempotent (same node, its own already-applied delta), so it
+// does NOT change `full_hash` — which is the point: if the apply changed the
+// child set the marker would mismatch and rebuild "for free", masking whether
+// the invalidation fired. Holding `full_hash` fixed isolates the marker clear as
+// the sole thing that heals the read. Root actions are skipped on replay so the
+// test exercises the child-link path without the root-state merge (which would
+// require a registered `Mergeable`).
 
-/// SortedSet: an index that holds a stale subset while its marker still equals
-/// the converged `full_hash` must still serve the full set in order — the
-/// ordered reader has to notice the index disagrees with the live element count
-/// and rebuild, not trust the matching marker.
+/// Replay the non-root (child-link) actions of a captured `StorageDelta` through
+/// the real `Interface::apply_action` receive path — the choke point that must
+/// clear the parent collection's ordered-index marker.
+fn replay_child_links<S: calimero_storage::store::StorageAdaptor>(delta: &[u8]) {
+    let actions = match borsh::from_slice::<StorageDelta>(delta).expect("decode delta") {
+        StorageDelta::Actions(actions) => actions,
+        StorageDelta::CausalActions { actions, .. } => actions,
+    };
+    for action in actions {
+        if action.id().is_root() {
+            continue;
+        }
+        Interface::<S>::apply_action(action, &ApplyContext::empty()).expect("apply_action");
+    }
+}
+
+/// SortedSet: a synced child-link apply must invalidate the ordered-index marker
+/// so a converged-but-stale index rebuilds on the next ordered read — even when
+/// the marker still equals the collection's current `full_hash`.
 #[test]
-fn sorted_set_ordered_read_rebuilds_stale_index_with_matching_marker() {
+fn sorted_set_apply_invalidates_stale_index_marker() {
     reset_environment();
     let state: SharedState = Rc::new(RefCell::new(HashMap::new()));
 
-    // Build the full set: index = {a,b}, marker = H({a,b}), state converged.
-    with_runtime_env(env_for(&state, [1u8; 32]), || {
+    // Build the full set + warm its index/marker, and capture the delta the
+    // collection emitted (the Add actions a peer would receive & apply).
+    let delta = with_runtime_env(env_for(&state, [1u8; 32]), || {
         let mut set = Root::new(SortedSet::<String, MainStorage>::new);
         assert!(set.insert("a".to_owned()).unwrap());
         assert!(set.insert("b".to_owned()).unwrap());
@@ -205,28 +241,45 @@ fn sorted_set_ordered_read_rebuilds_stale_index_with_matching_marker() {
             vec!["a".to_owned(), "b".to_owned()]
         );
         set.commit();
+        take_last_artifact().expect("commit emitted a delta")
     });
 
-    // Faithful stale state: the node-local index loses 'a' (as if a rebuild had
-    // run against a momentarily stale child list), but its marker still equals
-    // the converged full_hash and the synced children stay {a,b}. NOT a cleared
-    // index — the marker is deliberately left matching.
+    // Manufacture the false positive: index loses 'a' (as if a rebuild ran
+    // against a momentarily stale child list) but the marker stays == the
+    // converged full_hash and the synced children stay {a,b}.
     drop_sorted_index_entry_for_testing(b"a");
 
+    // CONTROL: the O(1) marker-only read cannot detect this — it serves the
+    // stale subset {b} because the marker matches. This is the observed bug.
     with_runtime_env(env_for(&state, [1u8; 32]), || {
         let set = Root::<SortedSet<String, MainStorage>>::fetch().expect("state present");
-        // Children are fully present & enumerable — the real node saw the same.
         assert!(set.contains("a").unwrap(), "child 'a' is present");
         assert_eq!(set.len().unwrap(), 2, "both children enumerable");
-        // Before the fix: marker == current full_hash → rebuild skipped → the
-        // stale index serves only {b}. After the fix: index count (1) != live
-        // count (2) → rebuild → the full set in order.
+        assert_eq!(
+            set.iter().unwrap().collect::<Vec<String>>(),
+            vec!["b".to_owned()],
+            "control: with a matching marker the O(1) read serves the stale subset"
+        );
+    });
+
+    // Drive the REAL receive/apply path: replay the collection's own child links.
+    // Idempotent (same node), so full_hash is unchanged — only the marker clear
+    // can heal the read.
+    with_runtime_env(env_for(&state, [1u8; 32]), || {
+        replay_child_links::<MainStorage>(&delta);
+    });
+
+    // After the apply invalidated the marker, the next ordered read rebuilds and
+    // serves the full converged set. Fails if `apply_action`'s `index_meta_clear`
+    // is removed (marker still matches → stale {b}).
+    with_runtime_env(env_for(&state, [1u8; 32]), || {
+        let set = Root::<SortedSet<String, MainStorage>>::fetch().expect("state present");
         let got: Vec<String> = set.iter().unwrap().collect();
         assert_eq!(
             got,
             vec!["a".to_owned(), "b".to_owned()],
-            "ordered iter() served a subset of converged state — the stale index \
-             was trusted because its full_hash marker matched (sdk-js#87)"
+            "ordered iter() still served a stale subset — the sync/apply path did \
+             not invalidate the ordered-index marker (sdk-js#87)"
         );
         // first/last are index-backed too and must agree after the self-heal.
         assert_eq!(set.first().unwrap(), Some("a".to_owned()));
@@ -234,15 +287,15 @@ fn sorted_set_ordered_read_rebuilds_stale_index_with_matching_marker() {
     });
 }
 
-/// SortedMap: same shape. `range`/`first`/`last`/`page` are the index-backed
-/// readers (`keys`/`entries` sort in memory), so they are what a stale index
-/// corrupts — and what must self-heal despite a matching marker.
+/// SortedMap: same shape. `range`/`first`/`last` are the index-backed readers,
+/// so they are what a stale index corrupts and what must heal once the apply
+/// path invalidates the marker.
 #[test]
-fn sorted_map_ordered_read_rebuilds_stale_index_with_matching_marker() {
+fn sorted_map_apply_invalidates_stale_index_marker() {
     reset_environment();
     let state: SharedState = Rc::new(RefCell::new(HashMap::new()));
 
-    with_runtime_env(env_for(&state, [1u8; 32]), || {
+    let delta = with_runtime_env(env_for(&state, [1u8; 32]), || {
         let mut map = Root::new(SortedMap::<String, String, MainStorage>::new);
         assert!(map
             .insert("a".to_owned(), "A".to_owned())
@@ -258,15 +311,29 @@ fn sorted_map_ordered_read_rebuilds_stale_index_with_matching_marker() {
             vec!["a".to_owned(), "b".to_owned()]
         );
         map.commit();
+        take_last_artifact().expect("commit emitted a delta")
     });
 
     drop_sorted_index_entry_for_testing(b"a");
 
+    // CONTROL: stale subset served because the marker matches.
     with_runtime_env(env_for(&state, [1u8; 32]), || {
         let map = Root::<SortedMap<String, String, MainStorage>>::fetch().expect("state present");
         assert!(map.contains("a").unwrap(), "entry 'a' is present");
         assert_eq!(map.len().unwrap(), 2, "both entries enumerable");
-        // Index-backed ordered read: subset before the fix, full set after.
+        assert_eq!(
+            map.range(..).unwrap().collect::<Vec<(String, String)>>(),
+            vec![("b".to_owned(), "B".to_owned())],
+            "control: with a matching marker the O(1) range() serves the stale subset"
+        );
+    });
+
+    with_runtime_env(env_for(&state, [1u8; 32]), || {
+        replay_child_links::<MainStorage>(&delta);
+    });
+
+    with_runtime_env(env_for(&state, [1u8; 32]), || {
+        let map = Root::<SortedMap<String, String, MainStorage>>::fetch().expect("state present");
         let ordered: Vec<(String, String)> = map.range(..).unwrap().collect();
         assert_eq!(
             ordered,
@@ -274,8 +341,8 @@ fn sorted_map_ordered_read_rebuilds_stale_index_with_matching_marker() {
                 ("a".to_owned(), "A".to_owned()),
                 ("b".to_owned(), "B".to_owned())
             ],
-            "index-backed range() served a subset of converged state — the stale \
-             index was trusted because its full_hash marker matched (sdk-js#87)"
+            "index-backed range() still served a stale subset — the sync/apply \
+             path did not invalidate the ordered-index marker (sdk-js#87)"
         );
         assert_eq!(map.first().unwrap(), Some(("a".to_owned(), "A".to_owned())));
         assert_eq!(map.last().unwrap(), Some(("b".to_owned(), "B".to_owned())));

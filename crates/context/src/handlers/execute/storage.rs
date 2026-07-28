@@ -317,6 +317,13 @@ impl Storage for ContextStorage {
             .raw_get(Column::SortedIndexMeta, &full)
             .ok()?
     }
+
+    fn index_meta_del(&mut self, key: &[u8]) -> bool {
+        let full = self.index_key(key);
+        self.borrow_index_store()
+            .raw_delete(Column::SortedIndexMeta, &full)
+            .is_ok()
+    }
 }
 
 // Same safety reasoning as ContextStorage
@@ -500,6 +507,11 @@ impl<S: Storage> Storage for ReadOnlyContextStorage<'_, S> {
 
     fn index_meta_set(&mut self, _key: &[u8], _value: &[u8]) -> bool {
         tracing::debug!("ReadOnlyContextStorage: write suppressed (index_meta_set)");
+        false
+    }
+
+    fn index_meta_del(&mut self, _key: &[u8]) -> bool {
+        tracing::debug!("ReadOnlyContextStorage: write suppressed (index_meta_del)");
         false
     }
 }

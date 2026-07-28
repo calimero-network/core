@@ -89,6 +89,18 @@ pub trait Storage: Reflect {
         let _ = key;
         None
     }
+
+    /// Delete the ordered-index validity marker for `key` (a `collection_id`),
+    /// forcing the next ordered read to rebuild the index. The sync/apply path
+    /// calls this to invalidate a collection whose element set changed outside
+    /// `insert` (see `calimero_storage`'s `index_meta_clear`). Returns whether
+    /// the write was persisted. Default is inert (see [`index_set`]).
+    ///
+    /// [`index_set`]: Self::index_set
+    fn index_meta_del(&mut self, key: &[u8]) -> bool {
+        let _ = key;
+        false
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -180,6 +192,11 @@ impl Storage for InMemoryStorage {
 
     fn index_meta_get(&self, key: &[u8]) -> Option<Vec<u8>> {
         self.index_meta.get(key).cloned()
+    }
+
+    fn index_meta_del(&mut self, key: &[u8]) -> bool {
+        let _ = self.index_meta.remove(key);
+        true
     }
 }
 

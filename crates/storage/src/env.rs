@@ -284,6 +284,15 @@ pub fn storage_index_meta_get(key: &[u8]) -> Option<Vec<u8>> {
     imp::storage_index_meta_get(key)
 }
 
+/// Clear the node-local ordered-index validity marker for `key` (a
+/// `collection_id`), so the next ordered read rebuilds the index. This is the
+/// invalidate-on-sync primitive routed to the same non-synced marker column as
+/// [`storage_index_meta_set`]. Returns whether the write was persisted.
+#[must_use]
+pub fn storage_index_meta_clear(key: &[u8]) -> bool {
+    imp::storage_index_meta_clear(key)
+}
+
 /// Reads data from node-local (private) persistent storage.
 ///
 /// Private storage is **NOT synchronised across nodes** — entries
@@ -569,6 +578,10 @@ mod calimero_vm {
         env::storage_index_meta_get(key)
     }
 
+    pub(super) fn storage_index_meta_clear(key: &[u8]) -> bool {
+        env::storage_index_meta_clear(key)
+    }
+
     /// Fills the buffer with random bytes.
     pub(super) fn random_bytes(buf: &mut [u8]) {
         env::random_bytes(buf)
@@ -794,6 +807,13 @@ mod mocked {
 
     pub(super) fn storage_index_meta_get(key: &[u8]) -> Option<Vec<u8>> {
         INDEX_META.with(|meta| meta.borrow().get(key).cloned())
+    }
+
+    pub(super) fn storage_index_meta_clear(key: &[u8]) -> bool {
+        INDEX_META.with(|meta| {
+            let _ = meta.borrow_mut().remove(key);
+        });
+        true
     }
 
     /// Clear ONLY the node-local ordered index and its validity markers, leaving
