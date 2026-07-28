@@ -9,9 +9,11 @@ cd "$ROOT"
 echo "=== State Schema Conformance Test ==="
 echo ""
 
-# Build the app
+# Built through cargo mero: it emits res/state-schema.json and embeds the ABI
+# section, and this test compares the two against each other.
 echo "1. Building state-schema-conformance..."
-cargo build -p state-schema-conformance --target wasm32-unknown-unknown
+PATH="$(scripts/setup-cargo-mero.sh):$PATH"
+cargo mero build --manifest-path apps/state-schema-conformance/Cargo.toml
 
 # Check build-time generated schema
 echo ""
@@ -43,7 +45,7 @@ fi
 # Extract from WASM
 echo ""
 echo "4. Extracting state schema from WASM..."
-WASM_FILE="target/wasm32-unknown-unknown/debug/state_schema_conformance.wasm"
+WASM_FILE="apps/state-schema-conformance/res/state_schema_conformance.wasm"
 if [ ! -f "$WASM_FILE" ]; then
     echo "ERROR: WASM file not found at $WASM_FILE"
     exit 1

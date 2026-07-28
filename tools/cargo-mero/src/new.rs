@@ -105,7 +105,6 @@ mod tests {
 
         for rel in [
             "Cargo.toml",
-            "build.rs",
             "src/lib.rs",
             "tests/converge.rs",
             "README.md",
@@ -113,6 +112,18 @@ mod tests {
         ] {
             assert!(dir.join(rel).exists(), "missing {rel}");
         }
+
+        // `cargo mero build` emits the ABI itself, so a scaffolded app carries no
+        // build script and no build-dependency on the ABI crate.
+        assert!(
+            !dir.join("build.rs").exists(),
+            "scaffold must not write a build.rs"
+        );
+        let cargo = fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+        assert!(
+            !cargo.contains("[build-dependencies]"),
+            "scaffold must not declare build-dependencies"
+        );
     }
 
     #[test]
@@ -128,10 +139,6 @@ mod tests {
         let cargo = fs::read_to_string(dir.join("Cargo.toml")).unwrap();
         assert!(cargo.contains("name = \"my-app\""), "kebab crate name");
         assert!(cargo.contains("tag = \"0.11.0-rc.17\""), "sdk git tag");
-        assert!(
-            cargo.contains("calimero-wasm-abi = \"=0.11.0-rc.17\""),
-            "wasm-abi exact pin tracks the sdk tag"
-        );
         assert!(cargo.contains("com.example.my-app"), "app id");
         assert!(!cargo.contains("{{"), "no placeholders left in Cargo.toml");
 

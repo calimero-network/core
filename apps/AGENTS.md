@@ -14,14 +14,11 @@ Example and test WebAssembly applications demonstrating Calimero SDK usage.
 # Add WASM target (one-time)
 rustup target add wasm32-unknown-unknown
 
-# Build specific app
-cargo build -p kv-store --target wasm32-unknown-unknown --release
+# Build one app (emits + embeds the ABI)
+cargo mero build --manifest-path apps/kv-store/Cargo.toml
 
 # Build all apps
 ./scripts/build-all-apps.sh
-
-# Build one app via cargo mero
-cargo mero build --manifest-path apps/kv-store/Cargo.toml
 ```
 
 ## Available Apps
@@ -47,7 +44,6 @@ Each app follows this structure:
 ```
 app-name/
 ├── Cargo.toml                # Crate config
-├── build.rs                  # Build-time config (optional)
 ├── README.md                 # App documentation
 ├── src/
 │   └── lib.rs                # App implementation
@@ -212,9 +208,8 @@ calimero-sdk = { workspace = true }
 calimero-storage = { workspace = true }
 thiserror = { workspace = true }  # For error handling
 
-[build-dependencies]
-calimero-wasm-abi = { workspace = true }  # For ABI generation
-serde_json = { workspace = true }
+# No [build-dependencies]: `cargo mero build` emits res/abi.json and
+# res/state-schema.json from src/*.rs, so an app carries no build script.
 
 [profile.release]
 codegen-units = 1
@@ -331,13 +326,14 @@ steps:
 ## Building for Production
 
 ```bash
-# Use release profile optimized for WASM
-cargo build -p <app-name> \
-    --target wasm32-unknown-unknown \
-    --profile app-release
+# app-release profile, wasm-opt, and the embedded ABI in one step
+cargo mero build --manifest-path apps/<app-name>/Cargo.toml
 
-# Output: target/wasm32-unknown-unknown/app-release/<app_name>.wasm
+# Output: apps/<app-name>/res/<app_name>.wasm (ABI embedded)
 ```
+
+A bare `cargo build --target wasm32-unknown-unknown` compiles the same code but
+emits no ABI and embeds nothing, so the node cannot introspect the result.
 
 ## Common Gotchas
 
