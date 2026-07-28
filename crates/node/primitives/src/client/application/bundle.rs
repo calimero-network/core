@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::Arc;
 
 use crate::bundle::{
@@ -68,6 +68,17 @@ fn bounded_archive(data: &[u8], limit: u64) -> Archive<Capped<GzDecoder<&[u8]>>>
     })
 }
 
+/// Whether two archive-relative paths name the same entry. A leading `./` is the
+/// spelling ordinary tar producers emit and means nothing, but `old/` is a real
+/// component, so this is not basename matching: a nested manifest stays distinct.
+fn same_archive_path(a: &Path, b: &Path) -> bool {
+    fn parts(path: &Path) -> impl Iterator<Item = Component<'_>> {
+        path.components()
+            .skip_while(|c| matches!(c, Component::CurDir))
+    }
+    parts(a).eq(parts(b))
+}
+
 /// One rule for every archive scan, so they cannot be edited apart. Exact and
 /// top-level: a nested `old/manifest.json` can carry an authentic older release.
 /// It takes the entry, not a path, so that resolving the path is part of the
@@ -76,7 +87,7 @@ fn bounded_archive(data: &[u8], limit: u64) -> Archive<Capped<GzDecoder<&[u8]>>>
 fn is_manifest_entry<R: Read>(entry: &Entry<'_, R>) -> bool {
     entry
         .path()
-        .is_ok_and(|path| path == Path::new("manifest.json"))
+        .is_ok_and(|path| same_archive_path(&path, Path::new("manifest.json")))
 }
 
 /// A second `manifest.json` leaves an unpacker holding one the signature never
@@ -259,12 +270,12 @@ pub fn is_bundle_archive(path: &camino::Utf8Path) -> bool {
 }
 
 /// Read the `wanted` paths out of a bundle archive in memory (no extraction to
-/// disk), in one walk. Paths are manifest-relative and matched exactly against
-/// the whole archive: a basename or first-hit match would let a decoy entry pass
-/// the digest check for the entry an unpacker later writes. Paths the archive
-/// does not hold are simply absent from the result. A path that will not decode
-/// is a non-match rather than an abort, as everywhere else: a manifest declares
-/// its paths as JSON strings, so one that is not valid UTF-8 is never sought.
+/// disk), in one walk. Paths are manifest-relative and matched whole against the
+/// archive under the same [`same_archive_path`] rule the manifest scan uses: a
+/// basename or first-hit match would let a decoy entry pass the digest check for
+/// the entry an unpacker later writes. Paths the archive does not hold are simply
+/// absent from the result. A path that will not decode is a non-match rather than
+/// an abort, as everywhere else.
 ///
 /// One walk for every path, not one per path: skipping an entry still
 /// decompresses it, so a walk per artifact would multiply the archive's whole
@@ -277,19 +288,27 @@ fn extract_bundle_files<'a>(
     let mut found = HashMap::new();
     for entry in archive.entries()? {
         let mut entry = entry?;
-        let Some(&path) = entry
-            .path()
-            .ok()
-            .and_then(|p| p.to_str().and_then(|p| wanted.get(p)))
-        else {
+        let Ok(entry_path) = entry.path() else {
             continue;
         };
-        if found.contains_key(path) {
-            bail!("bundle archive has more than one entry at '{path}'");
+        // Every match, not the first: a manifest may spell one path two ways,
+        // and each declaration carries its own digest.
+        let matched = wanted
+            .iter()
+            .copied()
+            .filter(|w| same_archive_path(Path::new(w), &entry_path))
+            .collect::<Vec<_>>();
+        if matched.is_empty() {
+            continue;
         }
         let mut bytes = Vec::new();
         let _ = entry.read_to_end(&mut bytes)?;
-        let _ = found.insert(path, Arc::from(bytes));
+        let bytes: Arc<[u8]> = Arc::from(bytes);
+        for path in matched {
+            if found.insert(path, Arc::clone(&bytes)).is_some() {
+                bail!("bundle archive has more than one entry at '{path}'");
+            }
+        }
     }
     Ok(found)
 }

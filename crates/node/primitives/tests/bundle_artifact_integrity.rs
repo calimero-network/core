@@ -6,12 +6,13 @@ use std::fs;
 use calimero_node_primitives::bundle::{derive_signer_id_did_key, sign_manifest_json};
 use calimero_node_primitives::client::NodeClient;
 use ed25519_dalek::SigningKey;
+use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use futures_util::io::Cursor;
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
-use tar::Builder;
+use tar::{Archive, Builder};
 use tempfile::TempDir;
 
 mod common;
@@ -66,6 +67,34 @@ fn pack(dir: &TempDir, name: &str, manifest_bytes: &[u8], wasm: &[u8]) -> Vec<u8
     tar.finish().unwrap();
     drop(tar);
     fs::read(&path).unwrap()
+}
+
+/// Pack with entry names written into the header verbatim: `Header::set_path`
+/// drops a leading `./`, which is the very spelling these fixtures need.
+fn pack_verbatim(dir: &TempDir, name: &str, entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let path = dir.path().join(name);
+    let encoder = GzEncoder::new(fs::File::create(&path).unwrap(), Compression::default());
+    let mut tar = Builder::new(encoder);
+    for (entry_path, content) in entries {
+        let mut header = tar::Header::new_gnu();
+        header.as_old_mut().name[..entry_path.len()].copy_from_slice(entry_path.as_bytes());
+        header.set_size(content.len() as u64);
+        header.set_cksum();
+        tar.append(&header, *content).unwrap();
+    }
+    tar.finish().unwrap();
+    drop(tar);
+
+    let bundle = fs::read(&path).unwrap();
+    let mut written = Archive::new(GzDecoder::new(bundle.as_slice()));
+    for (entry, (expected, _)) in written.entries().unwrap().zip(entries) {
+        assert_eq!(
+            entry.unwrap().path_bytes().as_ref(),
+            expected.as_bytes(),
+            "the fixture proves nothing unless the archive holds this exact spelling"
+        );
+    }
+    bundle
 }
 
 /// Install through the production path (mandatory signature) and return the
@@ -732,5 +761,177 @@ async fn duplicate_entries_at_the_manifest_path_are_refused() {
         err.to_string()
             .contains("more than one entry at 'app.wasm'"),
         "the duplicate must be refused as such, not left to hash ordering, got: {err}"
+    );
+}
+
+/// `tar -czf out.mpk .` writes every member as `./name`, which is the same path
+/// spelled differently. Such a bundle went unrecognised entirely: detection
+/// answered `false` and the archive was served to the runtime as raw bytes.
+#[tokio::test]
+async fn a_bundle_written_with_leading_dot_slash_installs_on_both_paths() {
+    let dir = TempDir::new().unwrap();
+    let key = SigningKey::generate(&mut OsRng);
+    let wasm = b"wasm from a bundle built by ordinary tar".as_slice();
+
+    // The manifest declares the plain path; only the entries carry the `./`.
+    let manifest = signed_manifest("com.example.dotslash", "1.0.0", wasm, &key);
+    let bundle = pack_verbatim(
+        &dir,
+        "dotslash.mpk",
+        &[("./manifest.json", &manifest), ("./app.wasm", wasm)],
+    );
+
+    assert!(
+        NodeClient::is_bundle_blob(&bundle),
+        "a `./`-spelled archive is a bundle, not raw bytes"
+    );
+
+    let (node, _d, _b) = node_client().await;
+    let (_app_id, served) = install(&node, bundle).await.expect("install");
+    assert_eq!(
+        served, wasm,
+        "the served bytes must be the digest-checked artifact, not the raw archive"
+    );
+}
+
+/// The other direction: normalising only the entry side would leave a manifest
+/// that declares `./app.wasm` unable to find the artifact it signed.
+#[tokio::test]
+async fn a_manifest_declaring_a_dot_slash_path_matches_a_plain_entry() {
+    let dir = TempDir::new().unwrap();
+    let key = SigningKey::generate(&mut OsRng);
+    let wasm = b"wasm named with a leading dot-slash".as_slice();
+
+    let manifest = signed_manifest_at(
+        "com.example.dotslashmanifest",
+        "1.0.0",
+        "./app.wasm",
+        wasm,
+        &key,
+    );
+    let bundle = pack_entries(
+        &dir,
+        "dotslashmanifest.mpk",
+        &[("manifest.json", &manifest), ("app.wasm", wasm)],
+    );
+
+    let (node, _d, _b) = node_client().await;
+    let (_app_id, served) = install(&node, bundle).await.expect("install");
+    assert_eq!(served, wasm, "the declared `./app.wasm` must resolve");
+}
+
+/// `./` is a no-op, `old/` is a component. Normalising the first must not have
+/// restored basename matching, so the nested release must still lose.
+#[tokio::test]
+async fn a_dot_slash_archive_still_refuses_a_nested_manifest_rollback() {
+    let dir = TempDir::new().unwrap();
+    let key = SigningKey::generate(&mut OsRng);
+
+    let old_wasm = b"wasm bytecode of the superseded release".as_slice();
+    let new_wasm = b"wasm bytecode of the current release !!".as_slice();
+
+    let old = signed_manifest_at(
+        "com.example.dotslashrollback",
+        "1.0.0",
+        "old/app.wasm",
+        old_wasm,
+        &key,
+    );
+    let new = signed_manifest_at(
+        "com.example.dotslashrollback",
+        "2.0.0",
+        "app.wasm",
+        new_wasm,
+        &key,
+    );
+
+    // Every entry `./`-spelled, the nested pair first: both manifests would
+    // install on their own, so which one is selected is the whole test.
+    let bundle = pack_verbatim(
+        &dir,
+        "dotslashrollback.mpk",
+        &[
+            ("./old/manifest.json", &old),
+            ("./old/app.wasm", old_wasm),
+            ("./manifest.json", &new),
+            ("./app.wasm", new_wasm),
+        ],
+    );
+
+    let (node, _d, _b) = node_client().await;
+    let (app_id, served) = install(&node, bundle).await.expect("install");
+    assert_eq!(
+        served, new_wasm,
+        "ROLLBACK: the nested manifest was selected and the superseded release installed"
+    );
+    let app = node.get_application(&app_id).unwrap().expect("application");
+    assert_eq!(
+        app.version.map(|v| v.to_string()).as_deref(),
+        Some("2.0.0"),
+        "the installed version must come from the top-level manifest"
+    );
+}
+
+/// Two spellings of one path are two entries at that path. Preferring either
+/// leaves an unpacker holding the manifest the signature never covered.
+#[tokio::test]
+async fn a_dot_slash_duplicate_of_the_manifest_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let key = SigningKey::generate(&mut OsRng);
+    let wasm = b"wasm behind two spellings of one manifest".as_slice();
+
+    let first = signed_manifest("com.example.dotslashdupmanifest", "1.0.0", wasm, &key);
+    let second = signed_manifest("com.example.dotslashdupmanifest", "2.0.0", wasm, &key);
+
+    let bundle = pack_verbatim(
+        &dir,
+        "dotslashdupmanifest.mpk",
+        &[
+            ("manifest.json", &first),
+            ("app.wasm", wasm),
+            ("./manifest.json", &second),
+        ],
+    );
+
+    let (node, _d, _b) = node_client().await;
+    let err = install(&node, bundle)
+        .await
+        .expect_err("a manifest duplicated under another spelling must not install");
+    assert!(
+        err.to_string()
+            .contains("more than one entry at 'manifest.json'"),
+        "the duplicate must be refused as such, not resolved by entry order, got: {err}"
+    );
+}
+
+/// Same on the artifact side: the digest check saw one of the two, and nothing
+/// says an unpacker keeps that one.
+#[tokio::test]
+async fn a_dot_slash_duplicate_of_an_artifact_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let key = SigningKey::generate(&mut OsRng);
+
+    let honest = b"HONEST wasm bytecode from the publisher".as_slice();
+    let evil = b"EVIL!! wasm bytecode from the registry ".as_slice();
+    let manifest = signed_manifest("com.example.dotslashdup", "1.0.0", honest, &key);
+
+    let bundle = pack_verbatim(
+        &dir,
+        "dotslashdup.mpk",
+        &[
+            ("manifest.json", &manifest),
+            ("app.wasm", honest),
+            ("./app.wasm", evil),
+        ],
+    );
+
+    let (node, _d, _b) = node_client().await;
+    let err = install(&node, bundle)
+        .await
+        .expect_err("an artifact duplicated under another spelling must not install");
+    assert!(
+        err.to_string()
+            .contains("more than one entry at 'app.wasm'"),
+        "the duplicate must be refused as such, not left to entry order, got: {err}"
     );
 }
