@@ -412,6 +412,77 @@ fn two_devices_sharing_a_replica_seed_converge_on_the_lower_id() {
     );
 }
 
+#[test]
+fn a_stranger_cannot_suppress_another_accounts_root_key_rotation() {
+    // `absorb_handoff` keys by the HANDOFF's own account field and runs before
+    // the credential is verified, gated only on `genesis.account_id() ==
+    // cert.account` — which anyone can satisfy, because a genesis is public data.
+    //
+    // So a stranger can author a DeviceLinked op naming the victim's account,
+    // carrying a bogus handoff for the victim at epoch 0. The link itself is
+    // refused (they cannot sign a cert under the victim's root), but the handoff
+    // is absorbed first. `absorb_handoff` breaks ties on the raw new_root_sign_pk
+    // bytes, so a ground key can win the slot — and `resolved_accounts` STOPS at
+    // the first handoff whose signature does not verify. The victim's real
+    // rotation is then never reached, reverting them to the old root key they
+    // rotated away from. That is a rotation rollback, and it converges, so it
+    // never shows up as a divergence.
+    let mut fx = Fixture::new();
+    let mut victim = Account::new(10);
+    let phone = victim.enroll(11, 0);
+    fx.push(grant_membership(&fx.admin, victim.id, 30, fx.head.clone()));
+    fx.push(victim.link_op(&phone, 40, fx.head.clone()));
+
+    // The victim rotates its root key away from key(10) onto key(12).
+    let real = victim.rotate_to(12);
+    let rotate = phone.sign_op(
+        50,
+        fx.head.clone(),
+        OpPayload::AccountKeysRotated { handoff: real },
+    );
+    fx.push(rotate);
+    let rotated = ScopeState::from_ops(&fx.log);
+    assert!(
+        rotated
+            .acl_view()
+            .accounts
+            .get(&victim.id)
+            .is_some_and(|a| a.epoch == 1),
+        "precondition: the victim's rotation took effect"
+    );
+
+    // A stranger forges a handoff for the victim's epoch 0. It cannot verify
+    // (they lack the victim's root key), but it only has to WIN THE SLOT.
+    let mallory = Account::new(20);
+    let mallory_device = mallory.enroll(21, 0);
+    fx.push(grant_membership(&fx.admin, mallory.id, 60, fx.head.clone()));
+    fx.push(mallory.link_op(&mallory_device, 70, fx.head.clone()));
+
+    let mut forged = real;
+    forged.new_root_sign_pk = calimero_primitives::identity::PublicKey::from([0u8; 32]);
+    let poison = mallory_device.sign_op(
+        80,
+        fx.head.clone(),
+        OpPayload::DeviceLinked {
+            genesis: victim.genesis, // public data
+            chain: vec![forged],
+            cert: phone.cert, // not signable by Mallory; the link WILL be refused
+        },
+    );
+    fx.push(poison);
+
+    let after = ScopeState::from_ops(&fx.log);
+    assert!(
+        after
+            .acl_view()
+            .accounts
+            .get(&victim.id)
+            .is_some_and(|a| a.epoch == 1),
+        "a stranger must not be able to roll the victim's root key back to a \
+         superseded epoch by crowding out its handoff"
+    );
+}
+
 // ------------------------------------------------------------- revocation --
 
 #[test]

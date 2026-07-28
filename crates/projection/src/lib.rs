@@ -115,7 +115,7 @@ pub struct ScopeState {
     /// what makes rotations order-independent: a handoff always lands in its
     /// own slot, so folding epoch 1 before epoch 0 converges to the same chain
     /// as the reverse.
-    handoffs: BTreeMap<(AccountId, u32), RootKeyHandoff>,
+    handoffs: BTreeMap<(AccountId, u32), BTreeMap<[u8; 32], RootKeyHandoff>>,
     /// Device bindings currently in force.
     devices: BTreeMap<DeviceId, DeviceBinding>,
     /// Withdrawn devices and the account they were withdrawn from. Terminal and
@@ -383,14 +383,12 @@ impl ScopeState {
     /// the incoming key's bytes, which is arbitrary but identical everywhere.
     fn absorb_handoff(&mut self, handoff: RootKeyHandoff) {
         let key = (handoff.account, handoff.from_epoch);
-        match self.handoffs.get(&key) {
-            Some(existing)
-                if AsRef::<[u8; 32]>::as_ref(&existing.new_root_sign_pk)
-                    <= AsRef::<[u8; 32]>::as_ref(&handoff.new_root_sign_pk) => {}
-            _ => {
-                let _ = self.handoffs.insert(key, handoff);
-            }
-        }
+        let candidate = *AsRef::<[u8; 32]>::as_ref(&handoff.new_root_sign_pk);
+        let _ = self
+            .handoffs
+            .entry(key)
+            .or_default()
+            .insert(candidate, handoff);
     }
 
     /// Device bindings that are actually in force, once the account's final
@@ -438,24 +436,42 @@ impl ScopeState {
     /// Resolve every known account's current root key by walking its handoff
     /// chain from the genesis.
     ///
-    /// The walk stops at the first epoch with no handoff, or at the first
-    /// handoff whose signature does not verify under the key it claims to
-    /// depart from. Stopping — rather than skipping — is deliberate: a chain is
-    /// an authorization chain, and a link that cannot be verified means every
-    /// key beyond it is unproven.
+    /// The walk stops at the first epoch with **no verifying** handoff. Stopping
+    /// — rather than skipping the epoch — is deliberate: a chain is an
+    /// authorization chain, and a gap means every key beyond it is unproven.
+    ///
+    /// Each epoch may hold several candidate handoffs, because absorption happens
+    /// before the credential carrying them is verified. The walk takes the first
+    /// that verifies, so an unverifiable candidate cannot crowd out a real one.
     fn resolved_accounts(&self) -> BTreeMap<AccountId, AccountBinding> {
         self.account_genesis
             .iter()
             .map(|(account, genesis)| {
                 let mut epoch = 0u32;
                 let mut root_pk = genesis.root_sign_pk;
-                while let Some(handoff) = self.handoffs.get(&(*account, epoch)) {
-                    if root_pk
-                        .verify_raw_signature(&handoff.payload(), &handoff.signature)
-                        .is_err()
-                    {
+                while let Some(candidates) = self.handoffs.get(&(*account, epoch)) {
+                    // The first candidate that VERIFIES wins, in ascending
+                    // new-root-key order. Keeping every candidate and choosing
+                    // here — rather than letting one occupy the slot at absorb
+                    // time — is what stops a forged handoff from suppressing a
+                    // real one: absorption runs before the credential carrying it
+                    // is verified, and it is gated only on the genesis matching
+                    // the claimed account, which anyone can satisfy because a
+                    // genesis is public. A stranger could otherwise grind a low
+                    // new-root key, win the slot with a signature that cannot
+                    // verify, and stop this walk at an earlier epoch — rolling the
+                    // account back to a root key it had deliberately rotated away
+                    // from, convergently and therefore invisibly.
+                    //
+                    // Ascending order keeps the existing tie-break between two
+                    // genuinely concurrent rotations the account signed itself.
+                    let Some(handoff) = candidates.values().find(|candidate| {
+                        root_pk
+                            .verify_raw_signature(&candidate.payload(), &candidate.signature)
+                            .is_ok()
+                    }) else {
                         break;
-                    }
+                    };
                     root_pk = handoff.new_root_sign_pk;
                     epoch = epoch.saturating_add(1);
                 }
