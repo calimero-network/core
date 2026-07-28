@@ -40,7 +40,7 @@ steps:
   - name: Install scenario-field-split-v1 on node 1
     type: install_application
     node: app-migration-split-1
-    path: apps/migrations/scenario-field-split-v1/res/scenario-field-split-1.0.0.mpk
+    path: dist/scenario-field-split-v1.mpk
     dev: true
     outputs:
       app_v1: applicationId
@@ -182,7 +182,7 @@ steps:
   - name: Install scenario-field-split-v2 on node 1
     type: install_application
     node: app-migration-split-1
-    path: apps/migrations/scenario-field-split-v2/res/scenario-field-split-2.0.0.mpk
+    path: dist/scenario-field-split-v2.mpk
     dev: true
     outputs:
       app_v2: applicationId

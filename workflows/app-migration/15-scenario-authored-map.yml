@@ -33,7 +33,7 @@ steps:
   - name: Install scenario-authored-map-v1 on node 1
     type: install_application
     node: app-migration-authmap-1
-    path: apps/migrations/scenario-authored-map-v1/res/scenario-authored-map-1.0.0.mpk
+    path: dist/scenario-authored-map-v1.mpk
     dev: true
     outputs:
       app_v1: applicationId
@@ -179,7 +179,7 @@ steps:
   - name: Install scenario-authored-map-v2 on node 1
     type: install_application
     node: app-migration-authmap-1
-    path: apps/migrations/scenario-authored-map-v2/res/scenario-authored-map-2.0.0.mpk
+    path: dist/scenario-authored-map-v2.mpk
     dev: true
     outputs:
       app_v2: applicationId

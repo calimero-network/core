@@ -51,7 +51,7 @@ fn workspace_root() -> PathBuf {
 }
 
 /// Newest modification time across the app's build inputs: every `*.rs` under
-/// `src/` (recursively), plus `Cargo.toml` and `build.sh`. Returns `None` if
+/// `src/` (recursively), plus `Cargo.toml` and `build.rs`. Returns `None` if
 /// nothing could be stat'd (forces a rebuild).
 fn newest_mtime(app_dir: &std::path::Path) -> Option<std::time::SystemTime> {
     fn visit(dir: &std::path::Path, newest: &mut Option<std::time::SystemTime>) {
@@ -71,7 +71,7 @@ fn newest_mtime(app_dir: &std::path::Path) -> Option<std::time::SystemTime> {
     }
     let mut newest = None;
     visit(&app_dir.join("src"), &mut newest);
-    for f in ["Cargo.toml", "build.sh"] {
+    for f in ["Cargo.toml", "build.rs"] {
         if let Ok(m) = std::fs::metadata(app_dir.join(f)).and_then(|m| m.modified()) {
             newest = Some(newest.map_or(m, |cur| cur.max(m)));
         }
@@ -87,7 +87,7 @@ fn scaffolding_wasm() -> &'static [u8] {
         let wasm_path = app_dir.join("res/scaffolding_e2e.wasm");
 
         // (Re)build if the wasm is missing or older than ANY source input
-        // (every `*.rs` under `src/`, plus `Cargo.toml` and `build.sh`) — not
+        // (every `*.rs` under `src/`, plus `Cargo.toml` and `build.rs`), not
         // just `src/lib.rs`, so an edit to a sibling module or the manifest
         // doesn't leave a stale binary in use.
         let wasm_mtime = std::fs::metadata(&wasm_path)
@@ -99,15 +99,23 @@ fn scaffolding_wasm() -> &'static [u8] {
             _ => true,
         };
         if needs_build {
-            // Build via the app's own `build.sh` (handles the wasm32 target +
-            // wasm-opt + copy to res/). The path is the compile-time-constant
-            // `CARGO_MANIFEST_DIR`, not attacker-controlled. Capture output so a
-            // build failure surfaces the actual compiler error, not just a
-            // generic assert.
-            let output = Command::new("bash")
-                .arg(app_dir.join("build.sh"))
+            // Build via `cargo mero build` (handles the wasm32 target +
+            // wasm-opt + ABI embed + copy to res/). Capture output so a build
+            // failure surfaces the actual compiler error, not a generic assert.
+            let output = Command::new(env!("CARGO"))
+                .args([
+                    "run",
+                    "-q",
+                    "-p",
+                    "cargo-mero",
+                    "--",
+                    "mero",
+                    "build",
+                    "--manifest-path",
+                ])
+                .arg(app_dir.join("Cargo.toml"))
                 .output()
-                .expect("failed to spawn build.sh — is bash on PATH?");
+                .expect("failed to spawn cargo mero build");
             assert!(
                 output.status.success(),
                 "building scaffolding-e2e wasm failed:\n--- stdout ---\n{}\n--- stderr ---\n{}",

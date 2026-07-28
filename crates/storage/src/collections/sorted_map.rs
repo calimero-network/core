@@ -86,7 +86,7 @@ use crate::collections::error::StoreError;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::error::StorageError;
 use crate::index::Index;
-use crate::store::{Key, MainStorage};
+use crate::store::MainStorage;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A map collection that keeps its entries ordered by key, enabling range and
@@ -571,18 +571,17 @@ where
 
     /// Stamp the index validity marker with the collection's current
     /// `full_hash`, claiming "the ordered index is consistent as of this hash".
+    /// Routed to the node-local index-meta keyspace (mirroring the index it
+    /// guards), never the synced state — so a peer never inherits this node's
+    /// marker and skips its own rebuild of converged-but-unindexed data.
     fn stamp_index_marker(&self) {
-        let _ = S::storage_write(
-            Key::SortedIndexMeta(self.inner.id()),
-            &self.current_full_hash(),
-        );
+        let _ = S::index_meta_put(self.inner.id(), &self.current_full_hash());
     }
 
     /// `true` if the stamped marker equals the collection's current `full_hash`
     /// — i.e. nothing has changed the entry set since the index was last built.
     fn index_marker_current(&self) -> bool {
-        S::storage_read(Key::SortedIndexMeta(self.inner.id())).as_deref()
-            == Some(&self.current_full_hash()[..])
+        S::index_meta_get(self.inner.id()).as_deref() == Some(&self.current_full_hash()[..])
     }
 
     /// Reconcile the ordered index with the authoritative entry set, then stamp
@@ -1627,7 +1626,7 @@ mod tests {
     // here proves the on-disk query path (insert warms the index; range/prefix/
     // page read from it) end to end.
     use crate::entities::Data;
-    use crate::store::{Key, MockedStorage, StorageAdaptor};
+    use crate::store::{MockedStorage, StorageAdaptor};
 
     type Indexed = MockedStorage<951>;
 
@@ -1695,7 +1694,7 @@ mod tests {
         // e.g. right after a remote sync applied entries host-side without going
         // through `SortedMap::insert`: wipe the index and stamp a bogus marker.
         Indexed::index_clear(collection);
-        let _ = Indexed::storage_write(Key::SortedIndexMeta(collection), &[0u8; 32]);
+        let _ = Indexed::index_meta_put(collection, &[0u8; 32]);
 
         // The next ordered read must notice the marker mismatch, rebuild the
         // index from the authoritative entries, and return correct results.

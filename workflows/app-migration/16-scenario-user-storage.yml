@@ -30,7 +30,7 @@ steps:
   - name: Install scenario-user-storage-v1 on node 1
     type: install_application
     node: app-migration-userstore-1
-    path: apps/migrations/scenario-user-storage-v1/res/scenario-user-storage-1.0.0.mpk
+    path: dist/scenario-user-storage-v1.mpk
     dev: true
     outputs:
       app_v1: applicationId
@@ -170,7 +170,7 @@ steps:
   - name: Install scenario-user-storage-v2 on node 1
     type: install_application
     node: app-migration-userstore-1
-    path: apps/migrations/scenario-user-storage-v2/res/scenario-user-storage-2.0.0.mpk
+    path: dist/scenario-user-storage-v2.mpk
     dev: true
     outputs:
       app_v2: applicationId

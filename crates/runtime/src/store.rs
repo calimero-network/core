@@ -70,6 +70,25 @@ pub trait Storage: Reflect {
         let _ = (lo, hi);
         None
     }
+
+    /// Write the ordered-index validity marker for `key` (a `collection_id`).
+    /// This is node-local bookkeeping that MUST live in the same non-synced
+    /// keyspace as the ordered index it guards — never in the synced state — so
+    /// a peer never observes a marker for an index it did not build. Returns
+    /// whether the write was persisted. Default is inert (see [`index_set`]).
+    ///
+    /// [`index_set`]: Self::index_set
+    fn index_meta_set(&mut self, key: &[u8], value: &[u8]) -> bool {
+        let _ = (key, value);
+        false
+    }
+
+    /// Read the ordered-index validity marker for `key` (a `collection_id`)
+    /// written by [`index_meta_set`](Self::index_meta_set). Default is inert.
+    fn index_meta_get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        let _ = key;
+        None
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -79,6 +98,10 @@ pub struct InMemoryStorage {
     /// iterates in key order, mirroring the RocksDB `SortedIndex` column the
     /// node backs this with in production.
     index: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// Node-local ordered-index validity markers (see `index_meta_*`), kept
+    /// separate from `index` so a marker can never be returned by an index
+    /// range scan — mirroring the RocksDB `SortedIndexMeta` sibling column.
+    index_meta: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
 impl Storage for InMemoryStorage {
@@ -148,6 +171,15 @@ impl Storage for InMemoryStorage {
             .range::<[u8], _>((Bound::Included(lo), Bound::Excluded(hi)))
             .next_back()
             .map(|(k, v)| (k.clone(), v.clone()))
+    }
+
+    fn index_meta_set(&mut self, key: &[u8], value: &[u8]) -> bool {
+        let _ = self.index_meta.insert(key.to_vec(), value.to_vec());
+        true
+    }
+
+    fn index_meta_get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.index_meta.get(key).cloned()
     }
 }
 

@@ -15,10 +15,6 @@ thiserror.workspace = true
 calimero-sdk.workspace = true
 calimero-storage.workspace = true
 
-[build-dependencies]
-calimero-wasm-abi.workspace = true
-serde_json.workspace = true
-
 [package.metadata.workspaces]
 independent = true
 
@@ -26,3 +22,7 @@ independent = true
 # Enables `register_crdt_merge` + the native mock host so `TestHost` can drive
 # CRDT state under `cargo test`.
 calimero-storage = { workspace = true, features = ["testing"] }
+
+[package.metadata.calimero]
+package = "com.calimero.kv-store"
+name = "KV Store"

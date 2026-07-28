@@ -37,7 +37,7 @@ steps:
   - name: Install migration-suite-v1 on node 1
     type: install_application
     node: invite-join-regression-1
-    path: apps/migrations/migration-suite-v1/res/migration-suite-1.0.0.mpk
+    path: dist/migration-suite-v1.mpk
     dev: true
     outputs:
       app_v1: applicationId

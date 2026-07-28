@@ -467,8 +467,55 @@ where
 
 /// Evaluate a `#[cfg(...)]` predicate (`feature = "x"`, `not`, `all`, `any`,
 /// or any other atom) with Kleene logic against the active feature set.
+/// The value a `cfg` key takes on `wasm32-unknown-unknown`, the only target apps
+/// are built for. `None` for keys outside this set, which stay undecided.
+fn wasm32_target_value(key: &syn::Path) -> Option<&'static str> {
+    for (name, value) in [
+        ("target_arch", "wasm32"),
+        ("target_os", "unknown"),
+        ("target_vendor", "unknown"),
+        ("target_env", ""),
+        ("target_family", "wasm"),
+        ("target_pointer_width", "32"),
+        ("target_endian", "little"),
+    ] {
+        if key.is_ident(name) {
+            return Some(value);
+        }
+    }
+    None
+}
+
 fn eval_cfg_meta(meta: &syn::Meta, features: &BTreeSet<String>) -> CfgTruth {
     match meta {
+        // The ABI describes the shipped wasm, which is never built with --cfg test,
+        // so this is definitely False rather than Unknown. That also decides the
+        // compound forms: `all(test, ..)` is False, `any(test, ..)` rests on the
+        // other predicates, and `not(test)` is True.
+        syn::Meta::Path(p) if p.is_ident("test") => CfgTruth::False,
+        // Apps only ever compile to wasm32-unknown-unknown, so these have a
+        // definite answer too. Unknown here would keep a `#[cfg(not(target_arch =
+        // "wasm32"))] mod native;` and leak types the wasm never contains.
+        syn::Meta::Path(p) if p.is_ident("unix") || p.is_ident("windows") => CfgTruth::False,
+        syn::Meta::Path(p) if p.is_ident("wasm") => CfgTruth::True,
+        syn::Meta::NameValue(nv) if !nv.path.is_ident("feature") => {
+            match wasm32_target_value(&nv.path) {
+                // An unrecognized key stays Unknown: guessing False would drop items
+                // that do belong in the ABI.
+                None => CfgTruth::Unknown,
+                Some(expected) => match &nv.value {
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(s),
+                        ..
+                    }) if s.value() == expected => CfgTruth::True,
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(_),
+                        ..
+                    }) => CfgTruth::False,
+                    _ => CfgTruth::Unknown,
+                },
+            }
+        }
         syn::Meta::NameValue(nv) if nv.path.is_ident("feature") => {
             if let syn::Expr::Lit(syn::ExprLit {
                 lit: syn::Lit::Str(s),
@@ -545,7 +592,10 @@ fn item_attrs(item: &Item) -> &[syn::Attribute] {
 /// Whether a top-level item survives cfg filtering. Multiple `#[cfg]` attrs are
 /// a conjunction; an item is dropped only when some `#[cfg]` is a definite
 /// False (Unknown and True keep it).
-fn item_cfg_active(item: &Item, features: &BTreeSet<String>) -> bool {
+///
+/// Public so a caller walking the module tree can ask whether a `mod x;`
+/// declaration is compiled in before it reads that file.
+pub fn item_cfg_active(item: &Item, features: &BTreeSet<String>) -> bool {
     item_attrs(item).iter().all(|attr| {
         !attr.path().is_ident("cfg")
             || attr

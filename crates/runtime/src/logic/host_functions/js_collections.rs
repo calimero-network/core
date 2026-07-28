@@ -10,8 +10,8 @@ use calimero_storage::{
     index::Index,
     interface::{Interface, StorageError},
     js::{
-        JsCounter, JsFrozenStorage, JsLwwRegister, JsPnCounter, JsRga, JsSortedMap, JsSortedSet,
-        JsUnorderedMap, JsUnorderedSet, JsUserStorage, JsVector,
+        JsAuthoredMap, JsAuthoredVector, JsCounter, JsFrozenStorage, JsLwwRegister, JsPnCounter,
+        JsRga, JsSortedMap, JsSortedSet, JsUnorderedMap, JsUnorderedSet, JsUserStorage, JsVector,
     },
     store::MainStorage,
 };
@@ -630,6 +630,235 @@ impl VMHostFunctions<'_> {
 
     pub fn js_crdt_sortedset_clear(&mut self, set_id_ptr: u64) -> VMLogicResult<i32> {
         self.invoke_with_storage_env(|host| host.crdt_sortedset_clear(set_id_ptr))
+    }
+
+    /// Creates a new attributed CRDT map and returns its identifier.
+    pub fn js_crdt_authored_map_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_authored_map_new(dest_register_id))
+    }
+
+    /// Creates a new attributed CRDT map at a caller-supplied deterministic id.
+    pub fn js_crdt_authored_map_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_map_new_with_id(id_ptr, dest_register_id)
+        })
+    }
+
+    /// Inserts a new key/value pair, stamping the caller as the entry owner.
+    pub fn js_crdt_authored_map_insert(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+        value_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_map_insert(map_id_ptr, key_ptr, value_ptr, dest_register_id)
+        })
+    }
+
+    /// Updates the value at a key. Only the entry owner may call this.
+    pub fn js_crdt_authored_map_update(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+        value_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_map_update(map_id_ptr, key_ptr, value_ptr, dest_register_id)
+        })
+    }
+
+    /// Removes a key. Only the entry owner may call this.
+    pub fn js_crdt_authored_map_remove(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_map_remove(map_id_ptr, key_ptr, dest_register_id)
+        })
+    }
+
+    /// Retrieves the value at a key.
+    pub fn js_crdt_authored_map_get(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_map_get(map_id_ptr, key_ptr, dest_register_id)
+        })
+    }
+
+    /// Checks whether a key exists in the attributed map.
+    pub fn js_crdt_authored_map_contains(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_authored_map_contains(map_id_ptr, key_ptr))
+    }
+
+    /// Writes the 32-byte owner public key of a key to the register.
+    pub fn js_crdt_authored_map_owner_of(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_map_owner_of(map_id_ptr, key_ptr, dest_register_id)
+        })
+    }
+
+    /// Returns whether the current executor owns a key.
+    pub fn js_crdt_authored_map_owned_by_me(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_authored_map_owned_by_me(map_id_ptr, key_ptr))
+    }
+
+    /// Iterates all entries in the attributed map.
+    pub fn js_crdt_authored_map_iter(
+        &mut self,
+        map_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_map_iter(map_id_ptr, dest_register_id)
+        })
+    }
+
+    /// Returns the number of entries in the attributed map.
+    pub fn js_crdt_authored_map_len(
+        &mut self,
+        map_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_map_len(map_id_ptr, dest_register_id)
+        })
+    }
+
+    /// Creates a new attributed CRDT vector and returns its identifier.
+    pub fn js_crdt_authored_vector_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_authored_vector_new(dest_register_id))
+    }
+
+    /// Creates a new attributed CRDT vector at a caller-supplied deterministic id.
+    pub fn js_crdt_authored_vector_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_vector_new_with_id(id_ptr, dest_register_id)
+        })
+    }
+
+    /// Pushes a new value at the tail, stamping the caller as the slot owner.
+    /// Writes the new index (u64 LE) to the register.
+    pub fn js_crdt_authored_vector_push(
+        &mut self,
+        vector_id_ptr: u64,
+        value_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_vector_push(vector_id_ptr, value_ptr, dest_register_id)
+        })
+    }
+
+    /// Updates the value at a slot. Only the slot owner may call this.
+    pub fn js_crdt_authored_vector_update(
+        &mut self,
+        vector_id_ptr: u64,
+        index: u64,
+        value_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_vector_update(vector_id_ptr, index, value_ptr, dest_register_id)
+        })
+    }
+
+    /// Tombstones a slot. Only the slot owner may call this.
+    pub fn js_crdt_authored_vector_tombstone(
+        &mut self,
+        vector_id_ptr: u64,
+        index: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_vector_tombstone(vector_id_ptr, index, dest_register_id)
+        })
+    }
+
+    /// Retrieves the value at a slot.
+    pub fn js_crdt_authored_vector_get(
+        &mut self,
+        vector_id_ptr: u64,
+        index: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_vector_get(vector_id_ptr, index, dest_register_id)
+        })
+    }
+
+    /// Writes the 32-byte owner public key of a slot to the register.
+    pub fn js_crdt_authored_vector_owner_of(
+        &mut self,
+        vector_id_ptr: u64,
+        index: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_vector_owner_of(vector_id_ptr, index, dest_register_id)
+        })
+    }
+
+    /// Returns whether the current executor owns a slot.
+    pub fn js_crdt_authored_vector_owned_by_me(
+        &mut self,
+        vector_id_ptr: u64,
+        index: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_vector_owned_by_me(vector_id_ptr, index)
+        })
+    }
+
+    /// Iterates all values in the attributed vector (insertion order).
+    pub fn js_crdt_authored_vector_iter(
+        &mut self,
+        vector_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_vector_iter(vector_id_ptr, dest_register_id)
+        })
+    }
+
+    /// Returns the number of entries in the attributed vector.
+    pub fn js_crdt_authored_vector_len(
+        &mut self,
+        vector_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_vector_len(vector_id_ptr, dest_register_id)
+        })
     }
 
     fn crdt_map_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
@@ -2595,6 +2824,674 @@ impl VMHostFunctions<'_> {
         }
     }
 
+    fn crdt_authored_map_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsAuthoredMap, String> {
+            let mut map = JsAuthoredMap::new();
+            save_js_authored_map_instance(&mut map)?;
+            Ok(map)
+        }));
+
+        match outcome {
+            Ok(Ok(map)) => {
+                self.write_register_bytes(dest_register_id, map.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_authored_map_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsAuthoredMap, String> {
+            let mut map = JsAuthoredMap::new_with_id(id);
+            save_js_authored_map_instance(&mut map)?;
+            Ok(map)
+        }));
+
+        match outcome {
+            Ok(Ok(map)) => {
+                self.write_register_bytes(dest_register_id, map.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_authored_map_insert(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+        value_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let map_id = match self.read_map_id(map_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let key = self.read_buffer(key_ptr)?;
+        let value = self.read_buffer(value_ptr)?;
+
+        let mut map = match load_js_authored_map_instance(map_id) {
+            Ok(map) => map,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        // `insert` stamps the current executor (installed in the runtime env) as
+        // the entry owner and rejects an already-present key.
+        match map.insert(&key, &value) {
+            Ok(()) => {
+                if let Err(message) = save_js_authored_map_instance(&mut map) {
+                    return self.write_error_message(dest_register_id, message);
+                }
+                self.clear_register(dest_register_id)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_authored_map_update(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+        value_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let map_id = match self.read_map_id(map_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let key = self.read_buffer(key_ptr)?;
+        let value = self.read_buffer(value_ptr)?;
+
+        let mut map = match load_js_authored_map_instance(map_id) {
+            Ok(map) => map,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        // Owner-only: the collection returns `ActionNotAllowed` when the current
+        // executor is not the stored owner; surface it verbatim.
+        match map.update(&key, &value) {
+            Ok(()) => match save_js_authored_map_instance(&mut map) {
+                Ok(()) => Ok(1),
+                Err(message) => self.write_error_message(dest_register_id, message),
+            },
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_authored_map_remove(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let map_id = match self.read_map_id(map_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let key = self.read_buffer(key_ptr)?;
+
+        let mut map = match load_js_authored_map_instance(map_id) {
+            Ok(map) => map,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        // Owner-only: a non-owner remove yields `ActionNotAllowed`; an absent key
+        // yields `Ok(None)`.
+        match map.remove(&key) {
+            Ok(Some(previous)) => {
+                if let Err(message) = save_js_authored_map_instance(&mut map) {
+                    return self.write_error_message(dest_register_id, message);
+                }
+                self.write_register_bytes(dest_register_id, &previous)?;
+                Ok(1)
+            }
+            Ok(None) => {
+                self.clear_register(dest_register_id)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_authored_map_get(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let map_id = match self.read_map_id(map_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let key = self.read_buffer(key_ptr)?;
+
+        let map = match load_js_authored_map_instance(map_id) {
+            Ok(map) => map,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match map.get(&key) {
+            Ok(Some(value)) => {
+                self.write_register_bytes(dest_register_id, &value)?;
+                Ok(1)
+            }
+            Ok(None) => {
+                self.clear_register(dest_register_id)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_authored_map_contains(&mut self, map_id_ptr: u64, key_ptr: u64) -> VMLogicResult<i32> {
+        let map_id = match self.read_map_id(map_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let key = self.read_buffer(key_ptr)?;
+
+        let map = match load_js_authored_map_instance(map_id) {
+            Ok(map) => map,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match map.contains(&key) {
+            Ok(result) => Ok(i32::from(result)),
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    fn crdt_authored_map_owner_of(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let map_id = match self.read_map_id(map_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let key = self.read_buffer(key_ptr)?;
+
+        let map = match load_js_authored_map_instance(map_id) {
+            Ok(map) => map,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        // Present key → 32-byte owner public key in the register (status 1);
+        // absent key → cleared register (status 0), matching `get`'s convention.
+        match map.owner_of(&key) {
+            Ok(Some(owner)) => {
+                self.write_register_bytes(dest_register_id, &owner)?;
+                Ok(1)
+            }
+            Ok(None) => {
+                self.clear_register(dest_register_id)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_authored_map_owned_by_me(
+        &mut self,
+        map_id_ptr: u64,
+        key_ptr: u64,
+    ) -> VMLogicResult<i32> {
+        let map_id = match self.read_map_id(map_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let key = self.read_buffer(key_ptr)?;
+
+        let map = match load_js_authored_map_instance(map_id) {
+            Ok(map) => map,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match map.owned_by_me(&key) {
+            Ok(result) => Ok(i32::from(result)),
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    fn crdt_authored_map_iter(
+        &mut self,
+        map_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let map_id = match self.read_map_id(map_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let map = match load_js_authored_map_instance(map_id) {
+            Ok(map) => map,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let entries = match map.entries() {
+            Ok(entries) => entries,
+            Err(err) => return self.write_error_message(dest_register_id, err),
+        };
+
+        let count = u32::try_from(entries.len()).map_err(|_| HostError::IntegerOverflow)?;
+
+        let mut total_len: usize = 4;
+        for (key, value) in &entries {
+            let key_len = key.len();
+            let value_len = value.len();
+            u32::try_from(key_len).map_err(|_| HostError::IntegerOverflow)?;
+            u32::try_from(value_len).map_err(|_| HostError::IntegerOverflow)?;
+            total_len = total_len
+                .checked_add(4)
+                .and_then(|acc| acc.checked_add(key_len))
+                .and_then(|acc| acc.checked_add(4))
+                .and_then(|acc| acc.checked_add(value_len))
+                .ok_or(HostError::IntegerOverflow)?;
+        }
+
+        let mut buffer = Vec::with_capacity(total_len);
+        buffer.extend_from_slice(&count.to_le_bytes());
+        for (key, value) in entries {
+            let key_len = u32::try_from(key.len()).map_err(|_| HostError::IntegerOverflow)?;
+            let value_len = u32::try_from(value.len()).map_err(|_| HostError::IntegerOverflow)?;
+            buffer.extend_from_slice(&key_len.to_le_bytes());
+            buffer.extend_from_slice(&key);
+            buffer.extend_from_slice(&value_len.to_le_bytes());
+            buffer.extend_from_slice(&value);
+        }
+
+        self.write_register_bytes(dest_register_id, &buffer)?;
+        Ok(1)
+    }
+
+    fn crdt_authored_map_len(
+        &mut self,
+        map_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let map_id = match self.read_map_id(map_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let map = match load_js_authored_map_instance(map_id) {
+            Ok(map) => map,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match map.len() {
+            Ok(len) => {
+                let len_u64 = u64::try_from(len).map_err(|_| HostError::IntegerOverflow)?;
+                self.write_register_bytes(dest_register_id, &len_u64.to_le_bytes())?;
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_authored_vector_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
+        let outcome =
+            panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsAuthoredVector, String> {
+                let mut vector = JsAuthoredVector::new();
+                save_js_authored_vector_instance(&mut vector)?;
+                Ok(vector)
+            }));
+
+        match outcome {
+            Ok(Ok(vector)) => {
+                self.write_register_bytes(dest_register_id, vector.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_authored_vector_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let outcome =
+            panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsAuthoredVector, String> {
+                let mut vector = JsAuthoredVector::new_with_id(id);
+                save_js_authored_vector_instance(&mut vector)?;
+                Ok(vector)
+            }));
+
+        match outcome {
+            Ok(Ok(vector)) => {
+                self.write_register_bytes(dest_register_id, vector.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_authored_vector_push(
+        &mut self,
+        vector_id_ptr: u64,
+        value_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let vector_id = match self.read_map_id(vector_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let value = self.read_buffer(value_ptr)?;
+
+        let mut vector = match load_js_authored_vector_instance(vector_id) {
+            Ok(vector) => vector,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        // `push` stamps the current executor as owner and returns the new index.
+        match vector.push(&value) {
+            Ok(index) => {
+                if let Err(message) = save_js_authored_vector_instance(&mut vector) {
+                    return self.write_error_message(dest_register_id, message);
+                }
+                let index_u64 = u64::try_from(index).map_err(|_| HostError::IntegerOverflow)?;
+                self.write_register_bytes(dest_register_id, &index_u64.to_le_bytes())?;
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_authored_vector_update(
+        &mut self,
+        vector_id_ptr: u64,
+        index: u64,
+        value_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let vector_id = match self.read_map_id(vector_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let idx = match usize::try_from(index) {
+            Ok(value) => value,
+            Err(_) => {
+                return self.write_error_message(
+                    dest_register_id,
+                    format!("index {index} does not fit into usize"),
+                )
+            }
+        };
+
+        let value = self.read_buffer(value_ptr)?;
+
+        let mut vector = match load_js_authored_vector_instance(vector_id) {
+            Ok(vector) => vector,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        // Owner-only: a non-owner update yields `ActionNotAllowed`.
+        match vector.update(idx, &value) {
+            Ok(()) => match save_js_authored_vector_instance(&mut vector) {
+                Ok(()) => Ok(1),
+                Err(message) => self.write_error_message(dest_register_id, message),
+            },
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_authored_vector_tombstone(
+        &mut self,
+        vector_id_ptr: u64,
+        index: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let vector_id = match self.read_map_id(vector_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let idx = match usize::try_from(index) {
+            Ok(value) => value,
+            Err(_) => {
+                return self.write_error_message(
+                    dest_register_id,
+                    format!("index {index} does not fit into usize"),
+                )
+            }
+        };
+
+        let mut vector = match load_js_authored_vector_instance(vector_id) {
+            Ok(vector) => vector,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        // Owner-only: a non-owner tombstone yields `ActionNotAllowed`.
+        match vector.tombstone(idx) {
+            Ok(()) => match save_js_authored_vector_instance(&mut vector) {
+                Ok(()) => Ok(1),
+                Err(message) => self.write_error_message(dest_register_id, message),
+            },
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_authored_vector_get(
+        &mut self,
+        vector_id_ptr: u64,
+        index: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let vector_id = match self.read_map_id(vector_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let idx = match usize::try_from(index) {
+            Ok(value) => value,
+            Err(_) => {
+                return self.write_error_message(
+                    dest_register_id,
+                    format!("index {index} does not fit into usize"),
+                )
+            }
+        };
+
+        let vector = match load_js_authored_vector_instance(vector_id) {
+            Ok(vector) => vector,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match vector.get(idx) {
+            Ok(Some(value)) => {
+                self.write_register_bytes(dest_register_id, &value)?;
+                Ok(1)
+            }
+            Ok(None) => {
+                self.clear_register(dest_register_id)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_authored_vector_owner_of(
+        &mut self,
+        vector_id_ptr: u64,
+        index: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let vector_id = match self.read_map_id(vector_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let idx = match usize::try_from(index) {
+            Ok(value) => value,
+            Err(_) => {
+                return self.write_error_message(
+                    dest_register_id,
+                    format!("index {index} does not fit into usize"),
+                )
+            }
+        };
+
+        let vector = match load_js_authored_vector_instance(vector_id) {
+            Ok(vector) => vector,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        // Present slot → 32-byte owner public key (status 1); out-of-bounds slot
+        // → cleared register (status 0), matching `get`'s convention.
+        match vector.owner_of(idx) {
+            Ok(Some(owner)) => {
+                self.write_register_bytes(dest_register_id, &owner)?;
+                Ok(1)
+            }
+            Ok(None) => {
+                self.clear_register(dest_register_id)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_authored_vector_owned_by_me(
+        &mut self,
+        vector_id_ptr: u64,
+        index: u64,
+    ) -> VMLogicResult<i32> {
+        let vector_id = match self.read_map_id(vector_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let idx = match usize::try_from(index) {
+            Ok(value) => value,
+            Err(_) => {
+                return self
+                    .write_error_message(0, format!("index {index} does not fit into usize"))
+            }
+        };
+
+        let vector = match load_js_authored_vector_instance(vector_id) {
+            Ok(vector) => vector,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        match vector.owned_by_me(idx) {
+            Ok(result) => Ok(i32::from(result)),
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    fn crdt_authored_vector_iter(
+        &mut self,
+        vector_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let vector_id = match self.read_map_id(vector_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let vector = match load_js_authored_vector_instance(vector_id) {
+            Ok(vector) => vector,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let values = match vector.iter() {
+            Ok(values) => values,
+            Err(err) => return self.write_error_message(dest_register_id, err),
+        };
+
+        let count = u32::try_from(values.len()).map_err(|_| HostError::IntegerOverflow)?;
+
+        let mut total_len: usize = 4;
+        for value in &values {
+            let value_len = value.len();
+            u32::try_from(value_len).map_err(|_| HostError::IntegerOverflow)?;
+            total_len = total_len
+                .checked_add(4)
+                .and_then(|acc| acc.checked_add(value_len))
+                .ok_or(HostError::IntegerOverflow)?;
+        }
+
+        let mut buffer = Vec::with_capacity(total_len);
+        buffer.extend_from_slice(&count.to_le_bytes());
+        for value in values {
+            let value_len = u32::try_from(value.len()).map_err(|_| HostError::IntegerOverflow)?;
+            buffer.extend_from_slice(&value_len.to_le_bytes());
+            buffer.extend_from_slice(&value);
+        }
+
+        self.write_register_bytes(dest_register_id, &buffer)?;
+        Ok(1)
+    }
+
+    fn crdt_authored_vector_len(
+        &mut self,
+        vector_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let vector_id = match self.read_map_id(vector_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let vector = match load_js_authored_vector_instance(vector_id) {
+            Ok(vector) => vector,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match vector.len() {
+            Ok(len) => {
+                let len_u64 = u64::try_from(len).map_err(|_| HostError::IntegerOverflow)?;
+                self.write_register_bytes(dest_register_id, &len_u64.to_le_bytes())?;
+                Ok(1)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
     fn read_map_id(&mut self, map_id_ptr: u64) -> VMLogicResult<Result<Id, String>> {
         // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
         //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
@@ -3199,6 +4096,90 @@ fn save_js_sortedset_instance(set: &mut JsSortedSet) -> Result<(), String> {
     }
 }
 
+fn load_js_authored_map_instance(id: Id) -> Result<JsAuthoredMap, String> {
+    match JsAuthoredMap::load(id) {
+        Ok(Some(map)) => {
+            debug!(
+                target: "runtime::authored_map",
+                map_id = %id.to_string(),
+                "loaded JsAuthoredMap from storage"
+            );
+            Ok(map)
+        }
+        Ok(None) => {
+            let missing_id = id.to_string();
+            warn!(
+                target: "runtime::authored_map",
+                map_id = %missing_id,
+                "JsAuthoredMap not found in storage"
+            );
+            let mut map = JsAuthoredMap::new_with_id(id);
+            match save_js_authored_map_instance(&mut map) {
+                Ok(()) => Ok(map),
+                Err(err) => Err(err),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn save_js_authored_map_instance(map: &mut JsAuthoredMap) -> Result<(), String> {
+    match map.save() {
+        Ok(_) => Ok(()),
+        Err(StorageError::CannotCreateOrphan(_)) => {
+            ensure_root_index_internal().map_err(|err| err.to_string())?;
+            match Interface::<MainStorage>::add_child_to(Id::root(), map) {
+                Ok(_) => Ok(()),
+                Err(StorageError::CannotCreateOrphan(_)) => Err("cannot create orphan".to_owned()),
+                Err(err) => Err(err.to_string()),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn load_js_authored_vector_instance(id: Id) -> Result<JsAuthoredVector, String> {
+    match JsAuthoredVector::load(id) {
+        Ok(Some(vector)) => {
+            debug!(
+                target: "runtime::authored_vector",
+                vector_id = %id.to_string(),
+                "loaded JsAuthoredVector from storage"
+            );
+            Ok(vector)
+        }
+        Ok(None) => {
+            let missing_id = id.to_string();
+            warn!(
+                target: "runtime::authored_vector",
+                vector_id = %missing_id,
+                "JsAuthoredVector not found in storage"
+            );
+            let mut vector = JsAuthoredVector::new_with_id(id);
+            match save_js_authored_vector_instance(&mut vector) {
+                Ok(()) => Ok(vector),
+                Err(err) => Err(err),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn save_js_authored_vector_instance(vector: &mut JsAuthoredVector) -> Result<(), String> {
+    match vector.save() {
+        Ok(_) => Ok(()),
+        Err(StorageError::CannotCreateOrphan(_)) => {
+            ensure_root_index_internal().map_err(|err| err.to_string())?;
+            match Interface::<MainStorage>::add_child_to(Id::root(), vector) {
+                Ok(_) => Ok(()),
+                Err(StorageError::CannotCreateOrphan(_)) => Err("cannot create orphan".to_owned()),
+                Err(err) => Err(err.to_string()),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::logic::{
@@ -3667,6 +4648,273 @@ mod tests {
             decode_set_items(&buffer),
             vec![b"alpha".to_vec(), b"beta".to_vec(), b"gamma".to_vec()],
             "SortedSet iteration must be in ascending order"
+        );
+    }
+
+    /// AuthoredMap: an insert stamps the caller as owner (`owner_of` returns the
+    /// executor identity, `owned_by_me` is true), and an `update` from a
+    /// DIFFERENT executor is rejected with an ownership error. The non-owner
+    /// path is exercised by building a second VM (with a different
+    /// `executor_public_key`) over the SAME backing storage.
+    #[test]
+    fn test_js_crdt_authored_map_owner_stamp_and_non_owner_update_rejected() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let id: [u8; 32] = [61u8; 32];
+        let alice: [u8; 32] = [0xA1; 32];
+        let bob: [u8; 32] = [0xB0; 32];
+
+        // --- Alice: create, insert, confirm ownership. ---
+        {
+            let context = VMContext::new(Cow::Owned(vec![]), [0u8; DIGEST_SIZE], alice);
+            let mut store = Store::default();
+            let memory =
+                wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
+            let mut logic = VMLogic::new(&mut storage, None, context, &limits, None);
+            let _ = logic.with_memory(memory);
+            let mut host = logic.host_functions(store.as_store_mut());
+
+            put_buffer(&host, ID_DESC_PTR, ID_DATA_PTR, &id);
+            assert_eq!(
+                host.js_crdt_authored_map_new_with_id(ID_DESC_PTR, 1)
+                    .unwrap(),
+                0
+            );
+
+            put_buffer(&host, KEY_DESC_PTR, KEY_DATA_PTR, b"apple");
+            put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"1");
+            assert_eq!(
+                host.js_crdt_authored_map_insert(ID_DESC_PTR, KEY_DESC_PTR, VALUE_DESC_PTR, 2)
+                    .unwrap(),
+                0,
+                "insert of a new key returns 0"
+            );
+
+            // Round-trip get.
+            let reg = 3u64;
+            assert_eq!(
+                host.js_crdt_authored_map_get(ID_DESC_PTR, KEY_DESC_PTR, reg)
+                    .unwrap(),
+                1
+            );
+            assert_eq!(host.borrow_logic().registers.get(reg).unwrap(), b"1");
+
+            // owner_of returns Alice's 32-byte identity.
+            let reg2 = 4u64;
+            assert_eq!(
+                host.js_crdt_authored_map_owner_of(ID_DESC_PTR, KEY_DESC_PTR, reg2)
+                    .unwrap(),
+                1
+            );
+            assert_eq!(host.borrow_logic().registers.get(reg2).unwrap(), &alice);
+
+            // owned_by_me is true for the inserter.
+            assert_eq!(
+                host.js_crdt_authored_map_owned_by_me(ID_DESC_PTR, KEY_DESC_PTR)
+                    .unwrap(),
+                1
+            );
+        }
+
+        // --- Bob: a different executor cannot update Alice's entry. ---
+        {
+            let context = VMContext::new(Cow::Owned(vec![]), [0u8; DIGEST_SIZE], bob);
+            let mut store = Store::default();
+            let memory =
+                wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
+            let mut logic = VMLogic::new(&mut storage, None, context, &limits, None);
+            let _ = logic.with_memory(memory);
+            let mut host = logic.host_functions(store.as_store_mut());
+
+            put_buffer(&host, ID_DESC_PTR, ID_DATA_PTR, &id);
+            put_buffer(&host, KEY_DESC_PTR, KEY_DATA_PTR, b"apple");
+            put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"99");
+
+            let reg = 1u64;
+            let res = host
+                .js_crdt_authored_map_update(ID_DESC_PTR, KEY_DESC_PTR, VALUE_DESC_PTR, reg)
+                .unwrap();
+            assert_eq!(res, -1, "non-owner update must be rejected");
+            let msg = String::from_utf8(host.borrow_logic().registers.get(reg).unwrap().to_vec())
+                .unwrap();
+            assert!(
+                msg.to_lowercase().contains("owner"),
+                "error should mention ownership, got: {msg}"
+            );
+
+            // owned_by_me is false for Bob.
+            assert_eq!(
+                host.js_crdt_authored_map_owned_by_me(ID_DESC_PTR, KEY_DESC_PTR)
+                    .unwrap(),
+                0
+            );
+
+            // The original value is unchanged.
+            let reg2 = 2u64;
+            assert_eq!(
+                host.js_crdt_authored_map_get(ID_DESC_PTR, KEY_DESC_PTR, reg2)
+                    .unwrap(),
+                1
+            );
+            assert_eq!(host.borrow_logic().registers.get(reg2).unwrap(), b"1");
+        }
+    }
+
+    /// AuthoredVector: `push` returns the new index (u64 LE) and stamps the
+    /// pusher as owner; `get`/`owner_of`/`owned_by_me` reflect that; a
+    /// `tombstone` by the owner succeeds and preserves the slot's position.
+    #[test]
+    fn test_js_crdt_authored_vector_push_get_owner_and_tombstone() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let id: [u8; 32] = [71u8; 32];
+        put_buffer(&host, ID_DESC_PTR, ID_DATA_PTR, &id);
+        assert_eq!(
+            host.js_crdt_authored_vector_new_with_id(ID_DESC_PTR, 1)
+                .unwrap(),
+            0
+        );
+
+        // push returns the new index (u64 LE) in the register.
+        put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"first");
+        let reg = 2u64;
+        assert_eq!(
+            host.js_crdt_authored_vector_push(ID_DESC_PTR, VALUE_DESC_PTR, reg)
+                .unwrap(),
+            1
+        );
+        let bytes = host.borrow_logic().registers.get(reg).unwrap();
+        assert_eq!(
+            u64::from_le_bytes(bytes.try_into().unwrap()),
+            0,
+            "first push lands at index 0"
+        );
+
+        put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"second");
+        let reg_b = 3u64;
+        assert_eq!(
+            host.js_crdt_authored_vector_push(ID_DESC_PTR, VALUE_DESC_PTR, reg_b)
+                .unwrap(),
+            1
+        );
+        let bytes = host.borrow_logic().registers.get(reg_b).unwrap();
+        assert_eq!(
+            u64::from_le_bytes(bytes.try_into().unwrap()),
+            1,
+            "second push lands at index 1"
+        );
+
+        // get index 0.
+        let reg_c = 4u64;
+        assert_eq!(
+            host.js_crdt_authored_vector_get(ID_DESC_PTR, 0, reg_c)
+                .unwrap(),
+            1
+        );
+        assert_eq!(host.borrow_logic().registers.get(reg_c).unwrap(), b"first");
+
+        // owner_of(0) is the (default) executor identity.
+        let reg_d = 5u64;
+        assert_eq!(
+            host.js_crdt_authored_vector_owner_of(ID_DESC_PTR, 0, reg_d)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            host.borrow_logic().registers.get(reg_d).unwrap(),
+            &[0u8; 32]
+        );
+
+        // owned_by_me(0) is true for the pusher.
+        assert_eq!(
+            host.js_crdt_authored_vector_owned_by_me(ID_DESC_PTR, 0)
+                .unwrap(),
+            1
+        );
+
+        // tombstone by owner succeeds; the slot becomes empty but is retained.
+        let reg_e = 6u64;
+        assert_eq!(
+            host.js_crdt_authored_vector_tombstone(ID_DESC_PTR, 0, reg_e)
+                .unwrap(),
+            1
+        );
+        let reg_f = 7u64;
+        assert_eq!(
+            host.js_crdt_authored_vector_get(ID_DESC_PTR, 0, reg_f)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            host.borrow_logic().registers.get(reg_f).unwrap(),
+            b"",
+            "tombstone overwrites the slot with an empty value"
+        );
+
+        // len is still 2 — tombstone preserves the slot's position.
+        let reg_g = 8u64;
+        assert_eq!(
+            host.js_crdt_authored_vector_len(ID_DESC_PTR, reg_g)
+                .unwrap(),
+            1
+        );
+        let bytes = host.borrow_logic().registers.get(reg_g).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes.try_into().unwrap()), 2);
+    }
+
+    /// A `*_new_with_id` constructor must place the authored vector at exactly
+    /// the caller-supplied id, and two handles at the same id must address the
+    /// same storage entity (push via one, read via another).
+    #[test]
+    fn test_js_crdt_authored_vector_new_with_id_is_deterministic_and_shared() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let id: [u8; 32] = [81u8; 32];
+        put_buffer(&host, ID_DESC_PTR, ID_DATA_PTR, &id);
+
+        // First handle at the deterministic id.
+        let reg_a = 1u64;
+        assert_eq!(
+            host.js_crdt_authored_vector_new_with_id(ID_DESC_PTR, reg_a)
+                .unwrap(),
+            0
+        );
+        assert_eq!(host.borrow_logic().registers.get(reg_a).unwrap(), &id);
+
+        // Second handle at the SAME id.
+        let reg_b = 2u64;
+        assert_eq!(
+            host.js_crdt_authored_vector_new_with_id(ID_DESC_PTR, reg_b)
+                .unwrap(),
+            0
+        );
+        assert_eq!(host.borrow_logic().registers.get(reg_b).unwrap(), &id);
+
+        // Push through the id, then read back via the shared id.
+        put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"payload");
+        let reg_c = 3u64;
+        assert_eq!(
+            host.js_crdt_authored_vector_push(ID_DESC_PTR, VALUE_DESC_PTR, reg_c)
+                .unwrap(),
+            1
+        );
+
+        let reg_d = 4u64;
+        assert_eq!(
+            host.js_crdt_authored_vector_get(ID_DESC_PTR, 0, reg_d)
+                .unwrap(),
+            1,
+            "value must be found via the shared id"
+        );
+        assert_eq!(
+            host.borrow_logic().registers.get(reg_d).unwrap(),
+            b"payload"
         );
     }
 }

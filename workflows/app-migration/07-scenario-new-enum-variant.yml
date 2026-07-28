@@ -39,7 +39,7 @@ steps:
   - name: Install scenario-new-enum-variant-v1 on node 1
     type: install_application
     node: app-migration-newenum-1
-    path: apps/migrations/scenario-new-enum-variant-v1/res/scenario-new-enum-variant-1.0.0.mpk
+    path: dist/scenario-new-enum-variant-v1.mpk
     dev: true
     outputs:
       app_v1: applicationId
@@ -175,7 +175,7 @@ steps:
   - name: Install scenario-new-enum-variant-v2 on node 1
     type: install_application
     node: app-migration-newenum-1
-    path: apps/migrations/scenario-new-enum-variant-v2/res/scenario-new-enum-variant-2.0.0.mpk
+    path: dist/scenario-new-enum-variant-v2.mpk
     dev: true
     outputs:
       app_v2: applicationId

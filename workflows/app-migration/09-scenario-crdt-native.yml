@@ -51,7 +51,7 @@ steps:
   - name: Install scenario-crdt-native-v1 on node 1
     type: install_application
     node: app-migration-crdt-1
-    path: apps/migrations/scenario-crdt-native-v1/res/scenario-crdt-native-1.0.0.mpk
+    path: dist/scenario-crdt-native-v1.mpk
     dev: true
     outputs:
       app_v1: applicationId
@@ -209,7 +209,7 @@ steps:
   - name: Install scenario-crdt-native-v2 on node 1
     type: install_application
     node: app-migration-crdt-1
-    path: apps/migrations/scenario-crdt-native-v2/res/scenario-crdt-native-2.0.0.mpk
+    path: dist/scenario-crdt-native-v2.mpk
     dev: true
     outputs:
       app_v2: applicationId
