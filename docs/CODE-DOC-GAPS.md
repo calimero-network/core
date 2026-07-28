@@ -17,7 +17,7 @@ against `src/content/docs/`. Ordered by priority. `file:line` anchors included.
 
 ## 1. Big undocumented subsystems (P1)
 
-- **App signing + `.mpk` bundle format.** JCS-canonical manifest, `ed25519`, `did:key` signerId, signed vs dev-unsigned install split, multi-service `services[]` + `--service`. Entirely undocumented. → `protocol/upgrades.mdx` + `build/advanced-sdk.mdx` (+ a bundle-format page).
+- **App signing + `.mpk` bundle format.** JCS-canonical manifest, `ed25519`, `did:key` signerId, multi-service `services[]` + `--service`. Entirely undocumented. → `protocol/upgrades.mdx` + `build/advanced-sdk.mdx` (+ a bundle-format page).
 - **Auto-follow machinery.** Dangling cross-refs ("see Governance") point at content that doesn't exist. The two flags, event-driven auto-join, backfill (1000 cap), 20 joins/min token bucket, inherited Open-anchor rule, `leave_context` opt-out. This is how membership becomes data replication ("joined but nothing synced"). `crates/context/src/auto_follow.rs`. → new section in `protocol/governance.mdx`.
 - **Authored-data migration is per-owner.** Whole-root `#[app::migrate]` does NOT convert `Authored*` entries; an auto-generated signed `migrate_my_entries` RPC must be called by each owner. Silent-correctness footgun. `crates/sdk/macros/src/state.rs:962`. → `build/migrations.mdx`.
 - **A "hot" peer can never serve a snapshot.** Any write during transfer aborts it (`InvalidBoundary`) → a node bootstrapping against a busy peer retries forever. `crates/node/src/sync/snapshot.rs:152,214`. → `operate/troubleshooting.mdx`.

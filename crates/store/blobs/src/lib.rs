@@ -116,11 +116,6 @@ impl BlobManager {
         self.blob_store.version_path(package, version)
     }
 
-    /// Get the root/base path of the blobstore
-    pub fn root_path(&self) -> Utf8PathBuf {
-        self.blob_store.root_path()
-    }
-
     /// Get the path for a blob stored in a package/version directory
     ///
     /// # Errors
@@ -715,11 +710,6 @@ impl FileSystem {
         utils::validate_path_component(version, Some("version"))?;
 
         Ok(self.root.join("applications").join(package).join(version))
-    }
-
-    /// Get the root/base path of the blobstore
-    pub fn root_path(&self) -> Utf8PathBuf {
-        self.root.clone()
     }
 }
 

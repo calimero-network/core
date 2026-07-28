@@ -12,8 +12,8 @@ use crate::meta::BundleMeta;
 const MANIFEST_VERSION: &str = "1.0";
 
 /// One bundle file: bundle-relative path, byte size, and lowercase-hex SHA-256.
-/// The node does not verify this hash - integrity comes from the manifest
-/// signature - but a real value is recorded rather than a null.
+/// The node requires this hash and checks the artifact bytes against it, so a
+/// wrong value here makes the bundle uninstallable.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Artifact {
