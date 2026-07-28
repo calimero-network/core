@@ -220,6 +220,12 @@ impl NodeClient {
         })
         .await??;
 
+        // Otherwise the application row is written with no bytecode and the
+        // bundle only reads as malformed at its first execution.
+        if wasm_bytes.is_empty() {
+            bail!("bundle manifest declares no wasm artifact: expected a top-level 'wasm' or a non-empty 'services' list");
+        }
+
         let manifest = verified.manifest();
         let package = &manifest.package;
         let version = &manifest.app_version;

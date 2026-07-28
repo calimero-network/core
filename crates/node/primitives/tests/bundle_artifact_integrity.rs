@@ -622,6 +622,50 @@ async fn a_bundle_larger_than_the_manifest_scan_cap_still_installs() {
     );
 }
 
+/// A manifest declaring no wasm is malformed at install, not at first
+/// execution: without the check the row is written with no bytecode at all.
+#[tokio::test]
+async fn a_manifest_declaring_no_wasm_is_refused_at_install() {
+    let dir = TempDir::new().unwrap();
+    let key = SigningKey::generate(&mut OsRng);
+    let migration = b"migration bytes and nothing to run them against".as_slice();
+
+    let signer_id = derive_signer_id_did_key(key.verifying_key().as_bytes());
+    let mut manifest = serde_json::json!({
+        "version": "1.0",
+        "package": "com.example.nowasm",
+        "appVersion": "1.0.0",
+        "signerId": signer_id,
+        "minRuntimeVersion": "0.1.0",
+        "migrations": [{
+            "path": "migrations/1.wasm",
+            "size": migration.len(),
+            "hash": hex_lower(&Sha256::digest(migration)),
+        }]
+    });
+    sign_manifest_json(&mut manifest, &key).unwrap();
+    let bundle = pack_entries(
+        &dir,
+        "nowasm.mpk",
+        &[
+            ("manifest.json", &serde_json::to_vec(&manifest).unwrap()),
+            ("migrations/1.wasm", migration),
+        ],
+    );
+
+    let (node, _d, _b) = node_client().await;
+    let err = install(&node, bundle)
+        .await
+        .expect_err("a bundle with no wasm artifact must not install");
+    // Pinned to the install-time wording: the deferred failure said "declares no
+    // top-level wasm" and only ever surfaced once something tried to run it.
+    let msg = err.to_string();
+    assert!(
+        msg.contains("declares no wasm artifact"),
+        "the missing wasm must be named at install, got: {msg}"
+    );
+}
+
 /// Two entries at the manifest's path: whichever one an unpacker keeps, the
 /// digest check saw the other. The archive is refused outright.
 #[tokio::test]
