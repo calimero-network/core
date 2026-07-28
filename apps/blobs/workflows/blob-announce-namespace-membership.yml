@@ -1,0 +1,182 @@
+name: Blob Announce — Namespace Membership Regression
+description: >
+  Regression test for the announce half of #3317. Uploading a blob with a
+  context_id must publish a provider record; it silently did not for every
+  namespace-backed context, which is every context, since `context create`
+  requires --group-id.
+
+  `NodeClient::find_owned_identity` only accepted a ContextIdentity row carrying
+  its own private_key. Under the group model a member's row is a keyless marker —
+  its presence IS the membership signal — and the signing key lives with the
+  node's single namespace identity, resolved live. So the lookup returned None
+  for contexts the node genuinely belongs to, and `PUT /admin-api/blobs?
+  context_id=…` bailed with "Skipping announce: node is not a member of the
+  requested context" (crates/server/src/admin/handlers/blob.rs).
+
+  That is exactly the request merobox's `upload_blob` step makes when given a
+  context_id, so the bug is observable here with no new step type: before the
+  fix the node logs the skip, after it the log is clean. `apps/blobs/workflows/
+  blobs.yml` never caught it because its only second-node assertion is
+  `list_files`, which reads CRDT metadata and replicates independently of any
+  blob.
+
+  SCOPE: this covers defect 1 (announce skipped). Defect 2 (every outgoing blob
+  request unsigned, so the serving node answers found:false) needs an assertion
+  on the received BYTES, which requires merobox's `download_blob` step —
+  unreleased at time of writing. blob-cross-node-transfer.yml is that test,
+  waiting on a MIN_MEROBOX bump to 0.6.44.
+
+force_pull_image: true
+
+auth_mode: embedded
+
+nodes:
+  chain_id: calimero-testnet
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: rust-blob-announce
+
+steps:
+  # First login on a fresh embedded-auth node bootstraps its root key and seeds
+  # merobox's token cache; every step below runs authenticated.
+  - name: Login on rust-blob-announce-1
+    type: login
+    node: rust-blob-announce-1
+    username: dev
+    password: dev-password
+
+  - name: Login on rust-blob-announce-2
+    type: login
+    node: rust-blob-announce-2
+    username: dev
+    password: dev-password
+
+  - name: Install Rust blobs app on inviter
+    type: install_application
+    node: rust-blob-announce-1
+    path: "res/blobs.wasm"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  # create_mesh gives a namespace-backed context with a real second member —
+  # the shape where find_owned_identity returned None. A single-node context
+  # would not exercise the membership lookup at all.
+  - name: Create Mesh
+    type: create_mesh
+    context_node: rust-blob-announce-1
+    application_id: "{{app_id}}"
+    path: "res/blobs.wasm"
+    nodes:
+      - rust-blob-announce-2
+    capability: member
+    outputs:
+      context_id: contextId
+      inviter_key: memberPublicKey
+
+  - name: Assert the mesh came up
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+      - "is_set({{inviter_key}})"
+
+  # ── The upload under test ──────────────────────────────────────────────
+  # `context_id` is what asks the node to announce. Without the fix this
+  # returns 200 with the blob stored but no provider record published, which is
+  # precisely why no workflow ever turned red.
+  - name: Upload a blob with a context id (announce path)
+    type: upload_blob
+    node: rust-blob-announce-1
+    file_path: static/sample.png
+    context_id: "{{context_id}}"
+    outputs:
+      blob_id: blob_id
+      blob_size: size
+
+  # Numeric comparison is infix with spaces around the operator; there is no
+  # gt()/lt() call form in the assert grammar.
+  - name: Assert the upload reported a blob
+    type: assert
+    statements:
+      - "is_set({{blob_id}})"
+      - "{{blob_size}} > 0"
+
+  # A second upload, different file. The membership lookup runs per request, so
+  # two announces make a one-off pass less likely to be luck.
+  - name: Upload a second blob with a context id
+    type: upload_blob
+    node: rust-blob-announce-1
+    file_path: static/test.txt
+    context_id: "{{context_id}}"
+    outputs:
+      txt_blob_id: blob_id
+
+  - name: Assert the second upload reported a blob
+    type: assert
+    statements:
+      - "is_set({{txt_blob_id}})"
+      - "not_equal({{txt_blob_id}}, {{blob_id}})"
+
+  - name: Let the provider records settle
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - rust-blob-announce-1
+      - rust-blob-announce-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # ── The assertion ──────────────────────────────────────────────────────
+  # THE regression guard. Both strings are the two arms of the membership bail
+  # in the blob upload handler. Either one means the announce was skipped and
+  # the blob is undiscoverable, however healthy the 200 looked.
+  - name: The node must not have skipped the announce
+    type: assert_log_absent
+    nodes:
+      - rust-blob-announce-1
+    patterns:
+      - "Skipping announce: node is not a member of the requested context"
+      - "Skipping announce: failed to verify context membership"
+    tail_lines: 5000
+
+  # The app's own announce path (env::blob_announce_to_context from WASM) shares
+  # the same membership resolution, so a regression there shows up as this
+  # warning rather than the handler log above.
+  - name: Register the blob through the app and check its announce too
+    type: call
+    node: rust-blob-announce-1
+    context_id: "{{context_id}}"
+    method: upload_file
+    args:
+      name: sample.png
+      blob_id: "{{blob_id}}"
+      size: "{{blob_size}}"
+      mime_type: image/png
+    outputs:
+      file_id: result.output
+
+  - name: Assert the app registered the file
+    type: assert
+    statements:
+      - "is_set({{file_id}})"
+
+  - name: The app must not have failed to announce
+    type: assert_log_absent
+    nodes:
+      - rust-blob-announce-1
+    patterns:
+      - "Warning: Failed to announce blob"
+    tail_lines: 5000
+
+  - name: The app announce must have succeeded
+    type: assert_log_present
+    nodes:
+      - rust-blob-announce-1
+    patterns:
+      - "Announced blob"
+    tail_lines: 5000
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
