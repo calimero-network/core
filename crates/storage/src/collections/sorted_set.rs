@@ -192,15 +192,26 @@ where
 
         // Warm the ordered index for the new element (after the write, so the
         // collection's full_hash already reflects it when we stamp the marker).
+        // But maintain it INCREMENTALLY only when the index was already
+        // consistent with the child set (marker current) BEFORE this insert. A
+        // sync-apply that linked a child clears the marker WITHOUT populating the
+        // node-local index; if we then index only this new element and stamp the
+        // marker to the (now full) `full_hash`, the marker would falsely certify
+        // an index still missing that synced child, so the next ordered read
+        // would trust it and serve a stale subset (core#3333). When the index is
+        // stale, leave the marker stale so the next ordered read rebuilds from the
+        // full child set — the invariant `ensure_index` documents.
         let order_key = S::index_supported().then(|| value.as_ref().to_vec());
+        let index_was_current = order_key.is_some() && self.index_marker_current();
 
         let _ignored = self.inner.insert(Some(id), value)?;
 
         if let Some(order_key) = order_key {
-            // Only stamp the validity marker if the index write landed; a dropped
+            // Only stamp the validity marker if the index was consistent before
+            // AND the index write landed; either a stale-before index or a dropped
             // write leaves the marker stale so the next ordered read rebuilds and
-            // self-heals rather than trusting an index missing this element.
-            if S::index_put(collection, &order_key, id) {
+            // self-heals rather than trusting an index missing elements.
+            if index_was_current && S::index_put(collection, &order_key, id) {
                 self.stamp_index_marker();
             }
         }
@@ -267,15 +278,22 @@ where
     {
         let id = compute_id(self.inner.id(), value.as_ref());
 
+        // Capture index consistency BEFORE the mutation (see `insert`): only
+        // maintain the index incrementally + stamp when it was already current;
+        // otherwise a sync-applied child change left it stale and we must leave
+        // the marker stale so the next ordered read rebuilds (core#3333).
+        let index_was_current = S::index_supported() && self.index_marker_current();
+
         let Some(entry) = self.inner.get_mut(id)? else {
             return Ok(false);
         };
 
         let _ignored = entry.remove()?;
 
-        // Only stamp if the index write landed; else leave the marker stale to
-        // force a rebuild on the next ordered read.
-        if S::index_supported() && S::index_remove(self.inner.id(), value.as_ref()) {
+        // Only stamp if the index was consistent before AND the index write
+        // landed; else leave the marker stale to force a rebuild on the next
+        // ordered read.
+        if index_was_current && S::index_remove(self.inner.id(), value.as_ref()) {
             self.stamp_index_marker();
         }
 
