@@ -312,6 +312,35 @@ The bootstrap case is unchanged and cannot be retired — a member with no accou
 in the scope is still served by identity, which is what lets a keyless joiner
 start at all.
 
+### Three gaps that block the acceptance test
+
+Found while writing `account-device-revoke-lockout.yml`, and worth stating
+because none is visible from the code that exists:
+
+**1. Per-device *authorization* is not wired on the governance bridge.**
+Delivery is device-aware; authorization is not. `DeviceBinding.sign_pk` is
+stored and folded into the hash but **never consulted**, so a device whose own
+key is not a granted member cannot author — which is the whole point of a second
+device. The fix is not the 96-file re-key onto `AccountId` that this document
+defers to the cutover: it is one change to the membership resolver, to accept a
+key that is the `sign_pk` of a live binding whose account is a member. It also
+retires a field that is currently written and never read.
+
+**2. There is no way to enroll into an *existing* account.** `ensure_enrolled`
+always mints a fresh account rooted at the enrolling node's own namespace
+identity. Pairing is the opposite: adopt an account whose genesis arrives from
+another node. Note the ordering this forces — a device cannot mint its `DeviceId`
+until it knows the account (`H(account ‖ nonce)`), and the account holder cannot
+sign its certificate until it knows the device id and KEM key, so pairing is a
+**two-way** exchange and not a single command.
+
+**3. One device per node per namespace.** `NodeDeviceIdentity` is keyed by
+namespace, so "two devices" means two nodes. That is why the acceptance scenario
+uses three: an admin, Alice's laptop (the only member), and Alice's phone —
+which is deliberately *not* a member and participates solely as a device of
+Alice's account. A pleasant consequence: nothing needs to tell merobox which
+device authors, because the node selects it.
+
 ### Not yet wired: the ops that trigger delivery
 
 Two behaviours from the plan are **not** implemented, for the same reason: no

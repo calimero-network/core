@@ -12,7 +12,16 @@ description: >
 
   What it pins, and why each step is load-bearing:
 
-    1. Two nodes, one namespace, one context. node-2 is an ordinary member.
+    1. Three nodes. node-1 is the admin. node-2 is Alice's laptop and the only
+       one of the three granted membership. node-3 is Alice's phone and is
+       DELIBERATELY NOT a member — its right to participate comes entirely from
+       being a device of Alice's account. That is the feature: one grant, two
+       devices.
+
+       One device per node, not two devices on one node: `NodeDeviceIdentity` is
+       keyed per namespace, so a node holds at most one device in a namespace.
+       That also removes any need for merobox to choose which device authors —
+       the node selects it.
 
     2. node-2 enrolls a device (`account create`). This is the first thing in the
        whole feature that publishes an account op, so it is also the first
@@ -29,16 +38,28 @@ description: >
     3. node-2 writes from its enrolled device and node-1 reads it. Proves the
        device is a working replica, not merely a stored row.
 
-    4. node-2 pairs a SECOND device (`account link`) onto the same account, and
-       writes from it. Both writes must be visible to node-1, and the two writes
-       must carry DIFFERENT replica ids under the SAME account. That pair of
-       assertions is the entire feature in one step: one identity, two replicas.
+    4. node-3 is paired onto Alice's account (`account link`) and writes. Both
+       writes must reach node-1, and the two must carry DIFFERENT replica ids
+       under the SAME account. That pair of assertions is the whole feature.
 
-       This step also exercises the on-link key backfill — the new device holds
-       no scope key of its own, so it can only read what it wrote if an existing
-       device of the same account wrapped the current keys for it.
+       Pairing is a two-way exchange, which is why it needs a real flow rather
+       than one command: node-3 cannot mint its `DeviceId` until it knows the
+       account (`DeviceId = H(account ‖ nonce)`), and node-2 cannot sign node-3's
+       certificate until it knows node-3's device id and KEM key. So node-2 hands
+       over Alice's genesis, node-3 returns its device id and KEM key, node-2
+       signs the certificate with the account root key it holds and publishes the
+       link.
 
-    5. node-1 (admin) revokes the second device. The scope key must rotate, and
+       This step also exercises the on-link key backfill — node-3 holds no scope
+       key of its own, so it can only read what it wrote if node-2 wrapped the
+       current keys for it.
+
+       And it is the step that requires per-device AUTHORIZATION, not just
+       delivery: node-3's ops are signed by a key that is not a member, so the
+       membership resolver has to accept a key that is the `sign_pk` of a live
+       device binding whose account is a member. Today it does not — see Wiring.
+
+    5. node-1 (admin) revokes node-3's device. The scope key must rotate, and
        the rotation must exclude that device while still reaching the first one.
 
     6. The revoked device's write FAILS (`expected_failure: true`), and the
@@ -48,7 +69,7 @@ description: >
 
     7. The revoked device cannot recover the key by asking a peer for it. This is
        the subtle one. A `GroupKeyRequest` names the requester's *identity* key,
-       and the revoked device's node is still a member — so before the pull path
+       and node-3's node is still in the namespace — so before the pull path
        was made device-addressed, step 6 would pass and then the node would
        quietly re-fetch the new key on its next sync round and start reading
        again. Asserted by log signal, because the failure is an absence of
@@ -74,7 +95,7 @@ near_devnet: false
 auth_mode: embedded
 
 nodes:
-  count: 2
+  count: 3
   image: merod:local
   prefix: account-revoke-node
 
@@ -91,6 +112,12 @@ steps:
     username: dev
     password: dev-password
 
+  - name: Login on account-revoke-node-3
+    type: login
+    node: account-revoke-node-3
+    username: dev
+    password: dev-password
+
   # ── Phase 1: namespace, membership, context ───────────────────────
 
   - name: Install application on node-1
@@ -104,6 +131,12 @@ steps:
   - name: Install application on node-2
     type: install_application
     node: account-revoke-node-2
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Install application on node-3
+    type: install_application
+    node: account-revoke-node-3
     path: res/scaffolding_e2e.wasm
     dev: true
 
@@ -194,12 +227,15 @@ steps:
 
   # ── Phase 4: pair a second device onto the SAME account ───────────
 
-  - name: Node-2 pairs a second device onto the same account
+  # node-3 is NOT invited to the namespace and never joins as a member. Its only
+  # route in is being a device of Alice's account.
+  - name: Pair node-3 onto Alice's account
     type: script
-    script: scripts/meroctl-account-link.sh
+    script: scripts/meroctl-account-pair.sh
     target: local
     args:
       - account-revoke-node-2
+      - account-revoke-node-3
       - '{{namespace_id}}'
     outputs:
       paired_device: device_id
@@ -215,13 +251,12 @@ steps:
   # the on-link backfill wrapped the current keys for it.
   - name: Node-2 writes from the paired device
     type: call
-    node: account-revoke-node-2
+    node: account-revoke-node-3
     context_id: '{{context_id}}'
     method: set
     args:
       key: from-phone
       value: phone-wrote-this
-    executor_device: '{{paired_device}}'
 
   - name: Node-1 reads the paired device's write
     type: call
@@ -251,7 +286,7 @@ steps:
 
   # ── Phase 5: revoke the paired device ─────────────────────────────
 
-  - name: Admin revokes the paired device
+  - name: Admin revokes node-3's device
     type: script
     script: scripts/meroctl-account-revoke.sh
     target: local
@@ -271,13 +306,12 @@ steps:
 
   - name: The revoked device can no longer write
     type: call
-    node: account-revoke-node-2
+    node: account-revoke-node-3
     context_id: '{{context_id}}'
     method: set
     args:
       key: from-phone
       value: phone-should-not-land
-    executor_device: '{{paired_device}}'
     expected_failure: true
 
   - name: The surviving device still writes
@@ -337,13 +371,12 @@ steps:
 
   - name: The revoked device still cannot write after the recovery window
     type: call
-    node: account-revoke-node-2
+    node: account-revoke-node-3
     context_id: '{{context_id}}'
     method: set
     args:
       key: from-phone
       value: phone-really-should-not-land
-    executor_device: '{{paired_device}}'
     expected_failure: true
 
 # ── Wiring ─────────────────────────────────────────────────────────
@@ -353,15 +386,30 @@ steps:
 # people to ignore CI. Add it to that workflow's scenario matrix in the same PR
 # that makes it pass.
 #
-# Three helper scripts under `apps/scaffolding-e2e/scripts/` are referenced and
-# do not exist yet:
-#   * meroctl-account-create.sh  — `meroctl account create --namespace <ns>`
-#   * meroctl-account-link.sh    — pairing; must emit the new device id
-#   * meroctl-account-revoke.sh  — `meroctl account revoke --device <id>`
-#   * assert-same-account-distinct-devices.sh — reads both entries' authorship
-#     and asserts same account, different device
+# Helper scripts under `apps/scaffolding-e2e/scripts/`, none of which exist yet:
+#   * meroctl-account-create.sh — `meroctl account create --namespace <ns>`
+#   * meroctl-account-pair.sh   — drives the two-way exchange between two nodes
+#                                 and emits the new device id
+#   * meroctl-account-revoke.sh — `meroctl account revoke --device <id>`
+#   * assert-same-account-distinct-devices.sh — asserts the two entries were
+#     authored by the same account under different device ids
 #
-# `call` also needs an `executor_device` field so a step can choose WHICH of a
-# node's devices authors. That is a merobox change (calimero-network/merobox),
-# and it is the one piece of this workflow that cannot be satisfied from core
-# alone.
+# THREE code gaps this workflow depends on, beyond the CLI itself:
+#
+#   1. Per-device AUTHORIZATION on the governance bridge. `DeviceBinding.sign_pk`
+#      is stored and hashed today but never consulted, so a device whose key is
+#      not itself a member cannot author — node-3's writes would be refused. The
+#      membership resolver needs to accept a key that is the `sign_pk` of a live
+#      binding whose account is a member. This is NOT the 96-file re-key onto
+#      `AccountId` that the design doc defers to the cutover; it is one resolver
+#      change, and it also stops `sign_pk` being a written-but-never-read field.
+#
+#   2. Enrolling into an EXISTING account. `ensure_enrolled` always mints a fresh
+#      account rooted at the node's own namespace identity. Pairing needs the
+#      opposite: adopt an account whose genesis arrives from another node.
+#
+#   3. On-link key backfill and revoke-triggered rotation, which have no
+#      publisher until the CLI exists.
+#
+# No merobox change is needed — one device per node means the node selects the
+# device implicitly.
