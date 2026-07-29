@@ -1264,7 +1264,7 @@ pub mod bounds {
     pub const MAX_TEE_ALLOWED_STRING_LEN: usize = 1_024;
     /// Max root-key handoffs in one device-link credential chain.
     ///
-    /// Each entry costs an Ed25519 verification in `resolve_root_keys`, on a
+    /// Each entry costs an Ed25519 verification in `root_key_at_epoch`, on a
     /// path reachable from the wire before any authorization runs, so an
     /// uncapped chain is a verification-amplification DoS. The cap is generous
     /// against real use: an account rotating its root key once a day would take
@@ -1360,7 +1360,7 @@ impl GroupOp {
             | Self::CascadeUpgrade {
                 migration: Some(m), ..
             } => check_bound("group_op.migration", m.len(), bounds::MAX_BLOB_BYTES),
-            // Each handoff costs an Ed25519 verification in `resolve_root_keys`,
+            // Each handoff costs an Ed25519 verification in `root_key_at_epoch`,
             // reached from the wire before any authorization runs, so an
             // uncapped chain is verification amplification.
             Self::AccountDeviceLinked { chain, .. } => check_bound(

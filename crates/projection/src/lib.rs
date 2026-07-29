@@ -319,7 +319,7 @@ impl ScopeState {
                 // then revoke would learn the account, revoke then link would
                 // not, and the two nodes' `scope_root` would disagree.
                 // Absorption runs before the credential is verified, so the cap
-                // inside `resolve_root_keys` does not protect it: without one here,
+                // inside `root_key_at_epoch` does not protect it: without one here,
                 // a single op could grow `handoffs` without limit, and this crate
                 // has no wire-bounds layer to lean on. Refusing the whole op's
                 // absorption (rather than truncating) keeps the decision a function

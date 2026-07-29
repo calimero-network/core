@@ -486,7 +486,7 @@ fn a_stranger_cannot_suppress_another_accounts_root_key_rotation() {
 #[test]
 fn an_overlong_handoff_chain_absorbs_nothing() {
     // Absorption runs BEFORE the credential is verified, so the cap inside
-    // `resolve_root_keys` does not protect it — without one in the fold, a single
+    // `root_key_at_epoch` does not protect it — without one in the fold, a single
     // op grows `handoffs` without limit, and this crate has no wire-bounds layer.
     // Refusing the whole op's absorption rather than truncating keeps the decision
     // a function of the op, so every replica absorbs the same set.

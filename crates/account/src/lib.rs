@@ -56,7 +56,7 @@ pub const ACCOUNT_GENESIS_VERSION: u8 = 1;
 
 /// Max root-key handoffs in one credential chain.
 ///
-/// Each entry costs an Ed25519 verification in [`resolve_root_keys`], on a path
+/// Each entry costs an Ed25519 verification in [`root_key_at_epoch`], on a path
 /// reachable from untrusted bytes, so an uncapped chain is verification
 /// amplification. Generous against real use: an account rotating its root key
 /// daily would take over two years to reach it.
@@ -143,9 +143,17 @@ pub fn derive_account_nonce(root_secret: &[u8; 32], namespace_id: &[u8; 32]) -> 
 
 /// Serialize with borsh into a `Vec<u8>`.
 ///
+/// **Deliberately not fallible, even though the signing helpers above it return
+/// `Result`.** Its other callers are the content addresses — `AccountGenesis::
+/// account_id`, `DeviceId::mint`, every `payload()` — and an id computation that
+/// can fail is a worse API than a panic that cannot happen: it would put a
+/// `Result` on the most-called function in this crate to model an outcome no
+/// input can produce. The failure the signing helpers *can* have is the signer
+/// refusing, and that is what `AccountError::SigningFailed` is.
+///
 /// # Panics
-/// Never in practice — borsh-serializing these plain-data types into an
-/// in-memory buffer is infallible; the `expect` documents that invariant.
+/// Never: every type passed here is fixed-size plain data, and a `Vec` writer has
+/// no failure mode, so `borsh::to_vec` has nothing to fail on.
 fn borsh_bytes<T: BorshSerialize>(value: &T) -> Vec<u8> {
     borsh::to_vec(value).expect("borsh serialization of a plain-data type is infallible")
 }
@@ -517,7 +525,7 @@ impl DeviceCert {
 
 /// Mint a root-key handoff, signed by the **outgoing** key.
 ///
-/// Pairs with [`resolve_root_keys`], which is the only consumer of the format.
+/// Pairs with [`root_key_at_epoch`], which is the only consumer of the format.
 /// Exists so no caller ever assembles the signing preimage by hand: a
 /// hand-rolled payload that omits a field still produces a signature that
 /// *verifies*, while silently leaving that field unauthenticated — and the
@@ -692,22 +700,36 @@ pub enum AccountError {
     RevocationSignatureInvalid,
 }
 
-/// Walk a handoff chain from `genesis` and return the root key at each epoch.
+/// Walk a handoff chain from `genesis` and return the root key at `epoch`.
 ///
-/// Index `i` of the returned vector is the root key at epoch `i`; index 0 is
-/// always the genesis key, so the result is never empty. The chain must start
-/// at epoch 0 and step by exactly one — a gap would mean accepting a key whose
-/// authorization was never demonstrated, and a repeat would make "the key at
-/// epoch n" ambiguous.
+/// Epoch 0 is the genesis key, needing no chain at all; epoch `n` needs the first
+/// `n` handoffs. The chain must start at epoch 0 and step by exactly one — a gap
+/// would mean accepting a key whose authorization was never demonstrated, and a
+/// repeat would make "the key at epoch n" ambiguous.
+///
+/// **The walk stops at `epoch`, and entries beyond it are neither read nor
+/// verified.** They are not part of the authorization the credential rests on, so
+/// letting one refuse the whole credential would invalidate a certificate that
+/// verifies perfectly against a key the chain genuinely established — over an
+/// entry that decides nothing. It is also the difference between one Ed25519
+/// verification and up to [`MAX_ROOT_KEY_HANDOFFS`] of them on a path any member
+/// can drive; the cap bounds that work but does not avoid doing it.
+///
+/// A handoff beyond `epoch` is still worthless to whoever appended it: the epoch
+/// it claims to establish is only reachable by asking for it, which walks — and
+/// verifies — every entry up to it.
 ///
 /// # Errors
-/// [`AccountError::UnsupportedVersion`] for an unknown genesis version, and the
-/// `Chain*` / `Handoff*` variants for a chain that is discontinuous, addressed
-/// to another account, or not properly signed.
-pub fn resolve_root_keys(
+/// [`AccountError::UnsupportedVersion`] for an unknown genesis version,
+/// [`AccountError::EpochOutOfRange`] when the chain is too short to reach
+/// `epoch`, and the `Chain*` / `Handoff*` variants for a chain that is
+/// discontinuous, addressed to another account, or not properly signed up to
+/// `epoch`.
+pub fn root_key_at_epoch(
     genesis: &AccountGenesis,
     chain: &[RootKeyHandoff],
-) -> Result<Vec<PublicKey>, AccountError> {
+    epoch: u32,
+) -> Result<PublicKey, AccountError> {
     if genesis.version != ACCOUNT_GENESIS_VERSION {
         return Err(AccountError::UnsupportedVersion {
             found: genesis.version,
@@ -715,7 +737,7 @@ pub fn resolve_root_keys(
         });
     }
 
-    // Cap before allocating or verifying anything. Each entry costs an Ed25519
+    // Cap before reading or verifying anything. Each entry costs an Ed25519
     // verification, and this function is reachable from the wire — the governance
     // path bounds the field at decode, but `calimero-op` has no bounds layer at
     // all, so the check has to exist here too rather than relying on every caller
@@ -727,13 +749,20 @@ pub fn resolve_root_keys(
         });
     }
 
-    let account = genesis.account_id();
-    let mut keys = Vec::with_capacity(chain.len().saturating_add(1));
-    keys.push(genesis.root_sign_pk);
+    let needed = usize::try_from(epoch).unwrap_or(usize::MAX);
+    if needed > chain.len() {
+        // A chain long enough to overflow u32 cannot be held in memory.
+        return Err(AccountError::EpochOutOfRange {
+            key_epoch: epoch,
+            reachable: u32::try_from(chain.len()).unwrap_or(u32::MAX),
+        });
+    }
 
-    for (index, handoff) in chain.iter().enumerate() {
-        // `index` is bounded by the chain length; a chain long enough to
-        // overflow u32 cannot be held in memory.
+    let account = genesis.account_id();
+    let mut current = genesis.root_sign_pk;
+
+    for (index, handoff) in chain.iter().take(needed).enumerate() {
+        // `index` is bounded by the chain length, as above.
         let expected = u32::try_from(index).unwrap_or(u32::MAX);
         if handoff.from_epoch != expected {
             return Err(AccountError::ChainNotContiguous {
@@ -747,17 +776,16 @@ pub fn resolve_root_keys(
         // Signed by the OUTGOING key — the one already established at this
         // position — which is what makes the chain an authorization chain
         // rather than a list of assertions.
-        let outgoing = keys[index];
-        if outgoing
+        if current
             .verify_raw_signature(&handoff.payload(), &handoff.signature)
             .is_err()
         {
             return Err(AccountError::HandoffSignatureInvalid { epoch: expected });
         }
-        keys.push(handoff.new_root_sign_pk);
+        current = handoff.new_root_sign_pk;
     }
 
-    Ok(keys)
+    Ok(current)
 }
 
 /// Verify a device certificate end to end against a self-certifying genesis.
@@ -791,17 +819,7 @@ pub fn verify_device_cert(
         return Err(AccountError::CertAccountMismatch);
     }
 
-    let keys = resolve_root_keys(genesis, chain)?;
-
-    let epoch_index = usize::try_from(cert.key_epoch).unwrap_or(usize::MAX);
-    let Some(signer) = keys.get(epoch_index) else {
-        // `keys` is non-empty, so `len() - 1` cannot underflow.
-        let reachable = u32::try_from(keys.len() - 1).unwrap_or(u32::MAX);
-        return Err(AccountError::EpochOutOfRange {
-            key_epoch: cert.key_epoch,
-            reachable,
-        });
-    };
+    let signer = root_key_at_epoch(genesis, chain, cert.key_epoch)?;
 
     if signer
         .verify_raw_signature(&cert.payload(), &cert.signature)
@@ -958,16 +976,7 @@ pub fn verify_device_revocation(
         return Err(AccountError::RevocationAccountMismatch);
     }
 
-    let keys = resolve_root_keys(genesis, chain)?;
-    let epoch_index = usize::try_from(revocation.key_epoch).unwrap_or(usize::MAX);
-    let Some(signer) = keys.get(epoch_index) else {
-        // `keys` is non-empty, so `len() - 1` cannot underflow.
-        let reachable = u32::try_from(keys.len() - 1).unwrap_or(u32::MAX);
-        return Err(AccountError::EpochOutOfRange {
-            key_epoch: revocation.key_epoch,
-            reachable,
-        });
-    };
+    let signer = root_key_at_epoch(genesis, chain, revocation.key_epoch)?;
 
     if signer
         .verify_raw_signature(&revocation.payload(), &revocation.signature)
@@ -1087,6 +1096,49 @@ mod tests {
             ),
             "a revocation is bound to the account that minted it"
         );
+    }
+
+    #[test]
+    fn a_credential_ignores_a_handoff_beyond_the_epoch_it_needs() {
+        // Only the key at the credential's own epoch decides anything. A handoff
+        // *past* that epoch is not part of the authorization it rests on, so
+        // refusing the whole credential over one made a garbage entry appended by
+        // the carrier — or one the holder built wrong — invalidate a certificate
+        // that verifies perfectly against a key the chain genuinely established.
+        //
+        // It is also the difference between one Ed25519 verification and up to
+        // MAX_ROOT_KEY_HANDOFFS of them on a path any member can drive: the cap
+        // bounds that work, it does not avoid doing it.
+        let (r0, r1, r2, imposter) = (key(1), key(2), key(3), key(9));
+        let g = genesis_for(&r0);
+        let account = g.account_id();
+        let device = DeviceId::mint(account, [0x22; 16]);
+        let chain = [
+            sign_handoff(&r0, account, 0, &r1),
+            // Never authorized: signed by a key that was never this account's root.
+            sign_handoff(&imposter, account, 1, &r2),
+        ];
+
+        let cert = sign_cert(&r1, account, device, &key(5), 1, 0);
+        assert!(
+            verify_device_cert(account, &g, &chain, &cert).is_ok(),
+            "epoch 1 is established by the first handoff alone"
+        );
+
+        let revocation = sign_device_revocation(&r1, account, device, 1).expect("sign");
+        assert!(
+            verify_device_revocation(account, &g, &chain, &revocation).is_ok(),
+            "and the same holds for a revocation proof, which accepts any epoch \
+             its chain resolves"
+        );
+
+        // The unauthorized handoff still buys nothing: the epoch it claims to
+        // establish is unreachable.
+        let forged = sign_cert(&r2, account, device, &key(5), 2, 0);
+        assert!(matches!(
+            verify_device_cert(account, &g, &chain, &forged),
+            Err(AccountError::HandoffSignatureInvalid { epoch: 1 })
+        ));
     }
 
     #[test]
@@ -1219,7 +1271,7 @@ mod tests {
             sign_root_key_handoff(&key(1), g.account_id(), 0, &key(2).public_key()).expect("sign");
         let chain = vec![bogus; MAX_ROOT_KEY_HANDOFFS + 1];
         assert_eq!(
-            resolve_root_keys(&g, &chain),
+            root_key_at_epoch(&g, &chain, 0),
             Err(AccountError::ChainTooLong {
                 found: MAX_ROOT_KEY_HANDOFFS + 1,
                 limit: MAX_ROOT_KEY_HANDOFFS,
@@ -1231,7 +1283,7 @@ mod tests {
         // not contiguous), not by the length gate.
         let at_cap = vec![bogus; MAX_ROOT_KEY_HANDOFFS];
         assert!(!matches!(
-            resolve_root_keys(&g, &at_cap),
+            root_key_at_epoch(&g, &at_cap, MAX_ROOT_KEY_HANDOFFS as u32),
             Err(AccountError::ChainTooLong { .. })
         ));
     }
@@ -1391,8 +1443,10 @@ mod tests {
     fn empty_chain_resolves_to_the_genesis_key() {
         let root = key(1);
         let g = genesis_for(&root);
-        let keys = resolve_root_keys(&g, &[]).expect("valid");
-        assert_eq!(keys, vec![root.public_key()]);
+        assert_eq!(
+            root_key_at_epoch(&g, &[], 0).expect("valid"),
+            root.public_key()
+        );
     }
 
     #[test]
@@ -1404,11 +1458,13 @@ mod tests {
             sign_handoff(&r0, account, 0, &r1),
             sign_handoff(&r1, account, 1, &r2),
         ];
-        let keys = resolve_root_keys(&g, &chain).expect("valid");
-        assert_eq!(
-            keys,
-            vec![r0.public_key(), r1.public_key(), r2.public_key()]
-        );
+        for (epoch, expected) in [&r0, &r1, &r2].into_iter().enumerate() {
+            assert_eq!(
+                root_key_at_epoch(&g, &chain, epoch as u32).expect("valid"),
+                expected.public_key(),
+                "epoch {epoch}"
+            );
+        }
     }
 
     #[test]
@@ -1419,7 +1475,7 @@ mod tests {
         // Signed by a key that was never the account's root.
         let chain = [sign_handoff(&imposter, account, 0, &r1)];
         assert_eq!(
-            resolve_root_keys(&g, &chain),
+            root_key_at_epoch(&g, &chain, 1),
             Err(AccountError::HandoffSignatureInvalid { epoch: 0 })
         );
     }
@@ -1435,7 +1491,7 @@ mod tests {
             sign_handoff(&r0, account, 1, &r2), // wrong signer for this position
         ];
         assert_eq!(
-            resolve_root_keys(&g, &chain),
+            root_key_at_epoch(&g, &chain, 2),
             Err(AccountError::HandoffSignatureInvalid { epoch: 1 })
         );
     }
@@ -1447,7 +1503,7 @@ mod tests {
         let account = g.account_id();
         let chain = [sign_handoff(&r0, account, 1, &r1)];
         assert_eq!(
-            resolve_root_keys(&g, &chain),
+            root_key_at_epoch(&g, &chain, 1),
             Err(AccountError::ChainNotContiguous {
                 expected: 0,
                 found: 1
@@ -1465,7 +1521,7 @@ mod tests {
             sign_handoff(&r1, account, 2, &r2),
         ];
         assert_eq!(
-            resolve_root_keys(&g, &chain),
+            root_key_at_epoch(&g, &chain, 2),
             Err(AccountError::ChainNotContiguous {
                 expected: 1,
                 found: 2
@@ -1481,7 +1537,7 @@ mod tests {
         // Validly signed by r0, but minted for a different account id.
         let stolen = sign_handoff(&r0, other.account_id(), 0, &r1);
         assert_eq!(
-            resolve_root_keys(&g, &[stolen]),
+            root_key_at_epoch(&g, &[stolen], 1),
             Err(AccountError::HandoffAccountMismatch { epoch: 0 })
         );
     }
@@ -1491,7 +1547,7 @@ mod tests {
         let mut g = genesis_for(&key(1));
         g.version = 200;
         assert_eq!(
-            resolve_root_keys(&g, &[]),
+            root_key_at_epoch(&g, &[], 0),
             Err(AccountError::UnsupportedVersion {
                 found: 200,
                 supported: ACCOUNT_GENESIS_VERSION
@@ -1710,10 +1766,13 @@ mod tests {
             sign_root_key_handoff(&r1, account, 1, &r2.public_key()).expect("sign"),
         ];
 
-        assert_eq!(
-            resolve_root_keys(&g, &chain).expect("resolve"),
-            vec![r0.public_key(), r1.public_key(), r2.public_key()]
-        );
+        for (epoch, expected) in [&r0, &r1, &r2].into_iter().enumerate() {
+            assert_eq!(
+                root_key_at_epoch(&g, &chain, epoch as u32).expect("resolve"),
+                expected.public_key(),
+                "epoch {epoch}"
+            );
+        }
     }
 
     #[test]
