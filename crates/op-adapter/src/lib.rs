@@ -384,6 +384,23 @@ mod tests {
             Some(account),
             "and it must know which account the device speaks for"
         );
+
+        // And the reason the binding has to be consulted at all: an account
+        // DERIVED from the device's signing key is a different account, and not a
+        // member. Resolving a signer through `legacy_account_id` alone therefore
+        // answers about somebody who does not exist, which is exactly why a second
+        // device could receive scope keys and then not author with them.
+        let device_sign_pk = PrivateKey::from([5u8; 32]).public_key();
+        assert_ne!(
+            legacy_account_id(&device_sign_pk),
+            account,
+            "if the derived account happened to equal the real one, the check \
+             below would pass for the wrong reason"
+        );
+        assert!(
+            !view.is_scope_member(&legacy_account_id(&device_sign_pk)),
+            "the account derived from a device key must not be a member"
+        );
     }
 
     fn hlc(ns: u64) -> HybridTimestamp {

@@ -106,18 +106,17 @@ impl<'a> NodeDeviceRepository<'a> {
     ///
     /// # Errors
     /// Propagates the store read failure.
-    pub fn get(
-        &self,
-        namespace: &ContextGroupId,
-        root_sign_pk: &PublicKey,
-    ) -> EyreResult<Option<NodeDevice>> {
+    pub fn get(&self, namespace: &ContextGroupId) -> EyreResult<Option<NodeDevice>> {
         let key = NodeDeviceIdentity::new(namespace.to_bytes());
         Ok(self
             .store
             .handle()
             .get(&key)?
             .map(|value: NodeDeviceIdentityValue| {
-                let genesis = AccountGenesis::new(*root_sign_pk, value.account_nonce);
+                let genesis = AccountGenesis::new(
+                    PublicKey::from(value.account_root_pk),
+                    value.account_nonce,
+                );
                 NodeDevice {
                     account: genesis.account_id(),
                     genesis,
@@ -179,13 +178,50 @@ impl<'a> NodeDeviceRepository<'a> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        if let Some(existing) = self.get(namespace, root_sign_pk)? {
+        let genesis = AccountGenesis::new(*root_sign_pk, rand::thread_rng().gen::<[u8; 16]>());
+        self.enroll_locked(namespace, genesis)
+    }
+
+    /// This node's device identity for `namespace`, enrolling it into an
+    /// **existing** account if absent.
+    ///
+    /// The pairing counterpart of [`ensure_enrolled`](Self::ensure_enrolled). The
+    /// genesis arrives from the device that already holds the account, and it has
+    /// to: `DeviceId` is `H(account ‖ nonce)`, so this node cannot mint its own id
+    /// until it knows the account, while the account holder cannot sign this
+    /// device's certificate until it knows the id and KEM key. Pairing is therefore
+    /// a two-way exchange, and this is its first half — the half that produces the
+    /// values the certificate will name.
+    ///
+    /// Idempotent on the same terms as `ensure_enrolled`, including that a stored
+    /// identity wins even when a *different* account asks: re-minting would strand
+    /// the replica state already written under the old device id.
+    ///
+    /// # Errors
+    /// Propagates the store read or write failure.
+    pub fn ensure_enrolled_into(
+        &self,
+        namespace: &ContextGroupId,
+        genesis: AccountGenesis,
+    ) -> EyreResult<NodeDevice> {
+        let _guard = NODE_DEVICE_MINT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.enroll_locked(namespace, genesis)
+    }
+
+    /// Mint-if-absent for a decided genesis. Callers hold
+    /// [`NODE_DEVICE_MINT_LOCK`].
+    fn enroll_locked(
+        &self,
+        namespace: &ContextGroupId,
+        genesis: AccountGenesis,
+    ) -> EyreResult<NodeDevice> {
+        if let Some(existing) = self.get(namespace)? {
             return Ok(existing);
         }
 
         let mut rng = rand::thread_rng();
-        let account_nonce = rng.gen::<[u8; 16]>();
-        let genesis = AccountGenesis::new(*root_sign_pk, account_nonce);
         let account = genesis.account_id();
         let device = DeviceId::mint(account, rng.gen::<[u8; 16]>());
         let kem_secret = X25519SecretKey::random(&mut rng);
@@ -194,7 +230,8 @@ impl<'a> NodeDeviceRepository<'a> {
         self.store.handle().put(
             &key,
             &NodeDeviceIdentityValue {
-                account_nonce,
+                account_root_pk: *AsRef::<[u8; 32]>::as_ref(&genesis.root_sign_pk),
+                account_nonce: genesis.nonce,
                 device_id: *device.as_bytes(),
                 kem_secret: *kem_secret.as_bytes(),
             },
@@ -228,6 +265,7 @@ impl<'a> NodeDeviceRepository<'a> {
 mod tests {
     use super::*;
     use crate::test_fixtures::{test_group_id, test_store};
+    use calimero_account::AccountGenesis;
     use calimero_crypto::SharedKey;
     use calimero_primitives::identity::PrivateKey;
 
@@ -239,7 +277,7 @@ mod tests {
     fn a_namespace_with_no_enrolled_device_reports_none() {
         let store = test_store();
         assert!(NodeDeviceRepository::new(&store)
-            .get(&test_group_id(), &root(1))
+            .get(&test_group_id())
             .expect("read")
             .is_none());
     }
@@ -288,7 +326,7 @@ mod tests {
         let repo = NodeDeviceRepository::new(&store);
 
         let enrolled = repo.ensure_enrolled(&ns, &root(1)).expect("enroll");
-        let reloaded = repo.get(&ns, &root(1)).expect("read").expect("present");
+        let reloaded = repo.get(&ns).expect("read").expect("present");
 
         assert_eq!(enrolled.account, reloaded.account);
         assert_eq!(enrolled.genesis, reloaded.genesis);
@@ -302,6 +340,66 @@ mod tests {
             root(1),
             "the account is rooted at the namespace identity that enrolled it"
         );
+    }
+
+    #[test]
+    fn a_paired_device_adopts_an_account_it_did_not_mint() {
+        // The pairing half. node-B enrolls into an account rooted at node-A's key,
+        // and the row has to be self-describing afterwards: nothing on node-B knows
+        // whose account it is, so reconstructing the genesis cannot depend on being
+        // told the root key.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        // node-A's account, as it would arrive over a pairing exchange.
+        let alice_root = root(1);
+        let alice = AccountGenesis::new(alice_root, [0xABu8; 16]);
+
+        let paired = repo
+            .ensure_enrolled_into(&ns, alice)
+            .expect("adopt the account");
+        assert_eq!(
+            paired.account,
+            alice.account_id(),
+            "the paired device must speak for the account it was given, not a new one"
+        );
+
+        // Reloaded with no external input at all.
+        let reloaded = repo.get(&ns).expect("read").expect("present");
+        assert_eq!(reloaded.account, alice.account_id());
+        assert_eq!(reloaded.genesis, alice);
+        assert_eq!(
+            reloaded.genesis.root_sign_pk, alice_root,
+            "the account stays rooted at the pairing device's key, not this node's"
+        );
+
+        // Distinct replica from whatever node-A holds: same account, different id.
+        let other = test_store();
+        let node_a = NodeDeviceRepository::new(&other)
+            .ensure_enrolled(&ns, &alice_root)
+            .expect("enroll");
+        assert_ne!(
+            paired.device(),
+            node_a.device(),
+            "one account, two devices — the replica ids must differ"
+        );
+    }
+
+    #[test]
+    fn an_adopted_account_does_not_displace_an_existing_enrollment() {
+        // Same terms as ensure_enrolled: re-minting would strand the replica state
+        // already written under the stored device id.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let mine = repo.ensure_enrolled(&ns, &root(1)).expect("enroll");
+        let asked = repo
+            .ensure_enrolled_into(&ns, AccountGenesis::new(root(2), [0xCDu8; 16]))
+            .expect("adopt");
+        assert_eq!(mine.device(), asked.device());
+        assert_eq!(mine.account, asked.account);
     }
 
     #[test]
@@ -346,7 +444,7 @@ mod tests {
         .expect("agree");
 
         // ...and the identity reloaded from the store opens it.
-        let reloaded = repo.get(&ns, &root(1)).expect("read").expect("present");
+        let reloaded = repo.get(&ns).expect("read").expect("present");
         let device_side = SharedKey::from_x25519(&reloaded.secret.kem_secret, &sender.public_key())
             .expect("agree");
 
@@ -394,7 +492,7 @@ mod tests {
         );
         assert_eq!(
             NodeDeviceRepository::new(&store)
-                .get(&ns, &acct)
+                .get(&ns)
                 .expect("read")
                 .expect("present")
                 .device(),
@@ -411,7 +509,7 @@ mod tests {
 
         let _ = repo.ensure_enrolled(&ns, &root(1)).expect("mint");
         repo.delete(&ns).expect("delete");
-        assert!(repo.get(&ns, &root(1)).expect("read").is_none());
+        assert!(repo.get(&ns).expect("read").is_none());
         repo.delete(&ns).expect("delete again");
     }
 }

@@ -2422,6 +2422,13 @@ impl Debug for NodeDeviceIdentity {
 #[derive(Clone, Eq, PartialEq, ZeroizeOnDrop)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NodeDeviceIdentityValue {
+    /// Epoch-0 root key of the account this node's device belongs to.
+    ///
+    /// Stored rather than assumed to be this node's own namespace identity: a
+    /// paired device adopts an account rooted at ANOTHER node's key, so a row that
+    /// only held the nonce could not reconstruct the genesis without being told
+    /// whose account it was — which the reader does not know.
+    pub account_root_pk: [u8; 32],
     /// Nonce of the `AccountGenesis` this node's device belongs to.
     ///
     /// The nonce rather than the `AccountId`, because the id is a one-way hash

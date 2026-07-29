@@ -79,6 +79,33 @@ type AuthCutContext = (
 /// [`ScopeProjections::acl_view_at`] resolves the same ancestry the source DAG
 /// would. The source ids are themselves content-addressed + identical on every
 /// node, so the projection's `(hlc, op_id)` LWW stays deterministic.
+/// Which account does `key` speak for at this cut?
+///
+/// A device's signing key is **not** a member key, so deriving an account from
+/// the key itself — all `legacy_account_id` can do — answers about somebody who
+/// does not exist. That is why a second device could be handed scope keys and
+/// then fail to author with them: delivery resolved the device, authorization did
+/// not.
+///
+/// The folded bindings are consulted first; `legacy_account_id` is the fallback
+/// for a key nobody has linked, which is every member key today.
+///
+/// Resolved from `view` — **at the cut** — deliberately. Reading the live binding
+/// rows would make the verdict depend on how much this replica has folded, and two
+/// replicas would decide the same op differently. That is the failure this plane
+/// has produced repeatedly.
+///
+/// The scan is forward-only and re-done per call. A cached key→account map is
+/// precisely what `denied_members` and `accounts_rooted_at_members` avoid: it can
+/// only be populated while observing bindings, so it comes back empty after a
+/// projection rebuild and silently reverts every device to the fallback.
+fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> AccountId {
+    view.devices
+        .values()
+        .find(|binding| binding.sign_pk == *key)
+        .map_or_else(|| legacy_account_id(key), |binding| binding.account)
+}
+
 fn build_op(
     id: [u8; 32],
     scope: ScopeId,
@@ -1417,7 +1444,12 @@ impl ScopeProjections {
             .flatten()
             .unwrap_or(0);
         if view.as_ref().is_some_and(|v| {
-            v.is_member_at_cut(group, &legacy_account_id(author), root, default_cap_base)
+            v.is_member_at_cut(
+                group,
+                &account_for_author(v, author),
+                root,
+                default_cap_base,
+            )
         }) {
             return Some(true);
         }
@@ -1531,7 +1563,12 @@ impl ScopeProjections {
             .flatten()
             .unwrap_or(0);
         Some(self.acl_view_at(&scope, heads).is_some_and(|v| {
-            v.is_member_at_cut(group, &legacy_account_id(author), root, default_cap_base)
+            v.is_member_at_cut(
+                group,
+                &account_for_author(&v, author),
+                root,
+                default_cap_base,
+            )
         }))
     }
 
@@ -1550,7 +1587,7 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<bool> {
         let (view, root, _) = self.auth_cut_context(store, group, heads)?;
-        Some(view.is_authorized_admin(group, &legacy_account_id(author), root))
+        Some(view.is_authorized_admin(group, &account_for_author(&view, author), root))
     }
 
     /// How `member` reaches membership of `group` at the cut — the at-cut analogue of
@@ -1565,7 +1602,12 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<calimero_authz::MemberPathAtCut> {
         let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
-        Some(view.member_path_at_cut(group, &legacy_account_id(member), root, default_cap_base))
+        Some(view.member_path_at_cut(
+            group,
+            &account_for_author(&view, member),
+            root,
+            default_cap_base,
+        ))
     }
 
     /// Is `author` an admin of `group` OR a holder of any bit in `capability` at
@@ -1584,10 +1626,10 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<bool> {
         let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
-        if view.is_authorized_admin(group, &legacy_account_id(author), root) {
+        if view.is_authorized_admin(group, &account_for_author(&view, author), root) {
             return Some(true);
         }
-        let folded = view.capability(&group, &legacy_account_id(author));
+        let folded = view.capability(&group, &account_for_author(&view, author));
         let effective = if folded != 0 {
             folded
         } else {
@@ -1743,7 +1785,7 @@ impl ScopeProjections {
         let view = self.acl_view_at(&scope, heads);
         let author_in_any = view
             .as_ref()
-            .is_some_and(|v| v.is_scope_member(&legacy_account_id(author)));
+            .is_some_and(|v| v.is_scope_member(&account_for_author(v, author)));
         // Is the DECISION group folded at all, and how big? Distinguishes
         // "subgroup membership never folded" (group absent / size 0 — a
         // decrypt/sync gap) from "folded but author absent" (re-add / deny-list).

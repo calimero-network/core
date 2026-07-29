@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use actix::Message;
+use calimero_account::{AccountGenesis, AccountId, DeviceId};
 use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
@@ -711,6 +712,40 @@ pub struct AdmitTeeNodeRequest {
 
 impl Message for AdmitTeeNodeRequest {
     type Result = eyre::Result<()>;
+}
+
+/// Enroll this node's device into a namespace under a fresh account, and publish
+/// the link so peers learn the binding.
+///
+/// The first thing in the account feature that publishes an account op, and the
+/// only way any of the account plane becomes reachable at runtime.
+///
+/// Must run AFTER the node holds the namespace's scope key: the link travels as an
+/// encrypted `GroupOp`, so a node with no key cannot publish one. That is not an
+/// implementation detail to be tidied away later — it is why `KeyEnvelope` can
+/// still address a member as well as a device.
+#[derive(Debug)]
+pub struct CreateAccountRequest {
+    /// The namespace to enroll in. The account is rooted at this node's namespace
+    /// identity, which is what ties it to a granted member.
+    pub namespace_id: ContextGroupId,
+}
+
+/// What the node enrolled as.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct CreateAccountResponse {
+    /// The account this node now speaks for in the namespace.
+    pub account: AccountId,
+    /// This node's replica id within it.
+    pub device: DeviceId,
+    /// The account's genesis, which a pairing device needs in order to mint its
+    /// own `DeviceId` — it is `H(account ‖ nonce)`, so the nonce has to travel.
+    pub genesis: AccountGenesis,
+}
+
+impl Message for CreateAccountRequest {
+    type Result = eyre::Result<CreateAccountResponse>;
 }
 
 /// Discharge a pending forward-secrecy key rotation left behind by a self-leave.

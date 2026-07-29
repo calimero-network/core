@@ -1271,6 +1271,7 @@ dependencies = [
  "async-stream",
  "blake3",
  "borsh",
+ "calimero-account",
  "calimero-blobstore",
  "calimero-context-config",
  "calimero-governance-types",

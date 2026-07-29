@@ -733,6 +733,52 @@ fn the_adversarial_account_workload_converges() {
     );
 }
 
+/// A device's signing key must authorize as the account it speaks for.
+///
+/// This is the property the whole feature rests on and it was missing until last:
+/// `AclView` is account-keyed, so anything resolving a signer had to map key →
+/// account, and the only mapping available derived an account *from the bare key*.
+/// For a device key that names somebody who does not exist, so a second device
+/// received scope keys and then could not author with them — delivery resolved the
+/// device, authorization did not.
+///
+/// Asserted here at the `AclView` level, which is what both the at-cut authorizer
+/// and the governance apply gates read.
+#[test]
+fn a_devices_signing_key_authorizes_as_its_account() {
+    let mut fx = Fixture::new();
+    let alice = Account::new(10);
+    let phone = alice.enroll(11, 0);
+
+    fx.push(grant_membership(&fx.admin, alice.id, 30, fx.head.clone()));
+    fx.push(alice.link_op(&phone, 40, fx.head.clone()));
+
+    let view = ScopeState::from_ops(&fx.log).acl_view();
+
+    // The binding is folded, and it names the account the device speaks for.
+    // Without this, nothing can map the device's key to Alice.
+    let bound = view
+        .devices
+        .values()
+        .find(|b| b.sign_pk == phone.sk.public_key())
+        .expect("the folded view must expose the device's signing key");
+    assert_eq!(
+        bound.account, alice.id,
+        "the device's signing key must resolve to the account it speaks for"
+    );
+
+    // And that account is a member, so resolving through the binding authorizes
+    // while deriving an account from the bare key does not.
+    assert!(
+        view.is_scope_member(&alice.id),
+        "precondition: the account is a member"
+    );
+    // The other half — that an account DERIVED from the device key is not a
+    // member, which is why the binding must be consulted — is asserted in
+    // `calimero-op-adapter`, where that derivation lives. It cannot be tested from
+    // here without a dev-dependency cycle.
+}
+
 // ------------------------------------------------------------- revocation --
 
 #[test]
