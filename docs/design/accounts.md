@@ -341,6 +341,43 @@ which is deliberately *not* a member and participates solely as a device of
 Alice's account. A pleasant consequence: nothing needs to tell merobox which
 device authors, because the node selects it.
 
+### How a non-member device participates at all
+
+A paired device needs two things it cannot get from membership: a namespace
+identity to sign with, and a gossip subscription to receive on. Both already
+exist as membership-free production calls, and neither is `join_namespace` —
+that publishes `RootOp::MemberJoinedAt`, which is the one thing a paired device
+must not do.
+
+- **Identity** — `NamespaceRepository::get_or_create_identity`. It resolves the
+  namespace root by walking parent rows, and an unknown group has no parent row,
+  so it returns itself. A node that has never heard of the namespace can
+  therefore mint an identity for it. (`store_identity` is the setter underneath
+  and is called only from there; searching for *it* finds only tests, which is
+  misleading.)
+- **Subscription** — `NodeClient::subscribe_namespace`. Idempotent, no
+  membership check.
+
+TEE fleet-join already does exactly this pair on a node that is not a member and
+may never be admitted, so a non-member namespace participant is an established
+shape rather than something pairing invents.
+
+**The subscription is not durable on its own, and the failure is silent.**
+Startup rehydration walks `list_all_groups`, which filters on membership, so a
+node whose only relationship to a namespace is a device row resubscribes to
+nothing after a restart — no error, no log line, it just stops receiving ops.
+Fleet-join has the same hole and survives it because admission is its whole
+purpose; for a paired device, non-membership is the steady state.
+
+So startup also walks `NodeDeviceRepository::enrolled_namespaces` — the device
+row family is written by *enrollment* rather than by joining, which makes it the
+one on-disk set that means "namespaces this node can speak in" regardless of
+membership. The two walks overlap for a member that enrolled a device, which is
+harmless because subscribing is idempotent.
+
+This is glue with no unit seam — the proof that it holds end to end is a restart
+step in the acceptance scenario, not a `cargo test`.
+
 ### Not yet wired: the ops that trigger delivery
 
 Two behaviours from the plan are **not** implemented, for the same reason: no

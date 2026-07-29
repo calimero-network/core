@@ -28,6 +28,8 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 use rand::Rng as _;
 
+use crate::collect_keys_with_prefix;
+
 /// Serializes the generate-once in [`NodeDeviceRepository::ensure_account_root`],
 /// for the same reason as the device mint below: two callers could both observe an
 /// absent row and both generate, and the second `put` would win — replacing the
@@ -354,6 +356,35 @@ impl<'a> NodeDeviceRepository<'a> {
             genesis,
             secret: DeviceSecret { device, kem_secret },
         })
+    }
+
+    /// Every namespace this node holds a device identity in.
+    ///
+    /// This is the node's own participation set, and it is deliberately not a
+    /// membership query. A paired device is a device of someone else's account
+    /// and a member of nothing, so every membership-derived listing omits it —
+    /// including `list_all_groups`, which the startup subscription rehydration
+    /// iterates. Without this the paired device comes back from a restart
+    /// subscribed to no gossip topic at all: no error, no log line, it simply
+    /// stops receiving ops.
+    ///
+    /// The row family is the right source precisely because it is written by
+    /// enrollment rather than by joining — one row per namespace this node can
+    /// speak in, whether or not it is a member there.
+    ///
+    /// # Errors
+    /// Propagates the store scan failure.
+    pub fn enrolled_namespaces(&self) -> EyreResult<Vec<ContextGroupId>> {
+        let keys = collect_keys_with_prefix(
+            self.store,
+            NodeDeviceIdentity::new([0u8; 32]),
+            calimero_store::key::NODE_DEVICE_IDENTITY_PREFIX,
+            |_| true,
+        )?;
+        Ok(keys
+            .into_iter()
+            .map(|key| ContextGroupId::from(key.namespace_id()))
+            .collect())
     }
 
     /// Drop this node's device identity for `namespace`. Idempotent.
@@ -687,5 +718,78 @@ mod tests {
         repo.delete(&ns).expect("delete");
         assert!(repo.get(&ns).expect("read").is_none());
         repo.delete(&ns).expect("delete again");
+    }
+
+    #[test]
+    fn a_node_with_no_enrollment_lists_no_namespaces() {
+        let store = test_store();
+        assert!(NodeDeviceRepository::new(&store)
+            .enrolled_namespaces()
+            .expect("scan")
+            .is_empty());
+    }
+
+    #[test]
+    fn every_enrolled_namespace_is_listed_whether_or_not_this_node_is_a_member() {
+        // The reason this scan exists. A paired device is a device of someone
+        // else's account and a member of nothing, so the membership-derived
+        // listings the startup subscription rehydration walks all skip it. This
+        // row family is written by enrollment, so it sees both cases alike.
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let mine = ContextGroupId::from([0xAAu8; 32]);
+        let paired = ContextGroupId::from([0xBBu8; 32]);
+        let _ = repo.ensure_enrolled(&mine).expect("mint");
+        let _ = repo
+            .ensure_enrolled_into(&paired, AccountGenesis::new(root(9), [0x11u8; 16]))
+            .expect("adopt");
+
+        let mut listed = repo.enrolled_namespaces().expect("scan");
+        listed.sort_unstable();
+        assert_eq!(listed, vec![mine, paired]);
+    }
+
+    #[test]
+    fn a_deleted_enrollment_leaves_the_listing() {
+        // Namespace teardown drops the device row, and the subscription must go
+        // with it — a node that keeps re-subscribing to a namespace it left is
+        // both noise and a capability it should no longer have.
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let kept = ContextGroupId::from([0xAAu8; 32]);
+        let dropped = ContextGroupId::from([0xBBu8; 32]);
+        let _ = repo.ensure_enrolled(&kept).expect("mint");
+        let _ = repo.ensure_enrolled(&dropped).expect("mint");
+        repo.delete(&dropped).expect("delete");
+
+        assert_eq!(repo.enrolled_namespaces().expect("scan"), vec![kept]);
+    }
+
+    #[test]
+    fn the_scan_stops_at_the_neighbouring_row_families() {
+        // The device rows sit at prefix 0x44, between the per-group account keys
+        // (0x43) and this node's account root (0x45) in the same column. A scan
+        // that failed to bound itself would read a neighbour's bytes as a
+        // namespace id and hand the node a subscription to a topic that does not
+        // exist — so bracket the range from both sides and pin the upper edge
+        // with the largest possible namespace id, which sorts immediately before
+        // the account root.
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let highest = ContextGroupId::from([0xFFu8; 32]);
+        let _ = repo.ensure_enrolled(&highest).expect("mint");
+        // `ensure_enrolled` already wrote the 0x45 root above; add a 0x43
+        // neighbour below the range.
+        crate::AccountBindingRepository::new(&store)
+            .absorb_genesis(
+                &ContextGroupId::from([0x01u8; 32]),
+                &AccountGenesis::new(root(3), [0x22u8; 16]),
+            )
+            .expect("absorb");
+
+        assert_eq!(repo.enrolled_namespaces().expect("scan"), vec![highest]);
     }
 }

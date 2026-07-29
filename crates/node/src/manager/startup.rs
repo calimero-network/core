@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use actix::{AsyncContext, WrapFuture};
 use calimero_context_client::group::ListAllGroupsRequest;
+use calimero_governance_store::NodeDeviceRepository;
 use calimero_primitives::context::ContextId;
 use futures_util::StreamExt;
 use tracing::{debug, error, warn};
@@ -64,6 +65,43 @@ impl NodeManager {
                     }
                     Err(err) => {
                         error!(%err, "Failed to list groups for startup subscription");
+                    }
+                }
+            }
+            .into_actor(self),
+        );
+
+        // Namespaces this node holds a *device* in, which is not the same set as
+        // the one above. `list_all_groups` filters on membership, and a paired
+        // device is deliberately a member of nothing — it is one device of an
+        // account that belongs to somebody else. Without this loop such a node
+        // comes back from a restart subscribed to no topic at all: it keeps its
+        // identity and its device secret, so nothing errors and nothing logs, it
+        // just silently stops receiving the ops it is still entitled to author
+        // against.
+        //
+        // The two loops overlap for an ordinary member that has enrolled a
+        // device, and that is fine — `subscribe_namespace` is idempotent.
+        let node_client = self.clients.node.clone();
+        let datastore = self.datastore.clone();
+
+        let _handle = ctx.spawn(
+            async move {
+                let namespaces = match NodeDeviceRepository::new(&datastore).enrolled_namespaces() {
+                    Ok(namespaces) => namespaces,
+                    Err(err) => {
+                        error!(%err, "Failed to list enrolled devices for startup subscription");
+                        return;
+                    }
+                };
+                for namespace in namespaces {
+                    let ns_bytes = namespace.to_bytes();
+                    if let Err(err) = node_client.subscribe_namespace(ns_bytes).await {
+                        error!(?namespace, %err, "Failed to subscribe to device namespace topic");
+                        continue;
+                    }
+                    if let Err(err) = node_client.sync_namespace(ns_bytes).await {
+                        warn!(?namespace, %err, "Failed to queue device namespace governance sync at startup");
                     }
                 }
             }
