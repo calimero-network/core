@@ -1699,6 +1699,7 @@ dependencies = [
  "borsh",
  "bytes",
  "cached-path",
+ "calimero-account",
  "calimero-blobstore",
  "calimero-context",
  "calimero-context-client",

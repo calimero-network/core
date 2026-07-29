@@ -8,10 +8,10 @@ use calimero_server_primitives::admin::{
     LeaveGroupApiResponse, LeaveNamespaceApiResponse, ListGroupContextsApiResponse,
     ListGroupMembersApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
     ListSubgroupsApiResponse, NamespaceApiResponse, NamespaceIdentityApiResponse,
-    RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse, ReparentGroupApiResponse,
-    SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse, SetMetadataApiResponse,
-    SetSubgroupVisibilityApiResponse, SyncGroupApiResponse, UpdateGroupSettingsApiResponse,
-    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    PairDeviceInitApiResponse, RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse,
+    ReparentGroupApiResponse, SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse,
+    SetMetadataApiResponse, SetSubgroupVisibilityApiResponse, SyncGroupApiResponse,
+    UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -76,6 +76,24 @@ impl Report for CreateAccountApiResponse {
             "Account nonce (for pairing)",
             &self.data.account_nonce,
         ]);
+        println!("{table}");
+    }
+}
+
+impl Report for PairDeviceInitApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Device Minted").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Account ID", &self.data.account_id]);
+        // All three are what `account pair-complete` needs on the other device.
+        // The device is inert until that runs: it holds no key, and nothing has
+        // certified it, so printing them is the whole point of this half.
+        let _ = table.add_row(vec!["Device ID", &self.data.device_id]);
+        let _ = table.add_row(vec!["Device KEM key", &self.data.kem_public_key]);
+        let _ = table.add_row(vec!["Device signing key", &self.data.sign_public_key]);
         println!("{table}");
     }
 }

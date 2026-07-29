@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use actix::Message;
-use calimero_account::{AccountGenesis, AccountId, DeviceId};
+use calimero_account::{AccountGenesis, AccountId, DeviceId, KemPublicKey};
 use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
@@ -760,6 +760,73 @@ impl CreateAccountResponse {
 
 impl Message for CreateAccountRequest {
     type Result = eyre::Result<CreateAccountResponse>;
+}
+
+/// Adopt an **existing** account on this node and mint a device for it — the
+/// first half of pairing.
+///
+/// Pairing has to be a two-way exchange, and this is the half that produces the
+/// values the other half signs: a device cannot mint its `DeviceId` until it
+/// knows the account (`H(account ‖ nonce)`), while the account holder cannot
+/// certify that device until it knows the id and KEM key.
+///
+/// Deliberately does **not** require a scope key, unlike `CreateAccountRequest`.
+/// A pairing device holds none — obtaining one is what the second half is for —
+/// and it publishes nothing here, so there is no encrypted op to gate on.
+#[derive(Debug)]
+pub struct PairDeviceInitRequest {
+    /// The namespace to enroll in.
+    pub namespace_id: ContextGroupId,
+    /// The genesis of the account being joined, carried from the device that
+    /// already holds it. The nonce has to travel because the id is a hash over
+    /// it, so it cannot be recovered from the account id alone.
+    pub genesis: AccountGenesis,
+}
+
+/// What the pairing device minted, for the account holder to certify.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct PairDeviceInitResponse {
+    /// The account this device will speak for once the link lands.
+    pub account: AccountId,
+    /// This node's replica id within that account.
+    pub device: DeviceId,
+    /// The agreement key a scope key must be wrapped under to reach this
+    /// device. Published in its certificate.
+    pub kem_pk: KemPublicKey,
+    /// The key this device signs its ops with — its namespace identity on this
+    /// node.
+    ///
+    /// Travels because the certificate names it and per-device authorization
+    /// resolves a signer *through* it. The account holder cannot derive it: it
+    /// is minted here, on the pairing node. Omitting it would produce a
+    /// certificate naming a key no signature ever matches, leaving the device
+    /// linked but unable to author.
+    pub sign_pk: PublicKey,
+}
+
+impl PairDeviceInitResponse {
+    /// Build a response. Exists for the same reason as
+    /// [`CreateAccountResponse::new`] — the struct is `#[non_exhaustive]` and
+    /// the producer lives in another crate.
+    #[must_use]
+    pub const fn new(
+        account: AccountId,
+        device: DeviceId,
+        kem_pk: KemPublicKey,
+        sign_pk: PublicKey,
+    ) -> Self {
+        Self {
+            account,
+            device,
+            kem_pk,
+            sign_pk,
+        }
+    }
+}
+
+impl Message for PairDeviceInitRequest {
+    type Result = eyre::Result<PairDeviceInitResponse>;
 }
 
 /// Discharge a pending forward-secrecy key rotation left behind by a self-leave.

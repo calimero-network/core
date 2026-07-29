@@ -3,7 +3,7 @@ use calimero_server_primitives::admin::{
     CreateNamespaceApiRequest, CreateNamespaceApiResponse, DeleteNamespaceApiRequest,
     DeleteNamespaceApiResponse, GetNamespaceApiResponse, JoinGroupApiRequest, JoinGroupApiResponse,
     ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, NamespaceApiResponse,
-    NamespaceIdentityApiResponse,
+    NamespaceIdentityApiResponse, PairDeviceInitApiRequest, PairDeviceInitApiResponse,
 };
 use eyre::Result;
 use serde::Serialize;
@@ -93,6 +93,27 @@ where
             .post(
                 &format!("admin-api/namespaces/{namespace_id}/account"),
                 CreateAccountApiRequest {},
+            )
+            .await?;
+        Ok(response)
+    }
+
+    /// Mint a device on this node for an account that already exists elsewhere
+    /// — the first half of pairing.
+    ///
+    /// Needs no scope key, unlike [`Self::create_account`]: nothing is
+    /// published here. It returns the device id and agreement key that the
+    /// account holder certifies in the second half.
+    pub async fn pair_device_init(
+        &self,
+        namespace_id: &str,
+        request: PairDeviceInitApiRequest,
+    ) -> Result<PairDeviceInitApiResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/namespaces/{namespace_id}/account/pair-init"),
+                request,
             )
             .await?;
         Ok(response)
