@@ -395,6 +395,110 @@ resolving **once per read** rather than the two-to-four times `acl_view` and
 without bound — is not specific to this plane; it is the DAG's growth problem, and
 it is answered by compaction, not by an admission rule.
 
+## Target model: a dedicated account root
+
+The account is currently rooted at the node's **namespace identity**. That works,
+and everything above is built on it, but it fails the requirement that matters
+most: it dies with the node. Lose every device and the root is gone with them, so
+nothing can certify a replacement — the exact case recovery exists for.
+
+Two candidates are ruled out. The **namespace identity** is the thing being
+recovered from. The **libp2p keypair** is public: a genesis travels in the clear
+and names its root key, so anyone seeing a link op would learn the account belongs
+to that `PeerId`, correlating the node's namespaces with each other and with its
+network identity. It would also make the transport key an identity root — the
+one-key-many-jobs conflation this design exists to remove.
+
+So the root is a **dedicated key, generated once per node, kept offline, used only
+to sign device certificates and root-key handoffs.**
+
+### Nonces are derived, not stored
+
+```
+nonce(namespace) = KDF(root_secret, namespace_id)
+AccountId        = H(genesis(root_pk, nonce(namespace)))
+```
+
+Storing the nonce per namespace — as the row does today — puts it on the node, so
+losing every device loses the nonces and the root can no longer *name* the accounts
+it owns. Deriving it means the recovery input is one secret plus a list of
+namespace ids, and the list is not secret.
+
+Per-namespace nonces are what keep this from costing privacy: one root everywhere,
+but a **different `AccountId` per namespace**, so nobody correlates a person across
+namespaces. That tension is real and was previously resolved silently — one
+identity everywhere and mutually unlinkable namespaces cannot both hold, and this
+picks unlinkability while still giving recovery.
+
+### The gate needs an endorsement
+
+The link gate asks *"is this account's root key a member of this group?"* An
+offline root is a member nowhere, so the link op carries a **member endorsement**:
+the node's namespace member key signs a statement binding that account id to
+itself. The gate becomes *"is the endorser a member at this cut, and did it validly
+sign this account id?"*
+
+Equally strong — only a member can endorse, and only the root holder can certify
+devices — and it needs no re-key of membership onto `AccountId`. A wire addition,
+so it is cheap while the schema is already a flag day and expensive afterwards.
+
+### Recovery, and what it does not cover
+
+Two separable halves, and conflating them is what makes recovery look impossible:
+
+| | Provided by |
+| --- | --- |
+| Proving you are you | the **root key** — a self-certifying cert, verified from the account id alone |
+| Getting scope keys | a **peer** — you hold none, and forward secrecy means they cannot be re-derived |
+
+So a peer's role is transport, not judgement: it cannot impersonate the recovering
+account, and it does not have to decide out-of-band who somebody is. The publish
+also needs a peer, since `AccountDeviceLinked` is an encrypted `GroupOp` and a
+keyless device cannot publish its own link — the bootstrap constraint again.
+
+Peers retain rotated-out keys (`load_key_by_id` resolves them), so history *can* be
+handed back. Whether it should is policy worth deciding deliberately.
+
+**Root-key compromise stays unrecoverable.** A stolen root signs its own handoff.
+Offline storage makes theft unlikely and the chain allows pre-emptive rotation, but
+whoever holds the root is the account.
+
+### Full-node restore
+
+`root key + [namespace_ids]` is enough: for each namespace, provision an identity,
+prove ownership with the root, let a peer deliver keys. Applications follow for
+free — `BlobId` is content-addressed and the app id is in the group meta, so it is
+fetched from any peer once the namespace is joined.
+
+It cannot be *zero* input: nothing enumerates a person's namespaces from a key, and
+namespaces do not index each other, so the id list has to come from somewhere.
+
+This makes phase G (`merod export` / `import`) **dependent on this change, not
+independent of it** — and much better on the far side. Without it, an export must
+carry every namespace identity's private key, a pile of secrets each of which is a
+full impersonation risk if the export leaks. With it, the export is one secret plus
+a non-secret list, and the import is a cryptographic recovery rather than a
+key-material restore.
+
+### What this deletes, and what it cannot
+
+Deleted: rooting accounts at the namespace identity, the stored `account_nonce`,
+and `account create` as a step a user is expected to run (auto-enrolment on the
+existing `OpEvent::GroupKeyDelivered` replaces it; the command stays as an
+idempotent escape hatch).
+
+**Not deletable, and not legacy:**
+
+- **The member-addressed envelope.** A keyless node cannot publish the link that
+  would make it device-addressable. It is one message per node per namespace, not a
+  compatibility mode — and the distinction matters, because treating it as a mode
+  is what produced the fallback rule that let a revoked device pull its key back.
+- **`legacy_account_id`.** Membership on the governance bridge is keyed by member
+  key, and that derivation is how the whole membership fold bridges onto the
+  account-keyed `AclView`. Removing it *is* the re-key onto `AccountId` that the
+  cutover carries. The endorsement above exists precisely so this change does not
+  have to wait for it.
+
 ## Known limits
 
 - **Revocation latency is per scope.** A scope that has not folded the
