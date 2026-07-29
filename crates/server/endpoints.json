@@ -6,6 +6,7 @@
   "DELETE /admin-api/namespaces/:namespace_id",
   "GET /admin-api/applications",
   "GET /admin-api/applications/:application_id",
+  "GET /admin-api/applications/:application_id/abi",
   "GET /admin-api/applications/:application_id/versions",
   "GET /admin-api/blobs",
   "GET /admin-api/blobs/:blob_id",
