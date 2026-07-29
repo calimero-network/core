@@ -32,8 +32,9 @@ use std::rc::Rc;
 
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_storage::env::RuntimeEnv;
+use calimero_storage::env::{IndexCallbacks, RuntimeEnv};
 use calimero_storage::store::Key;
+use calimero_store::db::Column;
 use calimero_store::{key, types, Store};
 use tracing::warn;
 
@@ -70,6 +71,145 @@ pub fn create_runtime_env(
         *context_id.as_ref(),
         *executor_id.as_ref(),
     )
+    .with_index(create_index_callbacks(store, context_id))
+}
+
+/// The exclusive upper bound for a byte prefix (smallest key not starting with
+/// `prefix`) — mirrors `ContextStorage`'s helper for range-clearing a prefix.
+fn index_prefix_upper_bound(prefix: &[u8]) -> Vec<u8> {
+    let mut end = prefix.to_vec();
+    while let Some(&last) = end.last() {
+        if last == 0xFF {
+            let _ = end.pop();
+        } else {
+            *end.last_mut().expect("non-empty") += 1;
+            return end;
+        }
+    }
+    vec![0xFF; prefix.len() + 1]
+}
+
+/// Build ordered-index host callbacks bridging `calimero-storage`'s node-local
+/// index + validity marker to this context's RocksDB `Column::SortedIndex` /
+/// `Column::SortedIndexMeta`.
+///
+/// This is the sync-side twin of the runtime's `build_runtime_env` bridge: it
+/// makes host-side `SortedSet`/`SortedMap` ops during native apply
+/// (`Interface::apply_action` on the HashComparison / delta-apply path) target
+/// the SAME durable, context-scoped columns the guest and JS read paths use —
+/// so an apply-time marker clear (invalidate-on-sync) is seen by the next
+/// ordered read instead of landing in a per-thread mock (sdk-js#87).
+///
+/// Keys mirror `ContextStorage::index_key`: the adaptor-level `collection ‖
+/// order_key` (marker: `collection_id`) is prefixed with the 32-byte context id
+/// to keep contexts disjoint in the shared columns.
+fn create_index_callbacks(store: &Store, context_id: ContextId) -> IndexCallbacks {
+    // `context ‖ key` — the column-scoped key for this context.
+    fn scoped(ctx: &[u8; 32], key: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(ctx.len() + key.len());
+        out.extend_from_slice(ctx);
+        out.extend_from_slice(key);
+        out
+    }
+
+    let ctx = *context_id.as_ref();
+
+    let set = {
+        let store = store.clone();
+        Rc::new(move |key: &[u8], value: &[u8]| {
+            store
+                .raw_put(Column::SortedIndex, &scoped(&ctx, key), value)
+                .is_ok()
+        }) as Rc<dyn Fn(&[u8], &[u8]) -> bool>
+    };
+    let remove = {
+        let store = store.clone();
+        Rc::new(move |key: &[u8]| {
+            store
+                .raw_delete(Column::SortedIndex, &scoped(&ctx, key))
+                .is_ok()
+        }) as Rc<dyn Fn(&[u8]) -> bool>
+    };
+    let remove_prefix = {
+        let store = store.clone();
+        Rc::new(move |prefix: &[u8]| {
+            let lo = scoped(&ctx, prefix);
+            let hi = index_prefix_upper_bound(&lo);
+            store
+                .raw_delete_range(Column::SortedIndex, &lo, &hi)
+                .is_ok()
+        }) as Rc<dyn Fn(&[u8]) -> bool>
+    };
+    let scan = {
+        let store = store.clone();
+        Rc::new(
+            move |lo: &[u8], hi: &[u8], offset: usize, limit: Option<usize>| {
+                let full_lo = scoped(&ctx, lo);
+                let full_hi = scoped(&ctx, hi);
+                // Walk O(offset + limit), matching ContextStorage.
+                let max = limit.map(|n| offset.saturating_add(n));
+                let pairs = store
+                    .raw_scan(Column::SortedIndex, &full_lo, &full_hi, max)
+                    .unwrap_or_default();
+                let stripped = pairs
+                    .into_iter()
+                    .filter_map(|(k, v)| k.get(ctx.len()..).map(|key| (key.to_vec(), v)))
+                    .skip(offset);
+                match limit {
+                    Some(n) => stripped.take(n).collect(),
+                    None => stripped.collect(),
+                }
+            },
+        ) as Rc<dyn Fn(&[u8], &[u8], usize, Option<usize>) -> Vec<(Vec<u8>, Vec<u8>)>>
+    };
+    let last = {
+        let store = store.clone();
+        Rc::new(move |lo: &[u8], hi: &[u8]| {
+            let full_lo = scoped(&ctx, lo);
+            let full_hi = scoped(&ctx, hi);
+            store
+                .raw_last(Column::SortedIndex, &full_lo, &full_hi)
+                .ok()
+                .flatten()
+                .and_then(|(k, v)| k.get(ctx.len()..).map(|key| (key.to_vec(), v)))
+        }) as Rc<dyn Fn(&[u8], &[u8]) -> Option<(Vec<u8>, Vec<u8>)>>
+    };
+    let meta_set = {
+        let store = store.clone();
+        Rc::new(move |key: &[u8], value: &[u8]| {
+            store
+                .raw_put(Column::SortedIndexMeta, &scoped(&ctx, key), value)
+                .is_ok()
+        }) as Rc<dyn Fn(&[u8], &[u8]) -> bool>
+    };
+    let meta_get = {
+        let store = store.clone();
+        Rc::new(move |key: &[u8]| {
+            store
+                .raw_get(Column::SortedIndexMeta, &scoped(&ctx, key))
+                .ok()
+                .flatten()
+        }) as Rc<dyn Fn(&[u8]) -> Option<Vec<u8>>>
+    };
+    let meta_clear = {
+        let store = store.clone();
+        Rc::new(move |key: &[u8]| {
+            store
+                .raw_delete(Column::SortedIndexMeta, &scoped(&ctx, key))
+                .is_ok()
+        }) as Rc<dyn Fn(&[u8]) -> bool>
+    };
+
+    IndexCallbacks {
+        set,
+        remove,
+        remove_prefix,
+        scan,
+        last,
+        meta_set,
+        meta_get,
+        meta_clear,
+    }
 }
 
 /// Storage callback closures that bridge `calimero-storage` Key API to the Store.
@@ -274,5 +414,128 @@ mod tests {
             read_result2.unwrap().is_some(),
             "root entity should exist in snapshot-restored store"
         );
+    }
+
+    /// Host-side (JS-path) regression for sdk-js#87: a native `SortedSet` whose
+    /// ordered index is stale but whose validity marker still matches the
+    /// converged `full_hash` must self-heal when a synced child is applied.
+    ///
+    /// This exercises the REAL host store the JS SDK uses: with the index bridge
+    /// installed by `create_runtime_env`, the ordered index + marker live in the
+    /// RocksDB `Column::SortedIndex` / `Column::SortedIndexMeta` (context-scoped),
+    /// NOT the storage crate's process-thread-local mock. The receiver applies a
+    /// child via the same native `Interface::apply_action` path HashComparison
+    /// uses; its `index_meta_clear` must invalidate the RocksDB marker so the
+    /// next ordered read rebuilds. Fails if the bridge or the apply-time clear is
+    /// removed (marker stays matched → stale subset served forever).
+    #[test]
+    fn sorted_set_apply_invalidates_host_index_marker() {
+        use calimero_storage::collections::{Root, SortedSet};
+        use calimero_storage::delta::StorageDelta;
+        use calimero_storage::env::take_last_artifact;
+        use calimero_storage::interface::{ApplyContext, Interface};
+
+        let db = InMemoryDB::owned();
+        let store = Store::new(Arc::new(db));
+        let context_id = ContextId::from([9u8; 32]);
+        let identity = PublicKey::from([2u8; 32]);
+        let ctx = *context_id.as_ref();
+
+        // Build the set host-side through the bridge → index + marker land in the
+        // RocksDB SortedIndex / SortedIndexMeta columns. Capture the delta a peer
+        // would apply.
+        let delta = with_runtime_env(create_runtime_env(&store, context_id, identity), || {
+            let mut set = Root::new(SortedSet::<String, MainStorage>::new);
+            assert!(set.insert("a".to_owned()).unwrap());
+            assert!(set.insert("b".to_owned()).unwrap());
+            // Warm the ordered index (rebuild + stamp marker) in RocksDB.
+            assert_eq!(
+                set.iter().unwrap().collect::<Vec<_>>(),
+                vec!["a".to_owned(), "b".to_owned()]
+            );
+            set.commit();
+            take_last_artifact().expect("commit emitted a delta")
+        });
+
+        // Sanity: the ordered index really is in RocksDB (bridge is wired), not
+        // the mock — there is at least one SortedIndex row for this context.
+        let index_rows = store
+            .raw_scan(
+                Column::SortedIndex,
+                &ctx,
+                &index_prefix_upper_bound(&ctx),
+                None,
+            )
+            .unwrap();
+        assert!(
+            !index_rows.is_empty(),
+            "ordered index must be backed by RocksDB SortedIndex (bridge wired)"
+        );
+
+        // Manufacture the false positive: wipe the SortedIndex rows for this
+        // context (index is now a strict subset — empty) but LEAVE the marker in
+        // SortedIndexMeta intact, so `index_marker_current()` still returns true.
+        store
+            .raw_delete_range(Column::SortedIndex, &ctx, &index_prefix_upper_bound(&ctx))
+            .unwrap();
+        assert!(
+            !store
+                .raw_scan(
+                    Column::SortedIndexMeta,
+                    &ctx,
+                    &index_prefix_upper_bound(&ctx),
+                    None
+                )
+                .unwrap()
+                .is_empty(),
+            "marker must survive the index wipe (this is the false-positive state)"
+        );
+
+        // CONTROL: the O(1) marker-only read trusts the matching marker and
+        // serves the stale (empty) index — the bug.
+        with_runtime_env(create_runtime_env(&store, context_id, identity), || {
+            let set = Root::<SortedSet<String, MainStorage>>::fetch().expect("state present");
+            assert!(
+                set.contains("a").unwrap(),
+                "child 'a' still present in state"
+            );
+            assert_eq!(set.len().unwrap(), 2, "both children enumerable");
+            assert_eq!(
+                set.iter().unwrap().collect::<Vec<String>>(),
+                Vec::<String>::new(),
+                "control: matching marker → stale (empty) ordered index served"
+            );
+        });
+
+        // Drive the REAL receiver apply path: replay the collection's own child
+        // links through native apply_action (idempotent → full_hash unchanged, so
+        // only the marker clear can heal the read).
+        let actions = match borsh::from_slice::<StorageDelta>(&delta).expect("decode delta") {
+            StorageDelta::Actions(a) => a,
+            StorageDelta::CausalActions { actions, .. } => actions,
+        };
+        with_runtime_env(create_runtime_env(&store, context_id, identity), || {
+            for action in actions {
+                if action.id().is_root() {
+                    continue;
+                }
+                Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())
+                    .expect("apply_action");
+            }
+        });
+
+        // The apply cleared the RocksDB marker, so the next ordered read rebuilds
+        // and serves the full converged set.
+        with_runtime_env(create_runtime_env(&store, context_id, identity), || {
+            let set = Root::<SortedSet<String, MainStorage>>::fetch().expect("state present");
+            assert_eq!(
+                set.iter().unwrap().collect::<Vec<String>>(),
+                vec!["a".to_owned(), "b".to_owned()],
+                "host-side ordered iter() stayed stale — the native apply did not \
+                 invalidate the RocksDB SortedIndexMeta marker (sdk-js#87)"
+            );
+            assert_eq!(set.first().unwrap(), Some("a".to_owned()));
+            assert_eq!(set.last().unwrap(), Some("b".to_owned()));
+        });
     }
 }

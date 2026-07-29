@@ -59,6 +59,7 @@ impl VMLogic<'_> {
             // keyed by `collection_id`, lives in its own non-synced column.
             fn storage_index_meta_set(key_ptr: u64, value_ptr: u64) -> u32;
             fn storage_index_meta_get(key_ptr: u64, register_id: u64) -> u32;
+            fn storage_index_meta_clear(key_ptr: u64) -> u32;
 
             // Private storage functions (node-local, NOT synchronized)
             fn private_storage_read(key_ptr: u64, register_id: u64) -> u32;
