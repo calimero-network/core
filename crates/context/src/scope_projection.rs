@@ -1402,6 +1402,38 @@ impl ScopeProjections {
     /// [`collect_namespace_ops`]: Self::collect_namespace_ops
     /// [`apply_backfill`]: Self::apply_backfill
     #[must_use]
+    /// Whether `author` may write as a **device** of an account that is a member
+    /// at `heads`.
+    ///
+    /// Split out of [`Self::member_at_cut`] so the two questions it answers stay
+    /// visibly separate: *which account does this key speak for* is read from
+    /// materialized rows, while *may that account write here* is resolved
+    /// against the folded view like every other authority decision.
+    ///
+    /// Returns `Some(true)` only on a positive grant; `None` when the key is not
+    /// a live device at all, so the caller falls through to its existing
+    /// verdicts rather than having this path turn an unrelated key into a deny.
+    fn device_author_is_member_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        author: &PublicKey,
+        view: Option<&calimero_authz::AclView>,
+        root: Option<(ContextGroupId, AccountId)>,
+        default_cap_base: u32,
+    ) -> Option<bool> {
+        let view = view?;
+        let bindings = calimero_governance_store::AccountBindingRepository::new(store);
+        let binding = bindings.binding_for_sign_pk(&group, author).ok()??;
+        let endorsers = bindings.endorsers_of(&group, binding.account).ok()?;
+        endorsers
+            .iter()
+            .any(|endorser| {
+                view.is_member_at_cut(group, &legacy_account_id(endorser), root, default_cap_base)
+            })
+            .then_some(true)
+    }
+
     pub fn member_at_cut(
         &self,
         store: &Store,
@@ -1451,6 +1483,33 @@ impl ScopeProjections {
                 default_cap_base,
             )
         }) {
+            return Some(true);
+        }
+
+        // Per-device authorization. A paired device signs with its own namespace
+        // identity, which is a member of nothing — its right to author comes
+        // entirely from the account its certificate binds it to. Without this a
+        // second device can be delivered scope keys and then have every op it
+        // writes refused, which is the feature failing at its whole point.
+        //
+        // The device→account→endorser mapping is read from the materialized
+        // account rows, because account ops do not reach the fold on the
+        // governance bridge (`op_from_group_op` feeds the cutover's unified log,
+        // not this path). The AUTHORITY question is still answered at the cut:
+        // the endorser's membership is resolved through the same folded view
+        // above, so a cut that removed the endorser refuses the device's ops too.
+        //
+        // `binding_for_sign_pk` reads live bindings, which already exclude
+        // revoked and superseded devices — so a revocation withdraws the right to
+        // author, not merely the right to receive keys.
+        if let Some(true) = self.device_author_is_member_at_cut(
+            store,
+            group,
+            author,
+            view.as_ref(),
+            root,
+            default_cap_base,
+        ) {
             return Some(true);
         }
 

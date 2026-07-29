@@ -300,6 +300,50 @@ impl<'a> AccountBindingRepository<'a> {
         Ok(out)
     }
 
+    /// The live device binding whose certified signing key is `sign_pk`, if any.
+    ///
+    /// The device→account direction per-device authorization needs: a paired
+    /// device signs with its own namespace identity, which is a member of
+    /// nothing, so the only way it can author is through the account its
+    /// certificate binds it to.
+    ///
+    /// Reads [`Self::live_bindings`], so a revoked or superseded device resolves
+    /// to `None` — revocation therefore withdraws the right to author, not only
+    /// the right to receive keys.
+    ///
+    /// # Errors
+    /// Propagates the store scan failure.
+    pub fn binding_for_sign_pk(
+        &self,
+        group: &ContextGroupId,
+        sign_pk: &PublicKey,
+    ) -> EyreResult<Option<DeviceBinding>> {
+        Ok(self
+            .live_bindings(group)?
+            .into_iter()
+            .find(|binding| binding.sign_pk == *sign_pk))
+    }
+
+    /// Every member key that has vouched for `account` in `group`.
+    ///
+    /// # Errors
+    /// Propagates the store scan failure.
+    pub fn endorsers_of(
+        &self,
+        group: &ContextGroupId,
+        account: AccountId,
+    ) -> EyreResult<Vec<PublicKey>> {
+        let gid = group.to_bytes();
+        let account_bytes = *account.as_bytes();
+        let keys = collect_keys_with_prefix(
+            self.store,
+            GroupAccountEndorser::new(gid, account_bytes, PublicKey::from([0u8; 32])),
+            calimero_store::key::GROUP_ACCOUNT_ENDORSER_PREFIX,
+            |k| k.group_id() == gid && k.account_id() == account_bytes,
+        )?;
+        Ok(keys.into_iter().map(|k| k.member()).collect())
+    }
+
     /// Every live device of `account` in `group` — the scope-key fan-out unit.
     ///
     /// # Errors

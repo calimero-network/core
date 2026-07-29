@@ -1,0 +1,217 @@
+//! A paired device may author, and a revoked one may not.
+//!
+//! Without this, the account feature fails at its whole point: a second device
+//! can be handed scope keys and then have every op it writes refused. Its
+//! signing key is its own namespace identity, which is a member of nothing —
+//! the only thing that entitles it is the account its certificate binds it to.
+//!
+//! The two halves of the resolution are deliberately different in kind, and this
+//! pins both. *Which account does this key speak for* is read from the
+//! materialized account rows, because account ops do not reach the fold on the
+//! governance bridge. *May that account write here* is resolved against the
+//! folded view at the op's cut, like every other authority question — so
+//! removing the endorser at the cut takes the device's ops with it.
+
+use std::sync::Arc;
+
+use calimero_account::{sign_device_cert, AccountGenesis, DeviceId, KemPublicKey};
+use calimero_context::group_store::{GroupKeyring, MembershipRepository, MetaRepository};
+use calimero_context::scope_projection::{op_from_namespace_op, ScopeProjections};
+use calimero_context_client::local_governance::{
+    EncryptedGroupOp, GroupOp, NamespaceOp, SignedNamespaceOp,
+};
+use calimero_context_config::types::ContextGroupId;
+use calimero_crypto::X25519SecretKey;
+use calimero_governance_store::AccountBindingRepository;
+use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+use calimero_store::db::InMemoryDB;
+use calimero_store::key::GroupMetaValue;
+use calimero_store::Store;
+use core::num::NonZeroU128;
+use rand::rngs::OsRng;
+
+fn store() -> Store {
+    Store::new(Arc::new(InMemoryDB::owned()))
+}
+
+fn hlc(ns: u64) -> HybridTimestamp {
+    HybridTimestamp::new(Timestamp::new(
+        NTP64(ns),
+        ID::from(NonZeroU128::new(1).unwrap()),
+    ))
+}
+
+fn meta(admin: PublicKey) -> GroupMetaValue {
+    GroupMetaValue {
+        app_key: [0xBB; 32],
+        target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+        upgrade_policy: calimero_primitives::context::UpgradePolicy::Automatic,
+        created_at: 1_700_000_000,
+        admin_identity: admin,
+        owner_identity: admin,
+        migration: None,
+        auto_join: true,
+    }
+}
+
+/// A namespace whose `member` was added by an encrypted group op, folded into a
+/// projection. Returns the projection, the cut, and the store.
+fn namespace_with_member(member: PublicKey) -> (Store, ScopeProjections, ContextGroupId, [u8; 32]) {
+    let store = store();
+    let admin = PrivateKey::random(&mut OsRng).public_key();
+    let ns = ContextGroupId::from([0x11; 32]);
+    let ns_bytes = ns.to_bytes();
+
+    MetaRepository::new(&store).save(&ns, &meta(admin)).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    let group_key = [0x5A; 32];
+    let key_id = GroupKeyring::new(&store, ns).store_key(&group_key).unwrap();
+
+    let inner = GroupOp::MemberAdded {
+        member,
+        role: GroupMemberRole::Member,
+    };
+    let encrypted: EncryptedGroupOp = GroupKeyring::encrypt_op(&group_key, &inner).unwrap();
+    let signed = SignedNamespaceOp {
+        version: 1,
+        namespace_id: ns_bytes.into(),
+        parent_op_hashes: Vec::new(),
+        signer: admin,
+        nonce: 1,
+        op: NamespaceOp::Group {
+            group_id: ns_bytes.into(),
+            key_id: key_id.into(),
+            encrypted,
+            key_rotation: None,
+        },
+        signature: [0u8; 64],
+    };
+    let delta_id = signed.content_hash().unwrap();
+
+    let mut proj = ScopeProjections::new();
+    proj.ingest_op(&op_from_namespace_op(
+        &signed,
+        Some(&inner),
+        delta_id,
+        hlc(1),
+        &[],
+    ));
+
+    (store, proj, ns, delta_id)
+}
+
+/// Link a device for an account rooted at a dedicated offline root, vouched for
+/// by `endorser` — the shape production produces.
+fn link_device(
+    store: &Store,
+    ns: ContextGroupId,
+    endorser: &PublicKey,
+    device_sign_pk: &PublicKey,
+) -> DeviceId {
+    let account_root = PrivateKey::from([0x42; 32]);
+    let genesis = AccountGenesis::new(account_root.public_key(), [0xAB; 16]);
+    let account = genesis.account_id();
+    let device = DeviceId::mint(account, [0xAB; 16]);
+    let kem_secret = X25519SecretKey::from([0x33; 32]);
+    let cert = sign_device_cert(
+        &account_root,
+        account,
+        device,
+        device_sign_pk,
+        &KemPublicKey::from(*kem_secret.public_key().as_bytes()),
+        0,
+        0,
+    )
+    .unwrap();
+
+    let bindings = AccountBindingRepository::new(store);
+    bindings.record_endorser(&ns, account, endorser).unwrap();
+    bindings
+        .apply_link(&ns, &genesis, &[], &cert)
+        .unwrap()
+        .expect("admitted");
+    device
+}
+
+#[test]
+fn a_paired_device_may_author_for_the_account_that_certified_it() {
+    let member = PrivateKey::random(&mut OsRng).public_key();
+    let (store, proj, ns, delta_id) = namespace_with_member(member);
+    let heads = [delta_id];
+
+    // The device signs with its own namespace identity, minted on its own node.
+    // It is a member of nothing.
+    let device_sign_pk = PrivateKey::random(&mut OsRng).public_key();
+
+    assert_eq!(
+        proj.member_at_cut(&store, ns, &member, &heads),
+        Some(true),
+        "sanity: the endorsing member must be a member at this cut"
+    );
+    assert_eq!(
+        proj.member_at_cut(&store, ns, &device_sign_pk, &heads),
+        Some(false),
+        "an unlinked key must not author — the grant has to come from the link"
+    );
+
+    let _device = link_device(&store, ns, &member, &device_sign_pk);
+
+    assert_eq!(
+        proj.member_at_cut(&store, ns, &device_sign_pk, &heads),
+        Some(true),
+        "a live device of an endorsed account must be able to author"
+    );
+}
+
+#[test]
+fn revoking_a_device_withdraws_its_right_to_author() {
+    // Revocation has to cut authorship, not only key delivery. A revoked device's
+    // node still holds the member key and is still in the namespace, so if the
+    // resolver kept granting on the binding the device would keep writing.
+    let member = PrivateKey::random(&mut OsRng).public_key();
+    let (store, proj, ns, delta_id) = namespace_with_member(member);
+    let heads = [delta_id];
+    let device_sign_pk = PrivateKey::random(&mut OsRng).public_key();
+
+    let device = link_device(&store, ns, &member, &device_sign_pk);
+    assert_eq!(
+        proj.member_at_cut(&store, ns, &device_sign_pk, &heads),
+        Some(true),
+        "precondition: the device authors before it is revoked"
+    );
+
+    AccountBindingRepository::new(&store)
+        .apply_revocation(&ns, device)
+        .unwrap();
+
+    assert_eq!(
+        proj.member_at_cut(&store, ns, &device_sign_pk, &heads),
+        Some(false),
+        "a revoked device must lose the right to author, not merely stop receiving keys"
+    );
+}
+
+#[test]
+fn a_device_whose_endorser_is_not_a_member_may_not_author() {
+    // The authority half. The device→account mapping is materialized, but the
+    // account's entitlement is resolved at the cut — so a vouch from someone who
+    // is not a member at that cut grants nothing, and a device cannot be smuggled
+    // in by endorsing its account with an unrelated key.
+    let member = PrivateKey::random(&mut OsRng).public_key();
+    let (store, proj, ns, delta_id) = namespace_with_member(member);
+    let heads = [delta_id];
+    let device_sign_pk = PrivateKey::random(&mut OsRng).public_key();
+
+    let stranger = PrivateKey::random(&mut OsRng).public_key();
+    let _device = link_device(&store, ns, &stranger, &device_sign_pk);
+
+    assert_eq!(
+        proj.member_at_cut(&store, ns, &device_sign_pk, &heads),
+        Some(false),
+        "an endorsement from a non-member must not confer authorship"
+    );
+}
