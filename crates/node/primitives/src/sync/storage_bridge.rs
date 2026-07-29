@@ -549,7 +549,16 @@ mod tests {
     /// the same native `Interface::apply_action` path a real receiver uses. The
     /// element set converges ({a,b}); the ordered `iter()` must too. A failure
     /// here is #3333 reproduced on the real host store.
+    ///
+    /// Ignored in the default suite: it constructs `Root::new(...)` under a
+    /// `create_runtime_env` thread-local without a context/`ROOT_ID` init, which
+    /// is fine run in isolation but orphans (`CannotCreateOrphan`) under the
+    /// full parallel `cargo test` where the thread-local storage env is shared.
+    /// The faithful, maintained reproduction of this layer is
+    /// `crates/node/tests/sorted_index_hc_merge.rs`; run this one directly with
+    /// `--ignored --test-threads=1` for ad-hoc storage-layer inspection.
     #[test]
+    #[ignore = "thread-local storage-env isolation; superseded by tests/sorted_index_hc_merge.rs (#3333)"]
     fn sorted_set_concurrent_writers_ordered_read_real_store() {
         use calimero_storage::collections::{Root, SortedSet};
         use calimero_storage::delta::StorageDelta;
