@@ -171,6 +171,7 @@ export default defineConfig({
               label: 'Confidentiality & identity',
               items: [
                 'protocol/identities',
+                'protocol/accounts',
                 'protocol/encryption',
                 'protocol/key-rotation',
                 'protocol/security-model',

@@ -24,6 +24,10 @@ Authority lives in the **member identity**: an Ed25519 keypair held **per namesp
 
 Because identity is per namespace, the same node participating in two namespaces presents two unrelated member keys — identity isolation across application instances, independent of the single transport identity underneath.
 
+:::note[One key, or one person?]
+A member identity is one key on one node. That is enough to answer "who authored this", but not "which person is this" — a second device of the same user is, at this layer, an unrelated member. [Accounts & Devices](/protocol/accounts/) adds the identity above this one: a person or agent whose current key set is projected state, so several devices can be the same *someone* and any one of them can be revoked without touching the others.
+:::
+
 ### Choosing the executor
 
 A node is not limited to one member key per context. It can hold **several**

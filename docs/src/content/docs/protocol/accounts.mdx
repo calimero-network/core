@@ -1,0 +1,275 @@
+---
+title: Accounts & Devices
+description: One person, many devices — why identity is a content address rather than a key.
+sidebar:
+  order: 4
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
+## The problem: one key doing four jobs
+
+In the model described in [Identities & Keys](/protocol/identities/), a namespace member identity is a single Ed25519 keypair, and it does everything at once: it *is* the identity, it signs operations, it receives wrapped scope keys, and it is the key membership rows are stored under.
+
+That conflation has consequences you cannot design around:
+
+| You want to | And you get |
+| --- | --- |
+| Add a second device | A second, unrelated member. It is not "you", it is a stranger who must be granted separately. |
+| Rotate a compromised key | A different member. The old identity dies and every grant must be re-issued. |
+| Lose your only device | Nothing can vouch for a replacement. The identity is unrecoverable. |
+| Revoke one device | Not expressible. You can only remove a *member*. |
+
+The account plane separates those jobs.
+
+## Two ids, one strict boundary
+
+|                  | `AccountId`                  | `DeviceId`               |
+| ---------------- | ---------------------------- | ------------------------ |
+| what it is       | a person or agent            | one installation         |
+| authorizes       | yes — the only authz subject | **never**                |
+| signs            | no (only certificates)       | yes, every operation     |
+| CRDT replica id  | never                        | yes                      |
+| KEM recipient    | no                           | yes                      |
+
+Neither is a public key. Both are content addresses:
+
+```
+AccountId = H( genesis(root_pk, nonce) )
+DeviceId  = H( account ‖ nonce )
+```
+
+Because the id is a hash rather than a key, the keys underneath can rotate without the identity moving.
+
+**The non-goal is as important as the goal.** Accounts never reach below authorization. Nothing that needs per-writer uniqueness (counter slots, HLC seeds), per-key revocability (KEM recipients), or cryptographic attribution (operation signatures) may be re-keyed onto `AccountId`. The test for any future change: *if two devices of the same account did this concurrently, is the result still correct?* If correctness depends on them being distinct, it stays device-keyed, and per-user aggregation happens **above** storage.
+
+## Three keys, one job each
+
+```
+  ACCOUNT ROOT ──── signs device certificates and root-key handoffs.
+   (offline)        Nothing else. Never signs an operation, never
+                    receives data. One per node. Survives losing
+                    every device.
+
+  SIGN KEY ──────── signs operations. This is the node's namespace
+                    identity — the "member identity" of the previous
+                    model, now demoted to one job.
+
+  KEM KEY ───────── receives wrapped scope keys (X25519).
+```
+
+Separating the sign key from the KEM key is what lets a device rotate one without invalidating deliveries made under the other. Crossing the account root with the sign key is silent — a certificate signed by the wrong one still serializes and is refused only by peers — so the two have a dedicated invariant test beside the repository that owns them.
+
+## What is derived, and what is not
+
+This split is deliberate in both directions.
+
+```
+FROM THE ROOT SECRET (deterministic, recomputable)
+  nonce(ns)  = H(domain ‖ root_secret ‖ namespace_id)[..16]
+  AccountId  = H( genesis(root_pk, nonce) )
+
+RANDOM AT CREATION (generated once, stored, unrecoverable)
+  DeviceId   = H(account ‖ random 16 bytes)
+  KEM secret = X25519, random
+  namespace identity keypair = Ed25519, random
+```
+
+**The account must be recomputable** — that is the whole recovery story. Hold the root secret plus a list of namespace ids and you can name every account you own, with no stored state.
+
+**The device must not be.** A `DeviceId` is a CRDT replica id. Two installations that derived the same id would share counter slots and an HLC seed and silently lose each other's writes. Determinism there would be a bug, not a feature.
+
+The nonce derives from the root **secret**, not the public root key. The public root travels in the clear inside every genesis, so deriving from it would let any observer compute your account ids for namespaces they have never seen. One root everywhere, a different `AccountId` per namespace, and no way to correlate a person across them.
+
+## The bridge: endorsements
+
+Membership rows are still keyed by member key, but the account root is offline and is a member *nowhere*. So how does a group learn that an account belongs to a member?
+
+A granted member key signs a statement binding the account id to itself:
+
+```
+  account root ──signs──▶ DeviceCert    "this device speaks for this account"
+                                        only the root holder can produce it
+
+  member key   ──signs──▶ Endorsement   "this account is mine"
+                                        only a member can produce it
+```
+
+A link is admitted only if **both** hold and the endorser is a member **at the operation's causal cut**. Neither alone is enough: anyone may endorse an account they do not own (ids are public data) and gains nothing, because they cannot certify a device into it; anyone may certify devices into their own account and gains nothing, because they are not a member.
+
+Endorsers are stored as a **grow-only set**, never a single field. Two links for one account may legitimately name different endorsers, and collapsing them to one value would make the stored state depend on which link folded last — order-dependent state on the authorization path. Set union is a join, and "is *any* endorser a member at this cut" is order-independent.
+
+## Enrolling the first device
+
+<SeqDiagram
+  id="d-account-enrol"
+  title="Enrolling a device under a fresh account"
+  lanes={[
+    { label: 'Node (a member)', color: '#58a6ff' },
+    { label: 'Account plane', color: '#a5ff11' },
+    { label: 'Peers', color: '#3fb950' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'generate account root (once per node)' },
+    { from: 0, to: 0, label: 'nonce = KDF(root_secret, namespace)' },
+    { from: 0, to: 0, label: 'account = H(root_pk, nonce); device = H(account, random)' },
+    { from: 0, to: 0, label: 'cert signed by ACCOUNT ROOT; endorsement signed by MEMBER KEY' },
+    { from: 0, to: 1, label: 'AccountDeviceLinked (encrypted GroupOp)', color: '#a5ff11' },
+    { from: 1, to: 2, label: 'verify cert + endorsement; is endorser a member at the cut?' },
+    { from: 2, to: 2, label: 'record binding and endorser' },
+  ]}
+/>
+
+Note the ordering constraint: the link is an **encrypted** group operation, so the node must already hold the scope key. Enrolment cannot happen at join time. This is exactly why key delivery can still address a *member* — otherwise a new member could never obtain the first key. That member-addressed envelope is the bootstrap form and is permanent, not legacy.
+
+## Pairing a second device
+
+Pairing is a **two-way exchange**, and the ordering is forced rather than stylistic:
+
+```
+  the new device cannot mint its DeviceId   without knowing the account
+  the holder cannot sign the certificate    without knowing the DeviceId
+```
+
+<SeqDiagram
+  id="d-account-pair"
+  title="Pairing a second device onto one account"
+  lanes={[
+    { label: 'New device (not a member)', color: '#58a6ff' },
+    { label: 'Account holder', color: '#3fb950' },
+    { label: 'Scope', color: '#a5ff11' },
+  ]}
+  steps={[
+    { from: 1, to: 0, label: 'root_pk + nonce (out of band)', dashed: true },
+    { from: 0, to: 0, label: 'account = H(root_pk, nonce); mint DeviceId, sign key, KEM key' },
+    { from: 0, to: 1, label: 'deviceId + kemPk + signPk (out of band)', dashed: true },
+    { from: 1, to: 1, label: 'cert signed by account root; endorsement by member key' },
+    { from: 1, to: 2, label: 'AccountDeviceLinked (encrypted GroupOp)' },
+    { from: 1, to: 0, label: 'RootOp::KeyDelivery — scope key wrapped to the KEM key', color: '#a5ff11' },
+    { from: 0, to: 2, label: 'the paired device can now read and write' },
+  ]}
+/>
+
+**The key delivery must be a cleartext root operation.** The pairing device holds no scope key, so a device-addressed envelope carried inside an *encrypted* group operation would be unreadable by its only recipient — the same bootstrap deadlock again. `KeyDelivery` being a root operation is what breaks the cycle.
+
+The new device is **never a member**. It obtains a namespace identity and a gossip subscription — both membership-free operations — and its entire right to participate comes from being a device of the account. Because a node holds at most one device per namespace, "two devices" means two nodes.
+
+Only the **current** scope key is delivered. Peers retain rotated-out keys, so history *could* be handed back, but that would make every newly paired device a full-history reader — a capability decision that deserves its own change. The paired device converges on forward state and cannot decrypt operations sealed under retired epochs.
+
+## Key delivery is device-first
+
+```
+  for each member of the group:
+      │
+      ├─ does the group know an account for them?
+      │
+      ├── NO  ──▶ wrap for their IDENTITY key
+      │            (bootstrap: they have never linked a device)
+      │
+      └── YES ──▶ wrap once per LIVE DEVICE of that account
+                   ── and give them NO identity envelope ──
+```
+
+The absence of an identity envelope is the security property, not an optimization. A revoked device runs on a node that still holds the member key; an identity-addressed envelope would hand the key straight back to it.
+
+Each entry is paired with the member whose entitlement it rests on, which is what makes excluding a removed member take **every device of theirs** with them. Filtering by recipient alone could only drop the identity entry.
+
+The sync **pull** path obeys the same rule. A key request names the device it asks as, and the responder resolves the reply with the same device-first logic narrowed to one member. The requester's claimed device is deliberately unauthenticated: the reply is sealed to that device's certified X25519 key, so a false claim yields an envelope the caller cannot open. The wrap is the authentication.
+
+## Revocation
+
+Revocation is **terminal**: the `DeviceId` is spent for good, so re-enrolling that machine mints a fresh one. That permanence is what stops a replica id from ever being reused.
+
+Two authorities, either of which suffices:
+
+<SeqDiagram
+  id="d-account-revoke"
+  title="Revoking a device"
+  lanes={[
+    { label: 'Admin', color: '#3fb950' },
+    { label: 'Account holder', color: '#58a6ff' },
+    { label: 'Scope', color: '#a5ff11' },
+  ]}
+  steps={[
+    { from: 0, to: 2, label: 'AccountDeviceUnlinked — authorized as admin at the cut' },
+    { from: 1, to: 2, label: 'or: AccountDeviceUnlinked + root-signed proof', dashed: true },
+    { from: 2, to: 2, label: 'tombstone the device (terminal)' },
+    { from: 0, to: 2, label: 'rotate the scope key — admin path only', color: '#a5ff11' },
+    { from: 2, to: 2, label: 'recipients recomputed: revoked device gone, siblings kept' },
+  ]}
+/>
+
+**Admin at the cut** is the path that ejects a device whose account holder is unreachable. Revocation is terminal, so an ungated one would be a permanent denial of service any member could inflict on any other.
+
+**A root-signed proof** is the self-service path — the lost-laptop case, where the owner may be the only person who knows. It deliberately is *not* a gate on folded state: "is the signer this account's current root key" depends on which rotations a replica has folded, so two replicas would decide one operation differently and disagree permanently about who may author. The proof travels with the operation and verifies from the account id alone, exactly as a certificate does.
+
+The proof accepts **any** epoch its carried chain resolves, not merely the newest. That asymmetry with certificate verification is deliberate: filtering superseded epochs would mean rotating an account's root silently *un-revokes* every device it had withdrawn. The cost is that a compromised old root can still revoke — accepted, because whoever holds any root key of an account can already sign a handoff and take it over.
+
+**Cutting off authorship is not enough on its own.** A revoked device already holds the current scope key, so without a rotation it stops writing and goes on reading — a silent reader. The rotation therefore rides on the same operation. Only an admin may rotate (peers accept a rotation sidecar only from an admin at the cut), so a self-service revocation locks the device out of writing immediately and leaves the rotation owed.
+
+## Per-device authorization
+
+A paired device signs with its own namespace identity, which is a member of nothing. Its right to author comes entirely from the account its certificate binds it to:
+
+```
+  author key
+      │
+      ├─ is it a member at the cut?  ──▶ yes: authorized (ordinary member)
+      │
+      └─ no ─▶ is it the sign_pk of a LIVE device binding?
+                    │
+                    └─ yes ─▶ is any endorser of that account
+                              a member AT THE CUT?  ──▶ authorized
+```
+
+The two halves are different in kind on purpose. *Which* account a key speaks for is read from materialized rows, because account operations do not reach the fold on the governance bridge. *Whether* that account may write is resolved against the folded view at the operation's cut, like every other authority question — so a cut that removed the endorser refuses the device's operations too.
+
+Because the lookup reads **live** bindings, which exclude revoked and superseded devices, revocation withdraws authorship and not merely delivery.
+
+## Recovery, and what it does not cover
+
+Two separable halves; conflating them is what makes recovery look impossible.
+
+| | Provided by |
+| --- | --- |
+| Proving you are you | the **root key** — a self-certifying certificate, verified from the account id alone |
+| Getting scope keys | a **peer** — you hold none, and forward secrecy means they cannot be re-derived |
+
+A peer's role is therefore transport, not judgement: it cannot impersonate the recovering account and does not have to decide out of band who somebody is.
+
+```
+  root key + [namespace_ids]
+        ├──▶ recompute the AccountId in each namespace
+        ├──▶ certify a brand new device into that account
+        │
+        ├──✗ the old DeviceId       — gone, and not wanted back
+        ├──✗ the old KEM secret     — gone
+        └──✗ the old namespace key  — gone; provision a fresh one
+```
+
+Recovery means *prove who you are, then enrol fresh* — not *restore the old machine*. The replacement is a new replica with a new lineage; the old device's history stays in the DAG, authored by an id nobody will hold again.
+
+## Where this lives in the code
+
+| Crate / module | What it owns |
+| --- | --- |
+| `crates/account` | The primitives: `AccountId`, `DeviceId`, `AccountGenesis`, `DeviceCert`, `RootKeyHandoff`, `DeviceRevocation`, and their sign/verify functions. No storage, no policy. |
+| `crates/governance-store/src/node_device.rs` | This node's own secrets: the `NodeAccountRoot` singleton and the per-namespace `NodeDeviceIdentity` row. Node-local, never gossiped. |
+| `crates/governance-store/src/account_bindings.rs` | The replicated view: device bindings, revocation tombstones, per-account root keys, and the endorser set. |
+| `crates/governance-store/src/ops/group/account_ops.rs` | Apply handlers for link, revoke, and rotate — the authorization gates. |
+| `crates/governance-store/src/group_keys.rs` | Both wrap modes, the device-first recipient resolution, and the pull-path equivalent. |
+| `crates/context/src/handlers/` | The operations a user drives: `create_account`, `pair_device_init`, `pair_device_complete`, `revoke_device`. |
+| `crates/context/src/scope_projection.rs` | `member_at_cut`, including the per-device fallthrough. |
+| `crates/projection`, `crates/authz`, `crates/op` | The unified-log account plane. Correct and tested, and the specification the governance path was built against — but not yet fed on the live path. |
+
+Account operations travel as `GroupOp` variants because that is the transport that exists: broadcast carries namespace governance deltas, not unified operations. The unified-log work becomes live at cutover.
+
+## Known limits
+
+- **Root-key compromise is unrecoverable.** A stolen root signs its own handoff. Whoever holds the root is the account.
+- **The root is not yet exportable.** It is generated into the node's own store, plaintext unless at-rest encryption is enabled. Until an export exists, calling it a recovery key overstates it — tracked in [#3335](https://github.com/calimero-network/core/issues/3335).
+- **Revocation latency is per scope.** A scope that has not folded the revocation still honours the old binding. Inherent to causal revocation.
+- **Self-service revocation cannot rotate.** The device stops writing at once but can read until an admin rotates.
+- **Pairing trusts the out-of-band channel.** Whoever can substitute the device id and keys during the exchange gets certified into the account.
+- **A member with no live device cannot self-recover.** Re-enrolling needs an encrypted group operation, which needs the key — so they depend on an admin to re-deliver it or to publish the replacement link. If they could re-key themselves, revocation would mean nothing.
+- **Member-addressed delivery remains reachable by admin action.** Re-admission and an explicit key delivery both wrap to a member identity, so an admin can hand a key to a node still running a revoked device. An explicit privileged act, not an automatic path.
