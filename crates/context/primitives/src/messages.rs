@@ -21,7 +21,7 @@ use crate::group::{
     LeaveGroupRequest, LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListNamespacesForApplicationRequest, ListNamespacesRequest,
     PairDeviceCompleteRequest, PairDeviceInitRequest, RemoveGroupMembersRequest,
-    ResyncContextRequest, RetryGroupUpgradeRequest, RotateGroupKeyRequest,
+    ResyncContextRequest, RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
     SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
     SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
     SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
@@ -507,6 +507,10 @@ pub enum ContextMessage {
     PairDeviceComplete {
         request: PairDeviceCompleteRequest,
         outcome: oneshot::Sender<<PairDeviceCompleteRequest as Message>::Result>,
+    },
+    RevokeDevice {
+        request: RevokeDeviceRequest,
+        outcome: oneshot::Sender<<RevokeDeviceRequest as Message>::Result>,
     },
     RotateGroupKey {
         request: RotateGroupKeyRequest,

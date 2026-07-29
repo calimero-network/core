@@ -4,7 +4,8 @@ use calimero_server_primitives::admin::{
     DeleteNamespaceApiResponse, GetNamespaceApiResponse, JoinGroupApiRequest, JoinGroupApiResponse,
     ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, NamespaceApiResponse,
     NamespaceIdentityApiResponse, PairDeviceCompleteApiRequest, PairDeviceCompleteApiResponse,
-    PairDeviceInitApiRequest, PairDeviceInitApiResponse,
+    PairDeviceInitApiRequest, PairDeviceInitApiResponse, RevokeDeviceApiRequest,
+    RevokeDeviceApiResponse,
 };
 use eyre::Result;
 use serde::Serialize;
@@ -135,6 +136,27 @@ where
             .connection
             .post(
                 &format!("admin-api/namespaces/{namespace_id}/account/pair-complete"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    /// Withdraw a device from an account, terminally.
+    ///
+    /// An admin may revoke any device and rotates the scope key in the same op.
+    /// The account holder may revoke its own with a root-signed proof, but
+    /// cannot rotate — so the device stops writing at once and keeps reading
+    /// until an admin rotates.
+    pub async fn revoke_device(
+        &self,
+        namespace_id: &str,
+        request: RevokeDeviceApiRequest,
+    ) -> Result<RevokeDeviceApiResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/namespaces/{namespace_id}/account/revoke"),
                 request,
             )
             .await?;

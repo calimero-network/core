@@ -48,6 +48,7 @@ pub mod pair_device_init;
 pub mod remove_group_members;
 pub mod resync_context;
 pub mod retry_group_upgrade;
+pub mod revoke_device;
 pub mod rotate_group_key;
 pub mod set_context_metadata;
 pub mod set_default_capabilities;
@@ -201,6 +202,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::PairDeviceComplete { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::RevokeDevice { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RotateGroupKey { request, outcome } => {

@@ -76,6 +76,7 @@
   "POST /admin-api/namespaces/:namespace_id/account",
   "POST /admin-api/namespaces/:namespace_id/account/pair-complete",
   "POST /admin-api/namespaces/:namespace_id/account/pair-init",
+  "POST /admin-api/namespaces/:namespace_id/account/revoke",
   "POST /admin-api/namespaces/:namespace_id/groups",
   "POST /admin-api/namespaces/:namespace_id/invite",
   "POST /admin-api/namespaces/:namespace_id/join",

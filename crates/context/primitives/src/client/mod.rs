@@ -41,14 +41,14 @@ use crate::group::{
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, MigrationStatus, NamespaceSummary, PairDeviceCompleteRequest,
     PairDeviceInitRequest, RemoveGroupMembersRequest, ResyncContextRequest, ResyncContextResponse,
-    RetryGroupUpgradeRequest, RotateGroupKeyRequest, SetContextMetadataRequest,
-    SetDefaultCapabilitiesRequest, SetGroupMetadataRequest, SetMemberAutoFollowRequest,
-    SetMemberCapabilitiesRequest, SetMemberMetadataRequest, SetSubgroupVisibilityRequest,
-    SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest,
-    StoreGroupContextRequest, StoreGroupMetaRequest, StoreGroupMetadataRequest,
-    StoreMemberCapabilityRequest, StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest,
-    SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest,
-    UpgradeGroupRequest, UpgradeGroupResponse,
+    RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
+    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
+    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
+    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
+    StoreDefaultCapabilitiesRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
+    StoreGroupMetadataRequest, StoreMemberCapabilityRequest, StoreMemberMetadataRequest,
+    StoreSubgroupVisibilityRequest, SyncGroupRequest, SyncGroupResponse,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
@@ -2158,6 +2158,12 @@ impl ContextClient {
         PairDeviceComplete,
         PairDeviceCompleteRequest,
         eyre::Result<crate::group::PairDeviceCompleteResponse>
+    );
+    forward_to_actor!(
+        revoke_device,
+        RevokeDevice,
+        RevokeDeviceRequest,
+        eyre::Result<crate::group::RevokeDeviceResponse>
     );
     forward_to_actor!(
         rotate_group_key,

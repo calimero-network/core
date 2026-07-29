@@ -879,6 +879,52 @@ impl PairDeviceCompleteResponse {
     }
 }
 
+/// Withdraw a device from an account, terminally.
+///
+/// Authorized either by this node being a group admin, or by it holding the
+/// account root that owns the device — the latter mints a self-certifying proof
+/// so the owner never needs an admin to disown their own lost machine.
+#[derive(Debug)]
+pub struct RevokeDeviceRequest {
+    /// The namespace the device is being withdrawn from.
+    pub namespace_id: ContextGroupId,
+    /// The device losing its binding. Its id is spent for good.
+    pub device: DeviceId,
+}
+
+/// What the revocation withdrew.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct RevokeDeviceResponse {
+    /// The account the device spoke for.
+    pub account: AccountId,
+    /// The device that was withdrawn.
+    pub device: DeviceId,
+    /// Whether the scope key was rotated in the same op.
+    ///
+    /// `false` means the device lost the right to write immediately but still
+    /// holds the key it had — it can read until an admin rotates. Only an admin
+    /// may rotate, so a self-service revocation always leaves this owed.
+    pub key_rotated: bool,
+}
+
+impl RevokeDeviceResponse {
+    /// Build a response. Exists because the struct is `#[non_exhaustive]` and
+    /// the producer lives in another crate.
+    #[must_use]
+    pub const fn new(account: AccountId, device: DeviceId, key_rotated: bool) -> Self {
+        Self {
+            account,
+            device,
+            key_rotated,
+        }
+    }
+}
+
+impl Message for RevokeDeviceRequest {
+    type Result = eyre::Result<RevokeDeviceResponse>;
+}
+
 impl Message for PairDeviceCompleteRequest {
     type Result = eyre::Result<PairDeviceCompleteResponse>;
 }

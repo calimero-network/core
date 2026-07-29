@@ -9,10 +9,10 @@ use calimero_server_primitives::admin::{
     ListGroupMembersApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
     ListSubgroupsApiResponse, NamespaceApiResponse, NamespaceIdentityApiResponse,
     PairDeviceCompleteApiResponse, PairDeviceInitApiResponse, RegisterGroupSigningKeyApiResponse,
-    RemoveGroupMembersApiResponse, ReparentGroupApiResponse, SetDefaultCapabilitiesApiResponse,
-    SetMemberCapabilitiesApiResponse, SetMetadataApiResponse, SetSubgroupVisibilityApiResponse,
-    SyncGroupApiResponse, UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse,
-    UpgradeGroupApiResponse,
+    RemoveGroupMembersApiResponse, ReparentGroupApiResponse, RevokeDeviceApiResponse,
+    SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse, SetMetadataApiResponse,
+    SetSubgroupVisibilityApiResponse, SyncGroupApiResponse, UpdateGroupSettingsApiResponse,
+    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -116,6 +116,30 @@ impl Report for PairDeviceCompleteApiResponse {
                 "yes"
             } else {
                 "no - the device's sync pull will retry"
+            },
+        ]);
+        println!("{table}");
+    }
+}
+
+impl Report for RevokeDeviceApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Device Revoked").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Account ID", &self.data.account_id]);
+        let _ = table.add_row(vec!["Device ID", &self.data.device_id]);
+        // Without the rotation the device stops writing but keeps the key it
+        // already holds — a silent reader. Say so rather than report a bare
+        // success.
+        let _ = table.add_row(vec![
+            "Scope key rotated",
+            if self.data.key_rotated {
+                "yes - the device can no longer read either"
+            } else {
+                "no - it can still READ until an admin rotates"
             },
         ]);
         println!("{table}");

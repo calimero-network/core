@@ -6,6 +6,7 @@ use crate::cli::Environment;
 mod create;
 mod pair_complete;
 mod pair_init;
+mod revoke;
 
 /// Account and device management.
 ///
@@ -25,6 +26,7 @@ pub enum AccountSubCommands {
     Create(create::CreateCommand),
     PairInit(pair_init::PairInitCommand),
     PairComplete(pair_complete::PairCompleteCommand),
+    Revoke(revoke::RevokeCommand),
 }
 
 impl AccountCommand {
@@ -33,6 +35,7 @@ impl AccountCommand {
             AccountSubCommands::Create(cmd) => cmd.run(environment).await,
             AccountSubCommands::PairInit(cmd) => cmd.run(environment).await,
             AccountSubCommands::PairComplete(cmd) => cmd.run(environment).await,
+            AccountSubCommands::Revoke(cmd) => cmd.run(environment).await,
         }
     }
 }

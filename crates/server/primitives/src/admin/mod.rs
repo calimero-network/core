@@ -2049,6 +2049,54 @@ pub struct PairDeviceCompleteApiResponse {
     pub data: PairDeviceCompleteApiResponseData,
 }
 
+/// Withdraw a device from an account, terminally.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeDeviceApiRequest {
+    /// Hex-encoded `DeviceId` to withdraw (32 bytes).
+    pub device_id: String,
+}
+
+impl Validate for RevokeDeviceApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.device_id.len() != 64 {
+            errors.push(ValidationError::InvalidLength {
+                field: "deviceId",
+                expected: 64,
+                actual: self.device_id.len(),
+            });
+        } else if hex::decode(&self.device_id).is_err() {
+            errors.push(ValidationError::InvalidHexEncoding {
+                field: "deviceId",
+                reason: "not valid hex".to_owned(),
+            });
+        }
+        errors
+    }
+}
+
+/// What the revocation withdrew.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeDeviceApiResponseData {
+    /// Hex-encoded `AccountId` the device spoke for.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId` that was withdrawn.
+    pub device_id: String,
+    /// Whether the scope key rotated in the same op.
+    ///
+    /// `false` means the device stopped writing at once but still holds the key
+    /// it had, so it can read until an admin rotates. Only an admin may rotate.
+    pub key_rotated: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeDeviceApiResponse {
+    pub data: RevokeDeviceApiResponseData,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupInvitationApiRequest {
