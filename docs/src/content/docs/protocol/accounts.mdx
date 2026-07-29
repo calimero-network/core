@@ -199,6 +199,8 @@ The sync **pull** path obeys the same rule. A key request names the device it as
 
 Revocation is **terminal**: the `DeviceId` is spent for good, so re-enrolling that machine mints a fresh one. That permanence is what stops a replica id from ever being reused.
 
+The tombstone therefore has to release the node's own device slot as well as the group's binding. A node holds one device per namespace, so a spent id left in place would leave enrolment minting certificates every peer refuses — locked out of the namespace by its own revocation, and locally indistinguishable from success.
+
 Two authorities, either of which suffices:
 
 <SeqDiagram
@@ -220,7 +222,9 @@ Two authorities, either of which suffices:
 
 **Admin at the cut** is the path that ejects a device whose account holder is unreachable. Revocation is terminal, so an ungated one would be a permanent denial of service any member could inflict on any other.
 
-**A root-signed proof** is the self-service path — the lost-laptop case, where the owner may be the only person who knows. It deliberately is *not* a gate on folded state: "is the signer this account's current root key" depends on which rotations a replica has folded, so two replicas would decide one operation differently and disagree permanently about who may author. The proof travels with the operation and verifies from the account id alone, exactly as a certificate does.
+**A root-signed proof** is the self-service path — the lost-laptop case, where the owner may be the only person who knows. It is available to whoever holds the root, which is the account: a *paired* device holds no root, so disowning it is the holder's act or an admin's, never its own.
+
+Which account a revocation names is read from the group's own device binding, never derived from the revoker's root. Those two answer different questions — "whose device is this" versus "which account do I own here" — and they coincide only when you revoke your own. It deliberately is *not* a gate on folded state: "is the signer this account's current root key" depends on which rotations a replica has folded, so two replicas would decide one operation differently and disagree permanently about who may author. The proof travels with the operation and verifies from the account id alone, exactly as a certificate does.
 
 The proof accepts **any** epoch its carried chain resolves, not merely the newest. That asymmetry with certificate verification is deliberate: filtering superseded epochs would mean rotating an account's root silently *un-revokes* every device it had withdrawn. The cost is that a compromised old root can still revoke — accepted, because whoever holds any root key of an account can already sign a handoff and take it over.
 
