@@ -39,7 +39,7 @@ use calimero_store::key::{
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error as ThisError;
 
 use crate::collect_keys_with_prefix;
@@ -174,6 +174,28 @@ impl<'a> AccountBindingRepository<'a> {
     /// Propagates the store scan failure.
     pub fn live_bindings(&self, group: &ContextGroupId) -> EyreResult<Vec<DeviceBinding>> {
         let gid = group.to_bytes();
+
+        // The tombstones as a set, from one sequential pass. Every binding is
+        // tested against the same rows, so a point read per binding re-walked the
+        // column N times for a set that fits in memory — and this runs on the
+        // per-op authorization path, not just at delivery time.
+        let revoked: BTreeSet<[u8; 32]> = collect_keys_with_prefix(
+            self.store,
+            GroupRevokedDevice::new(gid, [0u8; 32]),
+            calimero_store::key::GROUP_REVOKED_DEVICE_PREFIX,
+            |k| k.group_id() == gid,
+        )?
+        .into_iter()
+        .map(|k| k.device_id())
+        .collect();
+
+        // Keys first, then one `get` each — deliberately, and NOT the cursor's own
+        // `entries()`, which would save those reads. `entries()` decodes the value
+        // of every row it steps over, and `GroupRevokedDevice` lives in this column
+        // with a key of the same 65 bytes, so the typed iterator's size-mismatch
+        // skip does not filter it: the scan reaches a tombstone and fails decoding
+        // it as a binding before the prefix check can stop the loop. Reading values
+        // by key is what keeps the two families independent.
         let keys = collect_keys_with_prefix(
             self.store,
             GroupDeviceBinding::new(gid, [0u8; 32]),
@@ -181,24 +203,36 @@ impl<'a> AccountBindingRepository<'a> {
             |k| k.group_id() == gid,
         )?;
 
+        // Memoized for the duration of this call only. One account's epoch is the
+        // same for every device it owns, and a member with several devices asked
+        // for it once per device. Deliberately not cached across calls: the epoch
+        // changes under a rotation, and a cache outliving the read would need an
+        // invalidation path that nothing here would remember to call.
         let handle = self.store.handle();
+        let mut epochs: BTreeMap<AccountId, Option<u32>> = BTreeMap::new();
         let mut out = Vec::new();
         for key in keys {
             let Some(value) = handle.get(&key)? else {
                 continue;
             };
-            let device = DeviceId::from(key.device_id());
-            if self.is_revoked(group, device)? {
+            let raw_device = key.device_id();
+            if revoked.contains(&raw_device) {
                 continue;
             }
             let account = AccountId::from(value.account);
-            if let Some((epoch, _)) = self.account_key(group, account)? {
-                if value.key_epoch < epoch {
-                    continue;
+            let epoch = match epochs.get(&account) {
+                Some(epoch) => *epoch,
+                None => {
+                    let epoch = self.account_key(group, account)?.map(|(epoch, _)| epoch);
+                    let _ = epochs.insert(account, epoch);
+                    epoch
                 }
+            };
+            if epoch.is_some_and(|epoch| value.key_epoch < epoch) {
+                continue;
             }
             out.push(DeviceBinding {
-                device,
+                device: DeviceId::from(raw_device),
                 account,
                 sign_pk: PublicKey::from(value.sign_pk),
                 kem_pk: value.kem_pk,
@@ -363,6 +397,11 @@ impl<'a> AccountBindingRepository<'a> {
 
     /// Every live device of `account` in `group` — the scope-key fan-out unit.
     ///
+    /// For one account only. A caller resolving *several* accounts must use
+    /// [`live_devices_by_account`](Self::live_devices_by_account) instead: this
+    /// filters a full scan, so calling it in a loop rescans the column once per
+    /// account and makes the fan-out quadratic in a group's size.
+    ///
     /// # Errors
     /// Propagates the store scan failure.
     pub fn devices_of(
@@ -375,6 +414,27 @@ impl<'a> AccountBindingRepository<'a> {
             .into_iter()
             .filter(|binding| binding.account == account)
             .collect())
+    }
+
+    /// [`live_bindings`](Self::live_bindings) grouped by the account each device
+    /// speaks for — one scan for every account in the group.
+    ///
+    /// What the scope-key fan-out and the pull responder both actually want. They
+    /// previously called [`devices_of`](Self::devices_of) per account inside a
+    /// per-member loop, so a group of *m* members with *a* accounts each rescanned
+    /// the binding column *m × a* times to answer one delivery.
+    ///
+    /// # Errors
+    /// Propagates the store scan failure.
+    pub fn live_devices_by_account(
+        &self,
+        group: &ContextGroupId,
+    ) -> EyreResult<BTreeMap<AccountId, Vec<DeviceBinding>>> {
+        let mut out: BTreeMap<AccountId, Vec<DeviceBinding>> = BTreeMap::new();
+        for binding in self.live_bindings(group)? {
+            out.entry(binding.account).or_default().push(binding);
+        }
+        Ok(out)
     }
 
     /// Record the account root a credential carries.
@@ -466,7 +526,7 @@ impl<'a> AccountBindingRepository<'a> {
     ) -> EyreResult<Result<DeviceBinding, BindingRejected>> {
         // Cap before the loop below, not just inside `verify_device_cert`. Each
         // `apply_rotation` costs an Ed25519 verification, and this runs first, so
-        // the cap living only in `resolve_root_keys` left the expensive part
+        // the cap living only in `root_key_at_epoch` left the expensive part
         // unguarded — the same one-call-too-deep miss as the projection fold had.
         if chain.len() > calimero_account::MAX_ROOT_KEY_HANDOFFS {
             return Ok(Err(BindingRejected::ChainTooLong {

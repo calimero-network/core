@@ -695,6 +695,9 @@ impl<'a> GroupKeyring<'a> {
         let members = MembershipRepository::new(self.store).list(&self.group_id, 0, usize::MAX)?;
         let bindings = AccountBindingRepository::new(self.store);
         let accounts = bindings.accounts_by_endorsing_member(&self.group_id)?;
+        // One scan for the whole fan-out. Asking per account inside the member
+        // loop rescanned the binding column once per (member, account) pair.
+        let devices = bindings.live_devices_by_account(&self.group_id)?;
 
         let mut out = Vec::with_capacity(members.len());
         for (member, _) in members {
@@ -707,7 +710,7 @@ impl<'a> GroupKeyring<'a> {
                 continue;
             }
             for account in member_accounts {
-                for binding in bindings.devices_of(&self.group_id, *account)? {
+                for binding in devices.get(account).map(Vec::as_slice).unwrap_or(&[]) {
                     out.push(EntitledRecipient {
                         member,
                         recipient: KeyRecipient::Device {
@@ -766,8 +769,10 @@ impl<'a> GroupKeyring<'a> {
         let Some(claimed) = requester.device else {
             return Ok(None);
         };
+        // One scan, then a lookup per account — rather than a scan per account.
+        let devices = bindings.live_devices_by_account(&self.group_id)?;
         for account in member_accounts {
-            for binding in bindings.devices_of(&self.group_id, *account)? {
+            for binding in devices.get(account).map(Vec::as_slice).unwrap_or(&[]) {
                 if binding.device == claimed {
                     return Ok(Some(KeyRecipient::Device {
                         device: binding.device,
