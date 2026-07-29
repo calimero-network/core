@@ -95,7 +95,7 @@ impl AccountRoot {
 }
 
 /// Serializes the read-check-write in
-/// [`NodeDeviceRepository::ensure_for_account`] across callers, making the
+/// [`NodeDeviceRepository::ensure_enrolled`] across callers, making the
 /// mint-if-absent atomic without a store-level compare-and-swap. Same pattern and
 /// same reason as `GROUP_KEY_EPOCH_WRITE_LOCK`: two callers could otherwise both
 /// observe an absent row and both mint, and the second `put` would win — handing

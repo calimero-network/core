@@ -37,7 +37,8 @@ description: >
     3. node-2 writes from its enrolled device and node-1 reads it. Proves the
        device is a working replica, not merely a stored row.
 
-    4. node-3 is paired onto Alice's account (`account link`) and writes. Both
+    4. node-3 is paired onto Alice's account (`account pair-init` on node-3,
+       then `account pair-complete` on node-2) and writes. Both
        writes must reach node-1, and the two must carry DIFFERENT replica ids
        under the SAME account. That pair of assertions is the whole feature.
 
@@ -238,7 +239,7 @@ steps:
       - '{{namespace_id}}'
     # NOTE: no `outputs:` — merobox script steps do not support custom outputs
     # (see "Wiring" below). The script writes the new device id to a file that
-    # `meroctl-account-revoke.sh` reads.
+    # `account-revoke.sh` reads.
 
   - name: Settle after pairing
     type: wait_for_sync

@@ -344,6 +344,21 @@ impl<'a> AccountBindingRepository<'a> {
         Ok(keys.into_iter().map(|k| k.member()).collect())
     }
 
+    /// Whether `device` has a live binding in `group`.
+    ///
+    /// Answers the one question that decides whether this node's stored device
+    /// identity may be replaced: a device that was never linked holds no replica
+    /// state, so re-minting strands nothing.
+    ///
+    /// # Errors
+    /// Propagates the store scan failure.
+    pub fn is_device_linked(&self, group: &ContextGroupId, device: DeviceId) -> EyreResult<bool> {
+        Ok(self
+            .live_bindings(group)?
+            .into_iter()
+            .any(|binding| binding.device == device))
+    }
+
     /// Every live device of `account` in `group` — the scope-key fan-out unit.
     ///
     /// # Errors
@@ -631,6 +646,34 @@ mod tests {
             device_epoch,
         )
         .expect("sign")
+    }
+
+    #[test]
+    fn is_device_linked_distinguishes_a_bound_device_from_a_merely_minted_one() {
+        // Decides whether this node's stored device identity may be replaced. A
+        // device that was never linked holds no replica state, so re-minting
+        // strands nothing — which is what keeps a one-shot device row from
+        // becoming a trap when a pairing is attempted with the wrong account.
+        let store = test_store();
+        let gid = test_group_id();
+        let repo = AccountBindingRepository::new(&store);
+        let g = genesis_for(1);
+        let cert = cert_for(&g, &key(1), 5, 0, 0);
+
+        let never_linked = DeviceId::mint(g.account_id(), [0x77; 16]);
+        assert!(!repo.is_device_linked(&gid, never_linked).expect("query"));
+
+        let bound = repo
+            .apply_link(&gid, &g, &[], &cert)
+            .expect("store")
+            .expect("admitted");
+        assert!(repo.is_device_linked(&gid, bound.device).expect("query"));
+
+        // A revoked device is not live, so its id is not "linked" either — but it
+        // must NOT become re-mintable, because the tombstone is terminal and the
+        // id is spent. That is enforced by the revocation check on link, not here.
+        repo.apply_revocation(&gid, bound.device).expect("revoke");
+        assert!(!repo.is_device_linked(&gid, bound.device).expect("query"));
     }
 
     #[test]

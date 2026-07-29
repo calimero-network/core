@@ -96,7 +96,7 @@ type AuthCutContext = (
 /// has produced repeatedly.
 ///
 /// The scan is forward-only and re-done per call. A cached key→account map is
-/// precisely what `denied_members` and `accounts_rooted_at_members` avoid: it can
+/// precisely what `denied_members` and `accounts_by_endorsing_member` avoid: it can
 /// only be populated while observing bindings, so it comes back empty after a
 /// projection rebuild and silently reverts every device to the fallback.
 fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> AccountId {
