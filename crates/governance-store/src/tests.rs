@@ -10048,7 +10048,11 @@ mod account_plane_apply {
                 &store,
                 &gid,
                 &admin_sk,
-                GroupOp::AccountDeviceUnlinked { account, device },
+                GroupOp::AccountDeviceUnlinked {
+                    account,
+                    device,
+                    proof: None,
+                },
             )
             .unwrap();
         }
@@ -10224,7 +10228,11 @@ mod account_plane_apply {
             &store,
             &gid,
             &attacker_sk,
-            GroupOp::AccountDeviceUnlinked { account, device },
+            GroupOp::AccountDeviceUnlinked {
+                account,
+                device,
+                proof: None,
+            },
         )
         .unwrap();
         assert!(
@@ -10242,7 +10250,11 @@ mod account_plane_apply {
             &store,
             &gid,
             &admin_sk,
-            GroupOp::AccountDeviceUnlinked { account, device },
+            GroupOp::AccountDeviceUnlinked {
+                account,
+                device,
+                proof: None,
+            },
         )
         .unwrap();
         assert!(bindings.is_revoked(&gid, device).unwrap());
@@ -10268,7 +10280,11 @@ mod account_plane_apply {
             &store,
             &gid,
             &signer.public_key(),
-            &GroupOp::AccountDeviceUnlinked { account, device },
+            &GroupOp::AccountDeviceUnlinked {
+                account,
+                device,
+                proof: None,
+            },
             &crate::test_fixtures::TEST_CUT,
             &crate::test_fixtures::UnresolvableAuthorizer,
         )

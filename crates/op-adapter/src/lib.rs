@@ -174,7 +174,15 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
             chain: chain.clone(),
             cert: *cert,
         }),
-        GroupOp::AccountDeviceUnlinked { account, device } => Some(OpPayload::DeviceRevoked {
+        // `proof` is dropped, like `endorsement` on the link above and for the
+        // same reason: on the unified plane membership is keyed by `AccountId`,
+        // so `authorize` asks whether the revoker IS the account rather than
+        // needing a self-certifying proxy for it.
+        GroupOp::AccountDeviceUnlinked {
+            account,
+            device,
+            proof: _,
+        } => Some(OpPayload::DeviceRevoked {
             account: *account,
             device: *device,
         }),

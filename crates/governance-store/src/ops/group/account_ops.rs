@@ -17,6 +17,7 @@ use crate::membership::MembershipPath;
 use crate::{AccountBindingRepository, BindingRejected, MembershipRepository};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, DeviceCert, DeviceId, RootKeyHandoff,
+    SignedDeviceRevocation,
 };
 use eyre::Result as EyreResult;
 
@@ -131,20 +132,26 @@ pub(crate) fn apply_device_linked(
 
 /// `GroupOp::AccountDeviceUnlinked` — withdraw a device.
 ///
-/// **A group admin at the op's cut, and nobody else.** A revocation is terminal
-/// — the `DeviceId` is spent for good — so an ungated one is a permanent denial
-/// of service any member could inflict on any other. Membership in a group is
-/// not authority over other members' devices.
+/// Two ways to be authorized, and a revocation needs exactly one of them.
 ///
-/// The account owner revoking *their own* device without an admin is the case
-/// this deliberately does **not** cover yet, even though it is the motivating one
-/// (a lost laptop, where the owner may be the only person who knows). It cannot
-/// be gated on folded state: "is the signer this account's current root key"
-/// depends on which rotations this replica has folded, so two replicas would
-/// disagree about one op. Doing it right means the op carries a **root-signed
-/// revocation proof**, self-certifying exactly as `DeviceCert` is — a wire
-/// addition that belongs with the CLI that mints it (phase F), not a gate that
-/// looks correct and diverges.
+/// **A group admin at the op's cut.** A revocation is terminal — the `DeviceId`
+/// is spent for good — so an ungated one is a permanent denial of service any
+/// member could inflict on any other. Membership in a group is not authority
+/// over other members' devices. This is the path that ejects a device whose
+/// account holder is unreachable.
+///
+/// **Or a root-signed proof that the account withdrew its own device.** The
+/// lost-laptop case, where the owner may be the only person who knows. It is
+/// deliberately NOT a gate on folded state: "is the signer this account's
+/// current root key" depends on which rotations this replica has folded, so two
+/// replicas would decide one op differently and disagree permanently about who
+/// may author. The proof travels with the op and verifies from the account id
+/// alone, exactly as a `DeviceCert` does — so every replica reaches the same
+/// verdict regardless of what it has folded.
+///
+/// The proof is checked FIRST, and deliberately: it costs no fold work, so a
+/// self-service revocation never has to resolve the cut at all, and can therefore
+/// never park on `AuthorityUndecidable` for authority it does not need.
 ///
 /// Applied unconditionally once authorized, including for a device this group
 /// has never seen linked: the tombstone is what a later link consults, so
@@ -153,8 +160,32 @@ pub(crate) fn apply_device_unlinked(
     ctx: &mut GroupApplyCtx<'_>,
     account: &AccountId,
     device: &DeviceId,
+    proof: Option<&SignedDeviceRevocation>,
 ) -> EyreResult<()> {
     let group_id = *ctx.group_id();
+
+    let self_service = match proof {
+        Some(proof) => match proof.authorises(*account, *device) {
+            Ok(()) => true,
+            Err(err) => {
+                // A proof that does not verify is a deterministic refusal, not an
+                // error: every replica reaches it identically from the op alone.
+                // Falling through to the admin path would be wrong — an attacker
+                // could attach a garbage proof to an op they were not otherwise
+                // entitled to author and learn nothing, but a *valid admin* whose
+                // proof was malformed should still see why.
+                tracing::warn!(
+                    group_id = ?group_id,
+                    account = %account,
+                    device = %device,
+                    %err,
+                    "account device unlink: revocation proof did not verify"
+                );
+                false
+            }
+        },
+        None => false,
+    };
 
     // `?` rather than a swallowed `false`: `is_admin` returns
     // `AuthorityUndecidable` when the op's cut is real but unfolded here, and that
@@ -162,13 +193,14 @@ pub(crate) fn apply_device_unlinked(
     // genuine non-admin is a deterministic refusal every replica reaches
     // identically, so it records nothing and returns `Ok` — erroring would stall
     // the apply forever on an op that can never succeed.
-    if !ctx.permissions().is_admin(ctx.signer())? {
+    if !self_service && !ctx.permissions().is_admin(ctx.signer())? {
         tracing::warn!(
             group_id = ?group_id,
             signer = %ctx.signer(),
             account = %account,
             device = %device,
-            "account device unlink not recorded: signer is not an admin at the op's cut"
+            "account device unlink not recorded: signer is neither an admin at the \
+             op's cut nor the holder of a valid revocation proof"
         );
         return Ok(());
     }
@@ -179,6 +211,7 @@ pub(crate) fn apply_device_unlinked(
         group_id = ?group_id,
         account = %account,
         device = %device,
+        self_service,
         "account device unlinked"
     );
     Ok(())

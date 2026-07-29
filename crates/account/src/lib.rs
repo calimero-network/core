@@ -885,6 +885,39 @@ pub fn sign_device_revocation(
     })
 }
 
+/// A [`DeviceRevocation`] together with everything needed to verify it.
+///
+/// Bundled rather than passed as three fields on the op for the same reason a
+/// link carries its genesis and chain: the proof has to stand on its own, so a
+/// receiver can check it without having folded any prior op about the account.
+#[derive(Clone, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SignedDeviceRevocation {
+    /// The account's genesis, which hashes to the account being withdrawn from.
+    pub genesis: AccountGenesis,
+    /// Root-key handoffs up to `revocation.key_epoch`.
+    pub chain: Vec<RootKeyHandoff>,
+    /// The revocation itself.
+    pub revocation: DeviceRevocation,
+}
+
+impl SignedDeviceRevocation {
+    /// Whether this proof authorises withdrawing `device` from `account`.
+    ///
+    /// Checks the account and device the caller expects against the ones the
+    /// proof names, so a valid proof for one device cannot authorise another.
+    ///
+    /// # Errors
+    /// Propagates [`verify_device_revocation`]; also
+    /// [`AccountError::RevocationAccountMismatch`] when the proof is for a
+    /// different device than the op names.
+    pub fn authorises(&self, account: AccountId, device: DeviceId) -> Result<(), AccountError> {
+        if self.revocation.device != device {
+            return Err(AccountError::RevocationAccountMismatch);
+        }
+        verify_device_revocation(account, &self.genesis, &self.chain, &self.revocation)
+    }
+}
+
 /// Verify a revocation against the account it names, from the account id alone.
 ///
 /// **Any epoch the carried chain resolves is accepted, not merely the newest.**

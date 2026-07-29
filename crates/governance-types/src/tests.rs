@@ -309,6 +309,10 @@ const GOLDEN_GROUP_OP_ACCOUNT_DEVICE_UNLINKED: &[u8] = &[
     0, // account
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // device
+    // `proof: None` — one tag byte. Pinned so the admin path stays the cheap
+    // encoding it was before self-service revocation existed, and so a proof can
+    // never be silently dropped by a peer that decodes the shorter form.
+    0, // proof: None
 ];
 
 const GOLDEN_GROUP_OP_ACCOUNT_KEYS_ROTATED: &[u8] = &[

@@ -26,7 +26,7 @@ use std::io;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, DeviceCert, DeviceId, KemPublicKey,
-    RootKeyHandoff,
+    RootKeyHandoff, SignedDeviceRevocation,
 };
 use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
@@ -552,6 +552,19 @@ pub enum GroupOp {
         account: AccountId,
         /// The device losing its binding.
         device: DeviceId,
+        /// A root-signed proof that the account itself withdrew this device.
+        ///
+        /// `None` is the **admin path**: a group admin at the op's cut may
+        /// revoke any device, which is how a device is ejected when its account
+        /// holder is unreachable.
+        ///
+        /// `Some` is the **self-service path**, and it is what the lost-laptop
+        /// case needs: the owner may be the only person who knows. It cannot be
+        /// gated on folded state — "is the signer this account's current root
+        /// key" depends on which rotations a replica has folded, so two replicas
+        /// would decide one op differently — so the authority travels with the
+        /// op, self-certifying exactly as a `DeviceCert` is.
+        proof: Option<SignedDeviceRevocation>,
     },
     /// Roll an account's root key.
     ///
