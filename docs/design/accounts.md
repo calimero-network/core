@@ -343,6 +343,29 @@ answer, or every `Map<executor_id, Vote>` silently becomes one-vote-per-device.
 Per-account aggregation lives in the SDK, above storage. Counter slots stay keyed
 by `DeviceId`; the mapping is handed *up* to the app, never down into the CRDT.
 
+### The candidate slot is a bounded-cost DoS, not a closable one
+
+Retaining every handoff candidate is what stops the rollback, and it has a cost:
+`resolved_accounts` re-verifies the candidates at each epoch on every read. An
+attacker padding a slot makes every subsequent read more expensive.
+
+Both obvious bounds are wrong. Capping candidates per slot **on insert** is
+order-dependent — which ones get in depends on arrival order, so two replicas
+could resolve different keys. Keeping the lowest N by key is deterministic but
+**exploitable**: grind N candidates ordering below the real one and it is evicted,
+which is the rollback again.
+
+Verifying at absorb time closes only epoch 0, where the required signer is the
+genesis key carried in the op itself. At epoch *N* the required key is whatever
+resolving 0..*N* produces, which the fold cannot know mid-stream — that is the
+same reason supersession is a read-time question.
+
+So the mitigations are: a per-op chain cap (`MAX_ROOT_KEY_HANDOFFS`), and
+resolving **once per read** rather than the two-to-four times `acl_view` and
+`governance_hash` previously each paid. What remains — many ops growing state
+without bound — is not specific to this plane; it is the DAG's growth problem, and
+it is answered by compaction, not by an admission rule.
+
 ## Known limits
 
 - **Revocation latency is per scope.** A scope that has not folded the

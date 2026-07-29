@@ -430,8 +430,16 @@ impl ScopeState {
     /// two orders would yield two different device sets — and two different
     /// `scope_root`s. Deferring the question until every op in the cut has been
     /// seen makes the answer a function of the op *set*, not its order.
-    fn live_devices(&self) -> BTreeMap<DeviceId, DeviceBinding> {
-        let accounts = self.resolved_accounts();
+    ///
+    /// Takes the resolved accounts rather than resolving them itself, because
+    /// every caller needs both and resolving walks and re-verifies every stored
+    /// handoff candidate. Recomputing it here made `acl_view` and
+    /// `governance_hash` each pay for the walk twice, which multiplied the cost an
+    /// attacker can impose by padding a candidate slot.
+    fn live_devices(
+        &self,
+        accounts: &BTreeMap<AccountId, AccountBinding>,
+    ) -> BTreeMap<DeviceId, DeviceBinding> {
         let unsuperseded = self.devices.iter().filter(|(_, binding)| {
             accounts
                 .get(&binding.account)
@@ -512,6 +520,9 @@ impl ScopeState {
     /// The current authorization view (whole state).
     #[must_use]
     pub fn acl_view(&self) -> AclView {
+        // Resolved once and shared with `live_devices`, which needs the same
+        // answer — see its doc comment for why paying twice matters.
+        let accounts = self.resolved_accounts();
         let subgroups = self
             .subgroups
             .iter()
@@ -536,8 +547,8 @@ impl ScopeState {
             member_caps: self.member_caps.clone(),
             subgroups,
             group_admin: self.group_admin.clone(),
-            accounts: self.resolved_accounts(),
-            devices: self.live_devices(),
+            devices: self.live_devices(&accounts),
+            accounts,
             revoked_devices: self.revoked_devices.clone(),
         }
     }
@@ -806,12 +817,13 @@ impl ScopeState {
         // can author. The resolved epoch (not the raw handoff set) is hashed,
         // so a chain that stops early hashes differently from one that
         // completes.
-        for (account, binding) in &self.resolved_accounts() {
+        let accounts = self.resolved_accounts();
+        for (account, binding) in &accounts {
             hasher.update(account.as_bytes());
             hasher.update(binding.epoch.to_le_bytes());
             hasher.update(AsRef::<[u8; 32]>::as_ref(&binding.root_pk));
         }
-        for (device, binding) in &self.live_devices() {
+        for (device, binding) in &self.live_devices(&accounts) {
             hasher.update(device.as_bytes());
             hasher.update(binding.account.as_bytes());
             hasher.update(AsRef::<[u8; 32]>::as_ref(&binding.sign_pk));
