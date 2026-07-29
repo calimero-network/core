@@ -237,8 +237,9 @@ steps:
       - account-revoke-node-2
       - account-revoke-node-3
       - '{{namespace_id}}'
-    outputs:
-      paired_device: device_id
+    # NOTE: no `outputs:` — merobox script steps do not support custom outputs
+    # (see "Wiring" below). The script writes the new device id to a file that
+    # `meroctl-account-revoke.sh` reads.
 
   - name: Settle after pairing
     type: wait_for_sync
@@ -293,7 +294,6 @@ steps:
     args:
       - account-revoke-node-1
       - '{{namespace_id}}'
-      - '{{paired_device}}'
 
   - name: Settle after the revocation and its key rotation
     type: wait_for_sync
@@ -411,5 +411,25 @@ steps:
 #   3. On-link key backfill and revoke-triggered rotation, which have no
 #      publisher until the CLI exists.
 #
-# No merobox change is needed — one device per node means the node selects the
-# device implicitly.
+# STATUS: gaps 1-3 above are now CLOSED. What remains is the helper scripts and
+# two integration facts found while starting them, both of which change how they
+# have to be written:
+#
+#   a. `outputs:` on a `script` step does NOT work in merobox 0.3.8. Custom
+#      outputs are extracted from a step's `response_data`, and the script step
+#      never produces one — it exports only `script_output_local`,
+#      `script_exit_code_local`, and friends. So the `paired_device` capture
+#      above cannot work as written. `script_output_local` is a poor substitute
+#      because every later script step overwrites it, and two script steps run
+#      between pairing and revocation. The pair script should therefore write
+#      the device id to a file keyed by namespace, and the revoke script should
+#      read it — deterministic, and it needs nothing from merobox.
+#
+#   b. Nothing in the e2e suite invokes `meroctl`. merobox drives nodes through
+#      its own API client, and the merod image is not known to ship meroctl, so
+#      these scripts have to speak to the admin API directly (curl) and obtain
+#      their own token under `auth_mode: embedded`. Worth confirming against a
+#      running node before writing all four, rather than assuming the shape.
+#
+# One device per node still means no merobox change is needed to choose WHICH
+# device authors — the node selects it implicitly.

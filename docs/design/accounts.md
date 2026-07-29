@@ -318,6 +318,10 @@ Found while writing `account-device-revoke-lockout.yml`, and worth stating
 because none is visible from the code that exists:
 
 **1. Per-device *authorization* is not wired on the governance bridge.**
+*(Closed — the resolver now falls through to the account plane. The device→
+account mapping is read from materialized rows, because account ops do not reach
+the fold on this bridge; the authority question — is that account's endorser a
+member — still resolves at the op's cut.)*
 Delivery is device-aware; authorization is not. `DeviceBinding.sign_pk` is
 stored and folded into the hash but **never consulted**, so a device whose own
 key is not a granted member cannot author — which is the whole point of a second
@@ -646,8 +650,8 @@ in production, and a fan-out reading it would wrap for zero recipients.
 | D″ | Device-addressed sync pull (`GroupKeyRequest.requester_device`) | **done** |
 | E | Runtime: `executor_id()`→account, `device_id()`, SDK aggregation | after F |
 | F3 | `meroctl account pair-init` / `pair-complete`, on-link key backfill | **done** |
-| F4 | `account revoke`, rotation, root-signed revocation proof | next |
-| F5 | merobox helpers, wire the acceptance scenario into CI | after F4 |
+| F4 | `account revoke`, revoke-triggered rotation, root-signed revocation proof | **done** |
+| F5 | merobox helpers, wire the acceptance scenario into CI | next — see the scenario's Wiring notes |
 | G | `merod export` / `import` | **independent — deferred by decision** |
 
 `NodeDeviceIdentity` is an additive row family rather than two more fields on
