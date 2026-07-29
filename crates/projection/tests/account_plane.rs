@@ -580,6 +580,159 @@ fn a_forged_handoff_reusing_the_real_new_key_cannot_displace_it() {
     );
 }
 
+/// The same convergence property over a workload of ops that DISAGREE with each
+/// other — which is the only kind that has ever found an order-dependence bug
+/// here.
+///
+/// Every order-dependence defect in this plane came from a rule that read
+/// "whatever has folded so far": seed collisions resolved against the devices
+/// already present, the revocation tombstone's value against whether the link had
+/// folded, the handoff slot against which candidate arrived first. A workload of
+/// mutually-consistent ops cannot expose any of them, because there is nothing for
+/// the answer to depend on. So this one is deliberately built from the shapes that
+/// broke:
+///
+///   * two device links whose ids share an HLC seed — at most one may be live,
+///     and which one cannot depend on arrival order;
+///   * a revocation naming an account the device is NOT bound to — the mismatch
+///     is what made the tombstone's hashed value order-dependent;
+///   * a forged handoff reusing a real rotation's new-root key with a garbage
+///     signature — displacement bait for the candidate map;
+///   * the legitimate rotation it is trying to displace.
+///
+/// **When a new order-dependence bug is found, add its shape here** rather than
+/// only writing a targeted regression test. The targeted test pins the instance;
+/// this pins the class.
+#[test]
+fn the_adversarial_account_workload_converges() {
+    let mut fx = Fixture::new();
+    let mut alice = Account::new(10);
+    let mallory = Account::new(20);
+
+    fx.push(grant_membership(&fx.admin, alice.id, 30, fx.head.clone()));
+    fx.push(grant_membership(&fx.admin, mallory.id, 31, fx.head.clone()));
+
+    let mallory_device = mallory.enroll(21, 0);
+    fx.push(mallory.link_op(&mallory_device, 32, fx.head.clone()));
+
+    // Rotate FIRST, so the devices below are certified under the epoch the
+    // rotation establishes. Certifying them at epoch 0 and then folding a rotation
+    // to epoch 1 in the same workload would supersede them — correct behaviour,
+    // but it would mask the collision property this test is here to pin.
+    let base = fx.head.clone();
+    let real_handoff = alice.rotate_to(14);
+    let mut forged_handoff = real_handoff;
+    forged_handoff.signature = [0u8; 64];
+
+    // Two ids sharing an hlc_seed (the id's first 16 bytes).
+    let mut low_id = [0u8; 32];
+    low_id[..16].copy_from_slice(&[0xAA; 16]);
+    let mut high_id = low_id;
+    high_id[31] = 0xFF;
+    let forge = |device_seed: u8, id: [u8; 32]| {
+        let sk = key(device_seed);
+        Device {
+            id: DeviceId::from(id),
+            cert: calimero_account::sign_device_cert(
+                &alice.root,
+                alice.id,
+                DeviceId::from(id),
+                &sk.public_key(),
+                &KemPublicKey::from([device_seed; 32]),
+                alice.epoch,
+                0,
+            )
+            .expect("sign cert"),
+            sk,
+            account: alice.id,
+        }
+    };
+    let colliding_low = forge(11, low_id);
+    let colliding_high = forge(12, high_id);
+    let honest = alice.enroll(13, 0);
+
+    let ops = vec![
+        // Colliding pair — only the lower id may end up live.
+        alice.link_op(&colliding_low, 40, base.clone()),
+        alice.link_op(&colliding_high, 41, base.clone()),
+        // An honest device of the same account.
+        alice.link_op(&honest, 42, base.clone()),
+        // A revocation naming the WRONG account for this device.
+        mallory_device.sign_op(
+            50,
+            base.clone(),
+            OpPayload::DeviceRevoked {
+                account: mallory.id,
+                device: honest.id,
+            },
+        ),
+        // The legitimate rotation...
+        honest.sign_op(
+            60,
+            base.clone(),
+            OpPayload::AccountKeysRotated {
+                handoff: real_handoff,
+            },
+        ),
+        // ...and a forged handoff reusing its new-root key, as displacement bait.
+        mallory_device.sign_op(
+            61,
+            base.clone(),
+            OpPayload::DeviceLinked {
+                genesis: alice.genesis,
+                chain: vec![forged_handoff],
+                cert: honest.cert,
+            },
+        ),
+    ];
+
+    let expected = {
+        let mut s = ScopeState::from_ops(&fx.log);
+        for op in &ops {
+            s.apply(op);
+        }
+        s.root()
+    };
+
+    let mut order: Vec<usize> = (0..ops.len()).collect();
+    let mut checked = 0;
+    permute(&mut order, 0, &mut |perm| {
+        let mut s = ScopeState::from_ops(&fx.log);
+        for &i in perm {
+            s.apply(&ops[i]);
+        }
+        assert_eq!(
+            s.root(),
+            expected,
+            "delivery order {perm:?} produced a different scope_root"
+        );
+        checked += 1;
+    });
+    assert_eq!(checked, 720, "all 6! orders should have been exercised");
+
+    // Convergence alone is not enough — a plane that dropped every op would
+    // converge too. Pin the outcome as well.
+    let view = {
+        let mut s = ScopeState::from_ops(&fx.log);
+        for op in &ops {
+            s.apply(op);
+        }
+        s.acl_view()
+    };
+    assert!(
+        view.devices.contains_key(&colliding_low.id),
+        "the lower colliding id must be the one left live"
+    );
+    assert!(
+        !view.devices.contains_key(&colliding_high.id),
+        "the higher colliding id must not also be live"
+    );
+    assert!(
+        view.accounts.get(&alice.id).is_some_and(|a| a.epoch == 1),
+        "the forged handoff must not have displaced the real rotation"
+    );
+}
+
 // ------------------------------------------------------------- revocation --
 
 #[test]
@@ -1132,6 +1285,13 @@ fn the_account_plane_converges_under_every_delivery_order() {
     // The plane uses no last-writer-wins stamps — grow-only maps and monotone
     // epochs only — so this should hold structurally. It is here to catch a
     // later change that quietly introduces order-dependence.
+    //
+    // This workload is the WELL-FORMED one, and on its own it was not enough: it
+    // missed three real order-dependence bugs (seed collisions, the tombstone's
+    // hashed value, handoff displacement) because every op in it is honest and
+    // agrees with every other. `the_adversarial_account_workload_converges` below
+    // carries the ops that broke, and is the one to extend when a new
+    // order-dependence bug is found.
     let mut fx = Fixture::new();
     let mut alice = Account::new(10);
     let bob = Account::new(20);

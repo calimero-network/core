@@ -743,6 +743,132 @@ mod tests {
     }
 
     #[test]
+    fn the_adversarial_workload_reaches_the_same_state_in_every_order() {
+        // The governance plane's counterpart to
+        // `the_adversarial_account_workload_converges` in the projection. Same
+        // reasoning: every order-dependence bug here came from a rule that read
+        // "whatever has been applied so far", and a workload of mutually
+        // consistent ops cannot expose one. So this applies the shapes that broke
+        // — a seed-colliding pair, a revocation, and a rotation that supersedes —
+        // in all 24 orders and requires identical materialized state.
+        //
+        // When a new order-dependence bug is found, add its shape here.
+        let g = genesis_for(1);
+        let account = g.account_id();
+
+        let mut low = [0u8; 32];
+        low[..16].copy_from_slice(&[0xAA; 16]);
+        let mut high = low;
+        high[31] = 0xFF;
+        let (low, high) = (DeviceId::from(low), DeviceId::from(high));
+
+        let cert_at = |device: DeviceId, seed: u8, key_epoch: u32| {
+            sign_device_cert(
+                &key(if key_epoch == 0 { 1 } else { 2 }),
+                account,
+                device,
+                &key(seed).public_key(),
+                &KemPublicKey::from([seed; 32]),
+                key_epoch,
+                0,
+            )
+            .expect("sign")
+        };
+        let handoff =
+            sign_root_key_handoff(&key(1), account, 0, &key(2).public_key()).expect("sign");
+
+        // Certified at epoch 1 so the rotation does not supersede them and mask
+        // the collision property.
+        let low_cert = cert_at(low, 5, 1);
+        let high_cert = cert_at(high, 6, 1);
+        let doomed = cert_at(DeviceId::mint(account, [7u8; 16]), 7, 1);
+
+        #[derive(Clone, Copy)]
+        enum Step {
+            LinkLow,
+            LinkHigh,
+            LinkDoomed,
+            Revoke,
+        }
+
+        let run = |order: &[Step]| {
+            let store = test_store();
+            let gid = test_group_id();
+            let repo = AccountBindingRepository::new(&store);
+            // The rotation is applied first in every run: it is what establishes
+            // the epoch the certificates above claim, and `apply_rotation` needs
+            // the account already learned, so its position is not free to vary.
+            let _ = repo.apply_link(&gid, &g, &[], &low_cert).expect("store");
+            repo.apply_rotation(&gid, &handoff)
+                .expect("store")
+                .expect("rotated");
+            for step in order {
+                match step {
+                    Step::LinkLow => {
+                        let _ = repo.apply_link(&gid, &g, &[handoff], &low_cert).expect("s");
+                    }
+                    Step::LinkHigh => {
+                        let _ = repo
+                            .apply_link(&gid, &g, &[handoff], &high_cert)
+                            .expect("s");
+                    }
+                    Step::LinkDoomed => {
+                        let _ = repo.apply_link(&gid, &g, &[handoff], &doomed).expect("s");
+                    }
+                    Step::Revoke => repo.apply_revocation(&gid, doomed.device).expect("revoke"),
+                }
+            }
+            let mut live: Vec<DeviceId> = repo
+                .live_bindings(&gid)
+                .expect("read")
+                .into_iter()
+                .map(|b| b.device)
+                .collect();
+            live.sort_unstable();
+            (live, repo.account_key(&gid, account).expect("read"))
+        };
+
+        let steps = [
+            Step::LinkLow,
+            Step::LinkHigh,
+            Step::LinkDoomed,
+            Step::Revoke,
+        ];
+        let mut orders: Vec<Vec<Step>> = Vec::new();
+        for a in 0..4 {
+            for b in 0..4 {
+                for c in 0..4 {
+                    for d in 0..4 {
+                        let idx = [a, b, c, d];
+                        let mut seen = [false; 4];
+                        for i in idx {
+                            seen[i] = true;
+                        }
+                        if seen.iter().all(|s| *s) {
+                            orders.push(idx.iter().map(|i| steps[*i]).collect());
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(orders.len(), 24, "all 4! orders should be enumerated");
+
+        let expected = run(&orders[0]);
+        for order in &orders[1..] {
+            assert_eq!(
+                run(order),
+                expected,
+                "an application order produced different materialized state"
+            );
+        }
+
+        // Convergence alone would also hold if everything were dropped.
+        let (live, key_state) = expected;
+        assert_eq!(live, vec![low], "only the lower colliding id may be live");
+        assert_eq!(key_state.map(|r| r.0), Some(1), "the rotation took effect");
+    }
+
+    #[test]
     fn a_rotation_supersedes_certificates_from_the_old_key() {
         let store = test_store();
         let gid = test_group_id();
