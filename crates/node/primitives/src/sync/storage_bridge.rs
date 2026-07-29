@@ -538,4 +538,85 @@ mod tests {
             assert_eq!(set.last().unwrap(), Some("b".to_owned()));
         });
     }
+
+    /// TRUE concurrent-writer reproduction for core#3333 on the REAL RocksDB
+    /// `ContextStorage` (not the runtime `InMemoryStorage` the conformance
+    /// harness uses, and not the storage-crate thread-local mock that #3323/#3328
+    /// were validated against).
+    ///
+    /// Node A inserts "a" and warms its ordered index; node B inserts "b" and
+    /// warms its own. Then node B applies node A's delta child actions through
+    /// the same native `Interface::apply_action` path a real receiver uses. The
+    /// element set converges ({a,b}); the ordered `iter()` must too. A failure
+    /// here is #3333 reproduced on the real host store.
+    #[test]
+    fn sorted_set_concurrent_writers_ordered_read_real_store() {
+        use calimero_storage::collections::{Root, SortedSet};
+        use calimero_storage::delta::StorageDelta;
+        use calimero_storage::env::take_last_artifact;
+        use calimero_storage::interface::{ApplyContext, Interface};
+
+        let context_id = ContextId::from([42u8; 32]);
+        let identity = PublicKey::from([2u8; 32]);
+
+        // Node A: insert "a", warm the ordered index, capture the delta.
+        let store_a = Store::new(Arc::new(InMemoryDB::owned()));
+        let delta_a = with_runtime_env(create_runtime_env(&store_a, context_id, identity), || {
+            let mut set = Root::new(SortedSet::<String, MainStorage>::new);
+            // Pin the collection to the deterministic field-name id (what the
+            // `#[app::state]` macro does after `init`) so both nodes address the
+            // SAME collection — otherwise each `Root::new` mints a random id and
+            // node A's element can never merge into node B's set.
+            set.reassign_deterministic_id("tags");
+            assert!(set.insert("a".to_owned()).unwrap());
+            assert_eq!(
+                set.iter().unwrap().collect::<Vec<_>>(),
+                vec!["a".to_owned()]
+            );
+            set.commit();
+            take_last_artifact().expect("commit emitted a delta")
+        });
+
+        // Node B: insert "b", warm its own ordered index (index={b}, marker=H_b).
+        let store_b = Store::new(Arc::new(InMemoryDB::owned()));
+        with_runtime_env(create_runtime_env(&store_b, context_id, identity), || {
+            let mut set = Root::new(SortedSet::<String, MainStorage>::new);
+            set.reassign_deterministic_id("tags");
+            assert!(set.insert("b".to_owned()).unwrap());
+            assert_eq!(
+                set.iter().unwrap().collect::<Vec<_>>(),
+                vec!["b".to_owned()]
+            );
+            set.commit();
+        });
+
+        // Node B applies node A's child actions (the "a" element + its ancestors)
+        // via the real receiver apply path.
+        let actions = match borsh::from_slice::<StorageDelta>(&delta_a).expect("decode delta") {
+            StorageDelta::Actions(a) => a,
+            StorageDelta::CausalActions { actions, .. } => actions,
+        };
+        with_runtime_env(create_runtime_env(&store_b, context_id, identity), || {
+            for action in actions {
+                if action.id().is_root() {
+                    continue;
+                }
+                Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())
+                    .expect("apply_action");
+            }
+        });
+
+        // Node B: element set converged, and the ordered read must too.
+        with_runtime_env(create_runtime_env(&store_b, context_id, identity), || {
+            let set = Root::<SortedSet<String, MainStorage>>::fetch().expect("state present");
+            assert!(set.contains("a").unwrap(), "membership converged: 'a'");
+            assert!(set.contains("b").unwrap(), "membership converged: 'b'");
+            assert_eq!(set.len().unwrap(), 2, "both elements enumerable");
+            assert_eq!(
+                set.iter().unwrap().collect::<Vec<String>>(),
+                vec!["a".to_owned(), "b".to_owned()],
+                "ordered iter() diverged after concurrent writes (core#3333)"
+            );
+        });
+    }
 }

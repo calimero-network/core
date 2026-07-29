@@ -332,12 +332,32 @@ where
     /// the node-local index-meta keyspace (mirroring the index it guards), never
     /// the synced state — so a peer never inherits this node's marker.
     fn stamp_index_marker(&self) {
-        let _ = S::index_meta_put(self.inner.id(), &self.current_full_hash());
+        let full = self.current_full_hash();
+        tracing::debug!(
+            target: "calimero_storage::sorted_index_dbg",
+            collection = %self.inner.id(),
+            hash = %hex::encode(full),
+            kind = "SortedSet",
+            "STAMP index marker"
+        );
+        let _ = S::index_meta_put(self.inner.id(), &full);
     }
 
     /// `true` if the stamped marker equals the current `full_hash`.
     fn index_marker_current(&self) -> bool {
-        S::index_meta_get(self.inner.id()).as_deref() == Some(&self.current_full_hash()[..])
+        let full = self.current_full_hash();
+        let stored = S::index_meta_get(self.inner.id());
+        let current = stored.as_deref() == Some(&full[..]);
+        tracing::debug!(
+            target: "calimero_storage::sorted_index_dbg",
+            collection = %self.inner.id(),
+            current_full_hash = %hex::encode(full),
+            stored_marker = ?stored.as_deref().map(hex::encode),
+            marker_current = current,
+            kind = "SortedSet",
+            "CHECK index marker"
+        );
+        current
     }
 
     /// Reconcile the index with the authoritative element set, then stamp the
@@ -357,6 +377,14 @@ where
                 .into_iter()
                 .map(|(order_key, _id)| order_key)
                 .collect();
+        tracing::debug!(
+            target: "calimero_storage::sorted_index_dbg",
+            %collection,
+            desired_len = desired.len(),
+            existing_len = existing.len(),
+            kind = "SortedSet",
+            "REBUILD index (desired = child-list snapshot)"
+        );
         // Only stamp if every diff write landed; otherwise leave the marker
         // stale so the next read retries the rebuild rather than trusting a
         // partial index.
