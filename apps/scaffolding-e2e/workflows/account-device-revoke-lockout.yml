@@ -4,11 +4,10 @@ description: >
   feature is unit- and apply-path-tested; this is the only thing that proves the
   networked half — per-device scope-key delivery between real nodes.
 
-  NOT YET PASSING, and deliberately committed ahead of the code. It is the
-  definition of done for phase F, written as the target rather than backfilled
-  after. The `meroctl account ...` invocations below do not exist yet; until they
-  do this workflow fails at the first one. It is therefore NOT wired into
-  `e2e-rust-apps.yml` — see "Wiring" at the bottom.
+  Committed ahead of the code it tests, as the definition of done for phase F
+  rather than something backfilled afterwards. The code it needs has since
+  landed — per-device authorization, pairing, the revocation proof, and the
+  revoke-triggered key rotation — so it is now wired into `e2e-rust-apps.yml`.
 
   What it pins, and why each step is load-bearing:
 
@@ -186,7 +185,7 @@ steps:
 
   - name: Node-2 enrolls a device for a fresh account
     type: script
-    script: scripts/meroctl-account-create.sh
+    script: apps/scaffolding-e2e/scripts/account-create.sh
     target: local
     args:
       - account-revoke-node-2
@@ -231,7 +230,7 @@ steps:
   # route in is being a device of Alice's account.
   - name: Pair node-3 onto Alice's account
     type: script
-    script: scripts/meroctl-account-pair.sh
+    script: apps/scaffolding-e2e/scripts/account-pair.sh
     target: local
     args:
       - account-revoke-node-2
@@ -277,19 +276,16 @@ steps:
   # One identity, two replicas — the whole point of the feature.
   - name: The two devices authored as one account but distinct replicas
     type: script
-    script: scripts/assert-same-account-distinct-devices.sh
+    script: apps/scaffolding-e2e/scripts/assert-same-account-distinct-devices.sh
     target: local
     args:
-      - account-revoke-node-1
-      - '{{context_id}}'
-      - from-laptop
-      - from-phone
+      - '{{namespace_id}}'
 
   # ── Phase 5: revoke the paired device ─────────────────────────────
 
   - name: Admin revokes node-3's device
     type: script
-    script: scripts/meroctl-account-revoke.sh
+    script: apps/scaffolding-e2e/scripts/account-revoke.sh
     target: local
     args:
       - account-revoke-node-1
@@ -381,20 +377,16 @@ steps:
 
 # ── Wiring ─────────────────────────────────────────────────────────
 #
-# Deliberately NOT added to `.github/workflows/e2e-rust-apps.yml` yet — it
-# cannot pass until phase F lands, and a permanently-red required check trains
-# people to ignore CI. Add it to that workflow's scenario matrix in the same PR
-# that makes it pass.
+# Wired into `.github/workflows/e2e-rust-apps.yml`.
 #
-# Helper scripts under `apps/scaffolding-e2e/scripts/`, none of which exist yet:
-#   * meroctl-account-create.sh — `meroctl account create --namespace <ns>`
-#   * meroctl-account-pair.sh   — drives the two-way exchange between two nodes
-#                                 and emits the new device id
-#   * meroctl-account-revoke.sh — `meroctl account revoke --device <id>`
-#   * assert-same-account-distinct-devices.sh — asserts the two entries were
-#     authored by the same account under different device ids
+# Helper scripts under `apps/scaffolding-e2e/scripts/`:
+#   * account-api.sh    — shared URL resolution, auth, and admin-api POST
+#   * account-create.sh — enrol a node's device under a fresh account
+#   * account-pair.sh   — the full two-way exchange between two nodes
+#   * account-revoke.sh — revoke the paired device, asserting the key rotated
+#   * assert-same-account-distinct-devices.sh — one account, two replica ids
 #
-# THREE code gaps this workflow depends on, beyond the CLI itself:
+# THREE code gaps this workflow depended on, beyond the CLI itself:
 #
 #   1. Per-device AUTHORIZATION on the governance bridge. `DeviceBinding.sign_pk`
 #      is stored and hashed today but never consulted, so a device whose key is
@@ -411,25 +403,22 @@ steps:
 #   3. On-link key backfill and revoke-triggered rotation, which have no
 #      publisher until the CLI exists.
 #
-# STATUS: gaps 1-3 above are now CLOSED. What remains is the helper scripts and
-# two integration facts found while starting them, both of which change how they
-# have to be written:
+# STATUS: all three gaps above are CLOSED and the helper scripts exist. Two
+# integration facts shaped how they had to be written, neither visible from the
+# code:
 #
 #   a. `outputs:` on a `script` step does NOT work in merobox 0.3.8. Custom
-#      outputs are extracted from a step's `response_data`, and the script step
-#      never produces one — it exports only `script_output_local`,
-#      `script_exit_code_local`, and friends. So the `paired_device` capture
-#      above cannot work as written. `script_output_local` is a poor substitute
-#      because every later script step overwrites it, and two script steps run
-#      between pairing and revocation. The pair script should therefore write
-#      the device id to a file keyed by namespace, and the revoke script should
-#      read it — deterministic, and it needs nothing from merobox.
+#      outputs are extracted from a step's `response_data`, which the script
+#      step never produces — it exports only `script_output_local` and friends,
+#      and every later script step overwrites that. So the scripts hand values
+#      to each other through files keyed by namespace instead. Deterministic,
+#      and it needs nothing from merobox.
 #
-#   b. Nothing in the e2e suite invokes `meroctl`. merobox drives nodes through
-#      its own API client, and the merod image is not known to ship meroctl, so
-#      these scripts have to speak to the admin API directly (curl) and obtain
-#      their own token under `auth_mode: embedded`. Worth confirming against a
-#      running node before writing all four, rather than assuming the shape.
+#   b. Nothing in the e2e suite invokes `meroctl`; merobox drives nodes through
+#      its own API client and the merod image does not ship the CLI. So the
+#      scripts talk to the admin API directly with curl, mirroring merobox's own
+#      `/auth/token` payload. The CLI commands are thin wrappers over these same
+#      endpoints, so this exercises the same code paths.
 #
 # One device per node still means no merobox change is needed to choose WHICH
 # device authors — the node selects it implicitly.

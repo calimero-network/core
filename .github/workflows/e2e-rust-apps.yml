@@ -243,6 +243,9 @@ jobs:
           - workflow: group-membership
             file: workflows/group-membership.yml
             app: scaffolding-e2e
+          - workflow: account-device-revoke-lockout
+            file: workflows/account-device-revoke-lockout.yml
+            app: scaffolding-e2e
           - workflow: group-leave-context
             file: workflows/group-leave-context.yml
             app: scaffolding-e2e
