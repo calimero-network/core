@@ -315,6 +315,10 @@ pub(crate) fn setup(
             "/namespaces/:namespace_id/account/pair-init",
             post(namespaces::pair_device_init::handler),
         )
+        .route(
+            "/namespaces/:namespace_id/account/pair-complete",
+            post(namespaces::pair_device_complete::handler),
+        )
         // Namespace management
         .route(
             "/namespaces",

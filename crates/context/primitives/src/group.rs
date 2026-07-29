@@ -829,6 +829,60 @@ impl Message for PairDeviceInitRequest {
     type Result = eyre::Result<PairDeviceInitResponse>;
 }
 
+/// Certify a device another node minted, link it, and hand it the scope key —
+/// the second half of pairing, run on the device that already holds the account.
+///
+/// Every field comes from that node's `PairDeviceInitRequest` response. None of
+/// them is a secret, and none of them is trusted: the certificate this signs is
+/// what makes the device real, and it is signed by the account root, which only
+/// this side holds.
+#[derive(Debug)]
+pub struct PairDeviceCompleteRequest {
+    /// The namespace the device is being paired into.
+    pub namespace_id: ContextGroupId,
+    /// The replica id the other node minted.
+    pub device: DeviceId,
+    /// The agreement key to wrap the scope key under.
+    pub kem_pk: KemPublicKey,
+    /// The key that device will sign its ops with.
+    pub sign_pk: PublicKey,
+}
+
+/// What pairing established.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct PairDeviceCompleteResponse {
+    /// The account the device now speaks for.
+    pub account: AccountId,
+    /// The device that was linked.
+    pub device: DeviceId,
+    /// Whether the current scope key was wrapped and published for the device.
+    ///
+    /// A `false` here is not a failed pairing: the link is what confers
+    /// authority, and the device's own sync pull re-requests the key it is
+    /// missing. It does mean the device stays unable to read until that pull
+    /// lands, which is worth surfacing rather than reporting a flat success.
+    pub key_delivered: bool,
+}
+
+impl PairDeviceCompleteResponse {
+    /// Build a response. Exists for the same reason as
+    /// [`CreateAccountResponse::new`] — the struct is `#[non_exhaustive]` and
+    /// the producer lives in another crate.
+    #[must_use]
+    pub const fn new(account: AccountId, device: DeviceId, key_delivered: bool) -> Self {
+        Self {
+            account,
+            device,
+            key_delivered,
+        }
+    }
+}
+
+impl Message for PairDeviceCompleteRequest {
+    type Result = eyre::Result<PairDeviceCompleteResponse>;
+}
+
 /// Discharge a pending forward-secrecy key rotation left behind by a self-leave.
 ///
 /// A leaver cannot rotate for themselves — they would have to mint the very key they

@@ -8,10 +8,11 @@ use calimero_server_primitives::admin::{
     LeaveGroupApiResponse, LeaveNamespaceApiResponse, ListGroupContextsApiResponse,
     ListGroupMembersApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
     ListSubgroupsApiResponse, NamespaceApiResponse, NamespaceIdentityApiResponse,
-    PairDeviceInitApiResponse, RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse,
-    ReparentGroupApiResponse, SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse,
-    SetMetadataApiResponse, SetSubgroupVisibilityApiResponse, SyncGroupApiResponse,
-    UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    PairDeviceCompleteApiResponse, PairDeviceInitApiResponse, RegisterGroupSigningKeyApiResponse,
+    RemoveGroupMembersApiResponse, ReparentGroupApiResponse, SetDefaultCapabilitiesApiResponse,
+    SetMemberCapabilitiesApiResponse, SetMetadataApiResponse, SetSubgroupVisibilityApiResponse,
+    SyncGroupApiResponse, UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse,
+    UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -94,6 +95,29 @@ impl Report for PairDeviceInitApiResponse {
         let _ = table.add_row(vec!["Device ID", &self.data.device_id]);
         let _ = table.add_row(vec!["Device KEM key", &self.data.kem_public_key]);
         let _ = table.add_row(vec!["Device signing key", &self.data.sign_public_key]);
+        println!("{table}");
+    }
+}
+
+impl Report for PairDeviceCompleteApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Device Paired").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Account ID", &self.data.account_id]);
+        let _ = table.add_row(vec!["Device ID", &self.data.device_id]);
+        // Surfaced rather than folded into a flat success: the link confers
+        // authority on its own, but until the key lands the device cannot read.
+        let _ = table.add_row(vec![
+            "Scope key delivered",
+            if self.data.key_delivered {
+                "yes"
+            } else {
+                "no - the device's sync pull will retry"
+            },
+        ]);
         println!("{table}");
     }
 }

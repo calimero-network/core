@@ -10,6 +10,7 @@ pub mod leave_namespace;
 pub mod list;
 pub mod list_for_application;
 pub mod list_namespace_groups;
+pub mod pair_device_complete;
 pub mod pair_device_init;
 
 /// Per-namespace `appVersion`: the bundle-manifest version of the

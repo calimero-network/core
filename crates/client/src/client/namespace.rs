@@ -3,7 +3,8 @@ use calimero_server_primitives::admin::{
     CreateNamespaceApiRequest, CreateNamespaceApiResponse, DeleteNamespaceApiRequest,
     DeleteNamespaceApiResponse, GetNamespaceApiResponse, JoinGroupApiRequest, JoinGroupApiResponse,
     ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, NamespaceApiResponse,
-    NamespaceIdentityApiResponse, PairDeviceInitApiRequest, PairDeviceInitApiResponse,
+    NamespaceIdentityApiResponse, PairDeviceCompleteApiRequest, PairDeviceCompleteApiResponse,
+    PairDeviceInitApiRequest, PairDeviceInitApiResponse,
 };
 use eyre::Result;
 use serde::Serialize;
@@ -113,6 +114,27 @@ where
             .connection
             .post(
                 &format!("admin-api/namespaces/{namespace_id}/account/pair-init"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    /// Certify a device another node minted, link it, and deliver the scope
+    /// key — the second half of pairing.
+    ///
+    /// Run on the node that holds the account. Needs the current scope key:
+    /// the link is an encrypted group op, and the delivery is that same key
+    /// wrapped for the new device.
+    pub async fn pair_device_complete(
+        &self,
+        namespace_id: &str,
+        request: PairDeviceCompleteApiRequest,
+    ) -> Result<PairDeviceCompleteApiResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/namespaces/{namespace_id}/account/pair-complete"),
                 request,
             )
             .await?;

@@ -326,13 +326,11 @@ defers to the cutover: it is one change to the membership resolver, to accept a
 key that is the `sign_pk` of a live binding whose account is a member. It also
 retires a field that is currently written and never read.
 
-**2. There is no way to enroll into an *existing* account.** `ensure_enrolled`
-always mints a fresh account rooted at the enrolling node's own namespace
-identity. Pairing is the opposite: adopt an account whose genesis arrives from
-another node. Note the ordering this forces — a device cannot mint its `DeviceId`
-until it knows the account (`H(account ‖ nonce)`), and the account holder cannot
-sign its certificate until it knows the device id and KEM key, so pairing is a
-**two-way** exchange and not a single command.
+**2. There is no way to enroll into an *existing* account.** *(Closed — see
+"Pairing" below.)* `ensure_enrolled` only ever minted a fresh account of the
+enrolling node's own. Adopting an account whose genesis arrives from another node
+is `ensure_enrolled_into`, driven by the two-way `pair-init` / `pair-complete`
+exchange the ordering forces.
 
 **3. One device per node per namespace.** `NodeDeviceIdentity` is keyed by
 namespace, so "two devices" means two nodes. That is why the acceptance scenario
@@ -377,6 +375,50 @@ harmless because subscribing is idempotent.
 
 This is glue with no unit seam — the proof that it holds end to end is a restart
 step in the acceptance scenario, not a `cargo test`.
+
+### Pairing, and why the backfill needed no new op
+
+Pairing is `account pair-init` on the new device then `account pair-complete` on
+the one that holds the account. The split is forced, not stylistic: the new
+device mints three values nobody else can derive — its `DeviceId` (which needs
+the account, since the id is `H(account ‖ nonce)`), its KEM key, and its signing
+key — while only the holder has the root that certifies them.
+
+The signing key is the one easy to forget. The certificate names it and
+per-device authorization resolves a signer *through* it, so omitting it from the
+exchange yields a certificate naming a key no signature ever matches: the device
+links and still cannot author.
+
+`pair-complete` publishes **two** ops, and the second is what makes the first
+useful:
+
+1. `AccountDeviceLinked` — the encrypted `GroupOp`, carrying the root-signed
+   certificate and the member endorsement. This confers authority.
+2. `RootOp::KeyDelivery` — the current scope key, wrapped to the device's
+   agreement key.
+
+**The delivery needed no new op type, and the reason is the same bootstrap
+constraint as everywhere else here.** `KeyEnvelope.recipient` is already an
+`EnvelopeRecipient` with a `Device` variant, and `KeyDelivery` is already a
+*cleartext* `RootOp`. That last part is load-bearing: the pairing device holds no
+scope key, so a device-addressed envelope inside an encrypted `GroupOp` would be
+unreadable by its only recipient — the identical deadlock that keeps the
+member-addressed envelope alive. Being a root op is what breaks the cycle.
+
+The wrap takes the KEM key from the exchange rather than re-reading it from the
+folded binding, so the delivery does not depend on the publisher having already
+folded the link it just published.
+
+**Only the current key is delivered.** Peers retain rotated-out keys, so history
+*could* be handed back, but that would make every newly paired device a
+full-history reader — a capability decision that deserves its own change rather
+than riding in on pairing. The cost is stated plainly: a paired device converges
+on forward state and cannot decrypt ops sealed under retired epochs.
+
+A failed delivery is reported (`key_delivered: false`) rather than swallowed or
+treated as a failed pairing. The link already conferred authority and the
+device's own sync pull re-requests the key — but until that lands the device
+cannot read, and a flat success would hide exactly that.
 
 ### Not yet wired: the ops that trigger delivery
 
@@ -600,10 +642,12 @@ in production, and a fan-out reading it would wrap for zero recipients.
 | B3 | Account ops on the **`GroupOp` wire** (tags 27–29), device-binding rows, apply handlers | **done** |
 | C | **Node device identity** — `NodeDeviceIdentity` row family (`0x44`), per-namespace `DeviceId` + X25519 secret | **done** |
 | D | `KeyEnvelope` → `EnvelopeRecipient{Member,Device}`, native X25519 wrap, device-first fan-out, both-modes receive | **done** |
-| D′ | On-link backfill and revoke-triggered rotation | **folded into F** — needs an account-op publisher |
+| D′ | On-link backfill (in F3) and revoke-triggered rotation (in F4) | **split across F** — each needs its publisher |
 | D″ | Device-addressed sync pull (`GroupKeyRequest.requester_device`) | **done** |
-| E | Runtime: `executor_id()`→account, `device_id()`, SDK aggregation | after D |
-| F | `meroctl account create / link / revoke`, pairing UX, **plus D′** | after E |
+| E | Runtime: `executor_id()`→account, `device_id()`, SDK aggregation | after F |
+| F3 | `meroctl account pair-init` / `pair-complete`, on-link key backfill | **done** |
+| F4 | `account revoke`, rotation, root-signed revocation proof | next |
+| F5 | merobox helpers, wire the acceptance scenario into CI | after F4 |
 | G | `merod export` / `import` | **independent — deferred by decision** |
 
 `NodeDeviceIdentity` is an additive row family rather than two more fields on

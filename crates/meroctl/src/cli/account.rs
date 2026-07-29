@@ -4,6 +4,7 @@ use eyre::Result;
 use crate::cli::Environment;
 
 mod create;
+mod pair_complete;
 mod pair_init;
 
 /// Account and device management.
@@ -23,6 +24,7 @@ pub struct AccountCommand {
 pub enum AccountSubCommands {
     Create(create::CreateCommand),
     PairInit(pair_init::PairInitCommand),
+    PairComplete(pair_complete::PairCompleteCommand),
 }
 
 impl AccountCommand {
@@ -30,6 +32,7 @@ impl AccountCommand {
         match self.subcommand {
             AccountSubCommands::Create(cmd) => cmd.run(environment).await,
             AccountSubCommands::PairInit(cmd) => cmd.run(environment).await,
+            AccountSubCommands::PairComplete(cmd) => cmd.run(environment).await,
         }
     }
 }

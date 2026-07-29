@@ -1986,6 +1986,69 @@ pub struct PairDeviceInitApiResponse {
     pub data: PairDeviceInitApiResponseData,
 }
 
+/// Certify a device another node minted, link it, and deliver the scope key.
+///
+/// Every field is what that node's pair-init returned. None is a secret: the
+/// certificate this mints is what makes the device real, and only this side
+/// holds the account root that signs it.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairDeviceCompleteApiRequest {
+    /// Hex-encoded `DeviceId` the other node minted (32 bytes).
+    pub device_id: String,
+    /// Hex-encoded X25519 agreement key to wrap the scope key under (32 bytes).
+    pub kem_public_key: String,
+    /// Hex-encoded Ed25519 key that device signs its ops with (32 bytes).
+    pub sign_public_key: String,
+}
+
+impl Validate for PairDeviceCompleteApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        for (field, value) in [
+            ("deviceId", &self.device_id),
+            ("kemPublicKey", &self.kem_public_key),
+            ("signPublicKey", &self.sign_public_key),
+        ] {
+            if value.len() != 64 {
+                errors.push(ValidationError::InvalidLength {
+                    field,
+                    expected: 64,
+                    actual: value.len(),
+                });
+            } else if hex::decode(value).is_err() {
+                errors.push(ValidationError::InvalidHexEncoding {
+                    field,
+                    reason: "not valid hex".to_owned(),
+                });
+            }
+        }
+        errors
+    }
+}
+
+/// What pairing established.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairDeviceCompleteApiResponseData {
+    /// Hex-encoded `AccountId` the device now speaks for.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId` that was linked.
+    pub device_id: String,
+    /// Whether the current scope key was wrapped and published for the device.
+    ///
+    /// `false` does not mean pairing failed — the link is what confers
+    /// authority, and the device's own sync pull re-requests the key. It does
+    /// mean the device cannot read until that lands.
+    pub key_delivered: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairDeviceCompleteApiResponse {
+    pub data: PairDeviceCompleteApiResponseData,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupInvitationApiRequest {
