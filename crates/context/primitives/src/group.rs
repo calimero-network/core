@@ -744,6 +744,20 @@ pub struct CreateAccountResponse {
     pub genesis: AccountGenesis,
 }
 
+impl CreateAccountResponse {
+    /// Build a response. Exists because the struct is `#[non_exhaustive]` — which
+    /// is right for the readers, but the producer lives in `calimero-context` and
+    /// cannot use a struct expression across the crate boundary.
+    #[must_use]
+    pub const fn new(account: AccountId, device: DeviceId, genesis: AccountGenesis) -> Self {
+        Self {
+            account,
+            device,
+            genesis,
+        }
+    }
+}
+
 impl Message for CreateAccountRequest {
     type Result = eyre::Result<CreateAccountResponse>;
 }
