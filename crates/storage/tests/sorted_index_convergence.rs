@@ -348,3 +348,137 @@ fn sorted_map_apply_invalidates_stale_index_marker() {
         assert_eq!(map.last().unwrap(), Some(("b".to_owned(), "B".to_owned())));
     });
 }
+
+// === #3333 REOPENED: a post-sync LOCAL insert must not re-validate a stale index ===
+//
+// #3323 made the marker node-local; the apply-path clear (above) heals a peer
+// whose index was left stale by a synced child link. Both fixes assume the ONLY
+// thing that stamps the marker *valid* is a mutation from an already-consistent
+// index (or a rebuild). But `insert`/`remove` maintain the ordered index
+// INCREMENTALLY (one `index_put`/`index_remove`) and then stamp the marker to the
+// collection's *current* `full_hash` — which already reflects any children a
+// prior sync-apply linked. So this exact interleaving reintroduces the false
+// positive that #3333 is about (surfaced JS-path-first in sdk-js#87, because the
+// JS write path applies the peer's element before the local write commits):
+//
+//   1. sync delivers converged children `{a}` but NOT the node-local index
+//      (index fresh/empty, marker absent — the "second node" state above).
+//   2. a LOCAL `insert("b")` runs: children become `{a,b}`, `index_put("b")`
+//      writes ONLY `b`, and `stamp_index_marker()` records `marker = H({a,b})`.
+//   3. the index now holds `{b}` while the marker equals the full-set hash, so
+//      `index_marker_current()` is `true` and the next ordered read SKIPS the
+//      rebuild and serves the stale subset `{b}` forever.
+//
+// This is the SAME observable state the apply tests manufacture with
+// `drop_sorted_index_entry_for_testing`, but reached through a legitimate code
+// path (sync + local write), so it is the real regression. `contains`/`len`
+// read children directly and converge; only the ordered readers diverge.
+//
+// The fix: `insert`/`remove` must only maintain the index incrementally + stamp
+// when the index was ALREADY consistent (marker current) *before* the mutation.
+// When a sync left it stale, they leave the marker stale so the next ordered
+// read rebuilds from the full child set — the invariant `ensure_index`'s own doc
+// comment already promises ("the local insert path likewise leaves the marker
+// stale, so both mutation paths funnel back through this one rebuild").
+
+/// SortedSet: after sync delivers converged children to a node with a fresh
+/// ordered index, a LOCAL insert of a new element must not stamp a valid marker
+/// over the still-unbuilt index — the next ordered read must still see the full,
+/// converged set (not just the locally-inserted element).
+#[test]
+fn sorted_set_local_insert_after_sync_does_not_hide_synced_elements() {
+    reset_environment();
+    let state: SharedState = Rc::new(RefCell::new(HashMap::new()));
+
+    // Node A builds + commits the converged element `a` (warms the shared index
+    // mock as a side effect of `insert`).
+    with_runtime_env(env_for(&state, [1u8; 32]), || {
+        let mut set = Root::new(SortedSet::<String, MainStorage>::new);
+        assert!(set.insert("a".to_owned()).unwrap());
+        set.commit();
+    });
+
+    // Node B shares node A's converged state but has a FRESH node-local index
+    // (sync never ships the index) — the "second node" state.
+    clear_sorted_index_for_testing();
+
+    // Node B now performs a LOCAL insert of a NEW element `b` BEFORE any ordered
+    // read has rebuilt its index. Pre-fix this incrementally indexes only `b` and
+    // stamps `marker = H({a,b})`, hiding the synced `a` from ordered reads.
+    with_runtime_env(env_for(&state, [2u8; 32]), || {
+        let mut set = Root::<SortedSet<String, MainStorage>>::fetch().expect("node B sees state");
+        assert!(set.insert("b".to_owned()).unwrap());
+        set.commit();
+    });
+
+    // The next ordered read on node B must converge to the FULL set. Pre-fix it
+    // returns just `["b"]` (marker current over a `{b}`-only index).
+    with_runtime_env(env_for(&state, [2u8; 32]), || {
+        let set = Root::<SortedSet<String, MainStorage>>::fetch().expect("state present");
+        // Sanity: membership + count converge (they read children directly).
+        assert!(set.contains("a").unwrap(), "synced child 'a' present");
+        assert!(set.contains("b").unwrap(), "locally-inserted 'b' present");
+        assert_eq!(set.len().unwrap(), 2, "both children enumerable");
+
+        let got: Vec<String> = set.iter().unwrap().collect();
+        assert_eq!(
+            got,
+            vec!["a".to_owned(), "b".to_owned()],
+            "ordered iter() served a stale subset: a local insert after sync \
+             re-stamped the ordered-index marker over a fresh index, hiding the \
+             synced element (core#3333)"
+        );
+        assert_eq!(set.first().unwrap(), Some("a".to_owned()));
+        assert_eq!(set.last().unwrap(), Some("b".to_owned()));
+    });
+}
+
+/// SortedMap: same shape via the key/value API. A local `insert` of a new key
+/// after sync must not hide synced keys from the index-backed ordered readers.
+#[test]
+fn sorted_map_local_insert_after_sync_does_not_hide_synced_entries() {
+    reset_environment();
+    let state: SharedState = Rc::new(RefCell::new(HashMap::new()));
+
+    with_runtime_env(env_for(&state, [1u8; 32]), || {
+        let mut map = Root::new(SortedMap::<String, String, MainStorage>::new);
+        assert!(map
+            .insert("a".to_owned(), "A".to_owned())
+            .unwrap()
+            .is_none());
+        map.commit();
+    });
+
+    clear_sorted_index_for_testing();
+
+    with_runtime_env(env_for(&state, [2u8; 32]), || {
+        let mut map =
+            Root::<SortedMap<String, String, MainStorage>>::fetch().expect("node B sees state");
+        assert!(map
+            .insert("b".to_owned(), "B".to_owned())
+            .unwrap()
+            .is_none());
+        map.commit();
+    });
+
+    with_runtime_env(env_for(&state, [2u8; 32]), || {
+        let map = Root::<SortedMap<String, String, MainStorage>>::fetch().expect("state present");
+        assert!(map.contains("a").unwrap(), "synced entry 'a' present");
+        assert!(map.contains("b").unwrap(), "locally-inserted 'b' present");
+        assert_eq!(map.len().unwrap(), 2, "both entries enumerable");
+
+        let ordered: Vec<(String, String)> = map.range(..).unwrap().collect();
+        assert_eq!(
+            ordered,
+            vec![
+                ("a".to_owned(), "A".to_owned()),
+                ("b".to_owned(), "B".to_owned())
+            ],
+            "index-backed range() served a stale subset: a local insert after \
+             sync re-stamped the ordered-index marker over a fresh index, hiding \
+             the synced entry (core#3333)"
+        );
+        assert_eq!(map.first().unwrap(), Some(("a".to_owned(), "A".to_owned())));
+        assert_eq!(map.last().unwrap(), Some(("b".to_owned(), "B".to_owned())));
+    });
+}

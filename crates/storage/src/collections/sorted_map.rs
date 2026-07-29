@@ -339,6 +339,17 @@ where
         // collection is itself stored (see `super::rekey`).
         super::rekey::register_rekey::<Self>();
 
+        // core#3333: capture whether the ordered index was consistent with the
+        // child set (marker current) BEFORE any mutation below. A sync-apply that
+        // linked/unlinked a child clears the marker WITHOUT populating the
+        // node-local index; if a subsequent local insert stamps the marker to the
+        // new `full_hash` it would falsely certify an index still missing that
+        // synced key and the next ordered read would serve a stale subset. Only
+        // maintain the index incrementally + stamp when it was already current;
+        // otherwise leave the marker stale so the next ordered read rebuilds from
+        // the full child set — the invariant `ensure_index` documents.
+        let index_was_current = S::index_supported() && self.index_marker_current();
+
         let id = custom_id.unwrap_or_else(|| compute_id(self.inner.id(), key.as_ref()));
 
         // Re-key any nested collections in `value` deterministically relative to
@@ -359,10 +370,14 @@ where
                 let (_, v) = &mut *entry;
                 mem::replace(v, value)
             };
-            // The key set didn't change, so the ordered index is still correct —
-            // restamp the marker to the new `full_hash` so the next ordered read
-            // stays a seek instead of forcing a needless O(n) rebuild.
-            if S::index_supported() {
+            // The key set didn't change by THIS op, so if the index was already
+            // consistent it stays correct — restamp the marker to the new
+            // `full_hash` so the next ordered read stays a seek instead of forcing
+            // a needless O(n) rebuild. But if a sync-apply had changed the child
+            // set and cleared the marker (index stale), restamping here would
+            // falsely certify a stale index (core#3333); leave it stale so the
+            // next ordered read rebuilds.
+            if index_was_current {
                 self.stamp_index_marker();
             }
             return Ok(Some(old));
@@ -380,10 +395,11 @@ where
         if let Some(order_key) = order_key {
             // Done after the inner write so the collection's `full_hash` already
             // reflects this insert when we stamp the validity marker. Only stamp
-            // if the index write was actually persisted — otherwise we leave the
-            // marker stale so the next ordered read rebuilds and self-heals,
-            // rather than trusting an index that's missing this key.
-            if S::index_put(collection, &order_key, id) {
+            // if the index was consistent before (see the `index_was_current`
+            // note above) AND the index write was actually persisted — otherwise
+            // we leave the marker stale so the next ordered read rebuilds and
+            // self-heals, rather than trusting an index missing keys.
+            if index_was_current && S::index_put(collection, &order_key, id) {
                 self.stamp_index_marker();
             }
         }
@@ -525,6 +541,13 @@ where
     {
         let id = compute_id(self.inner.id(), key.as_ref());
 
+        // Capture index consistency BEFORE the mutation (see `insert_internal`):
+        // only maintain the index incrementally + stamp when it was already
+        // current; otherwise a sync-applied child change left it stale and we
+        // must leave the marker stale so the next ordered read rebuilds
+        // (core#3333).
+        let index_was_current = S::index_supported() && self.index_marker_current();
+
         let Some(entry) = self.inner.get_mut(id)? else {
             return Ok(None);
         };
@@ -534,8 +557,9 @@ where
         // Keep the ordered index in step with the removal (no-op when the
         // adaptor doesn't back it). `entry.remove()` has already recomputed the
         // collection's `full_hash`, so the stamped marker stays valid — but only
-        // stamp if the index write landed; otherwise leave it stale to rebuild.
-        if S::index_supported() && S::index_remove(self.inner.id(), key.as_ref()) {
+        // stamp if the index was consistent before AND the index write landed;
+        // otherwise leave it stale to rebuild.
+        if index_was_current && S::index_remove(self.inner.id(), key.as_ref()) {
             self.stamp_index_marker();
         }
 
@@ -1320,6 +1344,11 @@ where
         let collection = self.map.inner.id();
         let id = compute_id(collection, self.key.as_ref());
 
+        // core#3333: capture index consistency BEFORE any mutation (see
+        // `SortedMap::insert_internal`) so a local insert after a sync-apply
+        // doesn't stamp a valid marker over a stale index.
+        let index_was_current = S::index_supported() && self.map.index_marker_current();
+
         // Re-key any nested collections in `value` deterministically relative to
         // this entry's (deterministic) id — exactly as `insert_with_storage_type`
         // does, so a nested CRDT stored via the Entry API converges across nodes.
@@ -1331,9 +1360,10 @@ where
         drop(self.map.inner.insert(Some(id), (self.key, value))?);
 
         if let Some(order_key) = order_key {
-            // Only stamp the validity marker if the index write landed; a dropped
-            // write leaves the marker stale so the next ordered read rebuilds.
-            if S::index_put(collection, &order_key, id) {
+            // Only stamp the validity marker if the index was consistent before
+            // AND the index write landed; a stale-before index or a dropped write
+            // leaves the marker stale so the next ordered read rebuilds.
+            if index_was_current && S::index_put(collection, &order_key, id) {
                 self.map.stamp_index_marker();
             }
         }
