@@ -1928,6 +1928,9 @@ pub const GROUP_ACCOUNT_KEY_PREFIX: u8 = 0x43;
 /// [`NodeDeviceIdentity`]).
 pub const NODE_DEVICE_IDENTITY_PREFIX: u8 = 0x44;
 
+/// This node's account root secret (see [`NodeAccountRoot`]).
+pub const NODE_ACCOUNT_ROOT_PREFIX: u8 = 0x45;
+
 /// Prefix for the pending-key-rotation worklist. A row marks: `group_id` still
 /// owes a forward-secrecy key rotation because `departed` left, and no rotation
 /// has landed yet.
@@ -2400,6 +2403,83 @@ impl Debug for NodeDeviceIdentity {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("NodeDeviceIdentity")
             .field("namespace_id", &self.namespace_id())
+            .finish()
+    }
+}
+
+/// This node's account root secret — a **singleton**, keyed by nothing but its
+/// own prefix (see [`NODE_ACCOUNT_ROOT_PREFIX`]).
+///
+/// Node-level rather than per-namespace, which is the whole point: it is the one
+/// key that survives losing every device, so it is what certifies a replacement.
+/// Per-namespace account ids are still distinct, because the nonce is derived per
+/// namespace from this secret rather than shared — see
+/// `calimero_account::derive_account_nonce`.
+///
+/// A one-byte key rather than a sentinel id, so the singleton-ness is in the type
+/// and there is no "which id means the real one" question for a later reader.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeAccountRoot(Key<(GroupPrefix,)>);
+
+impl NodeAccountRoot {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Key(GenericArray::from([NODE_ACCOUNT_ROOT_PREFIX])))
+    }
+}
+
+impl Default for NodeAccountRoot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsKeyParts for NodeAccountRoot {
+    type Components = (GroupPrefix,);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NodeAccountRoot {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for NodeAccountRoot {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("NodeAccountRoot")
+    }
+}
+
+/// The secret a [`NodeAccountRoot`] row carries.
+///
+/// The **only** thing that can certify a device for any of this node's accounts,
+/// and therefore the only thing that can recover one after every device is lost.
+/// Intended to be backed up out of band — paper or hardware — because losing it
+/// alongside the devices means no recovery at all.
+#[derive(Clone, Eq, PartialEq, ZeroizeOnDrop)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeAccountRootValue {
+    /// Ed25519 secret that roots every account this node owns.
+    pub root_secret: [u8; 32],
+}
+
+/// Redacted by hand, never derived — same discipline as the other secret-bearing
+/// values here. This one is the most sensitive of them: it is the recovery key.
+impl Debug for NodeAccountRootValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NodeAccountRootValue")
+            .field("root_secret", &"[redacted]")
             .finish()
     }
 }

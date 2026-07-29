@@ -85,6 +85,7 @@ pub mod group_store {
         AbsorbRecord,
         AbsorbRepository,
         AbsorbedEntity,
+        AccountRoot,
         // Typed errors (#2305). Bundled because external callers that
         // downcast on `eyre::Report` need access to the error types; only
         // adding the ones currently imported would surface the same

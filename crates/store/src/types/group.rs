@@ -40,6 +40,11 @@ impl PredefinedEntry for key::GroupAccountKey {
     type DataType<'a> = key::GroupAccountKeyValue;
 }
 
+impl PredefinedEntry for key::NodeAccountRoot {
+    type Codec = Borsh;
+    type DataType<'a> = key::NodeAccountRootValue;
+}
+
 impl PredefinedEntry for key::NodeDeviceIdentity {
     type Codec = Borsh;
     type DataType<'a> = key::NodeDeviceIdentityValue;

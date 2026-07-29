@@ -69,11 +69,10 @@ impl Handler<CreateAccountRequest> for ContextManager {
         // Mint (or recover) this node's device identity. Idempotent, so a retried
         // request re-publishes the same link rather than minting a second replica
         // id and stranding the state written under the first.
-        let enrolled =
-            match NodeDeviceRepository::new(&store).ensure_enrolled(&namespace_id, &self_pk) {
-                Ok(enrolled) => enrolled,
-                Err(err) => return ActorResponse::reply(Err(err)),
-            };
+        let enrolled = match NodeDeviceRepository::new(&store).ensure_enrolled(&namespace_id) {
+            Ok(enrolled) => enrolled,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
 
         // The device's op-signing key is the namespace identity, because that is
         // what actually signs ops on the governance path. Recording anything else

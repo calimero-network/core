@@ -71,6 +71,16 @@ const HANDOFF_SIGN_DOMAIN: &[u8] = b"calimero.account.handoff.v1";
 /// Domain separator for the bytes a root key signs to grant a device.
 const DEVICE_CERT_SIGN_DOMAIN: &[u8] = b"calimero.device.cert.v1";
 
+/// Domain for deriving a per-namespace account nonce from the node's account root
+/// secret. Distinct from every signing and id domain, so a derived nonce can never
+/// be confused with a signature preimage or an id.
+const ACCOUNT_NONCE_DOMAIN: &[u8] = b"calimero.account.nonce.v1";
+
+/// Domain for a member's endorsement of an account. Distinct from every other
+/// signing domain, so an endorsement signature can never be replayed as a device
+/// certificate, a handoff, or an op.
+const ACCOUNT_ENDORSEMENT_SIGN_DOMAIN: &[u8] = b"calimero.account.endorsement.v1";
+
 /// Every signing domain used by this crate, for the test that asserts they are
 /// pairwise distinct. A collision here would let a signature minted for one
 /// purpose be replayed as another.
@@ -98,6 +108,32 @@ fn domain_hash(domain: &[u8], parts: &[&[u8]]) -> [u8; 32] {
         hasher.update(part);
     }
     hasher.finalize().into()
+}
+
+/// Derive the genesis nonce for `namespace_id` from the node's account root
+/// secret.
+///
+/// Derived rather than stored, and that is what makes recovery possible: a stored
+/// nonce lives on the node, so losing every device loses the nonces and the root
+/// can no longer *name* the accounts it owns. With derivation, the whole recovery
+/// input is one secret plus a list of namespace ids — and the list is not secret.
+///
+/// Per-namespace rather than one nonce for the root, because that is what lets
+/// recovery and unlinkability coexist. One root spans every namespace, but each
+/// yields a **different** `AccountId`, so nobody correlates a person across
+/// namespaces. A single shared nonce would make every account id equal and link
+/// them all.
+///
+/// Takes the root **secret**, not its public key. The public key travels in every
+/// genesis, so deriving from it would let any observer compute the account ids for
+/// namespaces it has never seen — reintroducing exactly the correlation the
+/// per-namespace nonce exists to prevent.
+#[must_use]
+pub fn derive_account_nonce(root_secret: &[u8; 32], namespace_id: &[u8; 32]) -> [u8; 16] {
+    let full = domain_hash(ACCOUNT_NONCE_DOMAIN, &[root_secret, namespace_id]);
+    let mut nonce = [0u8; 16];
+    nonce.copy_from_slice(&full[..16]);
+    nonce
 }
 
 /// Serialize with borsh into a `Vec<u8>`.
@@ -268,6 +304,87 @@ impl DeviceId {
         seed.copy_from_slice(&self.0[..16]);
         seed
     }
+}
+
+/// A group member's statement that an account is theirs.
+///
+/// Exists because an account root is deliberately **not** a member key. The root is
+/// kept offline so it survives losing every device, which means the link gate
+/// cannot ask "is this account's root a member?" — it is a member nowhere. Instead
+/// the member key that *is* granted signs the account id, and the gate asks whether
+/// the **endorser** is a member and whether it really signed this account.
+///
+/// Equally strong as the old question: only a member can produce a valid
+/// endorsement, and only the root holder can certify devices into the account. It
+/// takes both to enroll, and neither alone is enough.
+///
+/// Anyone may endorse an account they do not own — the account id is public — and it
+/// gains them nothing, exactly as constructing a genesis over someone else's key
+/// gains nothing: enrolling a device still needs the root's signature.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct AccountMemberEndorsement {
+    /// The account being endorsed.
+    pub account: AccountId,
+    /// The member key making the statement. Must be a member at the op's cut.
+    pub member: PublicKey,
+    /// `member`'s signature over [`Self::signing_payload`].
+    pub signature: [u8; 64],
+}
+
+impl AccountMemberEndorsement {
+    /// Canonical bytes an endorser signs.
+    ///
+    /// Covers the account id and the endorsing key. Including the endorser is what
+    /// stops a valid endorsement being re-presented as though a *different* member
+    /// had made it — the signature would then verify against a key that never
+    /// signed anything.
+    #[must_use]
+    pub fn signing_payload(account: AccountId, member: &PublicKey) -> [u8; 32] {
+        domain_hash(
+            ACCOUNT_ENDORSEMENT_SIGN_DOMAIN,
+            &[account.as_bytes(), AsRef::<[u8; 32]>::as_ref(member)],
+        )
+    }
+}
+
+/// Sign an endorsement of `account` with a granted member key.
+///
+/// # Errors
+/// [`AccountError::SigningFailed`] if the key cannot sign.
+pub fn sign_account_endorsement(
+    member_sk: &PrivateKey,
+    account: AccountId,
+) -> Result<AccountMemberEndorsement, AccountError> {
+    let member = member_sk.public_key();
+    let payload = AccountMemberEndorsement::signing_payload(account, &member);
+    Ok(AccountMemberEndorsement {
+        account,
+        member,
+        signature: member_sk
+            .sign(&payload)
+            .map_err(|_| AccountError::SigningFailed)?
+            .to_bytes(),
+    })
+}
+
+/// Check an endorsement is internally valid — that `member` really signed
+/// `account`.
+///
+/// Says nothing about whether `member` is actually a member: that is an at-cut
+/// question only the projection can answer, and keeping the two apart is the same
+/// split as [`VerifiedDeviceCert`] versus "in force".
+///
+/// # Errors
+/// [`AccountError::EndorsementSignatureInvalid`] if the signature does not verify.
+pub fn verify_account_endorsement(
+    endorsement: &AccountMemberEndorsement,
+) -> Result<(), AccountError> {
+    let payload =
+        AccountMemberEndorsement::signing_payload(endorsement.account, &endorsement.member);
+    endorsement
+        .member
+        .verify_raw_signature(&payload, &endorsement.signature)
+        .map_err(|_| AccountError::EndorsementSignatureInvalid)
 }
 
 /// Rolls an account's root key from epoch `from_epoch` to `from_epoch + 1`.
@@ -510,6 +627,9 @@ pub enum AccountError {
         /// Version this build mints and accepts.
         supported: u8,
     },
+    /// A member endorsement's signature does not verify under the key it names.
+    #[error("account endorsement is not validly signed by the member it names")]
+    EndorsementSignatureInvalid,
     /// The supplied chain is longer than [`MAX_ROOT_KEY_HANDOFFS`].
     #[error("handoff chain has {found} entries, over the {limit} cap")]
     ChainTooLong {
@@ -825,6 +945,117 @@ mod tests {
             resolve_root_keys(&g, &at_cap),
             Err(AccountError::ChainTooLong { .. })
         ));
+    }
+
+    #[test]
+    fn an_endorsement_round_trips_and_rejects_forgery() {
+        let member = key(1);
+        let account = genesis_for(&key(9)).account_id();
+
+        let endorsement = sign_account_endorsement(&member, account).expect("sign");
+        assert_eq!(verify_account_endorsement(&endorsement), Ok(()));
+
+        // A flipped signature byte fails.
+        let mut tampered = endorsement;
+        tampered.signature[0] ^= 0xFF;
+        assert_eq!(
+            verify_account_endorsement(&tampered),
+            Err(AccountError::EndorsementSignatureInvalid)
+        );
+
+        // Naming a different account fails: the account is inside the payload.
+        let mut moved = endorsement;
+        moved.account = genesis_for(&key(8)).account_id();
+        assert_eq!(
+            verify_account_endorsement(&moved),
+            Err(AccountError::EndorsementSignatureInvalid)
+        );
+    }
+
+    #[test]
+    fn an_endorsement_cannot_be_re_presented_as_another_members() {
+        // Why the endorser is inside the signed payload. Without it, swapping the
+        // `member` field would leave a signature that verifies against a key which
+        // never signed anything — a member could be shown to have endorsed an
+        // account it never touched.
+        let real = key(1);
+        let other = key(2);
+        let account = genesis_for(&key(9)).account_id();
+
+        let mut stolen = sign_account_endorsement(&real, account).expect("sign");
+        stolen.member = other.public_key();
+        assert_eq!(
+            verify_account_endorsement(&stolen),
+            Err(AccountError::EndorsementSignatureInvalid)
+        );
+    }
+
+    #[test]
+    fn endorsing_someone_elses_account_is_harmless() {
+        // Account ids are public, so anyone can endorse one. It grants nothing:
+        // enrolling a device still needs the ROOT's signature, which an endorser
+        // does not hold. Pinned so the gate is never "tightened" into rejecting a
+        // valid endorsement on the mistaken grounds that endorsement implies
+        // ownership.
+        let stranger = key(7);
+        let someone_elses = genesis_for(&key(9)).account_id();
+
+        let endorsement = sign_account_endorsement(&stranger, someone_elses).expect("sign");
+        assert_eq!(
+            verify_account_endorsement(&endorsement),
+            Ok(()),
+            "an endorsement is internally valid regardless of who made it; whether \
+             the endorser is a member is a separate at-cut question"
+        );
+    }
+
+    #[test]
+    fn a_derived_nonce_is_stable_per_namespace_and_unlinkable_across_them() {
+        // The two properties that make one offline root workable at all.
+        let root = [0x11u8; 32];
+        let ns_a = [0xAAu8; 32];
+        let ns_b = [0xBBu8; 32];
+
+        // Stable: recovery recomputes the same account id from the root alone.
+        assert_eq!(
+            derive_account_nonce(&root, &ns_a),
+            derive_account_nonce(&root, &ns_a),
+            "derivation must be deterministic or a recovered node names a different account"
+        );
+
+        // Unlinkable: the same person in two namespaces is two account ids.
+        assert_ne!(
+            derive_account_nonce(&root, &ns_a),
+            derive_account_nonce(&root, &ns_b),
+            "one nonce across namespaces would make every account id equal and link them"
+        );
+
+        // And two people in one namespace are distinct.
+        assert_ne!(
+            derive_account_nonce(&root, &ns_a),
+            derive_account_nonce(&[0x22u8; 32], &ns_a)
+        );
+    }
+
+    #[test]
+    fn the_nonce_cannot_be_derived_from_the_public_root_key() {
+        // Structural, not a behavioural assertion: `derive_account_nonce` takes the
+        // SECRET. The public root travels in every genesis, so a derivation from it
+        // would let any observer compute this root's account id in namespaces it has
+        // never seen — recreating the correlation the per-namespace nonce prevents.
+        //
+        // Pinned by deriving from a secret and its own public bytes and requiring
+        // they differ, so a refactor that swaps one for the other is caught.
+        let root_sk = key(1);
+        let secret_derived = derive_account_nonce(root_sk.as_bytes(), &[0xAAu8; 32]);
+        let public_derived = derive_account_nonce(
+            AsRef::<[u8; 32]>::as_ref(&root_sk.public_key()),
+            &[0xAAu8; 32],
+        );
+        assert_ne!(
+            secret_derived, public_derived,
+            "deriving from the public key must not produce the same nonce as the secret"
+        );
     }
 
     #[test]

@@ -20,11 +20,77 @@
 use calimero_account::{AccountGenesis, AccountId, DeviceId, KemPublicKey};
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519SecretKey;
-use calimero_primitives::identity::PublicKey;
-use calimero_store::key::{NodeDeviceIdentity, NodeDeviceIdentityValue};
+use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_store::key::{
+    NodeAccountRoot, NodeAccountRootValue, NodeDeviceIdentity, NodeDeviceIdentityValue,
+};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use rand::Rng as _;
+
+/// Serializes the generate-once in [`NodeDeviceRepository::ensure_account_root`],
+/// for the same reason as the device mint below: two callers could both observe an
+/// absent row and both generate, and the second `put` would win — replacing the
+/// root that already certified this node's devices, which is unrecoverable.
+static ACCOUNT_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// This node's account root — the one key that survives losing every device.
+///
+/// Node-level, not per-namespace: it is what certifies a replacement device after
+/// total loss, so it cannot live in the state being replaced. Per-namespace account
+/// ids stay distinct because the nonce is derived per namespace rather than shared,
+/// which is what lets recovery and unlinkability hold at once.
+// Deliberately NOT `Clone`: `PrivateKey` is not, and that is the right default for
+// a recovery key — every copy is another place it can leak from, and none of them
+// are covered by the original's wipe.
+#[non_exhaustive]
+pub struct AccountRoot {
+    secret: PrivateKey,
+}
+
+impl std::fmt::Debug for AccountRoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never derived: this is the recovery key.
+        write!(f, "AccountRoot([redacted])")
+    }
+}
+
+impl AccountRoot {
+    /// The public half, which every genesis this root produces names.
+    #[must_use]
+    pub fn public_key(&self) -> PublicKey {
+        self.secret.public_key()
+    }
+
+    /// The signing key, for minting device certificates and root-key handoffs.
+    ///
+    /// The only two things this key may ever do. It does not sign ops and does not
+    /// receive data, which is what allows it to live offline.
+    #[must_use]
+    pub const fn signing_key(&self) -> &PrivateKey {
+        &self.secret
+    }
+
+    /// This root's genesis for `namespace`.
+    ///
+    /// The nonce is derived from the root **secret** and the namespace id, so the
+    /// account id is recomputable from the root alone — no stored nonce to lose —
+    /// while remaining uncorrelatable across namespaces by anyone who does not hold
+    /// the secret.
+    #[must_use]
+    pub fn genesis_for(&self, namespace: &ContextGroupId) -> AccountGenesis {
+        AccountGenesis::new(
+            self.public_key(),
+            calimero_account::derive_account_nonce(self.secret.as_bytes(), &namespace.to_bytes()),
+        )
+    }
+
+    /// The `AccountId` this root owns in `namespace`.
+    #[must_use]
+    pub fn account_for(&self, namespace: &ContextGroupId) -> AccountId {
+        self.genesis_for(namespace).account_id()
+    }
+}
 
 /// Serializes the read-check-write in
 /// [`NodeDeviceRepository::ensure_for_account`] across callers, making the
@@ -97,6 +163,47 @@ impl<'a> NodeDeviceRepository<'a> {
         Self { store }
     }
 
+    /// This node's account root, generating it once if absent.
+    ///
+    /// Idempotent, and the lock matters more here than anywhere else in this file:
+    /// replacing a root that has already certified devices cannot be undone, and
+    /// there is no second copy to recover from.
+    ///
+    /// # Errors
+    /// Propagates the store read or write failure.
+    pub fn ensure_account_root(&self) -> EyreResult<AccountRoot> {
+        let _guard = ACCOUNT_ROOT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if let Some(existing) = self.account_root()? {
+            return Ok(existing);
+        }
+
+        let secret = PrivateKey::random(&mut rand::thread_rng());
+        self.store.handle().put(
+            &NodeAccountRoot::new(),
+            &NodeAccountRootValue {
+                root_secret: *secret.as_bytes(),
+            },
+        )?;
+        Ok(AccountRoot { secret })
+    }
+
+    /// This node's account root, if one has been generated.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn account_root(&self) -> EyreResult<Option<AccountRoot>> {
+        Ok(self
+            .store
+            .handle()
+            .get(&NodeAccountRoot::new())?
+            .map(|value: NodeAccountRootValue| AccountRoot {
+                secret: PrivateKey::from(value.root_secret),
+            }))
+    }
+
     /// This node's device identity for `namespace`, if it has enrolled one.
     ///
     /// `None` means this node has no device in the namespace, which is not an
@@ -167,18 +274,23 @@ impl<'a> NodeDeviceRepository<'a> {
     ///
     /// # Errors
     /// Propagates the store read or write failure.
-    pub fn ensure_enrolled(
-        &self,
-        namespace: &ContextGroupId,
-        root_sign_pk: &PublicKey,
-    ) -> EyreResult<NodeDevice> {
+    pub fn ensure_enrolled(&self, namespace: &ContextGroupId) -> EyreResult<NodeDevice> {
         // Recover a poisoned lock: the guarded state lives in the store, not the
         // guard, so a prior panic leaves nothing inconsistent behind.
         let _guard = NODE_DEVICE_MINT_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        let genesis = AccountGenesis::new(*root_sign_pk, rand::thread_rng().gen::<[u8; 16]>());
+        // Rooted at the node's account root, not its namespace identity. The
+        // namespace identity dies with the node, which is the case recovery exists
+        // for; the root is kept offline precisely so it does not.
+        //
+        // The nonce is DERIVED rather than generated, so a node holding only the
+        // root can recompute this exact account without the row below. The row is a
+        // read cache, not the source of truth — and it has to exist anyway, because
+        // a paired device's genesis belongs to another node's root and cannot be
+        // derived here at all.
+        let genesis = self.ensure_account_root()?.genesis_for(namespace);
         self.enroll_locked(namespace, genesis)
     }
 
@@ -291,8 +403,8 @@ mod tests {
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
-        let first = repo.ensure_enrolled(&ns, &root(1)).expect("mint");
-        let second = repo.ensure_enrolled(&ns, &root(1)).expect("mint");
+        let first = repo.ensure_enrolled(&ns).expect("mint");
+        let second = repo.ensure_enrolled(&ns).expect("mint");
 
         assert_eq!(first.device(), second.device());
         assert_eq!(
@@ -309,8 +421,8 @@ mod tests {
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
-        let original = repo.ensure_enrolled(&ns, &root(1)).expect("mint");
-        let asked_again = repo.ensure_enrolled(&ns, &root(2)).expect("mint");
+        let original = repo.ensure_enrolled(&ns).expect("mint");
+        let asked_again = repo.ensure_enrolled(&ns).expect("mint");
         assert_eq!(original.device(), asked_again.device());
     }
 
@@ -325,7 +437,7 @@ mod tests {
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
-        let enrolled = repo.ensure_enrolled(&ns, &root(1)).expect("enroll");
+        let enrolled = repo.ensure_enrolled(&ns).expect("enroll");
         let reloaded = repo.get(&ns).expect("read").expect("present");
 
         assert_eq!(enrolled.account, reloaded.account);
@@ -335,10 +447,76 @@ mod tests {
             reloaded.account,
             "the reconstructed genesis must address the account it claims"
         );
+        // Rooted at the node's ACCOUNT ROOT, not its namespace identity — which is
+        // the whole point: the namespace identity dies with the node, and this key
+        // is what certifies a replacement device afterwards.
         assert_eq!(
             reloaded.genesis.root_sign_pk,
-            root(1),
-            "the account is rooted at the namespace identity that enrolled it"
+            repo.account_root()
+                .expect("read")
+                .expect("present")
+                .public_key(),
+        );
+        // And it is recomputable from the root alone, with no row at all — the row
+        // is a read cache, not the source of truth.
+        assert_eq!(
+            repo.account_root()
+                .expect("read")
+                .expect("present")
+                .account_for(&ns),
+            reloaded.account,
+            "a node holding only the root must name the same account"
+        );
+    }
+
+    #[test]
+    fn the_account_root_is_generated_once_and_survives_reads() {
+        // Replacing a root that has already certified devices is unrecoverable —
+        // there is no second copy — so generate-once is the whole contract.
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+
+        assert!(repo.account_root().expect("read").is_none());
+
+        let first = repo.ensure_account_root().expect("generate");
+        let second = repo.ensure_account_root().expect("generate");
+        assert_eq!(first.public_key(), second.public_key());
+        assert_eq!(
+            repo.account_root()
+                .expect("read")
+                .expect("present")
+                .public_key(),
+            first.public_key()
+        );
+    }
+
+    #[test]
+    fn one_root_yields_a_distinct_account_per_namespace() {
+        // The property the whole recovery model rests on: one key to back up, one
+        // account per namespace, and no way to correlate them without the secret.
+        let store = test_store();
+        let root = NodeDeviceRepository::new(&store)
+            .ensure_account_root()
+            .expect("generate");
+
+        let ns_a = ContextGroupId::from([0xAAu8; 32]);
+        let ns_b = ContextGroupId::from([0xBBu8; 32]);
+
+        assert_ne!(
+            root.account_for(&ns_a),
+            root.account_for(&ns_b),
+            "the same root must not present the same account id in two namespaces"
+        );
+        assert_eq!(
+            root.genesis_for(&ns_a).root_sign_pk,
+            root.genesis_for(&ns_b).root_sign_pk,
+            "but both genesis records name the same root, which is what makes one \
+             backed-up key able to recover either"
+        );
+        // Recomputable from the root alone — nothing per-namespace to lose.
+        assert_eq!(
+            root.account_for(&ns_a),
+            root.genesis_for(&ns_a).account_id()
         );
     }
 
@@ -377,7 +555,7 @@ mod tests {
         // Distinct replica from whatever node-A holds: same account, different id.
         let other = test_store();
         let node_a = NodeDeviceRepository::new(&other)
-            .ensure_enrolled(&ns, &alice_root)
+            .ensure_enrolled(&ns)
             .expect("enroll");
         assert_ne!(
             paired.device(),
@@ -394,7 +572,7 @@ mod tests {
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
-        let mine = repo.ensure_enrolled(&ns, &root(1)).expect("enroll");
+        let mine = repo.ensure_enrolled(&ns).expect("enroll");
         let asked = repo
             .ensure_enrolled_into(&ns, AccountGenesis::new(root(2), [0xCDu8; 16]))
             .expect("adopt");
@@ -408,13 +586,12 @@ mod tests {
         // same replica id or the same agreement key in two namespaces.
         let store = test_store();
         let repo = NodeDeviceRepository::new(&store);
-        let acct = root(1);
 
         let a = repo
-            .ensure_enrolled(&ContextGroupId::from([0xAAu8; 32]), &acct)
+            .ensure_enrolled(&ContextGroupId::from([0xAAu8; 32]))
             .expect("mint");
         let b = repo
-            .ensure_enrolled(&ContextGroupId::from([0xBBu8; 32]), &acct)
+            .ensure_enrolled(&ContextGroupId::from([0xBBu8; 32]))
             .expect("mint");
 
         assert_ne!(a.device(), b.device());
@@ -432,7 +609,7 @@ mod tests {
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
-        let minted = repo.ensure_enrolled(&ns, &root(1)).expect("mint");
+        let minted = repo.ensure_enrolled(&ns).expect("mint");
         let published = minted.kem_public_key();
 
         // A sender wraps to the published key...
@@ -465,7 +642,6 @@ mod tests {
 
         let store = test_store();
         let ns = test_group_id();
-        let acct = root(1);
 
         let observed: Vec<DeviceId> = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..8)
@@ -473,7 +649,7 @@ mod tests {
                     let store = Arc::new(&store);
                     scope.spawn(move || {
                         NodeDeviceRepository::new(&store)
-                            .ensure_enrolled(&ns, &acct)
+                            .ensure_enrolled(&ns)
                             .expect("mint")
                             .device()
                     })
@@ -507,7 +683,7 @@ mod tests {
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
-        let _ = repo.ensure_enrolled(&ns, &root(1)).expect("mint");
+        let _ = repo.ensure_enrolled(&ns).expect("mint");
         repo.delete(&ns).expect("delete");
         assert!(repo.get(&ns).expect("read").is_none());
         repo.delete(&ns).expect("delete again");
