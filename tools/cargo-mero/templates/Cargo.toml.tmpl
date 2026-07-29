@@ -12,11 +12,6 @@ thiserror = "1"
 calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "{{sdk_tag}}" }
 calimero-storage = { git = "https://github.com/calimero-network/core", tag = "{{sdk_tag}}" }
 
-[build-dependencies]
-# Keep this pin in lock-step with the SDK tag above; they release together.
-calimero-wasm-abi = "={{sdk_tag}}"
-serde_json = "1"
-
 [dev-dependencies]
 # `testing` provides the mock host TestHost and tests/converge.rs run against.
 calimero-storage = { git = "https://github.com/calimero-network/core", tag = "{{sdk_tag}}", features = ["testing"] }

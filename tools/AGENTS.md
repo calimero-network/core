@@ -27,8 +27,8 @@ cargo install --path tools/cargo-mero      # picked up as `cargo mero`
 
 | Command | Purpose |
 | ------- | ------- |
-| `new <name>` | Scaffold an app (Cargo.toml, build.rs, lib.rs with a TestHost test) |
-| `build` | Compile to wasm32, `wasm-opt -Oz`, embed the ABI as `calimero_abi_v1` |
+| `new <name>` | Scaffold an app (Cargo.toml, lib.rs with a TestHost test) |
+| `build` | Emit the ABI from `src/*.rs`, compile to wasm32, `wasm-opt -Oz`, embed the ABI as `calimero_abi_v1` |
 | `test` | Run node-free TestHost unit tests + `tests/converge.rs` |
 | `bundle` | Build all services, write + sign `manifest.json`, tar the `.mpk` |
 | `abi` | Passthrough to `mero-abi`: `extract` / `state` / `types` / `inspect` / `embed` / `diff` |
@@ -47,7 +47,7 @@ cargo mero bundle --dev      # -> dist/<package>.mpk (dev key; --key <file> for 
 
 # CI signing without a checked-in key
 export MERO_SIGN_KEY="$RUNNER_TEMP/mero-key.json"
-cargo mero bundle            # reads MERO_SIGN_KEY when no --key/--dev/--unsigned
+cargo mero bundle            # reads MERO_SIGN_KEY when no --key/--dev
 ```
 
 ### File Organization
@@ -60,7 +60,7 @@ cargo-mero/
 ├── src/
 │   ├── main.rs              # CLI (DEFAULT_SDK_VERSION lives here)
 │   ├── new.rs               # `new` scaffold (+ version-pin tests)
-│   ├── build.rs             # `build`: compile -> wasm-opt -> embed ABI
+│   ├── build.rs             # `build`: emit ABI -> compile -> wasm-opt -> embed ABI
 │   ├── test_cmd.rs          # `test`
 │   ├── bundle.rs            # `bundle`: stage, manifest, sign, package
 │   ├── manifest.rs          # manifest.json shape

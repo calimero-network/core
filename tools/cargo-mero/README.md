@@ -38,11 +38,11 @@ meroctl app install --path dist/<package>.mpk ...   # 5. install on a node (mero
 ```
 
 **1. `cargo mero new my-app`**
-Scaffolds a crate: `Cargo.toml` (SDK pins, the `[package.metadata.calimero]` app id, and the `app-release` / `app-profiling` profiles), `build.rs`, `src/lib.rs` (state, events, logic, and a `#[cfg(test)]` TestHost test), and `tests/converge.rs`.
+Scaffolds a crate: `Cargo.toml` (SDK pins, the `[package.metadata.calimero]` app id, and the `app-release` / `app-profiling` profiles), `src/lib.rs` (state, events, logic, and a `#[cfg(test)]` TestHost test), and `tests/converge.rs`. No build script: the ABI is emitted by `build` below.
 
 **2. `cargo mero build`**
-Compiles to `wasm32-unknown-unknown`, copies the wasm into `res/`, size-optimizes it with `wasm-opt -Oz` (release only), and embeds the (canonicalized) full ABI as the wasm `calimero_abi_v1` custom section.
-Artifacts: `res/<name>.wasm` (the built, ABI-embedded wasm) plus `res/abi.json` and `res/state-schema.json` emitted by the app's `build.rs`.
+Emits the ABI from the crate's `src/*.rs`, compiles to `wasm32-unknown-unknown`, copies the wasm into `res/`, size-optimizes it with `wasm-opt -Oz` (release only), and embeds the (canonicalized) full ABI as the wasm `calimero_abi_v1` custom section.
+Artifacts: `res/<name>.wasm` (the built, ABI-embedded wasm) plus `res/abi.json` and `res/state-schema.json`. An app needs no `build.rs` for any of this.
 
 **3. `cargo mero test`**
 Runs the native test suite - the in-crate TestHost unit tests plus the `tests/converge.rs` convergence test.
@@ -51,7 +51,7 @@ No node or network is needed.
 **4. `cargo mero bundle`**
 Builds every service, stages the wasm/abi files under `res/bundle-temp/`, writes `manifest.json`, signs it, and packages everything into a tar.gz `.mpk`.
 Artifact: `dist/<package>.mpk` (the `<package>` is the `[package.metadata.calimero] package` id; the app version lives inside the manifest, not the filename).
-Pass a signing method: `--dev` (local), `--key <file>` (production), or `--unsigned`.
+Pass a signing method: `--dev` (local) or `--key <file>` (production).
 See [SIGNING.md](SIGNING.md).
 
 **5. `meroctl app install --path dist/<package>.mpk`**
@@ -148,8 +148,10 @@ The tool now lives back in core's workspace at `tools/cargo-mero`, versioned and
 
 The scaffolded SDK version has a single source of truth; a bump moves it and the test that pins the expected value:
 
-- `DEFAULT_SDK_VERSION` in `tools/cargo-mero/src/main.rs` - the one value `cargo mero new` substitutes into the scaffolded `Cargo.toml` (both the SDK git tag and the exact `calimero-wasm-abi` pin) and that `cargo mero test`'s example dev-dep hint prints.
-- the version assertions in `tools/cargo-mero/src/new.rs` tests, which hardcode the expected tag/pin and so must be bumped in lockstep.
+- `DEFAULT_SDK_VERSION` in `tools/cargo-mero/src/main.rs` - the one value `cargo mero new` substitutes into the scaffolded `Cargo.toml` (the SDK git tag) and that `cargo mero test`'s example dev-dep hint prints.
+- the version assertion in `tools/cargo-mero/src/new.rs` tests, which hardcodes the expected tag and so must be bumped in lockstep.
+
+Scaffolded apps carry no build script, so they no longer pin `calimero-wasm-abi`; the ABI comes from whichever `cargo mero` builds them.
 
 The in-repo test fixtures use `path` dependencies on core's own SDK crates, so they need no SDK-version update.
 

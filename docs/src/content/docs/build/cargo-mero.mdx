@@ -44,8 +44,8 @@ The optimizer is compiled into `cargo-mero`, so there is nothing to install on `
 
 | Command | What it does |
 | ------- | ------------ |
-| `cargo mero new <name>` | Scaffold a new app (Cargo.toml, build.rs, lib.rs with a TestHost test). |
-| `cargo mero build` | Compile to wasm32, optimize, and embed the ABI into `res/<name>.wasm`. |
+| `cargo mero new <name>` | Scaffold a new app (Cargo.toml, lib.rs with a TestHost test). |
+| `cargo mero build` | Emit the ABI, compile to wasm32, optimize, and embed the ABI into `res/<name>.wasm`. |
 | `cargo mero test` | Run the node-free native tests (TestHost unit tests + convergence tests). |
 | `cargo mero bundle` | Build all services and package a signed `.mpk` bundle. |
 | `cargo mero abi` | ABI utilities: `extract`, `state`, `types`, `inspect`, `embed`, `diff`. |
@@ -68,7 +68,7 @@ meroctl app install --path dist/<package>.mpk ...   # 5. install on a node (mero
 <Steps>
 
 1. **Scaffold.**
-   `cargo mero new my-app` writes a crate with `Cargo.toml` (SDK pins, the `[package.metadata.calimero]` app id, and the `app-release` / `app-profiling` profiles), `build.rs`, `src/lib.rs` (state, events, logic, and a `#[cfg(test)]` TestHost test), and `tests/converge.rs`.
+   `cargo mero new my-app` writes a crate with `Cargo.toml` (SDK pins, the `[package.metadata.calimero]` app id, and the `app-release` / `app-profiling` profiles), `src/lib.rs` (state, events, logic, and a `#[cfg(test)]` TestHost test), and `tests/converge.rs`. There is no build script - `cargo mero build` emits the ABI itself.
 
    ```
    $ cargo mero new my-app
@@ -87,12 +87,14 @@ meroctl app install --path dist/<package>.mpk ...   # 5. install on a node (mero
    $ cargo mero build
    • target wasm32-unknown-unknown present
    • building my-app (--profile app-release)
+   • emitted res/abi.json
+   • emitted res/state-schema.json
    • copied wasm to res/my_app.wasm
    • optimizing res/my_app.wasm (wasm-opt -Oz)
    • embedding res/abi.json into res/my_app.wasm
    ```
 
-   Artifacts: `res/<name>.wasm` (the built, ABI-embedded wasm) plus `res/abi.json` and `res/state-schema.json` emitted by the app's `build.rs`.
+   Artifacts: `res/<name>.wasm` (the built, ABI-embedded wasm) plus `res/abi.json` and `res/state-schema.json`, both emitted from the crate's `src/*.rs`. The app needs no `build.rs`.
 
 3. **Test.**
    Runs the native test suite - the in-crate TestHost unit tests plus the `tests/converge.rs` convergence test.
@@ -109,7 +111,7 @@ meroctl app install --path dist/<package>.mpk ...   # 5. install on a node (mero
 
 4. **Bundle.**
    Builds every service, stages the wasm/abi files, writes `manifest.json`, signs it, and packages everything into a tar.gz `.mpk` at `dist/<package>.mpk`.
-   Pass a signing method: `--dev` (local), `--key <file>` (production), or `--unsigned`.
+   Pass a signing method: `--dev` (local) or `--key <file>` (production).
 
    ```
    $ cargo mero bundle --dev
@@ -199,7 +201,7 @@ There are two kinds of key:
   A private Ed25519 key that only you hold, for anything you publish or install against a registry.
   Generate one with `cargo mero key generate -o my-key.json`.
 
-In CI, inject the key rather than checking it in: when none of `--key` / `--dev` / `--unsigned` is passed, `bundle` reads `MERO_SIGN_KEY` as the path to a key file.
+In CI, inject the key rather than checking it in: when neither `--key` nor `--dev` is passed, `bundle` reads `MERO_SIGN_KEY` as the path to a key file.
 
 ```bash
 export MERO_SIGN_KEY="$RUNNER_TEMP/mero-key.json"

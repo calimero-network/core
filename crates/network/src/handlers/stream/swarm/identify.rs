@@ -86,10 +86,32 @@ impl EventHandler<Event> for NetworkManager {
             // loopback/link-local interfaces. Private (RFC-1918) and IPv6
             // unique-local ranges are kept — they're legitimate for
             // same-network / overlay deployments.
+            // The same addresses also seed Kademlia's routing table. Without
+            // this, kad only ever learns the peers listed in
+            // `discovery.bootstrap.nodes` (seeded once at behaviour
+            // construction, `behaviour.rs`), and if those initial dials fail
+            // the table stays empty until the periodic bootstrap fires — five
+            // minutes, per libp2p-kad's default interval. A fleet that finds
+            // each other over mDNS therefore gossips and syncs state happily
+            // while every DHT query returns `NotFound { closest_peers: [] }`
+            // with `requests: 0`, because there is nobody in the table to ask.
+            //
+            // That is not hypothetical: it is why cross-node blob transfer
+            // (announce -> provider lookup -> signed request) cannot work in a
+            // two-node fleet whose bootstrap dials lost the startup race, even
+            // though blob metadata replicates over gossipsub perfectly well.
+            // Feeding identify's addresses in is the standard libp2p pattern
+            // and reuses the filtering already applied just below, so kad never
+            // sees a relayed, self-observed, or non-dialable entry.
             for addr in &listen_addrs {
                 let is_relayed = addr.iter().any(|p| matches!(p, Protocol::P2pCircuit));
                 if !is_relayed && addr != &observed_addr && is_dialable_advertised_addr(addr) {
                     self.discovery.state.add_peer_addr(peer_id, addr);
+                    let _ignored = self
+                        .swarm
+                        .behaviour_mut()
+                        .kad
+                        .add_address(&peer_id, addr.clone());
                 }
             }
 

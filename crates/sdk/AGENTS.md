@@ -18,8 +18,8 @@ cargo build -p calimero-sdk
 cargo test -p calimero-sdk
 cargo test -p calimero-sdk-macros
 
-# Build example app
-cargo build -p kv-store --target wasm32-unknown-unknown --release
+# Build example app (emits + embeds the ABI)
+cargo mero build --manifest-path apps/kv-store/Cargo.toml
 ```
 
 ## File Organization
@@ -488,10 +488,10 @@ ls tests/macros/*.stderr
 # Add WASM target
 rustup target add wasm32-unknown-unknown
 
-# Build app
-cargo build -p kv-store --target wasm32-unknown-unknown --release
+# Build app (emits + embeds the ABI)
+cargo mero build --manifest-path apps/kv-store/Cargo.toml
 
-# Output at: target/wasm32-unknown-unknown/release/kv_store.wasm
+# Output at: apps/kv-store/res/kv_store.wasm
 ```
 
 ## Common Gotchas

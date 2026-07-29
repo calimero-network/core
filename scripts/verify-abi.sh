@@ -4,9 +4,12 @@ set -euo pipefail
 # Add WASM target if not present
 rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
 
-# Build the conformance app
+# Built through cargo mero: it emits res/abi.json and embeds the ABI section,
+# both of which the extractor below reads.
 echo "Building abi_conformance..."
-cargo build -p abi_conformance --target wasm32-unknown-unknown
+PATH="$(scripts/setup-cargo-mero.sh):$PATH"
+cargo mero build --manifest-path apps/abi_conformance/Cargo.toml
+WASM="apps/abi_conformance/res/abi_conformance.wasm"
 
 # Build the extractor if not present
 EXTRACTOR="${ROOT:-$(git rev-parse --show-toplevel)}/target/debug/mero-abi"
@@ -18,7 +21,7 @@ fi
 # Extract ABI to temporary file
 OUT="/tmp/abi_conformance.json"
 echo "Extracting ABI..."
-"$EXTRACTOR" extract target/wasm32-unknown-unknown/debug/abi_conformance.wasm -o "$OUT"
+"$EXTRACTOR" extract "$WASM" -o "$OUT"
 
 # Format both files for comparison
 echo "Formatting files for comparison..."
@@ -81,7 +84,7 @@ fi
 # pair in .github/workflows/app-migration-e2e.yml (schema-downgrade-guard).
 echo "Exercising identity-downgrade lint (self-diff must be clean)..."
 STATE="/tmp/abi_conformance.state.json"
-"$EXTRACTOR" state target/wasm32-unknown-unknown/debug/abi_conformance.wasm -o "$STATE"
+"$EXTRACTOR" state "$WASM" -o "$STATE"
 "$EXTRACTOR" diff "$STATE" "$STATE"
 
 echo "ABI verify: OK" 
