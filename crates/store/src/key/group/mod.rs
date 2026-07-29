@@ -1664,7 +1664,13 @@ impl Debug for NamespaceIdentity {
 
 /// Value for [`NamespaceIdentity`]. The Ed25519 keypair this node uses as its
 /// member identity within the namespace, plus a sender key for encrypted sync.
-#[derive(Clone)]
+///
+/// Zeroized on drop, for the same reason the two node-local account secrets in
+/// this file are: this row holds two live secrets, and a plain drop leaves them in
+/// freed heap for whatever reads that page next — a core dump, a swap file, or the
+/// next allocation. `Copy` is therefore also off the table: it would duplicate the
+/// secret implicitly on every read, and the wipe only ever reaches the original.
+#[derive(Clone, ZeroizeOnDrop)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NamespaceIdentityValue {
     pub public_key: [u8; 32],
@@ -2606,7 +2612,7 @@ pub struct NodeDeviceIdentityValue {
     /// and the *genesis* is what a device link has to put on the wire. Pairing a
     /// second device means publishing another link naming the same account, so
     /// the genesis must be reconstructible — and it is, from this nonce plus the
-    /// namespace identity key that roots it.
+    /// account root key above.
     pub account_nonce: [u8; 16],
     /// The `DeviceId` this node speaks as in the namespace.
     pub device_id: [u8; 32],
