@@ -575,13 +575,33 @@ where
     /// guards), never the synced state — so a peer never inherits this node's
     /// marker and skips its own rebuild of converged-but-unindexed data.
     fn stamp_index_marker(&self) {
-        let _ = S::index_meta_put(self.inner.id(), &self.current_full_hash());
+        let full = self.current_full_hash();
+        tracing::debug!(
+            target: "calimero_storage::sorted_index_dbg",
+            collection = %self.inner.id(),
+            hash = %hex::encode(full),
+            kind = "SortedMap",
+            "STAMP index marker"
+        );
+        let _ = S::index_meta_put(self.inner.id(), &full);
     }
 
     /// `true` if the stamped marker equals the collection's current `full_hash`
     /// — i.e. nothing has changed the entry set since the index was last built.
     fn index_marker_current(&self) -> bool {
-        S::index_meta_get(self.inner.id()).as_deref() == Some(&self.current_full_hash()[..])
+        let full = self.current_full_hash();
+        let stored = S::index_meta_get(self.inner.id());
+        let current = stored.as_deref() == Some(&full[..]);
+        tracing::debug!(
+            target: "calimero_storage::sorted_index_dbg",
+            collection = %self.inner.id(),
+            current_full_hash = %hex::encode(full),
+            stored_marker = ?stored.as_deref().map(hex::encode),
+            marker_current = current,
+            kind = "SortedMap",
+            "CHECK index marker"
+        );
+        current
     }
 
     /// Reconcile the ordered index with the authoritative entry set, then stamp
@@ -612,6 +632,14 @@ where
                 .into_iter()
                 .map(|(order_key, _id)| order_key)
                 .collect();
+        tracing::debug!(
+            target: "calimero_storage::sorted_index_dbg",
+            %collection,
+            desired_len = desired.len(),
+            existing_len = existing.len(),
+            kind = "SortedMap",
+            "REBUILD index (desired = entry-set snapshot)"
+        );
 
         // Drop stale keys, add missing ones — only the diff is written. Track
         // whether every write landed: if any was dropped, leave the marker stale
