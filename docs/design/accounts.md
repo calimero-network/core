@@ -457,6 +457,29 @@ travel. Only the *sender* needs it, and reads it from the folded binding — the
 same source that decides whether the device is still authorized, so the fan-out
 cannot wrap for a device the projection says is revoked.
 
+## The acceptance test
+
+`apps/scaffolding-e2e/workflows/account-device-revoke-lockout.yml` — two nodes,
+one account, two devices, revoke one, assert the revoked device is locked out and
+the survivor is not.
+
+**Committed before the code it tests, and not yet passing.** It is the definition
+of done for phase F rather than something backfilled afterwards, and it is
+deliberately not wired into `e2e-rust-apps.yml` until it can pass — a permanently
+red required check trains people to ignore CI.
+
+It is the only thing that will have proven the networked half of this feature.
+Everything else is unit- and apply-path-tested, and `CLAUDE.md` is explicit that a
+green `cargo test` does not prove a networked flow works. Two of its steps exist
+because a unit test structurally cannot reach them: the **on-link backfill** (a
+paired device holds no scope key of its own, so it can only read what it wrote if
+an existing device wrapped the current keys for it) and the **pull-path lockout**
+(a revoked device's node is still a member, so it can ask a peer for the rotated
+key — and the failure is an absence of delivery, which only a log signal catches).
+
+It needs one thing from outside this repo: a `call` step that can choose *which*
+of a node's devices authors, which is a merobox change.
+
 ## Tests
 
 `crates/projection/tests/account_plane.rs` — 15 tests. Two properties carry the
