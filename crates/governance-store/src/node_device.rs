@@ -721,6 +721,54 @@ mod tests {
     }
 
     #[test]
+    fn an_enrolled_device_is_certifiable_only_by_the_account_root() {
+        // The two keys a node holds have one correct use each, and crossing them
+        // is silent: the namespace identity signs ops, the account root signs
+        // certificates. Since `ensure_enrolled` roots the account at the account
+        // root, a certificate signed by the namespace identity is verified
+        // against a key that never signed it — so the link is refused by every
+        // peer while the enrollment looks locally fine.
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let ns = test_group_id();
+
+        let enrolled = repo.ensure_enrolled(&ns).expect("enroll");
+        let namespace_identity = PrivateKey::random(&mut rand::thread_rng());
+
+        let wrong = calimero_account::sign_device_cert(
+            &namespace_identity,
+            enrolled.account,
+            enrolled.device(),
+            &namespace_identity.public_key(),
+            &enrolled.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("sign");
+        assert!(
+            calimero_account::verify_device_cert(enrolled.account, &enrolled.genesis, &[], &wrong)
+                .is_err(),
+            "a cert signed by the namespace identity must not verify against the account root"
+        );
+
+        let right = calimero_account::sign_device_cert(
+            repo.ensure_account_root().expect("root").signing_key(),
+            enrolled.account,
+            enrolled.device(),
+            &namespace_identity.public_key(),
+            &enrolled.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("sign");
+        assert!(
+            calimero_account::verify_device_cert(enrolled.account, &enrolled.genesis, &[], &right)
+                .is_ok(),
+            "a cert signed by the account root must verify"
+        );
+    }
+
+    #[test]
     fn a_node_with_no_enrollment_lists_no_namespaces() {
         let store = test_store();
         assert!(NodeDeviceRepository::new(&store)

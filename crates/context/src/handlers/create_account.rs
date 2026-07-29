@@ -13,10 +13,17 @@
 //! fail cleanly, it deadlocks the very bootstrap it depends on, so the precondition
 //! is checked explicitly below rather than left to fail deep in the publisher.
 //!
-//! **Why no admin approval.** The account is rooted at this node's namespace
-//! identity, so the apply gate's question — "is the account's root key a member of
-//! the group?" — is already satisfied by the node's own membership. The link grants
-//! nothing the member did not already hold, which is what makes it self-service.
+//! **Why no admin approval.** The account is rooted at this node's offline
+//! account root, which is a member nowhere by design, so the link carries a
+//! *member endorsement*: the node's granted namespace identity signs the account
+//! id, and the gate asks whether that endorser is a member at the op's cut. The
+//! link therefore grants nothing the member did not already hold, which is what
+//! makes it self-service.
+//!
+//! **Two keys, one use each.** The account root signs the certificate; the
+//! namespace identity signs the endorsement and the op itself. Crossing them is
+//! silent — a certificate signed by the wrong one still serializes, and is
+//! refused by every peer while the local enrollment looks fine.
 
 use std::sync::Arc;
 
@@ -37,11 +44,11 @@ impl Handler<CreateAccountRequest> for ContextManager {
         CreateAccountRequest { namespace_id }: CreateAccountRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        // The namespace identity is both the account's epoch-0 root key and the
-        // key that signs the link op. Those being the same key is what ties the
-        // account to a granted member: only the holder of that private half can
-        // certify devices under it, which is why the apply gate can ask about
-        // membership by key and still be asking about the account.
+        // The namespace identity signs the link op and the endorsement that
+        // carries it past the gate. It is NOT the account's root key — that is
+        // the offline account root, resolved below — and it is also the key
+        // recorded as the device's `sign_pk`, because it is what actually signs
+        // ops on the governance path.
         let Some((self_pk, signer_sk_bytes)) = self.node_namespace_identity(&namespace_id) else {
             return ActorResponse::reply(Err(eyre::eyre!(
                 "this node has no namespace identity for {namespace_id:?}; it cannot \
@@ -69,8 +76,23 @@ impl Handler<CreateAccountRequest> for ContextManager {
         // Mint (or recover) this node's device identity. Idempotent, so a retried
         // request re-publishes the same link rather than minting a second replica
         // id and stranding the state written under the first.
-        let enrolled = match NodeDeviceRepository::new(&store).ensure_enrolled(&namespace_id) {
+        let device_repo = NodeDeviceRepository::new(&store);
+        let enrolled = match device_repo.ensure_enrolled(&namespace_id) {
             Ok(enrolled) => enrolled,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+
+        // The certificate is signed by the ACCOUNT ROOT, not by the key that
+        // signs ops. `ensure_enrolled` roots the account at the account root, so
+        // that is the key `verify_device_cert` resolves from the genesis and
+        // checks against — signing with the namespace identity instead produces a
+        // certificate that verifies against a key which never signed it, and the
+        // link is refused by every peer while the local enrollment looks fine.
+        //
+        // The two keys have exactly one use each and crossing them is silent,
+        // which is why the invariant has its own test beside the repository.
+        let account_root = match device_repo.ensure_account_root() {
+            Ok(root) => root,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
@@ -79,7 +101,7 @@ impl Handler<CreateAccountRequest> for ContextManager {
         // would make `sign_pk` a claim no signature ever matches, and per-device
         // authorization resolves a signer THROUGH this field.
         let cert = match sign_device_cert(
-            &signer_sk,
+            account_root.signing_key(),
             enrolled.account,
             enrolled.device(),
             &self_pk,
