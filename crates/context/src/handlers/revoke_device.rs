@@ -63,61 +63,73 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
-        // Mint a proof when this node holds the account root that owns the
-        // device's account. That is what makes revocation available to the owner
-        // without an admin — and it is also the only authority a non-admin has
-        // here, so a node that is neither is refused before anything is signed.
+        // Whose device this is, and whether this node can prove it owns the
+        // account, both come from the group's own binding. Deriving the account
+        // from this node's root instead answers a different question — "which
+        // account do I own here" — so an admin ejecting somebody else's device
+        // named its own account in the op and reported it back to the operator.
         let device_repo = NodeDeviceRepository::new(&store);
-        let (account, proof) = match device_repo.account_root() {
-            Ok(Some(root)) => {
-                let genesis = root.genesis_for(&namespace_id);
-                let account = genesis.account_id();
-                match sign_device_revocation(root.signing_key(), account, device, 0) {
-                    Ok(revocation) => (
-                        account,
-                        Some(calimero_account::SignedDeviceRevocation {
-                            genesis,
-                            // Epoch 0: the account root has not rotated, so there
-                            // are no handoffs for a verifier to walk.
-                            chain: vec![],
-                            revocation,
-                        }),
-                    ),
-                    Err(err) => {
-                        return ActorResponse::reply(Err(eyre::eyre!(
-                            "failed to sign the revocation proof: {err}"
-                        )))
-                    }
-                }
-            }
+        let target = match device_repo.revocation_target(&namespace_id, device) {
+            Ok(Some(target)) => target,
             Ok(None) => {
                 return ActorResponse::reply(Err(eyre::eyre!(
-                    "this node has generated no account root, so it can neither own \
-                     the device nor prove a revocation"
+                    "{namespace_id:?} holds no binding for {device}, so there is no account \
+                     to name in the revocation. Either it was never linked here, or its \
+                     link has not synced to this node yet"
                 )))
             }
             Err(err) => return ActorResponse::reply(Err(err)),
         };
+        let account = target.account;
 
-        // The proof only authorises devices of THIS node's account. Revoking
-        // somebody else's device is the admin path, and nothing else.
-        let owns_the_account = match device_repo.get(&namespace_id) {
-            Ok(Some(enrolled)) => enrolled.account == account,
-            Ok(None) => false,
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
-
-        if !is_admin && !owns_the_account {
+        if !is_admin && !target.self_service {
             return ActorResponse::reply(Err(eyre::eyre!(
                 "this node is neither an admin of {namespace_id:?} nor the holder of the \
                  account that owns {device}; revoking somebody else's device requires admin"
             )));
         }
 
+        // Mint the proof only on the self-service path, which is the only one that
+        // needs it — an admin revokes on the group's authority and may hold no
+        // account root at all, so consulting one unconditionally refused every
+        // admin that had never run `account create`.
+        let proof = if target.self_service {
+            match device_repo.account_root() {
+                Ok(Some(root)) => {
+                    let genesis = root.genesis_for(&namespace_id);
+                    match sign_device_revocation(root.signing_key(), account, device, 0) {
+                        Ok(revocation) => Some(calimero_account::SignedDeviceRevocation {
+                            genesis,
+                            // Epoch 0: the account root has not rotated, so there
+                            // are no handoffs for a verifier to walk.
+                            chain: vec![],
+                            revocation,
+                        }),
+                        Err(err) => {
+                            return ActorResponse::reply(Err(eyre::eyre!(
+                                "failed to sign the revocation proof: {err}"
+                            )))
+                        }
+                    }
+                }
+                // Unreachable: `self_service` is true only because the root
+                // re-derived this account. Refusing beats signing nothing silently.
+                Ok(None) => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "the account root that owns {account} vanished between resolving \
+                         the revocation and signing its proof"
+                    )))
+                }
+                Err(err) => return ActorResponse::reply(Err(err)),
+            }
+        } else {
+            None
+        };
+
         let op = GroupOp::AccountDeviceUnlinked {
             account,
             device,
-            proof: if owns_the_account { proof } else { None },
+            proof,
         };
 
         let node_client = self.node_client.clone();

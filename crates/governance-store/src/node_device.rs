@@ -153,6 +153,18 @@ impl NodeDevice {
     }
 }
 
+/// What a revocation of one device is about, resolved from the group's own
+/// bindings rather than from anything this node derives for itself.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct RevocationTarget {
+    /// The account the device actually speaks for.
+    pub account: AccountId,
+    /// Whether this node holds the account root that owns it, and can therefore
+    /// mint the self-certifying proof that needs no admin.
+    pub self_service: bool,
+}
+
 /// Reads and writes this node's per-namespace device identity.
 pub struct NodeDeviceRepository<'a> {
     store: &'a Store,
@@ -419,6 +431,50 @@ impl<'a> NodeDeviceRepository<'a> {
             genesis,
             secret: DeviceSecret { device, kem_secret },
         })
+    }
+
+    /// Who owns `device` in `namespace`, and whether this node can prove it.
+    ///
+    /// `None` means this namespace holds no binding for the device — it was never
+    /// linked here, or the link has not synced yet. That is not a refusal on the
+    /// apply side (a revocation deliberately beats the link it withdraws), but it
+    /// does mean a *caller* cannot honestly name the account, so the revoke path
+    /// treats it as one.
+    ///
+    /// **The account is read from the binding, never derived locally.** Deriving it
+    /// from this node's own root answers a different question — "which account do
+    /// *I* own here" — and the two only coincide when revoking your own device. An
+    /// admin ejecting somebody else's device would name its own account in the op
+    /// it publishes and report that account back to the operator.
+    ///
+    /// **Ownership is a fact about the root, not about the stored row.** A paired
+    /// device's row names the account it adopted, which belongs to *another* node's
+    /// root — so a row match would let a paired device claim the self-service path
+    /// and sign a proof its root cannot back, which every peer then refuses. The
+    /// only proof of ownership is that this node's root re-derives the same account.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn revocation_target(
+        &self,
+        namespace: &ContextGroupId,
+        device: DeviceId,
+    ) -> EyreResult<Option<RevocationTarget>> {
+        let Some(binding) = crate::AccountBindingRepository::new(self.store)
+            .raw_binding(namespace, device)?
+            .map(|value| AccountId::from(value.account))
+        else {
+            return Ok(None);
+        };
+
+        let self_service = self
+            .account_root()?
+            .is_some_and(|root| root.account_for(namespace) == binding);
+
+        Ok(Some(RevocationTarget {
+            account: binding,
+            self_service,
+        }))
     }
 
     /// Every namespace this node holds a device identity in.
@@ -785,6 +841,177 @@ mod tests {
         let reloaded = repo.get(&ns).expect("read").expect("present");
         assert_eq!(reloaded.device(), mine.device());
         assert_eq!(reloaded.account, mine.account);
+    }
+
+    /// Link `device` of `genesis`'s account into `ns`, signed by `root_sk`.
+    fn link(store: &Store, ns: &ContextGroupId, root_sk: &PrivateKey, nonce: [u8; 16]) -> DeviceId {
+        let genesis = AccountGenesis::new(root_sk.public_key(), nonce);
+        let device = DeviceId::mint(genesis.account_id(), nonce);
+        let cert = calimero_account::sign_device_cert(
+            root_sk,
+            genesis.account_id(),
+            device,
+            &root(9),
+            &KemPublicKey::from([9u8; 32]),
+            0,
+            0,
+        )
+        .expect("sign the certificate");
+        let _binding = AccountBindingRepository::new(store)
+            .apply_link(ns, &genesis, &[], &cert)
+            .expect("store")
+            .expect("the credential must be admissible");
+        device
+    }
+
+    #[test]
+    fn a_revocation_names_the_account_that_owns_the_device() {
+        // The admin path. Deriving the account from this node's own root answers a
+        // different question — "which account do I own here" — so an admin ejecting
+        // somebody else's device published its OWN account id in the op and reported
+        // that account back to the operator.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let mine = repo.ensure_enrolled(&ns).expect("enroll");
+        let bob_sk = PrivateKey::from([7u8; 32]);
+        let bob_device = link(&store, &ns, &bob_sk, [0x11u8; 16]);
+
+        let target = repo
+            .revocation_target(&ns, bob_device)
+            .expect("resolve")
+            .expect("the group knows this binding");
+
+        assert_eq!(
+            target.account,
+            AccountGenesis::new(bob_sk.public_key(), [0x11u8; 16]).account_id(),
+        );
+        assert_ne!(
+            target.account, mine.account,
+            "the revocation must name the device's account, not the revoker's"
+        );
+        assert!(
+            !target.self_service,
+            "this node does not hold bob's root, so it can prove nothing about his \
+             device and has only the admin path"
+        );
+    }
+
+    #[test]
+    fn an_admin_holding_no_account_root_can_still_resolve_a_revocation() {
+        // Ejecting a device is an admin's job and needs no account of their own.
+        // Requiring a root here refused the whole admin path on any node that had
+        // never run `account create`.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+        assert!(repo.account_root().expect("read").is_none());
+
+        let device = link(&store, &ns, &PrivateKey::from([7u8; 32]), [0x11u8; 16]);
+
+        let target = repo
+            .revocation_target(&ns, device)
+            .expect("resolve")
+            .expect("the group knows this binding");
+        assert!(!target.self_service);
+        assert!(
+            repo.account_root().expect("read").is_none(),
+            "and resolving must not mint a root as a side effect — generating one \
+             here would burn the singleton on a node that never asked for an account"
+        );
+    }
+
+    #[test]
+    fn revoking_this_nodes_own_device_is_self_service() {
+        // The lost-laptop case: the owner may be the only person who knows, so it
+        // must not need an admin.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let mine = repo.ensure_enrolled(&ns).expect("enroll");
+        let cert = calimero_account::sign_device_cert(
+            repo.account_root()
+                .expect("read")
+                .expect("present")
+                .signing_key(),
+            mine.account,
+            mine.device(),
+            &root(9),
+            &mine.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("sign the certificate");
+        let _binding = AccountBindingRepository::new(&store)
+            .apply_link(&ns, &mine.genesis, &[], &cert)
+            .expect("store")
+            .expect("the credential must be admissible");
+
+        let target = repo
+            .revocation_target(&ns, mine.device())
+            .expect("resolve")
+            .expect("the group knows this binding");
+        assert_eq!(target.account, mine.account);
+        assert!(target.self_service);
+    }
+
+    #[test]
+    fn a_paired_device_cannot_claim_self_service_over_the_account_it_adopted() {
+        // The stored row names the account this device speaks for, which belongs to
+        // ANOTHER node's root. Reading ownership off that row would let this node
+        // sign a revocation proof its root cannot back — a proof every peer refuses,
+        // so the revocation records nothing and there is no admin fallback because
+        // the node claimed it did not need one.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let alice_sk = PrivateKey::from([1u8; 32]);
+        let alice = AccountGenesis::new(alice_sk.public_key(), [0xABu8; 16]);
+        let paired = repo.ensure_enrolled_into(&ns, alice).expect("adopt");
+        let cert = calimero_account::sign_device_cert(
+            &alice_sk,
+            paired.account,
+            paired.device(),
+            &root(9),
+            &paired.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("sign the certificate");
+        let _binding = AccountBindingRepository::new(&store)
+            .apply_link(&ns, &alice, &[], &cert)
+            .expect("store")
+            .expect("the credential must be admissible");
+
+        // This node has a root of its own — it just is not alice's.
+        let _own_root = repo.ensure_account_root().expect("generate");
+
+        let target = repo
+            .revocation_target(&ns, paired.device())
+            .expect("resolve")
+            .expect("the group knows this binding");
+        assert_eq!(
+            target.account, paired.account,
+            "the account is still read from the binding"
+        );
+        assert!(
+            !target.self_service,
+            "but ownership is a fact about the root, and this node does not hold the \
+             one that owns the account its own row names"
+        );
+    }
+
+    #[test]
+    fn a_device_this_namespace_never_linked_has_no_revocation_target() {
+        let store = test_store();
+        let ns = test_group_id();
+        assert!(NodeDeviceRepository::new(&store)
+            .revocation_target(&ns, DeviceId::from([0x33u8; 32]))
+            .expect("resolve")
+            .is_none());
     }
 
     #[test]
