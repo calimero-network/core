@@ -150,6 +150,31 @@ pub fn set_writers_payload(object: Id, entry: &RotationLogEntry) -> OpPayload {
 #[must_use]
 pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPayload> {
     match op {
+        // The account plane. Without these three arms the ops folded to `Noop`,
+        // so `crates/projection`'s account plane — built, tested, and complete —
+        // never learned that a device existed, and `AclView.devices` stayed empty
+        // on the governance path. That is not "dormant until the cutover": it is
+        // three missing arms. The payloads have been in `calimero-op` all along.
+        //
+        // The consequence was concrete: per-device authorization cannot resolve a
+        // device's signing key to the account it speaks for at a causal cut, so a
+        // second device could receive scope keys and then not author with them.
+        GroupOp::AccountDeviceLinked {
+            genesis,
+            chain,
+            cert,
+        } => Some(OpPayload::DeviceLinked {
+            genesis: *genesis,
+            chain: chain.clone(),
+            cert: *cert,
+        }),
+        GroupOp::AccountDeviceUnlinked { account, device } => Some(OpPayload::DeviceRevoked {
+            account: *account,
+            device: *device,
+        }),
+        GroupOp::AccountKeysRotated { handoff } => {
+            Some(OpPayload::AccountKeysRotated { handoff: *handoff })
+        }
         GroupOp::MemberAdded { member, role }
         | GroupOp::MemberRoleSet { member, role }
         | GroupOp::MemberJoinedViaTeeAttestation { member, role, .. } => {
@@ -293,6 +318,73 @@ mod tests {
     use calimero_storage::entities::{Metadata, OpMask};
     use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
     use calimero_storage::rotation_log::{RotationLog, RotationLogEntry};
+
+    /// A governance `AccountDeviceLinked` must reach the projection's account
+    /// plane and land as a folded device binding.
+    ///
+    /// Before the account arms existed this returned `None`, the op folded to
+    /// `Noop`, and `AclView.devices` stayed empty on the governance path — so the
+    /// complete, tested account plane in `crates/projection` guarded nothing, and
+    /// per-device authorization had no way to resolve a signing key to the account
+    /// it speaks for at a causal cut.
+    #[test]
+    fn a_governance_device_link_reaches_the_projection() {
+        use calimero_account::{sign_device_cert, AccountGenesis, DeviceId, KemPublicKey};
+        use calimero_primitives::identity::PrivateKey;
+
+        let root = PrivateKey::from([1u8; 32]);
+        let genesis = AccountGenesis::new(root.public_key(), [1u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [5u8; 16]);
+        let cert = sign_device_cert(
+            &root,
+            account,
+            device,
+            &PrivateKey::from([5u8; 32]).public_key(),
+            &KemPublicKey::from([5u8; 32]),
+            0,
+            0,
+        )
+        .expect("sign cert");
+
+        let group = ContextGroupId::from([9u8; 32]);
+        let payload = payload_from_group_op(
+            group,
+            &GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+            },
+        )
+        .expect("the account ops must map to a unified payload, not fold to Noop");
+        assert!(matches!(payload, OpPayload::DeviceLinked { .. }));
+
+        // And it must actually fold: a payload that never becomes a binding would
+        // satisfy the assertion above while leaving the plane just as blind.
+        let op = Op::from_parts(
+            [7u8; 32],
+            ScopeId::from([9u8; 32]),
+            vec![],
+            legacy_authorship(root.public_key()),
+            hlc(1),
+            payload,
+            [0u8; 32],
+            [0u8; 64],
+        );
+        let mut state = ScopeState::default();
+        state.apply(&op);
+        let view = state.acl_view();
+        assert!(
+            view.devices.contains_key(&device),
+            "the folded view must know the device, or per-device authorization has \
+             nothing to resolve against"
+        );
+        assert_eq!(
+            view.devices.get(&device).map(|b| b.account),
+            Some(account),
+            "and it must know which account the device speaks for"
+        );
+    }
 
     fn hlc(ns: u64) -> HybridTimestamp {
         HybridTimestamp::new(Timestamp::new(
