@@ -7,6 +7,12 @@ sidebar:
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
 
+## Two words this page leans on
+
+**Scope.** A [group](/protocol/concepts/) — a namespace, or a subgroup of one. A namespace is itself a group, the root one. (The word is overloaded in the code: `ScopeId` in `crates/op` is a *namespace* id, the partition key for the causal log. On this page "scope" means the group whose key is under discussion.)
+
+**Scope key.** One symmetric AES-256-GCM key per group, called `group_key` in the store. It encrypts that group's governance operations and its contexts' state deltas. Membership says you *may* participate; the scope key is what makes the bytes intelligible. That distinction is the whole reason revocation is not finished until the key rotates — strip someone's authority and they still read everything until the key changes.
+
 ## The problem: one key doing four jobs
 
 In the model described in [Identities & Keys](/protocol/identities/), a namespace member identity is a single Ed25519 keypair, and it does everything at once: it *is* the identity, it signs operations, it receives wrapped scope keys, and it is the key membership rows are stored under.
@@ -59,6 +65,19 @@ Because the id is a hash rather than a key, the keys underneath can rotate witho
 ```
 
 Separating the sign key from the KEM key is what lets a device rotate one without invalidating deliveries made under the other. Crossing the account root with the sign key is silent — a certificate signed by the wrong one still serializes and is refused only by peers — so the two have a dedicated invariant test beside the repository that owns them.
+
+### What the KEM key is
+
+KEM is *key encapsulation mechanism*: the X25519 public key a device publishes in its certificate, whose only job is to **receive the scope key**. It never signs anything.
+
+If the scope key is the key to a room, the KEM key is a mailbox slot on your door that only you can open. To let you in, someone already inside posts a copy of the room key through your slot — no round trip, no handshake. That is why delivery can ride on an ordinary operation and be picked up whenever the recipient next syncs.
+
+Two properties matter beyond the mechanics:
+
+- **Your KEM public key never travels on the envelope.** Only a fresh per-envelope *ephemeral* public key does. The sender reads your KEM key from the folded device binding — the same row that records whether you are still authorized. That is structurally why a revoked device cannot be wrapped for: the address and the authorization come from one source.
+- **The ephemeral is discarded after wrapping**, so compromising a sender's long-term key later does not decrypt past envelopes.
+
+The envelope format, both ECDH variants, and the AEAD details are specified in [Encryption](/protocol/encryption/); this page only covers who gets addressed and why.
 
 ## What is derived, and what is not
 
