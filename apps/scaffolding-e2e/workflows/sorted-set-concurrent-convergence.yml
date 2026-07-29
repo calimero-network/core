@@ -188,32 +188,18 @@ steps:
     outputs:
       n2_all: result
 
+  # DISCRIMINATOR for #3333. This PASSES on real Rust merod (verified in CI):
+  # a Rust structured-root app converges ordered reads cross-node — both
+  # in-process and networked. #3333 (stale ordered subset on the peer) is
+  # therefore JS-path-specific: the JS root converges via
+  # `__calimero_merge_root_state` (JsRoot merge runs), whereas a structured Rust
+  # root's deferred merge is a no-op, so the JS-root-merge write path's
+  # interaction with the SortedSet ordered-index marker is where the bug lives.
+  # This workflow stands as Rust convergence regression coverage.
   - name: Assert ordered iter converged on both nodes (#3333 discriminator)
     type: json_assert
     statements:
       - 'json_equal({{n1_all}}, {"output": ["a", "b"]})'
       - 'json_equal({{n2_all}}, {"output": ["a", "b"]})'
-
-  # --- Sanity: prove the instrumentation is live in this image ---
-  # `CHECK index marker` is emitted by `index_marker_current()` on every ordered
-  # read, so the two `sorted_tags_all` calls above guarantee it. Asserting it is
-  # present confirms the `sorted_index_dbg` trace is actually being captured
-  # (RUST_LOG wired, branch instrumentation compiled in) — so a diagnosis from
-  # these logs is trustworthy. Independent of whether the bug reproduces.
-  - name: node-1 emitted the sorted_index_dbg trace
-    type: assert_log_present
-    nodes:
-      - sortedset-node-1
-    patterns:
-      - "CHECK index marker"
-    tail_lines: 20000
-
-  - name: node-2 emitted the sorted_index_dbg trace
-    type: assert_log_present
-    nodes:
-      - sortedset-node-2
-    patterns:
-      - "CHECK index marker"
-    tail_lines: 20000
 
 stop_all_nodes: true
