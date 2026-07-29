@@ -34,8 +34,8 @@ use calimero_account::{
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
-    GroupAccountKey, GroupAccountKeyValue, GroupDeviceBinding, GroupDeviceBindingValue,
-    GroupRevokedDevice,
+    GroupAccountEndorser, GroupAccountKey, GroupAccountKeyValue, GroupDeviceBinding,
+    GroupDeviceBindingValue, GroupRevokedDevice,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -233,49 +233,69 @@ impl<'a> AccountBindingRepository<'a> {
         Ok(by_seed.into_values().collect())
     }
 
-    /// Every account this group knows, grouped by the member key currently
-    /// rooting it.
+    /// Record that `member` vouched for `account` in this group.
     ///
-    /// This is the member→account direction the scope-key fan-out needs, and it
-    /// is **re-derived on every call, never cached**. `AccountId` is a one-way
-    /// hash of the genesis, so the only way to build a reverse index is to
-    /// observe accounts while their genesis passes through — and a node rebuilds
-    /// its state from the op log, which carries accounts, not genesis-by-member.
-    /// A cache would therefore come back empty after a rebuild, silently
-    /// reverting every member to the identity fallback and undoing device
-    /// revocation. Scanning the rows has no state to lose.
+    /// Called after the endorsement has been verified — signature checked and
+    /// bound to this account — so a stored row always means a real vouch.
     ///
-    /// Keyed by the account's **epoch-0** root key, which is what the device-link
-    /// gate checks membership against. Keying on the *current* root instead — as
-    /// this did — let the two disagree: after a rotation onto a key that is not a
-    /// member, an account still passed the link gate (which reads the immutable
-    /// genesis) while vanishing from delivery, leaving its devices authorized to
-    /// write but unable to read. The genesis key is also immutable, so the tie
-    /// cannot depend on which rotations a replica has folded.
+    /// A grow-only set, and deliberately not "the" endorser: two links for one
+    /// account may legitimately name different members, and collapsing them to
+    /// one field would make the stored value depend on which link folded last.
+    /// Idempotent, because the key carries the whole fact.
+    ///
+    /// # Errors
+    /// Propagates the store write failure.
+    pub fn record_endorser(
+        &self,
+        group: &ContextGroupId,
+        account: AccountId,
+        member: &PublicKey,
+    ) -> EyreResult<()> {
+        let key = GroupAccountEndorser::new(group.to_bytes(), *account.as_bytes(), *member);
+        let mut handle = self.store.handle();
+        if handle.has(&key)? {
+            return Ok(());
+        }
+        handle.put(&key, &())?;
+        Ok(())
+    }
+
+    /// Every account this group knows, grouped by the member key that endorsed
+    /// it.
+    ///
+    /// The member→account direction the scope-key fan-out and per-device
+    /// authorization both need. Reads the endorser rows rather than the account
+    /// row's genesis key: since the account root became a dedicated offline key
+    /// it is a member nowhere, so matching on the genesis key matches nothing
+    /// and every member silently falls back to identity addressing — handing the
+    /// scope key straight to a node running a revoked device.
+    ///
+    /// Re-derived per call, never cached, for the reason in
+    /// [`Self::accounts_endorsed_by`]'s sibling below.
     ///
     /// # Errors
     /// Propagates the store scan failure.
-    pub fn accounts_rooted_at_members(
+    pub fn accounts_by_endorsing_member(
         &self,
         group: &ContextGroupId,
     ) -> EyreResult<BTreeMap<PublicKey, Vec<AccountId>>> {
         let gid = group.to_bytes();
         let keys = collect_keys_with_prefix(
             self.store,
-            GroupAccountKey::new(gid, [0u8; 32]),
-            calimero_store::key::GROUP_ACCOUNT_KEY_PREFIX,
+            GroupAccountEndorser::new(gid, [0u8; 32], PublicKey::from([0u8; 32])),
+            calimero_store::key::GROUP_ACCOUNT_ENDORSER_PREFIX,
             |k| k.group_id() == gid,
         )?;
 
-        let handle = self.store.handle();
         let mut out: BTreeMap<PublicKey, Vec<AccountId>> = BTreeMap::new();
         for key in keys {
-            let Some(value): Option<GroupAccountKeyValue> = handle.get(&key)? else {
-                continue;
-            };
-            out.entry(PublicKey::from(value.genesis_root_pk))
+            out.entry(key.member())
                 .or_default()
                 .push(AccountId::from(key.account_id()));
+        }
+        for accounts in out.values_mut() {
+            accounts.sort_unstable();
+            accounts.dedup();
         }
         Ok(out)
     }

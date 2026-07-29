@@ -1931,6 +1931,10 @@ pub const NODE_DEVICE_IDENTITY_PREFIX: u8 = 0x44;
 /// This node's account root secret (see [`NodeAccountRoot`]).
 pub const NODE_ACCOUNT_ROOT_PREFIX: u8 = 0x45;
 
+/// A member key that has endorsed an account into a group (see
+/// [`GroupAccountEndorser`]).
+pub const GROUP_ACCOUNT_ENDORSER_PREFIX: u8 = 0x46;
+
 /// Prefix for the pending-key-rotation worklist. A row marks: `group_id` still
 /// owes a forward-secrecy key rotation because `departed` left, and no rotation
 /// has landed yet.
@@ -2346,6 +2350,95 @@ pub struct GroupAccountKeyValue {
     /// disagree — an account could pass the link gate while its devices were
     /// invisible to key delivery, authorized to write but unable to read.
     pub genesis_root_pk: [u8; 32],
+}
+
+/// A member key that vouched for an account in a group. Key layout
+/// `prefix(1) + group_id(32) + account_id(32) + member_pk(32)` = 97 bytes.
+///
+/// **The account's tie to a member, and the reason it is a row rather than a
+/// field.** The account row's `genesis_root_pk` used to be that tie, back when
+/// an account was rooted at its owner's namespace identity. The root is now a
+/// dedicated offline key which is a member *nowhere*, so the tie moved to the
+/// endorsement carried on each link — and an endorsement is per-op, so it has
+/// to be persisted or the group forgets who vouched the moment the op is
+/// applied.
+///
+/// A grow-only **set**, never a single field. Two links for one account may
+/// legitimately carry different endorsers, so storing "the" endorser would make
+/// the stored value depend on which link folded last — order-dependent state on
+/// the authorization path, which is the failure this plane has hit repeatedly.
+/// Set union is a join, so every replica converges on the same endorser set and
+/// the question asked of it — "is *any* endorser a member at this cut" — is
+/// order-independent.
+///
+/// Valueless: the key carries everything. There is nothing to record about an
+/// endorsement beyond that it happened and was verified before the row was
+/// written.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountEndorser(
+    Key<(
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    )>,
+);
+
+impl GroupAccountEndorser {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], account_id: [u8; 32], member: PrimitivePublicKey) -> Self {
+        Self(Key(GenericArray::from([GROUP_ACCOUNT_ENDORSER_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(account_id))
+            .concat(GenericArray::from(*member))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn account_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[33..65]);
+        id
+    }
+
+    #[must_use]
+    pub fn member(&self) -> PrimitivePublicKey {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[65..]);
+        PrimitivePublicKey::from(id)
+    }
+}
+
+impl AsKeyParts for GroupAccountEndorser {
+    type Components = (
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    );
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupAccountEndorser {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
 }
 
 /// This node's own device identity within one namespace (see

@@ -98,9 +98,16 @@ pub(crate) fn apply_device_linked(
         return Ok(());
     }
     let store = ctx.store();
+    let bindings = AccountBindingRepository::new(store);
 
-    let outcome =
-        AccountBindingRepository::new(store).apply_link(&group_id, genesis, chain, cert)?;
+    // Record the vouch before deciding whether the link itself is admissible,
+    // for the same reason the genesis is absorbed unconditionally: the
+    // endorsement is self-certifying and was verified above, so accepting it is
+    // safe regardless, and making it conditional would let two arrival orders
+    // leave different endorser sets behind.
+    bindings.record_endorser(&group_id, cert.account, &endorsement.member)?;
+
+    let outcome = bindings.apply_link(&group_id, genesis, chain, cert)?;
 
     match outcome {
         Ok(binding) => {

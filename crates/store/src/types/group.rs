@@ -57,6 +57,11 @@ impl PredefinedEntry for key::GroupReentryBlock {
 
 // The key itself is the marker — presence means "this identity already used
 // this invitation to join this group".
+impl PredefinedEntry for key::GroupAccountEndorser {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
 impl PredefinedEntry for key::GroupConsumedInvitation {
     type Codec = Borsh;
     type DataType<'a> = ();

@@ -692,7 +692,7 @@ impl<'a> GroupKeyring<'a> {
     pub fn current_key_recipients(&self) -> EyreResult<Vec<EntitledRecipient>> {
         let members = MembershipRepository::new(self.store).list(&self.group_id, 0, usize::MAX)?;
         let bindings = AccountBindingRepository::new(self.store);
-        let accounts = bindings.accounts_rooted_at_members(&self.group_id)?;
+        let accounts = bindings.accounts_by_endorsing_member(&self.group_id)?;
 
         let mut out = Vec::with_capacity(members.len());
         for (member, _) in members {
@@ -756,7 +756,7 @@ impl<'a> GroupKeyring<'a> {
         requester: &KeyRequester,
     ) -> EyreResult<Option<KeyRecipient>> {
         let bindings = AccountBindingRepository::new(self.store);
-        let accounts = bindings.accounts_rooted_at_members(&self.group_id)?;
+        let accounts = bindings.accounts_by_endorsing_member(&self.group_id)?;
         let Some(member_accounts) = accounts.get(&requester.identity) else {
             return Ok(Some(KeyRecipient::Member(requester.identity)));
         };
@@ -875,8 +875,13 @@ mod recipient_tests {
             0,
         )
         .expect("sign cert");
-        AccountBindingRepository::new(store)
-            .apply_link(&gid, &genesis, &[], &cert)
+        let repo = AccountBindingRepository::new(store);
+        // The apply handler records the vouch alongside the link; the fixture has
+        // to as well, or the member→account direction is empty and every lookup
+        // here would be testing a state production never produces.
+        repo.record_endorser(&gid, account, &member_sk.public_key())
+            .expect("endorse");
+        repo.apply_link(&gid, &genesis, &[], &cert)
             .expect("store")
             .expect("admitted")
             .device
@@ -966,6 +971,91 @@ mod recipient_tests {
         let mut want = vec![member(2), member(3)];
         want.sort_unstable();
         assert_eq!(got, want);
+    }
+
+    /// Enroll a device for an account rooted at a **dedicated account root** —
+    /// the shape production actually produces since the root became an offline
+    /// key of its own. The member tie is the endorsement, not the genesis key.
+    fn link_device_under_dedicated_root(
+        store: &Store,
+        gid: ContextGroupId,
+        account_root_sk: &PrivateKey,
+        endorser: &PublicKey,
+        device_seed: u8,
+    ) -> DeviceId {
+        let genesis = AccountGenesis::new(account_root_sk.public_key(), [device_seed; 16]);
+        let account = genesis.account_id();
+        let cert = sign_device_cert(
+            account_root_sk,
+            account,
+            DeviceId::mint(account, [device_seed; 16]),
+            &PrivateKey::from([device_seed; 32]).public_key(),
+            &KemPublicKey::from(
+                *X25519SecretKey::from([device_seed; 32])
+                    .public_key()
+                    .as_bytes(),
+            ),
+            0,
+            0,
+        )
+        .expect("sign cert");
+        let repo = AccountBindingRepository::new(store);
+        repo.record_endorser(&gid, account, endorser)
+            .expect("endorse");
+        repo.apply_link(&gid, &genesis, &[], &cert)
+            .expect("store")
+            .expect("admitted")
+            .device
+    }
+
+    #[test]
+    fn a_member_whose_account_uses_a_dedicated_root_is_still_addressed_by_device() {
+        // The rooting production uses: the account root is an offline key that is
+        // a member NOWHERE, and the tie to the member is the endorsement carried
+        // on the link. Matching members against the account's genesis key — as
+        // this did — matches nothing once the root is dedicated, so every member
+        // silently falls back to identity addressing, which hands the scope key
+        // straight to the node running a revoked device: the exact leak
+        // device-first delivery exists to close.
+        let store = test_store();
+        let gid = test_group_id();
+        let member_sk = PrivateKey::from([2u8; 32]);
+        MembershipRepository::new(&store)
+            .add_member(&gid, &member_sk.public_key(), GroupMemberRole::Member)
+            .expect("add");
+
+        let account_root = PrivateKey::from([42u8; 32]);
+        let laptop = link_device_under_dedicated_root(
+            &store,
+            gid,
+            &account_root,
+            &member_sk.public_key(),
+            5,
+        );
+
+        let recipients = GroupKeyring::new(&store, gid)
+            .current_key_recipients()
+            .expect("list");
+
+        let devices: Vec<DeviceId> = recipients
+            .iter()
+            .filter_map(|e| match e.recipient {
+                KeyRecipient::Device { device, .. } => Some(device),
+                KeyRecipient::Member(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            devices,
+            vec![laptop],
+            "the account's device must be addressed; got {recipients:?}"
+        );
+        assert!(
+            !recipients
+                .iter()
+                .any(|e| matches!(e.recipient, KeyRecipient::Member(_))),
+            "a member whose account has a live device must NOT also be addressed \
+             by identity: {recipients:?}"
+        );
     }
 
     #[test]

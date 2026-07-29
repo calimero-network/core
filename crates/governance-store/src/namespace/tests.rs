@@ -5909,6 +5909,12 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
     )
     .unwrap();
     let bindings = crate::AccountBindingRepository::new(&store);
+    // The apply handler records the endorsing member alongside the link, and the
+    // member→account direction is read from those rows — so the fixture records
+    // it too, or this would test a state production never reaches.
+    bindings
+        .record_endorser(&ns_gid, account, &member_sk.public_key())
+        .unwrap();
     let _ = bindings
         .apply_link(&ns_gid, &genesis, &[], &cert)
         .unwrap()
