@@ -84,7 +84,8 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             genesis,
             chain,
             cert,
-        } => account_ops::apply_device_linked(ctx, genesis, chain, cert)?,
+            endorsement,
+        } => account_ops::apply_device_linked(ctx, genesis, chain, cert, endorsement)?,
         GroupOp::AccountDeviceUnlinked { account, device } => {
             account_ops::apply_device_unlinked(ctx, account, device)?
         }

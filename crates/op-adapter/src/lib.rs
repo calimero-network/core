@@ -159,10 +159,16 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
         // The consequence was concrete: per-device authorization cannot resolve a
         // device's signing key to the account it speaks for at a causal cut, so a
         // second device could receive scope keys and then not author with them.
+        // `endorsement` is deliberately dropped here. It is a bridge artifact: the
+        // unified plane's membership is keyed by `AccountId`, so `authorize` asks
+        // whether the ACCOUNT is a member directly and needs no proxy. The
+        // endorsement exists only for the governance path, where membership is
+        // still key-keyed and an offline root is a member nowhere.
         GroupOp::AccountDeviceLinked {
             genesis,
             chain,
             cert,
+            ..
         } => Some(OpPayload::DeviceLinked {
             genesis: *genesis,
             chain: chain.clone(),
@@ -354,6 +360,8 @@ mod tests {
                 genesis,
                 chain: vec![],
                 cert,
+                endorsement: calimero_account::sign_account_endorsement(&root, account)
+                    .expect("sign endorsement"),
             },
         )
         .expect("the account ops must map to a unified payload, not fold to Noop");

@@ -83,6 +83,12 @@ pub enum BindingRejected {
         /// The cap.
         limit: usize,
     },
+    /// The endorsement is about a different account than the credential.
+    #[error("endorsement names a different account than the certificate")]
+    EndorsementAccountMismatch,
+    /// The endorsement is not validly signed by the member key it names.
+    #[error("endorsement is not validly signed by the member it names")]
+    EndorsementInvalid,
     /// The account is not a member of this group, so its devices may not link
     /// themselves in. Raised by the apply handler, not by the repository —
     /// membership is the caller's question.

@@ -480,6 +480,30 @@ full impersonation risk if the export leaks. With it, the export is one secret p
 a non-secret list, and the import is a cryptographic recovery rather than a
 key-material restore.
 
+### Where the root actually lives, and what is still missing
+
+The root is generated on first use and written to the node's own RocksDB — the
+`NodeAccountRoot` singleton in `Column::Group`, and **plaintext unless the operator
+enabled at-rest encryption**, which is off by default.
+
+So the recovery property is *available, not delivered*. The key is structurally
+right — one key, node-level, per-namespace derived nonces, so a single backup would
+cover every namespace — but nothing exports it. It survives a namespace-identity
+rotation and does not survive losing the disk, which is the case the whole story is
+about. Describing it as "kept offline" is aspirational until an export exists.
+
+That is the concrete reason phase G depends on this rather than the reverse. Two
+follow-ups, neither blocking pairing:
+
+1. **`merod account export` / `import`** — the root out to paper or hardware and
+   back. Until it exists, calling this a recovery key overstates it.
+2. **Three secrets now sit in `Column::Group`** — namespace identity, device KEM
+   secret, account root. Nothing ships that column wholesale today, so this is not
+   an exposure, but the store's own docs list `Group` under "synced (replicated)".
+   That invariant is held by convention, and the root is the worst thing to bet it
+   on. Either move them to a column documented as never-synced, or fix the docs and
+   add a guard that fails if anything iterates `Group` wholesale.
+
 ### What this deletes, and what it cannot
 
 Deleted: rooting accounts at the namespace identity, the stored `account_nonce`,

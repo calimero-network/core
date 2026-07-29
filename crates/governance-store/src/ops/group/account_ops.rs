@@ -15,16 +15,26 @@ use super::context::GroupApplyCtx;
 use crate::authorizer::AtCutMembershipPath;
 use crate::membership::MembershipPath;
 use crate::{AccountBindingRepository, BindingRejected, MembershipRepository};
-use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyHandoff};
+use calimero_account::{
+    AccountGenesis, AccountId, AccountMemberEndorsement, DeviceCert, DeviceId, RootKeyHandoff,
+};
 use eyre::Result as EyreResult;
 
 /// `GroupOp::AccountDeviceLinked` — record a device as speaking for an account.
 ///
-/// Authorization is one question: **is the account already a member of this
-/// group?** If it is, the link grants nothing the account did not already hold,
-/// so no admin action is required and the device authors this for itself. If it
-/// is not, a stranger could otherwise write unlimited link rows into a group
-/// they have no relationship with.
+/// Authorization is two questions, and it takes both: **did a granted member
+/// endorse this account, and is that endorser a member at this cut?**
+///
+/// It used to ask whether the account's own root key was a member, which worked
+/// only while accounts were rooted at the node's namespace identity. The root is
+/// now a dedicated offline key — that is what lets it survive losing every device
+/// and certify a replacement — and such a key is a member nowhere. So a granted
+/// member key signs the account id instead, and the gate checks the endorser.
+///
+/// Equally strong: only a member can produce a valid endorsement, and only the root
+/// holder can certify a device into the account. Neither alone enrolls anything.
+/// Anyone may endorse an account they do not own — ids are public — and it gains
+/// them nothing for exactly that reason.
 ///
 /// Note what is *not* checked: whether the signer is the device being enrolled.
 /// The certificate is root-signed and the credential is self-certifying, so a
@@ -36,6 +46,7 @@ pub(crate) fn apply_device_linked(
     genesis: &AccountGenesis,
     chain: &[RootKeyHandoff],
     cert: &DeviceCert,
+    endorsement: &AccountMemberEndorsement,
 ) -> EyreResult<()> {
     let group_id = *ctx.group_id();
 
@@ -61,7 +72,28 @@ pub(crate) fn apply_device_linked(
     // recorded — and since a refusal writes nothing while the op still occupies
     // its place in the DAG, the two would disagree about who may author with no
     // later op to reconcile them.
-    if !root_key_is_member(ctx, &genesis.root_sign_pk)? {
+    // The endorsement must actually be about THIS account, or a valid endorsement
+    // of some other account could be presented alongside an unrelated credential.
+    if endorsement.account != cert.account {
+        log_refusal(
+            &group_id,
+            "device link",
+            &BindingRejected::EndorsementAccountMismatch,
+        );
+        return Ok(());
+    }
+    // ...and be validly signed by the key it names. Cheap, self-contained, and
+    // checked before the at-cut membership question so a forged endorsement costs
+    // no fold work.
+    if calimero_account::verify_account_endorsement(endorsement).is_err() {
+        log_refusal(
+            &group_id,
+            "device link",
+            &BindingRejected::EndorsementInvalid,
+        );
+        return Ok(());
+    }
+    if !root_key_is_member(ctx, &endorsement.member)? {
         log_refusal(&group_id, "device link", &BindingRejected::AccountNotMember);
         return Ok(());
     }

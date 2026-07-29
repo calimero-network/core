@@ -100,12 +100,27 @@ impl Handler<CreateAccountRequest> for ContextManager {
 
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
+        // The endorsement is what makes the link admissible: the account root is a
+        // member nowhere by design, so this node's granted namespace identity
+        // vouches for the account instead. Only a member can sign this, and only the
+        // root could sign the certificate above — the gate needs both.
+        let endorsement =
+            match calimero_account::sign_account_endorsement(&signer_sk, enrolled.account) {
+                Ok(endorsement) => endorsement,
+                Err(err) => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "failed to sign the account endorsement: {err}"
+                    )))
+                }
+            };
+
         let op = calimero_context_client::local_governance::GroupOp::AccountDeviceLinked {
             genesis: enrolled.genesis,
             // Epoch 0, so no handoffs to carry. A rotated account's chain is
             // supplied by whoever holds the newer root key.
             chain: vec![],
             cert,
+            endorsement,
         };
 
         ActorResponse::r#async(

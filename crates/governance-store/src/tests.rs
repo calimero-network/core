@@ -9850,6 +9850,7 @@ mod account_plane_apply {
                 genesis: account_genesis,
                 chain: vec![],
                 cert,
+                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
             },
         )
         .unwrap();
@@ -9873,6 +9874,7 @@ mod account_plane_apply {
                 genesis: account_genesis,
                 chain: vec![],
                 cert,
+                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
             },
         )
         .unwrap();
@@ -9918,6 +9920,8 @@ mod account_plane_apply {
                     genesis,
                     chain: vec![],
                     cert,
+                    endorsement: calimero_account::sign_account_endorsement(&key(9), account)
+                        .unwrap(),
                 },
             )
             .unwrap();
@@ -9964,6 +9968,7 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
+                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
             },
         )
         .unwrap();
@@ -10011,6 +10016,7 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
+                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
             },
         )
         .unwrap();
@@ -10053,6 +10059,118 @@ mod account_plane_apply {
     }
 
     #[test]
+    fn a_link_needs_a_member_endorsement_and_a_root_signed_cert() {
+        // The gate is two questions and it takes both. The account root is a member
+        // nowhere by design — that is what lets it stay offline and recover a device
+        // after total loss — so a granted member endorses the account instead.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        // An account rooted at an OFFLINE key that is nobody's member key.
+        let offline_root = key(9);
+        let genesis = AccountGenesis::new(offline_root.public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [5u8; 16]);
+        let cert = sign_device_cert(
+            &offline_root,
+            account,
+            device,
+            &key(5).public_key(),
+            &KemPublicKey::from([5u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        let bindings = AccountBindingRepository::new(&store);
+
+        // Endorsed by a NON-member → refused. The endorsement is valid; the endorser
+        // simply has no standing here.
+        let stranger = key(7);
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::sign_account_endorsement(&stranger, account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+        assert!(
+            bindings.live_bindings(&gid).unwrap().is_empty(),
+            "a valid endorsement from a non-member must not admit a link"
+        );
+
+        // A FORGED endorsement from a real member → refused. This is the one that
+        // matters: without the signature check, naming any member would be enough.
+        let mut forged = calimero_account::sign_account_endorsement(&admin_sk, account).unwrap();
+        forged.signature = [0u8; 64];
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: forged,
+            },
+        )
+        .unwrap();
+        assert!(
+            bindings.live_bindings(&gid).unwrap().is_empty(),
+            "naming a member is not endorsing — the signature has to verify"
+        );
+
+        // An endorsement of a DIFFERENT account → refused, even though it is validly
+        // signed by a member. Otherwise a genuine endorsement could be paired with
+        // an unrelated credential.
+        let other_account = AccountGenesis::new(key(8).public_key(), [8u8; 16]).account_id();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::sign_account_endorsement(&admin_sk, other_account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+        assert!(bindings.live_bindings(&gid).unwrap().is_empty());
+
+        // Endorsed by a member, correctly, for this account → admitted. Note the
+        // root never had to be a member.
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::sign_account_endorsement(&admin_sk, account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+        let live = bindings.live_bindings(&gid).unwrap();
+        assert_eq!(
+            live.len(),
+            1,
+            "a member-endorsed, root-signed link must land"
+        );
+        assert_eq!(live[0].account, account);
+    }
+
+    #[test]
     fn a_plain_member_cannot_revoke_another_members_device() {
         // A revocation is terminal — the DeviceId is spent for good — so an
         // ungated one is a permanent denial of service any member could inflict
@@ -10092,6 +10210,7 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
+                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
             },
         )
         .unwrap();
@@ -10197,6 +10316,7 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
+                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
             },
             &crate::test_fixtures::TEST_CUT,
             &crate::test_fixtures::UnresolvableAuthorizer,

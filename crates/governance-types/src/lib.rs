@@ -25,7 +25,8 @@ use std::io;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::{
-    AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff,
+    AccountGenesis, AccountId, AccountMemberEndorsement, DeviceCert, DeviceId, KemPublicKey,
+    RootKeyHandoff,
 };
 use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
@@ -161,7 +162,14 @@ id_newtype! {
 /// is the authoritative convergence signal now), so it was pure dead weight in
 /// the signed bytes. Removing it changes every op's content hash (the op id),
 /// hence the version bump and the flag-day re-bootstrap.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 8;
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 9;
+
+// v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
+// a dedicated offline key so it survives losing every device — and such a key is a
+// member nowhere, so the link gate can no longer ask whether the root is a member.
+// A granted member key signs the account id instead. Adding a field to an existing
+// variant changes that variant's layout, so every group op's id changes; a flag day,
+// alongside the namespace v4 one already in this change.
 
 /// Domain separation prefix for Ed25519 signatures over group ops.
 pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
@@ -525,6 +533,13 @@ pub enum GroupOp {
         chain: Vec<RootKeyHandoff>,
         /// The root-signed grant being recorded.
         cert: DeviceCert,
+        /// A granted member key's statement that this account is theirs.
+        ///
+        /// Required because an account root is deliberately a member **nowhere** —
+        /// it is kept offline so it survives losing every device. The gate checks
+        /// the *endorser* is a member instead of the root. Only a member can
+        /// endorse and only the root can certify a device, so it takes both.
+        endorsement: AccountMemberEndorsement,
     },
     /// Withdraw a device from an account.
     ///
