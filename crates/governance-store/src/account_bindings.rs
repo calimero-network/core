@@ -73,6 +73,16 @@ pub enum BindingRejected {
     /// A rotation not signed by the outgoing root key.
     #[error("key rotation is not signed by the outgoing root key")]
     RotationSignatureInvalid,
+    /// The credential's handoff chain is longer than
+    /// [`calimero_account::MAX_ROOT_KEY_HANDOFFS`]. Refused before any of its
+    /// signatures are verified.
+    #[error("handoff chain has {found} entries, over the {limit} cap")]
+    ChainTooLong {
+        /// Length of the supplied chain.
+        found: usize,
+        /// The cap.
+        limit: usize,
+    },
     /// The account is not a member of this group, so its devices may not link
     /// themselves in. Raised by the apply handler, not by the repository —
     /// membership is the caller's question.
@@ -229,10 +239,13 @@ impl<'a> AccountBindingRepository<'a> {
     /// reverting every member to the identity fallback and undoing device
     /// revocation. Scanning the rows has no state to lose.
     ///
-    /// Keyed by the account's *current* root key, not its epoch-0 one, so an
-    /// account that rotated its root onto a different member key follows that
-    /// key. An account whose current root is nobody's member key appears under
-    /// no member and receives nothing.
+    /// Keyed by the account's **epoch-0** root key, which is what the device-link
+    /// gate checks membership against. Keying on the *current* root instead — as
+    /// this did — let the two disagree: after a rotation onto a key that is not a
+    /// member, an account still passed the link gate (which reads the immutable
+    /// genesis) while vanishing from delivery, leaving its devices authorized to
+    /// write but unable to read. The genesis key is also immutable, so the tie
+    /// cannot depend on which rotations a replica has folded.
     ///
     /// # Errors
     /// Propagates the store scan failure.
@@ -254,7 +267,7 @@ impl<'a> AccountBindingRepository<'a> {
             let Some(value): Option<GroupAccountKeyValue> = handle.get(&key)? else {
                 continue;
             };
-            out.entry(PublicKey::from(value.root_pk))
+            out.entry(PublicKey::from(value.genesis_root_pk))
                 .or_default()
                 .push(AccountId::from(key.account_id()));
         }
@@ -303,6 +316,7 @@ impl<'a> AccountBindingRepository<'a> {
             &GroupAccountKeyValue {
                 epoch: 0,
                 root_pk: *AsRef::<[u8; 32]>::as_ref(&genesis.root_sign_pk),
+                genesis_root_pk: *AsRef::<[u8; 32]>::as_ref(&genesis.root_sign_pk),
             },
         )?;
         Ok(())
@@ -318,9 +332,11 @@ impl<'a> AccountBindingRepository<'a> {
         group: &ContextGroupId,
         handoff: &RootKeyHandoff,
     ) -> EyreResult<Result<(), BindingRejected>> {
-        let Some((epoch, root_pk)) = self.account_key(group, handoff.account)? else {
+        let key = GroupAccountKey::new(group.to_bytes(), *handoff.account.as_bytes());
+        let Some(current): Option<GroupAccountKeyValue> = self.store.handle().get(&key)? else {
             return Ok(Err(BindingRejected::RotationNotContinuous));
         };
+        let (epoch, root_pk) = (current.epoch, PublicKey::from(current.root_pk));
         if handoff.from_epoch != epoch {
             return Ok(Err(BindingRejected::RotationNotContinuous));
         }
@@ -331,12 +347,15 @@ impl<'a> AccountBindingRepository<'a> {
             return Ok(Err(BindingRejected::RotationSignatureInvalid));
         }
 
-        let key = GroupAccountKey::new(group.to_bytes(), *handoff.account.as_bytes());
         self.store.handle().put(
             &key,
             &GroupAccountKeyValue {
                 epoch: epoch.saturating_add(1),
                 root_pk: *AsRef::<[u8; 32]>::as_ref(&handoff.new_root_sign_pk),
+                // Carried through untouched: the genesis key is what ties this
+                // account to a group member, and a rotation changes the account's
+                // signing authority, not who it belongs to.
+                genesis_root_pk: current.genesis_root_pk,
             },
         )?;
         Ok(Ok(()))
@@ -363,6 +382,17 @@ impl<'a> AccountBindingRepository<'a> {
         chain: &[RootKeyHandoff],
         cert: &DeviceCert,
     ) -> EyreResult<Result<DeviceBinding, BindingRejected>> {
+        // Cap before the loop below, not just inside `verify_device_cert`. Each
+        // `apply_rotation` costs an Ed25519 verification, and this runs first, so
+        // the cap living only in `resolve_root_keys` left the expensive part
+        // unguarded — the same one-call-too-deep miss as the projection fold had.
+        if chain.len() > calimero_account::MAX_ROOT_KEY_HANDOFFS {
+            return Ok(Err(BindingRejected::ChainTooLong {
+                found: chain.len(),
+                limit: calimero_account::MAX_ROOT_KEY_HANDOFFS,
+            }));
+        }
+
         if genesis.account_id() == cert.account {
             self.absorb_genesis(group, genesis)?;
             for handoff in chain {

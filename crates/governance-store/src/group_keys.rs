@@ -1001,6 +1001,58 @@ mod recipient_tests {
     }
 
     #[test]
+    fn a_root_key_rotation_does_not_cut_the_account_off_from_delivery() {
+        // The link gate reads the immutable genesis key, so an account keeps
+        // passing it across rotations. The fan-out used to key on the account's
+        // CURRENT root, so rotating onto a key that is not a group member made the
+        // account vanish from delivery while still authorized to write — devices
+        // that may author but can never read what they wrote.
+        let store = test_store();
+        let gid = test_group_id();
+        let member_sk = PrivateKey::from([2u8; 32]);
+        MembershipRepository::new(&store)
+            .add_member(&gid, &member_sk.public_key(), GroupMemberRole::Member)
+            .expect("add");
+        let device = link_device(&store, gid, &member_sk, 5);
+        assert_eq!(
+            GroupKeyring::new(&store, gid)
+                .current_key_recipients()
+                .expect("list")
+                .len(),
+            1
+        );
+
+        // Rotate the account root onto a key that is NOT a member of the group.
+        let genesis = AccountGenesis::new(member_sk.public_key(), [5u8; 16]);
+        let offline_root = PrivateKey::from([0x77u8; 32]);
+        let handoff = calimero_account::sign_root_key_handoff(
+            &member_sk,
+            genesis.account_id(),
+            0,
+            &offline_root.public_key(),
+        )
+        .expect("sign handoff");
+        AccountBindingRepository::new(&store)
+            .apply_rotation(&gid, &handoff)
+            .expect("store")
+            .expect("rotated");
+
+        // The account is still the member's, so it is still addressed — through
+        // whichever devices remain in force under the new epoch.
+        let got = GroupKeyring::new(&store, gid)
+            .current_key_recipients()
+            .expect("list");
+        assert!(
+            got.iter().all(|e| e.member == member_sk.public_key()),
+            "the account must still resolve to the member its genesis names, not \
+             disappear because its current root key is not a member"
+        );
+        // The epoch-0 device is superseded by the rotation, so it drops out — that
+        // is the supersession rule, not the keying bug.
+        assert!(got.iter().all(|e| e.recipient.device() != Some(device)));
+    }
+
+    #[test]
     fn a_member_whose_only_device_was_revoked_is_addressed_by_nothing() {
         // Not an oversight: falling back to the identity key here would deliver
         // the fresh key to the very node running the revoked device. They get

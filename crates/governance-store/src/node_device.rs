@@ -25,6 +25,19 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 use rand::Rng as _;
 
+/// Serializes the read-check-write in
+/// [`NodeDeviceRepository::ensure_for_account`] across callers, making the
+/// mint-if-absent atomic without a store-level compare-and-swap. Same pattern and
+/// same reason as `GROUP_KEY_EPOCH_WRITE_LOCK`: two callers could otherwise both
+/// observe an absent row and both mint, and the second `put` would win — handing
+/// this machine a second `DeviceId` while the group's CRDT state still sat under
+/// the first.
+///
+/// Sufficient without snapshot isolation because a base-`Store` `handle.put` is
+/// write-through: the row is visible the instant `put` returns, before the lock is
+/// released, so the next holder's `get` always observes it.
+static NODE_DEVICE_MINT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// This node's device credentials for one namespace.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -85,6 +98,10 @@ impl<'a> NodeDeviceRepository<'a> {
     /// group's history under the old id. Callers may therefore invoke this on
     /// every enrollment attempt without checking first.
     ///
+    /// The read-check-write is serialized by [`NODE_DEVICE_MINT_LOCK`], so
+    /// idempotence holds against concurrent callers and not merely sequential
+    /// ones — two threads could otherwise both see an absent row and both mint.
+    ///
     /// A stored identity is returned **as is**, even when it was minted for a
     /// different account. Re-minting would be the wrong repair: the old device
     /// id is already the replica id in this namespace's CRDT state, and
@@ -99,6 +116,12 @@ impl<'a> NodeDeviceRepository<'a> {
         namespace: &ContextGroupId,
         account: AccountId,
     ) -> EyreResult<NodeDevice> {
+        // Recover a poisoned lock: the guarded state lives in the store, not the
+        // guard, so a prior panic leaves nothing inconsistent behind.
+        let _guard = NODE_DEVICE_MINT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         if let Some(existing) = self.get(namespace)? {
             return Ok(existing);
         }
@@ -233,6 +256,52 @@ mod tests {
         assert_eq!(
             device_side.decrypt(ciphertext, nonce).expect("open"),
             b"scope key".to_vec()
+        );
+    }
+
+    #[test]
+    fn concurrent_mints_agree_on_one_device_id() {
+        // The read-check-write is not atomic in the store, so without the lock two
+        // callers both observe an absent row, both mint, and the second `put` wins
+        // — handing this machine a second DeviceId while the group's CRDT state
+        // still sits under the first.
+        use std::sync::Arc;
+
+        let store = test_store();
+        let ns = test_group_id();
+        let acct = account(1);
+
+        let observed: Vec<DeviceId> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let store = Arc::new(&store);
+                    scope.spawn(move || {
+                        NodeDeviceRepository::new(&store)
+                            .ensure_for_account(&ns, acct)
+                            .expect("mint")
+                            .device
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("thread"))
+                .collect()
+        });
+
+        let first = observed[0];
+        assert!(
+            observed.iter().all(|d| *d == first),
+            "every concurrent caller must get the same device id, got {observed:?}"
+        );
+        assert_eq!(
+            NodeDeviceRepository::new(&store)
+                .get(&ns)
+                .expect("read")
+                .expect("present")
+                .device,
+            first,
+            "the stored identity must be the one every caller was handed"
         );
     }
 

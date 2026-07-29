@@ -16,6 +16,7 @@ use generic_array::GenericArray;
 use crate::db::Column;
 use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
+use zeroize::ZeroizeOnDrop;
 
 pub const GROUP_META_PREFIX: u8 = 0x20;
 pub const GROUP_MEMBER_PREFIX: u8 = 0x21;
@@ -2331,6 +2332,17 @@ pub struct GroupAccountKeyValue {
     /// The root key at `epoch` — the only key whose device certificates this
     /// group still accepts.
     pub root_pk: [u8; 32],
+    /// The account's **epoch-0** root key, from its genesis, retained unchanged
+    /// across every rotation.
+    ///
+    /// This is what ties the account to a group member, and it has to be the
+    /// genesis key rather than the current one for two reasons. The genesis is
+    /// immutable, so the tie is permanent and cannot depend on which rotations a
+    /// replica has folded; and it is the key the device-link gate checks
+    /// membership against, so keying anything else here would let the two
+    /// disagree — an account could pass the link gate while its devices were
+    /// invisible to key delivery, authorized to write but unable to read.
+    pub genesis_root_pk: [u8; 32],
 }
 
 /// This node's own device identity within one namespace (see
@@ -2400,7 +2412,14 @@ impl Debug for NodeDeviceIdentity {
 /// signing key, because the whole point of a device KEM key is that it is
 /// revocable independently of the identity that certified it — deriving it
 /// would tie the two lifetimes back together.
-#[derive(Clone, Copy, Eq, PartialEq)]
+///
+/// Deliberately **not** `Copy`, and zeroized on drop. `Copy` would let the secret
+/// be duplicated implicitly — every read, every move producing another copy the
+/// wipe never reaches — which is the same reason
+/// [`calimero_crypto::X25519SecretKey`] is not `Copy` either. A `Drop` impl and
+/// `Copy` are mutually exclusive, so dropping `Copy` is what makes the wipe
+/// possible at all.
+#[derive(Clone, Eq, PartialEq, ZeroizeOnDrop)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NodeDeviceIdentityValue {
     /// The `DeviceId` this node speaks as in the namespace.

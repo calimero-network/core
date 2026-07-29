@@ -880,6 +880,18 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
 fn check_device_speaks_for_author(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
     let device = op.device();
 
+    // Checked ahead of the binding, not only in its absence. The fold does
+    // maintain "revoked implies unbound" — a revocation removes the binding, and
+    // `admit_device_link` refuses a link for a revoked device — so this is not a
+    // reachable bypass today. It is here because `authorize` is the single
+    // security boundary and takes an `AclView` with public fields from any
+    // producer: resting a revocation check on an invariant maintained somewhere
+    // else means a future fold that ever leaves a stale binding behind fails
+    // open, silently.
+    if acl_at_cut.revoked_devices.contains(&device) {
+        return Err(Rejected::DeviceRevoked { device });
+    }
+
     match acl_at_cut.devices.get(&device) {
         Some(binding) => {
             if binding.account != op.author() {
@@ -897,15 +909,10 @@ fn check_device_speaks_for_author(op: &Op, acl_at_cut: &AclView) -> Result<(), R
             }
             Ok(())
         }
-        None => {
-            // A revoked device has no binding either, but the tombstone
-            // distinguishes "never linked" from "withdrawn" — worth separating
-            // so whoever reads a rejection knows which happened.
-            if acl_at_cut.revoked_devices.contains(&device) {
-                return Err(Rejected::DeviceRevoked { device });
-            }
-            Err(Rejected::DeviceNotLinked { device })
-        }
+        // The tombstone was already consulted above, so reaching here means the
+        // device was never linked rather than withdrawn — worth keeping distinct
+        // so whoever reads a rejection knows which happened.
+        None => Err(Rejected::DeviceNotLinked { device }),
     }
 }
 
