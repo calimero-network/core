@@ -765,7 +765,14 @@ impl VMHostFunctions<'_> {
         }
         let key = self.read_guest_memory_slice(&key)?.to_vec();
         trace!(target: "runtime::host::storage", op = "index_meta_clear", key_len = key.len(), "storage_index_meta_clear");
-        let ok = self.with_logic_mut(|logic| logic.storage.index_meta_del(&key));
+        // Meter the delete against the per-execution write budget, like every
+        // other mutating storage host fn (e.g. index_meta_set above) — otherwise
+        // a guest could drive unbounded unmetered writes/rebuilds against
+        // Column::SortedIndexMeta.
+        let ok = self.with_logic_mut(|logic| -> VMLogicResult<bool> {
+            logic.charge_storage_write(key.len() as u64)?;
+            Ok(logic.storage.index_meta_del(&key))
+        })?;
         Ok(ok.into())
     }
 }
