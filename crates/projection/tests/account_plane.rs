@@ -509,10 +509,19 @@ fn an_overlong_handoff_chain_absorbs_nothing() {
     fx.push(link);
 
     let after = ScopeState::from_ops(&fx.log);
+    let view = after.acl_view();
     assert!(
-        !after.acl_view().accounts.contains_key(&alice.id),
+        !view.accounts.contains_key(&alice.id),
         "an op whose chain exceeds the cap must absorb nothing at all — not its \
          genesis, and not a truncated prefix of its handoffs"
+    );
+    // And the link itself must not land either. Absorption and admission are
+    // separate steps, so skipping only the former would leave a device bound to an
+    // account whose genesis was never learned — live in `devices` while absent from
+    // `accounts`, which `live_devices` reads as unrestricted.
+    assert!(
+        !view.devices.contains_key(&phone.id),
+        "an over-cap chain must not admit the link either"
     );
 }
 
