@@ -55,60 +55,22 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
         };
 
         let store = self.datastore.clone();
-        let requested = genesis.account_id();
 
         // Mint this device under the account being adopted. Idempotent, so a
         // retried pairing hands back the same values rather than minting a
         // second replica id.
+        //
+        // A stored row that names a *different* account is decided by the
+        // repository, not here: an unlinked one is replaced (it holds no replica
+        // state, and the row is minted before anyone certifies it, so refusing
+        // would let one mistyped nonce claim this namespace's only device slot
+        // for good), a linked one is refused. `account create` reaches the same
+        // rule through the same place, which is why it lives there.
         let enrolled =
             match NodeDeviceRepository::new(&store).ensure_enrolled_into(&namespace_id, genesis) {
                 Ok(enrolled) => enrolled,
                 Err(err) => return ActorResponse::reply(Err(err)),
             };
-
-        // A stored identity normally wins even when a different account asks,
-        // because re-minting would strand the CRDT state already written under
-        // the old device id.
-        //
-        // But that rule only earns its keep once the device has actually been
-        // LINKED. An unlinked device holds no replica state, so replacing it
-        // strands nothing — and refusing to replace it turns a one-shot row into
-        // a trap: the row is minted before anyone certifies it, so a single
-        // `pair-init` with a mistyped nonce (or issued by anyone who can reach
-        // this node's admin API) claims the namespace's only device slot for an
-        // account nobody controls. After that, `account create` on this node
-        // hands back the squatted identity and signs a certificate its own root
-        // cannot back, so the node can never enrol here again short of leaving
-        // the namespace.
-        //
-        // So: replace an unlinked mismatch, refuse a linked one.
-        let enrolled = if enrolled.account == requested {
-            enrolled
-        } else {
-            let bindings = calimero_governance_store::AccountBindingRepository::new(&store);
-            match bindings.is_device_linked(&namespace_id, enrolled.device()) {
-                Ok(true) => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "this node already holds device {} for account {} in {namespace_id:?}, \
-                         and it is linked — its replica state is held under that id. Moving a \
-                         machine between accounts means revoking the existing device first",
-                        enrolled.device(),
-                        enrolled.account,
-                    )))
-                }
-                Ok(false) => {
-                    let repo = NodeDeviceRepository::new(&store);
-                    if let Err(err) = repo.delete(&namespace_id) {
-                        return ActorResponse::reply(Err(err));
-                    }
-                    match repo.ensure_enrolled_into(&namespace_id, genesis) {
-                        Ok(reminted) => reminted,
-                        Err(err) => return ActorResponse::reply(Err(err)),
-                    }
-                }
-                Err(err) => return ActorResponse::reply(Err(err)),
-            }
-        };
 
         let response = PairDeviceInitResponse::new(
             enrolled.account,

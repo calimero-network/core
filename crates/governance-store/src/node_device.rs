@@ -129,7 +129,7 @@ pub struct NodeDevice {
     /// The account this device speaks for.
     pub account: AccountId,
     /// The genesis that addresses [`Self::account`], reconstructed from the
-    /// stored nonce and the namespace identity key that roots it.
+    /// stored nonce and the account root key that roots it.
     ///
     /// Carried because a device link has to put the genesis on the wire, and
     /// pairing a second device means publishing another link naming this same
@@ -267,15 +267,13 @@ impl<'a> NodeDeviceRepository<'a> {
     /// idempotence holds against concurrent callers and not merely sequential
     /// ones — two threads could otherwise both see an absent row and both mint.
     ///
-    /// A stored identity is returned **as is**, even when it was minted for a
-    /// different account. Re-minting would be the wrong repair: the old device
-    /// id is already the replica id in this namespace's CRDT state, and
-    /// silently replacing it would strand that state. Moving a machine to
-    /// another account is a fresh enrollment after the old device is revoked,
-    /// which is what makes the revocation tombstone terminal.
+    /// A stored identity is returned as is whenever it still serves; see
+    /// [`stored_identity_still_serves`](Self::stored_identity_still_serves) for
+    /// the two cases where it cannot and is replaced instead.
     ///
     /// # Errors
-    /// Propagates the store read or write failure.
+    /// Propagates the store read or write failure, or refuses when the stored
+    /// device is linked to a different account.
     pub fn ensure_enrolled(&self, namespace: &ContextGroupId) -> EyreResult<NodeDevice> {
         // Recover a poisoned lock: the guarded state lives in the store, not the
         // guard, so a prior panic leaves nothing inconsistent behind.
@@ -307,12 +305,12 @@ impl<'a> NodeDeviceRepository<'a> {
     /// a two-way exchange, and this is its first half — the half that produces the
     /// values the certificate will name.
     ///
-    /// Idempotent on the same terms as `ensure_enrolled`, including that a stored
-    /// identity wins even when a *different* account asks: re-minting would strand
-    /// the replica state already written under the old device id.
+    /// Idempotent on the same terms as `ensure_enrolled`, and it applies the same
+    /// rule to a stored row that names a different account.
     ///
     /// # Errors
-    /// Propagates the store read or write failure.
+    /// Propagates the store read or write failure, or refuses when the stored
+    /// device is linked to a different account.
     pub fn ensure_enrolled_into(
         &self,
         namespace: &ContextGroupId,
@@ -324,6 +322,64 @@ impl<'a> NodeDeviceRepository<'a> {
         self.enroll_locked(namespace, genesis)
     }
 
+    /// May the row already stored for `namespace` be handed back to an enrolment
+    /// into `account`?
+    ///
+    /// A node holds at most one device per namespace, so this one row is the whole
+    /// slot. `Ok(true)` keeps it, `Ok(false)` releases it to be re-minted, and an
+    /// error refuses the enrolment outright.
+    ///
+    /// **The default is to keep it**, because the device id is already the replica
+    /// id in this namespace's CRDT state: counter slots and an HLC lineage are
+    /// held under it, and silently minting a second id would strand all of that
+    /// while the group's history still sat under the first. Two cases defeat that
+    /// reasoning, and in both the row is worthless rather than load-bearing:
+    ///
+    /// - **The device is revoked.** A tombstone is terminal, so the id can never
+    ///   be linked again — in this account or any other. Keeping it locks the node
+    ///   out of the namespace with its own revocation: enrolment keeps minting
+    ///   certificates for a spent id and every peer refuses them, with nothing to
+    ///   say why. Nothing else releases the slot, so "re-enrolling mints a fresh
+    ///   one" is only true if this does it. (A node that never received the
+    ///   revocation has no tombstone to read and cannot know; that is inherent to
+    ///   causal revocation, not something this can repair.)
+    /// - **The device names another account and was never linked.** The row is
+    ///   minted BEFORE anyone certifies it, so one `pair-init` with a mistyped
+    ///   nonce — or one issued by anyone who can reach this node's admin API —
+    ///   claims the slot for an account nobody here controls. An unlinked device
+    ///   holds no replica state, so replacing it strands nothing, while refusing
+    ///   to leaves the node unable to enroll here again short of leaving the
+    ///   namespace.
+    ///
+    /// A *linked* row for another account is the one refusal: its replica state is
+    /// real, so moving the machine between accounts has to be an explicit
+    /// revoke-then-enroll rather than a silent overwrite.
+    fn stored_identity_still_serves(
+        &self,
+        namespace: &ContextGroupId,
+        existing: &NodeDevice,
+        account: AccountId,
+    ) -> EyreResult<bool> {
+        let bindings = crate::AccountBindingRepository::new(self.store);
+
+        if bindings.is_revoked(namespace, existing.device())? {
+            return Ok(false);
+        }
+        if existing.account == account {
+            return Ok(true);
+        }
+        if bindings.is_device_linked(namespace, existing.device())? {
+            eyre::bail!(
+                "this node already holds device {} for account {} in {namespace:?}, and it \
+                 is linked — its replica state is held under that id. Moving a machine \
+                 between accounts means revoking the existing device first",
+                existing.device(),
+                existing.account,
+            );
+        }
+        Ok(false)
+    }
+
     /// Mint-if-absent for a decided genesis. Callers hold
     /// [`NODE_DEVICE_MINT_LOCK`].
     fn enroll_locked(
@@ -331,12 +387,19 @@ impl<'a> NodeDeviceRepository<'a> {
         namespace: &ContextGroupId,
         genesis: AccountGenesis,
     ) -> EyreResult<NodeDevice> {
+        let account = genesis.account_id();
         if let Some(existing) = self.get(namespace)? {
-            return Ok(existing);
+            if self.stored_identity_still_serves(namespace, &existing, account)? {
+                return Ok(existing);
+            }
+            // Deleting takes the KEM secret with it, which is only safe because
+            // both replacement cases leave nothing addressed to it: a revoked
+            // device is rotated away from, and an unlinked one was never a
+            // recipient at all.
+            self.delete(namespace)?;
         }
 
         let mut rng = rand::thread_rng();
-        let account = genesis.account_id();
         let device = DeviceId::mint(account, rng.gen::<[u8; 16]>());
         let kem_secret = X25519SecretKey::random(&mut rng);
 
@@ -408,6 +471,7 @@ impl<'a> NodeDeviceRepository<'a> {
 mod tests {
     use super::*;
     use crate::test_fixtures::{test_group_id, test_store};
+    use crate::AccountBindingRepository;
     use calimero_account::AccountGenesis;
     use calimero_crypto::SharedKey;
     use calimero_primitives::identity::PrivateKey;
@@ -445,16 +509,107 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_identity_survives_a_different_account_asking() {
-        // Re-minting for a new account would strand replica state, so the
-        // stored identity wins and re-enrollment is an explicit revoke-then-add.
+    fn a_linked_row_for_another_account_is_refused_rather_than_replaced() {
+        // Re-minting over a LINKED device would strand the replica state already
+        // written under its id, so the stored identity wins and moving the machine
+        // between accounts stays an explicit revoke-then-enroll.
         let store = test_store();
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
-        let original = repo.ensure_enrolled(&ns).expect("mint");
-        let asked_again = repo.ensure_enrolled(&ns).expect("mint");
-        assert_eq!(original.device(), asked_again.device());
+        let alice_sk = PrivateKey::from([1u8; 32]);
+        let alice = AccountGenesis::new(alice_sk.public_key(), [0xABu8; 16]);
+        let paired = repo.ensure_enrolled_into(&ns, alice).expect("adopt");
+
+        let cert = calimero_account::sign_device_cert(
+            &alice_sk,
+            paired.account,
+            paired.device(),
+            &root(9),
+            &paired.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("sign the certificate");
+        let _binding = AccountBindingRepository::new(&store)
+            .apply_link(&ns, &alice, &[], &cert)
+            .expect("store")
+            .expect("the credential must be admissible");
+
+        assert!(
+            repo.ensure_enrolled(&ns).is_err(),
+            "a linked device holds this namespace's replica state; enrolling over it \
+             has to be refused rather than silently strand that state"
+        );
+        assert_eq!(
+            repo.get(&ns).expect("read").expect("present").device(),
+            paired.device(),
+            "and the refusal must leave the stored row untouched"
+        );
+    }
+
+    #[test]
+    fn an_unlinked_row_for_another_account_yields_to_this_nodes_own_enrolment() {
+        // The device row is minted BEFORE anyone certifies it, so a single
+        // `pair-init` with a mistyped nonce — or one issued by anyone who can reach
+        // this node's admin API — claims the namespace's only device slot for an
+        // account nobody here controls. An unlinked device holds no replica state,
+        // so nothing is stranded by replacing it, and refusing to would leave the
+        // node unable to enroll here again short of leaving the namespace.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let squatter = AccountGenesis::new(root(1), [0xABu8; 16]);
+        let squatted = repo.ensure_enrolled_into(&ns, squatter).expect("adopt");
+        assert_eq!(squatted.account, squatter.account_id());
+
+        let mine = repo.ensure_enrolled(&ns).expect("enroll");
+        assert_eq!(
+            mine.account,
+            repo.account_root()
+                .expect("read")
+                .expect("present")
+                .account_for(&ns),
+            "the node must end up in the account its OWN root owns — a certificate \
+             signed for anything else verifies against a key that never signed it"
+        );
+        assert_ne!(
+            mine.device(),
+            squatted.device(),
+            "and under a fresh device id, since the squatted one addresses another \
+             account"
+        );
+    }
+
+    #[test]
+    fn a_revoked_device_is_reminted_rather_than_handed_back() {
+        // Revocation is terminal: the id is spent for good. So the tombstone has to
+        // release this node's device slot too, or `account create` afterwards keeps
+        // certifying an id every peer refuses — the node is locked out of the
+        // namespace by its own revocation, with nothing in the logs to say why.
+        // "Re-enrolling mints a fresh one" is only true if something mints it.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let spent = repo.ensure_enrolled(&ns).expect("enroll");
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&ns, spent.device())
+            .expect("tombstone the device");
+
+        let fresh = repo.ensure_enrolled(&ns).expect("re-enroll");
+        assert_ne!(
+            fresh.device(),
+            spent.device(),
+            "a spent device id can never be linked again, so handing it back leaves \
+             the node permanently unable to enroll"
+        );
+        assert_eq!(
+            fresh.account, spent.account,
+            "but the account is unchanged: it is derived from the root, which the \
+             revocation did not touch"
+        );
     }
 
     #[test]
@@ -596,19 +751,40 @@ mod tests {
     }
 
     #[test]
-    fn an_adopted_account_does_not_displace_an_existing_enrollment() {
-        // Same terms as ensure_enrolled: re-minting would strand the replica state
-        // already written under the stored device id.
+    fn an_adopted_account_does_not_displace_a_linked_enrollment() {
+        // Same rule as `ensure_enrolled`, reached through the pairing entry point:
+        // a linked device's replica state is real, so adopting another account over
+        // it is refused rather than stranding that state. Both entry points have to
+        // agree — the rule lives in one place precisely so they cannot drift.
         let store = test_store();
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
         let mine = repo.ensure_enrolled(&ns).expect("enroll");
-        let asked = repo
+        let cert = calimero_account::sign_device_cert(
+            repo.account_root()
+                .expect("read")
+                .expect("present")
+                .signing_key(),
+            mine.account,
+            mine.device(),
+            &root(9),
+            &mine.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("sign the certificate");
+        let _binding = AccountBindingRepository::new(&store)
+            .apply_link(&ns, &mine.genesis, &[], &cert)
+            .expect("store")
+            .expect("the credential must be admissible");
+
+        assert!(repo
             .ensure_enrolled_into(&ns, AccountGenesis::new(root(2), [0xCDu8; 16]))
-            .expect("adopt");
-        assert_eq!(mine.device(), asked.device());
-        assert_eq!(mine.account, asked.account);
+            .is_err());
+        let reloaded = repo.get(&ns).expect("read").expect("present");
+        assert_eq!(reloaded.device(), mine.device());
+        assert_eq!(reloaded.account, mine.account);
     }
 
     #[test]
