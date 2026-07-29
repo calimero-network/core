@@ -193,6 +193,24 @@ pub trait StorageAdaptor: 'static {
         let _ = collection;
         None
     }
+
+    /// Clear `collection`'s ordered-index validity marker (see
+    /// [`index_meta_put`](Self::index_meta_put)), forcing the next ordered read
+    /// to rebuild the index. This is the *invalidate-on-sync* primitive: the
+    /// apply/merge path calls it whenever it links or unlinks a child of a
+    /// collection outside `Collection::insert` (which never touches the marker),
+    /// so a `SortedSet`/`SortedMap` whose element set changed under sync rebuilds
+    /// its ordered index on the next read instead of trusting a marker that ran
+    /// ahead of the enumerable child list. Clearing a collection that has no
+    /// marker (any non-sorted collection) is a harmless no-op, so the caller need
+    /// not — and must not — try to detect whether the collection is sorted.
+    /// Returns whether the write was persisted. The inert default is never
+    /// reached on the invalidation path (gated on
+    /// [`index_supported`](Self::index_supported)).
+    fn index_meta_clear(collection: Id) -> bool {
+        let _ = collection;
+        false
+    }
 }
 
 /// Storage iteration support for GC and snapshots.
@@ -348,6 +366,10 @@ impl StorageAdaptor for MainStorage {
 
     fn index_meta_get(collection: Id) -> Option<Vec<u8>> {
         crate::env::storage_index_meta_get(collection.as_bytes())
+    }
+
+    fn index_meta_clear(collection: Id) -> bool {
+        crate::env::storage_index_meta_clear(collection.as_bytes())
     }
 }
 
@@ -741,6 +763,13 @@ pub mod mocked {
 
         fn index_meta_get(collection: Id) -> Option<Vec<u8>> {
             INDEX_META.with(|meta| meta.borrow().get(&(SCOPE, collection)).cloned())
+        }
+
+        fn index_meta_clear(collection: Id) -> bool {
+            INDEX_META.with(|meta| {
+                let _ = meta.borrow_mut().remove(&(SCOPE, collection));
+            });
+            true
         }
     }
 

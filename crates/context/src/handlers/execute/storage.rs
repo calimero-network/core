@@ -162,6 +162,15 @@ impl ContextStorage {
 }
 
 impl Storage for ContextStorage {
+    // The real host store backs the ordered index (RocksDB `Column::SortedIndex`
+    // / `SortedIndexMeta` via the methods below), so the runtime installs the
+    // `RuntimeEnv` ordered-index bridge and native SortedSet/SortedMap ops reach
+    // these durable, context-scoped columns instead of the process-thread-local
+    // mock.
+    fn supports_index(&self) -> bool {
+        true
+    }
+
     fn get(&self, key: &Key) -> Option<Vec<u8>> {
         let key = self.state_key(key)?;
 
@@ -317,6 +326,13 @@ impl Storage for ContextStorage {
             .raw_get(Column::SortedIndexMeta, &full)
             .ok()?
     }
+
+    fn index_meta_del(&mut self, key: &[u8]) -> bool {
+        let full = self.index_key(key);
+        self.borrow_index_store()
+            .raw_delete(Column::SortedIndexMeta, &full)
+            .is_ok()
+    }
 }
 
 // Same safety reasoning as ContextStorage
@@ -444,6 +460,13 @@ impl<'a, S: Storage> ReadOnlyContextStorage<'a, S> {
 }
 
 impl<S: Storage> Storage for ReadOnlyContextStorage<'_, S> {
+    // Delegate to the wrapped store: a read-only view over a `ContextStorage`
+    // still backs the ordered index (reads/`index_meta_get` pass through), so
+    // the bridge must install for read-only #[app::view] executions too.
+    fn supports_index(&self) -> bool {
+        self.0.supports_index()
+    }
+
     fn get(&self, key: &Key) -> Option<Value> {
         self.0.get(key)
     }
@@ -500,6 +523,11 @@ impl<S: Storage> Storage for ReadOnlyContextStorage<'_, S> {
 
     fn index_meta_set(&mut self, _key: &[u8], _value: &[u8]) -> bool {
         tracing::debug!("ReadOnlyContextStorage: write suppressed (index_meta_set)");
+        false
+    }
+
+    fn index_meta_del(&mut self, _key: &[u8]) -> bool {
+        tracing::debug!("ReadOnlyContextStorage: write suppressed (index_meta_del)");
         false
     }
 }

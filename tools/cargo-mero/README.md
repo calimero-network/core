@@ -51,7 +51,7 @@ No node or network is needed.
 **4. `cargo mero bundle`**
 Builds every service, stages the wasm/abi files under `res/bundle-temp/`, writes `manifest.json`, signs it, and packages everything into a tar.gz `.mpk`.
 Artifact: `dist/<package>.mpk` (the `<package>` is the `[package.metadata.calimero] package` id; the app version lives inside the manifest, not the filename).
-Pass a signing method: `--dev` (local), `--key <file>` (production), or `--unsigned`.
+Pass a signing method: `--dev` (local) or `--key <file>` (production).
 See [SIGNING.md](SIGNING.md).
 
 **5. `meroctl app install --path dist/<package>.mpk`**

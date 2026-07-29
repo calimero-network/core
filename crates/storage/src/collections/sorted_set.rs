@@ -382,6 +382,16 @@ where
         if !S::index_supported() {
             return Ok(false);
         }
+        // O(1) marker check: rebuild only when the node-local validity marker
+        // disagrees with the collection's current `full_hash`. This read pays a
+        // single meta read — no index scan, no child-list load. The marker is
+        // kept honest from the *write* side: the sync/apply path clears it
+        // whenever it links or unlinks a child of this collection (see
+        // `Interface::apply_action` / `apply_delete_ref_action`), so a converged-
+        // but-unindexed collection has its marker invalidated and rebuilds here
+        // on the next ordered read. The local `insert` path likewise leaves the
+        // marker stale (see the comment near `stamp_index_marker`'s callers), so
+        // both mutation paths funnel back through this one rebuild.
         if !self.index_marker_current() {
             self.rebuild_index()?;
         }
