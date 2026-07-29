@@ -51,29 +51,20 @@ pub(crate) fn apply_device_linked(
 ) -> EyreResult<()> {
     let group_id = *ctx.group_id();
 
-    // The one policy gate: **is this account's root key a member of the group?**
+    // The policy gate, in three steps: the endorsement is about this account, it
+    // is validly signed, and its signer is a member at the cut. Membership rows
+    // are keyed by member key and an `AccountId` is a one-way hash, so the account
+    // cannot be looked up in them at all — the endorsement is what bridges the
+    // two, and the only thing that can.
     //
-    // Membership rows are keyed by member key, and an `AccountId` is a one-way
-    // hash, so the account cannot be looked up in them directly. What ties the
-    // two together is the genesis: an account whose epoch-0 root key is a
-    // granted member key is that member's account, because only the holder of
-    // that key's private half can sign certificates under it.
+    // Membership is resolved at the op's causal cut, like every other apply-time
+    // authority question. Reading live rows would decide against whatever this
+    // replica has folded so far, so a node that had already applied a concurrent
+    // removal of the endorser would refuse a link its peers recorded — and since a
+    // refusal writes nothing while the op still occupies its place in the DAG, the
+    // two would disagree about who may author with no later op to reconcile them.
     //
-    // Anyone may *construct* a genesis naming someone else's member key — the
-    // genesis is public data — and such an account passes this gate. It gains
-    // them nothing: enrolling a device into it requires signing a certificate
-    // with the root key, which they do not hold. The gate keeps strangers from
-    // writing link rows for accounts unrelated to the group; the signature
-    // keeps them from enrolling into accounts that are not theirs.
-    //
-    // Resolved at the op's causal cut, like every other apply-time authority
-    // question. Reading live membership rows here would decide against whatever
-    // this replica has folded so far, so a node that had already applied a
-    // concurrent removal of the root-key holder would refuse a link its peers
-    // recorded — and since a refusal writes nothing while the op still occupies
-    // its place in the DAG, the two would disagree about who may author with no
-    // later op to reconcile them.
-    // The endorsement must actually be about THIS account, or a valid endorsement
+    // Step one: the endorsement must be about THIS account, or a valid endorsement
     // of some other account could be presented alongside an unrelated credential.
     if endorsement.account != cert.account {
         log_refusal(
@@ -94,7 +85,7 @@ pub(crate) fn apply_device_linked(
         );
         return Ok(());
     }
-    if !root_key_is_member(ctx, &endorsement.member)? {
+    if !endorser_is_member(ctx, &endorsement.member)? {
         log_refusal(&group_id, "device link", &BindingRejected::AccountNotMember);
         return Ok(());
     }
@@ -217,25 +208,29 @@ pub(crate) fn apply_device_unlinked(
     Ok(())
 }
 
-/// Is `root_pk` a member of this group at the op's causal cut?
+/// Is `endorser` a member of this group at the op's causal cut?
 ///
-/// Direct or inherited both count: an account whose root key reaches the group
-/// through an Open-subgroup chain holds every right its devices would gain, which
-/// is the whole basis for the link needing no admin.
+/// The key asked about is the **endorser's**, never the account root: the root is
+/// a dedicated offline key and is a member nowhere, so asking about it would
+/// refuse every link. That is why the link carries an endorsement at all.
+///
+/// Direct or inherited both count: a member who reaches the group through an
+/// Open-subgroup chain holds every right the endorsed account's devices would
+/// gain, which is the whole basis for the link needing no admin.
 ///
 /// The live resolver is used only when the projection has no cut to resolve
 /// against at all, and `ensure_live_fallback_is_sound` is what separates that
 /// from an unfolded cut — where falling back would answer against a different
 /// cut and let two replicas decide the same op differently.
-fn root_key_is_member(
+fn endorser_is_member(
     ctx: &GroupApplyCtx<'_>,
-    root_pk: &calimero_primitives::identity::PublicKey,
+    endorser: &calimero_primitives::identity::PublicKey,
 ) -> EyreResult<bool> {
-    let path = match ctx.projection_membership_path(root_pk) {
+    let path = match ctx.projection_membership_path(endorser) {
         Some(projected) => projected,
         None => {
-            ctx.ensure_live_fallback_is_sound(root_pk)?;
-            match MembershipRepository::new(ctx.store()).check_path(ctx.group_id(), root_pk)? {
+            ctx.ensure_live_fallback_is_sound(endorser)?;
+            match MembershipRepository::new(ctx.store()).check_path(ctx.group_id(), endorser)? {
                 MembershipPath::None => AtCutMembershipPath::None,
                 MembershipPath::Direct => AtCutMembershipPath::Direct,
                 MembershipPath::Inherited { .. } => AtCutMembershipPath::Inherited,

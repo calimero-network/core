@@ -270,8 +270,10 @@ impl<'a> AccountBindingRepository<'a> {
     /// and every member silently falls back to identity addressing — handing the
     /// scope key straight to a node running a revoked device.
     ///
-    /// Re-derived per call, never cached, for the reason in
-    /// [`Self::accounts_endorsed_by`]'s sibling below.
+    /// Re-derived per call, never cached: `AccountId` is a one-way hash, so a
+    /// reverse map could only be populated while decoding ops, and would come back
+    /// empty after a projection rebuild — silently reverting every member to
+    /// identity addressing and undoing revocation.
     ///
     /// # Errors
     /// Propagates the store scan failure.
@@ -401,7 +403,6 @@ impl<'a> AccountBindingRepository<'a> {
             &GroupAccountKeyValue {
                 epoch: 0,
                 root_pk: *AsRef::<[u8; 32]>::as_ref(&genesis.root_sign_pk),
-                genesis_root_pk: *AsRef::<[u8; 32]>::as_ref(&genesis.root_sign_pk),
             },
         )?;
         Ok(())
@@ -437,10 +438,6 @@ impl<'a> AccountBindingRepository<'a> {
             &GroupAccountKeyValue {
                 epoch: epoch.saturating_add(1),
                 root_pk: *AsRef::<[u8; 32]>::as_ref(&handoff.new_root_sign_pk),
-                // Carried through untouched: the genesis key is what ties this
-                // account to a group member, and a rotation changes the account's
-                // signing authority, not who it belongs to.
-                genesis_root_pk: current.genesis_root_pk,
             },
         )?;
         Ok(Ok(()))

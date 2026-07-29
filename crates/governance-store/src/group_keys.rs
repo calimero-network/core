@@ -680,12 +680,14 @@ impl<'a> GroupKeyring<'a> {
     ///   the bootstrap case, and the only one: an account cannot exist for
     ///   someone who has never held the key long enough to publish a link.
     ///
-    /// The member→account direction is re-derived on every call by scanning the
-    /// account rows and matching each one's root key, never cached. `AccountId`
-    /// is a one-way hash, so a cached reverse map could only be populated while
-    /// decoding ops — and would come back empty after a projection rebuild,
-    /// silently reverting every member to the identity fallback and undoing
-    /// revocation.
+    /// The member→account direction is re-derived on every call from the endorser
+    /// rows, never cached. It cannot be read off the account row's root key: since
+    /// the account root became a dedicated offline key it is a member nowhere, so
+    /// matching on it matches nothing and every member falls back to identity
+    /// addressing — handing the scope key straight to a node running a revoked
+    /// device. And it cannot be cached either: `AccountId` is a one-way hash, so a
+    /// reverse map could only be populated while decoding ops, and would come back
+    /// empty after a projection rebuild with exactly the same silent result.
     ///
     /// # Errors
     /// Propagates the membership or account-row scan failure.

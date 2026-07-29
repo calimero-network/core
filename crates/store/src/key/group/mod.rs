@@ -2338,18 +2338,16 @@ pub struct GroupAccountKeyValue {
     pub epoch: u32,
     /// The root key at `epoch` — the only key whose device certificates this
     /// group still accepts.
-    pub root_pk: [u8; 32],
-    /// The account's **epoch-0** root key, from its genesis, retained unchanged
-    /// across every rotation.
     ///
-    /// This is what ties the account to a group member, and it has to be the
-    /// genesis key rather than the current one for two reasons. The genesis is
-    /// immutable, so the tie is permanent and cannot depend on which rotations a
-    /// replica has folded; and it is the key the device-link gate checks
-    /// membership against, so keying anything else here would let the two
-    /// disagree — an account could pass the link gate while its devices were
-    /// invisible to key delivery, authorized to write but unable to read.
-    pub genesis_root_pk: [u8; 32],
+    /// Deliberately the *current* key and not the genesis one. This row exists to
+    /// answer "may this certificate still be honoured", which a rotation is
+    /// supposed to change; the account's tie to a member is a separate question,
+    /// answered by [`GroupAccountEndorser`] rather than by any key here. The row
+    /// used to carry the genesis key alongside for that purpose, back when an
+    /// account was rooted at its owner's namespace identity — once the root became
+    /// a dedicated offline key, which is a member nowhere, nothing could read it
+    /// and it stopped being carried.
+    pub root_pk: [u8; 32],
 }
 
 /// A member key that vouched for an account in a group. Key layout
