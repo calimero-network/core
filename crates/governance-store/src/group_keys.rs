@@ -1,4 +1,4 @@
-use crate::{AccountBindingRepository, KeyringError, MembershipRepository, NodeDevice};
+use crate::{AccountBindingRepository, DeviceSecret, KeyringError, MembershipRepository};
 use calimero_account::{DeviceId, KemPublicKey};
 use calimero_context_client::local_governance::{
     EncryptedGroupOp, EnvelopeRecipient, GroupOp, KeyEnvelope, KeyRotation,
@@ -575,7 +575,7 @@ impl<'a> GroupKeyring<'a> {
     /// device-addressed envelope simply is not for us.
     pub fn unwrap_any(
         identity_sk: &PrivateKey,
-        device: Option<&NodeDevice>,
+        device: Option<&DeviceSecret>,
         group_id: &[u8; 32],
         expected_sender: Option<&PublicKey>,
         envelope: &KeyEnvelope,
@@ -1447,7 +1447,7 @@ mod delete_tests {
         let sender = PrivateKey::from([0x01u8; 32]);
         let identity = PrivateKey::from([0x02u8; 32]);
         let (device, kem_secret) = device_fixture(0x05);
-        let node_device = NodeDevice {
+        let node_device = DeviceSecret {
             device,
             kem_secret: kem_secret.clone(),
         };

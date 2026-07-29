@@ -1474,7 +1474,7 @@ impl SyncManager {
         let requester = calimero_context::group_store::KeyRequester {
             identity: requester_public_key,
             device: calimero_context::group_store::NodeDeviceRepository::new(&store)
-                .get(&ns_gid)
+                .device_secret(&ns_gid)
                 .unwrap_or_else(|err| {
                     debug!(%err, "failed to read node device identity for key recovery");
                     None

@@ -126,7 +126,7 @@ pub use self::namespace::{
     NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord, NamespaceMembershipService,
     NamespaceOpLogService, NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
 };
-pub use self::node_device::{NodeDevice, NodeDeviceRepository};
+pub use self::node_device::{DeviceSecret, NodeDevice, NodeDeviceRepository};
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::PermissionChecker;
 pub use self::signing_keys::SigningKeysRepository;

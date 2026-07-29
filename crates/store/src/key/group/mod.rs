@@ -2422,6 +2422,14 @@ impl Debug for NodeDeviceIdentity {
 #[derive(Clone, Eq, PartialEq, ZeroizeOnDrop)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NodeDeviceIdentityValue {
+    /// Nonce of the `AccountGenesis` this node's device belongs to.
+    ///
+    /// The nonce rather than the `AccountId`, because the id is a one-way hash
+    /// and the *genesis* is what a device link has to put on the wire. Pairing a
+    /// second device means publishing another link naming the same account, so
+    /// the genesis must be reconstructible — and it is, from this nonce plus the
+    /// namespace identity key that roots it.
+    pub account_nonce: [u8; 16],
     /// The `DeviceId` this node speaks as in the namespace.
     pub device_id: [u8; 32],
     /// X25519 secret matching the certificate's `kem_pk`.

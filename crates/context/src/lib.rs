@@ -95,6 +95,7 @@ pub mod group_store {
         CapabilitiesRepository,
         ContextRegistrationError,
         DenyListRepository,
+        DeviceSecret,
         GroupCreatedRejection,
         GroupDeletedRejection,
         GroupKeyring,

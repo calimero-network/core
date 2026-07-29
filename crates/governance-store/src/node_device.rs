@@ -17,9 +17,10 @@
 //! lineage — its counter slots and HLC seed — even though the machine and its
 //! keys were unchanged.
 
-use calimero_account::{AccountId, DeviceId, KemPublicKey};
+use calimero_account::{AccountGenesis, AccountId, DeviceId, KemPublicKey};
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519SecretKey;
+use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{NodeDeviceIdentity, NodeDeviceIdentityValue};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -38,21 +39,49 @@ use rand::Rng as _;
 /// released, so the next holder's `get` always observes it.
 static NODE_DEVICE_MINT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// This node's device credentials for one namespace.
+/// The minimum needed to open a scope key addressed to this node's device.
+///
+/// Separate from [`NodeDevice`] because the unwrap paths need only these two
+/// values, and requiring the account's root key just to read a secret would make
+/// every receive path depend on resolving an identity it does not otherwise care
+/// about.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
-pub struct NodeDevice {
+pub struct DeviceSecret {
     /// The replica this node speaks as.
     pub device: DeviceId,
     /// The agreement secret matching the certificate's `kem_pk`.
     pub kem_secret: X25519SecretKey,
 }
 
+/// This node's full enrollment for one namespace.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct NodeDevice {
+    /// The account this device speaks for.
+    pub account: AccountId,
+    /// The genesis that addresses [`Self::account`], reconstructed from the
+    /// stored nonce and the namespace identity key that roots it.
+    ///
+    /// Carried because a device link has to put the genesis on the wire, and
+    /// pairing a second device means publishing another link naming this same
+    /// account.
+    pub genesis: AccountGenesis,
+    /// What opens scope keys addressed to this device.
+    pub secret: DeviceSecret,
+}
+
 impl NodeDevice {
+    /// The replica this node speaks as.
+    #[must_use]
+    pub const fn device(&self) -> DeviceId {
+        self.secret.device
+    }
+
     /// The public half to publish in this device's certificate.
     #[must_use]
     pub fn kem_public_key(&self) -> KemPublicKey {
-        KemPublicKey::from(*self.kem_secret.public_key().as_bytes())
+        KemPublicKey::from(*self.secret.kem_secret.public_key().as_bytes())
     }
 }
 
@@ -77,13 +106,41 @@ impl<'a> NodeDeviceRepository<'a> {
     ///
     /// # Errors
     /// Propagates the store read failure.
-    pub fn get(&self, namespace: &ContextGroupId) -> EyreResult<Option<NodeDevice>> {
+    pub fn get(
+        &self,
+        namespace: &ContextGroupId,
+        root_sign_pk: &PublicKey,
+    ) -> EyreResult<Option<NodeDevice>> {
         let key = NodeDeviceIdentity::new(namespace.to_bytes());
         Ok(self
             .store
             .handle()
             .get(&key)?
-            .map(|value: NodeDeviceIdentityValue| NodeDevice {
+            .map(|value: NodeDeviceIdentityValue| {
+                let genesis = AccountGenesis::new(*root_sign_pk, value.account_nonce);
+                NodeDevice {
+                    account: genesis.account_id(),
+                    genesis,
+                    secret: DeviceSecret {
+                        device: DeviceId::from(value.device_id),
+                        kem_secret: X25519SecretKey::from(value.kem_secret),
+                    },
+                }
+            }))
+    }
+
+    /// Just what the unwrap paths need: this node's device id and agreement
+    /// secret, without resolving the account that owns them.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn device_secret(&self, namespace: &ContextGroupId) -> EyreResult<Option<DeviceSecret>> {
+        let key = NodeDeviceIdentity::new(namespace.to_bytes());
+        Ok(self
+            .store
+            .handle()
+            .get(&key)?
+            .map(|value: NodeDeviceIdentityValue| DeviceSecret {
                 device: DeviceId::from(value.device_id),
                 kem_secret: X25519SecretKey::from(value.kem_secret),
             }))
@@ -111,10 +168,10 @@ impl<'a> NodeDeviceRepository<'a> {
     ///
     /// # Errors
     /// Propagates the store read or write failure.
-    pub fn ensure_for_account(
+    pub fn ensure_enrolled(
         &self,
         namespace: &ContextGroupId,
-        account: AccountId,
+        root_sign_pk: &PublicKey,
     ) -> EyreResult<NodeDevice> {
         // Recover a poisoned lock: the guarded state lives in the store, not the
         // guard, so a prior panic leaves nothing inconsistent behind.
@@ -122,11 +179,14 @@ impl<'a> NodeDeviceRepository<'a> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        if let Some(existing) = self.get(namespace)? {
+        if let Some(existing) = self.get(namespace, root_sign_pk)? {
             return Ok(existing);
         }
 
         let mut rng = rand::thread_rng();
+        let account_nonce = rng.gen::<[u8; 16]>();
+        let genesis = AccountGenesis::new(*root_sign_pk, account_nonce);
+        let account = genesis.account_id();
         let device = DeviceId::mint(account, rng.gen::<[u8; 16]>());
         let kem_secret = X25519SecretKey::random(&mut rng);
 
@@ -134,12 +194,17 @@ impl<'a> NodeDeviceRepository<'a> {
         self.store.handle().put(
             &key,
             &NodeDeviceIdentityValue {
+                account_nonce,
                 device_id: *device.as_bytes(),
                 kem_secret: *kem_secret.as_bytes(),
             },
         )?;
 
-        Ok(NodeDevice { device, kem_secret })
+        Ok(NodeDevice {
+            account,
+            genesis,
+            secret: DeviceSecret { device, kem_secret },
+        })
     }
 
     /// Drop this node's device identity for `namespace`. Idempotent.
@@ -163,19 +228,18 @@ impl<'a> NodeDeviceRepository<'a> {
 mod tests {
     use super::*;
     use crate::test_fixtures::{test_group_id, test_store};
-    use calimero_account::AccountGenesis;
     use calimero_crypto::SharedKey;
     use calimero_primitives::identity::PrivateKey;
 
-    fn account(seed: u8) -> AccountId {
-        AccountGenesis::new(PrivateKey::from([seed; 32]).public_key(), [seed; 16]).account_id()
+    fn root(seed: u8) -> PublicKey {
+        PrivateKey::from([seed; 32]).public_key()
     }
 
     #[test]
     fn a_namespace_with_no_enrolled_device_reports_none() {
         let store = test_store();
         assert!(NodeDeviceRepository::new(&store)
-            .get(&test_group_id())
+            .get(&test_group_id(), &root(1))
             .expect("read")
             .is_none());
     }
@@ -189,11 +253,14 @@ mod tests {
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
-        let first = repo.ensure_for_account(&ns, account(1)).expect("mint");
-        let second = repo.ensure_for_account(&ns, account(1)).expect("mint");
+        let first = repo.ensure_enrolled(&ns, &root(1)).expect("mint");
+        let second = repo.ensure_enrolled(&ns, &root(1)).expect("mint");
 
-        assert_eq!(first.device, second.device);
-        assert_eq!(first.kem_secret.as_bytes(), second.kem_secret.as_bytes());
+        assert_eq!(first.device(), second.device());
+        assert_eq!(
+            first.secret.kem_secret.as_bytes(),
+            second.secret.kem_secret.as_bytes()
+        );
     }
 
     #[test]
@@ -204,9 +271,37 @@ mod tests {
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
-        let original = repo.ensure_for_account(&ns, account(1)).expect("mint");
-        let asked_again = repo.ensure_for_account(&ns, account(2)).expect("mint");
-        assert_eq!(original.device, asked_again.device);
+        let original = repo.ensure_enrolled(&ns, &root(1)).expect("mint");
+        let asked_again = repo.ensure_enrolled(&ns, &root(2)).expect("mint");
+        assert_eq!(original.device(), asked_again.device());
+    }
+
+    #[test]
+    fn the_enrolled_account_is_reconstructible_from_the_stored_nonce() {
+        // The reason the nonce is stored rather than the AccountId: pairing a
+        // second device means publishing another link naming this same account,
+        // and a link has to carry the GENESIS on the wire. An id is a one-way
+        // hash, so storing it would leave the genesis unrecoverable and make the
+        // account un-pairable after a restart.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let enrolled = repo.ensure_enrolled(&ns, &root(1)).expect("enroll");
+        let reloaded = repo.get(&ns, &root(1)).expect("read").expect("present");
+
+        assert_eq!(enrolled.account, reloaded.account);
+        assert_eq!(enrolled.genesis, reloaded.genesis);
+        assert_eq!(
+            reloaded.genesis.account_id(),
+            reloaded.account,
+            "the reconstructed genesis must address the account it claims"
+        );
+        assert_eq!(
+            reloaded.genesis.root_sign_pk,
+            root(1),
+            "the account is rooted at the namespace identity that enrolled it"
+        );
     }
 
     #[test]
@@ -215,17 +310,20 @@ mod tests {
         // same replica id or the same agreement key in two namespaces.
         let store = test_store();
         let repo = NodeDeviceRepository::new(&store);
-        let acct = account(1);
+        let acct = root(1);
 
         let a = repo
-            .ensure_for_account(&ContextGroupId::from([0xAAu8; 32]), acct)
+            .ensure_enrolled(&ContextGroupId::from([0xAAu8; 32]), &acct)
             .expect("mint");
         let b = repo
-            .ensure_for_account(&ContextGroupId::from([0xBBu8; 32]), acct)
+            .ensure_enrolled(&ContextGroupId::from([0xBBu8; 32]), &acct)
             .expect("mint");
 
-        assert_ne!(a.device, b.device);
-        assert_ne!(a.kem_secret.as_bytes(), b.kem_secret.as_bytes());
+        assert_ne!(a.device(), b.device());
+        assert_ne!(
+            a.secret.kem_secret.as_bytes(),
+            b.secret.kem_secret.as_bytes()
+        );
     }
 
     #[test]
@@ -236,7 +334,7 @@ mod tests {
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
-        let minted = repo.ensure_for_account(&ns, account(1)).expect("mint");
+        let minted = repo.ensure_enrolled(&ns, &root(1)).expect("mint");
         let published = minted.kem_public_key();
 
         // A sender wraps to the published key...
@@ -248,9 +346,9 @@ mod tests {
         .expect("agree");
 
         // ...and the identity reloaded from the store opens it.
-        let reloaded = repo.get(&ns).expect("read").expect("present");
-        let device_side =
-            SharedKey::from_x25519(&reloaded.kem_secret, &sender.public_key()).expect("agree");
+        let reloaded = repo.get(&ns, &root(1)).expect("read").expect("present");
+        let device_side = SharedKey::from_x25519(&reloaded.secret.kem_secret, &sender.public_key())
+            .expect("agree");
 
         let (nonce, ciphertext) = sender_side.encrypt(b"scope key".to_vec()).expect("seal");
         assert_eq!(
@@ -269,7 +367,7 @@ mod tests {
 
         let store = test_store();
         let ns = test_group_id();
-        let acct = account(1);
+        let acct = root(1);
 
         let observed: Vec<DeviceId> = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..8)
@@ -277,9 +375,9 @@ mod tests {
                     let store = Arc::new(&store);
                     scope.spawn(move || {
                         NodeDeviceRepository::new(&store)
-                            .ensure_for_account(&ns, acct)
+                            .ensure_enrolled(&ns, &acct)
                             .expect("mint")
-                            .device
+                            .device()
                     })
                 })
                 .collect();
@@ -296,10 +394,10 @@ mod tests {
         );
         assert_eq!(
             NodeDeviceRepository::new(&store)
-                .get(&ns)
+                .get(&ns, &acct)
                 .expect("read")
                 .expect("present")
-                .device,
+                .device(),
             first,
             "the stored identity must be the one every caller was handed"
         );
@@ -311,9 +409,9 @@ mod tests {
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
-        let _ = repo.ensure_for_account(&ns, account(1)).expect("mint");
+        let _ = repo.ensure_enrolled(&ns, &root(1)).expect("mint");
         repo.delete(&ns).expect("delete");
-        assert!(repo.get(&ns).expect("read").is_none());
+        assert!(repo.get(&ns, &root(1)).expect("read").is_none());
         repo.delete(&ns).expect("delete again");
     }
 }
