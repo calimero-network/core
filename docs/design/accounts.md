@@ -579,7 +579,8 @@ That is the concrete reason phase G depends on this rather than the reverse. Two
 follow-ups, neither blocking pairing:
 
 1. **`merod account export` / `import`** — the root out to paper or hardware and
-   back. Until it exists, calling this a recovery key overstates it.
+   back. Until it exists, calling this a recovery key overstates it. Tracked as
+   [#3335](https://github.com/calimero-network/core/issues/3335).
 2. **Three secrets now sit in `Column::Group`** — namespace identity, device KEM
    secret, account root. Nothing ships that column wholesale today, so this is not
    an exposure, but the store's own docs list `Group` under "synced (replicated)".
@@ -652,7 +653,7 @@ in production, and a fan-out reading it would wrap for zero recipients.
 | F3 | `meroctl account pair-init` / `pair-complete`, on-link key backfill | **done** |
 | F4 | `account revoke`, revoke-triggered rotation, root-signed revocation proof | **done** |
 | F5 | merobox helpers, wire the acceptance scenario into CI | next — see the scenario's Wiring notes |
-| G | `merod export` / `import` | **independent — deferred by decision** |
+| G | `merod account export` / `import` | **deferred** — [#3335](https://github.com/calimero-network/core/issues/3335) |
 
 `NodeDeviceIdentity` is an additive row family rather than two more fields on
 `ContextIdentity`: that struct is `#[expect(clippy::exhaustive_structs)]` with
