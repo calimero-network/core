@@ -1,17 +1,17 @@
 use calimero_context_config::MemberCapabilities;
 use calimero_server_primitives::admin::{
-    AddGroupMembersApiResponse, CreateGroupApiResponse, CreateGroupInvitationApiResponse,
-    CreateNamespaceApiResponse, DeleteGroupApiResponse, DeleteNamespaceApiResponse,
-    DetachContextFromGroupApiResponse, GetGroupUpgradeStatusApiResponse,
-    GetMemberCapabilitiesApiResponse, GetMetadataApiResponse, GroupInfoApiResponse,
-    JoinContextApiResponse, JoinGroupApiResponse, LeaveContextApiResponse, LeaveGroupApiResponse,
-    LeaveNamespaceApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
-    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
-    NamespaceApiResponse, NamespaceIdentityApiResponse, RegisterGroupSigningKeyApiResponse,
-    RemoveGroupMembersApiResponse, ReparentGroupApiResponse, SetDefaultCapabilitiesApiResponse,
-    SetMemberCapabilitiesApiResponse, SetMetadataApiResponse, SetSubgroupVisibilityApiResponse,
-    SyncGroupApiResponse, UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse,
-    UpgradeGroupApiResponse,
+    AddGroupMembersApiResponse, CreateAccountApiResponse, CreateGroupApiResponse,
+    CreateGroupInvitationApiResponse, CreateNamespaceApiResponse, DeleteGroupApiResponse,
+    DeleteNamespaceApiResponse, DetachContextFromGroupApiResponse,
+    GetGroupUpgradeStatusApiResponse, GetMemberCapabilitiesApiResponse, GetMetadataApiResponse,
+    GroupInfoApiResponse, JoinContextApiResponse, JoinGroupApiResponse, LeaveContextApiResponse,
+    LeaveGroupApiResponse, LeaveNamespaceApiResponse, ListGroupContextsApiResponse,
+    ListGroupMembersApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
+    ListSubgroupsApiResponse, NamespaceApiResponse, NamespaceIdentityApiResponse,
+    RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse, ReparentGroupApiResponse,
+    SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse, SetMetadataApiResponse,
+    SetSubgroupVisibilityApiResponse, SyncGroupApiResponse, UpdateGroupSettingsApiResponse,
+    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -55,6 +55,27 @@ impl Report for GroupInfoApiResponse {
         if let Some(ref upgrade) = d.active_upgrade {
             let _ = table.add_row(vec!["Active Upgrade Status", &upgrade.status]);
         }
+        println!("{table}");
+    }
+}
+
+impl Report for CreateAccountApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Device Enrolled").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Account ID", &self.data.account_id]);
+        let _ = table.add_row(vec!["Device ID", &self.data.device_id]);
+        let _ = table.add_row(vec!["Account root key", &self.data.account_root_key]);
+        // Shown because pairing a second device needs it: the other device
+        // computes its own id as H(account ‖ nonce), so without the nonce the
+        // account cannot be joined at all.
+        let _ = table.add_row(vec![
+            "Account nonce (for pairing)",
+            &self.data.account_nonce,
+        ]);
         println!("{table}");
     }
 }

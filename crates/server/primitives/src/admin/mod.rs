@@ -1869,6 +1869,45 @@ impl Validate for RetryGroupUpgradeApiRequest {
     }
 }
 
+/// Enroll this node's device into a namespace under a fresh account.
+///
+/// No body fields: the account is rooted at this node's own namespace identity,
+/// so there is nothing for a caller to choose — and nothing a caller could
+/// usefully spoof.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAccountApiRequest {}
+
+impl Validate for CreateAccountApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+/// What the node enrolled as.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAccountApiResponseData {
+    /// Hex-encoded `AccountId` this node now speaks for.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId` — this node's replica id within the account.
+    pub device_id: String,
+    /// Hex-encoded epoch-0 root key of the account.
+    pub account_root_key: String,
+    /// Hex-encoded genesis nonce.
+    ///
+    /// Returned because pairing needs it: a second device computes its own id as
+    /// `H(account ‖ nonce)`, so the nonce has to travel for the account to be
+    /// join-able at all.
+    pub account_nonce: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAccountApiResponse {
+    pub data: CreateAccountApiResponseData,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupInvitationApiRequest {

@@ -17,6 +17,7 @@ use crate::connection::ConnectionInfo;
 use crate::defaults;
 use crate::output::{Format, Output, Report};
 
+mod account;
 mod app;
 mod blob;
 mod call;
@@ -105,6 +106,7 @@ pub enum SubCommands {
     Blob(BlobCommand),
     Context(ContextCommand),
     Dev(DevCommand),
+    Account(account::AccountCommand),
     Group(GroupCommand),
     #[command(alias = "ns")]
     Namespace(NamespaceCommand),
@@ -236,6 +238,7 @@ impl RootCommand {
             SubCommands::Blob(blob) => blob.run(&mut environment).await,
             SubCommands::Context(context) => context.run(&mut environment).await,
             SubCommands::Dev(dev) => dev.run(&mut environment).await,
+            SubCommands::Account(account) => account.run(&mut environment).await,
             SubCommands::Group(group) => group.run(&mut environment).await,
             SubCommands::Namespace(ns) => ns.run(&mut environment).await,
             SubCommands::Call(call) => call.run(&mut environment).await,

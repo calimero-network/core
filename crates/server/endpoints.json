@@ -73,6 +73,7 @@
   "POST /admin-api/install-application",
   "POST /admin-api/install-dev-application",
   "POST /admin-api/namespaces",
+  "POST /admin-api/namespaces/:namespace_id/account",
   "POST /admin-api/namespaces/:namespace_id/groups",
   "POST /admin-api/namespaces/:namespace_id/invite",
   "POST /admin-api/namespaces/:namespace_id/join",

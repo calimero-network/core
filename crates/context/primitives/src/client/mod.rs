@@ -25,19 +25,19 @@ use tokio::sync::oneshot;
 
 use crate::group::{
     AbortMigrationRequest, AbortMigrationResponse, AddGroupMembersRequest, AdmitTeeNodeRequest,
-    BroadcastGroupLocalStateRequest, CascadeStatusEntry, CreateGroupInvitationRequest,
-    CreateGroupInvitationResponse, CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest,
-    DeleteGroupResponse, DeleteNamespaceRequest, DeleteNamespaceResponse,
-    DetachContextFromGroupRequest, GetCascadeStatusRequest, GetContextMetadataRequest,
-    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
-    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
-    GetMemberMetadataRequest, GetMigrationStatusRequest, GetNamespaceIdentityRequest,
-    GroupContextEntry, GroupInfoResponse, GroupSummary, GroupUpgradeInfo,
-    IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest, IssueOwnershipProofResponse,
-    JoinContextRequest, JoinContextResponse, JoinGroupRequest, JoinGroupResponse,
-    JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse, LeaveContextRequest,
-    LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse, LeaveNamespaceRequest,
-    LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
+    BroadcastGroupLocalStateRequest, CascadeStatusEntry, CreateAccountRequest,
+    CreateGroupInvitationRequest, CreateGroupInvitationResponse, CreateGroupRequest,
+    CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse, DeleteNamespaceRequest,
+    DeleteNamespaceResponse, DetachContextFromGroupRequest, GetCascadeStatusRequest,
+    GetContextMetadataRequest, GetGroupForContextRequest, GetGroupInfoRequest,
+    GetGroupMetadataRequest, GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest,
+    GetMemberCapabilitiesResponse, GetMemberMetadataRequest, GetMigrationStatusRequest,
+    GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse, GroupSummary,
+    GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest,
+    IssueOwnershipProofResponse, JoinContextRequest, JoinContextResponse, JoinGroupRequest,
+    JoinGroupResponse, JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse,
+    LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse,
+    LeaveNamespaceRequest, LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, MigrationStatus, NamespaceSummary, RemoveGroupMembersRequest,
     ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest, RotateGroupKeyRequest,
@@ -2139,6 +2139,12 @@ impl ContextClient {
         AdmitTeeNode,
         AdmitTeeNodeRequest,
         eyre::Result<()>
+    );
+    forward_to_actor!(
+        create_account,
+        CreateAccount,
+        CreateAccountRequest,
+        eyre::Result<crate::group::CreateAccountResponse>
     );
     forward_to_actor!(
         rotate_group_key,

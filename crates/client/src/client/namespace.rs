@@ -1,8 +1,9 @@
 use calimero_server_primitives::admin::{
-    CreateGroupInvitationApiRequest, CreateNamespaceApiRequest, CreateNamespaceApiResponse,
-    DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, GetNamespaceApiResponse,
-    JoinGroupApiRequest, JoinGroupApiResponse, ListNamespaceGroupsApiResponse,
-    ListNamespacesApiResponse, NamespaceApiResponse, NamespaceIdentityApiResponse,
+    CreateAccountApiRequest, CreateAccountApiResponse, CreateGroupInvitationApiRequest,
+    CreateNamespaceApiRequest, CreateNamespaceApiResponse, DeleteNamespaceApiRequest,
+    DeleteNamespaceApiResponse, GetNamespaceApiResponse, JoinGroupApiRequest, JoinGroupApiResponse,
+    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, NamespaceApiResponse,
+    NamespaceIdentityApiResponse,
 };
 use eyre::Result;
 use serde::Serialize;
@@ -77,6 +78,22 @@ where
         let response = self
             .connection
             .delete_with_body(&format!("admin-api/namespaces/{namespace_id}"), request)
+            .await?;
+        Ok(response)
+    }
+
+    /// Enroll this node's device into a namespace under a fresh account.
+    ///
+    /// Must follow key delivery: the device link travels as an encrypted group
+    /// op, so a node holding no scope key cannot publish one. The node refuses
+    /// with that reason rather than failing obscurely.
+    pub async fn create_account(&self, namespace_id: &str) -> Result<CreateAccountApiResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/namespaces/{namespace_id}/account"),
+                CreateAccountApiRequest {},
+            )
             .await?;
         Ok(response)
     }
