@@ -81,6 +81,9 @@ const ACCOUNT_NONCE_DOMAIN: &[u8] = b"calimero.account.nonce.v1";
 /// certificate, a handoff, or an op.
 const ACCOUNT_ENDORSEMENT_SIGN_DOMAIN: &[u8] = b"calimero.account.endorsement.v1";
 
+/// Domain for a root-signed device revocation.
+const DEVICE_REVOCATION_SIGN_DOMAIN: &[u8] = b"calimero.device.revocation.v1";
+
 /// Every signing domain used by this crate, for the test that asserts they are
 /// pairwise distinct. A collision here would let a signature minted for one
 /// purpose be replayed as another.
@@ -90,6 +93,8 @@ const ALL_DOMAINS: &[&[u8]] = &[
     DEVICE_ID_DOMAIN,
     HANDOFF_SIGN_DOMAIN,
     DEVICE_CERT_SIGN_DOMAIN,
+    ACCOUNT_ENDORSEMENT_SIGN_DOMAIN,
+    DEVICE_REVOCATION_SIGN_DOMAIN,
 ];
 
 /// Hash `domain ‖ parts` — the one hashing helper, so every content address and
@@ -678,6 +683,13 @@ pub enum AccountError {
     /// The signing key refused to produce a signature.
     #[error("signing failed")]
     SigningFailed,
+    /// The revocation names a different account than the genesis.
+    #[error("revocation is for a different account than the supplied genesis")]
+    RevocationAccountMismatch,
+    /// The revocation is not validly signed by the root key at its claimed
+    /// epoch.
+    #[error("revocation has an invalid signature for its claimed key epoch")]
+    RevocationSignatureInvalid,
 }
 
 /// Walk a handoff chain from `genesis` and return the root key at each epoch.
@@ -808,11 +820,255 @@ pub fn verify_device_cert(
     })
 }
 
+/// A root-signed withdrawal of a device.
+///
+/// The counterpart of [`DeviceCert`], and self-certifying for the same reason:
+/// whether the account owner may revoke their own device cannot be answered from
+/// folded state. "Is the signer this account's current root key" depends on which
+/// rotations a given replica has folded, so two replicas would reach different
+/// verdicts on one op and disagree permanently about who may author. Carrying the
+/// proof makes the answer a property of the op rather than of the receiver.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct DeviceRevocation {
+    /// The account withdrawing the device. Bound into the signature so a
+    /// revocation cannot be replayed against another account.
+    pub account: AccountId,
+    /// The device being withdrawn.
+    pub device: DeviceId,
+    /// Which account root-key epoch signed this.
+    pub key_epoch: u32,
+    /// Signature by the epoch-`key_epoch` root key over
+    /// [`DeviceRevocation::signing_payload`].
+    pub signature: [u8; 64],
+}
+
+impl DeviceRevocation {
+    /// Canonical bytes the root key signs. Covers every field but the signature.
+    #[must_use]
+    pub fn signing_payload(account: AccountId, device: DeviceId, key_epoch: u32) -> [u8; 32] {
+        domain_hash(
+            DEVICE_REVOCATION_SIGN_DOMAIN,
+            &[
+                account.as_bytes(),
+                device.as_bytes(),
+                &key_epoch.to_le_bytes(),
+            ],
+        )
+    }
+
+    /// The bytes this revocation's signature covers.
+    #[must_use]
+    pub fn payload(&self) -> [u8; 32] {
+        Self::signing_payload(self.account, self.device, self.key_epoch)
+    }
+}
+
+/// Mint a revocation for `device`, signed by the account root at `key_epoch`.
+///
+/// # Errors
+/// [`AccountError::SigningFailed`] if the key refuses to sign.
+pub fn sign_device_revocation(
+    root_sk: &PrivateKey,
+    account: AccountId,
+    device: DeviceId,
+    key_epoch: u32,
+) -> Result<DeviceRevocation, AccountError> {
+    let payload = DeviceRevocation::signing_payload(account, device, key_epoch);
+    Ok(DeviceRevocation {
+        account,
+        device,
+        key_epoch,
+        signature: root_sk
+            .sign(&payload)
+            .map_err(|_| AccountError::SigningFailed)?
+            .to_bytes(),
+    })
+}
+
+/// Verify a revocation against the account it names, from the account id alone.
+///
+/// **Any epoch the carried chain resolves is accepted, not merely the newest.**
+/// That is a deliberate asymmetry with [`verify_device_cert`], whose superseded
+/// epochs are filtered when the view is read. Applying the same filter here would
+/// mean rotating an account's root key silently *un-revokes* every device it had
+/// withdrawn — and a revocation is terminal by design, precisely so a spent
+/// `DeviceId` can never come back.
+///
+/// The cost is that a compromised *old* root key can still revoke devices. That
+/// is accepted rather than overlooked: whoever holds any root key of an account
+/// can already sign a handoff and take it over, so root-key compromise is
+/// unrecoverable regardless, and the terminal-revocation guarantee is worth more
+/// than narrowing a capability an attacker in that position already has.
+///
+/// # Errors
+/// - [`AccountError::GenesisMismatch`] if the genesis does not hash to
+///   `claimed_account`.
+/// - [`AccountError::RevocationAccountMismatch`] if the revocation names a
+///   different account.
+/// - [`AccountError::EpochOutOfRange`] if `key_epoch` exceeds the chain.
+/// - [`AccountError::RevocationSignatureInvalid`] if the signature does not
+///   verify under the key at that epoch.
+pub fn verify_device_revocation(
+    claimed_account: AccountId,
+    genesis: &AccountGenesis,
+    chain: &[RootKeyHandoff],
+    revocation: &DeviceRevocation,
+) -> Result<(), AccountError> {
+    let derived = genesis.account_id();
+    if derived != claimed_account {
+        return Err(AccountError::GenesisMismatch {
+            claimed: claimed_account,
+            actual: derived,
+        });
+    }
+    if revocation.account != derived {
+        return Err(AccountError::RevocationAccountMismatch);
+    }
+
+    let keys = resolve_root_keys(genesis, chain)?;
+    let epoch_index = usize::try_from(revocation.key_epoch).unwrap_or(usize::MAX);
+    let Some(signer) = keys.get(epoch_index) else {
+        // `keys` is non-empty, so `len() - 1` cannot underflow.
+        let reachable = u32::try_from(keys.len() - 1).unwrap_or(u32::MAX);
+        return Err(AccountError::EpochOutOfRange {
+            key_epoch: revocation.key_epoch,
+            reachable,
+        });
+    };
+
+    if signer
+        .verify_raw_signature(&revocation.payload(), &revocation.signature)
+        .is_err()
+    {
+        return Err(AccountError::RevocationSignatureInvalid);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use calimero_primitives::identity::PrivateKey;
     use std::collections::HashSet;
+
+    /// An account rooted at `root`, plus a handoff rolling it onto `next`.
+    fn rotated(root: &PrivateKey, next: &PrivateKey) -> (AccountGenesis, RootKeyHandoff) {
+        let genesis = AccountGenesis::new(root.public_key(), [0x11; 16]);
+        let account = genesis.account_id();
+        let payload = RootKeyHandoff::signing_payload(account, 0, &next.public_key());
+        let handoff = RootKeyHandoff {
+            account,
+            from_epoch: 0,
+            new_root_sign_pk: next.public_key(),
+            signature: root.sign(&payload).expect("sign").to_bytes(),
+        };
+        (genesis, handoff)
+    }
+
+    #[test]
+    fn a_root_signed_revocation_verifies_from_the_account_id_alone() {
+        let root = PrivateKey::from([7u8; 32]);
+        let genesis = AccountGenesis::new(root.public_key(), [0x11; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [0x22; 16]);
+
+        let revocation = sign_device_revocation(&root, account, device, 0).expect("sign");
+        assert!(verify_device_revocation(account, &genesis, &[], &revocation).is_ok());
+    }
+
+    #[test]
+    fn a_revocation_survives_a_later_root_key_rotation() {
+        // The asymmetry with `verify_device_cert`, and the reason it exists.
+        // Superseded epochs are filtered for certificates when the view is read;
+        // applying that rule here would mean rotating the root silently
+        // UN-revokes every device the account had withdrawn. Revocation is
+        // terminal by design — a spent DeviceId must never come back.
+        let root = PrivateKey::from([7u8; 32]);
+        let next = PrivateKey::from([8u8; 32]);
+        let (genesis, handoff) = rotated(&root, &next);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [0x22; 16]);
+
+        // Signed by the OLD root, before the rotation.
+        let revocation = sign_device_revocation(&root, account, device, 0).expect("sign");
+
+        assert!(
+            verify_device_revocation(account, &genesis, &[handoff], &revocation).is_ok(),
+            "a rotation must not resurrect a revoked device"
+        );
+    }
+
+    #[test]
+    fn the_new_root_may_also_revoke() {
+        let root = PrivateKey::from([7u8; 32]);
+        let next = PrivateKey::from([8u8; 32]);
+        let (genesis, handoff) = rotated(&root, &next);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [0x22; 16]);
+
+        let revocation = sign_device_revocation(&next, account, device, 1).expect("sign");
+        assert!(verify_device_revocation(account, &genesis, &[handoff], &revocation).is_ok());
+    }
+
+    #[test]
+    fn a_revocation_signed_by_a_stranger_is_refused() {
+        // The whole point of the proof: without it, "may this signer revoke" would
+        // have to be answered from folded state, and two replicas would disagree.
+        let root = PrivateKey::from([7u8; 32]);
+        let stranger = PrivateKey::from([9u8; 32]);
+        let genesis = AccountGenesis::new(root.public_key(), [0x11; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [0x22; 16]);
+
+        let forged = sign_device_revocation(&stranger, account, device, 0).expect("sign");
+        assert!(matches!(
+            verify_device_revocation(account, &genesis, &[], &forged),
+            Err(AccountError::RevocationSignatureInvalid)
+        ));
+    }
+
+    #[test]
+    fn a_revocation_cannot_be_replayed_onto_another_device_or_account() {
+        let root = PrivateKey::from([7u8; 32]);
+        let genesis = AccountGenesis::new(root.public_key(), [0x11; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [0x22; 16]);
+        let other_device = DeviceId::mint(account, [0x23; 16]);
+
+        let mut revocation = sign_device_revocation(&root, account, device, 0).expect("sign");
+        revocation.device = other_device;
+        assert!(
+            matches!(
+                verify_device_revocation(account, &genesis, &[], &revocation),
+                Err(AccountError::RevocationSignatureInvalid)
+            ),
+            "the device is inside the signed payload"
+        );
+
+        let elsewhere = AccountGenesis::new(root.public_key(), [0x99; 16]);
+        let honest = sign_device_revocation(&root, account, device, 0).expect("sign");
+        assert!(
+            matches!(
+                verify_device_revocation(elsewhere.account_id(), &elsewhere, &[], &honest),
+                Err(AccountError::RevocationAccountMismatch)
+            ),
+            "a revocation is bound to the account that minted it"
+        );
+    }
+
+    #[test]
+    fn a_revocation_claiming_an_unreachable_epoch_is_refused() {
+        let root = PrivateKey::from([7u8; 32]);
+        let genesis = AccountGenesis::new(root.public_key(), [0x11; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [0x22; 16]);
+
+        let revocation = sign_device_revocation(&root, account, device, 5).expect("sign");
+        assert!(matches!(
+            verify_device_revocation(account, &genesis, &[], &revocation),
+            Err(AccountError::EpochOutOfRange { .. })
+        ));
+    }
 
     /// Deterministic keypair, so failures reproduce exactly.
     fn key(seed: u8) -> PrivateKey {
