@@ -1,0 +1,219 @@
+name: SortedSet concurrent ordered-read convergence repro (#3333)
+description: >
+  Networked repro for calimero-network/core#3333: after two nodes concurrently
+  add distinct elements to a `SortedSet`, MEMBERSHIP (`contains`) and `len`
+  converge cross-node, but ORDERED reads (`iter`/`keys`/`range`) may not — one
+  node's ordered view can serve a stale subset forever because its node-local
+  ordered-index validity marker was left stamped to a `full_hash` that ran ahead
+  of the child set (sdk-js#87 shape).
+
+  The defect was localized to the node HashComparison / deferred-root-merge
+  path: in-process Rust harnesses over the real storage `apply_action` path all
+  SELF-HEAL (the `SortedIndexMeta` marker-clear + rebuild-on-read converges
+  deterministically in one process), and the deferred root merge is a silent
+  no-op for a structured Rust root (borsh `Entry<AppState>` framing vs bare
+  `AppState` decode). So the open question this scenario answers is whether a
+  REAL merod Rust node reproduces the divergence over the actual network.
+
+  This scenario runs on a `merod:local` image built FROM this branch, which
+  carries the `calimero_storage::sorted_index_dbg` trace instrumentation. The
+  DISCRIMINATOR is the final ordered-read assertion (`sorted_tags_all()` ==
+  ["a","b"] on BOTH nodes). Membership assertions are expected to pass on both;
+  if the ordered-read assertion FAILS on either node, #3333 is reproduced on an
+  instrumented node and the decisive path is in the uploaded node logs (grep
+  `sorted_index_dbg`: APPLY_ADD clearing parent marker / CHECK index marker /
+  REBUILD index / STAMP index marker). If it PASSES, real Rust merod converges
+  and the divergence is JS-path-specific.
+
+force_pull_image: false
+
+# Passed verbatim to each node container as RUST_LOG (merobox manager.py sets
+# `"RUST_LOG": log_level`). Global `info` keeps the log readable while the three
+# targeted channels surface the decisive path: the storage ordered-index
+# instrumentation this branch adds (`sorted_index_dbg`), the rest of the storage
+# merge/apply layer, and the node sync (HashComparison / deferred-root-merge)
+# path #3333 localizes to.
+log_level: "info,calimero_storage::sorted_index_dbg=debug,calimero_storage=debug,calimero_node::sync=debug"
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: sortedset-node
+
+steps:
+  # First login on a fresh embedded-auth node bootstraps its root key and seeds
+  # merobox's token cache; every step below runs authenticated.
+  - name: Login on sortedset-node-1
+    type: login
+    node: sortedset-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on sortedset-node-2
+    type: login
+    node: sortedset-node-2
+    username: dev
+    password: dev-password
+
+  # --- Setup: 2-node mesh sharing one context ---
+  - name: Install application on node-1
+    type: install_application
+    node: sortedset-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create mesh with node-2
+    type: create_mesh
+    context_node: sortedset-node-1
+    application_id: "{{app_id}}"
+    path: res/scaffolding_e2e.wasm
+    nodes:
+      - sortedset-node-2
+    capability: member
+    outputs:
+      context_id: contextId
+      node1_key: memberPublicKey
+      group_id: groupId
+
+  - name: Wait for sync after mesh setup
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - sortedset-node-1
+      - sortedset-node-2
+    timeout: 60
+    trigger_sync: true
+
+  # --- Concurrent SortedSet adds: node-1 adds "a", node-2 adds "b" ---
+  # Issued back-to-back with NO sync in between, so each node applies its own
+  # add to local state before the other's delta arrives — two DAG branches from
+  # the same parent, the concurrency that drives the HashComparison reconcile.
+  - name: node-1 adds "a"
+    type: call
+    node: sortedset-node-1
+    context_id: "{{context_id}}"
+    method: sorted_tag_add
+    args:
+      tag: "a"
+
+  - name: node-2 adds "b"
+    type: call
+    node: sortedset-node-2
+    context_id: "{{context_id}}"
+    method: sorted_tag_add
+    args:
+      tag: "b"
+
+  - name: Wait for sync after concurrent adds (CONVERGENCE CHECK)
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - sortedset-node-1
+      - sortedset-node-2
+    timeout: 90
+    trigger_sync: true
+
+  # --- Membership converges (expected PASS on both nodes) ---
+  - name: node-1 contains "a"
+    type: call
+    node: sortedset-node-1
+    context_id: "{{context_id}}"
+    method: sorted_tag_contains
+    args:
+      tag: "a"
+    outputs:
+      n1_has_a: result
+
+  - name: node-1 contains "b"
+    type: call
+    node: sortedset-node-1
+    context_id: "{{context_id}}"
+    method: sorted_tag_contains
+    args:
+      tag: "b"
+    outputs:
+      n1_has_b: result
+
+  - name: node-2 contains "a"
+    type: call
+    node: sortedset-node-2
+    context_id: "{{context_id}}"
+    method: sorted_tag_contains
+    args:
+      tag: "a"
+    outputs:
+      n2_has_a: result
+
+  - name: node-2 contains "b"
+    type: call
+    node: sortedset-node-2
+    context_id: "{{context_id}}"
+    method: sorted_tag_contains
+    args:
+      tag: "b"
+    outputs:
+      n2_has_b: result
+
+  - name: Assert membership converged on both nodes
+    type: json_assert
+    statements:
+      - 'json_equal({{n1_has_a}}, {"output": true})'
+      - 'json_equal({{n1_has_b}}, {"output": true})'
+      - 'json_equal({{n2_has_a}}, {"output": true})'
+      - 'json_equal({{n2_has_b}}, {"output": true})'
+
+  # --- ORDERED read is the #3333 discriminator (expected FAIL if reproduced) ---
+  # `sorted_tags_all()` is index-backed (`iter()` -> `ensure_index()` ->
+  # `index_marker_current()`), so each of these calls also emits a
+  # `CHECK index marker` line into the node log. If the node-local ordered index
+  # is stale (marker stamped ahead of the child set), the returned vector is a
+  # subset — NOT ["a","b"] — even though `contains` above returned true for both.
+  - name: node-1 ordered iter
+    type: call
+    node: sortedset-node-1
+    context_id: "{{context_id}}"
+    method: sorted_tags_all
+    outputs:
+      n1_all: result
+
+  - name: node-2 ordered iter
+    type: call
+    node: sortedset-node-2
+    context_id: "{{context_id}}"
+    method: sorted_tags_all
+    outputs:
+      n2_all: result
+
+  - name: Assert ordered iter converged on both nodes (#3333 discriminator)
+    type: json_assert
+    statements:
+      - 'json_equal({{n1_all}}, {"output": ["a", "b"]})'
+      - 'json_equal({{n2_all}}, {"output": ["a", "b"]})'
+
+  # --- Sanity: prove the instrumentation is live in this image ---
+  # `CHECK index marker` is emitted by `index_marker_current()` on every ordered
+  # read, so the two `sorted_tags_all` calls above guarantee it. Asserting it is
+  # present confirms the `sorted_index_dbg` trace is actually being captured
+  # (RUST_LOG wired, branch instrumentation compiled in) — so a diagnosis from
+  # these logs is trustworthy. Independent of whether the bug reproduces.
+  - name: node-1 emitted the sorted_index_dbg trace
+    type: assert_log_present
+    nodes:
+      - sortedset-node-1
+    patterns:
+      - "CHECK index marker"
+    tail_lines: 20000
+
+  - name: node-2 emitted the sorted_index_dbg trace
+    type: assert_log_present
+    nodes:
+      - sortedset-node-2
+    patterns:
+      - "CHECK index marker"
+    tail_lines: 20000
+
+stop_all_nodes: true
