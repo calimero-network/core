@@ -1,4 +1,4 @@
-//! Tests for bundle installation and extraction
+//! Tests for bundle installation
 
 use std::fs;
 
@@ -20,6 +20,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use futures_util::io::Cursor;
 use rand::rngs::OsRng;
+use sha2::{Digest, Sha256};
 use tar::Builder;
 use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
@@ -28,6 +29,14 @@ use tokio::sync::{broadcast, mpsc};
 /// This is a convenience wrapper around the shared sign_manifest_json function.
 fn sign_manifest(manifest_json: &mut serde_json::Value, signing_key: &SigningKey) {
     sign_manifest_json(manifest_json, signing_key).unwrap();
+}
+
+/// Lowercase-hex SHA-256, the way `cargo mero bundle` records an artifact hash.
+fn artifact_hash(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Create a test bundle archive with manifest.json, app.wasm, abi.json, and migrations
@@ -59,12 +68,12 @@ fn create_test_bundle(
         interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
             path: "app.wasm".to_string(),
-            hash: None,
+            hash: artifact_hash(wasm_content),
             size: wasm_content.len() as u64,
         }),
         abi: abi_content.map(|content| calimero_node_primitives::bundle::BundleArtifact {
             path: "abi.json".to_string(),
-            hash: None,
+            hash: artifact_hash(content),
             size: content.len() as u64,
         }),
         migrations: migrations
@@ -72,7 +81,7 @@ fn create_test_bundle(
             .map(
                 |(path, content)| calimero_node_primitives::bundle::BundleArtifact {
                     path: path.to_string(),
-                    hash: None,
+                    hash: artifact_hash(content),
                     size: content.len() as u64,
                 },
             )
@@ -138,13 +147,15 @@ async fn create_test_node_client(datastore: Option<Store>) -> (NodeClient, TempD
     // Default to InMemoryDB if no store is provided (avoids dependency on calimero-store-rocksdb)
     let datastore = datastore.unwrap_or_else(|| Store::new(Arc::new(InMemoryDB::owned())));
 
+    // Nest the blobstore one level down: the node derives its root as the blob
+    // root's parent, so a bare TempDir would make every node share the OS temp
+    // dir as its root.
+    let blob_root = blob_dir.path().join("blobs");
     let blob_store = BlobStore::new(
         datastore.clone(),
-        FileSystem::new(&BlobStoreConfig::new(
-            blob_dir.path().to_path_buf().try_into().unwrap(),
-        ))
-        .await
-        .unwrap(),
+        FileSystem::new(&BlobStoreConfig::new(blob_root.try_into().unwrap()))
+            .await
+            .unwrap(),
     );
     let blob_manager = BlobManager::new(blob_store);
 
@@ -202,7 +213,7 @@ async fn test_bundle_detection() {
 #[tokio::test]
 async fn test_bundle_installation() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, blob_dir) = create_test_node_client(None).await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Create a test bundle
     let wasm_content = b"fake wasm bytecode";
@@ -220,7 +231,7 @@ async fn test_bundle_installation() {
         "1.0.0",
         wasm_content,
         Some(abi_content),
-        migrations.clone(),
+        migrations,
     );
 
     // Install the bundle
@@ -242,39 +253,14 @@ async fn test_bundle_installation() {
         .expect("Should check blob existence");
     assert!(blob_exists, "Bundle blob should exist");
 
-    // Verify extracted files exist
-    // Applications are now extracted to node root (parent of blobstore), not blobstore root
-    let node_root = blob_dir.path().parent().unwrap();
-    let extract_dir = node_root
-        .join("applications")
-        .join("com.example.test")
-        .join("1.0.0")
-        .join("extracted");
-
-    let wasm_path = extract_dir.join("app.wasm");
-    assert!(wasm_path.exists(), "Extracted WASM should exist");
-
-    let abi_path = extract_dir.join("abi.json");
-    assert!(abi_path.exists(), "Extracted ABI should exist");
-
-    let migration1_path = extract_dir.join("migrations/001_init.sql");
-    assert!(migration1_path.exists(), "First migration should exist");
-
-    let migration2_path = extract_dir.join("migrations/002_add_users.sql");
-    assert!(migration2_path.exists(), "Second migration should exist");
-
-    // Verify file contents
-    let extracted_wasm = fs::read(&wasm_path).unwrap();
-    assert_eq!(extracted_wasm, wasm_content, "WASM content should match");
-
-    let extracted_abi = fs::read(&abi_path).unwrap();
-    assert_eq!(extracted_abi, abi_content, "ABI content should match");
-
-    let extracted_migration1 = fs::read(&migration1_path).unwrap();
-    assert_eq!(
-        extracted_migration1, migrations[0].1,
-        "Migration 1 content should match"
-    );
+    // The wasm entry must still be picked out of an archive that also carries an
+    // ABI and migrations.
+    let bytes = node_client
+        .get_application_bytes(&application_id, None)
+        .await
+        .expect("Should get application bytes")
+        .expect("Application bytes should exist");
+    assert_eq!(bytes.as_ref(), wasm_content, "WASM content should match");
 }
 
 #[tokio::test]
@@ -299,7 +285,7 @@ async fn test_bundle_get_application_bytes() {
         .await
         .expect("Bundle installation should succeed");
 
-    // Get application bytes (should read from extracted directory)
+    // Get application bytes (should read the wasm out of the bundle blob)
     let bytes = node_client
         .get_application_bytes(&application_id, None)
         .await
@@ -311,77 +297,6 @@ async fn test_bundle_get_application_bytes() {
         wasm_content,
         "Application bytes should match WASM content"
     );
-}
-
-#[tokio::test]
-async fn test_bundle_deduplication() {
-    let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, blob_dir) = create_test_node_client(None).await;
-
-    // Create first bundle with specific WASM content
-    let wasm_content_v1 = b"shared wasm bytecode";
-    let bundle_path_v1 = create_test_bundle(
-        &temp_dir,
-        "com.example.shared",
-        "1.0.0",
-        wasm_content_v1,
-        None,
-        vec![],
-    );
-
-    // Install first version
-    let _app_id_v1 = node_client
-        .install_application_from_path(bundle_path_v1, vec![], None, None)
-        .await
-        .expect("First bundle installation should succeed");
-
-    // Create second bundle with same WASM content (should be deduplicated)
-    let wasm_content_v2 = wasm_content_v1; // Same content
-    let bundle_path_v2 = create_test_bundle(
-        &temp_dir,
-        "com.example.shared",
-        "2.0.0",
-        wasm_content_v2,
-        None,
-        vec![],
-    );
-
-    // Install second version
-    let _app_id_v2 = node_client
-        .install_application_from_path(bundle_path_v2, vec![], None, None)
-        .await
-        .expect("Second bundle installation should succeed");
-
-    // Check that both versions have the WASM file
-    // Applications are now extracted to node root (parent of blobstore), not blobstore root
-    let node_root = blob_dir.path().parent().unwrap();
-    let extract_dir_v1 = node_root
-        .join("applications")
-        .join("com.example.shared")
-        .join("1.0.0")
-        .join("extracted");
-
-    let extract_dir_v2 = node_root
-        .join("applications")
-        .join("com.example.shared")
-        .join("2.0.0")
-        .join("extracted");
-
-    let wasm_path_v1 = extract_dir_v1.join("app.wasm");
-    let wasm_path_v2 = extract_dir_v2.join("app.wasm");
-
-    assert!(wasm_path_v1.exists(), "V1 WASM should exist");
-    assert!(wasm_path_v2.exists(), "V2 WASM should exist");
-
-    // Verify both files exist and have the same content
-    // (Deduplication may use hardlinks or copies depending on filesystem)
-    let content_v1 = fs::read(&wasm_path_v1).unwrap();
-    let content_v2 = fs::read(&wasm_path_v2).unwrap();
-    assert_eq!(
-        content_v1, content_v2,
-        "Both versions should have same WASM content"
-    );
-    assert_eq!(content_v1, wasm_content_v1, "Content should match original");
 }
 
 #[tokio::test]
@@ -423,19 +338,21 @@ async fn test_bundle_validation_missing_fields() {
     let encoder = GzEncoder::new(bundle_file, Compression::default());
     let mut tar = Builder::new(encoder);
 
-    // Create manifest.json with missing package field
-    // Use a raw JSON string to ensure package field is truly missing
-    let invalid_manifest_json = r#"{
+    // The package key is simply absent. The artifact hash is real, so the only
+    // thing this manifest is malformed about is the field the test names.
+    let invalid_manifest_json = serde_json::json!({
         "version": "1.0",
         "appVersion": "1.0.0",
         "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
-            "size": 10
+            "size": 10,
+            "hash": artifact_hash(b"fake wasm")
         },
         "migrations": []
-    }"#;
-    let manifest_json = invalid_manifest_json.as_bytes();
+    });
+    let manifest_bytes = serde_json::to_vec(&invalid_manifest_json).unwrap();
+    let manifest_json = manifest_bytes.as_slice();
     let mut manifest_header = tar::Header::new_gnu();
     manifest_header.set_path("manifest.json").unwrap();
     manifest_header.set_size(manifest_json.len() as u64);
@@ -463,16 +380,11 @@ async fn test_bundle_validation_missing_fields() {
         "Bundle installation should fail for invalid manifest"
     );
     let error_msg = result.unwrap_err().to_string();
-    // BundleManifest deserialization will fail if package field is missing
-    // The error could be "missing field 'package'" from serde or "package field is empty" from validation
-    // Or it could be a tar parsing error if the archive is malformed
+    // Named after the absent field, so nothing looser will do: an empty-package
+    // or malformed-archive rejection would mean the manifest never got that far.
     assert!(
-        error_msg.contains("package")
-            || error_msg.contains("missing field")
-            || error_msg.contains("empty")
-            || error_msg.contains("manifest")
-            || error_msg.contains("parse"),
-        "Error should mention missing package field, manifest issue, or parse error, got: {error_msg}"
+        error_msg.contains("missing field `package`"),
+        "the absent package field must be what refuses the bundle, got: {error_msg}"
     );
 }
 
@@ -538,7 +450,7 @@ fn create_test_bundle_custom_wasm_path(
         interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
             path: wasm_path.to_string(),
-            hash: None,
+            hash: artifact_hash(wasm_content),
             size: wasm_content.len() as u64,
         }),
         abi: None,
@@ -574,7 +486,7 @@ fn create_test_bundle_custom_wasm_path(
 #[tokio::test]
 async fn test_bundle_custom_wasm_path() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, blob_dir) = create_test_node_client(None).await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Create bundle with WASM at custom path
     let wasm_content = b"custom path wasm bytecode";
@@ -592,20 +504,7 @@ async fn test_bundle_custom_wasm_path() {
         .await
         .expect("Bundle installation should succeed");
 
-    // Verify WASM was extracted at custom path
-    let node_root = blob_dir.path().parent().unwrap();
-    let extract_dir = node_root
-        .join("applications")
-        .join("com.example.custom")
-        .join("1.0.0")
-        .join("extracted");
-    let wasm_path = extract_dir.join("src/main.wasm");
-    assert!(
-        wasm_path.exists(),
-        "WASM should be extracted at custom path"
-    );
-
-    // Verify get_application_bytes reads from custom path
+    // A custom `wasm.path` must resolve to the entry at that path in the archive
     let bytes = node_client
         .get_application_bytes(&application_id, None)
         .await
@@ -676,18 +575,20 @@ async fn test_bundle_validation_empty_package() {
     let encoder = GzEncoder::new(bundle_file, Compression::default());
     let mut tar = Builder::new(encoder);
 
-    let invalid_manifest_json = r#"{
+    let invalid_manifest_json = serde_json::json!({
         "version": "1.0",
         "package": "",
         "appVersion": "1.0.0",
         "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
-            "size": 10
+            "size": 10,
+            "hash": artifact_hash(b"fake wasm")
         },
         "migrations": []
-    }"#;
-    let manifest_json = invalid_manifest_json.as_bytes();
+    });
+    let manifest_bytes = serde_json::to_vec(&invalid_manifest_json).unwrap();
+    let manifest_json = manifest_bytes.as_slice();
     let mut manifest_header = tar::Header::new_gnu();
     manifest_header.set_path("manifest.json").unwrap();
     manifest_header.set_size(manifest_json.len() as u64);
@@ -730,18 +631,20 @@ async fn test_bundle_validation_empty_app_version() {
     let encoder = GzEncoder::new(bundle_file, Compression::default());
     let mut tar = Builder::new(encoder);
 
-    let invalid_manifest_json = r#"{
+    let invalid_manifest_json = serde_json::json!({
         "version": "1.0",
         "package": "com.example.test",
         "appVersion": "",
         "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
-            "size": 10
+            "size": 10,
+            "hash": artifact_hash(b"fake wasm")
         },
         "migrations": []
-    }"#;
-    let manifest_json = invalid_manifest_json.as_bytes();
+    });
+    let manifest_bytes = serde_json::to_vec(&invalid_manifest_json).unwrap();
+    let manifest_json = manifest_bytes.as_slice();
     let mut manifest_header = tar::Header::new_gnu();
     manifest_header.set_path("manifest.json").unwrap();
     manifest_header.set_size(manifest_json.len() as u64);
@@ -784,17 +687,19 @@ async fn test_bundle_validation_missing_app_version() {
     let encoder = GzEncoder::new(bundle_file, Compression::default());
     let mut tar = Builder::new(encoder);
 
-    let invalid_manifest_json = r#"{
+    let invalid_manifest_json = serde_json::json!({
         "version": "1.0",
         "package": "com.example.test",
         "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
-            "size": 10
+            "size": 10,
+            "hash": artifact_hash(b"fake wasm")
         },
         "migrations": []
-    }"#;
-    let manifest_json = invalid_manifest_json.as_bytes();
+    });
+    let manifest_bytes = serde_json::to_vec(&invalid_manifest_json).unwrap();
+    let manifest_json = manifest_bytes.as_slice();
     let mut manifest_header = tar::Header::new_gnu();
     manifest_header.set_path("manifest.json").unwrap();
     manifest_header.set_size(manifest_json.len() as u64);
@@ -826,129 +731,6 @@ async fn test_bundle_validation_missing_app_version() {
             || error_msg.contains("version")
             || error_msg.contains("parse"),
         "Error should mention missing appVersion field, got: {error_msg}"
-    );
-}
-
-#[tokio::test]
-async fn test_bundle_deduplication_different_paths() {
-    let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, blob_dir) = create_test_node_client(None).await;
-
-    // Create first bundle with WASM at one path
-    let wasm_content = b"shared wasm";
-    let bundle_path_v1 = create_test_bundle_custom_wasm_path(
-        &temp_dir,
-        "com.example.paths",
-        "1.0.0",
-        "src/app.wasm",
-        wasm_content,
-    );
-
-    let _app_id_v1 = node_client
-        .install_application_from_path(bundle_path_v1, vec![], None, None)
-        .await
-        .expect("First bundle installation should succeed");
-
-    // Create second bundle with WASM at different path but same content
-    let bundle_path_v2 = create_test_bundle_custom_wasm_path(
-        &temp_dir,
-        "com.example.paths",
-        "2.0.0",
-        "lib/app.wasm", // Different path
-        wasm_content,   // Same content
-    );
-
-    let _app_id_v2 = node_client
-        .install_application_from_path(bundle_path_v2, vec![], None, None)
-        .await
-        .expect("Second bundle installation should succeed");
-
-    // Verify both paths exist (should NOT be deduplicated because paths differ)
-    let node_root = blob_dir.path().parent().unwrap();
-    let extract_dir_v1 = node_root
-        .join("applications")
-        .join("com.example.paths")
-        .join("1.0.0")
-        .join("extracted");
-    let extract_dir_v2 = node_root
-        .join("applications")
-        .join("com.example.paths")
-        .join("2.0.0")
-        .join("extracted");
-
-    let wasm_path_v1 = extract_dir_v1.join("src/app.wasm");
-    let wasm_path_v2 = extract_dir_v2.join("lib/app.wasm");
-
-    assert!(
-        wasm_path_v1.exists(),
-        "V1 WASM should exist at src/app.wasm"
-    );
-    assert!(
-        wasm_path_v2.exists(),
-        "V2 WASM should exist at lib/app.wasm"
-    );
-
-    // Both should have same content but be separate files (not deduplicated due to different paths)
-    let content_v1 = fs::read(&wasm_path_v1).unwrap();
-    let content_v2 = fs::read(&wasm_path_v2).unwrap();
-    assert_eq!(content_v1, content_v2, "Both should have same content");
-    assert_eq!(content_v1, wasm_content, "Content should match original");
-}
-
-#[tokio::test]
-async fn test_bundle_extract_dir_derived_from_manifest() {
-    let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, blob_dir) = create_test_node_client(None).await;
-
-    // Install bundle
-    let bundle_path = create_test_bundle(
-        &temp_dir,
-        "com.example.derived",
-        "2.5.0",
-        b"wasm content",
-        None,
-        vec![],
-    );
-
-    let application_id = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
-        .await
-        .expect("Bundle installation should succeed");
-
-    // Verify metadata contains package and version extracted from manifest
-    let application = node_client
-        .get_application(&application_id)
-        .expect("Application should exist")
-        .expect("Application should be found");
-
-    // Metadata should contain at least package and version
-    assert!(
-        !application.metadata.is_empty(),
-        "Bundle metadata should contain package and version extracted from manifest"
-    );
-
-    // Verify package and version are present
-    let metadata_json: serde_json::Value =
-        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
-    assert_eq!(
-        metadata_json["package"], "com.example.derived",
-        "Package should match manifest"
-    );
-    assert_eq!(
-        metadata_json["version"], "2.5.0",
-        "Version should match manifest"
-    );
-
-    // Verify files were extracted to correct location derived from manifest
-    let node_root = blob_dir.path().parent().unwrap();
-    let extract_dir = node_root
-        .join("applications")
-        .join("com.example.derived")
-        .join("2.5.0")
-        .join("extracted");
-    assert!(
-        extract_dir.exists(),
-        "Extract dir should exist at derived path"
     );
 }
 
@@ -1038,7 +820,7 @@ async fn test_is_bundle_blob() {
 #[tokio::test]
 async fn test_install_application_from_bundle_blob() {
     let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, blob_dir) = create_test_node_client(None).await;
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
     // Create a bundle
     let wasm_content = b"bundle wasm bytecode";
@@ -1072,24 +854,6 @@ async fn test_install_application_from_bundle_blob() {
         .get_application(&application_id)
         .expect("Application should exist");
     assert!(application.is_some(), "Application should be found");
-
-    // Verify bundle was extracted
-    let node_root = blob_dir.path().parent().unwrap();
-    let extract_dir = node_root
-        .join("applications")
-        .join("com.example.blob")
-        .join("1.0.0")
-        .join("extracted");
-
-    let wasm_path = extract_dir.join("app.wasm");
-    assert!(wasm_path.exists(), "Extracted WASM should exist");
-
-    let abi_path = extract_dir.join("abi.json");
-    assert!(abi_path.exists(), "Extracted ABI should exist");
-
-    // Verify file contents
-    let extracted_wasm = fs::read(&wasm_path).unwrap();
-    assert_eq!(extracted_wasm, wasm_content, "WASM content should match");
 
     // Verify we can get application bytes
     let bytes = node_client
@@ -1408,31 +1172,19 @@ async fn test_bundle_blob_sharing_integration() {
         "User 2 should be able to read WASM from bundle"
     );
 
-    // Step 7: Verify bundle was extracted on User 2's node
-    let node_root_2 = blob_dir_2.path().parent().unwrap();
-    let extract_dir_2 = node_root_2
-        .join("applications")
-        .join("com.example.integration")
-        .join("1.0.0")
-        .join("extracted");
-
-    let wasm_path_2 = extract_dir_2.join("app.wasm");
+    // Step 7: The received bundle stays a blob on User 2's node
+    let applications_2 = blob_dir_2.path().join("applications");
     assert!(
-        wasm_path_2.exists(),
-        "User 2 should have extracted WASM file"
-    );
-
-    let extracted_wasm_2 = fs::read(&wasm_path_2).unwrap();
-    assert_eq!(
-        extracted_wasm_2, wasm_content,
-        "Extracted WASM content should match"
+        !applications_2.exists(),
+        "no artifacts should be unpacked to disk, found {}",
+        applications_2.display()
     );
 }
 
 // Note: install_application_from_url tests require HTTP/HTTPS URLs and would need
 // a mock HTTP server or real server. The URL installation logic is covered by
 // integration tests. Path-based installation (which covers the same code paths
-// for bundle detection and extraction) is tested below.
+// for bundle detection) is tested below.
 
 // Signature Verification Integration Tests
 
@@ -1459,7 +1211,8 @@ fn create_unsigned_bundle(
         "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
-            "size": wasm_content.len()
+            "size": wasm_content.len(),
+            "hash": artifact_hash(wasm_content)
         },
         "migrations": []
         // Note: no "signature" field
@@ -1512,7 +1265,8 @@ fn create_tampered_bundle(
         "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
-            "size": wasm_content.len()
+            "size": wasm_content.len(),
+            "hash": artifact_hash(wasm_content)
         },
         "migrations": []
     });
@@ -1532,7 +1286,8 @@ fn create_tampered_bundle(
         "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
-            "size": wasm_content.len()
+            "size": wasm_content.len(),
+            "hash": artifact_hash(wasm_content)
         },
         "migrations": [],
         "signature": signature  // Original signature (won't match tampered content)
@@ -1597,7 +1352,8 @@ fn create_signer_id_mismatch_bundle(
         "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
-            "size": wasm_content.len()
+            "size": wasm_content.len(),
+            "hash": artifact_hash(wasm_content)
         },
         "migrations": []
     });
@@ -1666,7 +1422,7 @@ fn create_test_bundle_with_key(
         interfaces: None,
         wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
             path: "app.wasm".to_string(),
-            hash: None,
+            hash: artifact_hash(wasm_content),
             size: wasm_content.len() as u64,
         }),
         abi: None,
@@ -1699,29 +1455,23 @@ fn create_test_bundle_with_key(
     bundle_path.try_into().unwrap()
 }
 
-/// Test: Dev installation of an unsigned bundle should succeed.
-///
-/// Bundles installed from local paths (dev mode) are allowed to omit the
-/// signature field. Signature verification is only mandatory for production
-/// installs from registries.
+/// An unsigned bundle is not installable by any path. `create_unsigned_bundle`
+/// is kept because this is the only test that needs one.
 #[tokio::test]
-async fn test_dev_bundle_installation_succeeds_without_signature() {
+async fn test_unsigned_bundle_installation_is_rejected() {
     let temp_dir = TempDir::new().unwrap();
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
 
-    // Create an unsigned bundle
     let bundle_path =
         create_unsigned_bundle(&temp_dir, "com.example.unsigned", "1.0.0", b"wasm content");
 
-    // Dev installs allow unsigned bundles
-    let result = node_client
+    let err = node_client
         .install_application_from_path(bundle_path, vec![], None, None)
-        .await;
-
+        .await
+        .expect_err("an unsigned bundle must not install");
     assert!(
-        result.is_ok(),
-        "Dev bundle installation should succeed without signature, got: {}",
-        result.unwrap_err()
+        err.to_string().contains("signature"),
+        "error should name the missing signature, got: {err}"
     );
 }
 
@@ -1923,16 +1673,18 @@ async fn test_bundle_application_id_derived_from_package_and_signer_id() {
     // is verified by the assertions above (different signerIds produce different ApplicationIds).
 }
 
+/// The blob is the only copy of a bundle's bytes: nothing is unpacked to disk,
+/// and the wasm is still served.
 #[tokio::test]
-async fn test_bundle_get_application_bytes_fallback() {
+async fn test_bundle_get_application_bytes_needs_no_disk_copy() {
     let temp_dir = TempDir::new().unwrap();
     let (node_client, _data_dir, blob_dir) = create_test_node_client(None).await;
 
     // Create a test bundle
-    let wasm_content = b"fallback test wasm bytecode";
+    let wasm_content = b"blob-only test wasm bytecode";
     let bundle_path = create_test_bundle(
         &temp_dir,
-        "com.example.fallback",
+        "com.example.blobonly",
         "1.0.0",
         wasm_content,
         None,
@@ -1945,38 +1697,23 @@ async fn test_bundle_get_application_bytes_fallback() {
         .await
         .expect("Bundle installation should succeed");
 
-    // Verify extracted WASM exists initially
-    let node_root = blob_dir.path().parent().unwrap();
-    let extract_dir = node_root
-        .join("applications")
-        .join("com.example.fallback")
-        .join("1.0.0")
-        .join("extracted");
-    let wasm_path = extract_dir.join("app.wasm");
-    assert!(wasm_path.exists(), "Extracted WASM should exist initially");
-
-    // Delete extracted WASM to trigger fallback
-    fs::remove_file(&wasm_path).expect("Should delete extracted WASM");
-    assert!(!wasm_path.exists(), "WASM should be deleted");
-
-    // Get application bytes - should fallback to re-extract from bundle blob
-    // Note: fallback now extracts entire bundle to disk for persistence
     let bytes = node_client
         .get_application_bytes(&application_id, None)
         .await
-        .expect("Should get application bytes via fallback")
+        .expect("Should get application bytes")
         .expect("Application bytes should exist");
 
     assert_eq!(
         bytes.as_ref(),
         wasm_content,
-        "Application bytes should match WASM content (re-extracted from bundle blob)"
+        "Application bytes should match WASM content (served from the bundle blob)"
     );
 
-    // Verify WASM file now exists (fallback extracts bundle to disk for persistence)
+    let applications = blob_dir.path().join("applications");
     assert!(
-        wasm_path.exists(),
-        "WASM file should exist after fallback (fallback extracts bundle to disk)"
+        !applications.exists(),
+        "no artifacts should be unpacked to disk, found {}",
+        applications.display()
     );
 }
 
@@ -2106,7 +1843,8 @@ async fn test_bundle_validation_path_traversal_in_package() {
         "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
-            "size": 12
+            "size": 12,
+            "hash": artifact_hash(b"wasm content")
         },
         "migrations": []
     });
@@ -2152,7 +1890,8 @@ async fn test_bundle_validation_path_traversal_in_version() {
         "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
-            "size": 12
+            "size": 12,
+            "hash": artifact_hash(b"wasm content")
         },
         "migrations": []
     });
@@ -2179,6 +1918,52 @@ async fn test_bundle_validation_path_traversal_in_version() {
     );
 }
 
+/// Test: a service's wasm path is validated like every other artifact path.
+///
+/// The single- and multi-service shapes must not diverge here: a validator that
+/// covers `wasm.path` but skips `services[].wasm.path` is a trap for whoever
+/// next resolves a manifest path against a path on disk.
+#[tokio::test]
+async fn test_bundle_validation_path_traversal_in_service_wasm_path() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
+
+    let mut manifest = serde_json::json!({
+        "version": "1.0",
+        "package": "com.example.test",
+        "appVersion": "1.0.0",
+        "signerId": signer_id,
+        "minRuntimeVersion": "0.1.0",
+        "services": [{
+            "name": "svc",
+            "wasm": {
+                "path": "../../../etc/malicious.wasm",  // Path traversal!
+                "size": 12,
+                "hash": artifact_hash(b"wasm content")
+            }
+        }],
+        "migrations": []
+    });
+
+    sign_manifest(&mut manifest, &signing_key);
+
+    let bundle_path = create_bundle_with_custom_manifest(&temp_dir, manifest, b"wasm content");
+
+    let err = node_client
+        .install_application_from_path(bundle_path, vec![], None, None)
+        .await
+        .expect_err("a service wasm path with '..' must not install");
+
+    let error_msg = err.to_string();
+    assert!(
+        error_msg.contains("services[0].wasm.path") && error_msg.contains("'..'"),
+        "Error should name the offending service field, got: {error_msg}"
+    );
+}
+
 /// Test: Installation should fail when package contains forward slash
 #[tokio::test]
 async fn test_bundle_validation_forward_slash_in_package() {
@@ -2198,7 +1983,8 @@ async fn test_bundle_validation_forward_slash_in_package() {
         "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
-            "size": 12
+            "size": 12,
+            "hash": artifact_hash(b"wasm content")
         },
         "migrations": []
     });
@@ -2244,7 +2030,8 @@ async fn test_bundle_validation_backslash_in_package() {
         "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
-            "size": 12
+            "size": 12,
+            "hash": artifact_hash(b"wasm content")
         },
         "migrations": []
     });
@@ -2290,7 +2077,8 @@ async fn test_bundle_validation_windows_absolute_path_in_package() {
         "minRuntimeVersion": "0.1.0",
         "wasm": {
             "path": "app.wasm",
-            "size": 12
+            "size": 12,
+            "hash": artifact_hash(b"wasm content")
         },
         "migrations": []
     });

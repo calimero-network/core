@@ -111,7 +111,7 @@ meroctl app install --path dist/<package>.mpk ...   # 5. install on a node (mero
 
 4. **Bundle.**
    Builds every service, stages the wasm/abi files, writes `manifest.json`, signs it, and packages everything into a tar.gz `.mpk` at `dist/<package>.mpk`.
-   Pass a signing method: `--dev` (local), `--key <file>` (production), or `--unsigned`.
+   Pass a signing method: `--dev` (local) or `--key <file>` (production).
 
    ```
    $ cargo mero bundle --dev
@@ -201,7 +201,7 @@ There are two kinds of key:
   A private Ed25519 key that only you hold, for anything you publish or install against a registry.
   Generate one with `cargo mero key generate -o my-key.json`.
 
-In CI, inject the key rather than checking it in: when none of `--key` / `--dev` / `--unsigned` is passed, `bundle` reads `MERO_SIGN_KEY` as the path to a key file.
+In CI, inject the key rather than checking it in: when neither `--key` nor `--dev` is passed, `bundle` reads `MERO_SIGN_KEY` as the path to a key file.
 
 ```bash
 export MERO_SIGN_KEY="$RUNNER_TEMP/mero-key.json"

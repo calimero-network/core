@@ -118,12 +118,14 @@ different application id — it is a *different application*, not an upgrade, an
 existing contexts will not pick it up. Treat the signing key as the long-lived
 identity of your app and guard it accordingly.
 
-<Aside type="note" title="Signing vs. install trust">
-Signing a bundle and *requiring* a valid signature are separate concerns. A
-registry install demands a valid signature; a local dev install can admit an
-unsigned bundle as a synthetic dev identity. That install-time trust split, and
-the exact verification rules, are documented in
-[Upgrades & migration](/protocol/upgrades/).
+<Aside type="note" title="Every install path requires a signature">
+There is one rule, not a per-path split: a bundle must carry a valid Ed25519
+manifest signature to be installed, whether it comes from a registry, a URL, or
+a local file. Dev builds are not an exception - they sign with the well-known
+dev key (`cargo mero bundle --dev`) and are verified like any other bundle. The
+signature also binds the wasm bytes: each wasm artifact is checked against the
+SHA-256 the signed manifest records for it. The exact verification rules are
+documented in [Upgrades & migration](/protocol/upgrades/).
 </Aside>
 
 <CardGrid>
@@ -134,7 +136,7 @@ the exact verification rules, are documented in
   />
   <LinkCard
     title="Upgrades & migration"
-    description="The manifest/signing format, signature verification, and the install trust split."
+    description="The manifest/signing format, signature verification, and the artifact digest check on install."
     href="/protocol/upgrades/"
   />
   <LinkCard
