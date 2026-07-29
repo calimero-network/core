@@ -615,3 +615,60 @@ fn test_all_public_storage_spellings_normalize() {
             .unwrap_or_else(|e| panic!("{spelling} must normalize without error: {e:?}"));
     }
 }
+
+// Tuples serialize positionally (`[k, v]`), so the ABI describes them with an
+// ordered `elements` list, the shape @calimero-network/abi-codegen already
+// consumes. A record with "0"/"1" names would misdescribe the JSON shape.
+#[test]
+fn tuple_normalizes_to_positional_elements() {
+    let resolver = MockResolver::new();
+    let ty = normalize_type(&parse_type("(String, u64)"), true, &resolver)
+        .expect("a tuple must normalize");
+
+    assert_eq!(
+        serde_json::to_value(&ty).unwrap(),
+        serde_json::json!({
+            "kind": "tuple",
+            "elements": [{ "kind": "string" }, { "kind": "u64" }],
+        })
+    );
+}
+
+#[test]
+fn tuple_nested_in_a_container_normalizes() {
+    let resolver = MockResolver::new();
+    let ty = normalize_type(&parse_type("Vec<(String, u64)>"), true, &resolver)
+        .expect("a tuple inside a Vec must normalize");
+
+    assert_eq!(
+        serde_json::to_value(&ty).unwrap(),
+        serde_json::json!({
+            "kind": "list",
+            "items": {
+                "kind": "tuple",
+                "elements": [{ "kind": "string" }, { "kind": "u64" }],
+            },
+        })
+    );
+}
+
+#[test]
+fn tuple_round_trips_through_serde() {
+    let resolver = MockResolver::new();
+    for spelling in ["(String, u64)", "Vec<(String, u64)>"] {
+        let ty = normalize_type(&parse_type(spelling), true, &resolver)
+            .unwrap_or_else(|e| panic!("{spelling} must normalize: {e:?}"));
+        let json = serde_json::to_string(&ty).unwrap();
+        let back: TypeRef = serde_json::from_str(&json).unwrap();
+        assert_eq!(ty, back, "{spelling} must survive a serde round-trip");
+    }
+}
+
+#[test]
+fn empty_tuple_is_still_unit() {
+    let resolver = MockResolver::new();
+    assert_eq!(
+        normalize_type(&parse_type("()"), true, &resolver).unwrap(),
+        TypeRef::unit()
+    );
+}

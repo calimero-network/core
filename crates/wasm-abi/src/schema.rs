@@ -376,6 +376,11 @@ pub enum CollectionType {
     },
     #[serde(rename = "record")]
     Record { fields: Vec<Field> },
+    /// Fixed-arity, heterogeneous sequence. Serializes positionally (`[k, v]`),
+    /// matching how a Rust tuple encodes; a record would describe the same value
+    /// as `{"0":k,"1":v}`.
+    #[serde(rename = "tuple")]
+    Tuple { elements: Vec<TypeRef> },
 }
 
 /// Custom serializer for map keys to support compact string format
@@ -607,6 +612,13 @@ impl Manifest {
                             )?;
                         }
                     }
+                    CollectionType::Tuple { elements } => {
+                        for element in elements {
+                            Self::collect_dependencies_from_type_ref(
+                                element, all_types, collected, visited,
+                            )?;
+                        }
+                    }
                 }
             }
         }
@@ -702,6 +714,16 @@ impl TypeRef {
             collection: CollectionType::List {
                 items: Box::new(items),
             },
+            crdt_type: None,
+            inner_type: None,
+        }
+    }
+
+    /// Create a tuple type
+    #[must_use]
+    pub fn tuple(elements: Vec<Self>) -> Self {
+        Self::Collection {
+            collection: CollectionType::Tuple { elements },
             crdt_type: None,
             inner_type: None,
         }

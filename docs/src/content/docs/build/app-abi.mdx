@@ -59,8 +59,10 @@ Each method records its full call shape:
   entry points.
 
 Argument and return types are either inline scalars (`bool`, `i32`, `u64`,
-`string`, `bytes`, `unit`, …), inline collections (`list`, `map`, `record`), or
-a `$ref` to a named entry in `types`. This is enough for a caller to build a
+`string`, `bytes`, `unit`, …), inline collections (`list`, `map`, `record`,
+`tuple`), or a `$ref` to a named entry in `types`. A Rust tuple becomes a
+`tuple` whose `elements` are positional, matching how it encodes on the wire
+(`[k, v]`). This is enough for a caller to build a
 correctly typed request and decode the response without ever reading your Rust.
 
 ### Events

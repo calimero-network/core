@@ -65,14 +65,17 @@ pub fn normalize_type(
             ))
         }
         Type::Tuple(type_tuple) => {
-            // () -> unit
+            // () -> unit; (A, B, ...) -> a positional tuple, matching how the
+            // tuple serializes (`[a, b]`) rather than a record's `{"0":a,"1":b}`.
             if type_tuple.elems.is_empty() {
-                Ok(TypeRef::unit())
-            } else {
-                Err(NormalizeError::TypePathError(
-                    "unsupported tuple".to_owned(),
-                ))
+                return Ok(TypeRef::unit());
             }
+            let elements = type_tuple
+                .elems
+                .iter()
+                .map(|elem| normalize_type(elem, wasm32, resolver))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(TypeRef::tuple(elements))
         }
         _ => Err(NormalizeError::TypePathError("unsupported type".to_owned())),
     }
