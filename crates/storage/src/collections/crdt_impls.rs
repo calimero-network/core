@@ -201,10 +201,10 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Mergeable for Counter<ALLOW
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // Merge positive counts (both G-Counter and PN-Counter)
         // For each executor in other, take the max of their counts
-        for (executor_id, other_count) in other.positive.entries()? {
+        for (device_id, other_count) in other.positive.entries()? {
             let self_count = self
                 .positive
-                .get(&executor_id)?
+                .get(&device_id)?
                 .as_deref()
                 .copied()
                 .unwrap_or(0);
@@ -212,16 +212,16 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Mergeable for Counter<ALLOW
             // Take max for this executor (monotonic property)
             let new_count = self_count.max(other_count);
             if new_count > self_count {
-                let _ = self.positive.insert(executor_id, new_count)?;
+                let _ = self.positive.insert(device_id, new_count)?;
             }
         }
 
         // If PN-Counter mode, also merge negative counts
         if ALLOW_DECREMENT {
-            for (executor_id, other_count) in other.negative.entries()? {
+            for (device_id, other_count) in other.negative.entries()? {
                 let self_count = self
                     .negative
-                    .get(&executor_id)?
+                    .get(&device_id)?
                     .as_deref()
                     .copied()
                     .unwrap_or(0);
@@ -229,7 +229,7 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Mergeable for Counter<ALLOW
                 // Take max for this executor (monotonic property)
                 let new_count = self_count.max(other_count);
                 if new_count > self_count {
-                    let _ = self.negative.insert(executor_id, new_count)?;
+                    let _ = self.negative.insert(device_id, new_count)?;
                 }
             }
         }
@@ -669,13 +669,13 @@ mod tests {
         env::reset_for_testing();
 
         // Node 1 increments twice
-        env::set_executor_id([11; 32]);
+        env::set_device_id([11; 32]);
         let mut c1 = GCounter::new();
         c1.increment().unwrap();
         c1.increment().unwrap();
 
         // Node 2 increments once
-        env::set_executor_id([22; 32]);
+        env::set_device_id([22; 32]);
         let mut c2 = GCounter::new();
         c2.increment().unwrap();
 
@@ -718,7 +718,7 @@ mod tests {
         env::reset_for_testing();
 
         // vec1 = [Counter(2), Counter(1)] - Node 1 creates these
-        env::set_executor_id([33; 32]);
+        env::set_device_id([33; 32]);
         let mut vec1 = Vector::<_, MainStorage>::new();
         let mut c1 = GCounter::new();
         c1.increment().unwrap();
@@ -730,7 +730,7 @@ mod tests {
         vec1.push(c2).unwrap();
 
         // vec2 = [Counter(1), Counter(3)] - Node 2 creates these
-        env::set_executor_id([44; 32]);
+        env::set_device_id([44; 32]);
         let mut vec2 = Vector::<_, MainStorage>::new();
         let mut c3 = GCounter::new();
         c3.increment().unwrap(); // value = 1
@@ -756,7 +756,7 @@ mod tests {
         env::reset_for_testing();
 
         // vec1 = [Counter(2)] - Node 1
-        env::set_executor_id([55; 32]);
+        env::set_device_id([55; 32]);
         let mut vec1 = Vector::<_, MainStorage>::new();
         let mut c1 = GCounter::new();
         c1.increment().unwrap();
@@ -764,7 +764,7 @@ mod tests {
         vec1.push(c1).unwrap();
 
         // vec2 = [Counter(3), Counter(5), Counter(7)] - Node 2
-        env::set_executor_id([66; 32]);
+        env::set_device_id([66; 32]);
         let mut vec2 = Vector::<_, MainStorage>::new();
         let mut c2 = GCounter::new();
         c2.increment().unwrap();

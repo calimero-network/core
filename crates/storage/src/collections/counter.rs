@@ -76,10 +76,10 @@ use crate::store::MainStorage;
 /// ```
 #[derive(Debug)]
 pub struct Counter<const ALLOW_DECREMENT: bool = false, S: StorageAdaptor = MainStorage> {
-    /// Maps executor_id (hex string) -> positive increments
+    /// Maps device_id (hex string) -> positive increments
     pub(crate) positive: UnorderedMap<String, u64, S>,
 
-    /// Maps executor_id (hex string) -> negative decrements
+    /// Maps device_id (hex string) -> negative decrements
     /// Only used when ALLOW_DECREMENT = true
     pub(crate) negative: UnorderedMap<String, u64, S>,
 }
@@ -358,19 +358,19 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
                 "Counter::increment() is non-deterministic during a state migration: it \
                  stamps this node's identity, which differs per node and diverges the \
                  network. Carry the counter across unchanged (`field: old.field`) or \
-                 replay with `increment_for(executor_id, …)`."
+                 replay with `increment_for(device_id, …)`."
             );
         }
-        let executor_id = crate::env::executor_id();
-        self.increment_for(&executor_id)
+        let device_id = crate::env::device_id();
+        self.increment_for(&device_id)
     }
 
     /// Increment the counter for a specific executor
     ///
     /// # Errors
     /// Returns error if storage operation fails or if increment would overflow u64::MAX
-    pub fn increment_for(&mut self, executor_id: &[u8; 32]) -> Result<(), StoreError> {
-        let key = hex::encode(executor_id);
+    pub fn increment_for(&mut self, device_id: &[u8; 32]) -> Result<(), StoreError> {
+        let key = hex::encode(device_id);
         let current = self.positive.get(&key)?.as_deref().copied().unwrap_or(0);
         let new_value = current.checked_add(1).ok_or_else(|| {
             StorageError::InvalidData(
@@ -385,8 +385,8 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
     ///
     /// # Errors
     /// Returns error if storage operation fails
-    pub fn get_positive_count(&self, executor_id: &[u8; 32]) -> Result<u64, StoreError> {
-        let key = hex::encode(executor_id);
+    pub fn get_positive_count(&self, device_id: &[u8; 32]) -> Result<u64, StoreError> {
+        let key = hex::encode(device_id);
         Ok(self.positive.get(&key)?.as_deref().copied().unwrap_or(0))
     }
 }
@@ -443,19 +443,19 @@ impl<S: StorageAdaptor> Counter<true, S> {
                 "Counter::decrement() is non-deterministic during a state migration: it \
                  stamps this node's identity, which differs per node and diverges the \
                  network. Carry the counter across unchanged (`field: old.field`) or \
-                 replay with `decrement_for(executor_id, …)`."
+                 replay with `decrement_for(device_id, …)`."
             );
         }
-        let executor_id = crate::env::executor_id();
-        self.decrement_for(&executor_id)
+        let device_id = crate::env::device_id();
+        self.decrement_for(&device_id)
     }
 
     /// Decrement the counter for a specific executor (PN-Counter only)
     ///
     /// # Errors
     /// Returns error if storage operation fails or if decrement would overflow u64::MAX
-    pub fn decrement_for(&mut self, executor_id: &[u8; 32]) -> Result<(), StoreError> {
-        let key = hex::encode(executor_id);
+    pub fn decrement_for(&mut self, device_id: &[u8; 32]) -> Result<(), StoreError> {
+        let key = hex::encode(device_id);
         let current = self.negative.get(&key)?.as_deref().copied().unwrap_or(0);
         let new_value = current.checked_add(1).ok_or_else(|| {
             StorageError::InvalidData(
@@ -470,8 +470,8 @@ impl<S: StorageAdaptor> Counter<true, S> {
     ///
     /// # Errors
     /// Returns error if storage operation fails
-    pub fn get_negative_count(&self, executor_id: &[u8; 32]) -> Result<u64, StoreError> {
-        let key = hex::encode(executor_id);
+    pub fn get_negative_count(&self, device_id: &[u8; 32]) -> Result<u64, StoreError> {
+        let key = hex::encode(device_id);
         Ok(self.negative.get(&key)?.as_deref().copied().unwrap_or(0))
     }
 
@@ -600,16 +600,16 @@ mod tests {
     fn test_gcounter_increment() {
         crate::env::reset_for_testing();
         let mut counter = Root::new(GCounter::new);
-        let executor_id = [91u8; 32];
+        let device_id = [91u8; 32];
 
-        counter.increment_for(&executor_id).unwrap();
+        counter.increment_for(&device_id).unwrap();
         assert_eq!(counter.value().unwrap(), 1);
 
-        counter.increment_for(&executor_id).unwrap();
+        counter.increment_for(&device_id).unwrap();
         assert_eq!(counter.value().unwrap(), 2);
 
         for _ in 0..5 {
-            counter.increment_for(&executor_id).unwrap();
+            counter.increment_for(&device_id).unwrap();
         }
         assert_eq!(counter.value().unwrap(), 7);
     }
@@ -641,10 +641,10 @@ mod tests {
     fn test_gcounter_value_unsigned() {
         crate::env::reset_for_testing();
         let mut counter = Root::new(Counter::<false>::new);
-        let executor_id = [94u8; 32];
+        let device_id = [94u8; 32];
 
-        counter.increment_for(&executor_id).unwrap();
-        counter.increment_for(&executor_id).unwrap();
+        counter.increment_for(&device_id).unwrap();
+        counter.increment_for(&device_id).unwrap();
 
         assert_eq!(counter.value_unsigned().unwrap(), 2);
         assert_eq!(counter.value().unwrap(), 2);
@@ -656,32 +656,32 @@ mod tests {
     fn test_pncounter_increment_and_decrement() {
         crate::env::reset_for_testing();
         let mut counter = Root::new(PNCounter::new);
-        let executor_id = [95u8; 32];
+        let device_id = [95u8; 32];
 
         // Start at 0
         assert_eq!(counter.value().unwrap(), 0);
 
         // Increment
-        counter.increment_for(&executor_id).unwrap();
+        counter.increment_for(&device_id).unwrap();
         assert_eq!(counter.value().unwrap(), 1);
 
-        counter.increment_for(&executor_id).unwrap();
-        counter.increment_for(&executor_id).unwrap();
+        counter.increment_for(&device_id).unwrap();
+        counter.increment_for(&device_id).unwrap();
         assert_eq!(counter.value().unwrap(), 3);
 
         // Decrement
-        counter.decrement_for(&executor_id).unwrap();
+        counter.decrement_for(&device_id).unwrap();
         assert_eq!(counter.value().unwrap(), 2);
 
-        counter.decrement_for(&executor_id).unwrap();
-        counter.decrement_for(&executor_id).unwrap();
+        counter.decrement_for(&device_id).unwrap();
+        counter.decrement_for(&device_id).unwrap();
         assert_eq!(counter.value().unwrap(), 0);
 
         // Go negative
-        counter.decrement_for(&executor_id).unwrap();
+        counter.decrement_for(&device_id).unwrap();
         assert_eq!(counter.value().unwrap(), -1);
 
-        counter.decrement_for(&executor_id).unwrap();
+        counter.decrement_for(&device_id).unwrap();
         assert_eq!(counter.value().unwrap(), -2);
     }
 
@@ -723,13 +723,13 @@ mod tests {
     fn test_pncounter_value_signed() {
         crate::env::reset_for_testing();
         let mut counter = Root::new(Counter::<true>::new);
-        let executor_id = [98u8; 32];
+        let device_id = [98u8; 32];
 
-        counter.increment_for(&executor_id).unwrap();
+        counter.increment_for(&device_id).unwrap();
         assert_eq!(counter.value_signed().unwrap(), 1);
 
-        counter.decrement_for(&executor_id).unwrap();
-        counter.decrement_for(&executor_id).unwrap();
+        counter.decrement_for(&device_id).unwrap();
+        counter.decrement_for(&device_id).unwrap();
         assert_eq!(counter.value_signed().unwrap(), -1);
         assert_eq!(counter.value().unwrap(), -1);
     }
@@ -747,18 +747,18 @@ mod tests {
     fn test_gcounter_overflow_detection() {
         crate::env::reset_for_testing();
         let mut counter = Root::new(GCounter::new);
-        let executor_id = [99u8; 32];
+        let device_id = [99u8; 32];
 
         // Manually insert a value near u64::MAX to trigger overflow
-        let key = hex::encode(executor_id);
+        let key = hex::encode(device_id);
         counter.positive.insert(key.clone(), u64::MAX - 10).unwrap();
 
         // This should still work
         assert!(counter.value().is_ok());
 
         // Add another executor with a large value that will cause overflow
-        let executor_id2 = [100u8; 32];
-        let key2 = hex::encode(executor_id2);
+        let device_id2 = [100u8; 32];
+        let key2 = hex::encode(device_id2);
         counter.positive.insert(key2, 100).unwrap();
 
         // Now value() should detect overflow and return error
@@ -772,10 +772,10 @@ mod tests {
     fn test_pncounter_cast_overflow_detection() {
         crate::env::reset_for_testing();
         let mut counter = Root::new(PNCounter::new);
-        let executor_id = [101u8; 32];
+        let device_id = [101u8; 32];
 
         // Manually insert a value that exceeds i64::MAX
-        let key = hex::encode(executor_id);
+        let key = hex::encode(device_id);
         let invalid_value = (i64::MAX as u64) + 1;
         counter.positive.insert(key, invalid_value).unwrap();
 
@@ -815,8 +815,8 @@ mod tests {
         let mut counter = Root::new(PNCounter::new);
 
         // Create a scenario where pos - neg would underflow i64::MIN
-        let executor_id = [104u8; 32];
-        let key = hex::encode(executor_id);
+        let device_id = [104u8; 32];
+        let key = hex::encode(device_id);
 
         // Set positive to 0 and negative to i64::MAX
         // This should result in trying to compute 0 - i64::MAX = i64::MIN - 1 (underflow)
@@ -825,8 +825,8 @@ mod tests {
 
         // This particular case actually works (0 - i64::MAX = i64::MIN + 1)
         // Let's try a worse case: small positive, very large negative
-        let executor_id2 = [105u8; 32];
-        let key2 = hex::encode(executor_id2);
+        let device_id2 = [105u8; 32];
+        let key2 = hex::encode(device_id2);
         counter.negative.insert(key2, i64::MAX as u64 + 1).unwrap();
 
         // This should fail at the cast stage (negative value > i64::MAX)
@@ -841,8 +841,8 @@ mod tests {
 
         // Add some large but valid values
         for i in 0..10 {
-            let executor_id = [106u8 + i; 32];
-            let key = hex::encode(executor_id);
+            let device_id = [106u8 + i; 32];
+            let key = hex::encode(device_id);
             counter.positive.insert(key, 1_000_000_000).unwrap();
         }
 
@@ -880,13 +880,13 @@ mod tests {
 
         // Create a PNCounter with 10 increments and 3 decrements (value = 7)
         let mut pn_counter = PNCounter::new();
-        let executor_id = [120u8; 32];
+        let device_id = [120u8; 32];
 
         for _ in 0..10 {
-            pn_counter.increment_for(&executor_id).unwrap();
+            pn_counter.increment_for(&device_id).unwrap();
         }
         for _ in 0..3 {
-            pn_counter.decrement_for(&executor_id).unwrap();
+            pn_counter.decrement_for(&device_id).unwrap();
         }
 
         assert_eq!(pn_counter.value().unwrap(), 7);
@@ -919,10 +919,10 @@ mod tests {
 
         // Create a GCounter with 10 increments
         let mut g_counter = GCounter::new();
-        let executor_id = [121u8; 32];
+        let device_id = [121u8; 32];
 
         for _ in 0..10 {
-            g_counter.increment_for(&executor_id).unwrap();
+            g_counter.increment_for(&device_id).unwrap();
         }
 
         assert_eq!(g_counter.value().unwrap(), 10);
@@ -944,16 +944,16 @@ mod tests {
         // The exact scenario from the issue description:
         // PNCounter with 10 increments and 3 decrements (value=7)
         let mut pn_counter = PNCounter::new();
-        let executor_id = [122u8; 32];
+        let device_id = [122u8; 32];
 
         // 10 increments
         for _ in 0..10 {
-            pn_counter.increment_for(&executor_id).unwrap();
+            pn_counter.increment_for(&device_id).unwrap();
         }
 
         // 3 decrements
         for _ in 0..3 {
-            pn_counter.decrement_for(&executor_id).unwrap();
+            pn_counter.decrement_for(&device_id).unwrap();
         }
 
         // Value should be 7

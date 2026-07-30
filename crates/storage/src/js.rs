@@ -574,8 +574,8 @@ impl JsCounter {
     /// # Errors
     ///
     /// Returns [`StoreError`] if the read operation fails.
-    pub fn get_executor_count(&self, executor_id: &[u8; 32]) -> Result<u64, StoreError> {
-        self.counter.get_positive_count(executor_id)
+    pub fn get_executor_count(&self, device_id: &[u8; 32]) -> Result<u64, StoreError> {
+        self.counter.get_positive_count(device_id)
     }
 
     /// Persists the counter to storage.
@@ -943,10 +943,10 @@ impl JsPnCounter {
     ///
     /// Returns [`StoreError`] if the read operation fails, or if either
     /// per-executor count exceeds `i64::MAX`.
-    pub fn get_executor_count(&self, executor_id: &[u8; 32]) -> Result<i64, StoreError> {
-        let positive = i64::try_from(self.counter.get_positive_count(executor_id)?)
+    pub fn get_executor_count(&self, device_id: &[u8; 32]) -> Result<i64, StoreError> {
+        let positive = i64::try_from(self.counter.get_positive_count(device_id)?)
             .map_err(|_| StorageError::InvalidData("positive count exceeds i64::MAX".to_owned()))?;
-        let negative = i64::try_from(self.counter.get_negative_count(executor_id)?)
+        let negative = i64::try_from(self.counter.get_negative_count(device_id)?)
             .map_err(|_| StorageError::InvalidData("negative count exceeds i64::MAX".to_owned()))?;
         Ok(positive.saturating_sub(negative))
     }
@@ -1362,7 +1362,7 @@ impl Default for JsSortedSet {
 /// context member may [`insert`](Self::insert) a new key, which stamps the
 /// current executor as the entry's owner; only that owner may later
 /// [`update`](Self::update) or [`remove`](Self::remove) the entry. Reads are
-/// unrestricted. Ownership is resolved from `env::executor_id()`, which the
+/// unrestricted. Ownership is resolved from `env::device_id()`, which the
 /// runtime installs per-execution — no identity argument is threaded through
 /// the byte API.
 #[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
@@ -1527,7 +1527,7 @@ impl Default for JsAuthoredMap {
 /// may later [`update`](Self::update) or [`tombstone`](Self::tombstone) the
 /// slot. There is intentionally no physical remove — `tombstone` overwrites the
 /// slot with an empty value while preserving its position and owner. Ownership
-/// is resolved from `env::executor_id()`, which the runtime installs
+/// is resolved from `env::device_id()`, which the runtime installs
 /// per-execution — no identity argument is threaded through the byte API.
 #[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
 pub struct JsAuthoredVector {
@@ -1721,7 +1721,7 @@ mod roundtrip_tests {
     #[serial]
     fn js_vector_value_roundtrips_byte_identically() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         ensure_root_index();
 
         let mut v = JsVector::new();
@@ -1741,7 +1741,7 @@ mod roundtrip_tests {
     #[serial]
     fn js_authored_vector_iter_roundtrips_byte_identically() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         ensure_root_index();
 
         let mut v = JsAuthoredVector::new();
@@ -1777,7 +1777,7 @@ mod roundtrip_tests {
     #[serial]
     fn js_authored_map_value_roundtrips_byte_identically() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         ensure_root_index();
 
         let key = b"post-1";

@@ -681,7 +681,7 @@ mod typed_dispatch_tests {
         env::reset_for_testing();
 
         // Executor A: counter incremented twice — value 2.
-        env::set_executor_id([1; 32]);
+        env::set_device_id([1; 32]);
         let mut state_a = DispatchTestApp {
             counter: Counter::new(),
         };
@@ -690,7 +690,7 @@ mod typed_dispatch_tests {
         let bytes_a = borsh::to_vec(&state_a).unwrap();
 
         // Executor B: counter incremented once — value 1.
-        env::set_executor_id([2; 32]);
+        env::set_device_id([2; 32]);
         let mut state_b = DispatchTestApp {
             counter: Counter::new(),
         };

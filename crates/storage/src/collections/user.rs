@@ -1,7 +1,7 @@
 //! User-centric storage wrapper.
 //!
 //! Provides an `UnorderedMap<PublicKey, T>` where the current user can
-//! only `insert` into their own key-slot (`env::executor_id()`).
+//! only `insert` into their own key-slot (`env::device_id()`).
 
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
 use super::{StoreError, UnorderedMap, ValueRef};
@@ -109,7 +109,7 @@ where
     where
         T: 'static,
     {
-        let executor_public_key: PublicKey = env::executor_id().into();
+        let executor_public_key: PublicKey = env::device_id().into();
 
         // Construct the StorageType. It will be signed later, on the upper levels by
         // `ContextManager`.
@@ -146,7 +146,7 @@ where
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
     pub fn get(&self) -> Result<Option<T>, StoreError> {
-        let executor_public_key: PublicKey = env::executor_id().into();
+        let executor_public_key: PublicKey = env::device_id().into();
         Ok(self
             .inner
             .get(&executor_public_key)?
@@ -166,7 +166,7 @@ where
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
     pub fn contains_current_user(&self) -> Result<bool, StoreError> {
-        let executor_public_key: PublicKey = env::executor_id().into();
+        let executor_public_key: PublicKey = env::device_id().into();
         self.inner.contains(&executor_public_key)
     }
 
@@ -183,7 +183,7 @@ where
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
     pub fn remove(&mut self) -> Result<Option<T>, StoreError> {
-        let executor_public_key: PublicKey = env::executor_id().into();
+        let executor_public_key: PublicKey = env::device_id().into();
         self.inner.remove(&executor_public_key)
     }
 }

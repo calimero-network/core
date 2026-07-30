@@ -244,13 +244,13 @@ pub fn logical_counter(ts: &HybridTimestamp) -> u32 {
 ///
 /// Must be collision-resistant: distinct executors need distinct seeds, or two
 /// concurrently-minted `CharId`s collide and a character is silently lost during
-/// RGA sync. Takes the first 16 bytes of `SHA-256(executor_id)` (`sha2` is
+/// RGA sync. Takes the first 16 bytes of `SHA-256(device_id)` (`sha2` is
 /// already a dep). The replaced code copied only the first 16 bytes, so keys
 /// sharing a 16-byte prefix collided.
 #[must_use]
-pub fn hlc_seed_from_executor_id(executor_id: &[u8; 32]) -> [u8; 16] {
+pub fn hlc_seed_from_device_id(device_id: &[u8; 32]) -> [u8; 16] {
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(executor_id);
+    let digest = Sha256::digest(device_id);
     let mut seed = [0u8; 16];
     seed.copy_from_slice(&digest[..16]);
     seed
@@ -745,9 +745,9 @@ mod tests {
     #[test]
     fn test_naive_xor_fold_collapses_repeated_key_to_zero() {
         // The rejected XOR-fold alternative, reproduced verbatim.
-        fn xor_fold_seed(executor_id: &[u8; 32]) -> [u8; 16] {
+        fn xor_fold_seed(device_id: &[u8; 32]) -> [u8; 16] {
             let mut seed = [0u8; 16];
-            for (i, byte) in executor_id.iter().enumerate() {
+            for (i, byte) in device_id.iter().enumerate() {
                 seed[i % 16] ^= *byte;
             }
             seed
@@ -796,7 +796,7 @@ mod tests {
         ];
 
         // Every pair of distinct keys must map to distinct seeds.
-        let seeds: Vec<[u8; 16]> = keys.iter().map(hlc_seed_from_executor_id).collect();
+        let seeds: Vec<[u8; 16]> = keys.iter().map(hlc_seed_from_device_id).collect();
         for i in 0..seeds.len() {
             for j in (i + 1)..seeds.len() {
                 assert_ne!(
@@ -810,9 +810,9 @@ mod tests {
         // And the production seeding path mints distinct HLC ids for the
         // previously-colliding [1;32] vs [2;32] pair.
         let mut hlc_a =
-            LogicalClock::new(|buf| buf.copy_from_slice(&hlc_seed_from_executor_id(&[1u8; 32])));
+            LogicalClock::new(|buf| buf.copy_from_slice(&hlc_seed_from_device_id(&[1u8; 32])));
         let mut hlc_b =
-            LogicalClock::new(|buf| buf.copy_from_slice(&hlc_seed_from_executor_id(&[2u8; 32])));
+            LogicalClock::new(|buf| buf.copy_from_slice(&hlc_seed_from_device_id(&[2u8; 32])));
         let time = AtomicU64::new(1_000_000_000_000_000_000);
         let ts_a = hlc_a.new_timestamp(|| time.load(Ordering::Relaxed));
         let ts_b = hlc_b.new_timestamp(|| time.load(Ordering::Relaxed));
@@ -832,7 +832,7 @@ mod tests {
         // The exact inputs the XOR-fold zeroed must now seed to a non-zero id.
         for k in [1u8, 7, 42, 255] {
             assert_ne!(
-                hlc_seed_from_executor_id(&[k; 32]),
+                hlc_seed_from_device_id(&[k; 32]),
                 [0u8; 16],
                 "SHA-256 seeding of [{k}; 32] must not be all-zero (XOR-fold's bug)"
             );

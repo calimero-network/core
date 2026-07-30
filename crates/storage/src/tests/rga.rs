@@ -667,7 +667,7 @@ fn test_rga_delete_after_merge_delta_sync_converges() {
         reset_delta_context();
         register_crdt_merge::<RgaDoc>();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(executor);
+        env::set_device_id(executor);
     };
 
     // === Genesis: shared base "Hello" captured as a delta every node imports.
@@ -836,7 +836,7 @@ fn test_rga_concurrent_appends_then_delete_delta_sync_converges() {
         reset_delta_context();
         register_crdt_merge::<RgaDoc>();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(executor);
+        env::set_device_id(executor);
     };
 
     // === Genesis: shared base "Hello" (identical CharIds on every node).
@@ -1108,7 +1108,7 @@ fn test_rga_insert_after_observing_remote_is_causally_ordered() {
         reset_delta_context();
         register_crdt_merge::<RgaDoc>();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(executor);
+        env::set_device_id(executor);
     };
 
     // === Node A: insert 'A' at position 0; capture the delta (carrying A's char).
@@ -1269,7 +1269,7 @@ fn test_rga_real_interleave_merge_converges() {
         reset_delta_context();
         register_crdt_merge::<RgaDoc>();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(executor);
+        env::set_device_id(executor);
     };
 
     // Genesis: shared base "ab" (identical CharIds on every replica), pinned at a

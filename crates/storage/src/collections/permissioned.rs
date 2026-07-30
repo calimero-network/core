@@ -231,7 +231,7 @@ where
     /// `ActionNotAllowed` if the current executor is not authorised for `op`
     /// under policy `A`.
     pub fn guard(&self, op: Op) -> Result<(), StoreError> {
-        let me: PublicKey = env::executor_id().into();
+        let me: PublicKey = env::device_id().into();
         if self.can(&me, op) {
             Ok(())
         } else {
@@ -442,7 +442,7 @@ where
 
     /// New owned cell owned by the current executor (the common case in `init`).
     pub fn new_owned_by_caller() -> Self {
-        let me: PublicKey = env::executor_id().into();
+        let me: PublicKey = env::device_id().into();
         Self::new_owned_by(me)
     }
 
@@ -543,7 +543,7 @@ mod tests {
     #[serial]
     fn new_with_field_name_is_deterministic() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let _root: Root<TestVal> = Root::new(TestVal::default);
 
         let expected = compute_collection_id(None, "doc");
@@ -559,7 +559,7 @@ mod tests {
         // field-derived id when the macro calls `reassign_deterministic_id`,
         // or two nodes would mint different ids for the same field and diverge.
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let mut p = Root::new(|| PermissionedStorage::<TestVal>::new(writers(&[ALICE]), false));
         p.reassign_deterministic_id("doc");
         assert_eq!(p.element().id(), compute_collection_id(None, "doc"));
@@ -569,7 +569,7 @@ mod tests {
     #[serial]
     fn writer_can_write_non_writer_rejected() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let mut p = Root::new(|| PermissionedStorage::<TestVal>::new(writers(&[ALICE]), false));
 
         // Writer succeeds.
@@ -577,7 +577,7 @@ mod tests {
         assert_eq!(p.get().unwrap(), &TestVal(1));
 
         // Non-writer is rejected at the API gate (and would be at merge).
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         assert!(p.insert(TestVal(2)).is_err());
         assert!(!p.can(&pk(BOB), Op::Write));
         assert!(p.guard(Op::Write).is_err());
@@ -587,7 +587,7 @@ mod tests {
     #[serial]
     fn ownable_reports_owner_and_gates() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let p = Root::new(Ownable::<TestVal>::new_owned_by_caller);
 
         assert_eq!(p.owner(), Some(pk(ALICE)));
@@ -595,7 +595,7 @@ mod tests {
         assert!(!p.is_owner(&pk(BOB)));
         assert!(p.only_owner().is_ok());
 
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         assert!(p.only_owner().is_err());
     }
 
@@ -603,7 +603,7 @@ mod tests {
     #[serial]
     fn transfer_ownership_rotates_writer_set() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let mut p = Root::new(|| Ownable::<TestVal>::new_owned_by(pk(ALICE)));
         p.insert(TestVal(1)).unwrap();
 
@@ -612,9 +612,9 @@ mod tests {
         assert_eq!(p.owner(), Some(pk(BOB)));
 
         // Bob is now the writer; Alice is not.
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         p.insert(TestVal(2)).unwrap();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         assert!(p.insert(TestVal(3)).is_err());
     }
 
@@ -622,7 +622,7 @@ mod tests {
     #[serial]
     fn protocol_authorizer_enforces_op_masks() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         // Alice starts with FULL (the `new` default).
         let mut p = Root::new(|| {
             PermissionedStorage::<TestVal, ProtocolAuthorizer>::new(writers(&[ALICE]), false)
@@ -639,11 +639,11 @@ mod tests {
         assert!(p.can(&pk(BOB), Op::Read), "anyone may read");
 
         // Bob (WRITE-only) cannot grant — Admin gate refuses him.
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         assert!(p.grant_capability(pk(ALICE), OpMask::FULL).is_err());
 
         // Alice can revoke Bob.
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         p.revoke_capability(&pk(BOB)).unwrap();
         assert!(!p.can(&pk(BOB), Op::Write), "revoked Bob may not write");
     }

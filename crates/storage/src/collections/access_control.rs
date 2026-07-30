@@ -97,7 +97,7 @@ impl AccessControl {
     /// Create an `AccessControl` administered by the current executor (the
     /// common case in `init`).
     pub fn new_admin_caller() -> Self {
-        let me: PublicKey = env::executor_id().into();
+        let me: PublicKey = env::device_id().into();
         Self::new(me)
     }
 
@@ -155,7 +155,7 @@ impl AccessControl {
     /// # Errors
     /// `ActionNotAllowed` if the current executor is not an admin.
     pub fn only_admin(&self) -> Result<(), StoreError> {
-        let me: PublicKey = env::executor_id().into();
+        let me: PublicKey = env::device_id().into();
         if self.is_admin(&me) {
             Ok(())
         } else {
@@ -253,7 +253,7 @@ impl AccessControl {
     /// `ActionNotAllowed` if the current executor does not hold `role`;
     /// propagates a storage error from the lookup.
     pub fn only_role(&self, role: &str) -> Result<(), StoreError> {
-        let me: PublicKey = env::executor_id().into();
+        let me: PublicKey = env::device_id().into();
         if self.has_role(role, &me)? {
             Ok(())
         } else {
@@ -432,7 +432,7 @@ mod tests {
     #[serial]
     fn admin_can_grant_and_revoke_roles() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
 
         assert!(ac.is_admin(&ALICE.into()));
@@ -449,11 +449,11 @@ mod tests {
     #[serial]
     fn non_admin_cannot_grant() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
 
         // Bob is not an admin — the fail-fast guard rejects his grant.
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         assert!(ac.grant("editor", CAROL.into()).is_err());
         assert!(ac.only_admin().is_err());
     }
@@ -462,14 +462,14 @@ mod tests {
     #[serial]
     fn admin_tier_rotation() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
 
         ac.grant_admin(BOB.into()).unwrap();
         assert!(ac.is_admin(&BOB.into()));
 
         // Bob, now an admin, can grant.
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         ac.grant("editor", CAROL.into()).unwrap();
         assert!(ac.has_role("editor", &CAROL.into()).unwrap());
 
@@ -483,7 +483,7 @@ mod tests {
     #[serial]
     fn roles_are_independent() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
 
         ac.grant("editor", BOB.into()).unwrap();
@@ -498,13 +498,13 @@ mod tests {
     #[serial]
     fn only_role_gates_on_held_role() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
         ac.grant("editor", BOB.into()).unwrap();
 
         // Alice (admin, but no editor role) is refused; Bob (editor) passes.
         assert!(ac.only_role("editor").is_err());
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         assert!(ac.only_role("editor").is_ok());
     }
 
@@ -514,7 +514,7 @@ mod tests {
         // grant -> revoke -> has_role within one execution must read `false`
         // (the registry is read from storage, not a stale in-memory snapshot).
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
 
         ac.grant("editor", BOB.into()).unwrap();
@@ -528,7 +528,7 @@ mod tests {
     fn role_name_with_separator_is_rejected() {
         // A NUL in the role name could otherwise craft a colliding key.
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
 
         assert!(ac.grant("editor\0evil", BOB.into()).is_err());
@@ -540,7 +540,7 @@ mod tests {
     #[serial]
     fn over_long_role_name_is_rejected() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
 
         let long = "r".repeat(super::MAX_ROLE_NAME_LEN + 1);
@@ -554,7 +554,7 @@ mod tests {
     #[serial]
     fn members_of_lists_current_holders() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
 
         ac.grant("editor", BOB.into()).unwrap();
@@ -594,7 +594,7 @@ mod tests {
         ];
 
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let mut s = Root::new(|| St {
             ac: AccessControl::new(ALICE.into()),
             data: PermissionedStorage::new(BTreeSet::from([ALICE.into()]), false),

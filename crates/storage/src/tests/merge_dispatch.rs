@@ -28,8 +28,8 @@ use crate::merge::{is_builtin_crdt, merge_by_crdt_type};
 // =============================================================================
 
 /// Create a GCounter with a specific executor's contribution.
-fn create_gcounter_with_contribution(executor_id: [u8; 32], count: u64) -> Counter<false> {
-    env::set_executor_id(executor_id);
+fn create_gcounter_with_contribution(device_id: [u8; 32], count: u64) -> Counter<false> {
+    env::set_device_id(device_id);
     let mut counter = Counter::new();
     for _ in 0..count {
         counter.increment().unwrap();
@@ -39,11 +39,11 @@ fn create_gcounter_with_contribution(executor_id: [u8; 32], count: u64) -> Count
 
 /// Create a PnCounter with specific positive and negative contributions.
 fn create_pncounter_with_contributions(
-    executor_id: [u8; 32],
+    device_id: [u8; 32],
     positive: u64,
     negative: u64,
 ) -> Counter<true> {
-    env::set_executor_id(executor_id);
+    env::set_device_id(device_id);
     let mut counter = Counter::new();
     for _ in 0..positive {
         counter.increment().unwrap();
