@@ -215,3 +215,91 @@ fn a_device_whose_endorser_is_not_a_member_may_not_author() {
         "an endorsement from a non-member must not confer authorship"
     );
 }
+
+/// The divergence the acceptance scenario hit: node-2 publishes a SECOND device
+/// link and records it; node-1 refuses the same op with "account is not a member
+/// of this group" and the two `scope_root`s part company for good.
+///
+/// The gate that refused is `endorser_is_member`, resolved against the projection
+/// at the op's cut — and the only structural difference between the link that was
+/// accepted and the one that was refused is that the second one's cut CONTAINS the
+/// first link. So the question this pins is exactly that: does a cut whose
+/// ancestry includes a `DeviceLinked` op still resolve an ordinary member?
+#[test]
+fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
+    let member_sk = PrivateKey::random(&mut OsRng);
+    let member = member_sk.public_key();
+    let (store, mut proj, ns, member_cut) = namespace_with_member(member);
+
+    // Baseline: at the cut that added them, the member is a member.
+    assert_eq!(
+        proj.member_at_cut(&store, ns, &member, &[member_cut]),
+        Some(true),
+        "baseline: the member must resolve at the cut that added them"
+    );
+
+    // Fold a device link on top, exactly as the receive path does.
+    let account_root = PrivateKey::from([0x42; 32]);
+    let genesis = AccountGenesis::new(account_root.public_key(), [0xAB; 16]);
+    let account = genesis.account_id();
+    let device_sign_pk = PrivateKey::from([0x77; 32]).public_key();
+    let cert = sign_device_cert(
+        &account_root,
+        account,
+        DeviceId::mint(account, [0xAB; 16]),
+        &device_sign_pk,
+        &KemPublicKey::from(*X25519SecretKey::from([0x33; 32]).public_key().as_bytes()),
+        0,
+        0,
+    )
+    .unwrap();
+    let link = GroupOp::AccountDeviceLinked {
+        genesis,
+        chain: vec![],
+        cert,
+        endorsement: calimero_account::sign_account_endorsement(&member_sk, account).unwrap(),
+    };
+    let ns_bytes = ns.to_bytes();
+    let group_key = [0x5A; 32];
+    let encrypted: EncryptedGroupOp = GroupKeyring::encrypt_op(&group_key, &link).unwrap();
+    let signed = SignedNamespaceOp {
+        version: 1,
+        namespace_id: ns_bytes.into(),
+        parent_op_hashes: vec![member_cut],
+        signer: member,
+        nonce: 2,
+        op: NamespaceOp::Group {
+            group_id: ns_bytes.into(),
+            key_id: GroupKeyring::new(&store, ns)
+                .load_current_key()
+                .unwrap()
+                .expect("the fixture stored a key")
+                .0
+                .into(),
+            encrypted,
+            key_rotation: None,
+        },
+        signature: [0u8; 64],
+    };
+    let link_cut = signed.content_hash().unwrap();
+    proj.ingest_op(&op_from_namespace_op(
+        &signed,
+        Some(&link),
+        link_cut,
+        hlc(2),
+        &[member_cut],
+    ));
+
+    // THE assertion. A second link cites this cut, and its endorser gate asks
+    // exactly this question. If the answer is not `Some(true)`, the publisher
+    // (which answers from live) and every receiver (which answers from the
+    // projection) decide the same op differently — a `scope_root` split with no
+    // later op able to reconcile it.
+    assert_eq!(
+        proj.member_at_cut(&store, ns, &member, &[link_cut]),
+        Some(true),
+        "an ordinary member must still resolve at a cut whose ancestry contains a \
+         device link — otherwise the second link is refused by receivers and \
+         accepted by its publisher"
+    );
+}
