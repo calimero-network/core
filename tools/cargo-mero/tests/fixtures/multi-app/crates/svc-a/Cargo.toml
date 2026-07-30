@@ -9,6 +9,11 @@ edition.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# svc-b deliberately does NOT declare this: `--features schema_v2` has to build
+# the whole workspace anyway.
+schema_v2 = []
+
 [dependencies]
 calimero-sdk = { path = "../../../../../../../crates/sdk" }
 calimero-storage = { path = "../../../../../../../crates/storage" }

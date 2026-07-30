@@ -2,14 +2,50 @@
 //! directory. The `[metadata.calimero]` schema itself lives in `meta`.
 
 use camino::{Utf8Path, Utf8PathBuf};
-use cargo_metadata::{Metadata, MetadataCommand, Package};
+use cargo_metadata::{CargoOpt, Metadata, MetadataCommand, Package};
 use eyre::{Context, Result};
 
-/// Run `cargo metadata`, scoped to `manifest_path` when given.
-pub fn metadata_for(manifest_path: Option<&Utf8Path>) -> Result<Metadata> {
+/// Cargo's feature-selection flags, shared by `build` and `bundle`.
+///
+/// They must reach `cargo metadata` as well as `cargo build`: the ABI is emitted
+/// against the resolve graph, so a build-only flag would embed an ABI describing
+/// a different schema than the bytecode it ships with.
+#[derive(clap::Args, Clone, Default)]
+pub struct FeatureArgs {
+    /// Cargo features to activate, comma or space separated (repeatable)
+    #[arg(long, value_name = "FEATURES")]
+    features: Vec<String>,
+
+    /// Do not activate the `default` feature
+    #[arg(long)]
+    no_default_features: bool,
+}
+
+impl FeatureArgs {
+    /// Spell these flags onto a `cargo` command line. Values pass through
+    /// verbatim; cargo itself splits them on commas and spaces.
+    pub fn apply_to(&self, cmd: &mut std::process::Command) {
+        for features in &self.features {
+            cmd.arg("--features").arg(features);
+        }
+        if self.no_default_features {
+            cmd.arg("--no-default-features");
+        }
+    }
+}
+
+/// Run `cargo metadata`, scoped to `manifest_path` when given and resolved
+/// against the same features the build will use.
+pub fn metadata_for(manifest_path: Option<&Utf8Path>, features: &FeatureArgs) -> Result<Metadata> {
     let mut cmd = MetadataCommand::new();
     if let Some(path) = manifest_path {
         let _ = cmd.manifest_path(path);
+    }
+    if !features.features.is_empty() {
+        let _ = cmd.features(CargoOpt::SomeFeatures(features.features.clone()));
+    }
+    if features.no_default_features {
+        let _ = cmd.features(CargoOpt::NoDefaultFeatures);
     }
     cmd.exec().wrap_err("failed to run `cargo metadata`")
 }

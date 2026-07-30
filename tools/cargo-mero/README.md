@@ -58,6 +58,34 @@ See [SIGNING.md](SIGNING.md).
 Installs the bundle on a running `merod` node.
 The node derives the `ApplicationId` from the bundle's `package` and signer (see [SIGNING.md](SIGNING.md)).
 
+## Cargo features
+
+`build` and `bundle` take cargo's feature flags, spelled the way cargo spells them - comma or space separated, repeatable:
+
+```bash
+cargo mero build --features schema_v2
+cargo mero bundle --dev --features "schema_v2 telemetry" --no-default-features
+```
+
+They reach `cargo build` and the `cargo metadata` call the ABI is emitted against, so the embedded `calimero_abi_v1` section always describes the schema the bytecode was compiled with.
+That pairing is the point: a wasm and an ABI that disagree do not fail the build, they produce a wrong migration plan at upgrade time, because the node resolves upgrades from the embedded section alone.
+
+Features gate **top-level items**, which is how one crate carries two schema versions:
+
+```rust
+#[cfg(not(feature = "schema_v2"))]
+#[app::state(version = 1)]
+pub struct State { /* ... */ }
+
+#[cfg(feature = "schema_v2")]
+#[app::state(version = 2)]
+pub struct StateV2 { /* ... */ }
+```
+
+A `#[cfg]` on a struct field, an enum variant, or a method inside an `#[app::logic]` block is *not* applied to the ABI, so express a variant as whole gated items rather than gated members.
+
+In a multi-service workspace all services compile in one `cargo build`, so a feature only one service declares is fine: it applies to that service and is ignored by the rest.
+
 ## Metadata reference
 
 Bundle metadata comes from a `[package.metadata.calimero]` table in the app's `Cargo.toml` (or `[workspace.metadata.calimero]` for a multi-service workspace).
