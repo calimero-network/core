@@ -83,7 +83,60 @@ fn canonical(dir: &Utf8Path) -> Utf8PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
+
+    /// `--features` and `--no-default-features` must both reach `cargo metadata`.
+    /// They are independent knobs on `MetadataCommand`, so neither can drop the
+    /// other; if one did, the ABI would be emitted for a different feature set
+    /// than the wasm is compiled with.
+    #[test]
+    fn metadata_applies_features_and_no_default_features_together() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Utf8Path::from_path(tmp.path()).unwrap();
+        std::fs::create_dir(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "").unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"feature-probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+             \n[features]\ndefault = [\"baseline\"]\nbaseline = []\nschema_v2 = []\n\n[workspace]\n",
+        )
+        .unwrap();
+        let manifest = dir.join("Cargo.toml");
+
+        let resolved = |args: &FeatureArgs| {
+            let metadata = metadata_for(Some(&manifest), args).expect("cargo metadata");
+            let pkg = metadata
+                .packages
+                .iter()
+                .find(|p| p.name.as_str() == "feature-probe")
+                .unwrap();
+            let resolve = metadata.resolve.as_ref().unwrap();
+            let node = resolve.nodes.iter().find(|n| n.id == pkg.id).unwrap();
+            node.features
+                .iter()
+                .map(ToString::to_string)
+                .collect::<BTreeSet<_>>()
+        };
+
+        let defaults = resolved(&FeatureArgs::default());
+        assert!(defaults.contains("default"), "got {defaults:?}");
+        assert!(!defaults.contains("schema_v2"), "got {defaults:?}");
+
+        let both = resolved(&FeatureArgs {
+            features: vec!["schema_v2".to_owned()],
+            no_default_features: true,
+        });
+        assert!(
+            both.contains("schema_v2"),
+            "--no-default-features must not drop --features, got {both:?}"
+        );
+        assert!(
+            !both.contains("default") && !both.contains("baseline"),
+            "--features must not drop --no-default-features, got {both:?}"
+        );
+    }
 
     #[test]
     fn manifest_dir_resolves_a_noncanonical_path() {
