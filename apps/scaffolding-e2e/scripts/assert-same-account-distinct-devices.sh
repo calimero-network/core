@@ -4,7 +4,7 @@
 #
 #     - name: The two devices authored as one account but distinct replicas
 #       type: script
-#       script: apps/scaffolding-e2e/scripts/assert-same-account-distinct-devices.sh
+#       script: scripts/assert-same-account-distinct-devices.sh
 #       target: local
 #       args: [ <namespace-id> ]
 #

@@ -4,7 +4,7 @@
 #
 #     - name: Pair node-3 onto Alice's account
 #       type: script
-#       script: apps/scaffolding-e2e/scripts/account-pair.sh
+#       script: scripts/account-pair.sh
 #       target: local
 #       args: [ <holder-container>, <new-container>, <namespace-id> ]
 #

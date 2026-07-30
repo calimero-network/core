@@ -187,7 +187,7 @@ steps:
 
   - name: Node-2 enrolls a device for a fresh account
     type: script
-    script: apps/scaffolding-e2e/scripts/account-create.sh
+    script: scripts/account-create.sh
     target: local
     args:
       - account-revoke-node-2
@@ -232,7 +232,7 @@ steps:
   # route in is being a device of Alice's account.
   - name: Pair node-3 onto Alice's account
     type: script
-    script: apps/scaffolding-e2e/scripts/account-pair.sh
+    script: scripts/account-pair.sh
     target: local
     args:
       - account-revoke-node-2
@@ -278,7 +278,7 @@ steps:
   # One identity, two replicas — the whole point of the feature.
   - name: The two devices authored as one account but distinct replicas
     type: script
-    script: apps/scaffolding-e2e/scripts/assert-same-account-distinct-devices.sh
+    script: scripts/assert-same-account-distinct-devices.sh
     target: local
     args:
       - '{{namespace_id}}'
@@ -287,7 +287,7 @@ steps:
 
   - name: Admin revokes node-3's device
     type: script
-    script: apps/scaffolding-e2e/scripts/account-revoke.sh
+    script: scripts/account-revoke.sh
     target: local
     args:
       - account-revoke-node-1

@@ -1193,6 +1193,10 @@ fn decode_migration_check_verdict(
 /// `module` is a cheap clone (the compiled artifact is `Arc`-backed, see
 /// `calimero_runtime::Module`), so this second `module.run` shares the
 /// already-compiled module with `execute_migration` rather than re-loading it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "an execution's inputs: identity, module, staged bytes, storage"
+)]
 async fn run_migration_check(
     node_client: NodeClient,
     context: &Context,

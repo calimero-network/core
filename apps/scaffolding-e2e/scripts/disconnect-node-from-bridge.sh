@@ -5,7 +5,7 @@
 #
 #     - name: Partition admin away from peers
 #       type: script
-#       script: apps/scaffolding-e2e/scripts/disconnect-node-from-bridge.sh
+#       script: scripts/disconnect-node-from-bridge.sh
 #       target: local
 #       args:
 #         - e2e-node-1

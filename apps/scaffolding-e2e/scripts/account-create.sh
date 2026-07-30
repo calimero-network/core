@@ -4,7 +4,7 @@
 #
 #     - name: Node-2 enrolls a device
 #       type: script
-#       script: apps/scaffolding-e2e/scripts/account-create.sh
+#       script: scripts/account-create.sh
 #       target: local
 #       args: [ <container>, <namespace-id> ]
 #

@@ -4,7 +4,7 @@
 #
 #     - name: Admin revokes node-3's device
 #       type: script
-#       script: apps/scaffolding-e2e/scripts/account-revoke.sh
+#       script: scripts/account-revoke.sh
 #       target: local
 #       args: [ <admin-container>, <namespace-id> ]
 #

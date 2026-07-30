@@ -18,6 +18,9 @@ impl VMLogic<'_> {
             fn context_id(register_id: u64);
             fn account_id(register_id: u64);
             fn device_id(register_id: u64);
+            // Compatibility shim for blobs built before the account/device split.
+            // Not offered by `calimero-sys`, so no new app can reach it.
+            fn executor_id(register_id: u64);
             fn xcall_origin(register_id: u64) -> u32;
 
             fn input(register_id: u64);
