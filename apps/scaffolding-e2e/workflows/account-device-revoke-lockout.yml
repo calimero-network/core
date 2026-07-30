@@ -157,6 +157,7 @@ steps:
   - name: Node-2 joins the namespace
     type: join_namespace
     node: account-revoke-node-2
+    namespace_id: '{{namespace_id}}'
     invitation: '{{invitation}}'
 
   - name: Node-1 creates the context
@@ -363,8 +364,10 @@ steps:
 
   - name: A peer refused to serve the key to the revoked device
     type: assert_log_present
-    node: account-revoke-node-1
-    pattern: "not serving group key: the requester's account has no live device"
+    nodes:
+      - account-revoke-node-1
+    patterns:
+      - "not serving group key: the requester's account has no live device"
 
   - name: The revoked device still cannot write after the recovery window
     type: call
