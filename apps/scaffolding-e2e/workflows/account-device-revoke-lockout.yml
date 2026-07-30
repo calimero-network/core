@@ -211,6 +211,15 @@ steps:
       key: from-laptop
       value: laptop-wrote-this
 
+  - name: Settle so the first device's delta reaches node-1
+    type: wait_for_sync
+    nodes:
+      - account-revoke-node-1
+      - account-revoke-node-2
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
   - name: Node-1 reads the first device's write
     type: call
     node: account-revoke-node-1
@@ -222,9 +231,9 @@ steps:
       laptop_value: result
 
   - name: The first device's write converged
-    type: assert
+    type: json_assert
     statements:
-      - '{{laptop_value}} == laptop-wrote-this'
+      - 'json_equal({{laptop_value}}, {"output": "laptop-wrote-this"})'
 
   # ── Phase 4: pair a second device onto the SAME account ───────────
 
@@ -260,6 +269,16 @@ steps:
       key: from-phone
       value: phone-wrote-this
 
+  - name: Settle so the paired device's delta reaches node-1
+    type: wait_for_sync
+    nodes:
+      - account-revoke-node-1
+      - account-revoke-node-2
+      - account-revoke-node-3
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
   - name: Node-1 reads the paired device's write
     type: call
     node: account-revoke-node-1
@@ -271,9 +290,9 @@ steps:
       phone_value: result
 
   - name: Both devices' writes converged
-    type: assert
+    type: json_assert
     statements:
-      - '{{phone_value}} == phone-wrote-this'
+      - 'json_equal({{phone_value}}, {"output": "phone-wrote-this"})'
 
   # One identity, two replicas — the whole point of the feature.
   - name: The two devices authored as one account but distinct replicas
@@ -321,6 +340,17 @@ steps:
       key: from-laptop
       value: laptop-still-works
 
+  - name: Settle the survivor's write across the remaining devices
+    type: wait_for_sync
+    # node-3 is deliberately absent: it is revoked, so waiting for it to converge
+    # would be waiting for the failure this scenario exists to prevent.
+    nodes:
+      - account-revoke-node-1
+      - account-revoke-node-2
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
   - name: Node-1 sees the survivor's write and not the revoked device's
     type: call
     node: account-revoke-node-1
@@ -332,9 +362,9 @@ steps:
       survivor_value: result
 
   - name: Revocation cut out one device and only that device
-    type: assert
+    type: json_assert
     statements:
-      - '{{survivor_value}} == laptop-still-works'
+      - 'json_equal({{survivor_value}}, {"output": "laptop-still-works"})'
 
   - name: Node-1 still sees the pre-revocation value for the revoked device's key
     type: call
@@ -347,9 +377,9 @@ steps:
       post_revoke_phone: result
 
   - name: The revoked device's post-revocation write never landed
-    type: assert
+    type: json_assert
     statements:
-      - '{{post_revoke_phone}} == phone-wrote-this'
+      - 'json_equal({{post_revoke_phone}}, {"output": "phone-wrote-this"})'
 
   # ── Phase 7: the revoked device cannot pull the key back ──────────
   #
