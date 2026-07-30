@@ -251,6 +251,16 @@ steps:
     # (see "Wiring" below). The script writes the new device id to a file that
     # `account-revoke.sh` reads.
 
+  # Following a context is a separate act from being certified into an account:
+  # it writes the keyless identity marker that makes this node "own" an identity
+  # there, which is what the RPC layer resolves an executor from. A paired device
+  # is a member of nothing, so this only works because the join gate accepts a
+  # live device of an account a member endorsed.
+  - name: Node-3 follows the context as a device of Alice's account
+    type: join_context
+    node: account-revoke-node-3
+    context_id: '{{context_id}}'
+
   - name: Settle after pairing
     type: wait_for_sync
     nodes:

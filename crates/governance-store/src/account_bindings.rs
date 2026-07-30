@@ -96,6 +96,45 @@ pub enum BindingRejected {
     AccountNotMember,
 }
 
+/// The account `sign_pk` speaks for in `group`, if it is a **live device of an
+/// account a member endorsed** — the entitlement a paired device participates on.
+///
+/// A paired device is a member of nothing by design: its whole right to take part
+/// comes from the account its certificate binds it to. Every membership-shaped
+/// question therefore needs this fallback, or the device gets keys and the right to
+/// author and still cannot be selected as the executing identity for a context —
+/// which is a "no owned identity found for this context" at the RPC boundary, long
+/// before authorization is consulted.
+///
+/// Answered from **live** rows, deliberately. This decides what *this node*
+/// follows, not whether an op was authorized, so it needs no causal cut: it is the
+/// same shape as the authorization rule (device → account → is any endorser a
+/// member) evaluated against current state. The at-cut version lives on the apply
+/// path, where two replicas must agree.
+///
+/// Reads live bindings, so a revoked or superseded device resolves to `None`.
+///
+/// # Errors
+/// Propagates the store scan failure.
+pub fn member_account_for_device_key(
+    store: &Store,
+    group: &ContextGroupId,
+    sign_pk: &PublicKey,
+) -> EyreResult<Option<AccountId>> {
+    let bindings = AccountBindingRepository::new(store);
+    let Some(binding) = bindings.binding_for_sign_pk(group, sign_pk)? else {
+        return Ok(None);
+    };
+
+    let membership = crate::MembershipRepository::new(store);
+    for endorser in bindings.endorsers_of(group, binding.account)? {
+        if membership.check_path(group, &endorser)? != crate::membership::MembershipPath::None {
+            return Ok(Some(binding.account));
+        }
+    }
+    Ok(None)
+}
+
 /// A device binding that is currently in force.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeviceBinding {
@@ -1210,6 +1249,65 @@ mod tests {
             repo.apply_link(&gid, &mallory, &[], &hijack)
                 .expect("store"),
             Err(BindingRejected::AccountReassignment)
+        );
+    }
+
+    #[test]
+    fn a_paired_device_key_resolves_to_the_account_a_member_endorsed() {
+        // The entitlement a paired device participates on, and the one every
+        // membership-shaped question has to consult. Without it a paired device
+        // holds scope keys and the right to author yet cannot follow a context,
+        // surfacing as a bare "no owned identity found for this context" from the
+        // RPC layer — a message that names neither accounts nor devices.
+        let store = test_store();
+        let gid = ContextGroupId::from([7u8; 32]);
+        let member = key(1).public_key();
+        crate::MembershipRepository::new(&store)
+            .add_member(&gid, &member, crate::GroupMemberRole::Member)
+            .expect("add member");
+
+        // Alice's account, rooted at an offline key that is a member NOWHERE, with
+        // a device whose own signing key is a member of nothing either.
+        let root = key(2);
+        let genesis = AccountGenesis::new(root.public_key(), [0xAB; 16]);
+        let account = genesis.account_id();
+        let device_sign_pk = key(3).public_key();
+        let cert = sign_device_cert(
+            &root,
+            account,
+            DeviceId::mint(account, [0xAB; 16]),
+            &device_sign_pk,
+            &KemPublicKey::from([3u8; 32]),
+            0,
+            0,
+        )
+        .expect("sign cert");
+        let repo = AccountBindingRepository::new(&store);
+        repo.record_endorser(&gid, account, &member)
+            .expect("endorse");
+        let _ = repo
+            .apply_link(&gid, &genesis, &[], &cert)
+            .expect("store")
+            .expect("admissible");
+
+        assert_eq!(
+            member_account_for_device_key(&store, &gid, &device_sign_pk).expect("resolve"),
+            Some(account),
+            "the device's signing key must resolve to the account a member vouched for"
+        );
+
+        // A key nobody linked speaks for nobody.
+        assert_eq!(
+            member_account_for_device_key(&store, &gid, &key(9).public_key()).expect("resolve"),
+            None
+        );
+
+        // Revocation withdraws it: terminal, and it must not merely stop delivery.
+        repo.apply_revocation(&gid, cert.device).expect("revoke");
+        assert_eq!(
+            member_account_for_device_key(&store, &gid, &device_sign_pk).expect("resolve"),
+            None,
+            "a revoked device must stop being a route into the group"
         );
     }
 }
