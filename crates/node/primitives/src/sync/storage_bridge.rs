@@ -32,6 +32,7 @@ use std::rc::Rc;
 
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
+use calimero_primitives::utils::prefix_upper_bound;
 use calimero_storage::env::{IndexCallbacks, RuntimeEnv};
 use calimero_storage::store::Key;
 use calimero_store::db::Column;
@@ -72,21 +73,6 @@ pub fn create_runtime_env(
         *executor_id.as_ref(),
     )
     .with_index(create_index_callbacks(store, context_id))
-}
-
-/// The exclusive upper bound for a byte prefix (smallest key not starting with
-/// `prefix`) — mirrors `ContextStorage`'s helper for range-clearing a prefix.
-fn index_prefix_upper_bound(prefix: &[u8]) -> Vec<u8> {
-    let mut end = prefix.to_vec();
-    while let Some(&last) = end.last() {
-        if last == 0xFF {
-            let _ = end.pop();
-        } else {
-            *end.last_mut().expect("non-empty") += 1;
-            return end;
-        }
-    }
-    vec![0xFF; prefix.len() + 1]
 }
 
 /// Build ordered-index host callbacks bridging `calimero-storage`'s node-local
@@ -134,7 +120,7 @@ fn create_index_callbacks(store: &Store, context_id: ContextId) -> IndexCallback
         let store = store.clone();
         Rc::new(move |prefix: &[u8]| {
             let lo = scoped(&ctx, prefix);
-            let hi = index_prefix_upper_bound(&lo);
+            let hi = prefix_upper_bound(&lo);
             store
                 .raw_delete_range(Column::SortedIndex, &lo, &hi)
                 .is_ok()
@@ -460,12 +446,7 @@ mod tests {
         // Sanity: the ordered index really is in RocksDB (bridge is wired), not
         // the mock — there is at least one SortedIndex row for this context.
         let index_rows = store
-            .raw_scan(
-                Column::SortedIndex,
-                &ctx,
-                &index_prefix_upper_bound(&ctx),
-                None,
-            )
+            .raw_scan(Column::SortedIndex, &ctx, &prefix_upper_bound(&ctx), None)
             .unwrap();
         assert!(
             !index_rows.is_empty(),
@@ -476,14 +457,14 @@ mod tests {
         // context (index is now a strict subset — empty) but LEAVE the marker in
         // SortedIndexMeta intact, so `index_marker_current()` still returns true.
         store
-            .raw_delete_range(Column::SortedIndex, &ctx, &index_prefix_upper_bound(&ctx))
+            .raw_delete_range(Column::SortedIndex, &ctx, &prefix_upper_bound(&ctx))
             .unwrap();
         assert!(
             !store
                 .raw_scan(
                     Column::SortedIndexMeta,
                     &ctx,
-                    &index_prefix_upper_bound(&ctx),
+                    &prefix_upper_bound(&ctx),
                     None
                 )
                 .unwrap()
