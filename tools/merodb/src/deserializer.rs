@@ -563,6 +563,15 @@ fn deserialize_collection_with_crdt(
             }
             Ok(json!(obj))
         }
+        CollectionType::Tuple { elements } => {
+            // Borsh lays a tuple out as its elements back to back, with no
+            // length prefix: arity is fixed by the schema.
+            let mut array = Vec::with_capacity(elements.len());
+            for element in elements {
+                array.push(deserialize_type_ref(cursor, element, manifest)?);
+            }
+            Ok(json!(array))
+        }
     }
 }
 

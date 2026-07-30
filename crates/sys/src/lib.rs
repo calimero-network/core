@@ -52,6 +52,7 @@ wasm_imports! {
         // `collection_id`; lives in its own non-synced column, never in `State`.
         fn storage_index_meta_set(key: Ref<Buffer<'_>>, value: Ref<Buffer<'_>>) -> Bool;
         fn storage_index_meta_get(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
+        fn storage_index_meta_clear(key: Ref<Buffer<'_>>) -> Bool;
         // --
         // Private storage functions (node-local, NOT synchronized)
         fn private_storage_read(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;

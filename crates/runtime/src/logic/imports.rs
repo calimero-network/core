@@ -59,6 +59,7 @@ impl VMLogic<'_> {
             // keyed by `collection_id`, lives in its own non-synced column.
             fn storage_index_meta_set(key_ptr: u64, value_ptr: u64) -> u32;
             fn storage_index_meta_get(key_ptr: u64, register_id: u64) -> u32;
+            fn storage_index_meta_clear(key_ptr: u64) -> u32;
 
             // Private storage functions (node-local, NOT synchronized)
             fn private_storage_read(key_ptr: u64, register_id: u64) -> u32;
@@ -200,6 +201,20 @@ impl VMLogic<'_> {
             fn js_crdt_authored_vector_owned_by_me(vector_id_ptr: u64, index: u64) -> i32;
             fn js_crdt_authored_vector_iter(vector_id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_authored_vector_len(vector_id_ptr: u64, register_id: u64) -> i32;
+
+            fn js_crdt_shared_new(writers_ptr: u64, frozen: u32, register_id: u64) -> i32;
+            fn js_crdt_shared_new_with_id(
+                id_ptr: u64,
+                writers_ptr: u64,
+                frozen: u32,
+                register_id: u64,
+            ) -> i32;
+            fn js_crdt_shared_set(cell_id_ptr: u64, value_ptr: u64) -> i32;
+            fn js_crdt_shared_get(cell_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_shared_writers(cell_id_ptr: u64, register_id: u64) -> i32;
+            fn js_crdt_shared_writable_by_me(cell_id_ptr: u64) -> i32;
+            fn js_crdt_shared_is_frozen(cell_id_ptr: u64) -> i32;
+            fn js_crdt_shared_rotate_writers(cell_id_ptr: u64, writers_ptr: u64) -> i32;
 
             fn js_user_storage_new(register_id: u64) -> i32;
             fn js_user_storage_new_with_id(id_ptr: u64, register_id: u64) -> i32;

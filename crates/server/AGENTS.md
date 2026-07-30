@@ -109,6 +109,7 @@ DELETE /admin-api/contexts/:id        # Delete context
 GET  /admin-api/applications          # List apps
 POST /admin-api/install-application   # Install app
 GET  /admin-api/applications/:id      # Get app
+GET  /admin-api/applications/:id/abi  # Embedded WASM ABI manifest (optional ?service_name=)
 
 POST /admin-api/contexts/:id/join     # Join context
 ```
@@ -170,6 +171,8 @@ pub fn admin_router() -> Router<AppState> {
         .route("/contexts/:id", get(get_context).delete(delete_context))
 }
 ```
+
+When adding a new `.route(...)`, regenerate `crates/server/endpoints.json` via `UPDATE_MANIFEST=1 cargo test -p calimero-server --test route_manifest`, and cover the endpoint with a mero-js e2e hit or a reasoned entry in coverage-baseline.json.
 
 ## Key Files
 

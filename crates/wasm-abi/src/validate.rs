@@ -197,6 +197,11 @@ fn validate_type_ref(type_ref: &TypeRef, path: &str) -> Result<(), ValidationErr
                     }
                     validate_type_ref(value, &format!("{path}.value"))?;
                 }
+                CollectionType::Tuple { elements } => {
+                    for (i, element) in elements.iter().enumerate() {
+                        validate_type_ref(element, &format!("{path}.elements[{i}]"))?;
+                    }
+                }
             }
         }
     }
@@ -312,6 +317,11 @@ fn collect_refs_from_type_ref(type_ref: &TypeRef, path: &str, refs: &mut Vec<(St
                 CollectionType::Map { value, .. } => {
                     collect_refs_from_type_ref(value, &format!("{path}.value"), refs);
                 }
+                CollectionType::Tuple { elements } => {
+                    for (i, element) in elements.iter().enumerate() {
+                        collect_refs_from_type_ref(element, &format!("{path}.elements[{i}]"), refs);
+                    }
+                }
             }
         }
     }
@@ -350,6 +360,31 @@ mod tests {
         });
 
         assert!(validate_manifest(&manifest).is_ok());
+    }
+
+    // The dangling-ref sweep must descend into tuple elements; if it skips them,
+    // a bad `$ref` hides inside a tuple and only surfaces at the consumer.
+    #[test]
+    fn dangling_ref_inside_a_tuple_is_caught() {
+        let mut manifest = Manifest::new();
+        manifest.methods.push(Method {
+            name: "pairs".to_owned(),
+            params: vec![],
+            returns: Some(TypeRef::list(TypeRef::tuple(vec![
+                TypeRef::string(),
+                TypeRef::reference("NoSuchType"),
+            ]))),
+            returns_nullable: None,
+            errors: vec![],
+            intent: MethodIntent::Unspecified,
+            xcall_callable: false,
+            xcall_callers: Default::default(),
+        });
+
+        assert!(matches!(
+            validate_manifest(&manifest),
+            Err(ValidationError::InvalidTypeReference { ref_name, .. }) if ref_name == "NoSuchType"
+        ));
     }
 
     #[test]

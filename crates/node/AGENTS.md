@@ -239,3 +239,21 @@ cargo test -p calimero-node --test network_simulation
   `BroadcastMessage::NamespaceGovernanceDelta { namespace_id, delta_id,
   parent_ids, payload: borsh(NamespaceTopicMsg) }` - sender-side
   envelope skips break receive-side decoding silently
+- `VerifiedBundle` is the only way to read artifact bytes out of a
+  `.mpk`; `extract_bundle_files` is module-private so the compiler
+  enforces it. Construction requires a valid manifest signature, and
+  every wasm artifact is digest-checked against the signed manifest
+  before its bytes are returned. Nothing is unpacked to disk: the
+  `.mpk` stays a content-addressed blob, and a multi-service install
+  copies each service's wasm into a blob of its own
+- A bundle's manifest is the entry at exactly `manifest.json`, never a
+  nested one: an `old/manifest.json` would be an authentically signed
+  older release, so basename matching is a signed rollback. Only a
+  leading `./` is normalised away, since that is how ordinary tar
+  spells a top-level entry; every other component is significant, on
+  the manifest's declared paths as much as on the archive's entries. A
+  second entry at that path is refused, after the signature rather than
+  during the pre-auth scan, since the check has to reach the archive's end
+- `BundleManifest::artifacts` destructures the manifest without `..`,
+  so adding an artifact field is a compile error until it is
+  classified; keep it that way rather than reaching for a wildcard

@@ -863,6 +863,28 @@ pub fn storage_index_meta_get(key: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
+/// Clear the node-local ordered-index validity marker for `key`, forcing the
+/// next ordered read to rebuild the index (see [`storage_index_meta_set`]). The
+/// invalidate-on-sync primitive called by the storage apply/merge path when a
+/// collection's element set changes outside `insert`. Returns whether the host
+/// persisted the write.
+#[inline]
+pub fn storage_index_meta_clear(key: &[u8]) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::storage_index_meta_clear(Ref::new(&Buffer::from(key))) }
+            .try_into()
+            .unwrap_or_else(expected_boolean)
+    }
+    // Off-wasm, `calimero_storage`'s native mock serves the marker directly, so
+    // this SDK-level host hook is never reached (see `storage_index_set`).
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = key;
+        unsupported_native("storage_index_meta_clear")
+    }
+}
+
 /// Decode the length-prefixed scan reply produced by the host's
 /// `encode_index_pairs`. Malformed/truncated input yields what was parsed so
 /// far (the host controls this buffer, so it's well-formed in practice).

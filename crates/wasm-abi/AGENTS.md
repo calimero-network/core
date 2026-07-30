@@ -47,7 +47,7 @@ cargo test -p calimero-wasm-abi authored_map_to_unordered_is_downgrade -- --noca
 | `TypeDef` | enum (`kind` tag) | `Record { fields }`, `Variant { variants }`, `Bytes { size, encoding }`, `Alias { target }` |
 | `TypeRef` | enum (untagged) | `Reference { $ref }`, `Scalar(ScalarType)`, `Collection { collection, crdt_type, inner_type }` |
 | `ScalarType` | enum (`kind` tag) | `Bool`, `I32`, `I64`, `U32`, `U64`, `F32`, `F64`, `String`, `Bytes { size, encoding }`, `Unit` |
-| `CollectionType` | enum (`kind` tag) | `List { items }`, `Map { key, value }` (key custom-(de)serialized to accept a bare `"string"`), `Record { fields }` |
+| `CollectionType` | enum (`kind` tag) | `List { items }`, `Map { key, value }` (key custom-(de)serialized to accept a bare `"string"`), `Record { fields }`, `Tuple { elements }` (positional, so `(K, V)` describes `[k, v]` rather than a record's `{"0":k,"1":v}`) |
 | `CrdtCollectionType` | enum (`#[non_exhaustive]`) | `LwwRegister`, `Counter`, `Vector`, `UnorderedMap`, `SortedMap`, `AuthoredMap`, `UnorderedSet`, `SortedSet`, `ReplicatedGrowableArray`, `AuthoredVector`, `SharedStorage` |
 | `CollectionCategory` | enum | `Convergent` / `Replayable` / `IdentityGated` - classification returned by `collection_category()`, exhaustively matched (no wildcard) so a new `CrdtCollectionType` variant fails to compile until categorized |
 | `MethodIntent` | enum, `#[default] Unspecified` | `ReadOnly` (`#[app::view]`), `Mutating`, `Unspecified` (fail-safe: treated as write lock) |

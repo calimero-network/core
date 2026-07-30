@@ -106,10 +106,6 @@ struct BundleArgs {
     #[arg(long, group = "signing")]
     dev: bool,
 
-    /// Skip signing (bundle cannot be published or installed against a registry)
-    #[arg(long, group = "signing")]
-    unsigned: bool,
-
     /// Override the app version recorded in manifest.json
     #[arg(long)]
     app_version: Option<String>,
@@ -323,8 +319,7 @@ mod tests {
 
     #[test]
     fn bundle_signing_flags_are_exclusive_but_orthogonal_to_other_args() {
-        // The three signing flags are mutually exclusive.
-        assert!(Cargo::try_parse_from(["cargo", "mero", "bundle", "--dev", "--unsigned"]).is_err());
+        // The signing flags are mutually exclusive.
         assert!(
             Cargo::try_parse_from(["cargo", "mero", "bundle", "--dev", "--key", "k.json"]).is_err()
         );
@@ -340,6 +335,11 @@ mod tests {
             "Cargo.toml"
         ])
         .is_ok());
+    }
+
+    #[test]
+    fn bundle_rejects_the_removed_unsigned_flag() {
+        assert!(Cargo::try_parse_from(["cargo", "mero", "bundle", "--unsigned"]).is_err());
     }
 
     #[test]

@@ -9,11 +9,14 @@ pub use signature::{
 use serde::{Deserialize, Serialize};
 
 /// Represents an artifact within a bundle (WASM, ABI, migration)
+///
+/// `hash` is what binds the artifact bytes to the manifest signature, so a
+/// manifest that omits it is malformed rather than merely unhashed.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BundleArtifact {
     pub path: String,
-    pub hash: Option<String>,
+    pub hash: String,
     pub size: u64,
 }
 
@@ -46,6 +49,23 @@ pub struct BundleLinks {
     pub frontend: Option<String>,
     pub github: Option<String>,
     pub docs: Option<String>,
+}
+
+/// Deep-link handler declarations for the application.
+///
+/// Lets an app declare its own deep-link `slug` (e.g. `mero-chat`) so links
+/// like `https://links.calimero.network/<slug>/join` and
+/// `calimero://<slug>/join` resolve to the right app. When absent, the desktop
+/// falls back to kebab-casing the app name.
+///
+/// This block is a sibling of `metadata` in the manifest, NOT nested inside it,
+/// so it is deliberately outside the raw-wasm application-id derivation
+/// (`hash(bytecode, size, source, metadata)`).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleHandlers {
+    #[serde(default)]
+    pub slug: Option<String>,
 }
 
 /// Cryptographic signature of the manifest
@@ -97,6 +117,11 @@ pub struct BundleManifest {
     #[serde(default)]
     pub metadata: Option<BundleMetadata>,
 
+    /// Deep-link handler declarations. Sibling of `metadata`, so it does not
+    /// participate in the raw-wasm application-id derivation.
+    #[serde(default)]
+    pub handlers: Option<BundleHandlers>,
+
     #[serde(default)]
     pub interfaces: Option<BundleInterfaces>,
 
@@ -126,7 +151,6 @@ pub struct WasmArtifact<'a> {
     /// Service name. `None` for single-service bundles.
     pub name: Option<&'a str>,
     pub wasm: &'a BundleArtifact,
-    pub abi: Option<&'a BundleArtifact>,
 }
 
 impl BundleManifest {
@@ -148,7 +172,7 @@ impl BundleManifest {
     ///
     /// - Multi-service (`services` non-empty): yields one `WasmArtifact` per service.
     /// - Single-service: yields one `WasmArtifact` with `name: None` from the
-    ///   top-level `wasm`/`abi` fields.
+    ///   top-level `wasm` field.
     pub fn wasm_artifacts(&self) -> Vec<WasmArtifact<'_>> {
         match &self.services {
             Some(svcs) if !svcs.is_empty() => svcs
@@ -156,7 +180,6 @@ impl BundleManifest {
                 .map(|s| WasmArtifact {
                     name: Some(&s.name),
                     wasm: &s.wasm,
-                    abi: s.abi.as_ref(),
                 })
                 .collect(),
             _ => self
@@ -166,11 +189,49 @@ impl BundleManifest {
                     vec![WasmArtifact {
                         name: None,
                         wasm: w,
-                        abi: self.abi.as_ref(),
                     }]
                 })
                 .unwrap_or_default(),
         }
+    }
+
+    /// Every artifact the manifest declares, paired with its manifest field. The
+    /// `..`-free destructure stops compiling until a new field is classified.
+    pub fn artifacts(&self) -> Vec<(String, &BundleArtifact)> {
+        let Self {
+            wasm,
+            abi,
+            services,
+            migrations,
+            version: _,
+            package: _,
+            app_version: _,
+            signer_id: _,
+            min_runtime_version: _,
+            metadata: _,
+            handlers: _,
+            interfaces: _,
+            links: _,
+            signature: _,
+        } = self;
+
+        let mut artifacts = Vec::new();
+        if let Some(wasm) = wasm {
+            artifacts.push(("wasm".to_owned(), wasm));
+        }
+        if let Some(abi) = abi {
+            artifacts.push(("abi".to_owned(), abi));
+        }
+        for (i, service) in services.iter().flatten().enumerate() {
+            artifacts.push((format!("services[{i}].wasm"), &service.wasm));
+            if let Some(abi) = &service.abi {
+                artifacts.push((format!("services[{i}].abi"), abi));
+            }
+        }
+        for (i, migration) in migrations.iter().enumerate() {
+            artifacts.push((format!("migrations[{i}]"), migration));
+        }
+        artifacts
     }
 
     /// Serialize the manifest's display metadata to JSON bytes for storage.
@@ -230,5 +291,105 @@ impl BundleManifest {
         }
 
         Ok(serde_json::to_vec(&serde_json::Value::Object(obj))?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::hash::Hash;
+
+    use super::*;
+
+    /// A minimal manifest JSON with the given optional `handlers` block spliced
+    /// in verbatim. Everything else is held constant so the only difference
+    /// between two produced manifests is the presence of `handlers`.
+    fn manifest_json(handlers_block: &str) -> String {
+        format!(
+            r#"{{
+                "version": "1.0",
+                "package": "com.example.deeplink",
+                "appVersion": "1.0.0",
+                "minRuntimeVersion": "0.1.0",
+                "metadata": {{
+                    "name": "Mero Chat"
+                }},
+                {handlers_block}
+                "wasm": {{ "path": "app.wasm", "hash": "00", "size": 10 }},
+                "migrations": []
+            }}"#
+        )
+    }
+
+    #[test]
+    fn deserializes_handlers_slug() {
+        let manifest: BundleManifest =
+            serde_json::from_str(&manifest_json(r#""handlers": { "slug": "mero-chat" },"#))
+                .expect("manifest with handlers should deserialize");
+
+        let handlers = manifest.handlers.expect("handlers should be present");
+        assert_eq!(handlers.slug.as_deref(), Some("mero-chat"));
+    }
+
+    #[test]
+    fn handlers_defaults_to_none_when_absent() {
+        let manifest: BundleManifest = serde_json::from_str(&manifest_json(""))
+            .expect("manifest without handlers should deserialize");
+
+        assert!(
+            manifest.handlers.is_none(),
+            "handlers must default to None when the block is absent"
+        );
+    }
+
+    #[test]
+    fn handlers_absent_block_and_empty_slug_deserialize() {
+        // An empty `handlers: {}` block yields Some(handlers) with slug == None
+        // thanks to the field-level `#[serde(default)]`.
+        let manifest: BundleManifest =
+            serde_json::from_str(&manifest_json(r#""handlers": {},"#)).unwrap();
+        let handlers = manifest.handlers.expect("empty handlers block present");
+        assert!(handlers.slug.is_none());
+    }
+
+    /// The deep-link `handlers` field is a sibling of `metadata`, so it must NOT
+    /// leak into the display metadata JSON (which is what raw-wasm installs hash
+    /// into the application-id). This proves both that `metadata` is unchanged
+    /// and that the derived raw-wasm app-id is identical with vs without a
+    /// `handlers` block.
+    #[test]
+    fn handlers_does_not_affect_metadata_or_app_id() {
+        let with_handlers: BundleManifest =
+            serde_json::from_str(&manifest_json(r#""handlers": { "slug": "mero-chat" },"#))
+                .unwrap();
+        let without_handlers: BundleManifest = serde_json::from_str(&manifest_json("")).unwrap();
+
+        // 1. The serialized display metadata must be byte-for-byte identical.
+        let meta_with = with_handlers.to_metadata_json().unwrap();
+        let meta_without = without_handlers.to_metadata_json().unwrap();
+        assert_eq!(
+            meta_with, meta_without,
+            "handlers must not change the display metadata bytes"
+        );
+
+        // 2. Re-derive the raw-wasm application-id the same way
+        //    `NodeClient::install_raw_wasm` does — hash(bytecode, size, source,
+        //    metadata) — and assert it is identical for both manifests.
+        let bytecode = Hash::new(b"fake wasm bytecode");
+        let size: u64 = 18;
+        // `install_raw_wasm` stores the source as a string in `ApplicationMeta`,
+        // so hash the string form here.
+        let source = "file:///app.wasm".to_owned();
+
+        let derive = |metadata: &[u8]| -> ApplicationId {
+            let components = (&bytecode, size, &source, &metadata.to_vec());
+            ApplicationId::from(*Hash::hash_borsh(&components).unwrap())
+        };
+
+        assert_eq!(
+            derive(&meta_with),
+            derive(&meta_without),
+            "handlers must not change the derived raw-wasm application-id"
+        );
     }
 }

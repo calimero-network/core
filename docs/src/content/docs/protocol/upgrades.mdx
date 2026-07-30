@@ -78,16 +78,20 @@ content. A blob is treated as a bundle when it contains a `manifest.json` entry
 | `minRuntimeVersion` | floor on the node runtime (see the Aside above) |
 | `metadata` | display info — `name`, `description`, `icon`, `tags`, `license` |
 | `interfaces` | declared `exports` / `uses` intents |
-| `wasm` + `abi` | single-service artifacts, each a `{path, hash, size}` record |
+| `wasm` + `abi` | single-service artifacts, each a `{path, hash, size}` record; `hash` is required |
 | `services` | named multi-service modules; overrides `wasm` / `abi` when present and non-empty |
 | `migrations` | migration artifacts |
 | `links` | `frontend` / `github` / `docs` URLs |
 | `signature` | the Ed25519 signature object (below) |
 
-`package` and `appVersion` double as on-disk path components (the bundle extracts to
-`applications/{package}/{appVersion}/extracted`), so both are validated against path
-traversal when the manifest is parsed — a `package`, `appVersion`, or artifact path
-that escapes its directory is rejected
+Nothing is written out of the archive: the content-addressed blob is the only copy of
+a bundle's bytes, and it re-verifies its own content hashes on every read. Manifest
+parsing still rejects `package` and `appVersion` values that are not safe path
+components, and rejects any artifact path that is absolute or carries a `..` segment.
+That path check runs over *every* artifact the manifest declares - `wasm`, `abi`, each
+`services[].wasm` and `services[].abi`, and each `migrations[]` - enumerated by a
+single exhaustive destructure of the manifest, so a new artifact field stops compiling
+until it is classified
 (`crates/node/primitives/src/client/application/bundle.rs`).
 
 ### Signing
@@ -130,21 +134,64 @@ workspace tool under `tools/mero-sign`), not by the node or `meroctl` — the no
 *verifies*. `mero-sign` sets `signerId` from the key, canonicalizes, signs the
 payload, and writes the `signature` object back into the manifest.
 
-### Install trust split
+### Install trust
 
-Where a bundle comes from decides whether a signature is mandatory:
+Every install path requires a valid signature, whatever the bundle's source:
 
 | Path | Source | Signature |
 | --- | --- | --- |
-| `install-application` | registry / URL / stored `.mpk` blob | **required** — install bails on a missing or invalid signature (`install_verified_bundle`) |
-| `install-dev-application` | a local filesystem path | **optional** — verified if present; admitted as an unsigned dev build if absent (`install_dev_bundle`) |
+| `install-application` | registry / URL / stored `.mpk` blob | **required** |
+| `install-dev-application` | a local filesystem path | **required** |
 
-An unsigned dev bundle is given the synthetic signer `"dev:unsigned"` and a zero
-bundle hash, so it never collides with a real `did:key` update authority
-(`extract_manifest_allow_unsigned`,
-`crates/node/primitives/src/client/application/bundle.rs`). A signature that **is**
-present is verified on either path — an invalid one is always rejected. Either way the
-`minRuntimeVersion` floor documented above is still enforced.
+There is no unsigned path and no synthetic dev signer. A local dev build signs with
+the well-known dev key (`cargo mero bundle --dev`), so it carries a real `signerId`
+without the publisher having to generate one; a dev-signed bundle is still a signed
+bundle and goes through exactly the same verification.
+
+The signature also binds the wasm bytes. `VerifiedBundle` verifies the manifest
+signature, then checks each wasm artifact's SHA-256 against the `hash` the publisher
+signed and fails the install on a mismatch, so a mirror that swaps `app.wasm` under an
+otherwise untouched signed manifest is rejected
+(`crates/node/primitives/src/client/application/bundle.rs`). The artifact path is
+matched exactly and must be unique in the archive, so a decoy or duplicate entry
+cannot pass the check on behalf of the entry the node actually runs. `VerifiedBundle`
+is the only way to obtain artifact bytes at all, so there is no route that reads a
+`.mpk` without first clearing the signature.
+
+The scope of that guarantee is exactly the wasm artifacts. Everything else in the
+archive - the ABI, migrations, and any entry the manifest does not name - is
+path-validated but read back without a digest check. The `minRuntimeVersion` floor
+documented above is still enforced.
+
+Two size bounds apply to attacker-supplied bytes read *before* the signature clears.
+They are measured on decompressed output, so a compression bomb cannot get past them:
+the scan for `manifest.json` stops after 8 MiB, and the whole-archive read that serves
+artifact bytes stops after 512 MiB.
+
+<Aside type="caution" title="Two operational edges the E2E suite cannot catch">
+Every merobox node is the same build against fresh state, so neither of these shows
+up there: one needs data an older node wrote, the other needs a hand-built archive.
+
+**A bundle an older node admitted unsigned is no longer readable.** Signatures are
+now mandatory on every path, and the check runs on read, not just at install, so a
+`.mpk` blob already persisted without a valid signature fails when it is next opened,
+with `"manifest is missing required 'signature' field"`. Two paths surface that as a
+hard error: creating a group against an explicit `app_key`, and resolving an upgrade's
+migration parameters from the target blob. Two others degrade quietly instead: the
+displayed app version (`blob_app_version`) goes empty, and the affected blob is
+skipped from `list_application_versions`. The fix in every case is to reinstall the
+application from a signed bundle.
+
+**A `manifest.json` past 8 MiB of decompressed data classifies as "not a bundle".**
+Installing such an archive from a `.mpk` path reports the cap directly. Reading it
+back as a blob does not: the classifier that decides bundle-or-raw-wasm answers "not
+a bundle" when the scan trips the cap, so the blob is handed to the runtime as raw
+wasm and rejected there - a `.mpk` starts with the gzip magic `1f 8b` and can never
+be valid wasm. It fails closed either way, but on that second path the error names an
+instantiation failure rather than the cap. `cargo mero bundle` writes `manifest.json`
+as the archive's first entry, so bundles it produces are never affected; a bundle
+built by hand should place the manifest first.
+</Aside>
 
 ## What a migration is
 

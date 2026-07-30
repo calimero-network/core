@@ -4,13 +4,16 @@
 //! [`Data`](crate::entities::Data) trait so they can be persisted through the
 //! existing storage interface while being convenient to expose via FFI.
 
+use std::collections::BTreeSet;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate as calimero_storage;
 use crate::collections::{
     error::StoreError, AuthoredMap, AuthoredVector, Counter as StorageCounter, FrozenStorage,
-    LwwRegister as StorageLwwRegister, ReplicatedGrowableArray, SortedMap as StorageSortedMap,
-    SortedSet as StorageSortedSet, UnorderedMap, UnorderedSet, UserStorage, Vector,
+    LwwRegister as StorageLwwRegister, Op, ReplicatedGrowableArray, SharedStorage,
+    SortedMap as StorageSortedMap, SortedSet as StorageSortedSet, UnorderedMap, UnorderedSet,
+    UserStorage, Vector,
 };
 use crate::entities::{Element, Metadata};
 use crate::store::MainStorage;
@@ -1672,5 +1675,287 @@ impl JsAuthoredVector {
 impl Default for JsAuthoredVector {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The value type held inside a [`JsSharedStorage`].
+///
+/// `SharedStorage<T>` requires `T: Mergeable`, and a bare `Vec<u8>` is
+/// intentionally NOT `Mergeable` (primitive/byte types have no conflict-free
+/// merge rule). The byte value is therefore held in a last-write-wins register:
+/// concurrent writes from different writers converge deterministically by HLC
+/// timestamp. `Option` distinguishes "never written" (`None`) from a value that
+/// was explicitly set to the empty byte string (`Some(vec![])`).
+type SharedByteValue = StorageLwwRegister<Option<Vec<u8>>>;
+
+/// Group-writable single byte value with a rotatable writer set, exposed to
+/// JavaScript environments.
+///
+/// Wraps [`SharedStorage`] (`= PermissionedStorage<T, WriterSetAcl>`): any
+/// member of the writer set may read and [`set`](Self::set) the value, the
+/// writer set is rotatable by a current writer via
+/// [`rotate_writers`](Self::rotate_writers), and every write is verified at
+/// merge against the current set. A non-writer's `set`/`rotate_writers` is
+/// rejected with `ActionNotAllowed` at the API surface (and, authoritatively, at
+/// merge). The current executor identity is resolved from `env::executor_id()`,
+/// which the runtime installs per-execution — no identity argument is threaded
+/// through the byte API.
+///
+/// The byte value rides an LWW register (see [`SharedByteValue`]) so concurrent
+/// writes converge. OpMask per-writer capabilities and `SharedStorage<Collection>`
+/// nesting are intentionally NOT exposed here (deferred to a follow-up).
+#[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
+pub struct JsSharedStorage {
+    shared: SharedStorage<SharedByteValue>,
+
+    #[storage]
+    storage: Element,
+}
+
+impl JsSharedStorage {
+    /// Creates a new group-writable byte cell with the given initial writer set.
+    ///
+    /// `writers` are 32-byte public keys; `frozen` permanently rejects writer-set
+    /// rotation when `true` (genesis-immutable).
+    #[must_use]
+    pub fn new(writers: Vec<[u8; 32]>, frozen: bool) -> Self {
+        Self {
+            shared: SharedStorage::new(writer_set(writers), frozen),
+            storage: Element::new(None),
+        }
+    }
+
+    /// Rehydrates a shared byte cell using a known identifier.
+    ///
+    /// Mirrors the other `new_with_id` wrappers: the runtime persists the freshly
+    /// created instance immediately so subsequent loads succeed. Two handles
+    /// built at the same id address the same backing storage.
+    #[must_use]
+    pub fn new_with_id(id: Id, writers: Vec<[u8; 32]>, frozen: bool) -> Self {
+        Self {
+            shared: SharedStorage::new(writer_set(writers), frozen),
+            storage: Element::new(Some(id)),
+        }
+    }
+
+    /// Returns the unique identifier of this collection.
+    #[must_use]
+    pub fn id(&self) -> Id {
+        self.storage.id()
+    }
+
+    /// Replaces the value. The executor must be in the current writer set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] with `ActionNotAllowed` if the current executor is
+    /// not a writer, or any underlying storage error.
+    pub fn set(&mut self, value: &[u8]) -> Result<(), StoreError> {
+        self.storage.update();
+        let _previous = self
+            .shared
+            .insert(StorageLwwRegister::new(Some(value.to_vec())))?;
+        Ok(())
+    }
+
+    /// Returns the current value, or `None` if nothing has been written yet.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] when the underlying value read fails.
+    pub fn get(&self) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(self.shared.get()?.get().clone())
+    }
+
+    /// Returns the current writer set as 32-byte public keys.
+    #[must_use]
+    pub fn writers(&self) -> Vec<[u8; 32]> {
+        self.shared
+            .writers()
+            .into_iter()
+            .map(|pk| *pk.as_ref())
+            .collect()
+    }
+
+    /// Returns whether the current executor is in the writer set (may `set`).
+    #[must_use]
+    pub fn writable_by_me(&self) -> bool {
+        let me: PublicKey = crate::env::executor_id().into();
+        self.shared.can(&me, Op::Write)
+    }
+
+    /// Returns whether the writer set is frozen (rotation permanently rejected).
+    #[must_use]
+    pub fn is_frozen(&self) -> bool {
+        self.shared.is_frozen()
+    }
+
+    /// Rotates the writer set. Must be called by a current writer; rejected if
+    /// frozen or if `writers` is empty. Authenticated at merge.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] with `ActionNotAllowed` if frozen, if `writers` is
+    /// empty, or if the current executor is not a current writer.
+    pub fn rotate_writers(&mut self, writers: Vec<[u8; 32]>) -> Result<(), StoreError> {
+        self.storage.update();
+        self.shared.rotate_writers(writer_set(writers))
+    }
+
+    /// Persists the shared cell using the provided interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] produced by the storage interface.
+    pub fn save(&mut self) -> Result<bool, StorageError> {
+        Interface::<MainStorage>::save(self)
+    }
+
+    /// Loads a shared cell by identifier using the provided interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if the shared cell cannot be fetched from storage.
+    pub fn load(id: Id) -> Result<Option<Self>, StorageError> {
+        Interface::<MainStorage>::find_by_id::<Self>(id)
+    }
+}
+
+/// Decodes a list of 32-byte public keys into the `BTreeSet<PublicKey>` the
+/// writer-set constructors take.
+fn writer_set(writers: Vec<[u8; 32]>) -> BTreeSet<PublicKey> {
+    writers.into_iter().map(PublicKey::from).collect()
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod roundtrip_tests {
+    use serial_test::serial;
+
+    use super::{JsAuthoredMap, JsAuthoredVector, JsVector};
+    use crate::address::Id;
+    use crate::entities::{ChildInfo, Metadata};
+    use crate::index::Index;
+    use crate::store::MainStorage;
+    use crate::{env, Interface, StorageError};
+
+    const ALICE: [u8; 32] = [0x11; 32];
+
+    /// Establish the ROOT index so the wrapper can attach the collection as a
+    /// child of root, mirroring what the runtime's `save_js_*_instance` helpers
+    /// do on `CannotCreateOrphan`.
+    fn ensure_root_index() {
+        if let Ok(None) = Index::<MainStorage>::get_hashes_for(Id::root()) {
+            let metadata = Metadata::new(0, 0);
+            Index::<MainStorage>::add_root(ChildInfo::new(Id::root(), [0; 32], metadata))
+                .expect("add root index");
+        }
+    }
+
+    /// Persist a wrapper, attaching it under ROOT on the first
+    /// `CannotCreateOrphan` — exactly what the runtime `save_js_*_instance`
+    /// helpers do.
+    fn save_wrapper<D: crate::entities::Data>(entity: &mut D) {
+        match Interface::<MainStorage>::save(entity) {
+            Ok(_) => {}
+            Err(StorageError::CannotCreateOrphan(_)) => {
+                ensure_root_index();
+                Interface::<MainStorage>::add_child_to(Id::root(), entity).expect("attach to root");
+            }
+            Err(err) => panic!("save: {err:?}"),
+        }
+    }
+
+    /// Exact bytes `serialize("hello")` produces on the JS side (borsh string:
+    /// `len:u32 (LE) + utf8 bytes`).
+    const HELLO_BORSH: &[u8] = &[0x05, 0x00, 0x00, 0x00, b'h', b'e', b'l', b'l', b'o'];
+
+    #[test]
+    #[serial]
+    fn js_vector_value_roundtrips_byte_identically() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        ensure_root_index();
+
+        let mut v = JsVector::new();
+        v.push(HELLO_BORSH).expect("push");
+        let id = v.id();
+        save_wrapper(&mut v);
+
+        let loaded = JsVector::load(id).expect("load").expect("present");
+        assert_eq!(
+            loaded.get(0).unwrap().as_deref(),
+            Some(HELLO_BORSH),
+            "JsVector get must return exactly the pushed bytes"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn js_authored_vector_iter_roundtrips_byte_identically() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        ensure_root_index();
+
+        let mut v = JsAuthoredVector::new();
+        let idx = v.push(HELLO_BORSH).expect("push");
+        assert_eq!(idx, 0);
+        let id = v.id();
+        save_wrapper(&mut v);
+
+        let loaded = JsAuthoredVector::load(id).expect("load").expect("present");
+
+        // get() round-trip.
+        assert_eq!(
+            loaded.get(0).unwrap().as_deref(),
+            Some(HELLO_BORSH),
+            "AuthoredVector get returned bytes differ from pushed bytes"
+        );
+
+        // iter() round-trip — this is the exact path the JS `toArray()` hits.
+        let values: Vec<Vec<u8>> = loaded.iter().unwrap();
+        assert_eq!(values.len(), 1);
+        assert_eq!(
+            values[0].as_slice(),
+            HELLO_BORSH,
+            "AuthoredVector iter returned bytes differ from pushed bytes"
+        );
+
+        // Ownership must still be tracked via metadata.
+        assert_eq!(loaded.owner_of(0).unwrap(), Some(ALICE));
+        assert!(loaded.owned_by_me(0).unwrap());
+    }
+
+    #[test]
+    #[serial]
+    fn js_authored_map_value_roundtrips_byte_identically() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        ensure_root_index();
+
+        let key = b"post-1";
+        let mut m = JsAuthoredMap::new();
+        m.insert(key, HELLO_BORSH).expect("insert");
+        let id = m.id();
+        save_wrapper(&mut m);
+
+        let loaded = JsAuthoredMap::load(id).expect("load").expect("present");
+
+        assert_eq!(
+            loaded.get(key).unwrap().as_deref(),
+            Some(HELLO_BORSH),
+            "AuthoredMap get returned bytes differ from inserted bytes"
+        );
+
+        let entries = loaded.entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0.as_slice(), key);
+        assert_eq!(
+            entries[0].1.as_slice(),
+            HELLO_BORSH,
+            "AuthoredMap entries returned bytes differ from inserted bytes"
+        );
+
+        assert_eq!(loaded.owner_of(key).unwrap(), Some(ALICE));
+        assert!(loaded.owned_by_me(key).unwrap());
     }
 }

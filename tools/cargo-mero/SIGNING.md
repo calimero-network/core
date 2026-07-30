@@ -26,9 +26,6 @@ A private Ed25519 key that only you hold.
 Use it for anything you publish or install against a registry.
 Generate one with `cargo mero key generate` (below).
 
-`cargo mero bundle` also accepts `--unsigned`, which skips signing entirely.
-An unsigned bundle cannot be published to or installed from a registry.
-
 ## Generating and storing a production key
 
 ```bash
@@ -49,7 +46,7 @@ Treat the key file the way you would treat any signing credential:
   Keep key files out of the repository (the scaffold's `.gitignore` already ignores them; if you store one elsewhere, add its path).
 - **In CI, inject it, do not check it in.**
   Point `cargo mero bundle` at a key file through the `MERO_SIGN_KEY` environment variable instead of `--key`.
-  When none of `--key` / `--dev` / `--unsigned` is passed, `bundle` reads `MERO_SIGN_KEY` as the path to a key file, so a CI job can materialize the key from a secret at build time and set the variable:
+  When none of `--key` / `--dev` is passed, `bundle` reads `MERO_SIGN_KEY` as the path to a key file, so a CI job can materialize the key from a secret at build time and set the variable:
 
   ```bash
   export MERO_SIGN_KEY="$RUNNER_TEMP/mero-key.json"

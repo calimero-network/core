@@ -1,5 +1,6 @@
 //! Storage operations.
 
+use calimero_primitives::utils::prefix_upper_bound;
 use sha2::{Digest, Sha256};
 
 use crate::address::Id;
@@ -193,6 +194,24 @@ pub trait StorageAdaptor: 'static {
         let _ = collection;
         None
     }
+
+    /// Clear `collection`'s ordered-index validity marker (see
+    /// [`index_meta_put`](Self::index_meta_put)), forcing the next ordered read
+    /// to rebuild the index. This is the *invalidate-on-sync* primitive: the
+    /// apply/merge path calls it whenever it links or unlinks a child of a
+    /// collection outside `Collection::insert` (which never touches the marker),
+    /// so a `SortedSet`/`SortedMap` whose element set changed under sync rebuilds
+    /// its ordered index on the next read instead of trusting a marker that ran
+    /// ahead of the enumerable child list. Clearing a collection that has no
+    /// marker (any non-sorted collection) is a harmless no-op, so the caller need
+    /// not — and must not — try to detect whether the collection is sorted.
+    /// Returns whether the write was persisted. The inert default is never
+    /// reached on the invalidation path (gated on
+    /// [`index_supported`](Self::index_supported)).
+    fn index_meta_clear(collection: Id) -> bool {
+        let _ = collection;
+        false
+    }
 }
 
 /// Storage iteration support for GC and snapshots.
@@ -349,6 +368,10 @@ impl StorageAdaptor for MainStorage {
     fn index_meta_get(collection: Id) -> Option<Vec<u8>> {
         crate::env::storage_index_meta_get(collection.as_bytes())
     }
+
+    fn index_meta_clear(collection: Id) -> bool {
+        crate::env::storage_index_meta_clear(collection.as_bytes())
+    }
 }
 
 /// Build the ordered-index composite key `collection_id ‖ order_key`.
@@ -357,23 +380,6 @@ fn index_key(collection: Id, order_key: &[u8]) -> Vec<u8> {
     key.extend_from_slice(collection.as_bytes());
     key.extend_from_slice(order_key);
     key
-}
-
-/// The exclusive upper bound for a byte prefix: the smallest key that does NOT
-/// start with `prefix` (used to scan "all keys under this prefix"). For the
-/// all-`0xFF` corner (astronomically unlikely for a 32-byte id) we fall back to
-/// a longer all-`0xFF` key, which still bounds the scan.
-fn prefix_upper_bound(prefix: &[u8]) -> Vec<u8> {
-    let mut end = prefix.to_vec();
-    while let Some(last) = end.last_mut() {
-        if *last == 0xFF {
-            let _ = end.pop();
-        } else {
-            *last += 1;
-            return end;
-        }
-    }
-    vec![0xFF; prefix.len() + 1]
 }
 
 /// Map raw `(composite_key, entry_id_bytes)` scan hits back to
@@ -741,6 +747,13 @@ pub mod mocked {
 
         fn index_meta_get(collection: Id) -> Option<Vec<u8>> {
             INDEX_META.with(|meta| meta.borrow().get(&(SCOPE, collection)).cloned())
+        }
+
+        fn index_meta_clear(collection: Id) -> bool {
+            INDEX_META.with(|meta| {
+                let _ = meta.borrow_mut().remove(&(SCOPE, collection));
+            });
+            true
         }
     }
 
