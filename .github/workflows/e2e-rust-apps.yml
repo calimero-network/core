@@ -200,6 +200,14 @@ jobs:
           - workflow: frozen-rga-convergence
             file: workflows/frozen-rga-convergence.yml
             app: scaffolding-e2e
+          # #3333: after two nodes concurrently add distinct SortedSet elements,
+          # membership (`contains`)/`len` converge but ORDERED reads (`iter`)
+          # may not. Runs on a merod:local built from this branch (carrying the
+          # `sorted_index_dbg` trace); the ordered-read assertion is the
+          # discriminator. Converges here => the divergence is JS-path-specific.
+          - workflow: sorted-set-concurrent-convergence
+            file: workflows/sorted-set-concurrent-convergence.yml
+            app: scaffolding-e2e
           - workflow: groups
             file: workflows/groups.yml
             app: scaffolding-e2e

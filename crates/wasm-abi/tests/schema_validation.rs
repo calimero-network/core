@@ -306,3 +306,41 @@ fn test_schema_validation_events() {
         validation_result.err().map(|e| e.collect::<Vec<_>>())
     );
 }
+
+#[test]
+fn test_schema_validation_tuple() {
+    // `wasm-abi.schema.json` is hand-maintained, so a new CollectionType is only
+    // really shipped once the mirror describes it. `additionalProperties: false`
+    // on each collection branch means an undescribed `tuple` is rejected here.
+    let schema_json = include_str!("../wasm-abi.schema.json");
+    let schema_value: Value = serde_json::from_str(schema_json).unwrap();
+    let schema = JSONSchema::compile(&schema_value).unwrap();
+
+    let mut manifest = calimero_wasm_abi::schema::Manifest {
+        schema_version: "wasm-abi/1".to_string(),
+        ..Default::default()
+    };
+    manifest.methods.push(calimero_wasm_abi::schema::Method {
+        name: "sorted_scores_range".to_string(),
+        params: vec![],
+        returns: Some(calimero_wasm_abi::schema::TypeRef::list(
+            calimero_wasm_abi::schema::TypeRef::tuple(vec![
+                calimero_wasm_abi::schema::TypeRef::string(),
+                calimero_wasm_abi::schema::TypeRef::u64(),
+            ]),
+        )),
+        returns_nullable: None,
+        errors: vec![],
+        intent: MethodIntent::ReadOnly,
+        xcall_callable: false,
+        xcall_callers: Default::default(),
+    });
+
+    let manifest_json = serde_json::to_value(&manifest).unwrap();
+    let validation_result = schema.validate(&manifest_json);
+    assert!(
+        validation_result.is_ok(),
+        "Schema validation failed: {:?}",
+        validation_result.err().map(|e| e.collect::<Vec<_>>())
+    );
+}

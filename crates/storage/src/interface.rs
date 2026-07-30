@@ -2135,6 +2135,35 @@ impl<S: StorageAdaptor> Interface<S> {
                     }
                 }
 
+                // Invalidate-on-sync: this apply links `id` as a child of
+                // `parent` outside `Collection::insert`, so it mutates the
+                // parent's enumerable child set without touching the parent's
+                // node-local ordered index or its validity marker. If `parent`
+                // is a `SortedSet`/`SortedMap`, a marker left stamped to a
+                // `full_hash` that ran ahead of the child list would let the next
+                // ordered read serve a stale subset forever (sdk-js#87). Clear
+                // the parent's marker unconditionally so the next ordered read
+                // rebuilds the index once from the converged child set. This is
+                // done BEFORE `save_internal` so it also fires on the idempotent
+                // re-delivery path below (where `save_internal` returns `None`
+                // and this arm returns early). Clearing a non-sorted parent's
+                // marker is a no-op, so no "is this sorted?" check is needed.
+                if let Some(parent) = parent {
+                    tracing::debug!(
+                        target: "calimero_storage::sorted_index_dbg",
+                        child = %id,
+                        parent = %parent.id(),
+                        "APPLY_ADD clearing parent marker"
+                    );
+                    let _ = S::index_meta_clear(parent.id());
+                } else {
+                    tracing::debug!(
+                        target: "calimero_storage::sorted_index_dbg",
+                        child = %id,
+                        "APPLY_ADD parent=None, marker clear SKIPPED"
+                    );
+                }
+
                 // Save data (might merge, producing different hash)
                 let Some((_, _full_hash)) = Self::save_internal(id, &data, metadata.clone())?
                 else {
@@ -2432,6 +2461,20 @@ impl<S: StorageAdaptor> Interface<S> {
             // Remove child from parent's children list and recalculate hashes
             <Index<S>>::update_parent_after_child_removal(parent_id, id)?;
             <Index<S>>::recalculate_ancestor_hashes_for(parent_id)?;
+            // Invalidate-on-sync (mirror of the add path in `apply_action`): a
+            // synced delete unlinks a child from `parent_id` outside
+            // `Collection::insert`, changing the enumerable child set without
+            // touching the parent's node-local ordered index / marker. Clear the
+            // marker so a `SortedSet`/`SortedMap` rebuilds its ordered index on
+            // the next read rather than serving the removed element. No-op for a
+            // non-sorted parent.
+            tracing::debug!(
+                target: "calimero_storage::sorted_index_dbg",
+                child = %id,
+                parent = %parent_id,
+                "APPLY_DELETE clearing parent marker"
+            );
+            let _ = S::index_meta_clear(parent_id);
         }
 
         Ok(())

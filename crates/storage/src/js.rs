@@ -1674,3 +1674,136 @@ impl Default for JsAuthoredVector {
         Self::new()
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod roundtrip_tests {
+    use serial_test::serial;
+
+    use super::{JsAuthoredMap, JsAuthoredVector, JsVector};
+    use crate::address::Id;
+    use crate::entities::{ChildInfo, Metadata};
+    use crate::index::Index;
+    use crate::store::MainStorage;
+    use crate::{env, Interface, StorageError};
+
+    const ALICE: [u8; 32] = [0x11; 32];
+
+    /// Establish the ROOT index so the wrapper can attach the collection as a
+    /// child of root, mirroring what the runtime's `save_js_*_instance` helpers
+    /// do on `CannotCreateOrphan`.
+    fn ensure_root_index() {
+        if let Ok(None) = Index::<MainStorage>::get_hashes_for(Id::root()) {
+            let metadata = Metadata::new(0, 0);
+            Index::<MainStorage>::add_root(ChildInfo::new(Id::root(), [0; 32], metadata))
+                .expect("add root index");
+        }
+    }
+
+    /// Persist a wrapper, attaching it under ROOT on the first
+    /// `CannotCreateOrphan` — exactly what the runtime `save_js_*_instance`
+    /// helpers do.
+    fn save_wrapper<D: crate::entities::Data>(entity: &mut D) {
+        match Interface::<MainStorage>::save(entity) {
+            Ok(_) => {}
+            Err(StorageError::CannotCreateOrphan(_)) => {
+                ensure_root_index();
+                Interface::<MainStorage>::add_child_to(Id::root(), entity).expect("attach to root");
+            }
+            Err(err) => panic!("save: {err:?}"),
+        }
+    }
+
+    /// Exact bytes `serialize("hello")` produces on the JS side (borsh string:
+    /// `len:u32 (LE) + utf8 bytes`).
+    const HELLO_BORSH: &[u8] = &[0x05, 0x00, 0x00, 0x00, b'h', b'e', b'l', b'l', b'o'];
+
+    #[test]
+    #[serial]
+    fn js_vector_value_roundtrips_byte_identically() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        ensure_root_index();
+
+        let mut v = JsVector::new();
+        v.push(HELLO_BORSH).expect("push");
+        let id = v.id();
+        save_wrapper(&mut v);
+
+        let loaded = JsVector::load(id).expect("load").expect("present");
+        assert_eq!(
+            loaded.get(0).unwrap().as_deref(),
+            Some(HELLO_BORSH),
+            "JsVector get must return exactly the pushed bytes"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn js_authored_vector_iter_roundtrips_byte_identically() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        ensure_root_index();
+
+        let mut v = JsAuthoredVector::new();
+        let idx = v.push(HELLO_BORSH).expect("push");
+        assert_eq!(idx, 0);
+        let id = v.id();
+        save_wrapper(&mut v);
+
+        let loaded = JsAuthoredVector::load(id).expect("load").expect("present");
+
+        // get() round-trip.
+        assert_eq!(
+            loaded.get(0).unwrap().as_deref(),
+            Some(HELLO_BORSH),
+            "AuthoredVector get returned bytes differ from pushed bytes"
+        );
+
+        // iter() round-trip — this is the exact path the JS `toArray()` hits.
+        let values: Vec<Vec<u8>> = loaded.iter().unwrap();
+        assert_eq!(values.len(), 1);
+        assert_eq!(
+            values[0].as_slice(),
+            HELLO_BORSH,
+            "AuthoredVector iter returned bytes differ from pushed bytes"
+        );
+
+        // Ownership must still be tracked via metadata.
+        assert_eq!(loaded.owner_of(0).unwrap(), Some(ALICE));
+        assert!(loaded.owned_by_me(0).unwrap());
+    }
+
+    #[test]
+    #[serial]
+    fn js_authored_map_value_roundtrips_byte_identically() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        ensure_root_index();
+
+        let key = b"post-1";
+        let mut m = JsAuthoredMap::new();
+        m.insert(key, HELLO_BORSH).expect("insert");
+        let id = m.id();
+        save_wrapper(&mut m);
+
+        let loaded = JsAuthoredMap::load(id).expect("load").expect("present");
+
+        assert_eq!(
+            loaded.get(key).unwrap().as_deref(),
+            Some(HELLO_BORSH),
+            "AuthoredMap get returned bytes differ from inserted bytes"
+        );
+
+        let entries = loaded.entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0.as_slice(), key);
+        assert_eq!(
+            entries[0].1.as_slice(),
+            HELLO_BORSH,
+            "AuthoredMap entries returned bytes differ from inserted bytes"
+        );
+
+        assert_eq!(loaded.owner_of(key).unwrap(), Some(ALICE));
+        assert!(loaded.owned_by_me(key).unwrap());
+    }
+}

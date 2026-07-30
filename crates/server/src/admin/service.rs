@@ -20,8 +20,8 @@ use tracing::info;
 use super::handlers::{alias, blob, groups, namespaces, tee};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::applications::{
-    get_application, install_application, install_dev_application, list_application_versions,
-    list_applications, uninstall_application,
+    get_application, get_application_abi, install_application, install_dev_application,
+    list_application_versions, list_applications, uninstall_application,
 };
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_group, get_context_identities,
@@ -99,6 +99,10 @@ pub(crate) fn setup(
         .route(
             "/applications/:application_id",
             get(get_application::handler).delete(uninstall_application::handler),
+        )
+        .route(
+            "/applications/:application_id/abi",
+            get(get_application_abi::handler),
         )
         .route(
             "/applications/:application_id/versions",

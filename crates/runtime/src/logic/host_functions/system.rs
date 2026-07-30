@@ -11,7 +11,7 @@ use crate::{
     logic::{sys, VMHostFunctions, VMLogicError, VMLogicResult},
 };
 use calimero_primitives::common::DIGEST_SIZE;
-use calimero_storage::env::{with_runtime_env, RuntimeEnv};
+use calimero_storage::env::{with_runtime_env, IndexCallbacks, RuntimeEnv};
 use calimero_storage::{
     address::Id, entities::Metadata, index::Index, interface::Interface, store::MainStorage,
 };
@@ -48,6 +48,14 @@ pub(super) fn build_runtime_env(
     //         this `RuntimeEnv` is installed via `with_runtime_env`, which
     //         happens strictly within the host call that created it (see the
     //         per-closure safety notes below).
+    // Whether this backend actually persists the ordered index (only the real
+    // `ContextStorage` does). Captured via the `&mut` borrow before it is erased
+    // into the raw pointer below, so the bridge is installed only when it has a
+    // real target — test mocks (`SimpleMockStorage`, which implements just
+    // get/set/remove/has) return `false` and keep using `calimero-storage`'s
+    // process-thread-local index mock, exactly as before this bridge existed.
+    let wants_index = storage.supports_index();
+
     let raw_ptr: *mut dyn RuntimeStorage = storage;
     let raw_static: *mut (dyn RuntimeStorage + 'static) = unsafe { mem::transmute(raw_ptr) };
     let storage_cell = Rc::new(Cell::new(raw_static));
@@ -93,7 +101,73 @@ pub(super) fn build_runtime_env(
     //   the storage crate falls back to its default environment, so subsequent
     //   calls that do not install an override will continue to use the mock /
     //   WASM backends.
-    RuntimeEnv::new(reader, writer, remover, context_id, executor_id)
+
+    let base = RuntimeEnv::new(reader, writer, remover, context_id, executor_id);
+
+    // Only bridge the ordered index when the backend actually persists it (the
+    // real `ContextStorage`). A backend that doesn't (test mocks) leaves the
+    // bridge off, so native `SortedSet`/`SortedMap` index ops fall back to
+    // `calimero-storage`'s process-thread-local mock — the pre-bridge behaviour
+    // the runtime unit tests rely on.
+    if !wants_index {
+        return base;
+    }
+
+    // Ordered-index bridge: route the node-local ordered index + validity marker
+    // to the SAME `ContextStorage` (its `Column::SortedIndex`/`SortedIndexMeta`).
+    // Without this, a host-side `SortedSet`/`SortedMap` (the JS SDK path, and
+    // native `apply_action`) would hit the storage crate's process-thread-local
+    // mock instead of the durable, context-scoped columns — so an ordered read
+    // and its sync-apply marker clear could target different stores and a
+    // converged set could stay stale on the ordered readers (sdk-js#87). Every
+    // closure dereferences the same exclusive `storage` pointer as the callbacks
+    // above; the same safety reasoning applies.
+    let index = {
+        macro_rules! idx_cell {
+            () => {{
+                Rc::clone(&storage_cell)
+            }};
+        }
+        let set_cell = idx_cell!();
+        let remove_cell = idx_cell!();
+        let remove_prefix_cell = idx_cell!();
+        let scan_cell = idx_cell!();
+        let last_cell = idx_cell!();
+        let meta_set_cell = idx_cell!();
+        let meta_get_cell = idx_cell!();
+        let meta_clear_cell = idx_cell!();
+        IndexCallbacks {
+            // SAFETY (every closure): the VM holds exclusive access to
+            // `logic.storage` for the duration of the host call, the only time
+            // these run — same invariant as the read/write/remove closures above.
+            set: Rc::new(move |key: &[u8], value: &[u8]| unsafe {
+                (&mut *set_cell.get()).index_set(key, value)
+            }),
+            remove: Rc::new(move |key: &[u8]| unsafe { (&mut *remove_cell.get()).index_del(key) }),
+            remove_prefix: Rc::new(move |prefix: &[u8]| unsafe {
+                (&mut *remove_prefix_cell.get()).index_del_prefix(prefix)
+            }),
+            scan: Rc::new(
+                move |lo: &[u8], hi: &[u8], offset: usize, limit: Option<usize>| unsafe {
+                    (&*scan_cell.get()).index_scan(lo, hi, offset, limit)
+                },
+            ),
+            last: Rc::new(move |lo: &[u8], hi: &[u8]| unsafe {
+                (&*last_cell.get()).index_last(lo, hi)
+            }),
+            meta_set: Rc::new(move |key: &[u8], value: &[u8]| unsafe {
+                (&mut *meta_set_cell.get()).index_meta_set(key, value)
+            }),
+            meta_get: Rc::new(move |key: &[u8]| unsafe {
+                (&*meta_get_cell.get()).index_meta_get(key)
+            }),
+            meta_clear: Rc::new(move |key: &[u8]| unsafe {
+                (&mut *meta_clear_cell.get()).index_meta_del(key)
+            }),
+        }
+    };
+
+    base.with_index(index)
 }
 
 thread_local! {
