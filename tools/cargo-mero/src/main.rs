@@ -82,6 +82,9 @@ struct BuildArgs {
     /// Path to the app's Cargo.toml
     #[arg(long)]
     manifest_path: Option<Utf8PathBuf>,
+
+    #[command(flatten)]
+    features: workspace::FeatureArgs,
 }
 
 #[derive(clap::Args)]
@@ -126,6 +129,9 @@ struct BundleArgs {
     /// Path to the app's Cargo.toml
     #[arg(long)]
     manifest_path: Option<Utf8PathBuf>,
+
+    #[command(flatten)]
+    features: workspace::FeatureArgs,
 }
 
 // These mirror the standalone mero-abi / mero-sign binaries rather than sharing
@@ -335,6 +341,26 @@ mod tests {
             "Cargo.toml"
         ])
         .is_ok());
+    }
+
+    #[test]
+    fn feature_flags_parse_on_both_build_and_bundle() {
+        // Cargo's own spelling: comma or space separated, and repeatable.
+        for cmd in ["build", "bundle"] {
+            assert!(Cargo::try_parse_from(["cargo", "mero", cmd, "--features", "a,b"]).is_ok());
+            assert!(Cargo::try_parse_from(["cargo", "mero", cmd, "--features", "a b"]).is_ok());
+            assert!(Cargo::try_parse_from([
+                "cargo",
+                "mero",
+                cmd,
+                "--features",
+                "a",
+                "--features",
+                "b",
+                "--no-default-features"
+            ])
+            .is_ok());
+        }
     }
 
     #[test]

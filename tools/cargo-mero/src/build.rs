@@ -45,7 +45,7 @@ pub fn run_all(args: &BuildArgs) -> Result<Vec<BuiltWasm>> {
 }
 
 fn run_inner(args: &BuildArgs, all_services: bool) -> Result<Vec<BuiltWasm>> {
-    let metadata = workspace::metadata_for(args.manifest_path.as_deref())?;
+    let metadata = workspace::metadata_for(args.manifest_path.as_deref(), &args.features)?;
 
     let profiling =
         args.profiling || matches!(std::env::var("WASM_PROFILING").as_deref(), Ok("true"));
@@ -59,9 +59,11 @@ fn run_inner(args: &BuildArgs, all_services: bool) -> Result<Vec<BuiltWasm>> {
     ensure_wasm_target()?;
     ensure_profile(&metadata.workspace_root, profile)?;
 
+    cargo_build(&targets, profile, args)?;
+
     let mut built = Vec::with_capacity(targets.len());
     for target in targets {
-        built.push(build_one(&metadata, &target, profile, !profiling, args)?);
+        built.push(build_one(&metadata, &target, profile, !profiling)?);
     }
     Ok(built)
 }
@@ -380,13 +382,9 @@ fn build_one(
     target: &Target,
     profile: &str,
     optimize: bool,
-    args: &BuildArgs,
 ) -> Result<BuiltWasm> {
     let crate_name = &target.crate_name;
     let underscored = crate_name.replace('-', "_");
-
-    println!("• building {crate_name} (--profile {profile})");
-    cargo_build(crate_name, profile, args)?;
 
     let artifact = metadata
         .target_directory
@@ -457,18 +455,21 @@ fn canonicalize_abi(manifest: &mut serde_json::Value) {
     }
 }
 
-fn cargo_build(crate_name: &str, profile: &str, args: &BuildArgs) -> Result<()> {
+/// Compile every target in one invocation. Cargo rejects a plain `--features`
+/// naming a feature the one selected package lacks, but accepts it whenever some
+/// selected package has it - and a multi-service workspace routinely gates only
+/// one service's schema.
+fn cargo_build(targets: &[Target], profile: &str, args: &BuildArgs) -> Result<()> {
+    let names: Vec<&str> = targets.iter().map(|t| t.crate_name.as_str()).collect();
+    println!("• building {} (--profile {profile})", names.join(", "));
+
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let mut cmd = Command::new(cargo);
-    cmd.args([
-        "build",
-        "--target",
-        TARGET,
-        "--profile",
-        profile,
-        "-p",
-        crate_name,
-    ]);
+    cmd.args(["build", "--target", TARGET, "--profile", profile]);
+    for name in &names {
+        cmd.args(["-p", name]);
+    }
+    args.features.apply_to(&mut cmd);
     if let Some(mp) = &args.manifest_path {
         cmd.arg("--manifest-path").arg(mp);
     }
@@ -476,7 +477,7 @@ fn cargo_build(crate_name: &str, profile: &str, args: &BuildArgs) -> Result<()> 
 
     let status = cmd.status().wrap_err("failed to spawn `cargo build`")?;
     if !status.success() {
-        bail!("`cargo build` failed for `{crate_name}`");
+        bail!("`cargo build` failed for `{}`", names.join(", "));
     }
     Ok(())
 }
@@ -576,22 +577,59 @@ mod tests {
     "#;
 
     /// Write `sources` into `<root>/src` and emit into `<root>/res`.
-    fn emit_into(root: &Utf8PathBuf, sources: &[(&str, &str)]) -> Utf8PathBuf {
+    fn emit_into(
+        root: &Utf8PathBuf,
+        sources: &[(&str, &str)],
+        features: &BTreeSet<String>,
+    ) -> Utf8PathBuf {
         std::fs::create_dir_all(root.join("src")).unwrap();
         for (name, body) in sources {
             std::fs::write(root.join("src").join(name), body).unwrap();
         }
         let res = root.join("res");
         std::fs::create_dir_all(&res).unwrap();
-        emit_abi(root, &res, &BTreeSet::new()).expect("emit_abi");
+        emit_abi(root, &res, features).expect("emit_abi");
         res
+    }
+
+    /// A `#[cfg(feature)]`-gated state root must reach the ABI only when that
+    /// feature is active: `--features` picks the schema the wasm is compiled
+    /// with, and the embedded ABI has to describe that same schema.
+    #[test]
+    fn emit_abi_follows_the_active_feature_set() {
+        const VERSIONED_APP: &str = r#"
+            #[cfg(not(feature = "schema_v2"))]
+            #[app::state(version = 1)]
+            pub struct State { x: u32 }
+            #[cfg(feature = "schema_v2")]
+            #[app::state(version = 2)]
+            pub struct StateV2 { x: u32, y: u32 }
+            #[app::logic]
+            impl State {
+                #[app::init] pub fn init() -> State { State { x: 0 } }
+            }
+        "#;
+
+        let state_root = |features: &BTreeSet<String>| {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+            let res = emit_into(&root, &[("lib.rs", VERSIONED_APP)], features);
+            let schema: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(res.join("state-schema.json")).unwrap())
+                    .unwrap();
+            schema["state_root"].as_str().unwrap().to_owned()
+        };
+
+        assert_eq!(state_root(&BTreeSet::new()), "State");
+        let on: BTreeSet<String> = ["schema_v2".to_owned()].into_iter().collect();
+        assert_eq!(state_root(&on), "StateV2");
     }
 
     #[test]
     fn emit_abi_writes_both_artifacts() {
         let tmp = tempfile::tempdir().unwrap();
         let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
-        let res = emit_into(&root, &[("lib.rs", MINIMAL_APP)]);
+        let res = emit_into(&root, &[("lib.rs", MINIMAL_APP)], &BTreeSet::new());
 
         let abi: serde_json::Value =
             serde_json::from_slice(&std::fs::read(res.join("abi.json")).unwrap()).unwrap();
