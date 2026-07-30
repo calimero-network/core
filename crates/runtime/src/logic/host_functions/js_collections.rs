@@ -3780,6 +3780,19 @@ impl VMHostFunctions<'_> {
     /// multiple of 32.
     fn read_writer_set(&mut self, ptr: u64) -> VMLogicResult<Result<Vec<[u8; 32]>, String>> {
         let bytes = self.read_buffer(ptr)?;
+        // Reject an empty writer set at the decode boundary. A cell created with
+        // no writers could never be written to, and `rotate_writers` refuses an
+        // empty set, so it could never be recovered — the cell would be bricked
+        // for good. This mirrors the guard `WriterSetCell::rotate_writers` already
+        // applies, closing the gap on the construction path (`shared_new` /
+        // `shared_new_with_id`) that goes through this same decode helper.
+        if bytes.is_empty() {
+            return Ok(Err(
+                "writer set must not be empty (a cell with no writers can never be \
+                 written to or recovered)"
+                    .to_string(),
+            ));
+        }
         if bytes.len() % PUBLIC_KEY_LEN != 0 {
             return Ok(Err(format!(
                 "writer set must be a concatenation of {}-byte keys (received {} bytes)",
@@ -5427,6 +5440,52 @@ mod tests {
                 let reg2 = 3u64;
                 assert_eq!(host.js_crdt_shared_writers(ID_DESC_PTR, reg2).unwrap(), 1);
                 assert_eq!(host.borrow_logic().registers.get(reg2).unwrap(), &alice);
+            }
+        );
+    }
+
+    /// A cell must not be constructible with an empty writer set: with no
+    /// writers, `set`/`rotate_writers` could never succeed (rotate refuses an
+    /// empty set), so the cell would be permanently bricked. Both constructors
+    /// decode the writer buffer via `read_writer_set`, which rejects it.
+    #[test]
+    fn test_js_crdt_shared_empty_writer_set_rejected() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let alice: [u8; 32] = [0xA1; 32];
+        let id: [u8; 32] = [0x52; 32];
+
+        shared_host!(
+            &mut storage,
+            &limits,
+            alice,
+            |host: &mut crate::logic::VMHostFunctions<'_>| {
+                put_buffer(host, ID_DESC_PTR, ID_DATA_PTR, &id);
+                // Empty writer buffer (zero keys).
+                put_buffer(host, WRITERS_DESC_PTR, WRITERS_DATA_PTR, &writers_buf(&[]));
+
+                // new_with_id must refuse and surface an error (-1), not brick a cell.
+                let reg = 1u64;
+                assert_eq!(
+                    host.js_crdt_shared_new_with_id(ID_DESC_PTR, WRITERS_DESC_PTR, 0, reg)
+                        .unwrap(),
+                    -1,
+                    "empty writer set must be rejected"
+                );
+                let message =
+                    String::from_utf8(host.borrow_logic().registers.get(reg).unwrap().to_vec())
+                        .unwrap();
+                assert!(
+                    message.to_lowercase().contains("empty"),
+                    "error should explain the empty writer set, got: {message}"
+                );
+
+                // The random-id constructor rejects it too.
+                assert_eq!(
+                    host.js_crdt_shared_new(WRITERS_DESC_PTR, 0, 2u64).unwrap(),
+                    -1,
+                    "empty writer set must be rejected by shared_new as well"
+                );
             }
         );
     }
