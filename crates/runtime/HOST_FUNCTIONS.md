@@ -366,6 +366,7 @@ A **writer set** crosses the ABI as a buffer of concatenated 32-byte public keys
 | `js_crdt_shared_writable_by_me` | `(cell_id_ptr: u64) -> i32` | Whether the current executor is in the writer set (`1`/`0`). |
 | `js_crdt_shared_is_frozen` | `(cell_id_ptr: u64) -> i32` | Whether the writer set is frozen (`1`/`0`). |
 | `js_crdt_shared_rotate_writers` | `(cell_id_ptr: u64, writers_ptr: u64) -> i32` | Writer-gated. Rotates the writer set to the given keys. Returns `1` on success; `-1` with an `ActionNotAllowed` message in register `0` for a non-writer, a frozen cell, or an empty target set. |
+| `js_crdt_delete_collection` | `(id_ptr: u64, register_id: u64) -> i32` | Deletes a root-level collection entity by id and unlinks it from the root (cascades the subtree; rejects Frozen; enforces `Shared` writer authority). Used by the JS SDK to reclaim the random-id collection orphaned by deterministic-id reassignment. Returns `1` if an entity was deleted, `0` if none existed (idempotent), or `-1` with an error message in the register. |
 
 > **Deferred (not in this bridge):** per-writer **OpMask** capabilities (`grant_capability` /
 > `revoke_capability` / `rotate_writers_scoped`, exposing `WRITE`/`DELETE`/`ADMIN` granularity) and
