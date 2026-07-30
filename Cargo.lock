@@ -1688,6 +1688,7 @@ dependencies = [
  "calimero-store",
  "calimero-tee-attestation",
  "calimero-utils-actix",
+ "calimero-wasm-abi",
  "chrono",
  "color-eyre",
  "eyre",

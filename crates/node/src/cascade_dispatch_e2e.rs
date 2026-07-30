@@ -697,22 +697,32 @@ async fn cascade_dispatch_e2e_migration_under_automatic_descendant_rejected() {
     }
 }
 
-/// Minimal in-memory bundle: gz tar with an UNSIGNED manifest.json (every
-/// node-side read path goes through `extract_manifest_allow_unsigned`) and
-/// one `app.wasm` carrying an embedded ABI. Same shape the bundle
-/// installation tests build on disk.
+/// Minimal in-memory bundle: gz tar with a signed manifest.json and one
+/// `app.wasm` carrying an embedded ABI. The signature and the artifact digest
+/// are both mandatory on the node-side read path, so a fixture without them
+/// reads back as an absent ABI rather than an error.
 fn build_bundle_blob(package: &str, app_version: &str, wasm: &[u8]) -> Vec<u8> {
+    use calimero_node_primitives::bundle::sign_manifest_json;
     use flate2::write::GzEncoder;
     use flate2::Compression;
+    use sha2::{Digest, Sha256};
 
-    let manifest = serde_json::json!({
+    // Fixed key: the fixture's blob ids stay stable across runs.
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+
+    let mut manifest = serde_json::json!({
         "version": "1.0",
         "package": package,
         "appVersion": app_version,
         "minRuntimeVersion": "0.1.0",
-        "wasm": { "path": "app.wasm", "size": wasm.len() },
+        "wasm": {
+            "path": "app.wasm",
+            "size": wasm.len(),
+            "hash": hex::encode(Sha256::digest(wasm)),
+        },
         "migrations": [],
     });
+    sign_manifest_json(&mut manifest, &signing_key).expect("sign manifest");
     let manifest_bytes = serde_json::to_vec(&manifest).expect("manifest json");
 
     let mut tar = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::default()));

@@ -1,4 +1,5 @@
 pub mod get_application;
+pub mod get_application_abi;
 pub mod install_application;
 pub mod install_dev_application;
 pub mod list_application_versions;

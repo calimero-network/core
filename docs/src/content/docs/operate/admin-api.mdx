@@ -212,6 +212,7 @@ rather than assume the event stream is a complete, gap-free log.
 | POST | `/admin-api/install-dev-application` | Install a local dev application. |
 | GET | `/admin-api/applications` | List installed applications. |
 | GET | `/admin-api/applications/:application_id` | Get one application. |
+| GET | `/admin-api/applications/:application_id/abi` | Get the application's embedded WASM ABI manifest (optional `?service_name=`). |
 | DELETE | `/admin-api/applications/:application_id` | Uninstall an application. |
 | GET | `/admin-api/applications/:application_id/versions` | List versions of an installed application. |
 

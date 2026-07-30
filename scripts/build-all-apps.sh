@@ -17,6 +17,7 @@ APPS=(
     "apps/migrations/migration-suite-v3-remove-field/Cargo.toml"
     "apps/migrations/migration-suite-v4-rename-field/Cargo.toml"
     "apps/migrations/migration-suite-v5-change-type/Cargo.toml"
+    "apps/nested-crdt-test/Cargo.toml"
     "apps/private_data/Cargo.toml"
     "apps/state-schema-conformance/Cargo.toml"
     "apps/team-metrics-custom/Cargo.toml"
@@ -32,7 +33,3 @@ done
 
 # Apps that also ship an installable, signed .mpk bundle.
 cargo mero bundle --dev --manifest-path apps/kv-store/Cargo.toml
-
-# nested-crdt-test returns a tuple the ABI emitter cannot express, so it stays on
-# a plain cargo build. Its artifact never reaches res/, so the ABI guard is unaffected.
-cargo build -q -p nested-crdt-test --target wasm32-unknown-unknown --profile app-release

@@ -16,6 +16,18 @@ pub trait Storage: Reflect {
     fn remove(&mut self, key: &Key) -> Option<Vec<u8>>;
     fn has(&self, key: &Key) -> bool;
 
+    /// Whether this backend actually persists the ordered-index methods below
+    /// (as opposed to inheriting their inert defaults). Gates whether the
+    /// runtime installs the `RuntimeEnv` ordered-index bridge: only a backend
+    /// that returns `true` (the real `ContextStorage`) routes native
+    /// `SortedSet`/`SortedMap` index ops to this store; everything else (test
+    /// mocks that only implement `get`/`set`/`remove`/`has`) leaves the bridge
+    /// off so those ops fall back to `calimero-storage`'s process-thread-local
+    /// index mock. Default `false`.
+    fn supports_index(&self) -> bool {
+        false
+    }
+
     // === Ordered secondary index (SortedMap, core#2559) ===
     //
     // A separate, byte-ordered keyspace (the backend keeps keys in sorted
@@ -88,6 +100,18 @@ pub trait Storage: Reflect {
     fn index_meta_get(&self, key: &[u8]) -> Option<Vec<u8>> {
         let _ = key;
         None
+    }
+
+    /// Delete the ordered-index validity marker for `key` (a `collection_id`),
+    /// forcing the next ordered read to rebuild the index. The sync/apply path
+    /// calls this to invalidate a collection whose element set changed outside
+    /// `insert` (see `calimero_storage`'s `index_meta_clear`). Returns whether
+    /// the write was persisted. Default is inert (see [`index_set`]).
+    ///
+    /// [`index_set`]: Self::index_set
+    fn index_meta_del(&mut self, key: &[u8]) -> bool {
+        let _ = key;
+        false
     }
 }
 
@@ -180,6 +204,11 @@ impl Storage for InMemoryStorage {
 
     fn index_meta_get(&self, key: &[u8]) -> Option<Vec<u8>> {
         self.index_meta.get(key).cloned()
+    }
+
+    fn index_meta_del(&mut self, key: &[u8]) -> bool {
+        let _ = self.index_meta.remove(key);
+        true
     }
 }
 

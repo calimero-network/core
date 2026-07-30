@@ -13,7 +13,6 @@ use calimero_primitives::{
 use calimero_store::key;
 use calimero_store::layer::LayerExt;
 use calimero_store::namespace_signer::resolve_owned_namespace_signer;
-use camino::Utf8PathBuf;
 use eyre::bail;
 use futures_util::{AsyncRead, StreamExt};
 use libp2p::PeerId;
@@ -36,10 +35,6 @@ impl BlobManager {
     #[must_use]
     pub fn new(blobstore: BlobStore) -> Self {
         Self { blobstore }
-    }
-
-    pub fn root_path(&self) -> Utf8PathBuf {
-        self.blobstore.root_path()
     }
 
     pub async fn add_blob<S: AsyncRead>(

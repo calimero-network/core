@@ -19,14 +19,13 @@ use crate::workspace;
 use crate::{BuildArgs, BundleArgs};
 
 /// Environment variable naming a signing-key JSON file, used when none of
-/// `--key`/`--dev`/`--unsigned` is passed.
+/// `--key`/`--dev` is passed.
 const SIGN_KEY_ENV: &str = "MERO_SIGN_KEY";
 
 /// How the manifest will be signed, resolved from the flags + `MERO_SIGN_KEY`.
 enum SignMode {
     Key(SigningKey),
     Dev(SigningKey),
-    Unsigned,
 }
 
 pub fn run(args: &BundleArgs) -> Result<PathBuf> {
@@ -61,7 +60,7 @@ pub fn run(args: &BundleArgs) -> Result<PathBuf> {
     println!("\nbundle:     {output}");
     println!("package:    {}", bundle_meta.package);
     println!("appVersion: {}", bundle_meta.app_version);
-    println!("signerId:   {}", signer_id.as_deref().unwrap_or("UNSIGNED"));
+    println!("signerId:   {signer_id}");
 
     Ok(output.into_std_path_buf())
 }
@@ -123,9 +122,6 @@ fn resolve_sign_mode(args: &BundleArgs) -> Result<SignMode> {
     if args.dev {
         return Ok(SignMode::Dev(mero_sign::dev_signing_key()));
     }
-    if args.unsigned {
-        return Ok(SignMode::Unsigned);
-    }
     if let Some(path) = std::env::var_os(SIGN_KEY_ENV) {
         return Ok(SignMode::Key(mero_sign::load_signing_key(
             PathBuf::from(path).as_path(),
@@ -134,31 +130,24 @@ fn resolve_sign_mode(args: &BundleArgs) -> Result<SignMode> {
     bail!(
         "no signing method given. Pass one of:\n  \
          --key <FILE>   sign with a production key (cargo mero key generate)\n  \
-         --dev          sign with the well-known dev key (not publishable)\n  \
-         --unsigned     skip signing\n\
+         --dev          sign with the well-known dev key (not publishable)\n\
          or set {SIGN_KEY_ENV} to a key-file path."
     );
 }
 
-/// Sign `manifest.json` in place; returns the signerId, or `None` when unsigned.
-fn sign(manifest_path: &Utf8Path, mode: &SignMode) -> Result<Option<String>> {
+/// Sign `manifest.json` in place; returns the signerId.
+fn sign(manifest_path: &Utf8Path, mode: &SignMode) -> Result<String> {
     match mode {
         SignMode::Key(key) => {
             println!("• signing manifest.json");
             mero_sign::sign_manifest(manifest_path.as_std_path(), key)?;
-            Ok(Some(signer_id_of(key)))
+            Ok(signer_id_of(key))
         }
         SignMode::Dev(key) => {
             print_dev_warning();
             println!("• signing manifest.json with the DEV key");
             mero_sign::sign_manifest(manifest_path.as_std_path(), key)?;
-            Ok(Some(signer_id_of(key)))
-        }
-        SignMode::Unsigned => {
-            eprintln!(
-                "WARNING: --unsigned bundle. It cannot be published to or installed from a registry."
-            );
-            Ok(None)
+            Ok(signer_id_of(key))
         }
     }
 }
@@ -277,6 +266,8 @@ fn package(output: &Utf8Path, manifest_path: &Utf8Path, staged: &[StagedArtifact
         .parent()
         .ok_or_else(|| eyre!("manifest path has no parent"))?;
 
+    // First, and not merely by convention: the node's manifest scan runs before
+    // any signature check, so it is bounded and stops a few MiB in.
     tar.append_path_with_name(manifest_path, "manifest.json")
         .wrap_err("failed to add manifest.json to the bundle")?;
     for artifact in staged {

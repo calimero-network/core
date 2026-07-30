@@ -1,5 +1,7 @@
 //! Tests for the application module (bundle validation, path safety).
 
+use std::sync::Arc;
+
 use super::bundle;
 
 #[test]
@@ -174,7 +176,7 @@ fn test_is_bundle_archive_non_mpk() {
 }
 
 // -----------------------------------------------------------------------
-// is_bundle_blob — non-bundle data
+// is_bundle_blob - non-bundle data
 // -----------------------------------------------------------------------
 
 #[test]
@@ -185,7 +187,7 @@ fn test_is_bundle_blob_random_bytes() {
 }
 
 // -----------------------------------------------------------------------
-// extract_bundle_manifest — edge cases
+// extract_bundle_manifest - edge cases
 // -----------------------------------------------------------------------
 
 #[test]
@@ -214,17 +216,11 @@ fn test_extract_manifest_empty_tar() {
 }
 
 // -----------------------------------------------------------------------
-// extract_manifest_allow_unsigned — verify branching
+// VerifiedBundle - construction rejects non-archives
 // -----------------------------------------------------------------------
 
 #[test]
-fn test_extract_unsigned_rejects_non_tar() {
-    let result = bundle::extract_manifest_allow_unsigned(b"garbage");
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_verify_and_extract_rejects_non_tar() {
-    let result = bundle::verify_and_extract_manifest(b"garbage");
+fn test_verified_bundle_rejects_non_tar() {
+    let result = bundle::VerifiedBundle::open(Arc::from(b"garbage".as_slice()));
     assert!(result.is_err());
 }

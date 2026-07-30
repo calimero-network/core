@@ -72,6 +72,66 @@ type StorageWriteFn = std::rc::Rc<dyn Fn(Key, &[u8]) -> bool>;
 /// Reference-counted host callback for removing a key.
 type StorageRemoveFn = std::rc::Rc<dyn Fn(&Key) -> bool>;
 
+// === Ordered-index host callbacks (SortedMap/SortedSet, core#2559) ===
+//
+// The node-local ordered index and its validity marker live in dedicated,
+// non-synced columns (`Column::SortedIndex` / `Column::SortedIndexMeta`). On a
+// WASM guest those are reached through the `storage_index_*` host imports →
+// `ContextStorage`. But `SortedSet`/`SortedMap` also run **host-side, natively**
+// (the JS SDK drives `js_crdt_sortedset_*` → `SortedSet::<MainStorage>::iter`
+// inside `merod`, and delta/HashComparison apply runs `Interface::apply_action`
+// natively). On that native path `MainStorage`'s index ops go through
+// `calimero_storage::env`, which without these callbacks falls back to a
+// process-thread-local mock — NOT the durable, context-scoped RocksDB columns.
+// That split let a JS `SortedSet`'s ordered read and its sync-apply target
+// different stores, so a converged set stayed stale on the ordered readers
+// (sdk-js#87).
+//
+// These callbacks bridge the native index ops to the SAME host store the guest
+// path uses (`ContextStorage` under the runtime, the RocksDB `SortedIndex`/
+// `SortedIndexMeta` columns under the node's sync bridge), so every native
+// SortedSet/SortedMap read and every native apply-time marker clear share one
+// durable, cross-thread-coherent store. Keys are the adaptor-level
+// `collection ‖ order_key` (meta: `collection_id`); the bridge implementation
+// applies whatever context scoping the underlying store needs.
+#[cfg(not(target_arch = "wasm32"))]
+type IndexWriteFn = std::rc::Rc<dyn Fn(&[u8], &[u8]) -> bool>;
+#[cfg(not(target_arch = "wasm32"))]
+type IndexKeyFn = std::rc::Rc<dyn Fn(&[u8]) -> bool>;
+#[cfg(not(target_arch = "wasm32"))]
+type IndexScanFn =
+    std::rc::Rc<dyn Fn(&[u8], &[u8], usize, Option<usize>) -> Vec<(Vec<u8>, Vec<u8>)>>;
+#[cfg(not(target_arch = "wasm32"))]
+type IndexSeekFn = std::rc::Rc<dyn Fn(&[u8], &[u8]) -> Option<(Vec<u8>, Vec<u8>)>>;
+#[cfg(not(target_arch = "wasm32"))]
+type IndexReadFn = std::rc::Rc<dyn Fn(&[u8]) -> Option<Vec<u8>>>;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+/// Host callbacks routing the node-local ordered index + validity marker to the
+/// real host store (see the module comment above). Installed on a [`RuntimeEnv`]
+/// via [`RuntimeEnv::with_index`]; when absent, the native ordered-index ops use
+/// the process-thread-local mock (fine for pure `calimero-storage` unit tests,
+/// wrong for a real node running host-side SortedSet/SortedMap).
+pub struct IndexCallbacks {
+    /// `collection ‖ order_key -> entry_id` insert/overwrite.
+    pub set: IndexWriteFn,
+    /// Remove one `collection ‖ order_key`.
+    pub remove: IndexKeyFn,
+    /// Remove every key beginning with `prefix` (a `collection_id`).
+    pub remove_prefix: IndexKeyFn,
+    /// Ascending `[lo, hi)` scan after `offset`, capped at `limit`.
+    pub scan: IndexScanFn,
+    /// Largest `(key, value)` in `[lo, hi)` (reverse seek for `last`).
+    pub last: IndexSeekFn,
+    /// Write the validity marker for `collection_id`.
+    pub meta_set: IndexWriteFn,
+    /// Read the validity marker for `collection_id`.
+    pub meta_get: IndexReadFn,
+    /// Clear the validity marker for `collection_id` (invalidate-on-sync).
+    pub meta_clear: IndexKeyFn,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 /// Runtime-provided storage environment used by host functions.
@@ -82,12 +142,17 @@ type StorageRemoveFn = std::rc::Rc<dyn Fn(&Key) -> bool>;
 /// that close over the current storage trait object.  While the host function is
 /// executing we install this environment thread-locally so every
 /// `Interface::<MainStorage>::*` call can reach the real context storage.
+///
+/// `index` optionally routes the node-local ordered index + marker to the same
+/// host store (see [`IndexCallbacks`]); when `None`, those ops use the
+/// process-thread-local mock.
 pub struct RuntimeEnv {
     storage_read: StorageReadFn,
     storage_write: StorageWriteFn,
     storage_remove: StorageRemoveFn,
     context_id: [u8; 32],
     executor_id: [u8; 32],
+    index: Option<IndexCallbacks>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -111,7 +176,25 @@ impl RuntimeEnv {
             storage_remove,
             context_id,
             executor_id,
+            index: None,
         }
+    }
+
+    #[must_use]
+    /// Attaches ordered-index host callbacks so native `SortedSet`/`SortedMap`
+    /// index + marker ops reach the real host store instead of the
+    /// process-thread-local mock (see [`IndexCallbacks`]). Consuming builder so
+    /// the common [`new`](Self::new) path stays unchanged for callers that don't
+    /// drive host-side ordered collections.
+    pub fn with_index(mut self, index: IndexCallbacks) -> Self {
+        self.index = Some(index);
+        self
+    }
+
+    #[must_use]
+    /// Returns the installed ordered-index callbacks, if any.
+    pub fn index(&self) -> Option<IndexCallbacks> {
+        self.index.clone()
     }
 
     #[must_use]
@@ -284,6 +367,15 @@ pub fn storage_index_meta_get(key: &[u8]) -> Option<Vec<u8>> {
     imp::storage_index_meta_get(key)
 }
 
+/// Clear the node-local ordered-index validity marker for `key` (a
+/// `collection_id`), so the next ordered read rebuilds the index. This is the
+/// invalidate-on-sync primitive routed to the same non-synced marker column as
+/// [`storage_index_meta_set`]. Returns whether the write was persisted.
+#[must_use]
+pub fn storage_index_meta_clear(key: &[u8]) -> bool {
+    imp::storage_index_meta_clear(key)
+}
+
 /// Reads data from node-local (private) persistent storage.
 ///
 /// Private storage is **NOT synchronised across nodes** — entries
@@ -402,6 +494,17 @@ pub fn reset_environment() {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn clear_sorted_index_for_testing() {
     mocked::clear_sorted_index_for_testing();
+}
+
+/// Drops the single node-local ordered-index entry for `order_key`, leaving the
+/// index's validity marker and all synced state intact. Test-only seam for
+/// reproducing a node whose ordered index holds a stale subset of the converged
+/// element set while its marker still equals the converged `full_hash` — the
+/// false positive an ordered read must detect and rebuild past (sdk-js#87).
+/// Native-only.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn drop_sorted_index_entry_for_testing(order_key: &[u8]) {
+    mocked::drop_sorted_index_entry_for_testing(order_key);
 }
 
 /// Set executor ID. `pub(crate)` because the only sanctioned way to mutate
@@ -558,6 +661,10 @@ mod calimero_vm {
         env::storage_index_meta_get(key)
     }
 
+    pub(super) fn storage_index_meta_clear(key: &[u8]) -> bool {
+        env::storage_index_meta_clear(key)
+    }
+
     /// Fills the buffer with random bytes.
     pub(super) fn random_bytes(buf: &mut [u8]) {
         env::random_bytes(buf)
@@ -711,8 +818,10 @@ mod mocked {
     }
 
     // Native ordered-index backend. A process-local `BTreeMap` standing in for
-    // the node's RocksDB `SortedIndex` column — enough for native tests; the
-    // node provides the durable, cross-run backing once wired. Keys are the raw
+    // the node's RocksDB `SortedIndex` column — used for pure `calimero-storage`
+    // unit tests, where no `RuntimeEnv` index bridge is installed. On a real node
+    // an installed `RuntimeEnv::with_index` routes every op below to the durable,
+    // context-scoped host store instead (see `IndexCallbacks`). Keys are the raw
     // composite `collection ‖ order_key`, so `BTreeMap` order == key order.
     thread_local! {
         static INDEX: RefCell<std::collections::BTreeMap<Vec<u8>, Vec<u8>>> =
@@ -725,7 +834,17 @@ mod mocked {
             const { RefCell::new(std::collections::BTreeMap::new()) };
     }
 
+    /// The ordered-index callbacks installed by the current `RuntimeEnv`, if any.
+    /// When present, every native index op below routes to the host store rather
+    /// than the process-thread-local `INDEX`/`INDEX_META` mock.
+    fn index_bridge() -> Option<super::IndexCallbacks> {
+        RUNTIME_ENV.with(|env| env.borrow().as_ref().and_then(super::RuntimeEnv::index))
+    }
+
     pub(super) fn storage_index_set(key: &[u8], value: &[u8]) -> bool {
+        if let Some(bridge) = index_bridge() {
+            return (bridge.set)(key, value);
+        }
         INDEX.with(|index| {
             let _ = index.borrow_mut().insert(key.to_vec(), value.to_vec());
         });
@@ -733,6 +852,9 @@ mod mocked {
     }
 
     pub(super) fn storage_index_remove(key: &[u8]) -> bool {
+        if let Some(bridge) = index_bridge() {
+            return (bridge.remove)(key);
+        }
         INDEX.with(|index| {
             let _ = index.borrow_mut().remove(key);
         });
@@ -740,6 +862,9 @@ mod mocked {
     }
 
     pub(super) fn storage_index_remove_prefix(prefix: &[u8]) -> bool {
+        if let Some(bridge) = index_bridge() {
+            return (bridge.remove_prefix)(prefix);
+        }
         INDEX.with(|index| index.borrow_mut().retain(|k, _| !k.starts_with(prefix)));
         true
     }
@@ -750,6 +875,9 @@ mod mocked {
         offset: usize,
         limit: Option<usize>,
     ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        if let Some(bridge) = index_bridge() {
+            return (bridge.scan)(lo, hi, offset, limit);
+        }
         INDEX.with(|index| {
             let matched: Vec<(Vec<u8>, Vec<u8>)> = index
                 .borrow()
@@ -765,6 +893,9 @@ mod mocked {
     }
 
     pub(super) fn storage_index_last(lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+        if let Some(bridge) = index_bridge() {
+            return (bridge.last)(lo, hi);
+        }
         INDEX.with(|index| {
             index
                 .borrow()
@@ -775,6 +906,9 @@ mod mocked {
     }
 
     pub(super) fn storage_index_meta_set(key: &[u8], value: &[u8]) -> bool {
+        if let Some(bridge) = index_bridge() {
+            return (bridge.meta_set)(key, value);
+        }
         INDEX_META.with(|meta| {
             let _ = meta.borrow_mut().insert(key.to_vec(), value.to_vec());
         });
@@ -782,7 +916,20 @@ mod mocked {
     }
 
     pub(super) fn storage_index_meta_get(key: &[u8]) -> Option<Vec<u8>> {
+        if let Some(bridge) = index_bridge() {
+            return (bridge.meta_get)(key);
+        }
         INDEX_META.with(|meta| meta.borrow().get(key).cloned())
+    }
+
+    pub(super) fn storage_index_meta_clear(key: &[u8]) -> bool {
+        if let Some(bridge) = index_bridge() {
+            return (bridge.meta_clear)(key);
+        }
+        INDEX_META.with(|meta| {
+            let _ = meta.borrow_mut().remove(key);
+        });
+        true
     }
 
     /// Clear ONLY the node-local ordered index and its validity markers, leaving
@@ -793,6 +940,21 @@ mod mocked {
     pub(super) fn clear_sorted_index_for_testing() {
         INDEX.with(|index| index.borrow_mut().clear());
         INDEX_META.with(|meta| meta.borrow_mut().clear());
+    }
+
+    /// Drop the single node-local ordered-index entry for `order_key` (matched
+    /// as the suffix of the `collection_id ‖ order_key` composite), leaving the
+    /// validity marker and all state untouched. Models a node whose index holds
+    /// a stale subset of the converged element set while its marker still equals
+    /// the converged `full_hash` — the false positive the rebuild trigger must
+    /// catch (sdk-js#87).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn drop_sorted_index_entry_for_testing(order_key: &[u8]) {
+        INDEX.with(|index| {
+            index
+                .borrow_mut()
+                .retain(|k, _| !(k.len() == 32 + order_key.len() && k.ends_with(order_key)));
+        });
     }
 
     // Why these don't consult `RUNTIME_ENV` like their main-storage

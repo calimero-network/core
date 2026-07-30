@@ -827,6 +827,82 @@ fn sorted_set_rebuilds_index_after_sync() {
 }
 
 // ---------------------------------------------------------------------------
+// Concurrent-writer ORDERED-READ convergence (calimero-network/core#3333).
+//
+// The single-writer self-heal tests above prove a receiver rebuilds its stale
+// index when it applies a *foreign* delta whose child links go through
+// `apply_action` (which clears the marker). The bug #3333 is the CONCURRENT
+// case: node 0 adds "a" locally (its own index + marker warmed to the LOCAL
+// full_hash) while node 1 adds "b" locally; then each applies the other's
+// delta. Membership (`sorted_tag_contains` / `len`) and the Merkle root
+// converge, but the ORDERED read (`sorted_tags_all` / `sorted_keys`) can serve
+// a stale subset on one node — the marker matched a full_hash the index never
+// caught up to. This drives the REAL compiled app through the REAL
+// `__calimero_sync_next` apply path, so it fails on the actual defect, not a
+// storage-crate mock.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sorted_set_concurrent_ordered_read_converges() {
+    let mut c = Cluster::new(2);
+    // Concurrent adds: node 0 -> "a", node 1 -> "b". `round` makes each node
+    // apply the other's delta, then returns per-node roots.
+    let roots = round(
+        &mut c,
+        &[
+            (0, "sorted_tag_add", json!({ "tag": "a" })),
+            (1, "sorted_tag_add", json!({ "tag": "b" })),
+        ],
+    );
+    assert_converged("sorted_set_concurrent", &roots);
+
+    // Membership + count converge (this part already works today).
+    for n in 0..c.len() {
+        for tag in ["a", "b"] {
+            let has = c.query(n, "sorted_tag_contains", json!({ "tag": tag }));
+            let has = has.get("output").cloned().unwrap_or(has);
+            assert_eq!(has, json!(true), "node {n} must contain '{tag}'");
+        }
+    }
+
+    // ORDERED read must equal the sorted union on EVERY node — the #3333 assert.
+    for n in 0..c.len() {
+        let all = c.query(n, "sorted_tags_all", json!({}));
+        let all = all.get("output").cloned().unwrap_or(all);
+        assert_eq!(
+            all,
+            json!(["a", "b"]),
+            "node {n} sorted_tags_all diverged (ordered index served a stale \
+             subset after concurrent writes — core#3333)"
+        );
+    }
+}
+
+#[test]
+fn sorted_map_concurrent_ordered_read_converges() {
+    let mut c = Cluster::new(2);
+    let roots = round(
+        &mut c,
+        &[
+            (0, "sorted_set", json!({ "key": "a", "value": "A" })),
+            (1, "sorted_set", json!({ "key": "b", "value": "B" })),
+        ],
+    );
+    assert_converged("sorted_map_concurrent", &roots);
+
+    for n in 0..c.len() {
+        let keys = c.query(n, "sorted_keys", json!({}));
+        let keys = keys.get("output").cloned().unwrap_or(keys);
+        assert_eq!(
+            keys,
+            json!(["a", "b"]),
+            "node {n} sorted_keys diverged (ordered index served a stale subset \
+             after concurrent writes — core#3333)"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Single-writer sync coverage. These exercise the basic "one node edits, peers
 // apply the delta" path for the counter / set structures whose *concurrent*
 // same-entity tests are ignored above — so every data structure has at least
