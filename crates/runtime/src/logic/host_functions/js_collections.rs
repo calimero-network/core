@@ -11,7 +11,8 @@ use calimero_storage::{
     interface::{Interface, StorageError},
     js::{
         JsAuthoredMap, JsAuthoredVector, JsCounter, JsFrozenStorage, JsLwwRegister, JsPnCounter,
-        JsRga, JsSortedMap, JsSortedSet, JsUnorderedMap, JsUnorderedSet, JsUserStorage, JsVector,
+        JsRga, JsSharedStorage, JsSortedMap, JsSortedSet, JsUnorderedMap, JsUnorderedSet,
+        JsUserStorage, JsVector,
     },
     store::MainStorage,
 };
@@ -25,6 +26,8 @@ use tracing::{debug, warn};
 use super::system::build_runtime_env;
 
 const COLLECTION_ID_LEN: usize = 32;
+/// Byte length of an Ed25519 public key, the unit of a serialized writer set.
+const PUBLIC_KEY_LEN: usize = 32;
 
 impl VMHostFunctions<'_> {
     fn make_runtime_env(&mut self) -> VMLogicResult<RuntimeEnv> {
@@ -858,6 +861,81 @@ impl VMHostFunctions<'_> {
     ) -> VMLogicResult<i32> {
         self.invoke_with_storage_env(|host| {
             host.crdt_authored_vector_len(vector_id_ptr, dest_register_id)
+        })
+    }
+
+    /// Creates a new group-writable shared byte cell with the given writer set
+    /// (a buffer of concatenated 32-byte public keys) and returns its identifier.
+    pub fn js_crdt_shared_new(
+        &mut self,
+        writers_ptr: u64,
+        frozen: u32,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_shared_new(writers_ptr, frozen, dest_register_id)
+        })
+    }
+
+    /// Creates a new shared byte cell at a caller-supplied deterministic id.
+    pub fn js_crdt_shared_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        writers_ptr: u64,
+        frozen: u32,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_shared_new_with_id(id_ptr, writers_ptr, frozen, dest_register_id)
+        })
+    }
+
+    /// Replaces the value. Writer-gated: a non-writer is rejected with
+    /// `ActionNotAllowed` (written to register 0).
+    pub fn js_crdt_shared_set(&mut self, cell_id_ptr: u64, value_ptr: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_shared_set(cell_id_ptr, value_ptr))
+    }
+
+    /// Reads the current value into the register (status 1), or clears it if no
+    /// value has been written (status 0).
+    pub fn js_crdt_shared_get(
+        &mut self,
+        cell_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_shared_get(cell_id_ptr, dest_register_id))
+    }
+
+    /// Writes the current writer set as concatenated 32-byte public keys to the
+    /// register (the JS side decodes `len / 32` keys).
+    pub fn js_crdt_shared_writers(
+        &mut self,
+        cell_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_shared_writers(cell_id_ptr, dest_register_id))
+    }
+
+    /// Returns whether the current executor is in the writer set (1) or not (0).
+    pub fn js_crdt_shared_writable_by_me(&mut self, cell_id_ptr: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_shared_writable_by_me(cell_id_ptr))
+    }
+
+    /// Returns whether the writer set is frozen (1) or not (0).
+    pub fn js_crdt_shared_is_frozen(&mut self, cell_id_ptr: u64) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_shared_is_frozen(cell_id_ptr))
+    }
+
+    /// Rotates the writer set to the given keys (concatenated 32-byte public
+    /// keys). Writer-gated: a non-writer (or a frozen/empty rotation) is rejected
+    /// with `ActionNotAllowed` (written to register 0).
+    pub fn js_crdt_shared_rotate_writers(
+        &mut self,
+        cell_id_ptr: u64,
+        writers_ptr: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_shared_rotate_writers(cell_id_ptr, writers_ptr)
         })
     }
 
@@ -3492,6 +3570,235 @@ impl VMHostFunctions<'_> {
         }
     }
 
+    fn crdt_shared_new(
+        &mut self,
+        writers_ptr: u64,
+        frozen: u32,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let writers = match self.read_writer_set(writers_ptr)? {
+            Ok(writers) => writers,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+        let frozen = frozen != 0;
+
+        let outcome = panic::catch_unwind(AssertUnwindSafe(
+            move || -> Result<JsSharedStorage, String> {
+                let mut cell = JsSharedStorage::new(writers, frozen);
+                save_js_shared_instance(&mut cell)?;
+                Ok(cell)
+            },
+        ));
+
+        match outcome {
+            Ok(Ok(cell)) => {
+                self.write_register_bytes(dest_register_id, cell.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_shared_new_with_id(
+        &mut self,
+        id_ptr: u64,
+        writers_ptr: u64,
+        frozen: u32,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let writers = match self.read_writer_set(writers_ptr)? {
+            Ok(writers) => writers,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+        let frozen = frozen != 0;
+
+        let outcome = panic::catch_unwind(AssertUnwindSafe(
+            move || -> Result<JsSharedStorage, String> {
+                let mut cell = JsSharedStorage::new_with_id(id, writers, frozen);
+                save_js_shared_instance(&mut cell)?;
+                Ok(cell)
+            },
+        ));
+
+        match outcome {
+            Ok(Ok(cell)) => {
+                self.write_register_bytes(dest_register_id, cell.id().as_bytes())?;
+                Ok(0)
+            }
+            Ok(Err(err)) => self.write_error_message(dest_register_id, err),
+            Err(payload) => self.write_error_message(
+                dest_register_id,
+                panic_payload_to_string(payload.as_ref(), "unknown panic"),
+            ),
+        }
+    }
+
+    fn crdt_shared_set(&mut self, cell_id_ptr: u64, value_ptr: u64) -> VMLogicResult<i32> {
+        let cell_id = match self.read_map_id(cell_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let value = self.read_buffer(value_ptr)?;
+
+        let mut cell = match load_js_shared_instance(cell_id) {
+            Ok(cell) => cell,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        // Writer-gated: `set` returns `ActionNotAllowed` when the current
+        // executor is not in the writer set; surface it verbatim in register 0.
+        match cell.set(&value) {
+            Ok(()) => match save_js_shared_instance(&mut cell) {
+                Ok(()) => Ok(1),
+                Err(message) => self.write_error_message(0, message),
+            },
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    fn crdt_shared_get(&mut self, cell_id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let cell_id = match self.read_map_id(cell_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let cell = match load_js_shared_instance(cell_id) {
+            Ok(cell) => cell,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match cell.get() {
+            Ok(Some(value)) => {
+                self.write_register_bytes(dest_register_id, &value)?;
+                Ok(1)
+            }
+            Ok(None) => {
+                self.clear_register(dest_register_id)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    fn crdt_shared_writers(
+        &mut self,
+        cell_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let cell_id = match self.read_map_id(cell_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let cell = match load_js_shared_instance(cell_id) {
+            Ok(cell) => cell,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        // Concatenated 32-byte keys; the JS side decodes `len / 32` entries.
+        let writers = cell.writers();
+        let mut buffer = Vec::with_capacity(writers.len().saturating_mul(PUBLIC_KEY_LEN));
+        for writer in &writers {
+            buffer.extend_from_slice(writer);
+        }
+
+        self.write_register_bytes(dest_register_id, &buffer)?;
+        Ok(1)
+    }
+
+    fn crdt_shared_writable_by_me(&mut self, cell_id_ptr: u64) -> VMLogicResult<i32> {
+        let cell_id = match self.read_map_id(cell_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let cell = match load_js_shared_instance(cell_id) {
+            Ok(cell) => cell,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        Ok(i32::from(cell.writable_by_me()))
+    }
+
+    fn crdt_shared_is_frozen(&mut self, cell_id_ptr: u64) -> VMLogicResult<i32> {
+        let cell_id = match self.read_map_id(cell_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let cell = match load_js_shared_instance(cell_id) {
+            Ok(cell) => cell,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        Ok(i32::from(cell.is_frozen()))
+    }
+
+    fn crdt_shared_rotate_writers(
+        &mut self,
+        cell_id_ptr: u64,
+        writers_ptr: u64,
+    ) -> VMLogicResult<i32> {
+        let cell_id = match self.read_map_id(cell_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let writers = match self.read_writer_set(writers_ptr)? {
+            Ok(writers) => writers,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        let mut cell = match load_js_shared_instance(cell_id) {
+            Ok(cell) => cell,
+            Err(message) => return self.write_error_message(0, message),
+        };
+
+        // Writer-gated: a non-writer rotation (or a frozen/empty target) yields
+        // `ActionNotAllowed`; surface it verbatim in register 0.
+        match cell.rotate_writers(writers) {
+            Ok(()) => match save_js_shared_instance(&mut cell) {
+                Ok(()) => Ok(1),
+                Err(message) => self.write_error_message(0, message),
+            },
+            Err(err) => self.write_error_message(0, err),
+        }
+    }
+
+    /// Reads a writer set (a buffer of concatenated 32-byte public keys) from
+    /// guest memory, returning a decoding error string if the length is not a
+    /// multiple of 32.
+    fn read_writer_set(&mut self, ptr: u64) -> VMLogicResult<Result<Vec<[u8; 32]>, String>> {
+        let bytes = self.read_buffer(ptr)?;
+        if bytes.len() % PUBLIC_KEY_LEN != 0 {
+            return Ok(Err(format!(
+                "writer set must be a concatenation of {}-byte keys (received {} bytes)",
+                PUBLIC_KEY_LEN,
+                bytes.len()
+            )));
+        }
+
+        let writers = bytes
+            .chunks_exact(PUBLIC_KEY_LEN)
+            .map(|chunk| {
+                let mut key = [0u8; PUBLIC_KEY_LEN];
+                key.copy_from_slice(chunk);
+                key
+            })
+            .collect();
+        Ok(Ok(writers))
+    }
+
     fn read_map_id(&mut self, map_id_ptr: u64) -> VMLogicResult<Result<Id, String>> {
         // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
         //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
@@ -4180,6 +4487,49 @@ fn save_js_authored_vector_instance(vector: &mut JsAuthoredVector) -> Result<(),
     }
 }
 
+fn load_js_shared_instance(id: Id) -> Result<JsSharedStorage, String> {
+    match JsSharedStorage::load(id) {
+        Ok(Some(cell)) => {
+            debug!(
+                target: "runtime::shared_storage",
+                cell_id = %id.to_string(),
+                "loaded JsSharedStorage from storage"
+            );
+            Ok(cell)
+        }
+        Ok(None) => {
+            let missing_id = id.to_string();
+            warn!(
+                target: "runtime::shared_storage",
+                cell_id = %missing_id,
+                "JsSharedStorage not found in storage"
+            );
+            // Unlike the other wrappers, a shared cell cannot be recreated on the
+            // fly: its writer set is only known at construction, and inventing an
+            // empty one would silently make the cell unwritable. A missing cell
+            // means the id was referenced before `new`/`new_with_id` persisted it,
+            // which is a caller error — surface it rather than paper over it.
+            Err(format!("JsSharedStorage {missing_id} not found in storage"))
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn save_js_shared_instance(cell: &mut JsSharedStorage) -> Result<(), String> {
+    match cell.save() {
+        Ok(_) => Ok(()),
+        Err(StorageError::CannotCreateOrphan(_)) => {
+            ensure_root_index_internal().map_err(|err| err.to_string())?;
+            match Interface::<MainStorage>::add_child_to(Id::root(), cell) {
+                Ok(_) => Ok(()),
+                Err(StorageError::CannotCreateOrphan(_)) => Err("cannot create orphan".to_owned()),
+                Err(err) => Err(err.to_string()),
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::logic::{
@@ -4196,6 +4546,8 @@ mod tests {
     const KEY_DESC_PTR: u64 = 200;
     const VALUE_DATA_PTR: u64 = 3000;
     const VALUE_DESC_PTR: u64 = 300;
+    const WRITERS_DATA_PTR: u64 = 4000;
+    const WRITERS_DESC_PTR: u64 = 400;
 
     /// A `*_new_with_id` constructor must place the collection at exactly the
     /// caller-supplied id, and two handles built at the same id must address the
@@ -4993,6 +5345,320 @@ mod tests {
             "tombstoned slot is returned as ZERO value bytes — JS deserialize \
              then hits end-of-input trying to decode a self-describing value \
              out of nothing (calimero-sdk-js#88)"
+        );
+    }
+
+    /// Concatenates 32-byte public keys into the writer-set ABI buffer.
+    fn writers_buf(keys: &[[u8; 32]]) -> Vec<u8> {
+        keys.iter().flat_map(|k| k.iter().copied()).collect()
+    }
+
+    /// Builds a fresh `VMLogic`/host over `storage` with `executor` as the
+    /// current identity. The returned `Store` must be kept alive alongside the
+    /// closure's use of the host (mirrors the AuthoredMap non-owner test).
+    macro_rules! shared_host {
+        ($storage:expr, $limits:expr, $executor:expr, $body:expr) => {{
+            let context = VMContext::new(Cow::Owned(vec![]), [0u8; DIGEST_SIZE], $executor);
+            let mut store = Store::default();
+            let memory =
+                wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
+            let mut logic = VMLogic::new($storage, None, context, $limits, None);
+            let _ = logic.with_memory(memory);
+            let mut host = logic.host_functions(store.as_store_mut());
+            #[allow(clippy::redundant_closure_call)]
+            $body(&mut host)
+        }};
+    }
+
+    /// SharedStorage: a writer can set/get, `writers()` reflects the initial set,
+    /// `writable_by_me` is true for the writer, and `is_frozen` reflects the
+    /// constructor flag.
+    #[test]
+    fn test_js_crdt_shared_set_get_writers_writable_and_frozen() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let alice: [u8; 32] = [0xA1; 32];
+        let id: [u8; 32] = [0x51; 32];
+
+        shared_host!(
+            &mut storage,
+            &limits,
+            alice,
+            |host: &mut crate::logic::VMHostFunctions<'_>| {
+                put_buffer(host, ID_DESC_PTR, ID_DATA_PTR, &id);
+                put_buffer(
+                    host,
+                    WRITERS_DESC_PTR,
+                    WRITERS_DATA_PTR,
+                    &writers_buf(&[alice]),
+                );
+
+                // Construct an unfrozen cell writable by alice.
+                assert_eq!(
+                    host.js_crdt_shared_new_with_id(ID_DESC_PTR, WRITERS_DESC_PTR, 0, 1)
+                        .unwrap(),
+                    0,
+                    "constructor should succeed"
+                );
+                assert_eq!(
+                    host.borrow_logic().registers.get(1).unwrap(),
+                    &id,
+                    "returned id must equal the caller-supplied id"
+                );
+
+                // alice is a writer.
+                assert_eq!(host.js_crdt_shared_writable_by_me(ID_DESC_PTR).unwrap(), 1);
+                // not frozen.
+                assert_eq!(host.js_crdt_shared_is_frozen(ID_DESC_PTR).unwrap(), 0);
+
+                // set → get round-trip.
+                put_buffer(host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"hello");
+                assert_eq!(
+                    host.js_crdt_shared_set(ID_DESC_PTR, VALUE_DESC_PTR)
+                        .unwrap(),
+                    1,
+                    "writer set must succeed"
+                );
+                let reg = 2u64;
+                assert_eq!(host.js_crdt_shared_get(ID_DESC_PTR, reg).unwrap(), 1);
+                assert_eq!(host.borrow_logic().registers.get(reg).unwrap(), b"hello");
+
+                // writers() returns the initial set (one 32-byte key = alice).
+                let reg2 = 3u64;
+                assert_eq!(host.js_crdt_shared_writers(ID_DESC_PTR, reg2).unwrap(), 1);
+                assert_eq!(host.borrow_logic().registers.get(reg2).unwrap(), &alice);
+            }
+        );
+    }
+
+    /// SharedStorage writer-gating: a non-writer's `set` is rejected with an
+    /// ownership/writer error and `writable_by_me` is false; after the writer
+    /// rotates them in, the new writer can set. The non-writer path is exercised
+    /// by a second VM (different `executor_public_key`) over the SAME storage.
+    #[test]
+    fn test_js_crdt_shared_non_writer_rejected_then_rotation_grants() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let alice: [u8; 32] = [0xA1; 32];
+        let bob: [u8; 32] = [0xB0; 32];
+        let id: [u8; 32] = [0x52; 32];
+
+        // --- Alice: create with herself as sole writer, set a value. ---
+        shared_host!(
+            &mut storage,
+            &limits,
+            alice,
+            |host: &mut crate::logic::VMHostFunctions<'_>| {
+                put_buffer(host, ID_DESC_PTR, ID_DATA_PTR, &id);
+                put_buffer(
+                    host,
+                    WRITERS_DESC_PTR,
+                    WRITERS_DATA_PTR,
+                    &writers_buf(&[alice]),
+                );
+                assert_eq!(
+                    host.js_crdt_shared_new_with_id(ID_DESC_PTR, WRITERS_DESC_PTR, 0, 1)
+                        .unwrap(),
+                    0
+                );
+                put_buffer(host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"v1");
+                assert_eq!(
+                    host.js_crdt_shared_set(ID_DESC_PTR, VALUE_DESC_PTR)
+                        .unwrap(),
+                    1
+                );
+            }
+        );
+
+        // --- Bob: not a writer — cannot set, and writable_by_me is false. ---
+        shared_host!(
+            &mut storage,
+            &limits,
+            bob,
+            |host: &mut crate::logic::VMHostFunctions<'_>| {
+                put_buffer(host, ID_DESC_PTR, ID_DATA_PTR, &id);
+                assert_eq!(host.js_crdt_shared_writable_by_me(ID_DESC_PTR).unwrap(), 0);
+
+                put_buffer(host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"v2");
+                let res = host
+                    .js_crdt_shared_set(ID_DESC_PTR, VALUE_DESC_PTR)
+                    .unwrap();
+                assert_eq!(res, -1, "non-writer set must be rejected");
+                let msg = String::from_utf8(host.borrow_logic().registers.get(0).unwrap().to_vec())
+                    .unwrap();
+                // The `PermissionedStorage` API gate rejects first ("Action not
+                // allowed: Executor is not authorised …"), before the inner
+                // `WriterSetCell`'s writer-specific message.
+                assert!(
+                    msg.to_lowercase().contains("not allowed")
+                        || msg.to_lowercase().contains("authoris"),
+                    "error should signal an authorization failure, got: {msg}"
+                );
+
+                // The value is unchanged.
+                let reg = 1u64;
+                assert_eq!(host.js_crdt_shared_get(ID_DESC_PTR, reg).unwrap(), 1);
+                assert_eq!(host.borrow_logic().registers.get(reg).unwrap(), b"v1");
+            }
+        );
+
+        // --- Alice: rotate the writer set to add Bob. ---
+        shared_host!(
+            &mut storage,
+            &limits,
+            alice,
+            |host: &mut crate::logic::VMHostFunctions<'_>| {
+                put_buffer(host, ID_DESC_PTR, ID_DATA_PTR, &id);
+                put_buffer(
+                    host,
+                    WRITERS_DESC_PTR,
+                    WRITERS_DATA_PTR,
+                    &writers_buf(&[alice, bob]),
+                );
+                assert_eq!(
+                    host.js_crdt_shared_rotate_writers(ID_DESC_PTR, WRITERS_DESC_PTR)
+                        .unwrap(),
+                    1,
+                    "current writer may rotate"
+                );
+            }
+        );
+
+        // --- Bob: now a writer — can set. ---
+        shared_host!(
+            &mut storage,
+            &limits,
+            bob,
+            |host: &mut crate::logic::VMHostFunctions<'_>| {
+                put_buffer(host, ID_DESC_PTR, ID_DATA_PTR, &id);
+                assert_eq!(
+                    host.js_crdt_shared_writable_by_me(ID_DESC_PTR).unwrap(),
+                    1,
+                    "bob is a writer after rotation"
+                );
+                put_buffer(host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"v2");
+                assert_eq!(
+                    host.js_crdt_shared_set(ID_DESC_PTR, VALUE_DESC_PTR)
+                        .unwrap(),
+                    1,
+                    "new writer may set"
+                );
+                let reg = 1u64;
+                assert_eq!(host.js_crdt_shared_get(ID_DESC_PTR, reg).unwrap(), 1);
+                assert_eq!(host.borrow_logic().registers.get(reg).unwrap(), b"v2");
+            }
+        );
+    }
+
+    /// SharedStorage: a cell constructed `frozen` reports `is_frozen` and rejects
+    /// any writer-set rotation.
+    #[test]
+    fn test_js_crdt_shared_frozen_blocks_rotation() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let alice: [u8; 32] = [0xA1; 32];
+        let bob: [u8; 32] = [0xB0; 32];
+        let id: [u8; 32] = [0x53; 32];
+
+        shared_host!(
+            &mut storage,
+            &limits,
+            alice,
+            |host: &mut crate::logic::VMHostFunctions<'_>| {
+                put_buffer(host, ID_DESC_PTR, ID_DATA_PTR, &id);
+                put_buffer(
+                    host,
+                    WRITERS_DESC_PTR,
+                    WRITERS_DATA_PTR,
+                    &writers_buf(&[alice]),
+                );
+                // frozen = 1.
+                assert_eq!(
+                    host.js_crdt_shared_new_with_id(ID_DESC_PTR, WRITERS_DESC_PTR, 1, 1)
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(host.js_crdt_shared_is_frozen(ID_DESC_PTR).unwrap(), 1);
+
+                put_buffer(
+                    host,
+                    WRITERS_DESC_PTR,
+                    WRITERS_DATA_PTR,
+                    &writers_buf(&[alice, bob]),
+                );
+                let res = host
+                    .js_crdt_shared_rotate_writers(ID_DESC_PTR, WRITERS_DESC_PTR)
+                    .unwrap();
+                assert_eq!(res, -1, "rotation on a frozen cell must fail");
+                let msg = String::from_utf8(host.borrow_logic().registers.get(0).unwrap().to_vec())
+                    .unwrap();
+                assert!(
+                    msg.to_lowercase().contains("frozen"),
+                    "error should mention frozen, got: {msg}"
+                );
+            }
+        );
+    }
+
+    /// A `*_new_with_id` constructor must place the shared cell at exactly the
+    /// caller-supplied id, and two handles built at the same id must address the
+    /// same storage entity (set via one, read via another).
+    #[test]
+    fn test_js_crdt_shared_new_with_id_is_deterministic_and_shared() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let alice: [u8; 32] = [0xA1; 32];
+        let id: [u8; 32] = [0x54; 32];
+
+        shared_host!(
+            &mut storage,
+            &limits,
+            alice,
+            |host: &mut crate::logic::VMHostFunctions<'_>| {
+                put_buffer(host, ID_DESC_PTR, ID_DATA_PTR, &id);
+                put_buffer(
+                    host,
+                    WRITERS_DESC_PTR,
+                    WRITERS_DATA_PTR,
+                    &writers_buf(&[alice]),
+                );
+
+                // First handle at the deterministic id.
+                let reg_a = 1u64;
+                assert_eq!(
+                    host.js_crdt_shared_new_with_id(ID_DESC_PTR, WRITERS_DESC_PTR, 0, reg_a)
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(host.borrow_logic().registers.get(reg_a).unwrap(), &id);
+
+                // Second handle at the SAME id.
+                let reg_b = 2u64;
+                assert_eq!(
+                    host.js_crdt_shared_new_with_id(ID_DESC_PTR, WRITERS_DESC_PTR, 0, reg_b)
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(host.borrow_logic().registers.get(reg_b).unwrap(), &id);
+
+                // Set through the id, then read back via the shared id.
+                put_buffer(host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"payload");
+                assert_eq!(
+                    host.js_crdt_shared_set(ID_DESC_PTR, VALUE_DESC_PTR)
+                        .unwrap(),
+                    1
+                );
+                let reg_c = 3u64;
+                assert_eq!(
+                    host.js_crdt_shared_get(ID_DESC_PTR, reg_c).unwrap(),
+                    1,
+                    "value must be found via the shared id"
+                );
+                assert_eq!(
+                    host.borrow_logic().registers.get(reg_c).unwrap(),
+                    b"payload"
+                );
+            }
         );
     }
 }
