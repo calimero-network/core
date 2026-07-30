@@ -1,5 +1,40 @@
 use core::iter;
 
+/// The exclusive upper bound for a byte prefix: the smallest key that does NOT
+/// start with `prefix` — the `hi` of a half-open `[prefix, hi)` range that
+/// covers exactly "all keys under this prefix", used for prefix scans and
+/// range-clears against an ordered byte keyspace (e.g. RocksDB / `BTreeMap`).
+///
+/// It increments the last non-`0xFF` byte and drops the all-`0xFF` tail. For
+/// the degenerate all-`0xFF` (or empty) prefix — where no finite successor
+/// exists — it falls back to a longer all-`0xFF` key, which still upper-bounds
+/// the scan.
+///
+/// ## Examples
+///
+/// ```
+/// use calimero_primitives::utils::prefix_upper_bound;
+///
+/// assert_eq!(prefix_upper_bound(b"abc"), b"abd".to_vec());
+/// // A trailing 0xFF is dropped, then the preceding byte is bumped.
+/// assert_eq!(prefix_upper_bound(&[0x01, 0xFF]), vec![0x02]);
+/// // All-0xFF has no finite successor: fall back to a longer all-0xFF key.
+/// assert_eq!(prefix_upper_bound(&[0xFF, 0xFF]), vec![0xFF, 0xFF, 0xFF]);
+/// ```
+#[must_use]
+pub fn prefix_upper_bound(prefix: &[u8]) -> Vec<u8> {
+    let mut end = prefix.to_vec();
+    while let Some(last) = end.last_mut() {
+        if *last == 0xFF {
+            let _ = end.pop();
+        } else {
+            *last += 1;
+            return end;
+        }
+    }
+    vec![0xFF; prefix.len() + 1]
+}
+
 /// Creates an iterator that finds and compacts segments of a Rust type name.
 ///
 /// This function scans a path, discarding segments that do not contain generic
@@ -62,7 +97,32 @@ pub fn compact_path(path: &str) -> impl Iterator<Item = &str> {
 mod tests {
     use core::any::{type_name, type_name_of_val};
 
-    use super::compact_path;
+    use super::{compact_path, prefix_upper_bound};
+
+    #[test]
+    fn prefix_upper_bound_normal() {
+        // Bumps the last byte; the result is the first key not under `prefix`.
+        assert_eq!(prefix_upper_bound(b"abc"), b"abd".to_vec());
+        assert_eq!(prefix_upper_bound(&[0x00]), vec![0x01]);
+        assert_eq!(prefix_upper_bound(&[0x01, 0x02]), vec![0x01, 0x03]);
+    }
+
+    #[test]
+    fn prefix_upper_bound_trailing_ff() {
+        // Trailing 0xFF bytes are dropped, then the preceding byte is bumped.
+        assert_eq!(prefix_upper_bound(&[0x01, 0xFF]), vec![0x02]);
+        assert_eq!(prefix_upper_bound(&[0x01, 0xFF, 0xFF]), vec![0x02]);
+    }
+
+    #[test]
+    fn prefix_upper_bound_all_ff() {
+        // No finite successor exists: fall back to a longer all-0xFF key that
+        // still upper-bounds the scan.
+        assert_eq!(prefix_upper_bound(&[0xFF]), vec![0xFF, 0xFF]);
+        assert_eq!(prefix_upper_bound(&[0xFF, 0xFF]), vec![0xFF, 0xFF, 0xFF]);
+        // Empty prefix has no last byte either.
+        assert_eq!(prefix_upper_bound(&[]), vec![0xFF]);
+    }
 
     #[test]
     fn test_compact_path() {
