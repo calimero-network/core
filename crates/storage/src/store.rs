@@ -1,5 +1,6 @@
 //! Storage operations.
 
+use calimero_primitives::utils::prefix_upper_bound;
 use sha2::{Digest, Sha256};
 
 use crate::address::Id;
@@ -379,23 +380,6 @@ fn index_key(collection: Id, order_key: &[u8]) -> Vec<u8> {
     key.extend_from_slice(collection.as_bytes());
     key.extend_from_slice(order_key);
     key
-}
-
-/// The exclusive upper bound for a byte prefix: the smallest key that does NOT
-/// start with `prefix` (used to scan "all keys under this prefix"). For the
-/// all-`0xFF` corner (astronomically unlikely for a 32-byte id) we fall back to
-/// a longer all-`0xFF` key, which still bounds the scan.
-fn prefix_upper_bound(prefix: &[u8]) -> Vec<u8> {
-    let mut end = prefix.to_vec();
-    while let Some(last) = end.last_mut() {
-        if *last == 0xFF {
-            let _ = end.pop();
-        } else {
-            *last += 1;
-            return end;
-        }
-    }
-    vec![0xFF; prefix.len() + 1]
 }
 
 /// Map raw `(composite_key, entry_id_bytes)` scan hits back to

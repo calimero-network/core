@@ -2149,7 +2149,19 @@ impl<S: StorageAdaptor> Interface<S> {
                 // and this arm returns early). Clearing a non-sorted parent's
                 // marker is a no-op, so no "is this sorted?" check is needed.
                 if let Some(parent) = parent {
+                    tracing::debug!(
+                        target: "calimero_storage::sorted_index_dbg",
+                        child = %id,
+                        parent = %parent.id(),
+                        "APPLY_ADD clearing parent marker"
+                    );
                     let _ = S::index_meta_clear(parent.id());
+                } else {
+                    tracing::debug!(
+                        target: "calimero_storage::sorted_index_dbg",
+                        child = %id,
+                        "APPLY_ADD parent=None, marker clear SKIPPED"
+                    );
                 }
 
                 // Save data (might merge, producing different hash)
@@ -2456,6 +2468,12 @@ impl<S: StorageAdaptor> Interface<S> {
             // marker so a `SortedSet`/`SortedMap` rebuilds its ordered index on
             // the next read rather than serving the removed element. No-op for a
             // non-sorted parent.
+            tracing::debug!(
+                target: "calimero_storage::sorted_index_dbg",
+                child = %id,
+                parent = %parent_id,
+                "APPLY_DELETE clearing parent marker"
+            );
             let _ = S::index_meta_clear(parent_id);
         }
 

@@ -341,6 +341,37 @@ non-owner `update`/`tombstone` returns `-1` with an ownership error message writ
 | `js_crdt_authored_vector_iter` | `(vector_id_ptr: u64, register_id: u64) -> i32` | Iterates all values in insertion order (`[count][len,value]...`). |
 | `js_crdt_authored_vector_len` | `(vector_id_ptr: u64, register_id: u64) -> i32` | Gets the entry count including tombstoned slots (`u64`, little-endian). |
 
+#### Shared Storage Operations
+
+A group-writable single byte value guarded by a rotatable **writer set** (`SharedStorage`,
+i.e. `PermissionedStorage<T, WriterSetAcl>` over a byte value). Any member of the writer set may
+read and `set` the value; the set is rotated by a current writer via `rotate_writers`. Both `set`
+and `rotate_writers` are **writer-gated**: a caller not in the current writer set is rejected with
+`-1` and an `ActionNotAllowed` message written to register `0` (the authoritative check is the
+merge-time signature verification against the writer set). The executor identity is taken from the
+per-execution env, so no identity argument is threaded through. The byte value rides a
+last-write-wins register internally so concurrent writes from different writers converge by HLC
+timestamp.
+
+A **writer set** crosses the ABI as a buffer of concatenated 32-byte public keys — the caller passes
+`count * 32` bytes; `js_crdt_shared_writers` emits the same encoding (decode `len / 32` keys).
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `js_crdt_shared_new` | `(writers_ptr: u64, frozen: u32, register_id: u64) -> i32` | Creates a new shared byte cell with the given writer set (concatenated 32-byte keys) and `frozen` flag (`0`/`1`). Writes the 32-byte id to the register; returns `0`. |
+| `js_crdt_shared_new_with_id` | `(id_ptr: u64, writers_ptr: u64, frozen: u32, register_id: u64) -> i32` | As above, at a caller-supplied deterministic 32-byte id. |
+| `js_crdt_shared_set` | `(cell_id_ptr: u64, value_ptr: u64) -> i32` | Writer-gated. Replaces the value. Returns `1` on success; `-1` with an `ActionNotAllowed` message in register `0` for a non-writer. |
+| `js_crdt_shared_get` | `(cell_id_ptr: u64, register_id: u64) -> i32` | Reads the current value into the register (`1` found, `0` never-written with a cleared register). |
+| `js_crdt_shared_writers` | `(cell_id_ptr: u64, register_id: u64) -> i32` | Writes the current writer set as concatenated 32-byte keys to the register; returns `1`. |
+| `js_crdt_shared_writable_by_me` | `(cell_id_ptr: u64) -> i32` | Whether the current executor is in the writer set (`1`/`0`). |
+| `js_crdt_shared_is_frozen` | `(cell_id_ptr: u64) -> i32` | Whether the writer set is frozen (`1`/`0`). |
+| `js_crdt_shared_rotate_writers` | `(cell_id_ptr: u64, writers_ptr: u64) -> i32` | Writer-gated. Rotates the writer set to the given keys. Returns `1` on success; `-1` with an `ActionNotAllowed` message in register `0` for a non-writer, a frozen cell, or an empty target set. |
+
+> **Deferred (not in this bridge):** per-writer **OpMask** capabilities (`grant_capability` /
+> `revoke_capability` / `rotate_writers_scoped`, exposing `WRITE`/`DELETE`/`ADMIN` granularity) and
+> **`SharedStorage<Collection>` nesting** (a group-writable map/set/vector rather than a single byte
+> value). Both are planned follow-ups.
+
 ### User & Frozen Storage (JS)
 
 #### User Storage

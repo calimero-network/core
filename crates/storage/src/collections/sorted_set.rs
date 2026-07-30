@@ -192,15 +192,26 @@ where
 
         // Warm the ordered index for the new element (after the write, so the
         // collection's full_hash already reflects it when we stamp the marker).
+        // But maintain it INCREMENTALLY only when the index was already
+        // consistent with the child set (marker current) BEFORE this insert. A
+        // sync-apply that linked a child clears the marker WITHOUT populating the
+        // node-local index; if we then index only this new element and stamp the
+        // marker to the (now full) `full_hash`, the marker would falsely certify
+        // an index still missing that synced child, so the next ordered read
+        // would trust it and serve a stale subset (core#3333). When the index is
+        // stale, leave the marker stale so the next ordered read rebuilds from the
+        // full child set — the invariant `ensure_index` documents.
         let order_key = S::index_supported().then(|| value.as_ref().to_vec());
+        let index_was_current = order_key.is_some() && self.index_marker_current();
 
         let _ignored = self.inner.insert(Some(id), value)?;
 
         if let Some(order_key) = order_key {
-            // Only stamp the validity marker if the index write landed; a dropped
+            // Only stamp the validity marker if the index was consistent before
+            // AND the index write landed; either a stale-before index or a dropped
             // write leaves the marker stale so the next ordered read rebuilds and
-            // self-heals rather than trusting an index missing this element.
-            if S::index_put(collection, &order_key, id) {
+            // self-heals rather than trusting an index missing elements.
+            if index_was_current && S::index_put(collection, &order_key, id) {
                 self.stamp_index_marker();
             }
         }
@@ -267,15 +278,22 @@ where
     {
         let id = compute_id(self.inner.id(), value.as_ref());
 
+        // Capture index consistency BEFORE the mutation (see `insert`): only
+        // maintain the index incrementally + stamp when it was already current;
+        // otherwise a sync-applied child change left it stale and we must leave
+        // the marker stale so the next ordered read rebuilds (core#3333).
+        let index_was_current = S::index_supported() && self.index_marker_current();
+
         let Some(entry) = self.inner.get_mut(id)? else {
             return Ok(false);
         };
 
         let _ignored = entry.remove()?;
 
-        // Only stamp if the index write landed; else leave the marker stale to
-        // force a rebuild on the next ordered read.
-        if S::index_supported() && S::index_remove(self.inner.id(), value.as_ref()) {
+        // Only stamp if the index was consistent before AND the index write
+        // landed; else leave the marker stale to force a rebuild on the next
+        // ordered read.
+        if index_was_current && S::index_remove(self.inner.id(), value.as_ref()) {
             self.stamp_index_marker();
         }
 
@@ -332,12 +350,32 @@ where
     /// the node-local index-meta keyspace (mirroring the index it guards), never
     /// the synced state — so a peer never inherits this node's marker.
     fn stamp_index_marker(&self) {
-        let _ = S::index_meta_put(self.inner.id(), &self.current_full_hash());
+        let full = self.current_full_hash();
+        tracing::debug!(
+            target: "calimero_storage::sorted_index_dbg",
+            collection = %self.inner.id(),
+            hash = %hex::encode(full),
+            kind = "SortedSet",
+            "STAMP index marker"
+        );
+        let _ = S::index_meta_put(self.inner.id(), &full);
     }
 
     /// `true` if the stamped marker equals the current `full_hash`.
     fn index_marker_current(&self) -> bool {
-        S::index_meta_get(self.inner.id()).as_deref() == Some(&self.current_full_hash()[..])
+        let full = self.current_full_hash();
+        let stored = S::index_meta_get(self.inner.id());
+        let current = stored.as_deref() == Some(&full[..]);
+        tracing::debug!(
+            target: "calimero_storage::sorted_index_dbg",
+            collection = %self.inner.id(),
+            current_full_hash = %hex::encode(full),
+            stored_marker = ?stored.as_deref().map(hex::encode),
+            marker_current = current,
+            kind = "SortedSet",
+            "CHECK index marker"
+        );
+        current
     }
 
     /// Reconcile the index with the authoritative element set, then stamp the
@@ -357,6 +395,14 @@ where
                 .into_iter()
                 .map(|(order_key, _id)| order_key)
                 .collect();
+        tracing::debug!(
+            target: "calimero_storage::sorted_index_dbg",
+            %collection,
+            desired_len = desired.len(),
+            existing_len = existing.len(),
+            kind = "SortedSet",
+            "REBUILD index (desired = child-list snapshot)"
+        );
         // Only stamp if every diff write landed; otherwise leave the marker
         // stale so the next read retries the rebuild rather than trusting a
         // partial index.
