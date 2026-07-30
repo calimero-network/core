@@ -1,5 +1,6 @@
 #![allow(unused_crate_dependencies, reason = "Not actually unused")]
 
+use calimero_account::AccountId;
 use core::str;
 use std::env;
 use std::path::Path;
@@ -73,6 +74,7 @@ fn main() -> EyreResult<()> {
 
         let outcome = module.run(
             [0; 32].into(),
+            AccountId::from([0; 32]),
             [0; 32].into(),
             name,
             &input,

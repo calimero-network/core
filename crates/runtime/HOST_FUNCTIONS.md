@@ -103,7 +103,8 @@ Registers are host-side temporary storage slots that allow passing data larger t
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `context_id` | `(register_id: u64)` | Writes 32-byte context ID to register. |
-| `executor_id` | `(register_id: u64)` | Writes 32-byte executor public key to register. |
+| `account_id` | `(register_id: u64)` | Writes the 32-byte account this call is authorized as. The id to key per-person state by; two devices of one person write the same value. |
+| `device_id` | `(register_id: u64)` | Writes the 32-byte public key of the executing device — one installation, and the replica its writes are attributed to. Never interchangeable with `account_id`. |
 
 ### Input/Output
 

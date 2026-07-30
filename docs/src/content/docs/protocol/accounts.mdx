@@ -249,6 +249,25 @@ The two halves are different in kind on purpose. *Which* account a key speaks fo
 
 Because the lookup reads **live** bindings, which exclude revoked and superseded devices, revocation withdraws authorship and not merely delivery.
 
+## What an app sees
+
+The two ids reach app code as two host functions, and the choice between them is the whole model in one line:
+
+```rust
+env::account_id()   // WHO is calling  — a person; same on all their devices
+env::device_id()    // WHICH machine   — one installation; the replica id
+```
+
+There is deliberately no `executor_id()` any more. It returned a device-shaped value while reading like a user, so `Map<executor_id, Vote>` was one vote per *device* — and adding a second device silently split the person in two. Deleting it rather than redefining it makes every existing call site a compile error, which is the only way that choice gets made deliberately instead of inherited.
+
+| If the state is… | Key it by | Because |
+| --- | --- | --- |
+| per person — a vote, a profile, a balance, a role | `account_id()` | two devices of one person must agree |
+| per replica — a counter slot, an HLC seed, "which machine wrote this" | `device_id()` | two devices of one person must differ |
+| an owner stamp read back from a storage collection | `device_id()` | `UserStorage` / `AuthoredMap` / `SharedStorage` stamp the device, so a lookup has to match |
+
+The third row is the one that bites: those collections record the writer at write time, and that writer is the device. Handing them an account id produces a gate that never matches. Per-person aggregation over them belongs **above** storage.
+
 ## Recovery, and what it does not cover
 
 Two separable halves; conflating them is what makes recovery look impossible.

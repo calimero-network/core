@@ -14,6 +14,7 @@
 //! watchdog `timeout` fires the test — which is precisely the node-thread
 //! starvation the meter exists to prevent.
 
+use calimero_account::AccountId;
 use std::time::Duration;
 
 use calimero_runtime::errors::FunctionCallError;
@@ -54,6 +55,7 @@ async fn runaway_guest_on_blocking_pool_is_gas_bounded_and_frees_the_thread() {
         let mut storage = InMemoryStorage::default();
         module.run(
             [0u8; 32].into(),
+            AccountId::from([0u8; 32]),
             [0u8; 32].into(),
             "spin_forever",
             &[],

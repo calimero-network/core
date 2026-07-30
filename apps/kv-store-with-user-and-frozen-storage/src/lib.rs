@@ -126,7 +126,7 @@ impl KvStore {
 
     /// Sets a simple string value for the *current* user.
     pub fn set_user_simple(&mut self, value: String) -> app::Result<()> {
-        let executor_id = calimero_sdk::env::executor_id();
+        let executor_id = calimero_sdk::env::device_id();
         app::log!(
             "Setting simple value for user {:?}: {:?}",
             executor_id,
@@ -144,7 +144,7 @@ impl KvStore {
 
     /// Gets the simple string value for the *current* user.
     pub fn get_user_simple(&self) -> app::Result<Option<String>> {
-        let executor_id = calimero_sdk::env::executor_id();
+        let executor_id = calimero_sdk::env::device_id();
         app::log!("Getting simple value for user {:?}", executor_id);
 
         Ok(self.user_items_simple.get()?.map(|v| v.get().clone()))
@@ -163,7 +163,7 @@ impl KvStore {
 
     /// Sets a key-value pair in the *current* user's nested map.
     pub fn set_user_nested(&mut self, key: String, value: String) -> app::Result<()> {
-        let executor_id = calimero_sdk::env::executor_id();
+        let executor_id = calimero_sdk::env::device_id();
         app::log!(
             "Setting nested key {:?} for user {:?}: {:?}",
             key,
@@ -186,7 +186,7 @@ impl KvStore {
 
     /// Gets a value from the *current* user's nested map.
     pub fn get_user_nested(&self, key: &str) -> app::Result<Option<String>> {
-        let executor_id = calimero_sdk::env::executor_id();
+        let executor_id = calimero_sdk::env::device_id();
         app::log!("Getting nested key {:?} for user {:?}", key, executor_id);
 
         let nested_map = self.user_items_nested.get()?;

@@ -1,6 +1,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
+use calimero_account::AccountId;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -393,6 +394,7 @@ impl Module {
     pub fn run<'a>(
         &'a self,
         context: ContextId,
+        account: AccountId,
         executor: PublicKey,
         method: &str,
         input: &'a [u8],
@@ -402,6 +404,7 @@ impl Module {
     ) -> RuntimeResult<Outcome> {
         self.run_with_origin(
             context,
+            account,
             executor,
             method,
             input,
@@ -420,6 +423,7 @@ impl Module {
     pub fn run_with_origin<'a>(
         &'a self,
         context: ContextId,
+        account: AccountId,
         executor: PublicKey,
         method: &str,
         input: &'a [u8],
@@ -432,7 +436,7 @@ impl Module {
         info!(%context_id, method, "Running WASM method");
         debug!(%context_id, method, input_len = input.len(), "WASM execution input");
 
-        let mut context = VMContext::new(input.into(), *context_id, *executor);
+        let mut context = VMContext::new(input.into(), *context_id, *executor, account);
         context.xcall_origin = xcall_origin.map(|origin| *origin);
 
         let mut logic = VMLogic::new(storage, private_storage, context, &self.limits, node_client);
@@ -700,6 +704,7 @@ mod wasm_integration_tests {
         let outcome = module
             .run(
                 [0; 32].into(),
+                AccountId::from([0; 32]),
                 [0; 32].into(),
                 "test_func",
                 &[],
@@ -734,6 +739,7 @@ mod wasm_integration_tests {
         let outcome = module
             .run(
                 [0; 32].into(),
+                AccountId::from([0; 32]),
                 [0; 32].into(),
                 "non_existent_func",
                 &[],
@@ -771,6 +777,7 @@ mod wasm_integration_tests {
         let outcome = module
             .run(
                 [0; 32].into(),
+                AccountId::from([0; 32]),
                 [0; 32].into(),
                 "",
                 &[],
@@ -811,6 +818,7 @@ mod wasm_integration_tests {
         let outcome = module
             .run(
                 [0; 32].into(),
+                AccountId::from([0; 32]),
                 [0; 32].into(),
                 &long_method_name,
                 &[],
@@ -859,6 +867,7 @@ mod wasm_integration_tests {
             let outcome = module
                 .run(
                     [0; 32].into(),
+                    AccountId::from([0; 32]),
                     [0; 32].into(),
                     method_name,
                     &[],
@@ -928,6 +937,7 @@ mod wasm_integration_tests {
             let outcome = module
                 .run(
                     [0; 32].into(),
+                    AccountId::from([0; 32]),
                     [0; 32].into(),
                     method_name,
                     &[],
@@ -974,6 +984,7 @@ mod wasm_integration_tests {
         let outcome = module
             .run(
                 [0; 32].into(),
+                AccountId::from([0; 32]),
                 [0; 32].into(),
                 "valid_method_name",
                 &[],
@@ -1011,6 +1022,7 @@ mod wasm_integration_tests {
         let outcome = module
             .run(
                 [0; 32].into(),
+                AccountId::from([0; 32]),
                 [0; 32].into(),
                 "trap_func",
                 &[],
@@ -1069,6 +1081,7 @@ mod wasm_integration_tests {
         let outcome = module
             .run(
                 [0; 32].into(),
+                AccountId::from([0; 32]),
                 [0; 32].into(),
                 "panic_func",
                 &[],
@@ -1165,6 +1178,7 @@ mod wasm_integration_tests {
         let outcome = module
             .run(
                 [0; 32].into(),
+                AccountId::from([0; 32]),
                 [0; 32].into(),
                 "read_probe",
                 &[],
@@ -1226,6 +1240,7 @@ mod wasm_integration_tests {
         let outcome = module
             .run(
                 [0; 32].into(),
+                AccountId::from([0; 32]),
                 [0; 32].into(),
                 "oob_func",
                 &[],
@@ -1268,6 +1283,7 @@ mod wasm_integration_tests {
         let outcome = module
             .run(
                 [0; 32].into(),
+                AccountId::from([0; 32]),
                 [0; 32].into(),
                 "overflow_func",
                 &[],
@@ -1747,6 +1763,7 @@ mod gas_metering_tests {
             let outcome = module
                 .run(
                     [0; 32].into(),
+                    AccountId::from([0; 32]),
                     [0; 32].into(),
                     method,
                     &[],
@@ -1861,6 +1878,7 @@ mod gas_metering_tests {
         let outcome = module
             .run(
                 [0; 32].into(),
+                AccountId::from([0; 32]),
                 [0; 32].into(),
                 "boom",
                 &[],
@@ -1894,6 +1912,7 @@ mod gas_metering_tests {
         let outcome = module
             .run(
                 [0; 32].into(),
+                AccountId::from([0; 32]),
                 [0; 32].into(),
                 "noop",
                 &[],
@@ -2011,6 +2030,7 @@ mod gas_metering_tests {
             let outcome = restored
                 .run(
                     [0; 32].into(),
+                    AccountId::from([0; 32]),
                     [0; 32].into(),
                     "spin_forever",
                     &[],
@@ -2066,6 +2086,7 @@ mod gas_metering_tests {
             module
                 .run(
                     [0; 32].into(),
+                    AccountId::from([0; 32]),
                     [0; 32].into(),
                     "work",
                     &[],

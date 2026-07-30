@@ -25,6 +25,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use calimero_account::AccountId;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
@@ -236,6 +237,7 @@ fn run(module: &Module, node: &mut Node, method: &str, params: Value) -> eyre::R
     let input = to_json_vec(&params)?;
     let outcome = module.run(
         CTX.into(),
+        AccountId::from(node.executor),
         node.executor.into(),
         method,
         &input,
@@ -252,6 +254,7 @@ fn run(module: &Module, node: &mut Node, method: &str, params: Value) -> eyre::R
 fn apply_delta(module: &Module, node: &mut Node, artifact: &[u8]) -> eyre::Result<[u8; 32]> {
     let outcome = module.run(
         CTX.into(),
+        AccountId::from(node.executor),
         node.executor.into(),
         "__calimero_sync_next",
         artifact,

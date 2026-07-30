@@ -145,7 +145,7 @@ impl VMHostFunctions<'_> {
 
 ```rust
 // 1. Create context
-let context = VMContext::new(input, context_id, executor_id);
+let context = VMContext::new(input, context_id, device_id, account);
 
 // 2. Create logic with storage and limits
 let mut logic = VMLogic::new(storage, private_storage, context, limits, node_client);

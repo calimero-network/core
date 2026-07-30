@@ -207,7 +207,7 @@ its own slot; reads are open:
 
 ```rust
 let mut profiles: UserStorage<LwwRegister<String>> = UserStorage::new();
-profiles.insert("Alice".into())?;                     // writes env::executor_id()'s slot
+profiles.insert("Alice".into())?;                     // writes env::device_id()'s slot
 let mine = profiles.get()?;                            // my slot
 let theirs = profiles.get_for_user(&bob_key)?;         // anyone's slot, read-only
 ```
@@ -300,7 +300,7 @@ never branch state on `now()` inside a merge-replayed path.
 <Aside type="caution" title="Counters and clocks in replayed code">
   `Counter::increment` and `Rga::insert` read the executor id / HLC of the *live*
   call and intentionally **panic** when replayed in merge mode. Their deterministic
-  siblings — `increment_for(executor_id)` and `insert_str_at_timestamp(...)` — take
+  siblings — `increment_for(device_id)` and `insert_str_at_timestamp(...)` — take
   the value explicitly so replay is reproducible. This matters most in
   [migrations](/build/migrations/).
 </Aside>

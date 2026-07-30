@@ -331,7 +331,7 @@ it is set, every timestamp-stamping path zeroes itself out instead of reading th
 if env::in_merge_mode() {
     Self { value, timestamp: HybridTimestamp::zero(), node_id: [0; 32] }
 } else {
-    Self { value, timestamp: env::hlc_timestamp(), node_id: env::executor_id() }
+    Self { value, timestamp: env::hlc_timestamp(), node_id: env::device_id() }
 }
 ```
 

@@ -133,7 +133,7 @@ pub struct KvStore {
 impl KvStore {
     #[app::init]
     pub fn init() -> KvStore {
-        let initializer: PublicKey = calimero_sdk::env::executor_id().into();
+        let initializer: PublicKey = calimero_sdk::env::device_id().into();
         let mut writers = BTreeSet::new();
         writers.insert(initializer);
         KvStore {
@@ -161,7 +161,7 @@ impl KvStore {
 ## User-owned and write-once storage
 
 From `apps/kv-store-with-user-and-frozen-storage`. `UserStorage<T>` gives each
-identity its own slot keyed by `executor_id()`; `FrozenStorage<T>` is
+identity its own slot keyed by `device_id()`; `FrozenStorage<T>` is
 content-addressed and immutable.
 
 ```rust
@@ -174,7 +174,7 @@ pub struct KvStore {
 
 #[app::logic]
 impl KvStore {
-    // Writes to the CURRENT user's slot (env::executor_id()). Another user's
+    // Writes to the CURRENT user's slot (env::device_id()). Another user's
     // slot is `User { owner }`-stamped and only that owner's signature verifies.
     pub fn set_user_simple(&mut self, value: String) -> app::Result<()> {
         self.user_items_simple.insert(value.into())?;
@@ -196,7 +196,7 @@ Both attach an identity to data, but they answer different questions.
 
 | | `AuthoredMap<K, V>` | `UserStorage<T>` |
 |---|---|---|
-| Keyspace | One **shared** keyspace; keys are app-chosen | One slot **per user**, keyed by `executor_id()` |
+| Keyspace | One **shared** keyspace; keys are app-chosen | One slot **per user**, keyed by `device_id()` |
 | Who inserts | Anyone may insert a *new* key (stamped with their identity) | Each user writes only their own slot |
 | Who updates / removes | Only the entry's recorded **author** | Only the slot owner |
 | Use it when | A collaborative collection where each row has an owner (posts, listings, claims) | Per-user private data (a profile, a personal sub-store) |
@@ -267,7 +267,7 @@ pub struct Docs {
 impl Docs {
     #[app::init]
     pub fn init() -> Docs {
-        let me: PublicKey = env::executor_id().into();
+        let me: PublicKey = env::device_id().into();
         Docs {
             roles: AccessControl::new(me),
             body: PermissionedStorage::new([me].into(), false),

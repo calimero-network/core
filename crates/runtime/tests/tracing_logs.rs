@@ -19,6 +19,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use calimero_account::AccountId;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
@@ -140,6 +141,7 @@ fn run(method: &str, params: Value) -> Outcome {
     module
         .run(
             CTX.into(),
+            AccountId::from(EXEC),
             EXEC.into(),
             "init",
             &to_json_vec(&json!({})).unwrap(),
@@ -152,6 +154,7 @@ fn run(method: &str, params: Value) -> Outcome {
     module
         .run(
             CTX.into(),
+            AccountId::from(EXEC),
             EXEC.into(),
             method,
             &to_json_vec(&params).unwrap(),

@@ -62,7 +62,7 @@ impl ScenarioSharedStorageV2 {
     pub fn init() -> ScenarioSharedStorageV2 {
         // Seed the writer set with the creating node so it can write.
         let mut writers = BTreeSet::new();
-        let executor: PublicKey = env::executor_id().into();
+        let executor: PublicKey = env::device_id().into();
         writers.insert(executor);
         ScenarioSharedStorageV2 {
             doc: SharedStorage::new(writers, false),

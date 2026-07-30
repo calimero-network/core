@@ -305,9 +305,50 @@ mod tests {
     }
 
     #[test]
+    fn the_account_and_the_device_move_independently() {
+        // The contract the whole account/device split rests on, at the layer app
+        // authors touch. Both ids are 32 bytes read through the same harness, so a
+        // wiring mistake that pointed them at one field is invisible unless a test
+        // moves one and checks the other did not follow.
+        let mut app = TestHost::new(NestedCrdtTest::init);
+
+        assert_ne!(
+            app.account_id(),
+            app.device_id(),
+            "the harness defaults must differ, or every test that confuses the two \
+             passes by accident"
+        );
+
+        // `call_as` is one person's second device: the device moves, the account
+        // does not — the case that was inexpressible while there was one id.
+        let account_before = app.account_id();
+        app.call_as([7; 32], |_s| {
+            assert_eq!(
+                calimero_sdk::env::device_id(),
+                [7; 32],
+                "app logic must observe the impersonated device"
+            );
+            assert_eq!(
+                calimero_sdk::env::account_id(),
+                account_before,
+                "...and the SAME account: two devices of one person are one person"
+            );
+        });
+
+        // `call_as_account` is a different person on a machine of their own.
+        app.call_as_account([9; 32], [8; 32], |_s| {
+            assert_eq!(calimero_sdk::env::account_id(), [9; 32]);
+            assert_eq!(calimero_sdk::env::device_id(), [8; 32]);
+        });
+
+        // Both restored.
+        assert_eq!(app.account_id(), account_before);
+    }
+
+    #[test]
     fn call_as_restores_executor_even_on_panic() {
         let mut app = TestHost::new(NestedCrdtTest::init);
-        let before = app.executor_id();
+        let before = app.device_id();
 
         // `AssertUnwindSafe` is sound here: after the unwind we only read
         // `executor_id()` (a thread-local), and the whole point of the assert
@@ -319,7 +360,7 @@ mod tests {
         assert!(result.is_err());
 
         // The impersonated identity must not leak past the panic.
-        assert_eq!(app.executor_id(), before);
+        assert_eq!(app.device_id(), before);
     }
 
     #[test]

@@ -9,7 +9,7 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// v2 carries the v1 `AuthoredVector` THROUGH the migrate (preserving every
 /// element's recorded owner AND its index/order) and adds a plain
 /// `migration_note` register seeded during migrate. Elements are NOT re-pushed:
-/// `AuthoredVector::push` stamps `env::executor_id()` as owner, and migrate runs
+/// `AuthoredVector::push` stamps `env::device_id()` as owner, and migrate runs
 /// independently per node under LazyOnAccess, so re-pushing would stamp each
 /// node's OWN identity and diverge the owners. Carrying the collection preserves
 /// the v1 owner stamps byte-for-byte, so every node converges.

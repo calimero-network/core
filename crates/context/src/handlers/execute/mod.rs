@@ -1,3 +1,4 @@
+use calimero_account::AccountId;
 use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MetaRepository, NamespaceRepository,
 };
@@ -1963,11 +1964,17 @@ async fn internal_execute(
             .is_authorized_for_context_state_op(&context.id, &executor)
             .unwrap_or(false);
 
+    // Resolved here rather than passed down from the RPC layer: the account is a
+    // fact about this node in this context's namespace, not something a caller may
+    // assert. `account_for_context` always yields a real account — see its docs for
+    // why there is no un-enrolled fallback.
+    let account = calimero_governance_store::account_for_context(&datastore, &context.id)?;
     let storage = ContextStorage::from(datastore.clone(), context.id);
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
     let (mut outcome, storage, private_storage) = execute(
         guard,
         module,
+        account,
         executor,
         method.clone(),
         input,
@@ -2456,6 +2463,7 @@ async fn internal_execute(
 pub async fn execute(
     context: &ContextGuard,
     module: calimero_runtime::Module,
+    account: AccountId,
     executor: PublicKey,
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
@@ -2478,6 +2486,7 @@ pub async fn execute(
                 let mut ro_private = ReadOnlyContextStorage::new(&mut private_storage);
                 module.run_with_origin(
                     context_id,
+                    account,
                     executor,
                     &method,
                     &input,
@@ -2489,6 +2498,7 @@ pub async fn execute(
             } else {
                 module.run_with_origin(
                     context_id,
+                    account,
                     executor,
                     &method,
                     &input,

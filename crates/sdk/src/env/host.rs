@@ -29,11 +29,18 @@ use sha2::{Digest, Sha256};
 /// storage layers agree out of the box when a test doesn't override identity.
 pub(crate) const DEFAULT_CONTEXT_ID: [u8; 32] = [236; 32];
 
-/// Default executor identity returned by the mock host.
+/// Default device identity returned by the mock host.
 ///
-/// Matches `calimero_storage`'s native `executor_id()` default for the same
+/// Matches `calimero_storage`'s native `device_id()` default for the same
 /// reason as [`DEFAULT_CONTEXT_ID`].
-pub(crate) const DEFAULT_EXECUTOR_ID: [u8; 32] = [237; 32];
+pub(crate) const DEFAULT_DEVICE_ID: [u8; 32] = [237; 32];
+
+/// Default account identity returned by the mock host.
+///
+/// Deliberately NOT equal to [`DEFAULT_DEVICE_ID`]: a test that accidentally reads
+/// one where it meant the other has to fail, and it cannot if the two defaults are
+/// the same 32 bytes. That equality is exactly the conflation this split removes.
+pub(crate) const DEFAULT_ACCOUNT_ID: [u8; 32] = [238; 32];
 
 /// An event captured by the mock host during a test.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,7 +60,8 @@ struct MockHost {
     events: Vec<CapturedEvent>,
     logs: Vec<String>,
     context_id: [u8; 32],
-    executor_id: [u8; 32],
+    account_id: [u8; 32],
+    device_id: [u8; 32],
     storage: BTreeMap<Vec<u8>, Vec<u8>>,
     private_storage: BTreeMap<Vec<u8>, Vec<u8>>,
     /// Seed for the deterministic-enough PRNG backing `random_bytes`.
@@ -79,7 +87,8 @@ impl Default for MockHost {
             events: Vec::new(),
             logs: Vec::new(),
             context_id: DEFAULT_CONTEXT_ID,
-            executor_id: DEFAULT_EXECUTOR_ID,
+            account_id: DEFAULT_ACCOUNT_ID,
+            device_id: DEFAULT_DEVICE_ID,
             storage: BTreeMap::new(),
             private_storage: BTreeMap::new(),
             rng_state: 0x9E37_79B9_7F4A_7C15,
@@ -133,9 +142,14 @@ pub(crate) fn take_logs() -> Vec<String> {
     with(|h| std::mem::take(&mut h.logs))
 }
 
-/// Overrides the executor identity the mock host reports to app logic.
-pub(crate) fn set_executor_id(id: [u8; 32]) {
-    with(|h| h.executor_id = id);
+/// Overrides the account identity the mock host reports to app logic.
+pub(crate) fn set_account_id(id: [u8; 32]) {
+    with(|h| h.account_id = id);
+}
+
+/// Overrides the device identity the mock host reports to app logic.
+pub(crate) fn set_device_id(id: [u8; 32]) {
+    with(|h| h.device_id = id);
 }
 
 /// Overrides the context identity the mock host reports to app logic.
@@ -198,8 +212,12 @@ pub(crate) fn context_id() -> [u8; 32] {
     with(|h| h.context_id)
 }
 
-pub(crate) fn executor_id() -> [u8; 32] {
-    with(|h| h.executor_id)
+pub(crate) fn account_id() -> [u8; 32] {
+    with(|h| h.account_id)
+}
+
+pub(crate) fn device_id() -> [u8; 32] {
+    with(|h| h.device_id)
 }
 
 pub(crate) fn xcall_origin() -> Option<[u8; 32]> {

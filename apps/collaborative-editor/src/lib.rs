@@ -87,7 +87,7 @@ impl EditorState {
     /// Initialize a new collaborative document with a default title
     #[app::init]
     pub fn init() -> EditorState {
-        let owner_id = env::executor_id();
+        let owner_id = env::device_id();
         let owner = encode_identity(&owner_id);
         let title = "Untitled Document".to_string();
 
@@ -126,7 +126,7 @@ impl EditorState {
     /// * `Ok(())` - Text successfully inserted
     /// * `Err(app::Error)` - Error if position is invalid or insertion fails
     pub fn insert_text(&mut self, position: usize, text: String) -> app::Result<()> {
-        let editor_id = env::executor_id();
+        let editor_id = env::device_id();
         let editor = encode_identity(&editor_id);
 
         app::log!(
@@ -159,7 +159,7 @@ impl EditorState {
     /// * `Ok(())` - Text successfully deleted
     /// * `Err(app::Error)` - Error if range is invalid or deletion fails
     pub fn delete_text(&mut self, start: usize, end: usize) -> app::Result<()> {
-        let editor_id = env::executor_id();
+        let editor_id = env::device_id();
         let editor = encode_identity(&editor_id);
 
         app::log!("Deleting text from {} to {} by {}", start, end, editor);
@@ -213,7 +213,7 @@ impl EditorState {
             app::bail!("Title cannot be empty");
         }
 
-        let editor_id = env::executor_id();
+        let editor_id = env::device_id();
         let editor = encode_identity(&editor_id);
 
         let old_title = self.get_title()?;

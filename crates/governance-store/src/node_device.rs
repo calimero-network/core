@@ -20,6 +20,7 @@
 use calimero_account::{AccountGenesis, AccountId, DeviceId, KemPublicKey};
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519SecretKey;
+use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     NodeAccountRoot, NodeAccountRootValue, NodeDeviceIdentity, NodeDeviceIdentityValue,
@@ -28,7 +29,7 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 use rand::Rng as _;
 
-use crate::collect_keys_with_prefix;
+use crate::{collect_keys_with_prefix, NamespaceRepository};
 
 /// Serializes the generate-once in [`NodeDeviceRepository::ensure_account_root`],
 /// for the same reason as the device mint below: two callers could both observe an
@@ -151,6 +152,36 @@ impl NodeDevice {
     pub fn kem_public_key(&self) -> KemPublicKey {
         KemPublicKey::from(*self.secret.kem_secret.public_key().as_bytes())
     }
+}
+
+/// The account this node executes as inside `context` — what the guest reads as
+/// `env::account_id()`.
+///
+/// **Always a real account, never a stand-in for the executing key.** The account
+/// id is derived from this node's root plus a scope id and needs no ops at all, so
+/// there is no state in which this node has no account to name: one that never ran
+/// `account create` simply owns an account no peer has heard of yet. The
+/// alternative — falling back to the identity key when nothing is enrolled — would
+/// hand apps a device-shaped value through the account door and make
+/// `Map<account_id, Vote>` silently one-vote-per-device again, which is the exact
+/// failure this split exists to end.
+///
+/// The scope is the context's **namespace**, so all of a person's contexts in one
+/// namespace agree on who they are, and their accounts in two namespaces stay
+/// uncorrelatable. A context with no owning group has no namespace to resolve, so
+/// it degenerates to being its own scope: still a real derived account, just one
+/// scoped to that context.
+///
+/// # Errors
+/// Propagates the store read or the account-root generation failure.
+pub fn account_for_context(store: &Store, context_id: &ContextId) -> EyreResult<AccountId> {
+    let scope = match crate::get_group_for_context(store, context_id)? {
+        Some(group) => NamespaceRepository::new(store).resolve(&group)?,
+        None => ContextGroupId::from(*context_id.as_ref()),
+    };
+    Ok(NodeDeviceRepository::new(store)
+        .ensure_account_root()?
+        .account_for(&scope))
 }
 
 /// What a revocation of one device is about, resolved from the group's own

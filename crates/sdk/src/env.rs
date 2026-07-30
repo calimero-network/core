@@ -292,15 +292,43 @@ pub fn context_id() -> [u8; 32] {
     host::context_id()
 }
 
+/// The **account** this call is authorized as — who is calling, as a person or
+/// agent rather than a machine.
+///
+/// This is the id to key per-person state by: `Map<account_id, Vote>` is one vote
+/// per person, and stays that way when they add a second device. It is stable
+/// across a device's keys rotating, and across losing every device and recovering.
+///
+/// Use [`device_id`] instead — never this — for anything that must differ between
+/// two devices of the same person: a replica or writer slot, a per-machine
+/// setting, an "is this the machine that wrote it" check. Two devices report the
+/// same account here on purpose.
 #[must_use]
-pub fn executor_id() -> [u8; 32] {
+pub fn account_id() -> [u8; 32] {
     #[cfg(target_arch = "wasm32")]
     {
-        unsafe { sys::executor_id(DATA_REGISTER) }
-        read_register_sized(DATA_REGISTER).expect("Must have executor identity.")
+        unsafe { sys::account_id(DATA_REGISTER) }
+        read_register_sized(DATA_REGISTER).expect("Must have an account identity.")
     }
     #[cfg(not(target_arch = "wasm32"))]
-    host::executor_id()
+    host::account_id()
+}
+
+/// The **device** executing this call — one installation, and the replica its
+/// writes are attributed to.
+///
+/// Distinct per machine even for one person, which is what makes it right for
+/// per-writer state and wrong for per-person state. If you are counting people,
+/// use [`account_id`].
+#[must_use]
+pub fn device_id() -> [u8; 32] {
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::device_id(DATA_REGISTER) }
+        read_register_sized(DATA_REGISTER).expect("Must have a device identity.")
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::device_id()
 }
 
 /// The context that dispatched the current `xcall`, or `None` for a direct/RPC

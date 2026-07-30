@@ -155,7 +155,7 @@ the context will diverge.
   their explicit siblings instead:
 
   ```rust
-  counter.increment_for(&executor_id)?;            // not increment()
+  counter.increment_for(&device_id)?;            // not increment()
   rga.insert_str_at_timestamp(pos, ts, text)?;      // not insert()
   ```
 

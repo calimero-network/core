@@ -47,7 +47,7 @@ impl KvStore {
     #[app::init]
     pub fn init() -> KvStore {
         // seed the writer set with whoever installed the app
-        let initializer: PublicKey = calimero_sdk::env::executor_id().into();
+        let initializer: PublicKey = calimero_sdk::env::device_id().into();
         let mut writers = BTreeSet::new();
         writers.insert(initializer);
         // second arg `frozen`: once true, the writer set can never rotate
@@ -156,7 +156,7 @@ pub struct TeamDoc {
 impl TeamDoc {
     #[app::init]
     pub fn init() -> TeamDoc {
-        let owner: PublicKey = calimero_sdk::env::executor_id().into();
+        let owner: PublicKey = calimero_sdk::env::device_id().into();
         let mut writers = std::collections::BTreeSet::new();
         writers.insert(owner);
         TeamDoc {

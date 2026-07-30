@@ -144,7 +144,7 @@ ids that satisfy owner checks. The relevant methods:
 | `set_executor(id)` | Override the executor id reported to app logic for later `call` / `view`. |
 | `set_context(id)` | Override the context id reported to app logic. |
 | `call_as(id, \|s\| ...)` | Run one mutation as `id`, driving **both** the SDK identity and CRDT authorship, then restore. |
-| `executor_id()` / `context_id()` | Read the current identities. |
+| `device_id()` / `context_id()` | Read the current identities. |
 
 <Aside type="caution">
   An access-control test that asserts a **rejection** must set a non-owner

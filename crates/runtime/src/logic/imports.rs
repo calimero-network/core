@@ -16,7 +16,8 @@ impl VMLogic<'_> {
             fn read_register(register_id: u64, register_ptr: u64) -> u32;
 
             fn context_id(register_id: u64);
-            fn executor_id(register_id: u64);
+            fn account_id(register_id: u64);
+            fn device_id(register_id: u64);
             fn xcall_origin(register_id: u64) -> u32;
 
             fn input(register_id: u64);

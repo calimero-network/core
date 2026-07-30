@@ -1632,6 +1632,7 @@ dependencies = [
  "assert-json-diff",
  "borsh",
  "bytes",
+ "calimero-account",
  "calimero-context-config",
  "calimero-node-primitives",
  "calimero-primitives",

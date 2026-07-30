@@ -46,7 +46,7 @@ pub struct FileRecord {
     pub mime_type: String,
 
     /// Uploader's identity as base58-encoded public key
-    /// Derived from `env::executor_id()` and converted to base58 string
+    /// Derived from `env::device_id()` and converted to base58 string
     pub uploaded_by: String,
 
     /// Upload timestamp in milliseconds since Unix epoch (January 1, 1970 00:00:00 UTC)
@@ -62,7 +62,7 @@ calimero_storage::impl_atomic_lww_leaf!(FileRecord, uploaded_at);
 #[app::state(emits = FileShareEvent)]
 pub struct FileShareState {
     /// Context owner's identity as base58-encoded public key.
-    /// Set during initialization from `env::executor_id()`.
+    /// Set during initialization from `env::device_id()`.
     pub owner: LwwRegister<String>,
 
     /// Map of file ID to file metadata records.
@@ -105,7 +105,7 @@ impl FileShareState {
     pub fn init() -> FileShareState {
         // `executor_id()` is the caller's public key, so render it with the
         // SDK's `PublicKey` newtype rather than the (now-removed) blob helper.
-        let owner = PublicKey::from(env::executor_id()).to_string();
+        let owner = PublicKey::from(env::device_id()).to_string();
 
         app::log!("Initializing file sharing app for owner: {}", owner);
 
@@ -146,7 +146,7 @@ impl FileShareState {
         // ID with the uploader's identity makes it collision-free — each node
         // has a distinct executor key, so `<uploader>_<counter>` is globally
         // unique even when counters coincide.
-        let uploader = PublicKey::from(env::executor_id()).to_string();
+        let uploader = PublicKey::from(env::device_id()).to_string();
         let next_id = self.file_counter.value()?;
         let file_id = format!("{uploader}_{next_id}");
         self.file_counter.increment()?;

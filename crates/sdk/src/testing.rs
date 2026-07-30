@@ -80,7 +80,7 @@ pub trait TestState: Sized {
     fn __test_with_ref(f: &mut dyn FnMut(&Self));
 
     /// Runs `f` with the storage-layer executor identity set to `id`.
-    fn __test_with_executor(id: [u8; 32], f: &mut dyn FnMut());
+    fn __test_with_device(id: [u8; 32], f: &mut dyn FnMut());
 
     /// Mirrors the committed root `Entry` into the SDK host map so
     /// [`read_raw`](crate::read_raw) observes it (the storage and SDK layers use
@@ -259,36 +259,41 @@ where
         S::__test_root_hash()
     }
 
-    /// Runs a mutating method as a specific executor identity, then restores the
-    /// previous identity — even if the closure panics.
+    /// Runs a mutating method as a specific **device**, then restores the previous
+    /// one — even if the closure panics.
     ///
-    /// Sets both the SDK-level [`env::executor_id`](crate::env::executor_id)
-    /// (what app logic reads) and the storage-layer authorship identity (what
-    /// CRDT element writes record), so multi-author scenarios resolve exactly as
-    /// they would across nodes. Both layers switch together for the duration of
-    /// the closure and are unwound together: the SDK identity is restored by an
-    /// RAII guard nested *inside* the storage layer's own
-    /// `with_executor_id` scope, so a panic can't leave the two layers
-    /// disagreeing for a later `call` / `view` on the same thread.
-    pub fn call_as<R>(&mut self, executor: [u8; 32], f: impl FnOnce(&mut S) -> R) -> R {
-        // Restores the SDK-host executor on scope exit (incl. unwind), mirroring
-        // the storage layer's RAII restore in `with_executor_id`.
-        struct SdkExecutorGuard([u8; 32]);
-        impl Drop for SdkExecutorGuard {
+    /// Sets both the SDK-level [`env::device_id`](crate::env::device_id) (what app
+    /// logic reads) and the storage-layer authorship identity (what CRDT element
+    /// writes record), so multi-author scenarios resolve exactly as they would
+    /// across nodes. Both layers switch together for the duration of the closure
+    /// and are unwound together: the SDK identity is restored by an RAII guard
+    /// nested *inside* the storage layer's own `with_device_id` scope, so a panic
+    /// can't leave the two layers disagreeing for a later `call` / `view` on the
+    /// same thread.
+    ///
+    /// **The account is left alone**, so two `call_as` devices are two devices of
+    /// the *same* person — the case that used to be inexpressible, and the one
+    /// worth making easy. For two different people, use
+    /// [`call_as_account`](TestHost::call_as_account).
+    pub fn call_as<R>(&mut self, device: [u8; 32], f: impl FnOnce(&mut S) -> R) -> R {
+        // Restores the SDK-host device on scope exit (incl. unwind), mirroring
+        // the storage layer's RAII restore in `with_device_id`.
+        struct SdkDeviceGuard([u8; 32]);
+        impl Drop for SdkDeviceGuard {
             fn drop(&mut self) {
-                host::set_executor_id(self.0);
+                host::set_device_id(self.0);
             }
         }
 
         let mut out = None;
         let mut f = Some(f);
-        // `__test_with_executor` switches the storage executor to `executor`
-        // for the body below (and restores it on the way out). We switch the
-        // SDK executor *inside* that body so both layers are aligned before any
-        // user code runs and restored together as the body unwinds.
-        S::__test_with_executor(executor, &mut || {
-            let _sdk = SdkExecutorGuard(host::executor_id());
-            host::set_executor_id(executor);
+        // `__test_with_device` switches the storage device to `device` for the
+        // body below (and restores it on the way out). We switch the SDK device
+        // *inside* that body so both layers are aligned before any user code runs
+        // and restored together as the body unwinds.
+        S::__test_with_device(device, &mut || {
+            let _sdk = SdkDeviceGuard(host::device_id());
+            host::set_device_id(device);
 
             let mut inner = f.take();
             S::__test_with_mut(&mut |state| {
@@ -325,13 +330,46 @@ where
         host::take_logs()
     }
 
-    /// Overrides the executor identity reported to app logic for subsequent
+    /// Runs a mutating method as a specific **account and device** — a different
+    /// person, on a machine of their own.
+    ///
+    /// The pair [`call_as`](TestHost::call_as) does not cover: `call_as` moves the
+    /// device and leaves the account, which models one person's second device. Use
+    /// this when the scenario is two people, and pass distinct values for both — an
+    /// app that aggregates per person and one that aggregates per replica behave
+    /// identically until the two axes actually disagree, so a test that moves only
+    /// one of them cannot tell them apart.
+    pub fn call_as_account<R>(
+        &mut self,
+        account: [u8; 32],
+        device: [u8; 32],
+        f: impl FnOnce(&mut S) -> R,
+    ) -> R {
+        struct SdkAccountGuard([u8; 32]);
+        impl Drop for SdkAccountGuard {
+            fn drop(&mut self) {
+                host::set_account_id(self.0);
+            }
+        }
+
+        let _account = SdkAccountGuard(host::account_id());
+        host::set_account_id(account);
+        self.call_as(device, f)
+    }
+
+    /// Overrides the **device** identity reported to app logic for subsequent
     /// `call` / `view` invocations.
     ///
     /// Affects only the SDK-level identity. To also drive CRDT authorship for a
     /// single mutation, prefer [`call_as`](TestHost::call_as).
-    pub fn set_executor(&mut self, id: [u8; 32]) {
-        host::set_executor_id(id);
+    pub fn set_device(&mut self, id: [u8; 32]) {
+        host::set_device_id(id);
+    }
+
+    /// Overrides the **account** identity reported to app logic for subsequent
+    /// `call` / `view` invocations — who the caller is as a person.
+    pub fn set_account(&mut self, id: [u8; 32]) {
+        host::set_account_id(id);
     }
 
     /// Overrides the context identity reported to app logic.
@@ -347,10 +385,16 @@ where
         host::set_blob_announce_should_fail(fail);
     }
 
-    /// Returns the current executor identity.
+    /// Returns the current device identity.
     #[must_use]
-    pub fn executor_id(&self) -> [u8; 32] {
-        host::executor_id()
+    pub fn device_id(&self) -> [u8; 32] {
+        host::device_id()
+    }
+
+    /// Returns the current account identity.
+    #[must_use]
+    pub fn account_id(&self) -> [u8; 32] {
+        host::account_id()
     }
 
     /// Returns the current context identity.
@@ -375,7 +419,7 @@ where
         V2: TestState + AppState,
         for<'a> V2::Event<'a>: AppEventExt,
     {
-        self.migrate_as(host::executor_id(), migrate_fn)
+        self.migrate_as(host::device_id(), migrate_fn)
     }
 
     /// Like [`migrate`](TestHost::migrate) but pins the executor identity (both
@@ -394,15 +438,15 @@ where
         // version.
         crate::app::register_schema_version::<V2>();
 
-        let prior = host::executor_id();
-        host::set_executor_id(executor);
+        let prior = host::device_id();
+        host::set_device_id(executor);
         let mut build = Some(migrate_fn);
         // Set the storage-layer authorship identity for the body too, so any
         // identity-gated write inside the migrate resolves as it would on a node.
-        V2::__test_with_executor(executor, &mut || {
+        V2::__test_with_device(executor, &mut || {
             V2::__test_install_migrated(&mut || (build.take().expect("migrate fn invoked once"))());
         });
-        host::set_executor_id(prior);
+        host::set_device_id(prior);
         V2::__test_mirror_root();
 
         // Transfer this thread's single live-harness slot from `self` (V1) to
@@ -487,9 +531,9 @@ pub fn assert_migrate_converges<V1, V2>(
         // `app::emit!` in the migrate body resolves the new state's emitter
         // (matching `migrate_as` and the real node path).
         event::register::<V2>();
-        host::set_executor_id(node);
+        host::set_device_id(node);
         let mut mbuild = Some(migrate_fn);
-        V2::__test_with_executor(node, &mut || {
+        V2::__test_with_device(node, &mut || {
             V2::__test_install_migrated(&mut || {
                 (mbuild.take().expect("migrate fn invoked once"))()
             });

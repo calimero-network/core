@@ -51,7 +51,7 @@ The ABI is a fixed catalog of host functions. The guest never does anything outs
 
 | Family | Examples | Purpose |
 | --- | --- | --- |
-| Context / input | `context_id`, `executor_id`, `input`, `read_register` | Read who is calling, in which context, with what arguments. |
+| Context / input | `context_id`, `account_id`, `device_id`, `input`, `read_register` | Read who is calling — as a person (`account_id`) and as a machine (`device_id`) — in which context, with what arguments. |
 | State | `storage_read`, `storage_write`, `storage_remove` | Read and mutate replicated context state. Writes are buffered (below). |
 | Output | `value_return`, `log`, `emit` | Return a result, log a line, emit an application event. |
 | Commit | `commit` / root-state functions | Finalize buffered writes into a new state root and an artifact. |
@@ -107,7 +107,7 @@ The exact host ABI. All host functions live in the WASM `env` namespace. Pointer
 
 | Family | Signature |
 | --- | --- |
-| Input | `context_id(reg: u64)`, `executor_id(reg: u64)`, `input(reg: u64)`, `xcall_origin(reg: u64) -> u32` |
+| Input | `context_id(reg: u64)`, `account_id(reg: u64)`, `device_id(reg: u64)`, `input(reg: u64)`, `xcall_origin(reg: u64) -> u32` |
 | Registers | `register_len(id: u64) -> u64`, `read_register(id: u64, dest: u64) -> u32` |
 | Replicated state | `storage_read(key: u64, reg: u64) -> u32`, `storage_write(key: u64, val: u64, reg: u64) -> u32`, `storage_remove(key: u64, reg: u64) -> u32` |
 | Private state | `private_storage_read / write / remove(…)` — same shapes, node-local |

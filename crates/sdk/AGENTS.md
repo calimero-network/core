@@ -242,7 +242,7 @@ pub fn migrate_v1_to_v2() -> AppV2 {
     `LwwRegister` created inside migrate (`total: count.into()`, map or
     vector values via `.into()`, `LwwRegister::new(...)`) gets a
     deterministic zero `timestamp`/`node_id` instead of this node's
-    `hlc_timestamp()`/`executor_id()`. `Element` update timestamps are
+    `hlc_timestamp()`/`device_id()`. `Element` update timestamps are
     likewise zeroed. This applies to the *whole* body, including any
     explicit `LwwRegister::set()` you call on a carried-over register -
     and that is intended, not a side effect: each node runs migrate at a
@@ -365,7 +365,7 @@ use calimero_sdk::app;
 let context_id = app::context_id();
 
 // Get executor public key
-let executor = app::executor_id();
+let executor = app::device_id();
 ```
 
 ### Event Emission

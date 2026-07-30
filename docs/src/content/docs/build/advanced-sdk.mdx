@@ -420,7 +420,7 @@ instead of `Id::random()`.
 `increment()` stamps the running node's executor id, which differs per node and
 would diverge the network. It detects merge mode and **panics** loudly rather than
 silently forking. If you must touch a counter in a migrate, carry it across
-unchanged (`counter: old.counter`) or use `increment_for(executor_id)` with a
+unchanged (`counter: old.counter`) or use `increment_for(device_id)` with a
 deterministic id.
 :::
 
@@ -520,7 +520,7 @@ A grab-bag of things that are easy to get wrong:
 
 | Concept | What to know |
 |---------|--------------|
-| `executor_id` vs `context_id` vs `xcall_origin` | `env::executor_id()` is who is calling; `env::context_id()` is the current context; `env::xcall_origin()` is the node-set, unforgeable origin of an xcall (`None` for a direct call). |
+| `account_id` vs `device_id` vs `context_id` vs `xcall_origin` | `env::account_id()` is *who* is calling (a person; stable across their devices). `env::device_id()` is *which machine* (one installation; the replica writes are attributed to). `env::context_id()` is the current context. `env::xcall_origin()` is the node-set, unforgeable origin of an xcall (`None` for a direct call). |
 | `app::Result` / `app::Error` | `Error` wraps a `serde_json::Value`, has a blanket `From` for any `std::error::Error`, and the `app::bail!` / `app::err!` macros build/return it. `?` on any std error just works. |
 | view vs mutate | Only a `&mut self` method (or `#[app::init]`) commits state. A `&self` method **never** commits, even if it is not marked `#[app::view]` — so a missing `view` attribute is a missed optimization, not a correctness bug. |
 | `TestHost` limits | Networked operations panic: `xcall`, `ed25519_verify`, and networked blob ops are unsupported. Event handlers are captured but **not** auto-dispatched (call them directly in tests). The default identity passes owner/access checks. |
