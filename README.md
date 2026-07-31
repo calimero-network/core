@@ -37,7 +37,8 @@ The docs live in [`docs/`](docs/) (Astro Starlight).
 
 - [calimero-network/merobox](https://github.com/calimero-network/merobox) -- E2E testing framework
 - [calimero-network/mero-tee](https://github.com/calimero-network/mero-tee) -- TEE infrastructure (KMS, locked images)
-- [calimero-network/calimero-client-js](https://github.com/calimero-network/calimero-client-js) -- JavaScript client
+- [calimero-network/cargo-mero](https://github.com/calimero-network/cargo-mero) -- `cargo mero` app toolchain (scaffold, build, test, bundle)
+- [calimero-network/mero-js](https://github.com/calimero-network/mero-js) -- JavaScript/TypeScript client
 - [calimero-network/calimero-client-py](https://github.com/calimero-network/calimero-client-py) -- Python client
 
 ## License
