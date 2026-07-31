@@ -1,0 +1,20 @@
+# Convergence-race findings that predate `scripts/lint-e2e-convergence.py`.
+#
+# A burndown backlog, not an allowlist: each line is a scenario step that reads or
+# acts on another node's state without establishing that it arrived, so each can fail
+# intermittently and will do so with a misleading symptom (a null value, an
+# "undefined" string reaching a parser, a key-less join). They are baselined only so
+# the check could land without failing on its first run.
+#
+# Remove a line by adding a `wait_for_sync` covering the nodes involved. A stale entry
+# is reported as a notice rather than an error, so a fix never needs to touch this file
+# to go green — but leaving the line means the next regression in that step is silenced.
+apps/scaffolding-e2e/workflows/account-device-revoke-lockout.yml: R1 barrier 'Settle' omits ['account-revoke-node-3'], which mutated since the last barrier — a later step on those nodes races the sync this step was supposed to establish
+apps/scaffolding-e2e/workflows/account-device-revoke-lockout.yml: R1 barrier 'Settle the survivor's write across the remaining devices' omits ['account-revoke-node-3'], which mutated since the last barrier — a later step on those nodes races the sync this step was supposed to establish
+apps/scaffolding-e2e/workflows/dm-subgroup-privacy.yml: R1 barrier 'Wait for private-context sync between node-2 and node-3' omits ['e2e-node-1'], which mutated since the last barrier — a later step on those nodes races the sync this step was supposed to establish
+apps/scaffolding-e2e/workflows/group-private-add-then-write.yml: R1 barrier 'Initial sync to settle Root state' omits ['private-add-node-3'], which mutated since the last barrier — a later step on those nodes races the sync this step was supposed to establish
+apps/scaffolding-e2e/workflows/group-private-add-then-write.yml: R1 barrier 'Round 1 sync' omits ['private-add-node-3'], which mutated since the last barrier — a later step on those nodes races the sync this step was supposed to establish
+apps/sync-test/workflows/six-node-sync.yml: R1 barrier 'Wait for 3-node sync' omits ['sync6-4', 'sync6-5', 'sync6-6'], which mutated since the last barrier — a later step on those nodes races the sync this step was supposed to establish
+apps/sync-test/workflows/six-node-sync.yml: R1 barrier 'Wait for invitation sync' omits ['sync6-1'], which mutated since the last barrier — a later step on those nodes races the sync this step was supposed to establish
+apps/sync-test/workflows/three-node-sync.yml: R1 barrier 'Wait for Matea join to sync' omits ['sync-test-node-3'], which mutated since the last barrier — a later step on those nodes races the sync this step was supposed to establish
+workflows/app-migration/26-owner-driven-authored.yml: R2 'Read final schema_info on node 2 (both converted notes converged)' asserts cross-node convergence, but ['app-migration-owner-1'] mutated after the last barrier ('Wait for both v1 notes to sync across nodes') — the read races those writes
