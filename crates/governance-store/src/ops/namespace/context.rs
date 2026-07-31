@@ -134,4 +134,28 @@ impl<'a> NamespaceApplyCtx<'a> {
         self.authorizer
             .membership_path_at_cut(group, member, self.parents)
     }
+
+    /// Guard a fall-back to the live resolver, same contract as
+    /// `require_namespace_admin`'s inline check above.
+    ///
+    /// The at-cut resolver abstains for two reasons that must not be collapsed.
+    /// No cut to resolve against (a genesis op, or a construction with no
+    /// apply-auth context — the sign path, local apply, tests) makes live the
+    /// right answer, because nothing contradicts it. A cut that is real but
+    /// unfolded here makes live the WRONG answer: it is a different cut, so the
+    /// verdict would turn on how much this replica happens to have folded, and
+    /// two replicas would decide the same op differently.
+    pub(crate) fn ensure_live_fallback_is_sound(
+        &self,
+        group: &ContextGroupId,
+        identity: &PublicKey,
+    ) -> EyreResult<()> {
+        if self.authorizer.can_resolve_cut(group, self.parents) {
+            return Ok(());
+        }
+        bail!(crate::ApplyError::AuthorityUndecidable {
+            group_id: format!("{group:?}"),
+            signer: format!("{identity}"),
+        });
+    }
 }

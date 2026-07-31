@@ -39,6 +39,7 @@ pub mod registration_notify;
 
 pub mod absorb;
 pub mod absorb_record;
+mod account_bindings;
 pub mod authorizer;
 mod capabilities;
 pub mod cascade;
@@ -56,6 +57,7 @@ mod membership;
 mod meta;
 mod metadata;
 mod namespace;
+mod node_device;
 pub mod nonce_window;
 mod ops;
 mod pending_rotation;
@@ -76,6 +78,9 @@ pub use self::authorizer::{
 };
 pub use self::capabilities::CapabilitiesRepository;
 
+pub use self::account_bindings::{
+    member_account_for_device_key, AccountBindingRepository, BindingRejected, DeviceBinding,
+};
 pub use self::context_registration::ContextRegistrationService;
 pub use self::context_tree::ContextTreeService;
 pub use self::contexts::{
@@ -91,7 +96,9 @@ pub use self::reentry::ReentryRepository;
 pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;
 
-pub use self::group_keys::{GroupKeyring, StoredGroupKey};
+pub use self::group_keys::{
+    EntitledRecipient, GroupKeyring, KeyRecipient, KeyRequester, StoredGroupKey,
+};
 pub use self::group_settings::GroupSettingsService;
 pub use self::local_state::{
     delete_group_local_rows, delete_namespace_local_state, get_local_gov_nonce,
@@ -120,6 +127,10 @@ pub use self::namespace::{
     ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure, NamespaceDagService,
     NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord, NamespaceMembershipService,
     NamespaceOpLogService, NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
+};
+pub use self::node_device::{
+    account_for_context, AccountRoot, DeviceSecret, NodeDevice, NodeDeviceRepository,
+    RevocationTarget,
 };
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::PermissionChecker;

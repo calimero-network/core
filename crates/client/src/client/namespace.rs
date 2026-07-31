@@ -1,8 +1,11 @@
 use calimero_server_primitives::admin::{
-    CreateGroupInvitationApiRequest, CreateNamespaceApiRequest, CreateNamespaceApiResponse,
-    DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, GetNamespaceApiResponse,
-    JoinGroupApiRequest, JoinGroupApiResponse, ListNamespaceGroupsApiResponse,
-    ListNamespacesApiResponse, NamespaceApiResponse, NamespaceIdentityApiResponse,
+    CreateAccountApiRequest, CreateAccountApiResponse, CreateGroupInvitationApiRequest,
+    CreateNamespaceApiRequest, CreateNamespaceApiResponse, DeleteNamespaceApiRequest,
+    DeleteNamespaceApiResponse, GetNamespaceApiResponse, JoinGroupApiRequest, JoinGroupApiResponse,
+    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, NamespaceApiResponse,
+    NamespaceIdentityApiResponse, PairDeviceCompleteApiRequest, PairDeviceCompleteApiResponse,
+    PairDeviceInitApiRequest, PairDeviceInitApiResponse, RevokeDeviceApiRequest,
+    RevokeDeviceApiResponse,
 };
 use eyre::Result;
 use serde::Serialize;
@@ -77,6 +80,85 @@ where
         let response = self
             .connection
             .delete_with_body(&format!("admin-api/namespaces/{namespace_id}"), request)
+            .await?;
+        Ok(response)
+    }
+
+    /// Enroll this node's device into a namespace under a fresh account.
+    ///
+    /// Must follow key delivery: the device link travels as an encrypted group
+    /// op, so a node holding no scope key cannot publish one. The node refuses
+    /// with that reason rather than failing obscurely.
+    pub async fn create_account(&self, namespace_id: &str) -> Result<CreateAccountApiResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/namespaces/{namespace_id}/account"),
+                CreateAccountApiRequest {},
+            )
+            .await?;
+        Ok(response)
+    }
+
+    /// Mint a device on this node for an account that already exists elsewhere
+    /// — the first half of pairing.
+    ///
+    /// Needs no scope key, unlike [`Self::create_account`]: nothing is
+    /// published here. It returns the device id and agreement key that the
+    /// account holder certifies in the second half.
+    pub async fn pair_device_init(
+        &self,
+        namespace_id: &str,
+        request: PairDeviceInitApiRequest,
+    ) -> Result<PairDeviceInitApiResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/namespaces/{namespace_id}/account/pair-init"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    /// Certify a device another node minted, link it, and deliver the scope
+    /// key — the second half of pairing.
+    ///
+    /// Run on the node that holds the account. Needs the current scope key:
+    /// the link is an encrypted group op, and the delivery is that same key
+    /// wrapped for the new device.
+    pub async fn pair_device_complete(
+        &self,
+        namespace_id: &str,
+        request: PairDeviceCompleteApiRequest,
+    ) -> Result<PairDeviceCompleteApiResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/namespaces/{namespace_id}/account/pair-complete"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    /// Withdraw a device from an account, terminally.
+    ///
+    /// An admin may revoke any device and rotates the scope key in the same op.
+    /// The account holder may revoke its own with a root-signed proof, but
+    /// cannot rotate — so the device stops writing at once and keeps reading
+    /// until an admin rotates.
+    pub async fn revoke_device(
+        &self,
+        namespace_id: &str,
+        request: RevokeDeviceApiRequest,
+    ) -> Result<RevokeDeviceApiResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/namespaces/{namespace_id}/account/revoke"),
+                request,
+            )
             .await?;
         Ok(response)
     }

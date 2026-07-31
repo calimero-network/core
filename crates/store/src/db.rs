@@ -26,6 +26,22 @@ pub enum Column {
     Application,
     Alias,
     Generic,
+    /// Group governance: membership, capabilities, the namespace op log, the
+    /// account plane's replicated rows — **and three node-local secrets**, each
+    /// under its own prefix: the namespace identity keypair (`0x36`), a device's
+    /// X25519 agreement secret (`0x44`), and the account root (`0x45`).
+    ///
+    /// **This column is never replicated wholesale, and must not become so.**
+    /// Governance reaches peers as individually signed ops, and every reader here
+    /// addresses a typed key or scans one prefix; nothing dumps the column. That is
+    /// the only reason secrets can sit beside replicated rows at all, so a
+    /// column-level export, snapshot, or sync added later would leak this node's
+    /// member identity, its ability to unwrap scope keys, and the one key that can
+    /// certify a device into any of its accounts. Add such a path and these three
+    /// prefixes move to a column of their own first.
+    ///
+    /// The rows are also plaintext unless at-rest encryption is enabled, which is
+    /// off by default — see <https://github.com/calimero-network/core/issues/3335>.
     Group,
     /// Node-local context-scoped state. NOT synchronized across nodes.
     /// Used for things like the per-(member, context) `leave_context`

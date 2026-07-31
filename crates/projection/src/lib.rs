@@ -10,15 +10,15 @@
 //! per-slot last-writer-wins keyed on `(hlc, op_id)`, so the fold is
 //! order-independent.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use sha2::{Digest, Sha256};
 
-use calimero_authz::AclView;
+use calimero_account::{AccountGenesis, AccountId, DeviceId, RootKeyHandoff};
+use calimero_authz::{AccountBinding, AclView, DeviceBinding};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::{scope_root, Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
 use calimero_storage::logical_clock::HybridTimestamp;
@@ -69,6 +69,23 @@ struct SubgroupSlot {
     exists: Option<(Stamp, bool)>,
 }
 
+/// Candidate handoffs at one `(account, epoch)` slot, keyed by
+/// `(new_root_sign_pk, signature)` so no candidate can ever displace another —
+/// see `absorb_handoff` for why displacement was exploitable.
+type HandoffCandidates = BTreeMap<([u8; 32], [u8; 64]), RootKeyHandoff>;
+
+/// How many candidate handoffs one `(account, epoch)` slot may retain.
+///
+/// Keying candidates by signature stopped a forged handoff from *displacing* a
+/// real one, but it let a slot grow without limit instead, and every candidate in
+/// it costs an Ed25519 verification on every `resolved_accounts` walk — i.e. on
+/// every projection read. Unbounded, that turns some accepted ops into permanent
+/// per-read work for every node in the scope.
+///
+/// A slot only ever holds genuinely concurrent rotations from the same epoch by
+/// devices sharing one root key, so this is far above any legitimate need.
+const MAX_HANDOFF_CANDIDATES: usize = 8;
+
 /// The deterministic projection of one scope's op-log: values + ACL + groups,
 /// each slot resolved last-writer-wins by `(hlc, op_id)`.
 #[derive(Clone, Debug, Default)]
@@ -77,13 +94,13 @@ pub struct ScopeState {
     entities: BTreeMap<Id, Vec<u8>>,
     data_clock: BTreeMap<Id, Stamp>,
     // --- access-control plane ---
-    acl: BTreeMap<Id, BTreeMap<PublicKey, OpMask>>,
+    acl: BTreeMap<Id, BTreeMap<AccountId, OpMask>>,
     acl_clock: BTreeMap<Id, Stamp>,
     // --- membership plane ---
-    groups: BTreeMap<ContextGroupId, BTreeMap<PublicKey, GroupMemberRole>>,
-    member_clock: BTreeMap<(ContextGroupId, PublicKey), Stamp>,
+    groups: BTreeMap<ContextGroupId, BTreeMap<AccountId, GroupMemberRole>>,
+    member_clock: BTreeMap<(ContextGroupId, AccountId), Stamp>,
     // --- admin plane ---
-    root_admin: Option<PublicKey>,
+    root_admin: Option<AccountId>,
     admin_clock: Option<Stamp>,
     policy: Vec<u8>,
     policy_clock: Option<Stamp>,
@@ -91,11 +108,37 @@ pub struct ScopeState {
     // --- capability plane (gates inherited-membership resolution) ---
     default_caps: BTreeMap<ContextGroupId, u32>,
     default_caps_clock: BTreeMap<ContextGroupId, Stamp>,
-    member_caps: BTreeMap<(ContextGroupId, PublicKey), u32>,
-    member_caps_clock: BTreeMap<(ContextGroupId, PublicKey), Stamp>,
+    member_caps: BTreeMap<(ContextGroupId, AccountId), u32>,
+    member_caps_clock: BTreeMap<(ContextGroupId, AccountId), Stamp>,
     // --- per-group admin (the subgroup creator / genesis admin) ---
-    group_admin: BTreeMap<ContextGroupId, PublicKey>,
+    group_admin: BTreeMap<ContextGroupId, AccountId>,
     group_admin_clock: BTreeMap<ContextGroupId, Stamp>,
+    // --- account plane ---
+    //
+    // Unlike every plane above, this one carries **no LWW stamps**. Each of its
+    // three structures is a join-semilattice on its own — a grow-only map of
+    // self-certifying genesis records, a grow-only map of handoffs keyed by the
+    // epoch they depart from, and a grow-only set of revocation tombstones — so
+    // the fold is order-independent by construction rather than by tie-break.
+    // That matters because the LWW tie-break is where ordering bugs concentrate;
+    // the account plane simply cannot have them.
+    /// Self-certifying account roots, learned from the `DeviceLinked` ops that
+    /// carry them. Keyed by the id each one hashes to, so a wrong genesis can
+    /// never be filed under an account it does not address.
+    account_genesis: BTreeMap<AccountId, AccountGenesis>,
+    /// Root-key handoffs keyed by `(account, from_epoch)`.
+    ///
+    /// Keying by the departing epoch — rather than appending to a list — is
+    /// what makes rotations order-independent: a handoff always lands in its
+    /// own slot, so folding epoch 1 before epoch 0 converges to the same chain
+    /// as the reverse.
+    handoffs: BTreeMap<(AccountId, u32), HandoffCandidates>,
+    /// Device bindings currently in force.
+    devices: BTreeMap<DeviceId, DeviceBinding>,
+    /// Withdrawn devices and the account they were withdrawn from. Terminal and
+    /// grow-only — see `AclView::revoked_devices` for why revocation lives in
+    /// its own set instead of as a flag on the binding.
+    revoked_devices: BTreeSet<DeviceId>,
 }
 
 impl ScopeState {
@@ -268,12 +311,259 @@ impl ScopeState {
             // A graph-only node: present in the log so an ancestry walk can
             // traverse through it, but it folds to nothing.
             OpPayload::Noop => {}
+
+            // ---- account plane (monotone; no LWW stamp) ----
+            OpPayload::DeviceLinked {
+                genesis,
+                chain,
+                cert,
+            } => {
+                // The admission rule lives in `calimero-authz` and is shared
+                // verbatim with `authorize`, so a link can never be authorized
+                // here and refused there (or the reverse) — which would be a
+                // `scope_root` divergence between two nodes that saw the same
+                // ops.
+                // Learn the account FIRST, and unconditionally — the genesis
+                // is self-certifying (it hashes to the id it claims), so
+                // absorbing it is safe even when the device link that carried
+                // it turns out to be inadmissible. Doing this only on success
+                // would make the accounts map depend on delivery order: link
+                // then revoke would learn the account, revoke then link would
+                // not, and the two nodes' `scope_root` would disagree.
+                // Absorption runs before the credential is verified, so the cap
+                // inside `root_key_at_epoch` does not protect it: without one here,
+                // a single op could grow `handoffs` without limit, and this crate
+                // has no wire-bounds layer to lean on. Refusing the whole op's
+                // absorption (rather than truncating) keeps the decision a function
+                // of the op, so every replica absorbs the same set.
+                if genesis.account_id() == cert.account
+                    && chain.len() <= calimero_account::MAX_ROOT_KEY_HANDOFFS
+                {
+                    let _ = self.account_genesis.entry(cert.account).or_insert(*genesis);
+                    for handoff in chain {
+                        // A credential's chain speaks only for the account it
+                        // names. Absorbing entries for other accounts let one op
+                        // write into slots of accounts it has no relationship to.
+                        if handoff.account == cert.account {
+                            self.absorb_handoff(*handoff);
+                        }
+                    }
+                }
+
+                // Only the order-independent rules here. Supersession by a
+                // later root-key rotation is applied when the view is read (see
+                // `live_devices`), because it depends on the account's FINAL
+                // epoch — which this fold cannot know mid-stream.
+                let Ok(verified) = calimero_authz::fold_device_link(
+                    &self.devices,
+                    &self.revoked_devices,
+                    genesis,
+                    chain,
+                    cert,
+                ) else {
+                    // Deterministically inadmissible on every node, so ignoring
+                    // it keeps the projection convergent. The op still occupies
+                    // its place in the causal graph.
+                    return;
+                };
+
+                let _ = self.devices.insert(
+                    verified.device,
+                    DeviceBinding {
+                        account: verified.account,
+                        sign_pk: verified.sign_pk,
+                        kem_pk: verified.kem_pk,
+                        device_epoch: verified.device_epoch,
+                        key_epoch: verified.key_epoch,
+                    },
+                );
+            }
+            OpPayload::DeviceRevoked { device, .. } => {
+                // Written unconditionally, even for a device this scope has
+                // never seen linked. A revocation that folds before its link
+                // must still win: the tombstone is what the link consults.
+                // Silently dropping an early revocation would make the outcome
+                // depend on arrival order, which is a split-brain.
+                //
+                // A *set*, carrying no value at all. It previously recorded the
+                // revoked device's account, resolved as
+                // `devices.get(device).map_or(payload.account, ..)` — which reads
+                // whether the link had folded yet, so link-then-revoke stored the
+                // binding's account while revoke-then-link stored the payload's
+                // claim. That value is hashed into `governance_hash`, so an op
+                // naming an account that disagreed with the binding split the
+                // root by arrival order. Nothing ever read the value (both
+                // consumers ask only `contains`), so the fix is to not have one:
+                // set union is a join by construction.
+                let _ = self.revoked_devices.insert(*device);
+                let _ = self.devices.remove(device);
+            }
+            OpPayload::AccountKeysRotated { handoff } => {
+                // Only the account may write its own epoch slots. `authorize`
+                // refuses a rotation authored by anyone else
+                // (`Rejected::RotationNotByAccount`), but the check has to exist
+                // HERE too: the fold is reachable without it — `from_ops` and the
+                // sync convergence path both fold raw logs — and this arm is what
+                // decides what lands in `handoffs`.
+                //
+                // Relying on the authz layer alone was an exploitable gap. A slot is
+                // capped, and the cap evicts by key order, so a stranger able to
+                // absorb into a victim's slot could fill it with forged low-keyed
+                // candidates, evict the real rotation, and freeze that account's
+                // chain at the epoch before it — permanently, convergently, and
+                // therefore invisibly. That is a worse outcome than the unbounded
+                // growth the cap was added to prevent.
+                if handoff.account == op.authorship.account {
+                    self.absorb_handoff(*handoff);
+                }
+            }
         }
+    }
+
+    /// Record a handoff in its epoch slot, resolving a same-epoch race
+    /// deterministically.
+    ///
+    /// Two devices holding the same root key can both rotate from epoch `n`
+    /// concurrently. Both are validly signed, so neither is "wrong" — but every
+    /// node must pick the same one or their chains diverge. The tie-break is
+    /// the incoming key's bytes, which is arbitrary but identical everywhere.
+    fn absorb_handoff(&mut self, handoff: RootKeyHandoff) {
+        let key = (handoff.account, handoff.from_epoch);
+        // Keyed by new-root key AND signature, so a candidate can never DISPLACE
+        // another. Keying on the new-root key alone was not enough: that key is
+        // broadcast in the clear, so an attacker could author a handoff reusing it
+        // with a garbage signature, land on the identical map key, overwrite the
+        // legitimate correctly-signed entry, and put the rollback straight back.
+        // Nothing is overwritten now, so the walk always still has the real one to
+        // find. New-root key first in the tuple keeps the ascending tie-break
+        // between two rotations an account genuinely signed itself.
+        let candidate = (
+            *AsRef::<[u8; 32]>::as_ref(&handoff.new_root_sign_pk),
+            handoff.signature,
+        );
+        let slot = self.handoffs.entry(key).or_default();
+        let _ = slot.insert(candidate, handoff);
+
+        // Bounded by dropping the HIGHEST keys, so the retained set is the lowest
+        // `MAX_HANDOFF_CANDIDATES` of everything ever offered — a function of the
+        // set, not of arrival order, which is what keeps replicas identical.
+        // Trimming to a fixed size is only safe because a slot is no longer
+        // writable by strangers: the device-link path absorbs a chain entry only
+        // when `handoff.account` matches the certificate's account, and a bare
+        // rotation is refused unless its author IS the account. So an over-full
+        // slot means that account authored the padding, and the only chain it can
+        // truncate is its own.
+        while slot.len() > MAX_HANDOFF_CANDIDATES {
+            let highest = slot.keys().next_back().copied();
+            if let Some(highest) = highest {
+                let _ = slot.remove(&highest);
+            }
+        }
+    }
+
+    /// Device bindings that are actually in force, once the account's final
+    /// root-key epoch is known.
+    ///
+    /// A binding minted under a root key the account has since rotated past is
+    /// dropped here rather than at fold time. That placement is what makes the
+    /// plane convergent: mid-fold, "has this epoch been superseded" depends on
+    /// how many rotations have folded so far, so the same op set delivered in
+    /// two orders would yield two different device sets — and two different
+    /// `scope_root`s. Deferring the question until every op in the cut has been
+    /// seen makes the answer a function of the op *set*, not its order.
+    ///
+    /// Takes the resolved accounts rather than resolving them itself, because
+    /// every caller needs both and resolving walks and re-verifies every stored
+    /// handoff candidate. Recomputing it here made `acl_view` and
+    /// `governance_hash` each pay for the walk twice, which multiplied the cost an
+    /// attacker can impose by padding a candidate slot.
+    fn live_devices(
+        &self,
+        accounts: &BTreeMap<AccountId, AccountBinding>,
+    ) -> BTreeMap<DeviceId, DeviceBinding> {
+        let unsuperseded = self.devices.iter().filter(|(_, binding)| {
+            accounts
+                .get(&binding.account)
+                .is_none_or(|account| binding.key_epoch >= account.epoch)
+        });
+
+        // Replica-seed uniqueness, applied HERE for the same reason supersession
+        // is: the answer depends on the whole folded set, not on what had folded
+        // when each link arrived. Two devices sharing an HLC seed mint colliding
+        // RGA ids and lose characters silently, so at most one of a colliding
+        // pair may be live, and the lower id is the arbitrary-but-fixed winner.
+        //
+        // `admit_device_link` used to reject the newcomer when an already-folded
+        // device compared lower, which is order-dependent in the direction it did
+        // not check — high-then-low admitted both. As a filter over the folded
+        // set the rule cannot depend on arrival order.
+        let mut by_seed: BTreeMap<[u8; 16], (DeviceId, DeviceBinding)> = BTreeMap::new();
+        for (device, binding) in unsuperseded {
+            by_seed
+                .entry(device.hlc_seed())
+                .and_modify(|kept| {
+                    if *device < kept.0 {
+                        *kept = (*device, *binding);
+                    }
+                })
+                .or_insert((*device, *binding));
+        }
+        by_seed.into_values().collect()
+    }
+
+    /// Resolve every known account's current root key by walking its handoff
+    /// chain from the genesis.
+    ///
+    /// The walk stops at the first epoch with **no verifying** handoff. Stopping
+    /// — rather than skipping the epoch — is deliberate: a chain is an
+    /// authorization chain, and a gap means every key beyond it is unproven.
+    ///
+    /// Each epoch may hold several candidate handoffs, because absorption happens
+    /// before the credential carrying them is verified. The walk takes the first
+    /// that verifies, so an unverifiable candidate cannot crowd out a real one.
+    fn resolved_accounts(&self) -> BTreeMap<AccountId, AccountBinding> {
+        self.account_genesis
+            .iter()
+            .map(|(account, genesis)| {
+                let mut epoch = 0u32;
+                let mut root_pk = genesis.root_sign_pk;
+                while let Some(candidates) = self.handoffs.get(&(*account, epoch)) {
+                    // The first candidate that VERIFIES wins, in ascending
+                    // new-root-key order. Keeping every candidate and choosing
+                    // here — rather than letting one occupy the slot at absorb
+                    // time — is what stops a forged handoff from suppressing a
+                    // real one: absorption runs before the credential carrying it
+                    // is verified, and it is gated only on the genesis matching
+                    // the claimed account, which anyone can satisfy because a
+                    // genesis is public. A stranger could otherwise grind a low
+                    // new-root key, win the slot with a signature that cannot
+                    // verify, and stop this walk at an earlier epoch — rolling the
+                    // account back to a root key it had deliberately rotated away
+                    // from, convergently and therefore invisibly.
+                    //
+                    // Ascending order keeps the existing tie-break between two
+                    // genuinely concurrent rotations the account signed itself.
+                    let Some(handoff) = candidates.values().find(|candidate| {
+                        root_pk
+                            .verify_raw_signature(&candidate.payload(), &candidate.signature)
+                            .is_ok()
+                    }) else {
+                        break;
+                    };
+                    root_pk = handoff.new_root_sign_pk;
+                    epoch = epoch.saturating_add(1);
+                }
+                (*account, AccountBinding { epoch, root_pk })
+            })
+            .collect()
     }
 
     /// The current authorization view (whole state).
     #[must_use]
     pub fn acl_view(&self) -> AclView {
+        // Resolved once and shared with `live_devices`, which needs the same
+        // answer — see its doc comment for why paying twice matters.
+        let accounts = self.resolved_accounts();
         let subgroups = self
             .subgroups
             .iter()
@@ -298,6 +588,9 @@ impl ScopeState {
             member_caps: self.member_caps.clone(),
             subgroups,
             group_admin: self.group_admin.clone(),
+            devices: self.live_devices(&accounts),
+            accounts,
+            revoked_devices: self.revoked_devices.clone(),
         }
     }
 
@@ -499,7 +792,7 @@ impl ScopeState {
         for (id, writers) in &self.acl {
             hasher.update(id.as_bytes());
             for (writer, mask) in writers {
-                hasher.update(AsRef::<[u8; 32]>::as_ref(writer));
+                hasher.update(writer.as_bytes());
                 hasher.update([mask.bits()]);
             }
         }
@@ -524,13 +817,13 @@ impl ScopeState {
             }
             hasher.update(group.to_bytes());
             for (member, role) in members {
-                hasher.update(AsRef::<[u8; 32]>::as_ref(member));
+                hasher.update(member.as_bytes());
                 hasher.update([role_byte(role)]);
             }
         }
         if let Some(admin) = &self.root_admin {
             hasher.update([1u8]);
-            hasher.update(AsRef::<[u8; 32]>::as_ref(admin));
+            hasher.update(admin.as_bytes());
         } else {
             hasher.update([0u8]);
         }
@@ -555,12 +848,35 @@ impl ScopeState {
         }
         for ((group, member), caps) in &self.member_caps {
             hasher.update(group.to_bytes());
-            hasher.update(AsRef::<[u8; 32]>::as_ref(member));
+            hasher.update(member.as_bytes());
             hasher.update(caps.to_le_bytes());
+        }
+        // Account plane. Folded in for the same reason as the ACL: a device
+        // link or revocation changes *who may write* without touching a single
+        // entity, so leaving it out would make that change hash-neutral and let
+        // sync report "converged" while two nodes disagree about which devices
+        // can author. The resolved epoch (not the raw handoff set) is hashed,
+        // so a chain that stops early hashes differently from one that
+        // completes.
+        let accounts = self.resolved_accounts();
+        for (account, binding) in &accounts {
+            hasher.update(account.as_bytes());
+            hasher.update(binding.epoch.to_le_bytes());
+            hasher.update(AsRef::<[u8; 32]>::as_ref(&binding.root_pk));
+        }
+        for (device, binding) in &self.live_devices(&accounts) {
+            hasher.update(device.as_bytes());
+            hasher.update(binding.account.as_bytes());
+            hasher.update(AsRef::<[u8; 32]>::as_ref(&binding.sign_pk));
+            hasher.update(binding.kem_pk.as_bytes());
+            hasher.update(binding.device_epoch.to_le_bytes());
+        }
+        for device in &self.revoked_devices {
+            hasher.update(device.as_bytes());
         }
         for (group, admin) in &self.group_admin {
             hasher.update(group.to_bytes());
-            hasher.update(AsRef::<[u8; 32]>::as_ref(admin));
+            hasher.update(admin.as_bytes());
         }
         hasher.finalize().into()
     }
@@ -591,15 +907,35 @@ mod tests {
         ))
     }
 
+    /// Authorship for a test account: a deterministic device and key, matching
+    /// what [`bind`] registers. These tests exercise the *fold*, which never
+    /// looks at the device plane for non-account payloads, so the values only
+    /// need to be stable.
+    fn authorship(account: AccountId) -> calimero_op::Authorship {
+        calimero_op::Authorship {
+            account,
+            device: DeviceId::from(*account.as_bytes()),
+            device_key: calimero_primitives::identity::PublicKey::from(*account.as_bytes()),
+        }
+    }
+
     fn op(hlc_ns: u64, payload: OpPayload) -> Op {
         let scope = ScopeId::from([0u8; 32]);
-        let author = PublicKey::from([1u8; 32]);
+        let author = AccountId::from([1u8; 32]);
         let h = hlc(hlc_ns);
-        Op::new(scope, vec![], author, h, payload, [0u8; 32], [0u8; 64])
+        Op::new(
+            scope,
+            vec![],
+            authorship(author),
+            h,
+            payload,
+            [0u8; 32],
+            [0u8; 64],
+        )
     }
 
     fn sample_ops() -> Vec<Op> {
-        let pk = PublicKey::from([9u8; 32]);
+        let pk = AccountId::from([9u8; 32]);
         let group = ContextGroupId::from([3u8; 32]);
         vec![
             op(
@@ -671,7 +1007,7 @@ mod tests {
         // Security property: with the SAME entity root, an ACL or membership
         // change must still move the convergence signal.
         let entities_root = [0x42u8; 32];
-        let pk = PublicKey::from([9u8; 32]);
+        let pk = AccountId::from([9u8; 32]);
         let group = ContextGroupId::from([3u8; 32]);
 
         let empty = ScopeState::from_ops::<[&Op; 0]>([]);
@@ -767,7 +1103,7 @@ mod tests {
             state ^= state << 17;
             state
         };
-        let author = PublicKey::from([1u8; 32]);
+        let author = AccountId::from([1u8; 32]);
         let mut ops = Vec::new();
         for _ in 0..120 {
             let scope = scopes[(next() % 3) as usize];
@@ -781,7 +1117,7 @@ mod tests {
                 1 => OpPayload::Delete { entity },
                 _ => OpPayload::SetWriters {
                     object: entity,
-                    writers: [(PublicKey::from([(next() % 5) as u8; 32]), OpMask::FULL)]
+                    writers: [(AccountId::from([(next() % 5) as u8; 32]), OpMask::FULL)]
                         .into_iter()
                         .collect(),
                 },
@@ -789,7 +1125,7 @@ mod tests {
             ops.push(Op::new(
                 scope,
                 vec![],
-                author,
+                authorship(author),
                 h,
                 payload,
                 [0u8; 32],
@@ -834,7 +1170,7 @@ mod tests {
     #[test]
     fn acl_view_at_honors_the_causal_cut() {
         // genesis: admin adds pk as a writer-set owner.
-        let owner = PublicKey::from([9u8; 32]);
+        let owner = AccountId::from([9u8; 32]);
         let object = Id::new([2u8; 32]);
         let genesis = op(
             10,
@@ -877,12 +1213,20 @@ mod tests {
         // to PRESENT at the re-add cut, not lose to the remove by op_id tie-break
         // (the kick-and-readd bug).
         let group = ContextGroupId::from([3u8; 32]);
-        let member = PublicKey::from([0x55; 32]);
+        let member = AccountId::from([0x55; 32]);
         let scope = ScopeId::from([0u8; 32]);
-        let author = PublicKey::from([1u8; 32]);
+        let author = AccountId::from([1u8; 32]);
         let zero = hlc(0);
         let mk = |parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
-            Op::new(scope, parents, author, zero, payload, [0u8; 32], [0u8; 64])
+            Op::new(
+                scope,
+                parents,
+                authorship(author),
+                zero,
+                payload,
+                [0u8; 32],
+                [0u8; 64],
+            )
         };
         let add = mk(
             vec![],
@@ -927,12 +1271,20 @@ mod tests {
         // and the walk truncates → incomplete. This is the over-grant guard: a
         // missing removal in the middle must NOT pass as an authoritative grant.
         let group = ContextGroupId::from([3u8; 32]);
-        let member = PublicKey::from([0x55; 32]);
+        let member = AccountId::from([0x55; 32]);
         let scope = ScopeId::from([0u8; 32]);
-        let author = PublicKey::from([1u8; 32]);
+        let author = AccountId::from([1u8; 32]);
         let zero = hlc(0);
         let mk = |parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
-            Op::new(scope, parents, author, zero, payload, [0u8; 32], [0u8; 64])
+            Op::new(
+                scope,
+                parents,
+                authorship(author),
+                zero,
+                payload,
+                [0u8; 32],
+                [0u8; 64],
+            )
         };
         let add = mk(
             vec![],
@@ -966,12 +1318,20 @@ mod tests {
         // every id is present — but not fully DECODED, so a membership answer
         // read over it is provisional and must not be flagged as a divergence.
         let group = ContextGroupId::from([3u8; 32]);
-        let member = PublicKey::from([0x55; 32]);
+        let member = AccountId::from([0x55; 32]);
         let scope = ScopeId::from([0u8; 32]);
-        let author = PublicKey::from([1u8; 32]);
+        let author = AccountId::from([1u8; 32]);
         let zero = hlc(0);
         let mk = |parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
-            Op::new(scope, parents, author, zero, payload, [0u8; 32], [0u8; 64])
+            Op::new(
+                scope,
+                parents,
+                authorship(author),
+                zero,
+                payload,
+                [0u8; 32],
+                [0u8; 64],
+            )
         };
         let add = mk(
             vec![],
@@ -1071,7 +1431,7 @@ mod tests {
                     child,
                     parent: p1,
                     restricted: true,
-                    admin: PublicKey::from([7u8; 32]),
+                    admin: AccountId::from([7u8; 32]),
                 },
             ),
             op(

@@ -24,6 +24,10 @@ use std::collections::BTreeMap;
 use std::io;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_account::{
+    AccountGenesis, AccountId, AccountMemberEndorsement, DeviceCert, DeviceId, KemPublicKey,
+    RootKeyHandoff, SignedDeviceRevocation,
+};
 use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_primitives::application::ApplicationId;
@@ -158,7 +162,14 @@ id_newtype! {
 /// is the authoritative convergence signal now), so it was pure dead weight in
 /// the signed bytes. Removing it changes every op's content hash (the op id),
 /// hence the version bump and the flag-day re-bootstrap.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 8;
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 9;
+
+// v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
+// a dedicated offline key so it survives losing every device — and such a key is a
+// member nowhere, so the link gate can no longer ask whether the root is a member.
+// A granted member key signs the account id instead. Adding a field to an existing
+// variant changes that variant's layout, so every group op's id changes; a flag day,
+// alongside the namespace v4 one already in this change.
 
 /// Domain separation prefix for Ed25519 signatures over group ops.
 pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
@@ -490,6 +501,80 @@ pub enum GroupOp {
         /// excludes.
         departed: PublicKey,
     },
+
+    // ---- account plane ----
+    //
+    // Appended at the END, like every variant before them: borsh tags by source
+    // order, so slotting one in beside the membership ops it belongs with would
+    // renumber every later variant and silently change the content hash — and
+    // therefore the signature — of every already-stored op that used one.
+    //
+    // `SIGNED_GROUP_OP_SCHEMA_VERSION` deliberately does NOT change. It is
+    // enforced strictly-equal on decode, so bumping it would make peers reject
+    // *every* op rather than just the ones they don't understand. Peers that
+    // predate these variants decode everything they already knew and fail only
+    // on an account op itself.
+    /// Bind a device to an account within this group.
+    ///
+    /// Self-contained: `genesis` hashes to `cert.account`, and `chain` carries
+    /// the signed root-key rollovers up to `cert.key_epoch`, so a verifier needs
+    /// no prior op. That is what lets a freshly paired device link *itself*
+    /// rather than the account root having to author a grant per group.
+    ///
+    /// Authored by the new device, with no admin action: linking a device to an
+    /// account that is **already a member** grants nothing the account did not
+    /// already hold, so it is not a privilege escalation. The apply path
+    /// enforces exactly that.
+    AccountDeviceLinked {
+        /// The account's self-certifying root.
+        genesis: AccountGenesis,
+        /// Signed root-key rollovers, epoch 0 upward. Empty when the
+        /// certificate was signed by the genesis key.
+        chain: Vec<RootKeyHandoff>,
+        /// The root-signed grant being recorded.
+        cert: DeviceCert,
+        /// A granted member key's statement that this account is theirs.
+        ///
+        /// Required because an account root is deliberately a member **nowhere** —
+        /// it is kept offline so it survives losing every device. The gate checks
+        /// the *endorser* is a member instead of the root. Only a member can
+        /// endorse and only the root can certify a device, so it takes both.
+        endorsement: AccountMemberEndorsement,
+    },
+    /// Withdraw a device from an account.
+    ///
+    /// Terminal for this `DeviceId` — re-enrolling the machine mints a fresh
+    /// one. Permanence is what keeps a replica id from ever being reused, so the
+    /// CRDT planes hold their one-writer-per-replica invariant across a
+    /// revoke/re-add cycle.
+    AccountDeviceUnlinked {
+        /// Account the device is being removed from.
+        account: AccountId,
+        /// The device losing its binding.
+        device: DeviceId,
+        /// A root-signed proof that the account itself withdrew this device.
+        ///
+        /// `None` is the **admin path**: a group admin at the op's cut may
+        /// revoke any device, which is how a device is ejected when its account
+        /// holder is unreachable.
+        ///
+        /// `Some` is the **self-service path**, and it is what the lost-laptop
+        /// case needs: the owner may be the only person who knows. It cannot be
+        /// gated on folded state — "is the signer this account's current root
+        /// key" depends on which rotations a replica has folded, so two replicas
+        /// would decide one op differently — so the authority travels with the
+        /// op, self-certifying exactly as a `DeviceCert` is.
+        proof: Option<SignedDeviceRevocation>,
+    },
+    /// Roll an account's root key.
+    ///
+    /// Raises the account's key epoch, after which a certificate signed by any
+    /// superseded key is refused — which is how a rotation withdraws the old
+    /// key's authority instead of merely adding a new one beside it.
+    AccountKeysRotated {
+        /// The handoff, signed by the outgoing key.
+        handoff: RootKeyHandoff,
+    },
 }
 
 impl GroupOp {
@@ -507,6 +592,9 @@ impl GroupOp {
             GroupOp::MemberRemoved { .. } => "member_removed",
             GroupOp::MemberLeft { .. } => "member_left",
             GroupOp::GroupKeyRotated { .. } => "group_key_rotated",
+            GroupOp::AccountDeviceLinked { .. } => "account_device_linked",
+            GroupOp::AccountDeviceUnlinked { .. } => "account_device_unlinked",
+            GroupOp::AccountKeysRotated { .. } => "account_keys_rotated",
             GroupOp::MemberRoleSet { .. } => "member_role_set",
             GroupOp::MemberCapabilitySet { .. } => "member_capability_set",
             GroupOp::DefaultCapabilitiesSet { .. } => "default_capabilities_set",
@@ -766,24 +854,128 @@ pub struct EncryptedGroupOp {
 /// envelope signature can never be replayed as an op signature or vice versa.
 pub const KEY_ENVELOPE_SIGN_DOMAIN: &[u8] = b"calimero.keyenvelope.v1";
 
+/// Who a [`KeyEnvelope`] is addressed to, and the ECDH public key the recipient
+/// must combine with their own secret to open it.
+///
+/// Addressing and key agreement are one field because they are one decision.
+/// A member is reached by ECDH over the Curve25519 form of their Ed25519
+/// namespace identity; a device is reached by native X25519 to the key its
+/// certificate published. Splitting them into a recipient field and an
+/// ephemeral field would make it possible to pair a `DeviceId` with an Ed25519
+/// ephemeral — a combination no correct sender produces and no unwrap path can
+/// service, which is exactly the kind of state a type should not be able to
+/// represent.
+///
+/// Deliberately **not** `#[non_exhaustive]`: every unwrap site matches this
+/// exhaustively, and a third addressing mode must be a compile error at each of
+/// them rather than silently taking a wildcard arm that reports "not for us".
+/// The append-only borsh discriminant rule still applies — `Member` is tag 0 and
+/// `Device` is tag 1, permanently.
+#[derive(Clone, Copy, Debug, BorshSerialize, BorshDeserialize)]
+pub enum EnvelopeRecipient {
+    /// Addressed to a member's namespace identity key.
+    ///
+    /// This is the **bootstrap** form, and it cannot be retired. A device link
+    /// travels as an encrypted `GroupOp`, so a node must already hold the scope
+    /// key to enroll a device — if the only way to receive a key were
+    /// device-addressed, a new member could never obtain the first one. Key
+    /// delivery, the sync pull path, and invitation/TEE admission therefore stay
+    /// member-addressed by necessity, not by legacy.
+    Member {
+        /// The member's Ed25519 namespace identity.
+        identity: PublicKey,
+        /// Per-envelope ephemeral Ed25519 key; ECDH runs over its Curve25519
+        /// form.
+        ephemeral_pk: PublicKey,
+    },
+    /// Addressed to one device, under the X25519 key in its certificate.
+    ///
+    /// The device's own public key is **not** carried here. The unwrapping
+    /// device already holds the matching secret and ECDH needs only
+    /// `ephemeral_pk`, so it never has to travel. Only the sender needs it, and
+    /// the sender reads it from the folded device binding — the same row that
+    /// decides whether the device is still authorized, which is what makes it
+    /// impossible to wrap for a device the projection says is revoked.
+    Device {
+        /// The device this envelope is for.
+        device: DeviceId,
+        /// Per-envelope ephemeral X25519 public key.
+        ephemeral_pk: KemPublicKey,
+    },
+}
+
+impl EnvelopeRecipient {
+    /// Tag distinguishing the addressing modes inside the signed bytes.
+    const MEMBER_TAG: u8 = 0;
+    /// See [`Self::MEMBER_TAG`].
+    const DEVICE_TAG: u8 = 1;
+
+    /// The member identity this envelope is for, if it is member-addressed.
+    #[must_use]
+    pub const fn member_identity(&self) -> Option<PublicKey> {
+        match *self {
+            Self::Member { identity, .. } => Some(identity),
+            Self::Device { .. } => None,
+        }
+    }
+
+    /// The device this envelope is for, if it is device-addressed.
+    #[must_use]
+    pub const fn device(&self) -> Option<DeviceId> {
+        match *self {
+            Self::Device { device, .. } => Some(device),
+            Self::Member { .. } => None,
+        }
+    }
+
+    /// Bytes this addressing contributes to the envelope signature.
+    ///
+    /// The leading tag is load-bearing: without it, rewriting the borsh
+    /// discriminant would reinterpret a member envelope's 32-byte identity as a
+    /// device id (and its ephemeral as an X25519 key) while the signature still
+    /// verified. With the tag inside the signed bytes, that swap fails
+    /// verification.
+    fn extend_signing_bytes(&self, out: &mut Vec<u8>) {
+        match *self {
+            Self::Member {
+                identity,
+                ephemeral_pk,
+            } => {
+                out.push(Self::MEMBER_TAG);
+                out.extend_from_slice(identity.as_ref());
+                out.extend_from_slice(ephemeral_pk.as_ref());
+            }
+            Self::Device {
+                device,
+                ephemeral_pk,
+            } => {
+                out.push(Self::DEVICE_TAG);
+                out.extend_from_slice(device.as_bytes());
+                out.extend_from_slice(ephemeral_pk.as_bytes());
+            }
+        }
+    }
+}
+
 /// Authenticated, forward-secret ECDH-wrapped group key for a recipient.
 ///
 /// The sender generates a fresh ephemeral keypair per envelope and encrypts the
-/// group key under `SharedKey::new(ephemeral_sk, recipient_pk)`; the recipient
-/// decrypts with `SharedKey::new(recipient_sk, ephemeral_pk)`. Because the
-/// ephemeral key is discarded after wrapping, compromising the sender's
-/// long-term key does not retroactively decrypt past envelopes. The `signature`
-/// authenticates `sender` over the whole envelope (bound to a `group_id`), so a
-/// recipient rejects forged or cross-group-replayed envelopes.
+/// group key under the ECDH secret between that ephemeral and the recipient's
+/// key; the recipient re-derives the same secret from its own key and the
+/// envelope's `ephemeral_pk`. Because the ephemeral key is discarded after
+/// wrapping, compromising the sender's long-term key does not retroactively
+/// decrypt past envelopes. The `signature` authenticates `sender` over the whole
+/// envelope (bound to a `group_id`), so a recipient rejects forged or
+/// cross-group-replayed envelopes.
+///
+/// [`EnvelopeRecipient`] decides both who the envelope is for and which
+/// agreement opens it.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct KeyEnvelope {
-    /// Recipient's namespace identity public key.
-    pub recipient: PublicKey,
+    /// Who this is for, and the ephemeral public key that opens it.
+    pub recipient: EnvelopeRecipient,
     /// Identity that wrapped this key, authenticated by `signature`.
     pub sender: PublicKey,
-    /// Per-envelope ephemeral public key used for ECDH key agreement. Fresh for
-    /// every wrap — this is what gives the wrap forward secrecy.
-    pub ephemeral_pk: PublicKey,
     /// 12-byte AES-GCM nonce.
     pub nonce: [u8; 12],
     /// `AES-256-GCM(group_key)` using the ECDH shared secret.
@@ -800,19 +992,17 @@ impl KeyEnvelope {
     #[must_use]
     pub fn signing_payload(
         group_id: &[u8; 32],
-        recipient: &PublicKey,
+        recipient: &EnvelopeRecipient,
         sender: &PublicKey,
-        ephemeral_pk: &PublicKey,
         nonce: &[u8; 12],
         ciphertext: &[u8],
     ) -> Vec<u8> {
         let mut out =
-            Vec::with_capacity(KEY_ENVELOPE_SIGN_DOMAIN.len() + 32 * 4 + 12 + ciphertext.len());
+            Vec::with_capacity(KEY_ENVELOPE_SIGN_DOMAIN.len() + 32 * 4 + 13 + ciphertext.len());
         out.extend_from_slice(KEY_ENVELOPE_SIGN_DOMAIN);
         out.extend_from_slice(group_id);
-        out.extend_from_slice(recipient.as_ref());
+        recipient.extend_signing_bytes(&mut out);
         out.extend_from_slice(sender.as_ref());
-        out.extend_from_slice(ephemeral_pk.as_ref());
         out.extend_from_slice(nonce);
         out.extend_from_slice(ciphertext);
         out
@@ -869,7 +1059,13 @@ pub struct SignedNamespaceOp {
 /// authenticated `sender` + `signature` fields (and its `ephemeral_pk` became a
 /// true per-envelope ephemeral). That changes the borsh layout of every group
 /// op that carries a rotation, so every op id changes — another flag-day.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 3;
+///
+/// v4: `KeyEnvelope::recipient` became [`EnvelopeRecipient`], a discriminated
+/// member-or-device address that carries its own ephemeral key (so the separate
+/// `ephemeral_pk` field is gone). Both `RootOp::KeyDelivery` and the rotation on
+/// `NamespaceOp::Group` embed an envelope, so every namespace op's layout and id
+/// changes — another flag-day.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 4;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 pub const NAMESPACE_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.namespace.v1";
@@ -1066,6 +1262,14 @@ pub mod bounds {
     pub const MAX_TEE_ALLOWED_ENTRIES: usize = 1_024;
     /// Max byte length of each string entry in a TEE allow-list.
     pub const MAX_TEE_ALLOWED_STRING_LEN: usize = 1_024;
+    /// Max root-key handoffs in one device-link credential chain.
+    ///
+    /// Each entry costs an Ed25519 verification in `root_key_at_epoch`, on a
+    /// path reachable from the wire before any authorization runs, so an
+    /// uncapped chain is a verification-amplification DoS. The cap is generous
+    /// against real use: an account rotating its root key once a day would take
+    /// well over two years to reach it.
+    pub const MAX_ROOT_KEY_HANDOFFS: usize = 1_024;
     /// Max entries in a metadata map (`GroupOp::*MetadataSet.data`).
     pub const MAX_METADATA_ENTRIES: usize = 1_024;
     /// Max byte length of a metadata name / key / value string.
@@ -1156,6 +1360,14 @@ impl GroupOp {
             | Self::CascadeUpgrade {
                 migration: Some(m), ..
             } => check_bound("group_op.migration", m.len(), bounds::MAX_BLOB_BYTES),
+            // Each handoff costs an Ed25519 verification in `root_key_at_epoch`,
+            // reached from the wire before any authorization runs, so an
+            // uncapped chain is verification amplification.
+            Self::AccountDeviceLinked { chain, .. } => check_bound(
+                "group_op.account_device_linked.chain",
+                chain.len(),
+                bounds::MAX_ROOT_KEY_HANDOFFS,
+            ),
             Self::GroupMetadataSet { name, data } => {
                 check_metadata("group_op.group_metadata", name.as_ref(), data)
             }

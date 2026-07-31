@@ -37,7 +37,7 @@ impl KvStore {
     /// Use `rotate_writers` to add or replace writers.
     #[app::init]
     pub fn init() -> KvStore {
-        let initializer: PublicKey = calimero_sdk::env::executor_id().into();
+        let initializer: PublicKey = calimero_sdk::env::device_id().into();
         let mut writers = BTreeSet::new();
         writers.insert(initializer);
         KvStore {
@@ -145,7 +145,7 @@ mod tests {
     fn rotate_writers_emits_event() {
         let mut app = TestHost::new(KvStore::init);
 
-        let me: PublicKey = app.executor_id().into();
+        let me: PublicKey = app.device_id().into();
         app.call(|s| s.rotate_writers(vec![me])).unwrap();
 
         assert!(app.events().iter().any(|e| e.kind == "WritersRotated"));

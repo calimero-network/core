@@ -13,7 +13,7 @@
 //! the HLC. This means any state mutated by a prior test — including a leaked executor
 //! ID from a panicking test — is fully cleared before the current test's body runs.
 //! The `#[serial]` attribute ensures tests run sequentially, so no concurrent state
-//! corruption is possible. Tests that call `env::set_executor_id` do NOT need a trailing
+//! corruption is possible. Tests that call `env::set_device_id` do NOT need a trailing
 //! reset: the next test's leading `reset_for_testing()` is the correct and sufficient
 //! cleanup point.
 
@@ -132,7 +132,7 @@ fn test_map_of_counters_merge() {
     // by Counter::increment() (and decrement()) when writing GCounter entries.
 
     // Node 1 (executor [100;32]): increment "counter1" three times
-    env::set_executor_id([100; 32]);
+    env::set_device_id([100; 32]);
     let mut map1 = UnorderedMap::<String, Counter>::new();
     let mut c1 = Counter::new();
     c1.increment().unwrap();
@@ -141,7 +141,7 @@ fn test_map_of_counters_merge() {
     map1.insert("counter1".to_string(), c1).unwrap();
 
     // Node 2 (executor [200;32]): also increment "counter1" three times (concurrent)
-    env::set_executor_id([200; 32]);
+    env::set_device_id([200; 32]);
     let mut map2 = UnorderedMap::<String, Counter>::new();
     let mut c2 = Counter::new();
     c2.increment().unwrap();

@@ -13,7 +13,10 @@ wasm_imports! {
         fn read_register(register_id: RegisterId, buf: Ref<BufferMut<'_>>) -> Bool;
         // --
         fn context_id(register_id: RegisterId);
-        fn executor_id(register_id: RegisterId);
+        // The account the call is authorized as, and the device replica that
+        // writes it. Two ids, never interchangeable: see `crates/account`.
+        fn account_id(register_id: RegisterId);
+        fn device_id(register_id: RegisterId);
         // Source context of an xcall dispatch; writes the register and returns
         // true only when this execution was invoked via `xcall`.
         fn xcall_origin(register_id: RegisterId) -> Bool;

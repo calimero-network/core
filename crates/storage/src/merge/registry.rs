@@ -371,14 +371,14 @@ mod tests {
         register_crdt_merge::<TestState>();
 
         // Create two states with different executor IDs (use unique IDs to avoid test contamination)
-        env::set_executor_id([10; 32]);
+        env::set_device_id([10; 32]);
         let mut state1 = TestState {
             counter: Counter::new(),
         };
         state1.counter.increment().unwrap();
         state1.counter.increment().unwrap(); // value = 2
 
-        env::set_executor_id([20; 32]);
+        env::set_device_id([20; 32]);
         let mut state2 = TestState {
             counter: Counter::new(),
         };

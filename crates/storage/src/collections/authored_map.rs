@@ -34,7 +34,7 @@ use crate::store::{MainStorage, StorageAdaptor};
 /// inserted it.
 ///
 /// Internally an `UnorderedMap<K, V>`. Each entry's `StorageType` is
-/// `User { owner }`, set at insert time from `env::executor_id()`. Only the
+/// `User { owner }`, set at insert time from `env::device_id()`. Only the
 /// owner can `update` or `remove` their entry.
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub struct AuthoredMap<K, V, S: StorageAdaptor = MainStorage>
@@ -149,7 +149,7 @@ where
             .owner_of(k)?
             .ok_or(StoreError::StorageError(StorageError::NotFound(entry_id)))?;
 
-        if !super::authored_common::executor_matches_owner(&stored_owner) {
+        if !super::authored_common::writer_matches_owner(&stored_owner) {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
                 "AuthoredMap::update: not entry owner".to_owned(),
             )));
@@ -178,7 +178,7 @@ where
             return Ok(None);
         };
 
-        if !super::authored_common::executor_matches_owner(&stored_owner) {
+        if !super::authored_common::writer_matches_owner(&stored_owner) {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
                 "AuthoredMap::remove: not entry owner".to_owned(),
             )));
@@ -263,7 +263,7 @@ where
         Ok(self
             .owner_of(k)?
             .as_ref()
-            .is_some_and(super::authored_common::executor_matches_owner))
+            .is_some_and(super::authored_common::writer_matches_owner))
     }
 
     pub(crate) fn entry_id(&self, k: &K) -> crate::address::Id {
@@ -383,7 +383,7 @@ mod tests {
     #[serial]
     fn insert_stamps_current_executor_as_owner() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).expect("insert");
@@ -397,7 +397,7 @@ mod tests {
     #[serial]
     fn insert_rejects_existing_key() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
@@ -416,7 +416,7 @@ mod tests {
     #[serial]
     fn update_by_owner_succeeds() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
@@ -430,12 +430,12 @@ mod tests {
     #[serial]
     fn update_by_non_owner_rejected() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
 
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         let err = map
             .update(&"apple".to_owned(), 99)
             .expect_err("non-owner update must fail");
@@ -451,7 +451,7 @@ mod tests {
     #[serial]
     fn update_missing_key_errors() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         let err = map
@@ -468,7 +468,7 @@ mod tests {
     #[serial]
     fn remove_by_owner_succeeds() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
@@ -483,12 +483,12 @@ mod tests {
     #[serial]
     fn remove_by_non_owner_rejected() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
 
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         let err = map
             .remove(&"apple".to_owned())
             .expect_err("non-owner remove must fail");
@@ -500,7 +500,7 @@ mod tests {
     #[serial]
     fn remove_missing_key_is_none() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         assert_eq!(map.remove(&"ghost".to_owned()).unwrap(), None);
@@ -513,10 +513,10 @@ mod tests {
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
 
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         map.insert("alice_key".to_owned(), 1).unwrap();
 
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         map.insert("bob_key".to_owned(), 2).unwrap();
 
         assert_eq!(map.len().unwrap(), 2);
@@ -535,7 +535,7 @@ mod tests {
         assert!(map.remove(&"alice_key".to_owned()).is_err());
 
         // Alice still sees her original value.
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         assert_eq!(map.get(&"alice_key".to_owned()).unwrap(), Some(1));
     }
 
@@ -543,7 +543,7 @@ mod tests {
     #[serial]
     fn owner_of_missing_key_is_none() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let map = Root::new(AuthoredMap::<String, u64>::new);
         assert_eq!(map.owner_of(&"ghost".to_owned()).unwrap(), None);
@@ -581,7 +581,7 @@ mod tests {
         }
 
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         // Insert at the default (unversioned 0) target — the "v1" stamp.
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
@@ -638,7 +638,7 @@ mod tests {
         }
 
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, LwwRegister<String>>::new);
         map.insert("k".to_owned(), LwwRegister::new("v1".to_owned()))
@@ -664,7 +664,7 @@ mod tests {
     #[serial]
     fn entry_schema_version_and_ownership_reflect_stored_metadata() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
@@ -678,11 +678,11 @@ mod tests {
         assert!(map.owned_by_me(&"apple".to_owned()).unwrap());
 
         // A different executor is not the owner.
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         assert!(!map.owned_by_me(&"apple".to_owned()).unwrap());
 
         // Absent key: no version, not owned.
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         assert_eq!(map.entry_schema_version(&"ghost".to_owned()).unwrap(), None);
         assert!(!map.owned_by_me(&"ghost".to_owned()).unwrap());
     }
@@ -691,12 +691,12 @@ mod tests {
     #[serial]
     fn entries_contains_all_inserted_pairs() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("a".to_owned(), 1).unwrap();
         map.insert("b".to_owned(), 2).unwrap();
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         map.insert("c".to_owned(), 3).unwrap();
 
         let pairs: Vec<_> = map.entries().unwrap().collect();
@@ -719,9 +719,9 @@ mod tests {
         env::reset_for_testing();
 
         let mut map = Root::new(|| AuthoredMap::<String, u64>::new_with_field_name("entries"));
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         map.insert("apple".to_owned(), 1).expect("alice insert");
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         map.insert("banana".to_owned(), 2).expect("bob insert");
 
         // Simulate the macro-driven id canonicalisation.
@@ -752,9 +752,9 @@ mod tests {
         env::reset_for_testing();
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         map.insert("apple".to_owned(), 1).expect("alice insert");
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         map.insert("banana".to_owned(), 2).expect("bob insert");
 
         // Random inner id != deterministic id => real clear+reinsert (not the

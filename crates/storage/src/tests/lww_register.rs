@@ -46,7 +46,7 @@ fn test_lww_value_mut_stamps_on_mutation() {
     // The guard re-stamped on drop: the write is now attributed to this executor
     // with a fresh HLC, not the foreign stamp — so LWW merge will see it (this is
     // exactly what `get_mut` fails to do).
-    assert_eq!(reg.node_id(), env::executor_id());
+    assert_eq!(reg.node_id(), env::device_id());
     assert_ne!(reg.timestamp(), make_timestamp(100));
 }
 

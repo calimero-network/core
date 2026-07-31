@@ -40,6 +40,7 @@ Core library crates for Calimero infrastructure. Each crate is conceptually sepa
 | `calimero-crypto`     | Cryptographic utilities                                         |
 | `calimero-config`     | Configuration parsing                                           |
 | `calimero-client`     | HTTP/WS client for nodes                                        |
+| `calimero-account`    | Account/device identity primitive (ids, certs, key chains)      |
 | `calimero-op`         | Unified op envelope types + id/root hashing                     |
 | `calimero-governance-types` | Signed group-operation types (local governance)           |
 
@@ -176,6 +177,7 @@ Core libraries:
 
 Unified causal log & governance:
 
+- [account/AGENTS.md](account/AGENTS.md) - Account/device identity primitive
 - [op/AGENTS.md](op/AGENTS.md) - Unified op envelope + id/root hashing
 - [op-adapter/AGENTS.md](op-adapter/AGENTS.md) - Per-plane ops onto the unified log
 - [projection/AGENTS.md](projection/AGENTS.md) - Deterministic ScopeState projection

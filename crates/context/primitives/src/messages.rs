@@ -11,8 +11,8 @@ use tokio::sync::oneshot;
 
 use crate::group::{
     AbortMigrationRequest, AddGroupMembersRequest, AdmitTeeNodeRequest,
-    BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupRequest,
-    DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
+    BroadcastGroupLocalStateRequest, CreateAccountRequest, CreateGroupInvitationRequest,
+    CreateGroupRequest, DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
     GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
     GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
     GetMemberCapabilitiesRequest, GetMemberMetadataRequest, GetMigrationStatusRequest,
@@ -20,14 +20,15 @@ use crate::group::{
     JoinContextRequest, JoinGroupRequest, JoinSubgroupInheritanceRequest, LeaveContextRequest,
     LeaveGroupRequest, LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListNamespacesForApplicationRequest, ListNamespacesRequest,
-    RemoveGroupMembersRequest, ResyncContextRequest, RetryGroupUpgradeRequest,
-    RotateGroupKeyRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
-    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
-    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
-    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
-    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
-    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
-    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    PairDeviceCompleteRequest, PairDeviceInitRequest, RemoveGroupMembersRequest,
+    ResyncContextRequest, RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
+    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
+    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
+    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
+    StoreDefaultCapabilitiesRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
+    StoreGroupMetadataRequest, StoreMemberCapabilityRequest, StoreMemberMetadataRequest,
+    StoreSubgroupVisibilityRequest, SyncGroupRequest, UpdateGroupSettingsRequest,
+    UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -494,6 +495,22 @@ pub enum ContextMessage {
     AdmitTeeNode {
         request: AdmitTeeNodeRequest,
         outcome: oneshot::Sender<<AdmitTeeNodeRequest as Message>::Result>,
+    },
+    CreateAccount {
+        request: CreateAccountRequest,
+        outcome: oneshot::Sender<<CreateAccountRequest as Message>::Result>,
+    },
+    PairDeviceInit {
+        request: PairDeviceInitRequest,
+        outcome: oneshot::Sender<<PairDeviceInitRequest as Message>::Result>,
+    },
+    PairDeviceComplete {
+        request: PairDeviceCompleteRequest,
+        outcome: oneshot::Sender<<PairDeviceCompleteRequest as Message>::Result>,
+    },
+    RevokeDevice {
+        request: RevokeDeviceRequest,
+        outcome: oneshot::Sender<<RevokeDeviceRequest as Message>::Result>,
     },
     RotateGroupKey {
         request: RotateGroupKeyRequest,

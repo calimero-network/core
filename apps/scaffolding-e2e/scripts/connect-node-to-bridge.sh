@@ -5,7 +5,7 @@
 #
 #     - name: Heal admin's partition
 #       type: script
-#       script: apps/scaffolding-e2e/scripts/connect-node-to-bridge.sh
+#       script: scripts/connect-node-to-bridge.sh
 #       target: local
 #       args:
 #         - e2e-node-1

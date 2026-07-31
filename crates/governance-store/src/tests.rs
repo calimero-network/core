@@ -9543,11 +9543,23 @@ mod self_leave_rotation_crypto {
             .unwrap();
 
         let new_key: [u8; 32] = OsRng.gen();
-        let rotation = GroupKeyring::new(&store, ns_gid)
-            .build_rotation(&new_key, &admin_sk, Some(&leaver))
+        let keyring = GroupKeyring::new(&store, ns_gid);
+        let recipients: Vec<KeyRecipient> = keyring
+            .current_key_recipients()
+            .expect("list recipients")
+            .into_iter()
+            .filter(|entitled| entitled.member != leaver)
+            .map(|entitled| entitled.recipient)
+            .collect();
+        let rotation = keyring
+            .build_rotation(&new_key, &admin_sk, &recipients)
             .expect("build rotation excluding the leaver");
 
-        let recipients: Vec<PublicKey> = rotation.envelopes.iter().map(|e| e.recipient).collect();
+        let recipients: Vec<PublicKey> = rotation
+            .envelopes
+            .iter()
+            .filter_map(|e| e.recipient.member_identity())
+            .collect();
 
         assert!(
             !recipients.contains(&leaver),
@@ -9583,7 +9595,7 @@ mod self_leave_rotation_crypto {
         let stayer_envelope = rotation
             .envelopes
             .iter()
-            .find(|e| e.recipient == stayer)
+            .find(|e| e.recipient.member_identity() == Some(stayer))
             .expect("the stayer has an envelope");
         let unwrapped = GroupKeyring::unwrap_for_recipient(
             &stayer_sk,
@@ -9771,6 +9783,788 @@ mod parked_op_retries_to_success {
             meta_after_retry.target_application_id,
             ApplicationId::from([0x5B; 32]),
             "the retried op's full mutation must land, not just part of it"
+        );
+    }
+}
+
+/// The account plane, driven through the **real apply pipeline** rather than
+/// the repository directly.
+///
+/// The repository has its own unit tests, but they call it in-process; these
+/// go through `sign_apply_local_group_op_borsh` → signature check → nonce
+/// window → dispatch → handler, which is the path a gossiped op actually
+/// takes. That is where a mis-wired dispatch arm or a handler that is not
+/// idempotent under replay shows up.
+mod account_plane_apply {
+    use super::*;
+    use calimero_account::{
+        sign_device_cert, sign_root_key_handoff, AccountGenesis, DeviceId, KemPublicKey,
+    };
+    use calimero_context_client::local_governance::GroupOp;
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_store::Store;
+
+    use crate::AccountBindingRepository;
+
+    fn key(seed: u8) -> PrivateKey {
+        PrivateKey::from([seed; 32])
+    }
+
+    /// A group with `admin` as its sole admin — the minimum for signing ops.
+    fn group_with_admin(store: &Store, gid: &ContextGroupId, admin: &PrivateKey) {
+        MetaRepository::new(store).save(gid, &test_meta()).unwrap();
+        MembershipRepository::new(store)
+            .add_member(gid, &admin.public_key(), GroupMemberRole::Admin)
+            .unwrap();
+    }
+
+    #[test]
+    fn linking_a_device_through_the_apply_path_records_a_binding() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        // The admin's own key is the member, so its derived account is what a
+        // device may link to while membership is still key-keyed.
+        let account_genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let account = account_genesis.account_id();
+        let device = DeviceId::mint(account, [5u8; 16]);
+        let cert = sign_device_cert(
+            &key(9),
+            account,
+            device,
+            &key(5).public_key(),
+            &KemPublicKey::from([5u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+
+        // Not a member yet → refused, and nothing recorded.
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis: account_genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
+            },
+        )
+        .unwrap();
+        let repo = AccountBindingRepository::new(&store);
+        assert!(
+            repo.live_bindings(&gid).unwrap().is_empty(),
+            "a device must not link into a group its account does not belong to"
+        );
+
+        // Grant the key that is this account's genesis root. That key IS the
+        // member, and the account is certifiable because its holder signs with
+        // the same private half — so the same op now lands.
+        MembershipRepository::new(&store)
+            .add_member(&gid, &key(9).public_key(), GroupMemberRole::Member)
+            .unwrap();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis: account_genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
+            },
+        )
+        .unwrap();
+
+        let live = repo.live_bindings(&gid).unwrap();
+        assert_eq!(live.len(), 1, "the device must now be bound");
+        assert_eq!(live[0].account, account);
+        assert_eq!(live[0].device, device);
+    }
+
+    #[test]
+    fn a_second_device_links_with_no_further_grant() {
+        // The property the whole feature exists for, through the real pipeline:
+        // one grant, two devices, one identity, distinct replica ids.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &key(9).public_key(), GroupMemberRole::Member)
+            .unwrap();
+
+        for seed in [5u8, 6] {
+            let device = DeviceId::mint(account, [seed; 16]);
+            let cert = sign_device_cert(
+                &key(9),
+                account,
+                device,
+                &key(seed).public_key(),
+                &KemPublicKey::from([seed; 32]),
+                0,
+                0,
+            )
+            .unwrap();
+            sign_apply_local_group_op_borsh(
+                &store,
+                &gid,
+                &admin_sk,
+                GroupOp::AccountDeviceLinked {
+                    genesis,
+                    chain: vec![],
+                    cert,
+                    endorsement: calimero_account::sign_account_endorsement(&key(9), account)
+                        .unwrap(),
+                },
+            )
+            .unwrap();
+        }
+
+        let devices = AccountBindingRepository::new(&store)
+            .devices_of(&gid, account)
+            .unwrap();
+        assert_eq!(devices.len(), 2, "a second device needs no new grant");
+        assert_ne!(
+            devices[0].device, devices[1].device,
+            "one account, two devices — the replica ids must stay distinct"
+        );
+    }
+
+    #[test]
+    fn a_device_cannot_link_into_an_account_whose_root_is_not_a_member() {
+        // The gate. A stranger may construct a genesis naming any public key,
+        // but linking into a group requires that key to be a member of it.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let genesis = AccountGenesis::new(key(20).public_key(), [20u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [21u8; 16]);
+        let cert = sign_device_cert(
+            &key(20),
+            account,
+            device,
+            &key(21).public_key(),
+            &KemPublicKey::from([21u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
+            },
+        )
+        .unwrap();
+        assert!(AccountBindingRepository::new(&store)
+            .live_bindings(&gid)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn constructing_an_account_over_someone_elses_member_key_enrolls_nothing() {
+        // The gate passes — the genesis names a real member — but enrolling a
+        // device needs a signature from that member's private key, which the
+        // attacker does not have. Passing the gate is not the same as gaining
+        // anything.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+        MembershipRepository::new(&store)
+            .add_member(&gid, &key(9).public_key(), GroupMemberRole::Member)
+            .unwrap();
+
+        // Mallory names Alice's member key as his account's root...
+        let genesis = AccountGenesis::new(key(9).public_key(), [77u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [78u8; 16]);
+        // ...but must sign the certificate with his own key, which is not it.
+        let cert = sign_device_cert(
+            &key(78),
+            account,
+            device,
+            &key(78).public_key(),
+            &KemPublicKey::from([78u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
+            },
+        )
+        .unwrap();
+        assert!(
+            AccountBindingRepository::new(&store)
+                .live_bindings(&gid)
+                .unwrap()
+                .is_empty(),
+            "passing the membership gate must not enroll a device without the root key"
+        );
+    }
+
+    #[test]
+    fn revocation_through_the_apply_path_is_idempotent_under_replay() {
+        // The apply pipeline re-runs a mutation before the op-log dedup gate,
+        // so every handler is applied at least twice in practice. A revocation
+        // that errored or flip-flopped on the second run would stall the node.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [5u8; 16]);
+
+        for _ in 0..2 {
+            sign_apply_local_group_op_borsh(
+                &store,
+                &gid,
+                &admin_sk,
+                GroupOp::AccountDeviceUnlinked {
+                    account,
+                    device,
+                    proof: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let repo = AccountBindingRepository::new(&store);
+        assert!(repo.is_revoked(&gid, device).unwrap());
+        assert!(repo.live_bindings(&gid).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_link_needs_a_member_endorsement_and_a_root_signed_cert() {
+        // The gate is two questions and it takes both. The account root is a member
+        // nowhere by design — that is what lets it stay offline and recover a device
+        // after total loss — so a granted member endorses the account instead.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        // An account rooted at an OFFLINE key that is nobody's member key.
+        let offline_root = key(9);
+        let genesis = AccountGenesis::new(offline_root.public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [5u8; 16]);
+        let cert = sign_device_cert(
+            &offline_root,
+            account,
+            device,
+            &key(5).public_key(),
+            &KemPublicKey::from([5u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        let bindings = AccountBindingRepository::new(&store);
+
+        // Endorsed by a NON-member → refused. The endorsement is valid; the endorser
+        // simply has no standing here.
+        let stranger = key(7);
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::sign_account_endorsement(&stranger, account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+        assert!(
+            bindings.live_bindings(&gid).unwrap().is_empty(),
+            "a valid endorsement from a non-member must not admit a link"
+        );
+
+        // A FORGED endorsement from a real member → refused. This is the one that
+        // matters: without the signature check, naming any member would be enough.
+        let mut forged = calimero_account::sign_account_endorsement(&admin_sk, account).unwrap();
+        forged.signature = [0u8; 64];
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: forged,
+            },
+        )
+        .unwrap();
+        assert!(
+            bindings.live_bindings(&gid).unwrap().is_empty(),
+            "naming a member is not endorsing — the signature has to verify"
+        );
+
+        // An endorsement of a DIFFERENT account → refused, even though it is validly
+        // signed by a member. Otherwise a genuine endorsement could be paired with
+        // an unrelated credential.
+        let other_account = AccountGenesis::new(key(8).public_key(), [8u8; 16]).account_id();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::sign_account_endorsement(&admin_sk, other_account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+        assert!(bindings.live_bindings(&gid).unwrap().is_empty());
+
+        // Endorsed by a member, correctly, for this account → admitted. Note the
+        // root never had to be a member.
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::sign_account_endorsement(&admin_sk, account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+        let live = bindings.live_bindings(&gid).unwrap();
+        assert_eq!(
+            live.len(),
+            1,
+            "a member-endorsed, root-signed link must land"
+        );
+        assert_eq!(live[0].account, account);
+    }
+
+    #[test]
+    fn a_root_signed_proof_revokes_the_account_s_own_device_without_an_admin() {
+        // The self-service path itself — the lost-laptop case, where the owner may be
+        // the only person who knows. It has to work for a NON-ADMIN, or the feature
+        // is admin-only revocation with extra steps.
+        //
+        // Kept beside the negative case deliberately: the gate that stops an attacker
+        // spending somebody else's device id is one `binding.account == account`
+        // check away from refusing every legitimate self-revocation too, and nothing
+        // else in the suite would notice.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let owner_sk = key(9);
+        let repo = MembershipRepository::new(&store);
+        repo.add_member(&gid, &owner_sk.public_key(), GroupMemberRole::Member)
+            .unwrap();
+
+        let owner_root = key(9);
+        let genesis = AccountGenesis::new(owner_root.public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [5u8; 16]);
+        let cert = sign_device_cert(
+            &owner_root,
+            account,
+            device,
+            &key(5).public_key(),
+            &KemPublicKey::from([5u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::sign_account_endorsement(&owner_sk, account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+        let bindings = AccountBindingRepository::new(&store);
+        assert_eq!(bindings.live_bindings(&gid).unwrap().len(), 1);
+
+        // The owner's own root withdraws its own device, and the op is signed by a
+        // plain member — NOT the admin. The proof is the whole authority.
+        let proof = calimero_account::SignedDeviceRevocation {
+            genesis,
+            chain: vec![],
+            revocation: calimero_account::sign_device_revocation(&owner_root, account, device, 0)
+                .unwrap(),
+        };
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &owner_sk,
+            GroupOp::AccountDeviceUnlinked {
+                account,
+                device,
+                proof: Some(proof),
+            },
+        )
+        .unwrap();
+
+        assert!(
+            bindings.is_revoked(&gid, device).unwrap(),
+            "an account's own root-signed proof must withdraw its own device with no \
+             admin involved — that is the lost-laptop case the proof exists for"
+        );
+        assert!(
+            bindings.live_bindings(&gid).unwrap().is_empty(),
+            "and the binding must no longer be in force"
+        );
+    }
+
+    #[test]
+    fn a_revocation_proof_does_not_authorize_revoking_someone_elses_device() {
+        // The self-service path's hole, and it reintroduces on this path exactly the
+        // bug the admin path was fixed for. A `SignedDeviceRevocation` is a
+        // self-signed statement: it proves the signer holds the root of the account
+        // it NAMES, and nothing more. The `DeviceId` in it is whatever the signer
+        // chose — owning that device is not a precondition of signing about it.
+        //
+        // So an attacker who holds any account root signs "my account withdraws
+        // device D" for the victim's D, and if `self_service` rests on the proof
+        // alone it is honoured. Revocation is TERMINAL, so that spends the victim's
+        // replica id for good: it can never be linked again, in any account. A
+        // permanent denial of service any account holder could inflict on any other.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let victim_sk = key(9);
+        let attacker_sk = key(7);
+        let repo = MembershipRepository::new(&store);
+        repo.add_member(&gid, &victim_sk.public_key(), GroupMemberRole::Member)
+            .unwrap();
+        repo.add_member(&gid, &attacker_sk.public_key(), GroupMemberRole::Member)
+            .unwrap();
+
+        // The victim's device, linked and in force.
+        let victim_root = key(9);
+        let genesis = AccountGenesis::new(victim_root.public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [5u8; 16]);
+        let cert = sign_device_cert(
+            &victim_root,
+            account,
+            device,
+            &key(5).public_key(),
+            &KemPublicKey::from([5u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::sign_account_endorsement(&victim_sk, account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+        let bindings = AccountBindingRepository::new(&store);
+        assert_eq!(bindings.live_bindings(&gid).unwrap().len(), 1);
+
+        // The attacker's OWN account, and a proof naming it beside the victim's
+        // device. Every signature here is genuine; that is the point.
+        let attacker_root = key(7);
+        let attacker_genesis = AccountGenesis::new(attacker_root.public_key(), [7u8; 16]);
+        let attacker_account = attacker_genesis.account_id();
+        let forged = calimero_account::SignedDeviceRevocation {
+            genesis: attacker_genesis,
+            chain: vec![],
+            revocation: calimero_account::sign_device_revocation(
+                &attacker_root,
+                attacker_account,
+                device,
+                0,
+            )
+            .unwrap(),
+        };
+        assert!(
+            forged.authorises(attacker_account, device).is_ok(),
+            "the proof itself is valid — it proves account ownership, not device \
+             ownership, which is exactly why it cannot stand alone"
+        );
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &attacker_sk,
+            GroupOp::AccountDeviceUnlinked {
+                account: attacker_account,
+                device,
+                proof: Some(forged),
+            },
+        )
+        .unwrap();
+
+        assert!(
+            !bindings.is_revoked(&gid, device).unwrap(),
+            "a proof for the attacker's OWN account must not spend a device bound to \
+             somebody else's — the tombstone is terminal"
+        );
+        assert_eq!(
+            bindings.live_bindings(&gid).unwrap().len(),
+            1,
+            "the victim's device must still be in force"
+        );
+    }
+
+    #[test]
+    fn a_plain_member_cannot_revoke_another_members_device() {
+        // A revocation is terminal — the DeviceId is spent for good — so an
+        // ungated one is a permanent denial of service any member could inflict
+        // on any other. Membership is not authority over other members' devices.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let victim_sk = key(9);
+        let attacker_sk = key(7);
+        let repo = MembershipRepository::new(&store);
+        repo.add_member(&gid, &victim_sk.public_key(), GroupMemberRole::Member)
+            .unwrap();
+        repo.add_member(&gid, &attacker_sk.public_key(), GroupMemberRole::Member)
+            .unwrap();
+
+        // The victim enrolls a device, admin-signed so the link itself lands.
+        let genesis = AccountGenesis::new(victim_sk.public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [5u8; 16]);
+        let cert = sign_device_cert(
+            &victim_sk,
+            account,
+            device,
+            &key(5).public_key(),
+            &KemPublicKey::from([5u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
+            },
+        )
+        .unwrap();
+        let bindings = AccountBindingRepository::new(&store);
+        assert_eq!(bindings.live_bindings(&gid).unwrap().len(), 1);
+
+        // A fellow member signs the revocation. Refused deterministically — the
+        // apply returns Ok (every replica reaches the same verdict, and erroring
+        // would stall on an op that can never succeed) but records nothing.
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &attacker_sk,
+            GroupOp::AccountDeviceUnlinked {
+                account,
+                device,
+                proof: None,
+            },
+        )
+        .unwrap();
+        assert!(
+            !bindings.is_revoked(&gid, device).unwrap(),
+            "a non-admin must not be able to spend another member's device id"
+        );
+        assert_eq!(
+            bindings.live_bindings(&gid).unwrap().len(),
+            1,
+            "the victim's device must still be in force"
+        );
+
+        // The admin can.
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceUnlinked {
+                account,
+                device,
+                proof: None,
+            },
+        )
+        .unwrap();
+        assert!(bindings.is_revoked(&gid, device).unwrap());
+    }
+
+    #[test]
+    fn an_unresolvable_cut_parks_an_unlink_instead_of_denying_it() {
+        // The load-bearing direction of the at-cut rule. This replica has not
+        // folded the op's ancestry, so its live rows are a DIFFERENT cut. Reading
+        // "not an admin" off them would harden into a permanent refusal here while
+        // peers that had folded the cut applied the revocation — a split on who
+        // may author, with no later op to reconcile it. It must park instead.
+        let store = test_store();
+        let gid = test_group_id();
+        let signer = key(7);
+        group_with_admin(&store, &gid, &key(1));
+
+        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [5u8; 16]);
+
+        let err = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &signer.public_key(),
+            &GroupOp::AccountDeviceUnlinked {
+                account,
+                device,
+                proof: None,
+            },
+            &crate::test_fixtures::TEST_CUT,
+            &crate::test_fixtures::UnresolvableAuthorizer,
+        )
+        .expect_err("an unresolvable cut must not harden into a permanent refusal");
+        assert!(
+            format!("{err:#}").contains("authority undecidable"),
+            "expected AuthorityUndecidable (a retryable park), got: {err:#}"
+        );
+        assert!(
+            !AccountBindingRepository::new(&store)
+                .is_revoked(&gid, device)
+                .unwrap(),
+            "a parked op must not mutate state — it has not been authorized yet"
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_cut_parks_a_link_instead_of_refusing_it() {
+        // Same rule on the link gate. Live rows would say "not a member" and a
+        // refusal writes nothing while the op keeps its place in the DAG, so the
+        // disagreement would be permanent and invisible.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        let cert = sign_device_cert(
+            &key(9),
+            account,
+            DeviceId::mint(account, [5u8; 16]),
+            &key(5).public_key(),
+            &KemPublicKey::from([5u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+
+        let err = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &admin_sk.public_key(),
+            &GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
+            },
+            &crate::test_fixtures::TEST_CUT,
+            &crate::test_fixtures::UnresolvableAuthorizer,
+        )
+        .expect_err("an unresolvable cut must not decide the membership gate");
+        assert!(
+            format!("{err:#}").contains("authority undecidable"),
+            "expected AuthorityUndecidable (a retryable park), got: {err:#}"
+        );
+        assert!(
+            AccountBindingRepository::new(&store)
+                .account_key(&gid, account)
+                .unwrap()
+                .is_none(),
+            "a parked link must not even absorb the genesis"
+        );
+    }
+
+    #[test]
+    fn a_rotation_through_the_apply_path_advances_the_epoch_once() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        let repo = AccountBindingRepository::new(&store);
+        repo.absorb_genesis(&gid, &genesis).unwrap();
+
+        let handoff = sign_root_key_handoff(&key(9), account, 0, &key(10).public_key()).unwrap();
+
+        // Applied twice: the second is a no-op because `from_epoch` no longer
+        // matches, which is exactly the idempotence replay depends on.
+        for _ in 0..2 {
+            sign_apply_local_group_op_borsh(
+                &store,
+                &gid,
+                &admin_sk,
+                GroupOp::AccountKeysRotated { handoff },
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            repo.account_key(&gid, account).unwrap().map(|r| r.0),
+            Some(1),
+            "a replayed rotation must not advance the epoch twice"
         );
     }
 }

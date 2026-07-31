@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use borsh::{BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 
+use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyHandoff};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
@@ -45,6 +46,37 @@ impl From<[u8; 32]> for ScopeId {
     }
 }
 
+/// Who authored an op, as one indivisible triple.
+///
+/// These three answer three *different* questions that used to be answered by a
+/// single key, and separating them is what makes one identity across several
+/// devices possible:
+///
+/// - [`account`](Self::account) — **who**, for authorization and for the app.
+///   The only subject the ACL and membership planes key on.
+/// - [`device`](Self::device) — **which replica**, for the CRDT planes. Must be
+///   unique per concurrent writer; never an authorization input.
+/// - [`device_key`](Self::device_key) — **what signed this**, for integrity.
+///
+/// They travel together because a claim is only meaningful as a unit: the
+/// signature proves the device key authored the op, and the projection proves
+/// that key currently speaks for that account. Splitting them across call
+/// boundaries invites checking one without the other.
+///
+/// All three are covered by [`Op::compute_id`], hence by the signature. If
+/// `device_key` were left out, an attacker could swap in their own key; if
+/// `account` were left out, a device's op could be replayed under a different
+/// account.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, BorshSerialize, BorshDeserialize)]
+pub struct Authorship {
+    /// The authorizing identity — what ACLs, membership, and the app see.
+    pub account: AccountId,
+    /// The CRDT replica id of the installation that authored this.
+    pub device: DeviceId,
+    /// The Ed25519 key that produced [`Op::signature`].
+    pub device_key: PublicKey,
+}
+
 /// One envelope for every kind of change in a scope.
 ///
 /// `parents` are the op's causal predecessors **within its scope**, and MAY
@@ -54,17 +86,18 @@ impl From<[u8; 32]> for ScopeId {
 /// set, one causal model, spanning data and governance.
 #[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct Op {
-    /// `compute_id(scope, parents, author, hlc, payload)` — content address.
-    /// **Private** and computed by [`Op::new`] so a caller can't desync the id
-    /// from the content it addresses; read it via [`Op::id`] and re-check it
-    /// with [`Op::verify`].
+    /// `compute_id(scope, parents, authorship, hlc, payload)` — content
+    /// address. **Private** and computed by [`Op::new`] so a caller can't
+    /// desync the id from the content it addresses; read it via [`Op::id`] and
+    /// re-check it with [`Op::verify`].
     id: [u8; 32],
     /// The scope this op belongs to.
     pub scope: ScopeId,
     /// Causal predecessors (may cross scopes — see the struct docs).
     pub parents: Vec<[u8; 32]>,
-    /// Authoring identity (verified against this scope's ACL at the op's cut).
-    pub author: PublicKey,
+    /// Who authored this: account, device, and signing key. See [`Authorship`]
+    /// for why all three are carried rather than one key doing every job.
+    pub authorship: Authorship,
     /// Hybrid logical clock at author time (causally monotonic).
     pub hlc: HybridTimestamp,
     /// The change itself. Once payload encryption lands, the data arms are
@@ -78,15 +111,21 @@ pub struct Op {
     /// authority — at worst it flags a divergence the recompute would catch
     /// anyway. Security never depends on this field.
     pub expected_scope_root: [u8; 32],
-    /// Ed25519 signature by `author` over the [`compute_id`](Op::compute_id)
-    /// preimage (i.e. over `id`). The signature is intentionally NOT folded
-    /// back into `id` (it signs the id, which would be circular).
+    /// Ed25519 signature by [`Authorship::device_key`] over the
+    /// [`compute_id`](Op::compute_id) preimage (i.e. over `id`). The signature
+    /// is intentionally NOT folded back into `id` (it signs the id, which would
+    /// be circular).
     ///
-    /// **Callers MUST verify this signature against `author` before trusting an
-    /// `Op`.** `calimero-projection`/`calimero-authz` assume already-verified
-    /// ops: they fold/authorize on content alone and perform no signature
-    /// check. Feeding an unverified op into the projection bypasses
-    /// authentication entirely.
+    /// **Callers MUST verify this signature before trusting an `Op`.**
+    /// `calimero-projection`/`calimero-authz` assume already-verified ops: they
+    /// fold/authorize on content alone and perform no signature check. Feeding
+    /// an unverified op into the projection bypasses authentication entirely.
+    ///
+    /// Note the two-stage split. Verifying this signature proves only that the
+    /// holder of `device_key` authored the op — it says nothing about whether
+    /// that key currently speaks for [`Authorship::account`]. That second
+    /// question is answered at the causal cut by `calimero-authz`, because only
+    /// the cut knows which links and revocations are in force.
     pub signature: [u8; 64],
 }
 
@@ -119,25 +158,25 @@ pub enum OpPayload {
     /// Set the writer/capability set for `object` (writer-set rotation).
     SetWriters {
         object: Id,
-        writers: BTreeMap<PublicKey, OpMask>,
+        writers: BTreeMap<AccountId, OpMask>,
     },
 
     // ---- membership plane ----
     /// Add `member` to `group` with `role`.
     MemberAdded {
         group: ContextGroupId,
-        member: PublicKey,
+        member: AccountId,
         role: GroupMemberRole,
     },
     /// Remove `member` from `group`.
     MemberRemoved {
         group: ContextGroupId,
-        member: PublicKey,
+        member: AccountId,
     },
 
     // ---- admin / namespace plane ----
     /// Change the scope's root admin.
-    AdminChanged { new_admin: PublicKey },
+    AdminChanged { new_admin: AccountId },
     /// Replace the scope's policy bytes.
     PolicyUpdated { policy_bytes: Vec<u8> },
     /// Create a child subgroup scope nested under `parent`. A `restricted`
@@ -149,7 +188,7 @@ pub enum OpPayload {
         child: ScopeId,
         parent: ScopeId,
         restricted: bool,
-        admin: PublicKey,
+        admin: AccountId,
     },
     /// Move a subgroup scope under a new parent (a scope-tree restructure).
     SubgroupReparented { child: ScopeId, new_parent: ScopeId },
@@ -174,7 +213,7 @@ pub enum OpPayload {
     /// group default for that member).
     MemberCapabilitySet {
         group: ContextGroupId,
-        member: PublicKey,
+        member: AccountId,
         capabilities: MemberCapabilities,
     },
 
@@ -186,6 +225,64 @@ pub enum OpPayload {
     /// governance op, or an encrypted op this node can't decrypt). Folding it
     /// is a no-op; its only effect is keeping the parent chain unbroken.
     Noop,
+
+    // ---- account plane ----
+    //
+    // Appended after `Noop` rather than grouped with the other governance
+    // planes above: borsh tags by declaration order, so slotting a variant into
+    // its thematic home would renumber every variant after it and silently
+    // change the id — and therefore the signature — of every stored op that
+    // used one. New variants go at the end, always.
+    /// Bind a device to an account, within this scope.
+    ///
+    /// Self-contained by construction: `genesis` hashes to `cert.account`, and
+    /// `chain` carries the signed root-key rollovers from the genesis up to
+    /// `cert.key_epoch`. A verifier needs no prior op to check the credential —
+    /// which is what lets a freshly paired device link *itself* into every
+    /// scope its account belongs to, instead of the account root having to
+    /// author a grant into each one.
+    ///
+    /// The op is authored by the new device itself and requires no admin
+    /// action, because linking a device to an account that is **already a
+    /// member** is not a privilege escalation: the account holds every right
+    /// the device gains. The projection enforces exactly that (see its
+    /// `DeviceLinked` fold rules), so a device can never link itself into a
+    /// scope its account does not belong to.
+    DeviceLinked {
+        /// The account's self-certifying root; `genesis.account_id()` must
+        /// equal `cert.account`.
+        genesis: AccountGenesis,
+        /// Signed root-key rollovers, epoch 0 upward, reaching
+        /// `cert.key_epoch`. Empty when the cert was signed by the genesis key.
+        chain: Vec<RootKeyHandoff>,
+        /// The root-signed grant being folded.
+        cert: DeviceCert,
+    },
+    /// Withdraw a device from an account, at this cut.
+    ///
+    /// Terminal for this `DeviceId`: re-enrolling the physical machine mints a
+    /// fresh id. Making revocation permanent rather than a toggle means a
+    /// replica id is never reused, so the CRDT planes keep their one-writer-per-
+    /// replica invariant even across a revoke/re-add cycle.
+    ///
+    /// Causally honoured like every other decision — ops the device authored
+    /// *before* this one in causal order stay valid, and ops after it do not.
+    DeviceRevoked {
+        /// Account the device is being removed from.
+        account: AccountId,
+        /// The device losing its binding.
+        device: DeviceId,
+    },
+    /// Roll an account's root key within this scope.
+    ///
+    /// Folding this raises the account's key epoch, after which a certificate
+    /// signed by any superseded key is refused — which is how a rotation
+    /// actually withdraws the old key's authority rather than merely adding a
+    /// new one alongside it.
+    AccountKeysRotated {
+        /// The handoff, signed by the outgoing key.
+        handoff: RootKeyHandoff,
+    },
 }
 
 impl Op {
@@ -197,18 +294,18 @@ impl Op {
     pub fn new(
         scope: ScopeId,
         parents: Vec<[u8; 32]>,
-        author: PublicKey,
+        authorship: Authorship,
         hlc: HybridTimestamp,
         payload: OpPayload,
         expected_scope_root: [u8; 32],
         signature: [u8; 64],
     ) -> Self {
-        let id = Self::compute_id(scope, &parents, &author, &hlc, &payload);
+        let id = Self::compute_id(scope, &parents, &authorship, &hlc, &payload);
         Self {
             id,
             scope,
             parents,
-            author,
+            authorship,
             hlc,
             payload,
             expected_scope_root,
@@ -237,7 +334,7 @@ impl Op {
         id: [u8; 32],
         scope: ScopeId,
         parents: Vec<[u8; 32]>,
-        author: PublicKey,
+        authorship: Authorship,
         hlc: HybridTimestamp,
         payload: OpPayload,
         expected_scope_root: [u8; 32],
@@ -247,12 +344,30 @@ impl Op {
             id,
             scope,
             parents,
-            author,
+            authorship,
             hlc,
             payload,
             expected_scope_root,
             signature,
         }
+    }
+
+    /// The account whose authority this op is judged against.
+    #[must_use]
+    pub const fn author(&self) -> AccountId {
+        self.authorship.account
+    }
+
+    /// The CRDT replica that authored this op.
+    #[must_use]
+    pub const fn device(&self) -> DeviceId {
+        self.authorship.device
+    }
+
+    /// The key that signed this op.
+    #[must_use]
+    pub const fn device_key(&self) -> &PublicKey {
+        &self.authorship.device_key
     }
 
     /// Content address of this op.
@@ -273,21 +388,31 @@ impl Op {
         let recomputed = Self::compute_id(
             self.scope,
             &self.parents,
-            &self.author,
+            &self.authorship,
             &self.hlc,
             &self.payload,
         );
         if recomputed != self.id {
             return false;
         }
-        self.author
+        // Against the DEVICE key, not the account: an account has no key of its
+        // own to sign with, and the whole point of the split is that the thing
+        // which signs is per-device and revocable. Binding that key to
+        // `authorship.account` is a separate, at-cut decision made by
+        // `calimero-authz` — see the `signature` field docs.
+        self.authorship
+            .device_key
             .verify_raw_signature(&self.id, &self.signature)
             .is_ok()
     }
 
-    /// Content address of an op: `Sha256(scope ‖ sorted(parents) ‖ author ‖
-    /// hlc ‖ borsh(payload))`. Parents are sorted so the id is independent of
-    /// the order a builder happened to list them in.
+    /// Content address of an op: `Sha256(scope ‖ sorted(parents) ‖
+    /// borsh(authorship) ‖ hlc ‖ borsh(payload))`. Parents are sorted so the id
+    /// is independent of the order a builder happened to list them in.
+    ///
+    /// The whole [`Authorship`] triple is in the preimage, so the account, the
+    /// replica id, and the signing key are all covered by the signature. Each
+    /// omission would be exploitable on its own — see the [`Authorship`] docs.
     ///
     /// # Panics
     /// Never in practice — borsh-serializing these field types into an
@@ -296,7 +421,7 @@ impl Op {
     pub fn compute_id(
         scope: ScopeId,
         parents: &[[u8; 32]],
-        author: &PublicKey,
+        authorship: &Authorship,
         hlc: &HybridTimestamp,
         payload: &OpPayload,
     ) -> [u8; 32] {
@@ -306,15 +431,15 @@ impl Op {
         let mut hasher = Sha256::new();
         hasher.update(scope.as_bytes());
         // Length-prefix the parent list so the boundary between the (variable
-        // count of) parents and the author that follows is unambiguous — i.e.
-        // `parents=[A,B], author=C` can never hash-collide with
-        // `parents=[A,B,C], author=…`. All other fields are fixed-size or
+        // count of) parents and the authorship that follows is unambiguous —
+        // i.e. `parents=[A,B], account=C` can never hash-collide with
+        // `parents=[A,B,C], account=…`. All other fields are fixed-size or
         // borsh-length-prefixed.
         hasher.update((sorted.len() as u64).to_le_bytes());
         for parent in &sorted {
             hasher.update(parent);
         }
-        hasher.update(AsRef::<[u8; 32]>::as_ref(author));
+        hasher.update(borsh::to_vec(authorship).expect("Authorship borsh is infallible in-memory"));
         hasher.update(borsh::to_vec(hlc).expect("HybridTimestamp borsh is infallible in-memory"));
         hasher.update(borsh::to_vec(payload).expect("OpPayload borsh is infallible in-memory"));
         hasher.finalize().into()
@@ -342,6 +467,22 @@ pub fn scope_root(entities_root: [u8; 32], acl_hash: [u8; 32], groups_root: [u8;
 mod tests {
     use super::*;
 
+    /// Deterministic keypair, so failures reproduce exactly.
+    fn key(seed: u8) -> calimero_primitives::identity::PrivateKey {
+        calimero_primitives::identity::PrivateKey::from([seed; 32])
+    }
+
+    /// A real (non-self) account with one device, for authorship tests.
+    fn real_authorship(root_seed: u8, dev_seed: u8) -> Authorship {
+        let account =
+            AccountGenesis::new(key(root_seed).public_key(), [root_seed; 16]).account_id();
+        Authorship {
+            account,
+            device: DeviceId::mint(account, [dev_seed; 16]),
+            device_key: key(dev_seed).public_key(),
+        }
+    }
+
     fn hlc0() -> HybridTimestamp {
         use core::num::NonZeroU128;
 
@@ -355,7 +496,7 @@ mod tests {
     #[test]
     fn compute_id_is_parent_order_invariant() {
         let scope = ScopeId::from([7u8; 32]);
-        let author = PublicKey::from([1u8; 32]);
+        let author = real_authorship(1, 2);
         let hlc = hlc0();
         let payload = OpPayload::Delete {
             entity: Id::new([2u8; 32]),
@@ -368,7 +509,7 @@ mod tests {
     #[test]
     fn compute_id_distinguishes_payload() {
         let scope = ScopeId::from([7u8; 32]);
-        let author = PublicKey::from([1u8; 32]);
+        let author = real_authorship(1, 2);
         let hlc = hlc0();
         let put = OpPayload::Put {
             entity: Id::new([2u8; 32]),
@@ -394,16 +535,135 @@ mod tests {
     }
 
     #[test]
+    fn compute_id_covers_every_part_of_authorship() {
+        // Each field is separately exploitable if unsigned: swapping the
+        // account replays a device's op under someone else, swapping the
+        // device forges a replica id, swapping the key substitutes the signer.
+        let scope = ScopeId::from([7u8; 32]);
+        let hlc = hlc0();
+        let payload = OpPayload::Delete {
+            entity: Id::new([2u8; 32]),
+        };
+        let base = real_authorship(1, 2);
+        let id = |a: &Authorship| Op::compute_id(scope, &[], a, &hlc, &payload);
+
+        let mut other_account = base;
+        other_account.account = AccountId::from([42u8; 32]);
+        assert_ne!(id(&base), id(&other_account), "account must be signed");
+
+        let mut other_device = base;
+        other_device.device = DeviceId::from([43u8; 32]);
+        assert_ne!(id(&base), id(&other_device), "device must be signed");
+
+        let mut other_key = base;
+        other_key.device_key = key(9).public_key();
+        assert_ne!(id(&base), id(&other_key), "device_key must be signed");
+    }
+
+    #[test]
+    fn verify_checks_the_signature_against_the_device_key() {
+        // An account has no key of its own; the device key is what signs.
+        let device_sk = key(2);
+        let authorship = real_authorship(1, 2);
+        let scope = ScopeId::from([7u8; 32]);
+        let payload = OpPayload::Put {
+            entity: Id::new([2u8; 32]),
+            value: vec![1],
+        };
+        let id = Op::compute_id(scope, &[], &authorship, &hlc0(), &payload);
+        let op = Op::new(
+            scope,
+            vec![],
+            authorship,
+            hlc0(),
+            payload,
+            [0u8; 32],
+            device_sk.sign(&id).expect("sign").to_bytes(),
+        );
+        assert!(op.verify());
+        assert_eq!(op.author(), authorship.account);
+        assert_eq!(op.device(), authorship.device);
+        assert_eq!(*op.device_key(), device_sk.public_key());
+    }
+
+    #[test]
+    fn verify_rejects_an_op_signed_by_a_different_device_key() {
+        let authorship = real_authorship(1, 2);
+        let scope = ScopeId::from([7u8; 32]);
+        let payload = OpPayload::Put {
+            entity: Id::new([2u8; 32]),
+            value: vec![1],
+        };
+        let id = Op::compute_id(scope, &[], &authorship, &hlc0(), &payload);
+        // Signed by key 9 while claiming device_key of key 2.
+        let op = Op::new(
+            scope,
+            vec![],
+            authorship,
+            hlc0(),
+            payload,
+            [0u8; 32],
+            key(9).sign(&id).expect("sign").to_bytes(),
+        );
+        assert!(!op.verify());
+    }
+
+    #[test]
+    fn verify_rejects_a_swapped_account_after_signing() {
+        // The account is in the id preimage, so re-pointing a validly signed op
+        // at another account breaks the id/content match before the signature
+        // check is even reached.
+        let device_sk = key(2);
+        let authorship = real_authorship(1, 2);
+        let scope = ScopeId::from([7u8; 32]);
+        let payload = OpPayload::Put {
+            entity: Id::new([2u8; 32]),
+            value: vec![1],
+        };
+        let id = Op::compute_id(scope, &[], &authorship, &hlc0(), &payload);
+        let mut op = Op::new(
+            scope,
+            vec![],
+            authorship,
+            hlc0(),
+            payload,
+            [0u8; 32],
+            device_sk.sign(&id).expect("sign").to_bytes(),
+        );
+        assert!(op.verify());
+        op.authorship.account = AccountId::from([99u8; 32]);
+        assert!(!op.verify());
+    }
+
+    #[test]
     fn op_payload_discriminants_are_pinned() {
         use calimero_context_config::types::ContextGroupId;
         use calimero_context_config::MemberCapabilities;
         use calimero_primitives::context::GroupMemberRole;
 
         let id = Id::new([1u8; 32]);
-        let pk = PublicKey::from([2u8; 32]);
+        let pk = AccountId::from([2u8; 32]);
         let scope = ScopeId::from([3u8; 32]);
         let group = ContextGroupId::from([4u8; 32]);
         let caps = MemberCapabilities::empty();
+        let genesis = AccountGenesis::new(key(1).public_key(), [1u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [1u8; 16]);
+        let handoff = RootKeyHandoff {
+            account,
+            from_epoch: 0,
+            new_root_sign_pk: key(2).public_key(),
+            signature: [0u8; 64],
+        };
+        let cert = DeviceCert {
+            account,
+            device,
+            sign_pk: key(3).public_key(),
+            kem_pk: calimero_account::KemPublicKey::from([4u8; 32]),
+            key_epoch: 0,
+            device_epoch: 0,
+            signature: [0u8; 64],
+        };
 
         // Every variant, paired with the borsh discriminant it MUST keep forever
         // (see the append-only note on `OpPayload`). The exhaustive `match` below
@@ -454,6 +714,13 @@ mod tests {
                 capabilities: caps,
             },
             OpPayload::Noop,
+            OpPayload::DeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+            },
+            OpPayload::DeviceRevoked { account, device },
+            OpPayload::AccountKeysRotated { handoff },
         ];
 
         // Exhaustive: a new variant forces a new arm here.
@@ -473,10 +740,13 @@ mod tests {
                 OpPayload::DefaultCapabilitiesSet { .. } => 11,
                 OpPayload::MemberCapabilitySet { .. } => 12,
                 OpPayload::Noop => 13,
+                OpPayload::DeviceLinked { .. } => 14,
+                OpPayload::DeviceRevoked { .. } => 15,
+                OpPayload::AccountKeysRotated { .. } => 16,
             }
         }
 
-        assert_eq!(all.len(), 14, "every OpPayload variant must be listed");
+        assert_eq!(all.len(), 17, "every OpPayload variant must be listed");
         for payload in &all {
             let bytes = borsh::to_vec(payload).expect("serialize");
             assert_eq!(
@@ -491,7 +761,7 @@ mod tests {
     fn op_payload_borsh_roundtrips() {
         let payload = OpPayload::SetWriters {
             object: Id::new([5u8; 32]),
-            writers: [(PublicKey::from([9u8; 32]), OpMask::FULL)]
+            writers: [(AccountId::from([9u8; 32]), OpMask::FULL)]
                 .into_iter()
                 .collect(),
         };
@@ -502,11 +772,11 @@ mod tests {
 
     #[test]
     fn op_payload_rejects_out_of_range_discriminant() {
-        // 14 variants are pinned (tags 0..=13). Any higher tag must fail to
+        // 17 variants are pinned (tags 0..=16). Any higher tag must fail to
         // decode rather than silently map onto a variant — the guard that
         // keeps a corrupt/forward-version byte from being mistaken for a valid
         // op.
-        for tag in [14u8, 15, 20, 42, 200, 255] {
+        for tag in [17u8, 18, 20, 42, 200, 255] {
             let bytes = [tag];
             assert!(
                 borsh::from_slice::<OpPayload>(&bytes).is_err(),
@@ -521,7 +791,7 @@ mod tests {
         // decode. A truncated buffer must error, never yield a partial value.
         let payload = OpPayload::SetWriters {
             object: Id::new([5u8; 32]),
-            writers: [(PublicKey::from([9u8; 32]), OpMask::FULL)]
+            writers: [(AccountId::from([9u8; 32]), OpMask::FULL)]
                 .into_iter()
                 .collect(),
         };

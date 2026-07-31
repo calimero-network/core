@@ -311,6 +311,22 @@ pub(crate) fn setup(
             post(groups::create_group_invitation::handler),
         )
         .route("/groups/join", post(groups::join_group::handler))
+        .route(
+            "/namespaces/:namespace_id/account",
+            post(namespaces::create_account::handler),
+        )
+        .route(
+            "/namespaces/:namespace_id/account/pair-init",
+            post(namespaces::pair_device_init::handler),
+        )
+        .route(
+            "/namespaces/:namespace_id/account/pair-complete",
+            post(namespaces::pair_device_complete::handler),
+        )
+        .route(
+            "/namespaces/:namespace_id/account/revoke",
+            post(namespaces::revoke_device::handler),
+        )
         // Namespace management
         .route(
             "/namespaces",

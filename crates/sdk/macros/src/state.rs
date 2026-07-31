@@ -970,8 +970,8 @@ fn generate_test_state_impl(
                 f(&*app);
             }
 
-            fn __test_with_executor(id: [u8; 32], f: &mut dyn ::core::ops::FnMut()) {
-                ::calimero_storage::env::with_executor_id(id, || f());
+            fn __test_with_device(id: [u8; 32], f: &mut dyn ::core::ops::FnMut()) {
+                ::calimero_storage::env::with_device_id(id, || f());
             }
 
             fn __test_mirror_root() {

@@ -196,7 +196,7 @@ fn unordered_set_satisfies_crdt_laws() {
 // conflict slot. Establishes add-wins union over keys without touching the
 // per-actor max-merge conflict path. The shared-key conflict variant lives
 // below as `unordered_map_with_counter_shared_key_conflict`, which exercises
-// the per-actor max-merge slot via the `env::with_executor_id` scoped guard.
+// the per-actor max-merge slot via the `env::with_device_id` scoped guard.
 #[test]
 fn unordered_map_with_counter_satisfies_crdt_laws() {
     use calimero_storage::collections::{Counter, UnorderedMap};
@@ -241,8 +241,8 @@ fn unordered_map_with_counter_satisfies_crdt_laws() {
 // Shared-key + per-replica executor conflict variant — the path that
 // actually exercises UnorderedMap's recursive merge into a nested
 // Counter on the same key from different replicas. Each replica writes
-// the shared key under its own `executor_id` via the scoped
-// [`env::with_executor_id`] guard, which restores prior identity even
+// the shared key under its own `device_id` via the scoped
+// [`env::with_device_id`] guard, which restores prior identity even
 // on panic so a failure here doesn't pollute siblings in the same
 // process.
 #[test]
@@ -263,7 +263,7 @@ fn unordered_map_with_counter_shared_key_conflict() {
                 shared_count: usize,
                 private_count: usize| {
         move || {
-            env::with_executor_id(executor, || {
+            env::with_device_id(executor, || {
                 let mut m = UnorderedMap::new();
 
                 // Shared key — every replica writes to it under its own actor.
@@ -363,8 +363,8 @@ fn lww_register_satisfies_crdt_laws() {
 // max-under-merge is 7 regardless of merge order; private slots simply
 // sum (disjoint executors).
 //
-// Driven by the `env::with_executor_id` scoped guard so the
-// per-replica increments run under the right `executor_id`, with prior
+// Driven by the `env::with_device_id` scoped guard so the
+// per-replica increments run under the right `device_id`, with prior
 // identity restored even on panic so a failure here doesn't pollute
 // siblings in the same process.
 #[test]
@@ -380,14 +380,14 @@ fn shared_executor_counter_merge() {
             let mut c = Counter::<false, MainStorage>::new();
 
             // Increments under the shared executor (the conflict-resolution slot).
-            env::with_executor_id(SHARED_EXECUTOR, || {
+            env::with_device_id(SHARED_EXECUTOR, || {
                 for _ in 0..shared_count {
                     c.increment().unwrap();
                 }
             });
 
             // Increments under this replica's private executor.
-            env::with_executor_id(private_executor, || {
+            env::with_device_id(private_executor, || {
                 for _ in 0..private_count {
                     c.increment().unwrap();
                 }
@@ -521,7 +521,7 @@ fn sorted_map_with_counter_shared_key_conflict() {
                 shared_count: usize,
                 private_count: usize| {
         move || {
-            env::with_executor_id(executor, || {
+            env::with_device_id(executor, || {
                 let mut m = SortedMap::new();
 
                 let mut shared = Counter::<false, MainStorage>::new();

@@ -63,7 +63,7 @@ impl<T> LwwRegister<T> {
             Self {
                 value,
                 timestamp: env::hlc_timestamp(),
-                node_id: env::executor_id(),
+                node_id: env::device_id(),
             }
         }
     }
@@ -137,7 +137,7 @@ impl<T> LwwRegister<T> {
             self.node_id = [0; 32];
         } else {
             self.timestamp = env::hlc_timestamp();
-            self.node_id = env::executor_id();
+            self.node_id = env::device_id();
         }
     }
 
@@ -289,7 +289,7 @@ impl<T> Drop for LwwGuard<'_, T> {
             self.reg.node_id = [0; 32];
         } else {
             self.reg.timestamp = env::hlc_timestamp();
-            self.reg.node_id = env::executor_id();
+            self.reg.node_id = env::device_id();
         }
     }
 }
@@ -332,7 +332,7 @@ mod merge_mode_tests {
     #[test]
     fn lww_new_zeroes_timestamp_and_node_id_in_merge_mode() {
         env::reset_for_testing();
-        env::set_executor_id([7; 32]);
+        env::set_device_id([7; 32]);
 
         // Outside merge mode: real, node-local stamp.
         let outside = LwwRegister::new(5_u64);
@@ -361,12 +361,12 @@ mod merge_mode_tests {
         // Mirror the `total: count.into()` migrate path: two nodes with
         // different executor ids must serialise identical bytes.
         env::reset_for_testing();
-        env::set_executor_id([1; 32]);
+        env::set_device_id([1; 32]);
         let n1: LwwRegister<u64> = env::with_merge_mode(|| 6_u64.into());
         let b1 = borsh::to_vec(&n1).unwrap();
 
         env::reset_for_testing();
-        env::set_executor_id([2; 32]);
+        env::set_device_id([2; 32]);
         let n2: LwwRegister<u64> = env::with_merge_mode(|| 6_u64.into());
         let b2 = borsh::to_vec(&n2).unwrap();
 
@@ -384,7 +384,7 @@ mod merge_mode_tests {
     #[test]
     fn nested_with_merge_mode_must_not_disable_outer_scope() {
         env::reset_for_testing();
-        env::set_executor_id([9; 32]);
+        env::set_device_id([9; 32]);
 
         let (before, after) = env::with_merge_mode(|| {
             let before = LwwRegister::new(1_u64);
@@ -415,7 +415,7 @@ mod merge_mode_tests {
     #[test]
     fn trailing_lww_after_map_inserts_stays_zeroed_in_merge_mode() {
         env::reset_for_testing();
-        env::set_executor_id([9; 32]);
+        env::set_device_id([9; 32]);
 
         let total: LwwRegister<u64> = env::with_merge_mode(|| {
             let mut map = Root::new(UnorderedMap::<String, LwwRegister<u64>>::new);
@@ -470,7 +470,7 @@ mod merge_mode_tests {
     #[test]
     fn lww_set_zeroes_timestamp_and_node_id_in_merge_mode() {
         env::reset_for_testing();
-        env::set_executor_id([7; 32]);
+        env::set_device_id([7; 32]);
 
         // Outside merge mode: a real, node-local stamp.
         let mut reg = LwwRegister::new(1_u64);

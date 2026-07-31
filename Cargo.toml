@@ -81,6 +81,7 @@ exclude = [
 [workspace]
 resolver = "2"
 members = [
+    "./crates/account",
     "./crates/auth",
     "./crates/build-utils",
     "./crates/config",
@@ -327,6 +328,7 @@ calimero-network = { path = "./crates/network" }
 calimero-network-primitives = { path = "./crates/network/primitives" }
 calimero-node = { path = "./crates/node" }
 calimero-node-primitives = { path = "./crates/node/primitives" }
+calimero-account = { path = "./crates/account" }
 calimero-op = { path = "./crates/op" }
 calimero-op-adapter = { path = "./crates/op-adapter" }
 calimero-authz = { path = "./crates/authz" }

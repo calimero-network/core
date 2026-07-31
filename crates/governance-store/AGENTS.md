@@ -48,7 +48,9 @@ cargo test -p calimero-governance-store tee_member_removed_event_tests -- --test
 | `absorb.rs` / `absorb_record.rs` | `AbsorbRepository` - durable buffer for stale-schema (future-version) straggler deltas that can't yet be applied |
 | `meta.rs` / `metadata.rs` | `MetaRepository` (group meta row, state-hash computation), `MetadataRepository` (arbitrary metadata records for group/member/context) |
 | `capabilities.rs` | `CapabilitiesRepository` - per-member and per-context-member capability bitmasks |
-| `group_keys.rs` | `GroupKeyring` - per-group symmetric key storage and epoch lookup |
+| `group_keys.rs` | `GroupKeyring` - per-group symmetric key storage and epoch lookup; both scope-key wrap modes (`wrap_for_member` / `wrap_for_device`); `current_key_recipients` (device-first fan-out) and `key_recipient_for_requester` (the same rule for one pull requester) |
+| `account_bindings.rs` | `AccountBindingRepository` - materialized device->account bindings, revocation tombstones, per-account root keys |
+| `node_device.rs` | `NodeDeviceRepository` - this node's own per-namespace `DeviceId` + X25519 agreement secret (node-local, never gossiped) |
 | `nonce_window.rs` | Per-signer sliding nonce window (anti-replay + out-of-order-sibling tolerance) |
 | `deny_list.rs`, `signing_keys.rs`, `pending_rotation.rs`, `pending_self_purge.rs`, `upgrades.rs`, `upgrade_ladder.rs`, `tee.rs`, `context_registration.rs`, `context_tree.rs`, `contexts.rs`, `group_settings.rs` | Smaller per-domain repositories (deny-listed members, group signing keys, pending FS rotations/self-purges, app upgrade state, TEE admission records, context<->group registration) |
 | `op_events.rs` | `OpEvent` enum + process-global broadcast `notify()`/subscribe - fired only after an op is durably logged |

@@ -1,3 +1,4 @@
+pub mod create_account;
 pub mod create_group_in_namespace;
 pub mod create_namespace;
 pub mod delete_namespace;
@@ -9,6 +10,9 @@ pub mod leave_namespace;
 pub mod list;
 pub mod list_for_application;
 pub mod list_namespace_groups;
+pub mod pair_device_complete;
+pub mod pair_device_init;
+pub mod revoke_device;
 
 /// Per-namespace `appVersion`: the bundle-manifest version of the
 /// namespace's `app_key` blob. `None` when unresolvable (zero/legacy key,

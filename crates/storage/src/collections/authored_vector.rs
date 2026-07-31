@@ -32,7 +32,7 @@ use crate::store::{MainStorage, StorageAdaptor};
 /// A vector where each position is owned by the public key that pushed it.
 ///
 /// Internally a `Vector<V>`. Each entry's `StorageType` is `User { owner }`
-/// set at push time from `env::executor_id()`. Only the owner can `update`
+/// set at push time from `env::device_id()`. Only the owner can `update`
 /// or `tombstone` their entry.
 #[derive(BorshSerialize, BorshDeserialize)]
 pub struct AuthoredVector<V, S: StorageAdaptor = MainStorage>
@@ -130,7 +130,7 @@ where
     {
         let (entry_id, stored_owner) = self.require_owner(index)?;
 
-        if !super::authored_common::executor_matches_owner(&stored_owner) {
+        if !super::authored_common::writer_matches_owner(&stored_owner) {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
                 "AuthoredVector::update: not entry owner".to_owned(),
             )));
@@ -203,7 +203,7 @@ where
         Ok(self
             .owner_of(index)?
             .as_ref()
-            .is_some_and(super::authored_common::executor_matches_owner))
+            .is_some_and(super::authored_common::writer_matches_owner))
     }
 
     /// Iterates over all values in insertion order.
@@ -373,7 +373,7 @@ mod tests {
     #[serial]
     fn entry_schema_version_and_ownership_reflect_stored_metadata() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(7).expect("push");
@@ -386,11 +386,11 @@ mod tests {
         assert!(v.owned_by_me(0).unwrap());
 
         // A different executor is not the owner.
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         assert!(!v.owned_by_me(0).unwrap());
 
         // Out-of-bounds slot: no version, not owned.
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         assert_eq!(v.entry_schema_version(99).unwrap(), None);
         assert!(!v.owned_by_me(99).unwrap());
     }
@@ -399,7 +399,7 @@ mod tests {
     #[serial]
     fn push_stamps_current_executor_as_owner() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
         let idx = v.push(7).expect("push");
@@ -416,11 +416,11 @@ mod tests {
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
 
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let a = v.push(1).unwrap();
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         let b = v.push(2).unwrap();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let c = v.push(3).unwrap();
 
         assert_eq!((a, b, c), (0, 1, 2));
@@ -433,7 +433,7 @@ mod tests {
     #[serial]
     fn update_by_owner_succeeds() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(7).unwrap();
@@ -446,12 +446,12 @@ mod tests {
     #[serial]
     fn update_by_non_owner_rejected() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(7).unwrap();
 
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         let err = v.update(0, 99).expect_err("non-owner update must fail");
         assert!(err.to_string().to_lowercase().contains("owner"));
         assert_eq!(v.get(0).unwrap(), Some(7));
@@ -462,7 +462,7 @@ mod tests {
     #[serial]
     fn update_out_of_bounds_errors() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
         let err = v.update(5, 1).expect_err("out-of-bounds update must fail");
@@ -473,7 +473,7 @@ mod tests {
     #[serial]
     fn tombstone_by_owner_writes_default() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(7).unwrap();
@@ -489,12 +489,12 @@ mod tests {
     #[serial]
     fn tombstone_by_non_owner_rejected() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(7).unwrap();
 
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         let err = v.tombstone(0).expect_err("non-owner tombstone must fail");
         assert!(err.to_string().to_lowercase().contains("owner"));
         assert_eq!(v.get(0).unwrap(), Some(7));
@@ -504,12 +504,12 @@ mod tests {
     #[serial]
     fn iter_yields_all_values_in_insertion_order() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(10).unwrap();
         v.push(20).unwrap();
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         v.push(30).unwrap();
 
         let items: Vec<u64> = v.iter().unwrap().collect();
@@ -520,7 +520,7 @@ mod tests {
     #[serial]
     fn owner_of_out_of_bounds_is_none() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let v = Root::new(AuthoredVector::<u64>::new);
         assert_eq!(v.owner_of(0).unwrap(), None);

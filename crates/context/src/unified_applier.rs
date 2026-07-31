@@ -118,7 +118,15 @@ mod tests {
     fn op(scope: ScopeId, ns: u64, parents: Vec<[u8; 32]>, payload: OpPayload) -> Op {
         let author = PublicKey::from([7u8; 32]);
         let h = hlc(ns);
-        Op::new(scope, parents, author, h, payload, [0u8; 32], [0u8; 64])
+        Op::new(
+            scope,
+            parents,
+            calimero_op_adapter::legacy_authorship(author),
+            h,
+            payload,
+            [0u8; 32],
+            [0u8; 64],
+        )
     }
 
     fn delta(op: &Op) -> CausalDelta<Op> {
@@ -144,7 +152,9 @@ mod tests {
             scope,
             10,
             vec![],
-            OpPayload::AdminChanged { new_admin: admin },
+            OpPayload::AdminChanged {
+                new_admin: calimero_op_adapter::legacy_account_id(&admin),
+            },
         );
         let op_member = op(
             scope,
@@ -152,7 +162,7 @@ mod tests {
             vec![op_admin.id()],
             OpPayload::MemberAdded {
                 group,
-                member,
+                member: calimero_op_adapter::legacy_account_id(&member),
                 role: GroupMemberRole::Member,
             },
         );
@@ -162,7 +172,12 @@ mod tests {
             vec![op_member.id()],
             OpPayload::SetWriters {
                 object: Id::new([9u8; 32]),
-                writers: [(member, OpMask::FULL)].into_iter().collect(),
+                writers: [(
+                    calimero_op_adapter::legacy_account_id(&member),
+                    OpMask::FULL,
+                )]
+                .into_iter()
+                .collect(),
             },
         );
         let op_put = op(

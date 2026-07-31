@@ -1119,9 +1119,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-account"
+version = "0.0.0"
+dependencies = [
+ "borsh",
+ "calimero-primitives",
+ "hex",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "calimero-authz"
 version = "0.0.0"
 dependencies = [
+ "calimero-account",
  "calimero-context-config",
  "calimero-op",
  "calimero-primitives",
@@ -1213,6 +1225,7 @@ dependencies = [
  "async-trait",
  "borsh",
  "bs58",
+ "calimero-account",
  "calimero-authz",
  "calimero-context-client",
  "calimero-context-config",
@@ -1258,6 +1271,7 @@ dependencies = [
  "async-stream",
  "blake3",
  "borsh",
+ "calimero-account",
  "calimero-blobstore",
  "calimero-context-config",
  "calimero-governance-types",
@@ -1334,6 +1348,7 @@ dependencies = [
  "async-trait",
  "borsh",
  "bs58",
+ "calimero-account",
  "calimero-blobstore",
  "calimero-context-client",
  "calimero-context-config",
@@ -1371,6 +1386,7 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "borsh",
+ "calimero-account",
  "calimero-context-config",
  "calimero-primitives",
  "calimero-storage",
@@ -1443,6 +1459,7 @@ dependencies = [
  "actix",
  "async-trait",
  "borsh",
+ "calimero-account",
  "calimero-blobstore",
  "calimero-context",
  "calimero-context-client",
@@ -1501,6 +1518,7 @@ dependencies = [
  "base64 0.22.1",
  "borsh",
  "bs58",
+ "calimero-account",
  "calimero-blobstore",
  "calimero-context-config",
  "calimero-crypto",
@@ -1541,6 +1559,7 @@ name = "calimero-op"
 version = "0.0.0"
 dependencies = [
  "borsh",
+ "calimero-account",
  "calimero-context-config",
  "calimero-primitives",
  "calimero-storage",
@@ -1551,6 +1570,7 @@ dependencies = [
 name = "calimero-op-adapter"
 version = "0.0.0"
 dependencies = [
+ "calimero-account",
  "calimero-authz",
  "calimero-context-config",
  "calimero-governance-types",
@@ -1558,6 +1578,7 @@ dependencies = [
  "calimero-primitives",
  "calimero-projection",
  "calimero-storage",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -1595,6 +1616,7 @@ dependencies = [
 name = "calimero-projection"
 version = "0.0.0"
 dependencies = [
+ "calimero-account",
  "calimero-authz",
  "calimero-context-config",
  "calimero-op",
@@ -1610,6 +1632,7 @@ dependencies = [
  "assert-json-diff",
  "borsh",
  "bytes",
+ "calimero-account",
  "calimero-context-config",
  "calimero-node-primitives",
  "calimero-primitives",
@@ -1677,6 +1700,7 @@ dependencies = [
  "borsh",
  "bytes",
  "cached-path",
+ "calimero-account",
  "calimero-blobstore",
  "calimero-context",
  "calimero-context-client",

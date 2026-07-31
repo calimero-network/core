@@ -47,7 +47,7 @@ pub fn in_merge_mode() -> bool {
 /// unconditional `set(false)` on the inner exit would silently clear
 /// merge mode for the *remainder of the outer body*, so any trailing
 /// `LwwRegister::new()` (e.g. `total: count.into()` in a migrate) would
-/// then bake a node-local HLC + executor_id into the serialised state and
+/// then bake a node-local HLC + device_id into the serialised state and
 /// diverge across nodes. The restore-on-exit (incl. unwind) keeps nesting
 /// correct.
 pub fn with_merge_mode<R>(f: impl FnOnce() -> R) -> R {
@@ -151,7 +151,7 @@ pub struct RuntimeEnv {
     storage_write: StorageWriteFn,
     storage_remove: StorageRemoveFn,
     context_id: [u8; 32],
-    executor_id: [u8; 32],
+    device_id: [u8; 32],
     index: Option<IndexCallbacks>,
 }
 
@@ -168,14 +168,14 @@ impl RuntimeEnv {
         storage_write: StorageWriteFn,
         storage_remove: StorageRemoveFn,
         context_id: [u8; 32],
-        executor_id: [u8; 32],
+        device_id: [u8; 32],
     ) -> Self {
         Self {
             storage_read,
             storage_write,
             storage_remove,
             context_id,
-            executor_id,
+            device_id,
             index: None,
         }
     }
@@ -223,8 +223,8 @@ impl RuntimeEnv {
 
     #[must_use]
     /// Returns the current executor identifier.
-    pub const fn executor_id(&self) -> [u8; 32] {
-        self.executor_id
+    pub const fn device_id(&self) -> [u8; 32] {
+        self.device_id
     }
 }
 
@@ -431,12 +431,20 @@ pub fn context_id() -> [u8; 32] {
     imp::context_id()
 }
 
-/// Returns the current executor ID (the public key of the transaction signer).
+/// Returns the id of the **device** executing right now — the replica this crate
+/// attributes writes to.
+///
+/// Every use of it in this crate is a per-replica question: an LWW register's
+/// tiebreak `node_id`, a counter's per-actor slot, an HLC instance seed, an
+/// author-tracked entry's owner. None of those may become an account: two devices
+/// of one account acting concurrently must stay distinguishable, or they share a
+/// counter slot and an HLC seed and silently lose each other's writes. Per-person
+/// aggregation belongs above storage, on `account_id()`.
 ///
 /// In WASM, this calls the host function. In tests, returns a fixed value.
 #[must_use]
-pub fn executor_id() -> [u8; 32] {
-    imp::executor_id()
+pub fn device_id() -> [u8; 32] {
+    imp::device_id()
 }
 
 /// Prints the log.
@@ -508,12 +516,12 @@ pub fn drop_sorted_index_entry_for_testing(order_key: &[u8]) {
 }
 
 /// Set executor ID. `pub(crate)` because the only sanctioned way to mutate
-/// executor identity from outside the crate is the scoped [`with_executor_id`]
+/// executor identity from outside the crate is the scoped [`with_device_id`]
 /// guard below — that guard guarantees restoration on panic, whereas a raw
 /// setter would leave a thread polluted on unwind.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn set_executor_id(id: [u8; 32]) {
-    imp::set_executor_id(id);
+pub(crate) fn set_device_id(id: [u8; 32]) {
+    imp::set_device_id(id);
 }
 
 /// Run `f` with the executor identity set to `id`, then restore the prior
@@ -528,8 +536,8 @@ pub(crate) fn set_executor_id(id: [u8; 32]) {
 /// # Scope of effect
 ///
 /// Only writes the `EXECUTOR_ID` thread-local. If a [`with_runtime_env`]-style
-/// `RuntimeEnv` is installed when `with_executor_id` is called, the public
-/// [`executor_id`] getter will continue to return the `RuntimeEnv`'s identity
+/// `RuntimeEnv` is installed when `with_device_id` is called, the public
+/// [`device_id`] getter will continue to return the `RuntimeEnv`'s identity
 /// (it prefers `RuntimeEnv` over the thread-local), so the guard's `id` is
 /// effectively shadowed for the duration of `f()`. Tests that need to override
 /// identity must not be nested inside a `RuntimeEnv`; the contract tests in
@@ -537,27 +545,27 @@ pub(crate) fn set_executor_id(id: [u8; 32]) {
 ///
 /// Native-only: WASM doesn't expose executor-identity mutation (the runtime
 /// owns it). The `#[cfg(not(target_arch = "wasm32"))]` gate matches
-/// [`set_executor_id`].
+/// [`set_device_id`].
 #[cfg(not(target_arch = "wasm32"))]
-pub fn with_executor_id<R>(id: [u8; 32], f: impl FnOnce() -> R) -> R {
+pub fn with_device_id<R>(id: [u8; 32], f: impl FnOnce() -> R) -> R {
     struct Guard {
         prior: [u8; 32],
     }
     impl Drop for Guard {
         fn drop(&mut self) {
-            set_executor_id(self.prior);
+            set_device_id(self.prior);
         }
     }
 
     // Save and restore via the EXECUTOR_ID thread-local rather than the
-    // public `executor_id()` getter: that getter prefers a `RuntimeEnv`
-    // value when one is installed, but `set_executor_id` only writes
-    // the thread-local fallback — so reading via `executor_id()` and
-    // restoring via `set_executor_id` would be asymmetric. Anchoring
+    // public `device_id()` getter: that getter prefers a `RuntimeEnv`
+    // value when one is installed, but `set_device_id` only writes
+    // the thread-local fallback — so reading via `device_id()` and
+    // restoring via `set_device_id` would be asymmetric. Anchoring
     // both ends on the same storage keeps the guard semantically
     // correct regardless of whether a runtime env is in scope.
-    let prior = imp::executor_id_fallback();
-    set_executor_id(id);
+    let prior = imp::device_id_fallback();
+    set_device_id(id);
     let _g = Guard { prior };
     f()
 }
@@ -582,8 +590,8 @@ mod calimero_vm {
                 // 32 bytes via SHA-256 — using only the first 16 collapsed
                 // executors sharing a 16-byte prefix to one id → CharId collision
                 // → silent character loss during RGA sync.
-                let executor_id = env::executor_id();
-                let seed = crate::logical_clock::hlc_seed_from_executor_id(&executor_id);
+                let device_id = env::device_id();
+                let seed = crate::logical_clock::hlc_seed_from_device_id(&device_id);
                 *hlc_cell.borrow_mut() = Some(LogicalClock::new(|buf| {
                     let n = buf.len().min(seed.len());
                     buf[..n].copy_from_slice(&seed[..n]);
@@ -676,8 +684,8 @@ mod calimero_vm {
     }
 
     /// Return the executor id.
-    pub(super) fn executor_id() -> [u8; 32] {
-        env::executor_id()
+    pub(super) fn device_id() -> [u8; 32] {
+        env::device_id()
     }
 
     /// Prints the log
@@ -1018,10 +1026,10 @@ mod mocked {
     }
 
     /// Return the executor id (for testing, returns a fixed value).
-    pub(super) fn executor_id() -> [u8; 32] {
+    pub(super) fn device_id() -> [u8; 32] {
         RUNTIME_ENV
             .with(|env| env.borrow().clone())
-            .map(|env| env.executor_id)
+            .map(|env| env.device_id)
             .unwrap_or_else(|| EXECUTOR_ID.with(|id| id.get()))
     }
 
@@ -1035,18 +1043,18 @@ mod mocked {
 
     /// Sets the thread-local executor ID. Only callable from this crate
     /// via the `pub(crate)` re-export above; external callers must go
-    /// through the scoped [`super::with_executor_id`] guard so they
+    /// through the scoped [`super::with_device_id`] guard so they
     /// can't forget to restore prior state on panic.
-    pub(super) fn set_executor_id(new_id: [u8; 32]) {
+    pub(super) fn set_device_id(new_id: [u8; 32]) {
         EXECUTOR_ID.with(|id| id.set(new_id));
     }
 
     /// Reads the thread-local executor ID fallback, bypassing
-    /// `RUNTIME_ENV`. Used by [`super::with_executor_id`] for symmetric
+    /// `RUNTIME_ENV`. Used by [`super::with_device_id`] for symmetric
     /// save/restore around its mutation of the same thread-local — the
-    /// public `executor_id()` getter prefers `RUNTIME_ENV`, which
-    /// wouldn't restore correctly via `set_executor_id`.
-    pub(super) fn executor_id_fallback() -> [u8; 32] {
+    /// public `device_id()` getter prefers `RUNTIME_ENV`, which
+    /// wouldn't restore correctly via `set_device_id`.
+    pub(super) fn device_id_fallback() -> [u8; 32] {
         EXECUTOR_ID.with(|id| id.get())
     }
 

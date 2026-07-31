@@ -12,6 +12,7 @@ publish = false
 thiserror.workspace = true
 
 calimero-context-config.workspace = true
+calimero-account.workspace = true
 calimero-op.workspace = true
 calimero-primitives.workspace = true
 calimero-storage.workspace = true

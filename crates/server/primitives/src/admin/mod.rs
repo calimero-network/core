@@ -1890,6 +1890,234 @@ impl Validate for RetryGroupUpgradeApiRequest {
     }
 }
 
+/// Enroll this node's device into a namespace under a fresh account.
+///
+/// No body fields: the account is rooted at this node's own namespace identity,
+/// so there is nothing for a caller to choose — and nothing a caller could
+/// usefully spoof.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAccountApiRequest {}
+
+impl Validate for CreateAccountApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+/// What the node enrolled as.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAccountApiResponseData {
+    /// Hex-encoded `AccountId` this node now speaks for.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId` — this node's replica id within the account.
+    pub device_id: String,
+    /// Hex-encoded epoch-0 root key of the account.
+    pub account_root_key: String,
+    /// Hex-encoded genesis nonce.
+    ///
+    /// Returned because pairing needs it: a second device computes its own id as
+    /// `H(account ‖ nonce)`, so the nonce has to travel for the account to be
+    /// join-able at all.
+    pub account_nonce: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAccountApiResponse {
+    pub data: CreateAccountApiResponseData,
+}
+
+/// Adopt an existing account on this node and mint a device for it.
+///
+/// Unlike `CreateAccountApiRequest` this one *does* carry caller-supplied
+/// values, because the account being joined is not this node's to derive: the
+/// genesis comes from the device that already holds it, and both halves have to
+/// travel — the id is a hash over the nonce, so it cannot be recovered from the
+/// account id alone.
+///
+/// Nothing here is a credential. A genesis is public data, and naming somebody
+/// else's account gains a caller nothing: the device is inert until its
+/// certificate is signed by the account root, which only the holder has.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairDeviceInitApiRequest {
+    /// Hex-encoded epoch-0 root key of the account to join (32 bytes).
+    pub account_root_key: String,
+    /// Hex-encoded genesis nonce (16 bytes).
+    pub account_nonce: String,
+}
+
+impl Validate for PairDeviceInitApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+
+        if self.account_root_key.len() != 64 {
+            errors.push(ValidationError::InvalidLength {
+                field: "accountRootKey",
+                expected: 64,
+                actual: self.account_root_key.len(),
+            });
+        } else if hex::decode(&self.account_root_key).is_err() {
+            errors.push(ValidationError::InvalidHexEncoding {
+                field: "accountRootKey",
+                reason: "not valid hex".to_owned(),
+            });
+        }
+
+        if self.account_nonce.len() != 32 {
+            errors.push(ValidationError::InvalidLength {
+                field: "accountNonce",
+                expected: 32,
+                actual: self.account_nonce.len(),
+            });
+        } else if hex::decode(&self.account_nonce).is_err() {
+            errors.push(ValidationError::InvalidHexEncoding {
+                field: "accountNonce",
+                reason: "not valid hex".to_owned(),
+            });
+        }
+
+        errors
+    }
+}
+
+/// What the pairing device minted, for the account holder to certify.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairDeviceInitApiResponseData {
+    /// Hex-encoded `AccountId` this device will speak for once linked.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId` — hand this to the account holder.
+    pub device_id: String,
+    /// Hex-encoded X25519 agreement key a scope key must be wrapped under to
+    /// reach this device. Hand this to the account holder alongside the id.
+    pub kem_public_key: String,
+    /// Hex-encoded Ed25519 key this device signs its ops with.
+    ///
+    /// The account holder cannot derive this — it is minted here — and the
+    /// certificate names it, so it has to travel with the other two.
+    pub sign_public_key: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairDeviceInitApiResponse {
+    pub data: PairDeviceInitApiResponseData,
+}
+
+/// Certify a device another node minted, link it, and deliver the scope key.
+///
+/// Every field is what that node's pair-init returned. None is a secret: the
+/// certificate this mints is what makes the device real, and only this side
+/// holds the account root that signs it.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairDeviceCompleteApiRequest {
+    /// Hex-encoded `DeviceId` the other node minted (32 bytes).
+    pub device_id: String,
+    /// Hex-encoded X25519 agreement key to wrap the scope key under (32 bytes).
+    pub kem_public_key: String,
+    /// Hex-encoded Ed25519 key that device signs its ops with (32 bytes).
+    pub sign_public_key: String,
+}
+
+impl Validate for PairDeviceCompleteApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        for (field, value) in [
+            ("deviceId", &self.device_id),
+            ("kemPublicKey", &self.kem_public_key),
+            ("signPublicKey", &self.sign_public_key),
+        ] {
+            if value.len() != 64 {
+                errors.push(ValidationError::InvalidLength {
+                    field,
+                    expected: 64,
+                    actual: value.len(),
+                });
+            } else if hex::decode(value).is_err() {
+                errors.push(ValidationError::InvalidHexEncoding {
+                    field,
+                    reason: "not valid hex".to_owned(),
+                });
+            }
+        }
+        errors
+    }
+}
+
+/// What pairing established.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairDeviceCompleteApiResponseData {
+    /// Hex-encoded `AccountId` the device now speaks for.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId` that was linked.
+    pub device_id: String,
+    /// Whether the current scope key was wrapped and published for the device.
+    ///
+    /// `false` does not mean pairing failed — the link is what confers
+    /// authority, and the device's own sync pull re-requests the key. It does
+    /// mean the device cannot read until that lands.
+    pub key_delivered: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairDeviceCompleteApiResponse {
+    pub data: PairDeviceCompleteApiResponseData,
+}
+
+/// Withdraw a device from an account, terminally.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeDeviceApiRequest {
+    /// Hex-encoded `DeviceId` to withdraw (32 bytes).
+    pub device_id: String,
+}
+
+impl Validate for RevokeDeviceApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.device_id.len() != 64 {
+            errors.push(ValidationError::InvalidLength {
+                field: "deviceId",
+                expected: 64,
+                actual: self.device_id.len(),
+            });
+        } else if hex::decode(&self.device_id).is_err() {
+            errors.push(ValidationError::InvalidHexEncoding {
+                field: "deviceId",
+                reason: "not valid hex".to_owned(),
+            });
+        }
+        errors
+    }
+}
+
+/// What the revocation withdrew.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeDeviceApiResponseData {
+    /// Hex-encoded `AccountId` the device spoke for.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId` that was withdrawn.
+    pub device_id: String,
+    /// Whether the scope key rotated in the same op.
+    ///
+    /// `false` means the device stopped writing at once but still holds the key
+    /// it had, so it can read until an admin rotates. Only an admin may rotate.
+    pub key_rotated: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeDeviceApiResponse {
+    pub data: RevokeDeviceApiResponseData,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupInvitationApiRequest {

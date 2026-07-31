@@ -305,16 +305,19 @@ A scope key is delivered wrapped per recipient:
 
 ```rust
 struct KeyEnvelope {
-  recipient: PublicKey,
-  ephemeral_pk: PublicKey,  // sender's ephemeral key for this envelope
+  recipient: EnvelopeRecipient,  // a member identity OR one device, + its ECDH key
+  sender: PublicKey,             // authenticated by `signature`
   nonce: [u8; 12],  // AES-GCM nonce
   ciphertext: Vec<u8>,  // AES-256-GCM(scope_key)
+  signature: [u8; 64],  // Ed25519 by `sender`, bound to the group
 }
 ```
 
-- **Shared secret** — X25519-style ECDH on the Curve25519 form of the two identities (sender ephemeral × recipient): the 32-byte compressed point _is_ the AES-256 key (no separate KDF).
+- **Addressing** — `EnvelopeRecipient::Member { identity, ephemeral_pk }` or `Device { device, ephemeral_pk }`. The variant decides the agreement, so the two are one field. Member addressing is the bootstrap form and is permanent: enrolling a device requires an *encrypted* group op, so a node must already hold the scope key to do it.
+- **Shared secret** — a fresh ephemeral keypair per envelope (that is the forward secrecy), agreed against the recipient's key: ECDH on the Curve25519 form of the Ed25519 identity for a member, native X25519 for a device. The raw point is HKDF-derived into the AES-256 key, under a per-scheme label so the two agreements can never collide.
 - **AEAD** — AES-256-GCM, 12-byte nonce, empty additional data, GCM tag appended inline.
-- **Rotation** — a removal carries a `KeyRotation { new_key_id = SHA-256(new_key), envelopes }` with one envelope per _remaining_ member; the removed member gets none.
+- **Authentication** — `sender` signs the canonical envelope bytes bound to the `group_id`, checked *before* any ECDH, so a forged or cross-group-replayed envelope is rejected first. The addressing variant tag is inside those bytes, so the two modes cannot be swapped.
+- **Rotation** — a removal carries a `KeyRotation { new_key_id = SHA-256(new_key), envelopes }` with one envelope per _remaining_ recipient; the removed member and every device of theirs get none. One bundle may mix both addressing modes.
 
 A scope key is identified on the wire by `key_id = SHA-256(scope_key)`, so a receiver can look up which delivered key decrypts a given operation.
 

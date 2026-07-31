@@ -340,6 +340,21 @@ steps:
   # Phase 9: CONVERGENCE — every note is at schema 2 on BOTH nodes, and values
   # are preserved. node 2 sees node 1's converted notes at v2 (the convert
   # replicated as ordinary signed deltas).
+  # Phase 9 asserts CROSS-NODE convergence, so it has to wait for it. Without
+  # this, the reads below race the deltas they are asserting on: node 1's own
+  # note is local and node 1's note on node 2 has had the whole convert phase to
+  # propagate, but node 2's note on node 1 is the last write to travel and reads
+  # back `null` under CI load — a failure that looks like a migration bug and is
+  # really a missing barrier.
+  - name: Wait for the converted notes to converge on both nodes
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-ux-1
+      - app-migration-ux-2
+    timeout: 90
+    trigger_sync: true
+
   - name: Read node 1's note schema_version AFTER convert (node 1)
     type: call
     node: app-migration-ux-1

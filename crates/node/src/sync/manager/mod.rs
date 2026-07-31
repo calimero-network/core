@@ -3520,13 +3520,17 @@ impl SyncManager {
             namespace_id,
             group_id,
             requester_public_key,
+            requester_device,
             key_id,
         } = &payload
         {
             self.handle_group_key_request(
                 *namespace_id,
                 *group_id,
-                *requester_public_key,
+                calimero_context::group_store::KeyRequester {
+                    identity: *requester_public_key,
+                    device: *requester_device,
+                },
                 *key_id,
                 stream,
                 nonce,
@@ -4121,6 +4125,7 @@ mod init_pop_gate_tests {
                 namespace_id: [0; 32],
                 group_id: [0; 32],
                 requester_public_key: [0; 32].into(),
+                requester_device: None,
                 key_id: None,
             },
             InitPayload::NamespaceBackfillRequest {

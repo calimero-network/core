@@ -5107,7 +5107,12 @@ mod tests {
 
         // --- Alice: create, insert, confirm ownership. ---
         {
-            let context = VMContext::new(Cow::Owned(vec![]), [0u8; DIGEST_SIZE], alice);
+            let context = VMContext::new(
+                Cow::Owned(vec![]),
+                [0u8; DIGEST_SIZE],
+                alice,
+                calimero_account::AccountId::from(alice),
+            );
             let mut store = Store::default();
             let memory =
                 wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
@@ -5159,7 +5164,12 @@ mod tests {
 
         // --- Bob: a different executor cannot update Alice's entry. ---
         {
-            let context = VMContext::new(Cow::Owned(vec![]), [0u8; DIGEST_SIZE], bob);
+            let context = VMContext::new(
+                Cow::Owned(vec![]),
+                [0u8; DIGEST_SIZE],
+                bob,
+                calimero_account::AccountId::from(bob),
+            );
             let mut store = Store::default();
             let memory =
                 wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
@@ -5447,7 +5457,14 @@ mod tests {
     /// closure's use of the host (mirrors the AuthoredMap non-owner test).
     macro_rules! shared_host {
         ($storage:expr, $limits:expr, $executor:expr, $body:expr) => {{
-            let context = VMContext::new(Cow::Owned(vec![]), [0u8; DIGEST_SIZE], $executor);
+            // The account is derived from the executor so distinct test writers get
+            // distinct accounts, matching today's one-account-per-writer reality.
+            let context = VMContext::new(
+                Cow::Owned(vec![]),
+                [0u8; DIGEST_SIZE],
+                $executor,
+                calimero_account::AccountId::from($executor),
+            );
             let mut store = Store::default();
             let memory =
                 wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();

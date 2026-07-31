@@ -27,9 +27,9 @@ pub use ack_router::AckRouter;
 #[deprecated(note = "use calimero_governance_types::* directly")]
 pub use calimero_governance_types::{
     hash_scoped_group, hash_scoped_namespace, namespace_op_content_hash, namespace_signable_bytes,
-    op_content_hash, signable_bytes, EncryptedGroupOp, GovernanceError, GroupOp, GroupTopicMsg,
-    KeyEnvelope, KeyRotation, NamespaceOp, NamespaceTopicMsg, OpaqueSkeleton, ReadinessProbe,
-    RootOp, SignableGroupOp, SignableNamespaceOp, SignedAck, SignedGroupOp,
+    op_content_hash, signable_bytes, EncryptedGroupOp, EnvelopeRecipient, GovernanceError, GroupOp,
+    GroupTopicMsg, KeyEnvelope, KeyRotation, NamespaceOp, NamespaceTopicMsg, OpaqueSkeleton,
+    ReadinessProbe, RootOp, SignableGroupOp, SignableNamespaceOp, SignedAck, SignedGroupOp,
     SignedMigrationHeartbeat, SignedNamespaceOp, SignedReadinessBeacon, StoredNamespaceEntry,
     GROUP_GOVERNANCE_SIGN_DOMAIN, NAMESPACE_GOVERNANCE_SIGN_DOMAIN, SIGNED_GROUP_OP_SCHEMA_VERSION,
     SIGNED_NAMESPACE_OP_SCHEMA_VERSION,

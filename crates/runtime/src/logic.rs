@@ -28,6 +28,7 @@ use std::vec;
 
 use tracing::{debug, trace};
 
+use calimero_account::AccountId;
 use calimero_context_config::types::GovernanceParentEdge;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::common::DIGEST_SIZE;
@@ -64,7 +65,17 @@ pub struct VMContext<'a> {
     pub input: Cow<'a, [u8]>,
     /// The unique ID for the current execution context.
     pub context_id: [u8; DIGEST_SIZE],
-    /// The public key of the entity executing the function call/transaction.
+    /// The account this call is authorized as — the **only** authorization
+    /// subject, and the id an app keys per-person state by.
+    ///
+    /// Distinct from [`Self::executor_public_key`] and never a substitute for it:
+    /// several devices of one account share this value, so anything needing
+    /// per-writer uniqueness (counter slots, HLC seeds, signatures) must key off
+    /// the device instead. Supplied by the node, which derives it from the
+    /// account root; never read from guest memory.
+    pub account_id: [u8; DIGEST_SIZE],
+    /// The public key of the device executing the function call/transaction —
+    /// the replica this node speaks as, and what signs its writes.
     pub executor_public_key: [u8; DIGEST_SIZE],
     /// Cross-DAG reference embedded in the resulting state delta.
     ///
@@ -86,16 +97,24 @@ impl<'a> VMContext<'a> {
     ///
     /// * `input` - The input data for the context.
     /// * `context_id` - The unique ID for the execution context.
-    /// * `executor_public_key` - The public key of the executor.
+    /// * `executor_public_key` - The public key of the executing device.
+    /// * `account` - The account the call is authorized as.
+    ///
+    /// `account` is typed rather than another `[u8; DIGEST_SIZE]` on purpose: the
+    /// account and the device are both 32 bytes and mean entirely different
+    /// things, and every bug this plane has shipped came from crossing two values
+    /// that a byte array cannot tell apart.
     #[must_use]
     pub fn new(
         input: Cow<'a, [u8]>,
         context_id: [u8; DIGEST_SIZE],
         executor_public_key: [u8; DIGEST_SIZE],
+        account: AccountId,
     ) -> Self {
         Self {
             input,
             context_id,
+            account_id: *account.as_bytes(),
             executor_public_key,
             governance_position: None,
             xcall_origin: None,
@@ -1176,8 +1195,12 @@ mod tests {
     /// ensuring that all lifetimes are valid.
     macro_rules! setup_vm {
         ($storage:expr, $limits:expr, $input:expr) => {{
-            let context =
-                VMContext::new(Cow::Owned($input), [0u8; DIGEST_SIZE], [0u8; DIGEST_SIZE]);
+            let context = VMContext::new(
+                Cow::Owned($input),
+                [0u8; DIGEST_SIZE],
+                [0u8; DIGEST_SIZE],
+                calimero_account::AccountId::from([0u8; DIGEST_SIZE]),
+            );
             let mut store = Store::default();
             let memory =
                 wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
@@ -1335,7 +1358,12 @@ mod tests {
     fn test_vmlogic_finish_without_memory() {
         let mut storage = SimpleMockStorage::new();
         let limits = VMLimits::default();
-        let context = VMContext::new(Cow::Owned(vec![]), [0u8; DIGEST_SIZE], [0u8; DIGEST_SIZE]);
+        let context = VMContext::new(
+            Cow::Owned(vec![]),
+            [0u8; DIGEST_SIZE],
+            [0u8; DIGEST_SIZE],
+            calimero_account::AccountId::from([0u8; DIGEST_SIZE]),
+        );
 
         let logic = VMLogic::new(&mut storage, None, context, &limits, None);
 

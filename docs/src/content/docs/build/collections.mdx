@@ -218,7 +218,7 @@ against the writer set / owner. A forged write does not survive convergence.
   shared maps/logs where users own what they contributed.
 
 - **`UserStorage<T>`** — *per-user slots keyed by identity*. Each executor can
-  only write its own slot (`insert` targets `env::executor_id()`); reads are
+  only write its own slot (`insert` targets `env::device_id()`); reads are
   unrestricted (`get` for the current user, `get_for_user(key)` for any). Use for
   per-user preferences or state. See `apps/kv-store-with-user-and-frozen-storage`.
 

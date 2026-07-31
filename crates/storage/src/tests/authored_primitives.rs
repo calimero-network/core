@@ -149,7 +149,7 @@ fn authored_map_update_with_forged_owner_claim_is_rejected() {
     let (bob_sk, _bob_pk) = create_test_keypair();
 
     // Alice inserts the entry (stamped owner = Alice).
-    env::set_executor_id(*alice_pk.digest());
+    env::set_device_id(*alice_pk.digest());
     let mut map = Root::new(AuthoredMap::<String, u64>::new);
     map.insert("apple".to_owned(), 1).expect("alice insert");
 
@@ -186,7 +186,7 @@ fn authored_map_delete_by_non_owner_is_rejected() {
     let (_alice_sk, alice_pk) = create_test_keypair();
     let (bob_sk, bob_pk) = create_test_keypair();
 
-    env::set_executor_id(*alice_pk.digest());
+    env::set_device_id(*alice_pk.digest());
     let mut map = Root::new(AuthoredMap::<String, u64>::new);
     map.insert("apple".to_owned(), 1).expect("alice insert");
 
@@ -217,7 +217,7 @@ fn authored_vector_update_with_forged_owner_claim_is_rejected() {
     let (_alice_sk, alice_pk) = create_test_keypair();
     let (bob_sk, _bob_pk) = create_test_keypair();
 
-    env::set_executor_id(*alice_pk.digest());
+    env::set_device_id(*alice_pk.digest());
     let mut v = Root::new(AuthoredVector::<u64>::new);
     v.push(7).expect("alice push");
 
@@ -249,7 +249,7 @@ fn authored_vector_delete_by_non_owner_is_rejected() {
     let (_alice_sk, alice_pk) = create_test_keypair();
     let (bob_sk, bob_pk) = create_test_keypair();
 
-    env::set_executor_id(*alice_pk.digest());
+    env::set_device_id(*alice_pk.digest());
     let mut v = Root::new(AuthoredVector::<u64>::new);
     v.push(7).expect("alice push");
 

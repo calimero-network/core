@@ -122,7 +122,15 @@ mod tests {
         // projection fold verifies them (the projection folds already-verified ops
         // on content alone). If a signature or root check is ever added to that
         // path, this helper must produce valid values rather than zeros.
-        Op::new(scope, parents, author, h, payload, [0u8; 32], [0u8; 64])
+        Op::new(
+            scope,
+            parents,
+            calimero_op_adapter::legacy_authorship(author),
+            h,
+            payload,
+            [0u8; 32],
+            [0u8; 64],
+        )
     }
 
     fn delta(op: &Op) -> calimero_dag::CausalDelta<Op> {
@@ -146,7 +154,9 @@ mod tests {
             scope,
             10,
             vec![],
-            OpPayload::AdminChanged { new_admin: admin },
+            OpPayload::AdminChanged {
+                new_admin: calimero_op_adapter::legacy_account_id(&admin),
+            },
         );
         let op_member = op(
             scope,
@@ -154,7 +164,7 @@ mod tests {
             vec![op_admin.id()],
             OpPayload::MemberAdded {
                 group,
-                member,
+                member: calimero_op_adapter::legacy_account_id(&member),
                 role: GroupMemberRole::Member,
             },
         );
@@ -164,7 +174,12 @@ mod tests {
             vec![op_member.id()],
             OpPayload::SetWriters {
                 object: Id::new([9u8; 32]),
-                writers: [(member, OpMask::FULL)].into_iter().collect(),
+                writers: [(
+                    calimero_op_adapter::legacy_account_id(&member),
+                    OpMask::FULL,
+                )]
+                .into_iter()
+                .collect(),
             },
         );
         let ops = [&op_admin, &op_member, &op_writers];

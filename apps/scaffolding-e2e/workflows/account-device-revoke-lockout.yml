@@ -1,0 +1,503 @@
+name: E2E KV Store - One Account, Two Devices, Revoke Sticks
+description: >
+  The acceptance test for account identity (#3290). Everything else in that
+  feature is unit- and apply-path-tested; this is the only thing that proves the
+  networked half — per-device scope-key delivery between real nodes.
+
+  Committed ahead of the code it tests, as the definition of done for phase F
+  rather than something backfilled afterwards. The code it needs has since
+  landed — per-device authorization, pairing, the revocation proof, and the
+  revoke-triggered key rotation — so it is now wired into `e2e-rust-apps.yml`.
+
+  What it pins, and why each step is load-bearing:
+
+    1. Three nodes. node-1 is the admin. node-2 is Alice's laptop and the only
+       one of the three granted membership. node-3 is Alice's phone and is
+       DELIBERATELY NOT a member — its right to participate comes entirely from
+       being a device of Alice's account. That is the feature: one grant, two
+       devices.
+
+       One device per node, not two devices on one node: `NodeDeviceIdentity` is
+       keyed per namespace, so a node holds at most one device in a namespace.
+       That also removes any need for merobox to choose which device authors —
+       the node selects it.
+
+    2. node-2 enrolls a device (`account create`). This is the first thing in the
+       whole feature that publishes an account op, so it is also the first
+       evidence that `AccountDeviceLinked` survives the real wire — signature
+       check, nonce window, dispatch, apply — rather than only the in-process
+       apply harness.
+
+       Note the ordering constraint: enrollment CANNOT happen at join time. A
+       device link travels as an *encrypted* GroupOp, so the node must already
+       hold the scope key. If this step is ever moved before the context join, it
+       will deadlock, and the deadlock is the reason `KeyEnvelope` addresses a
+       member as well as a device.
+
+    3. node-2 writes from its enrolled device and node-1 reads it. Proves the
+       device is a working replica, not merely a stored row.
+
+    4. node-3 is paired onto Alice's account (`account pair-init` on node-3,
+       then `account pair-complete` on node-2) and writes. Both
+       writes must reach node-1, and the two must carry DIFFERENT replica ids
+       under the SAME account. That pair of assertions is the whole feature.
+
+       Pairing is a two-way exchange, which is why it needs a real flow rather
+       than one command: node-3 cannot mint its `DeviceId` until it knows the
+       account (`DeviceId = H(account ‖ nonce)`), and node-2 cannot sign node-3's
+       certificate until it knows node-3's device id and KEM key. So node-2 hands
+       over Alice's genesis, node-3 returns its device id and KEM key, node-2
+       signs the certificate with the account root key it holds and publishes the
+       link.
+
+       This step also exercises the on-link key backfill — node-3 holds no scope
+       key of its own, so it can only read what it wrote if node-2 wrapped the
+       current keys for it.
+
+       And it is the step that requires per-device AUTHORIZATION, not just
+       delivery: node-3's ops are signed by a key that is not a member, so the
+       membership resolver has to accept a key that is the `sign_pk` of a live
+       device binding whose account is a member. Today it does not — see Wiring.
+
+    5. node-1 (admin) revokes node-3's device. The scope key must rotate, and
+       the rotation must exclude that device while still reaching the first one.
+
+    6. The revoked device's write FAILS (`expected_failure: true`), and the
+       surviving device's write still succeeds and still reaches node-1. Both
+       halves matter: a revocation that also breaks the surviving device would
+       pass a naive lockout assertion while being useless.
+
+    7. The revoked device cannot READ past the rotation. This is the subtle one,
+       and the one a naive lockout test misses: cutting off writes leaves a
+       silent reader, which is the failure the whole feature exists to prevent.
+       Asserted as the property — node-3 reads the survivor's key and must still
+       see the PRE-revocation value, because the post-rotation delta is
+       undecryptable to it. A device that had recovered the key returns the new
+       value and fails here.
+
+       Deliberately NOT asserted via the pull path's refusal log. A node asks a
+       peer for a key when it is a member of a group it holds no key for, or when
+       a governance op is buffered on an epoch it is stranded at. A revoked device
+       is neither — it is a member of nothing, and it still holds the old key with
+       nothing buffered — so it never asks, and a log assertion would wait on a
+       line no code path emits in this shape. The refusal is still logged at
+       `info` on the responder for the day a scenario can drive it.
+
+  What this does NOT cover (intentionally):
+    * Self-service revocation (an account revoking its own lost device without
+      an admin). Needs the root-signed revocation proof, which is a wire
+      addition still to land; until then revocation is admin-only.
+    * Root-key rotation across a live group. Covered by unit tests in
+      `crates/governance-store/src/group_keys.rs`; a networked version is worth
+      adding once this one passes.
+    * Mixed old/new node interop across the schema v4 flag day. merobox cannot
+      test that by construction — every node is the same build against fresh
+      state.
+
+  User-visible failure mode this guards against: "I revoked my stolen laptop and
+  it kept reading our messages."
+
+force_pull_image: false
+near_devnet: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: account-revoke-node
+
+steps:
+  - name: Login on account-revoke-node-1
+    type: login
+    node: account-revoke-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on account-revoke-node-2
+    type: login
+    node: account-revoke-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on account-revoke-node-3
+    type: login
+    node: account-revoke-node-3
+    username: dev
+    password: dev-password
+
+  # ── Phase 1: namespace, membership, context ───────────────────────
+
+  - name: Install application on node-1
+    type: install_application
+    node: account-revoke-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2
+    type: install_application
+    node: account-revoke-node-2
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Install application on node-3
+    type: install_application
+    node: account-revoke-node-3
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Node-1 creates namespace
+    type: create_namespace
+    node: account-revoke-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2 to the namespace
+    type: create_namespace_invitation
+    node: account-revoke-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation: invitation
+
+  - name: Node-2 joins the namespace
+    type: join_namespace
+    node: account-revoke-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation}}'
+
+  - name: Node-1 creates the context
+    type: create_context
+    node: account-revoke-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      context_id: contextId
+
+  - name: Node-2 joins the context
+    type: join_context
+    node: account-revoke-node-2
+    context_id: '{{context_id}}'
+
+  - name: Settle
+    type: wait_for_sync
+    nodes:
+      - account-revoke-node-1
+      - account-revoke-node-2
+    context_id: '{{context_id}}'
+
+  # ── Phase 2: node-2 enrolls its first device ──────────────────────
+  #
+  # Must come AFTER the context join: the link op is an encrypted GroupOp, so
+  # the node needs the scope key before it can publish one.
+
+  - name: Node-2 enrolls a device for a fresh account
+    type: script
+    script: scripts/account-create.sh
+    target: local
+    args:
+      - account-revoke-node-2
+      - '{{namespace_id}}'
+
+  - name: Settle after the link op
+    type: wait_for_sync
+    nodes:
+      - account-revoke-node-1
+      - account-revoke-node-2
+    context_id: '{{context_id}}'
+
+  # ── Phase 3: the first device is a working replica ────────────────
+
+  - name: Node-2 writes from its first device
+    type: call
+    node: account-revoke-node-2
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: from-laptop
+      value: laptop-wrote-this
+
+  - name: Settle so the first device's delta reaches node-1
+    type: wait_for_sync
+    nodes:
+      - account-revoke-node-1
+      - account-revoke-node-2
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-1 reads the first device's write
+    type: call
+    node: account-revoke-node-1
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: from-laptop
+    outputs:
+      laptop_value: result
+
+  - name: The first device's write converged
+    type: json_assert
+    statements:
+      - 'json_equal({{laptop_value}}, {"output": "laptop-wrote-this"})'
+
+  # ── Phase 4: pair a second device onto the SAME account ───────────
+
+  # node-3 is NOT invited to the namespace and never joins as a member. Its only
+  # route in is being a device of Alice's account.
+  - name: Pair node-3 onto Alice's account
+    type: script
+    script: scripts/account-pair.sh
+    target: local
+    args:
+      - account-revoke-node-2
+      - account-revoke-node-3
+      - '{{namespace_id}}'
+    # NOTE: no `outputs:` — merobox script steps do not support custom outputs
+    # (see "Wiring" below). The script writes the new device id to a file that
+    # `account-revoke.sh` reads.
+
+  # Following a context is a separate act from being certified into an account:
+  # it writes the keyless identity marker that makes this node "own" an identity
+  # there, which is what the RPC layer resolves an executor from. A paired device
+  # is a member of nothing, so this only works because the join gate accepts a
+  # live device of an account a member endorsed.
+  - name: Node-3 follows the context as a device of Alice's account
+    type: join_context
+    node: account-revoke-node-3
+    context_id: '{{context_id}}'
+
+  # node-3 is listed too, and that is the point of this step rather than an
+  # afterthought: the very next step has the paired device write, which only
+  # succeeds once node-2's KeyDelivery has actually reached and been applied by
+  # node-3. Waiting only on 1 and 2 leaves that a race against gossip timing.
+  - name: Settle after pairing
+    type: wait_for_sync
+    nodes:
+      - account-revoke-node-1
+      - account-revoke-node-2
+      - account-revoke-node-3
+    context_id: '{{context_id}}'
+
+  # The paired device holds no scope key of its own, so this write only works if
+  # the on-link backfill wrapped the current keys for it.
+  - name: Node-3 (paired device) writes
+    type: call
+    node: account-revoke-node-3
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: from-phone
+      value: phone-wrote-this
+
+  - name: Settle so the paired device's delta reaches node-1
+    type: wait_for_sync
+    nodes:
+      - account-revoke-node-1
+      - account-revoke-node-2
+      - account-revoke-node-3
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-1 reads the paired device's write
+    type: call
+    node: account-revoke-node-1
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: from-phone
+    outputs:
+      phone_value: result
+
+  - name: Both devices' writes converged
+    type: json_assert
+    statements:
+      - 'json_equal({{phone_value}}, {"output": "phone-wrote-this"})'
+
+  # One identity, two replicas — the whole point of the feature.
+  - name: The two devices authored as one account but distinct replicas
+    type: script
+    script: scripts/assert-same-account-distinct-devices.sh
+    target: local
+    args:
+      - '{{namespace_id}}'
+
+  # ── Phase 5: revoke the paired device ─────────────────────────────
+
+  - name: Admin revokes node-3's device
+    type: script
+    script: scripts/account-revoke.sh
+    target: local
+    args:
+      - account-revoke-node-1
+      - '{{namespace_id}}'
+
+  - name: Settle after the revocation and its key rotation
+    type: wait_for_sync
+    nodes:
+      - account-revoke-node-1
+      - account-revoke-node-2
+    context_id: '{{context_id}}'
+
+  # ── Phase 6: the revoked device is out, the survivor is not ───────
+
+  - name: The revoked device can no longer write
+    type: call
+    node: account-revoke-node-3
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: from-phone
+      value: phone-should-not-land
+    expected_failure: true
+
+  - name: The surviving device still writes
+    type: call
+    node: account-revoke-node-2
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: from-laptop
+      value: laptop-still-works
+
+  - name: Settle the survivor's write across the remaining devices
+    type: wait_for_sync
+    # node-3 is deliberately absent: it is revoked, so waiting for it to converge
+    # would be waiting for the failure this scenario exists to prevent.
+    nodes:
+      - account-revoke-node-1
+      - account-revoke-node-2
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-1 sees the survivor's write and not the revoked device's
+    type: call
+    node: account-revoke-node-1
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: from-laptop
+    outputs:
+      survivor_value: result
+
+  - name: Revocation cut out one device and only that device
+    type: json_assert
+    statements:
+      - 'json_equal({{survivor_value}}, {"output": "laptop-still-works"})'
+
+  - name: Node-1 still sees the pre-revocation value for the revoked device's key
+    type: call
+    node: account-revoke-node-1
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: from-phone
+    outputs:
+      post_revoke_phone: result
+
+  - name: The revoked device's post-revocation write never landed
+    type: json_assert
+    statements:
+      - 'json_equal({{post_revoke_phone}}, {"output": "phone-wrote-this"})'
+
+  # ── Phase 7: the revoked device cannot pull the key back ──────────
+  #
+  # The subtle one. A GroupKeyRequest names the requester's IDENTITY key, and
+  # this node is still a namespace member — so before the pull path was made
+  # device-addressed, everything above would pass and then the node would
+  # quietly re-fetch the rotated key on its next sync round.
+
+  - name: Give the recovery loop several rounds to try
+    type: wait
+    seconds: 20
+
+  # Asserted as the PROPERTY, not as a log signal, because this shape cannot
+  # trigger the pull path at all. A node asks for a key when it is a member of a
+  # group it holds no key for, or when a governance op is buffered on an epoch it
+  # is stranded at. The revoked device is neither: it is a member of NOTHING (that
+  # is what makes it a device rather than a member), and it still holds the
+  # pre-rotation key with nothing buffered — so it never asks, and asserting on the
+  # responder's refusal would be waiting for a line no code path emits here.
+  #
+  # What the feature actually promises is observable directly: a revoked device
+  # must not go on reading. It is frozen at the state it had, so the survivor's
+  # post-rotation write is invisible to it — this read returns the value from
+  # BEFORE the revocation. A device that had recovered the key would return
+  # `laptop-still-works` and fail here, which is exactly the "silent reader" this
+  # whole scenario exists to catch.
+  - name: The revoked device reads the group as it was, not as it is
+    type: call
+    node: account-revoke-node-3
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: from-laptop
+    outputs:
+      revoked_view: result
+
+  - name: The revoked device cannot read past the rotation
+    type: json_assert
+    statements:
+      - 'json_equal({{revoked_view}}, {"output": "laptop-wrote-this"})'
+
+  - name: The revoked device still cannot write after the recovery window
+    type: call
+    node: account-revoke-node-3
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: from-phone
+      value: phone-really-should-not-land
+    expected_failure: true
+
+# ── Wiring ─────────────────────────────────────────────────────────
+#
+# Wired into `.github/workflows/e2e-rust-apps.yml`.
+#
+# Helper scripts under `apps/scaffolding-e2e/scripts/`:
+#   * account-api.sh    — shared URL resolution, auth, and admin-api POST
+#   * account-create.sh — enrol a node's device under a fresh account
+#   * account-pair.sh   — the full two-way exchange between two nodes
+#   * account-revoke.sh — revoke the paired device, asserting the key rotated
+#   * assert-same-account-distinct-devices.sh — one account, two replica ids
+#
+# THREE code gaps this workflow depended on, beyond the CLI itself:
+#
+#   1. Per-device AUTHORIZATION on the governance bridge. `DeviceBinding.sign_pk`
+#      is stored and hashed today but never consulted, so a device whose key is
+#      not itself a member cannot author — node-3's writes would be refused. The
+#      membership resolver needs to accept a key that is the `sign_pk` of a live
+#      binding whose account is a member. This is NOT the 96-file re-key onto
+#      `AccountId` that the design doc defers to the cutover; it is one resolver
+#      change, and it also stops `sign_pk` being a written-but-never-read field.
+#
+#   2. Enrolling into an EXISTING account. `ensure_enrolled` always mints a fresh
+#      account rooted at the node's own namespace identity. Pairing needs the
+#      opposite: adopt an account whose genesis arrives from another node.
+#
+#   3. On-link key backfill and revoke-triggered rotation, which have no
+#      publisher until the CLI exists.
+#
+# STATUS: all three gaps above are CLOSED and the helper scripts exist. Two
+# integration facts shaped how they had to be written, neither visible from the
+# code:
+#
+#   a. `outputs:` on a `script` step does NOT work in merobox 0.3.8. Custom
+#      outputs are extracted from a step's `response_data`, which the script
+#      step never produces — it exports only `script_output_local` and friends,
+#      and every later script step overwrites that. So the scripts hand values
+#      to each other through files keyed by namespace instead. Deterministic,
+#      and it needs nothing from merobox.
+#
+#   b. Nothing in the e2e suite invokes `meroctl`; merobox drives nodes through
+#      its own API client and the merod image does not ship the CLI. So the
+#      scripts talk to the admin API directly with curl, mirroring merobox's own
+#      `/auth/token` payload. The CLI commands are thin wrappers over these same
+#      endpoints, so this exercises the same code paths.
+#
+# One device per node still means no merobox change is needed to choose WHICH
+# device authors — the node selects it implicitly.

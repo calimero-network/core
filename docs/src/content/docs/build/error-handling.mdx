@@ -163,8 +163,8 @@ pub enum TransferError {
 #[app::logic]
 impl Token {
     pub fn transfer(&mut self, to: String, amount: u64) -> app::Result<()> {
-        // `executor_id()` is the unforgeable actor for per-user logic.
-        let caller = env::executor_id();
+        // `device_id()` is the unforgeable actor for per-user logic.
+        let caller = env::device_id();
         if !self.is_member(&caller) {
             app::bail!(TransferError::Unauthorized);
         }

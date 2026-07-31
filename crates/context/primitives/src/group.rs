@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use actix::Message;
+use calimero_account::{AccountGenesis, AccountId, DeviceId, KemPublicKey};
 use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
@@ -711,6 +712,221 @@ pub struct AdmitTeeNodeRequest {
 
 impl Message for AdmitTeeNodeRequest {
     type Result = eyre::Result<()>;
+}
+
+/// Enroll this node's device into a namespace under a fresh account, and publish
+/// the link so peers learn the binding.
+///
+/// The first thing in the account feature that publishes an account op, and the
+/// only way any of the account plane becomes reachable at runtime.
+///
+/// Must run AFTER the node holds the namespace's scope key: the link travels as an
+/// encrypted `GroupOp`, so a node with no key cannot publish one. That is not an
+/// implementation detail to be tidied away later — it is why `KeyEnvelope` can
+/// still address a member as well as a device.
+#[derive(Debug)]
+pub struct CreateAccountRequest {
+    /// The namespace to enroll in. The account is rooted at this node's namespace
+    /// identity, which is what ties it to a granted member.
+    pub namespace_id: ContextGroupId,
+}
+
+/// What the node enrolled as.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct CreateAccountResponse {
+    /// The account this node now speaks for in the namespace.
+    pub account: AccountId,
+    /// This node's replica id within it.
+    pub device: DeviceId,
+    /// The account's genesis, which a pairing device needs in order to mint its
+    /// own `DeviceId` — it is `H(account ‖ nonce)`, so the nonce has to travel.
+    pub genesis: AccountGenesis,
+}
+
+impl CreateAccountResponse {
+    /// Build a response. Exists because the struct is `#[non_exhaustive]` — which
+    /// is right for the readers, but the producer lives in `calimero-context` and
+    /// cannot use a struct expression across the crate boundary.
+    #[must_use]
+    pub const fn new(account: AccountId, device: DeviceId, genesis: AccountGenesis) -> Self {
+        Self {
+            account,
+            device,
+            genesis,
+        }
+    }
+}
+
+impl Message for CreateAccountRequest {
+    type Result = eyre::Result<CreateAccountResponse>;
+}
+
+/// Adopt an **existing** account on this node and mint a device for it — the
+/// first half of pairing.
+///
+/// Pairing has to be a two-way exchange, and this is the half that produces the
+/// values the other half signs: a device cannot mint its `DeviceId` until it
+/// knows the account (`H(account ‖ nonce)`), while the account holder cannot
+/// certify that device until it knows the id and KEM key.
+///
+/// Deliberately does **not** require a scope key, unlike `CreateAccountRequest`.
+/// A pairing device holds none — obtaining one is what the second half is for —
+/// and it publishes nothing here, so there is no encrypted op to gate on.
+#[derive(Debug)]
+pub struct PairDeviceInitRequest {
+    /// The namespace to enroll in.
+    pub namespace_id: ContextGroupId,
+    /// The genesis of the account being joined, carried from the device that
+    /// already holds it. The nonce has to travel because the id is a hash over
+    /// it, so it cannot be recovered from the account id alone.
+    pub genesis: AccountGenesis,
+}
+
+/// What the pairing device minted, for the account holder to certify.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct PairDeviceInitResponse {
+    /// The account this device will speak for once the link lands.
+    pub account: AccountId,
+    /// This node's replica id within that account.
+    pub device: DeviceId,
+    /// The agreement key a scope key must be wrapped under to reach this
+    /// device. Published in its certificate.
+    pub kem_pk: KemPublicKey,
+    /// The key this device signs its ops with — its namespace identity on this
+    /// node.
+    ///
+    /// Travels because the certificate names it and per-device authorization
+    /// resolves a signer *through* it. The account holder cannot derive it: it
+    /// is minted here, on the pairing node. Omitting it would produce a
+    /// certificate naming a key no signature ever matches, leaving the device
+    /// linked but unable to author.
+    pub sign_pk: PublicKey,
+}
+
+impl PairDeviceInitResponse {
+    /// Build a response. Exists for the same reason as
+    /// [`CreateAccountResponse::new`] — the struct is `#[non_exhaustive]` and
+    /// the producer lives in another crate.
+    #[must_use]
+    pub const fn new(
+        account: AccountId,
+        device: DeviceId,
+        kem_pk: KemPublicKey,
+        sign_pk: PublicKey,
+    ) -> Self {
+        Self {
+            account,
+            device,
+            kem_pk,
+            sign_pk,
+        }
+    }
+}
+
+impl Message for PairDeviceInitRequest {
+    type Result = eyre::Result<PairDeviceInitResponse>;
+}
+
+/// Certify a device another node minted, link it, and hand it the scope key —
+/// the second half of pairing, run on the device that already holds the account.
+///
+/// Every field comes from that node's `PairDeviceInitRequest` response. None of
+/// them is a secret, and none of them is trusted: the certificate this signs is
+/// what makes the device real, and it is signed by the account root, which only
+/// this side holds.
+#[derive(Debug)]
+pub struct PairDeviceCompleteRequest {
+    /// The namespace the device is being paired into.
+    pub namespace_id: ContextGroupId,
+    /// The replica id the other node minted.
+    pub device: DeviceId,
+    /// The agreement key to wrap the scope key under.
+    pub kem_pk: KemPublicKey,
+    /// The key that device will sign its ops with.
+    pub sign_pk: PublicKey,
+}
+
+/// What pairing established.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct PairDeviceCompleteResponse {
+    /// The account the device now speaks for.
+    pub account: AccountId,
+    /// The device that was linked.
+    pub device: DeviceId,
+    /// Whether the current scope key was wrapped and published for the device.
+    ///
+    /// A `false` here is not a failed pairing: the link is what confers
+    /// authority, and the device's own sync pull re-requests the key it is
+    /// missing. It does mean the device stays unable to read until that pull
+    /// lands, which is worth surfacing rather than reporting a flat success.
+    pub key_delivered: bool,
+}
+
+impl PairDeviceCompleteResponse {
+    /// Build a response. Exists for the same reason as
+    /// [`CreateAccountResponse::new`] — the struct is `#[non_exhaustive]` and
+    /// the producer lives in another crate.
+    #[must_use]
+    pub const fn new(account: AccountId, device: DeviceId, key_delivered: bool) -> Self {
+        Self {
+            account,
+            device,
+            key_delivered,
+        }
+    }
+}
+
+/// Withdraw a device from an account, terminally.
+///
+/// Authorized either by this node being a group admin, or by it holding the
+/// account root that owns the device — the latter mints a self-certifying proof
+/// so the owner never needs an admin to disown their own lost machine.
+#[derive(Debug)]
+pub struct RevokeDeviceRequest {
+    /// The namespace the device is being withdrawn from.
+    pub namespace_id: ContextGroupId,
+    /// The device losing its binding. Its id is spent for good.
+    pub device: DeviceId,
+}
+
+/// What the revocation withdrew.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct RevokeDeviceResponse {
+    /// The account the device spoke for.
+    pub account: AccountId,
+    /// The device that was withdrawn.
+    pub device: DeviceId,
+    /// Whether the scope key was rotated in the same op.
+    ///
+    /// `false` means the device lost the right to write immediately but still
+    /// holds the key it had — it can read until an admin rotates. Only an admin
+    /// may rotate, so a self-service revocation always leaves this owed.
+    pub key_rotated: bool,
+}
+
+impl RevokeDeviceResponse {
+    /// Build a response. Exists because the struct is `#[non_exhaustive]` and
+    /// the producer lives in another crate.
+    #[must_use]
+    pub const fn new(account: AccountId, device: DeviceId, key_rotated: bool) -> Self {
+        Self {
+            account,
+            device,
+            key_rotated,
+        }
+    }
+}
+
+impl Message for RevokeDeviceRequest {
+    type Result = eyre::Result<RevokeDeviceResponse>;
+}
+
+impl Message for PairDeviceCompleteRequest {
+    type Result = eyre::Result<PairDeviceCompleteResponse>;
 }
 
 /// Discharge a pending forward-secrecy key rotation left behind by a self-leave.

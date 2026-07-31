@@ -165,7 +165,37 @@ impl Handler<JoinContextRequest> for ContextManager {
                 let mut was_inherited = false;
                 match membership_path {
                     calimero_governance_store::MembershipPath::None => {
-                        bail!("identity is not a member of the group");
+                        // A paired device is a member of NOTHING by design — its
+                        // right to take part comes from the account its certificate
+                        // binds it to. So the same fallback the authorization path
+                        // uses applies here: is this key the `sign_pk` of a live
+                        // device whose account a member endorsed?
+                        //
+                        // Without it a paired device gets scope keys and the right
+                        // to author and still cannot follow a context, because
+                        // following one means writing the keyless identity marker
+                        // that makes this node "own" an identity there. The symptom
+                        // is a bare "no owned identity found for this context" from
+                        // the RPC layer, which names neither accounts nor devices.
+                        let account = calimero_governance_store::member_account_for_device_key(
+                            &datastore,
+                            &group_id,
+                            &joiner_identity,
+                        )?;
+                        let Some(account) = account else {
+                            bail!(
+                                "identity is not a member of the group, nor a live device of an \
+                                 account that one endorsed"
+                            );
+                        };
+                        info!(
+                            target: "calimero::audit::group_membership",
+                            group_id = %hex::encode(group_id.to_bytes()),
+                            %joiner_identity,
+                            %account,
+                            %context_id,
+                            "context join authorized as a device of a member's account"
+                        );
                     }
                     calimero_governance_store::MembershipPath::Direct => {}
                     calimero_governance_store::MembershipPath::Inherited { anchor, via_admin } => {

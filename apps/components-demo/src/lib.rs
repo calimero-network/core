@@ -36,7 +36,7 @@ impl ComponentsDemo {
     /// The installer becomes the config owner, sole settings writer, and admin.
     #[app::init]
     pub fn init() -> ComponentsDemo {
-        let me: PublicKey = env::executor_id().into();
+        let me: PublicKey = env::device_id().into();
         ComponentsDemo {
             config: Ownable::new_owned_by(me),
             settings: PermissionedStorage::new(BTreeSet::from([me]), false),
@@ -71,7 +71,7 @@ impl ComponentsDemo {
     /// grant delta* that bypasses this gate happens at merge (the same
     /// writer-set-guarded mechanism the settings adversarial step proves).
     pub fn try_grant_role(&mut self, role: String, who: PublicKey) -> app::Result<bool> {
-        let me: PublicKey = env::executor_id().into();
+        let me: PublicKey = env::device_id().into();
         if !self.roles.is_admin(&me) {
             return Ok(false);
         }

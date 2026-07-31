@@ -3,6 +3,7 @@ use std::rc::Rc;
 
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
 use borsh::BorshDeserialize;
+use calimero_account::AccountId;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::group::MigrationFailureKind;
 use calimero_context_client::messages::{MigrationParams, UpdateApplicationRequest};
@@ -750,6 +751,7 @@ pub(crate) async fn update_application_with_migration(
                     check_module,
                     &new_state_bytes,
                     migration_witness.as_deref(),
+                    calimero_governance_store::account_for_context(&datastore, &context_id)?,
                     public_key,
                     storage,
                 )
@@ -1006,6 +1008,9 @@ async fn execute_migration(
 )> {
     let context_id = context.id;
     let method = migration_params.method.clone();
+    // The same account an ordinary call runs as: a migrate is this node executing
+    // app code, so `env::account_id()` must not change underneath it.
+    let account = calimero_governance_store::account_for_context(datastore, &context_id)?;
 
     debug!(
         %context_id,
@@ -1031,6 +1036,7 @@ async fn execute_migration(
             let mut storage = storage;
             let outcome = module.run(
                 context_id,
+                account,
                 executor_identity,
                 &method,
                 &[],
@@ -1187,12 +1193,19 @@ fn decode_migration_check_verdict(
 /// `module` is a cheap clone (the compiled artifact is `Arc`-backed, see
 /// `calimero_runtime::Module`), so this second `module.run` shares the
 /// already-compiled module with `execute_migration` rather than re-loading it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "an execution's inputs: identity, module, staged bytes, storage"
+)]
 async fn run_migration_check(
     node_client: NodeClient,
     context: &Context,
     module: calimero_runtime::Module,
     new_state_bytes: &[u8],
     witness: Option<&[u8]>,
+    // Passed rather than re-resolved so the check provably runs as the same
+    // account as the migrate whose output it is judging.
+    account: AccountId,
     executor_identity: PublicKey,
     storage: ContextStorage,
 ) -> eyre::Result<(bool, ContextStorage)> {
@@ -1217,6 +1230,7 @@ async fn run_migration_check(
                 let mut ro = ReadOnlyContextStorage::new(&mut storage);
                 module.run(
                     context_id,
+                    account,
                     executor_identity,
                     "__calimero_migration_check",
                     &input,
@@ -1263,11 +1277,13 @@ async fn run_count_my_pending(
     executor_identity: PublicKey,
 ) -> Option<u32> {
     let storage = ContextStorage::from(datastore.clone(), context_id);
+    let account = calimero_governance_store::account_for_context(datastore, &context_id).ok()?;
     let outcome = global_runtime()
         .spawn_blocking(move || {
             let mut storage = storage;
             let outcome = module.run(
                 context_id,
+                account,
                 executor_identity,
                 "count_my_pending",
                 &[],

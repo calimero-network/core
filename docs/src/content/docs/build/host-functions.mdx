@@ -20,7 +20,7 @@ conventions) see [`execution`](/protocol/execution/) and the runtime's
 
 <Aside type="note">
   Bring the functions into scope with `use calimero_sdk::env;` and call them as
-  `env::executor_id()`, `env::log(..)`, and so on. Most apps reach for only a
+  `env::device_id()`, `env::log(..)`, and so on. Most apps reach for only a
   handful — identity, logging, events, and time. State lives in CRDT
   collections, not in raw `env::storage_*` calls; see
   [`collections`](/build/collections/).
@@ -33,7 +33,8 @@ Who is running, in which context, and on whose behalf.
 | Function | What it does | Gotcha |
 |----------|--------------|--------|
 | `env::context_id() -> [u8; 32]` | The 32-byte ID of the context this execution runs in. | Same for every member of the context. Not an identity — don't use it to authorize a caller. |
-| `env::executor_id() -> [u8; 32]` | The 32-byte public key of the identity executing this call. | This is "who is calling" within the context. Use it as the actor for per-user logic. |
+| `env::account_id() -> [u8; 32]` | The 32-byte account this call is authorized as — a **person**, not a machine. | The actor for per-user logic: `Map<account_id, Vote>` is one vote per person and stays that way when they add a second device. Stable across a device's keys rotating and across losing every device and recovering. |
+| `env::device_id() -> [u8; 32]` | The 32-byte public key of the **device** executing this call — one installation. | Differs between two devices of the same person, which makes it right for per-replica state and wrong for per-user state. Storage collections that stamp an owner (`UserStorage`, `AuthoredMap`, `SharedStorage`) key off this, so a lookup into one must use it too. |
 | `env::xcall_origin() -> Option<[u8; 32]>` | The context that dispatched the current cross-context call, or `None` for a direct/RPC call. | Set by the node from the calling context — it cannot be forged. Return-`None` lets a method reject direct calls and require xcall-only invocation. |
 | `env::input() -> Option<Vec<u8>>` | The raw, undecoded input bytes for this call (typically JSON-encoded arguments). | `#[app::logic]` already decodes method arguments for you. You only need `input()` for custom entry points or raw payloads. |
 

@@ -388,7 +388,7 @@ where
     /// writer-signed update, not single-owner). Resolves via the same
     /// rotation-log-aware path as the write gate.
     pub fn writable_by_me(&self) -> bool {
-        let executor: PublicKey = env::executor_id().into();
+        let executor: PublicKey = env::device_id().into();
         self.current_writers().contains_key(&executor)
     }
 
@@ -483,7 +483,7 @@ where
     /// # Errors
     /// Returns `ActionNotAllowed` if the executor is not in the writer set.
     pub fn insert(&mut self, value: T) -> Result<Option<T>, StoreError> {
-        let executor: PublicKey = env::executor_id().into();
+        let executor: PublicKey = env::device_id().into();
         let writers = self.current_writers();
         if !writers.contains_key(&executor) {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
@@ -550,7 +550,7 @@ where
                 "Cannot rotate to an empty writer set".to_owned(),
             )));
         }
-        let executor: PublicKey = env::executor_id().into();
+        let executor: PublicKey = env::device_id().into();
         let writers = self.current_writers();
         if !writers.contains_key(&executor) {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
@@ -725,7 +725,7 @@ mod tests {
         use crate::entities::Data;
 
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         let _root: Root<TestVal> = Root::new(TestVal::default);
 
         let expected = compute_collection_id(None, "doc");
@@ -755,7 +755,7 @@ mod tests {
         use crate::store::MainStorage;
 
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE]), false));
         s.insert(TestVal(1)).unwrap();
@@ -794,7 +794,7 @@ mod tests {
 
         // The newly-added writer can write — authorization resolves from the
         // anchor's (rotated) writer set, and the entry stays an anchored member.
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         s.insert(TestVal(2)).unwrap();
         assert_member_of(storage_type_of(value_id));
     }
@@ -808,7 +808,7 @@ mod tests {
         use crate::store::MainStorage;
 
         env::reset_for_testing();
-        env::set_executor_id([7u8; 32]);
+        env::set_device_id([7u8; 32]);
 
         type Map = UnorderedMap<String, LwwRegister<String>>;
 
@@ -848,7 +848,7 @@ mod tests {
     #[serial]
     fn get_returns_default_before_insert() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
         assert_eq!(s.get().unwrap(), &TestVal::default());
@@ -858,7 +858,7 @@ mod tests {
     #[serial]
     fn value_schema_version_and_writability_reflect_stored_metadata() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
         s.insert(TestVal(42)).expect("writer inserts");
@@ -871,9 +871,9 @@ mod tests {
 
         // Writability tracks the writer set, not single ownership.
         assert!(s.writable_by_me()); // ALICE
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         assert!(s.writable_by_me()); // BOB
-        env::set_executor_id(CAROL);
+        env::set_device_id(CAROL);
         assert!(!s.writable_by_me()); // CAROL is not a writer
     }
 
@@ -881,7 +881,7 @@ mod tests {
     #[serial]
     fn insert_by_writer_succeeds() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
         s.insert(TestVal(42)).expect("alice (writer) inserts");
@@ -892,7 +892,7 @@ mod tests {
     #[serial]
     fn insert_by_non_writer_short_circuits() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[BOB, CAROL]), false));
         let err = s
@@ -909,7 +909,7 @@ mod tests {
     #[serial]
     fn rotate_writers_by_current_writer_succeeds() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
         s.insert(TestVal(1)).unwrap();
@@ -924,7 +924,7 @@ mod tests {
         assert!(err.to_string().to_lowercase().contains("writer"));
 
         // Bob (new writer) can.
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         s.insert(TestVal(99)).expect("bob (new writer) inserts");
         assert_eq!(s.get().unwrap(), &TestVal(99));
     }
@@ -933,12 +933,12 @@ mod tests {
     #[serial]
     fn rotate_writers_by_non_writer_rejected() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE]), false));
         s.insert(TestVal(1)).unwrap();
 
-        env::set_executor_id(BOB);
+        env::set_device_id(BOB);
         let err = s
             .rotate_writers(writers(&[BOB]))
             .expect_err("non-writer rotation must fail");
@@ -949,7 +949,7 @@ mod tests {
     #[serial]
     fn rotate_to_empty_writer_set_rejected() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
         s.insert(TestVal(1)).unwrap();
@@ -971,7 +971,7 @@ mod tests {
     #[serial]
     fn writers_accessor_reflects_bootstrap_then_rotation() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
 
@@ -989,7 +989,7 @@ mod tests {
     #[serial]
     fn is_frozen_accessor_reflects_construction_and_blocks_rotation() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE]), true));
 
@@ -1017,7 +1017,7 @@ mod tests {
         // freeze an honest node's rotation. Merge leaves the local value intact
         // in both directions.
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
         // Establish ROOT so the wrapper's `add_child_to(ROOT)` succeeds.
         let _root: Root<TestVal> = Root::new(TestVal::default);
         let mut a = WriterSetCell::<TestVal>::new(writers(&[ALICE]), false);
@@ -1042,7 +1042,7 @@ mod tests {
     #[serial]
     fn frozen_at_construction_blocks_rotation() {
         env::reset_for_testing();
-        env::set_executor_id(ALICE);
+        env::set_device_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), true));
         s.insert(TestVal(1)).unwrap();

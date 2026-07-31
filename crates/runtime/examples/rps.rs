@@ -1,6 +1,7 @@
 #![allow(unused_crate_dependencies)]
 #![allow(dead_code)]
 
+use calimero_account::AccountId;
 use std::env;
 use std::path::Path;
 
@@ -80,6 +81,7 @@ fn main() -> EyreResult<()> {
 
     let create_keypair_outcome = module.run(
         [0; 32].into(),
+        AccountId::from([0; 32]),
         [0; 32].into(),
         "create_keypair",
         &input,
@@ -109,6 +111,7 @@ fn main() -> EyreResult<()> {
 
     let create_keypair_outcome = module.run(
         [0; 32].into(),
+        AccountId::from([0; 32]),
         [0; 32].into(),
         "create_keypair",
         &input,
@@ -137,6 +140,7 @@ fn main() -> EyreResult<()> {
 
     let join_outcome = module.run(
         [0; 32].into(),
+        AccountId::from([0; 32]),
         [0; 32].into(),
         "join",
         &input,
@@ -162,6 +166,7 @@ fn main() -> EyreResult<()> {
 
     let join_outcome = module.run(
         [0; 32].into(),
+        AccountId::from([0; 32]),
         [0; 32].into(),
         "join",
         &input,
@@ -185,6 +190,7 @@ fn main() -> EyreResult<()> {
 
     let state_outcome = module.run(
         [0; 32].into(),
+        AccountId::from([0; 32]),
         [0; 32].into(),
         "state",
         &input,
@@ -215,6 +221,7 @@ fn main() -> EyreResult<()> {
 
     let prepare_outcome = module.run(
         [0; 32].into(),
+        AccountId::from([0; 32]),
         [0; 32].into(),
         "prepare",
         &input,
@@ -245,6 +252,7 @@ fn main() -> EyreResult<()> {
 
     let prepare_outcome = module.run(
         [0; 32].into(),
+        AccountId::from([0; 32]),
         [0; 32].into(),
         "prepare",
         &input,
@@ -272,6 +280,7 @@ fn main() -> EyreResult<()> {
 
     let commit_outcome = module.run(
         [0; 32].into(),
+        AccountId::from([0; 32]),
         [0; 32].into(),
         "commit",
         &input,
@@ -295,6 +304,7 @@ fn main() -> EyreResult<()> {
 
     let commit_outcome = module.run(
         [0; 32].into(),
+        AccountId::from([0; 32]),
         [0; 32].into(),
         "commit",
         &input,
@@ -317,6 +327,7 @@ fn main() -> EyreResult<()> {
 
     let reveal_outcome = module.run(
         [0; 32].into(),
+        AccountId::from([0; 32]),
         [0; 32].into(),
         "reveal",
         &input,
@@ -339,6 +350,7 @@ fn main() -> EyreResult<()> {
 
     let reveal_outcome = module.run(
         [0; 32].into(),
+        AccountId::from([0; 32]),
         [0; 32].into(),
         "reveal",
         &input,
@@ -359,6 +371,7 @@ fn main() -> EyreResult<()> {
 
     let state_outcome = module.run(
         [0; 32].into(),
+        AccountId::from([0; 32]),
         [0; 32].into(),
         "state",
         &input,
@@ -392,6 +405,7 @@ fn main() -> EyreResult<()> {
 
     let reset_outcome = module.run(
         [0; 32].into(),
+        AccountId::from([0; 32]),
         [0; 32].into(),
         "reset",
         &input,
@@ -405,6 +419,7 @@ fn main() -> EyreResult<()> {
 
     let state_outcome = module.run(
         [0; 32].into(),
+        AccountId::from([0; 32]),
         [0; 32].into(),
         "state",
         &input,

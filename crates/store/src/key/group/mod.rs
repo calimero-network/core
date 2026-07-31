@@ -16,7 +16,18 @@ use generic_array::GenericArray;
 use crate::db::Column;
 use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
+use zeroize::ZeroizeOnDrop;
 
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x46` is taken
+// except `0x2B` (retired, below); **the next free byte is `0x47`**.
+//
+// The constants themselves are declared beside the key types they belong to
+// rather than all in this block, which is why a ledger is needed at all: two
+// families sharing a prefix would collide silently, and several of these keys are
+// byte-identical in length, so the compiler cannot catch it either — a
+// `GroupRevokedDevice` key and a `GroupDeviceBinding` key are both `[u8; 65]`,
+// and only the prefix distinguishes them. Grep `u8 = 0x` in this file to
+// re-derive this list before claiming a byte.
 pub const GROUP_META_PREFIX: u8 = 0x20;
 pub const GROUP_MEMBER_PREFIX: u8 = 0x21;
 pub const GROUP_CONTEXT_INDEX_PREFIX: u8 = 0x22;
@@ -1663,12 +1674,32 @@ impl Debug for NamespaceIdentity {
 
 /// Value for [`NamespaceIdentity`]. The Ed25519 keypair this node uses as its
 /// member identity within the namespace, plus a sender key for encrypted sync.
-#[derive(Clone, Debug)]
+///
+/// Zeroized on drop, for the same reason the two node-local account secrets in
+/// this file are: this row holds two live secrets, and a plain drop leaves them in
+/// freed heap for whatever reads that page next — a core dump, a swap file, or the
+/// next allocation. `Copy` is therefore also off the table: it would duplicate the
+/// secret implicitly on every read, and the wipe only ever reaches the original.
+#[derive(Clone, ZeroizeOnDrop)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NamespaceIdentityValue {
     pub public_key: [u8; 32],
     pub private_key: [u8; 32],
     pub sender_key: [u8; 32],
+}
+
+/// Redacted by hand, never derived. `private_key` is this node's namespace
+/// member identity — the key it signs every governance op and state delta with.
+/// A derived `Debug` puts it one `tracing` field or one error context away from a
+/// log file.
+impl Debug for NamespaceIdentityValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NamespaceIdentityValue")
+            .field("public_key", &self.public_key)
+            .field("private_key", &"[redacted]")
+            .field("sender_key", &"[redacted]")
+            .finish()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1900,6 +1931,26 @@ pub const GROUP_DENIED_MEMBER_PREFIX: u8 = 0x3B;
 /// deny-list.
 pub const GROUP_INHERITED_DENIED_MEMBER_PREFIX: u8 = 0x40;
 
+/// Device→account bindings (see [`GroupDeviceBinding`]).
+pub const GROUP_DEVICE_BINDING_PREFIX: u8 = 0x41;
+
+/// Revocation tombstones for devices (see [`GroupRevokedDevice`]).
+pub const GROUP_REVOKED_DEVICE_PREFIX: u8 = 0x42;
+
+/// Per-account current root key (see [`GroupAccountKey`]).
+pub const GROUP_ACCOUNT_KEY_PREFIX: u8 = 0x43;
+
+/// This node's own device identity for a namespace (see
+/// [`NodeDeviceIdentity`]).
+pub const NODE_DEVICE_IDENTITY_PREFIX: u8 = 0x44;
+
+/// This node's account root secret (see [`NodeAccountRoot`]).
+pub const NODE_ACCOUNT_ROOT_PREFIX: u8 = 0x45;
+
+/// A member key that has endorsed an account into a group (see
+/// [`GroupAccountEndorser`]).
+pub const GROUP_ACCOUNT_ENDORSER_PREFIX: u8 = 0x46;
+
 /// Prefix for the pending-key-rotation worklist. A row marks: `group_id` still
 /// owes a forward-secrecy key rotation because `departed` left, and no rotation
 /// has landed yet.
@@ -2077,6 +2128,517 @@ impl Debug for GroupDeniedMember {
         f.debug_struct("GroupDeniedMember")
             .field("group_id", &self.group_id())
             .field("identity", &self.identity())
+            .finish()
+    }
+}
+
+/// Device→account binding for a group (see [`GROUP_DEVICE_BINDING_PREFIX`]).
+///
+/// One row per enrolled device. Key layout `prefix(1) + group_id(32) +
+/// device_id(32)` = 65 bytes, the same shape as [`GroupMember`], so prefix
+/// scans over `(group_id, *)` enumerate a group's devices exactly the way they
+/// enumerate its members.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupDeviceBinding(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupDeviceBinding {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], device_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_DEVICE_BINDING_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(device_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn device_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupDeviceBinding {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupDeviceBinding {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupDeviceBinding {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupDeviceBinding")
+            .field("group_id", &self.group_id())
+            .field("device_id", &self.device_id())
+            .finish()
+    }
+}
+
+/// The binding a [`GroupDeviceBinding`] row carries.
+///
+/// `key_epoch` is retained deliberately. Whether the account has since rotated
+/// past the root key that signed this device's certificate cannot be decided
+/// when the link applies — at that moment only the rotations seen so far are
+/// known, so the answer would depend on delivery order. Storing the signing
+/// epoch lets the read side drop superseded bindings once the account's current
+/// epoch is known, which makes the result a function of the op *set* rather
+/// than its arrival order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupDeviceBindingValue {
+    /// The account this device speaks for.
+    pub account: [u8; 32],
+    /// Ed25519 key whose signature counts as this device's.
+    pub sign_pk: [u8; 32],
+    /// X25519 key wrapped scope keys are delivered to.
+    pub kem_pk: [u8; 32],
+    /// Device key-rotation epoch; a link must strictly exceed it to supersede.
+    pub device_epoch: u32,
+    /// Account root-key epoch that signed this device's certificate.
+    pub key_epoch: u32,
+}
+
+/// Revocation tombstone for a device (see [`GROUP_REVOKED_DEVICE_PREFIX`]).
+///
+/// A separate row family from [`GroupDeviceBinding`], not a flag on it. That is
+/// what makes revocation order-independent: a revocation that applies *before*
+/// the link it withdraws still wins, because every link consults this family
+/// first. As a flag on the binding, a revoke-then-link arrival order would
+/// silently resurrect the device.
+///
+/// Terminal — re-enrolling a machine mints a fresh device id — so a replica id
+/// is never reused and the CRDT planes keep one writer per replica across a
+/// revoke/re-add cycle.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupRevokedDevice(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupRevokedDevice {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], device_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_REVOKED_DEVICE_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(device_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn device_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupRevokedDevice {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupRevokedDevice {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupRevokedDevice {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupRevokedDevice")
+            .field("group_id", &self.group_id())
+            .field("device_id", &self.device_id())
+            .finish()
+    }
+}
+
+/// An account's current root key within a group (see [`GROUP_ACCOUNT_KEY_PREFIX`]).
+///
+/// Written the first time the group sees any credential for the account, and
+/// advanced by each rotation. Key layout `prefix(1) + group_id(32) +
+/// account_id(32)`.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountKey(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupAccountKey {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], account_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_ACCOUNT_KEY_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(account_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn account_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupAccountKey {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupAccountKey {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupAccountKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupAccountKey")
+            .field("group_id", &self.group_id())
+            .field("account_id", &self.account_id())
+            .finish()
+    }
+}
+
+/// The root key an account currently holds in a group.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountKeyValue {
+    /// Highest root-key epoch this group has established for the account.
+    pub epoch: u32,
+    /// The root key at `epoch` — the only key whose device certificates this
+    /// group still accepts.
+    ///
+    /// Deliberately the *current* key and not the genesis one. This row exists to
+    /// answer "may this certificate still be honoured", which a rotation is
+    /// supposed to change; the account's tie to a member is a separate question,
+    /// answered by [`GroupAccountEndorser`] rather than by any key here. The row
+    /// used to carry the genesis key alongside for that purpose, back when an
+    /// account was rooted at its owner's namespace identity — once the root became
+    /// a dedicated offline key, which is a member nowhere, nothing could read it
+    /// and it stopped being carried.
+    pub root_pk: [u8; 32],
+}
+
+/// A member key that vouched for an account in a group. Key layout
+/// `prefix(1) + group_id(32) + account_id(32) + member_pk(32)` = 97 bytes.
+///
+/// **The account's tie to a member, and the reason it is a row rather than a
+/// field.** The account row's `genesis_root_pk` used to be that tie, back when
+/// an account was rooted at its owner's namespace identity. The root is now a
+/// dedicated offline key which is a member *nowhere*, so the tie moved to the
+/// endorsement carried on each link — and an endorsement is per-op, so it has
+/// to be persisted or the group forgets who vouched the moment the op is
+/// applied.
+///
+/// A grow-only **set**, never a single field. Two links for one account may
+/// legitimately carry different endorsers, so storing "the" endorser would make
+/// the stored value depend on which link folded last — order-dependent state on
+/// the authorization path, which is the failure this plane has hit repeatedly.
+/// Set union is a join, so every replica converges on the same endorser set and
+/// the question asked of it — "is *any* endorser a member at this cut" — is
+/// order-independent.
+///
+/// Valueless: the key carries everything. There is nothing to record about an
+/// endorsement beyond that it happened and was verified before the row was
+/// written.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountEndorser(
+    Key<(
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    )>,
+);
+
+impl GroupAccountEndorser {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], account_id: [u8; 32], member: PrimitivePublicKey) -> Self {
+        Self(Key(GenericArray::from([GROUP_ACCOUNT_ENDORSER_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(account_id))
+            .concat(GenericArray::from(*member))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn account_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[33..65]);
+        id
+    }
+
+    #[must_use]
+    pub fn member(&self) -> PrimitivePublicKey {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[65..]);
+        PrimitivePublicKey::from(id)
+    }
+}
+
+impl AsKeyParts for GroupAccountEndorser {
+    type Components = (
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    );
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupAccountEndorser {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+/// This node's own device identity within one namespace (see
+/// [`NODE_DEVICE_IDENTITY_PREFIX`]). Key layout `prefix(1) + namespace_id(32)`
+/// = 33 bytes; one row per namespace, because a node is a distinct replica in
+/// each namespace it participates in and must not reuse one KEM secret across
+/// them.
+///
+/// Deliberately a row family of its own rather than two more fields on
+/// `ContextIdentity`. That struct is `#[expect(clippy::exhaustive_structs)]`
+/// with construction sites all over the node, so widening it would touch every
+/// one of them — and a device secret has a different lifetime anyway: it is
+/// minted once when the device enrolls, never rotated in place, and deleted
+/// when the namespace is purged.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeDeviceIdentity(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl NodeDeviceIdentity {
+    #[must_use]
+    pub fn new(namespace_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([NODE_DEVICE_IDENTITY_PREFIX])
+            .concat(GenericArray::from(namespace_id))))
+    }
+
+    #[must_use]
+    pub fn namespace_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for NodeDeviceIdentity {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NodeDeviceIdentity {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for NodeDeviceIdentity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NodeDeviceIdentity")
+            .field("namespace_id", &self.namespace_id())
+            .finish()
+    }
+}
+
+/// This node's account root secret — a **singleton**, keyed by nothing but its
+/// own prefix (see [`NODE_ACCOUNT_ROOT_PREFIX`]).
+///
+/// Node-level rather than per-namespace, which is the whole point: it is the one
+/// key that survives losing every device, so it is what certifies a replacement.
+/// Per-namespace account ids are still distinct, because the nonce is derived per
+/// namespace from this secret rather than shared — see
+/// `calimero_account::derive_account_nonce`.
+///
+/// A one-byte key rather than a sentinel id, so the singleton-ness is in the type
+/// and there is no "which id means the real one" question for a later reader.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeAccountRoot(Key<(GroupPrefix,)>);
+
+impl NodeAccountRoot {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Key(GenericArray::from([NODE_ACCOUNT_ROOT_PREFIX])))
+    }
+}
+
+impl Default for NodeAccountRoot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsKeyParts for NodeAccountRoot {
+    type Components = (GroupPrefix,);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NodeAccountRoot {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for NodeAccountRoot {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("NodeAccountRoot")
+    }
+}
+
+/// The secret a [`NodeAccountRoot`] row carries.
+///
+/// The **only** thing that can certify a device for any of this node's accounts,
+/// and therefore the only thing that can recover one after every device is lost.
+/// Intended to be backed up out of band — paper or hardware — because losing it
+/// alongside the devices means no recovery at all.
+#[derive(Clone, Eq, PartialEq, ZeroizeOnDrop)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeAccountRootValue {
+    /// Ed25519 secret that roots every account this node owns.
+    pub root_secret: [u8; 32],
+}
+
+/// Redacted by hand, never derived — same discipline as the other secret-bearing
+/// values here. This one is the most sensitive of them: it is the recovery key.
+impl Debug for NodeAccountRootValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NodeAccountRootValue")
+            .field("root_secret", &"[redacted]")
+            .finish()
+    }
+}
+
+/// The device identity a [`NodeDeviceIdentity`] row carries.
+///
+/// `kem_secret` is the private half of the X25519 key published in this
+/// device's certificate, and it is the **only** thing that can unwrap a scope
+/// key addressed to this device. It is stored, not derived from the namespace
+/// signing key, because the whole point of a device KEM key is that it is
+/// revocable independently of the identity that certified it — deriving it
+/// would tie the two lifetimes back together.
+///
+/// Deliberately **not** `Copy`, and zeroized on drop. `Copy` would let the secret
+/// be duplicated implicitly — every read, every move producing another copy the
+/// wipe never reaches — which is the same reason
+/// [`calimero_crypto::X25519SecretKey`] is not `Copy` either. A `Drop` impl and
+/// `Copy` are mutually exclusive, so dropping `Copy` is what makes the wipe
+/// possible at all.
+#[derive(Clone, Eq, PartialEq, ZeroizeOnDrop)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeDeviceIdentityValue {
+    /// Epoch-0 root key of the account this node's device belongs to.
+    ///
+    /// Stored rather than assumed to be this node's own namespace identity: a
+    /// paired device adopts an account rooted at ANOTHER node's key, so a row that
+    /// only held the nonce could not reconstruct the genesis without being told
+    /// whose account it was — which the reader does not know.
+    pub account_root_pk: [u8; 32],
+    /// Nonce of the `AccountGenesis` this node's device belongs to.
+    ///
+    /// The nonce rather than the `AccountId`, because the id is a one-way hash
+    /// and the *genesis* is what a device link has to put on the wire. Pairing a
+    /// second device means publishing another link naming the same account, so
+    /// the genesis must be reconstructible — and it is, from this nonce plus the
+    /// account root key above.
+    pub account_nonce: [u8; 16],
+    /// The `DeviceId` this node speaks as in the namespace.
+    pub device_id: [u8; 32],
+    /// X25519 secret matching the certificate's `kem_pk`.
+    pub kem_secret: [u8; 32],
+}
+
+/// Redacted by hand, never derived. `kem_secret` is the only thing that can
+/// unwrap a scope key addressed to this device, and a derived `Debug` prints it
+/// — one `tracing` field, one `dbg!`, one error context and the secret is in a
+/// log. Mirrors the same discipline `calimero_crypto::SharedKey` applies.
+impl Debug for NodeDeviceIdentityValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NodeDeviceIdentityValue")
+            .field("device_id", &self.device_id)
+            .field("kem_secret", &"[redacted]")
             .finish()
     }
 }

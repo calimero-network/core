@@ -11,6 +11,7 @@ pub mod admit_tee_node;
 pub mod apply_signed_group_op;
 pub mod apply_signed_namespace_op;
 pub mod broadcast_group_local_state;
+pub mod create_account;
 pub mod create_context;
 pub mod create_group;
 pub mod create_group_invitation;
@@ -42,9 +43,12 @@ pub mod list_group_members;
 pub mod list_namespaces;
 pub mod list_namespaces_for_application;
 pub mod namespace_pending_op_count;
+pub mod pair_device_complete;
+pub mod pair_device_init;
 pub mod remove_group_members;
 pub mod resync_context;
 pub mod retry_group_upgrade;
+pub mod revoke_device;
 pub mod rotate_group_key;
 pub mod set_context_metadata;
 pub mod set_default_capabilities;
@@ -189,6 +193,18 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::AdmitTeeNode { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::CreateAccount { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::PairDeviceInit { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::PairDeviceComplete { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::RevokeDevice { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RotateGroupKey { request, outcome } => {

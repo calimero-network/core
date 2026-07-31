@@ -23,9 +23,11 @@ sha2.workspace = true
 thiserror.workspace = true
 
 calimero-context-config.workspace = true
+calimero-account.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-storage.workspace = true
 
 [dev-dependencies]
+calimero-account.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 rand.workspace = true

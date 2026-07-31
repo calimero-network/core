@@ -48,6 +48,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use calimero_account::AccountId;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, OnceLock};
@@ -210,6 +211,7 @@ fn run_wasm(node: &Node, method: &str, params: &Value, commit: bool) -> (Vec<u8>
     let outcome = module
         .run(
             node.ctx(),
+            AccountId::from([0u8; 32]),
             node.executor,
             method,
             &input,
@@ -319,6 +321,7 @@ fn apply_foreign_delta(
     let outcome = module
         .run(
             receiver.ctx(),
+            AccountId::from([0u8; 32]),
             receiver.executor,
             "__calimero_merge_root_state",
             &payload,
@@ -428,6 +431,7 @@ fn deferred_root_merge_is_noop_for_structured_rust_root() {
     let outcome = module
         .run(
             node.ctx(),
+            AccountId::from([0u8; 32]),
             node.executor,
             "__calimero_merge_root_state",
             &payload,

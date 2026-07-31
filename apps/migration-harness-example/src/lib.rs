@@ -270,7 +270,7 @@ mod tests {
         let old_bytes = read_raw().unwrap_or_else(|| panic!("no state"));
         let old: DocV1Data = BorshDeserialize::deserialize(&mut &old_bytes[..]).unwrap();
         // BUG: per-node value baked into the migrated state.
-        let who = calimero_sdk::env::executor_id()[0];
+        let who = calimero_sdk::env::device_id()[0];
         DocV2 {
             entries: old.entries,
             title: LwwRegister::new(format!("migrated-by-{who}")),
@@ -302,7 +302,7 @@ mod tests {
         let old: DocV1Data = BorshDeserialize::deserialize(&mut &old_bytes[..]).unwrap();
         let mut entries = old.entries;
         // BUG: per-node value written into a CHILD map entry, not the root.
-        let who = calimero_sdk::env::executor_id()[0];
+        let who = calimero_sdk::env::device_id()[0];
         entries
             .insert("__migrated_by".to_owned(), format!("node-{who}").into())
             .unwrap();

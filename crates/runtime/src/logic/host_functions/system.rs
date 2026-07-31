@@ -523,7 +523,12 @@ impl VMHostFunctions<'_> {
         Ok(0)
     }
 
-    /// Copies the executor's public key into a register.
+    /// Copies the **account** this call is authorized as into a register.
+    ///
+    /// The id an app keys per-person state by. Several devices of one account
+    /// write the same value here, which is the whole point — and the reason it
+    /// must never be used where per-writer uniqueness matters. For that, see
+    /// [`device_id`](Self::device_id).
     ///
     /// # Arguments
     ///
@@ -532,7 +537,36 @@ impl VMHostFunctions<'_> {
     /// # Errors
     ///
     /// * `HostError::InvalidMemoryAccess` if the register operation fails (e.g., exceeds limits).
-    pub fn executor_id(&mut self, dest_register_id: u64) -> VMLogicResult<()> {
+    pub fn account_id(&mut self, dest_register_id: u64) -> VMLogicResult<()> {
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
+            logic
+                .registers
+                .set(logic.limits, dest_register_id, logic.context.account_id)
+        })?;
+
+        trace!(
+            target: "runtime::host::system",
+            dest_register_id,
+            "account_id written"
+        );
+
+        Ok(())
+    }
+
+    /// Copies the executing **device**'s public key into a register.
+    ///
+    /// The replica this node speaks as: unique per installation, and what signs
+    /// its writes. Distinct from [`account_id`](Self::account_id) — two devices of
+    /// one person differ here and agree there.
+    ///
+    /// # Arguments
+    ///
+    /// * `dest_register_id` - The ID of the destination register.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::InvalidMemoryAccess` if the register operation fails (e.g., exceeds limits).
+    pub fn device_id(&mut self, dest_register_id: u64) -> VMLogicResult<()> {
         self.with_logic_mut(|logic| -> VMLogicResult<()> {
             logic.registers.set(
                 logic.limits,
@@ -544,10 +578,31 @@ impl VMHostFunctions<'_> {
         trace!(
             target: "runtime::host::system",
             dest_register_id,
-            "executor_id written"
+            "device_id written"
         );
 
         Ok(())
+    }
+
+    /// `device_id` under its former name, for WASM built before the split.
+    ///
+    /// **A linking shim, not an API.** `calimero-sys` does not declare it, so no
+    /// app compiled against the current SDK can import it and `env::executor_id()`
+    /// does not exist — the deletion that forces every new call site to choose
+    /// between an account and a device is intact. This exists because the import
+    /// name is baked into every already-built blob: dropping it turns a stale
+    /// fixture into `Link(Import("env", "executor_id", UnknownImport))` at
+    /// instantiation, which is a 500 on the first context creation and looks
+    /// nothing like an ABI change.
+    ///
+    /// It returns the DEVICE, which is exactly what those blobs were getting.
+    /// Removable once every consumer that pins a pre-split blob has rebuilt.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::InvalidMemoryAccess` if the register operation fails (e.g., exceeds limits).
+    pub fn executor_id(&mut self, dest_register_id: u64) -> VMLogicResult<()> {
+        self.device_id(dest_register_id)
     }
 
     /// Writes the xcall origin (the source context id) into `dest_register_id`
@@ -1511,16 +1566,21 @@ mod tests {
         }
     }
 
-    /// Tests the `context_id()` and `executor_id()` host functions.
+    /// Tests the `context_id()`, `account_id()` and `device_id()` host functions.
     ///
-    /// This test verifies that the guest can request and receive context and executor IDs.
+    /// The account and the device are given **different** bytes on purpose. Both
+    /// are 32-byte values reached through the same register mechanism, so a wiring
+    /// mistake that served one where the other was asked for is invisible to a
+    /// fixture that gives them the same value — and serving the device as the
+    /// account is precisely the conflation this split exists to end.
     #[test]
-    fn test_context_and_executor_id() {
+    fn test_context_account_and_device_id() {
         let context_id = [3u8; DIGEST_SIZE];
-        let executor_id = [5u8; DIGEST_SIZE];
+        let device_id = [5u8; DIGEST_SIZE];
+        let account = calimero_account::AccountId::from([7u8; DIGEST_SIZE]);
         let mut storage = SimpleMockStorage::new();
         let limits = VMLimits::default();
-        let context = VMContext::new(Cow::Owned(vec![]), context_id, executor_id);
+        let context = VMContext::new(Cow::Owned(vec![]), context_id, device_id, account);
         let mut logic = VMLogic::new(&mut storage, None, context, &limits, None);
 
         let mut store = Store::default();
@@ -1541,17 +1601,26 @@ mod tests {
             .unwrap();
         assert_eq!(requested_context_id, context_id);
 
-        let executor_id_register = 2;
-        // Guest: ask the host to put the executor ID into host register
-        // that has a value `executor_id_register`.
-        host.executor_id(executor_id_register).unwrap();
-        // Verify the `executor_id` is correctly written into its host-side register.
-        let requested_executor_id = host
-            .borrow_logic()
-            .registers
-            .get(executor_id_register)
-            .unwrap();
-        assert_eq!(requested_executor_id, executor_id);
+        let device_id_register = 2;
+        host.device_id(device_id_register).unwrap();
+        assert_eq!(
+            host.borrow_logic()
+                .registers
+                .get(device_id_register)
+                .unwrap(),
+            device_id,
+        );
+
+        let account_id_register = 3;
+        host.account_id(account_id_register).unwrap();
+        assert_eq!(
+            host.borrow_logic()
+                .registers
+                .get(account_id_register)
+                .unwrap(),
+            *account.as_bytes(),
+            "the account register must carry the account, not the device"
+        );
     }
 
     /// `xcall_origin()` returns 0 and leaves the register untouched for a direct
@@ -1565,7 +1634,12 @@ mod tests {
         {
             let mut storage = SimpleMockStorage::new();
             let limits = VMLimits::default();
-            let context = VMContext::new(Cow::Owned(vec![]), context_id, executor_id);
+            let context = VMContext::new(
+                Cow::Owned(vec![]),
+                context_id,
+                executor_id,
+                calimero_account::AccountId::from([7u8; DIGEST_SIZE]),
+            );
             let mut logic = VMLogic::new(&mut storage, None, context, &limits, None);
             let mut store = Store::default();
             let memory =
@@ -1587,7 +1661,12 @@ mod tests {
             let origin = [9u8; DIGEST_SIZE];
             let mut storage = SimpleMockStorage::new();
             let limits = VMLimits::default();
-            let mut context = VMContext::new(Cow::Owned(vec![]), context_id, executor_id);
+            let mut context = VMContext::new(
+                Cow::Owned(vec![]),
+                context_id,
+                executor_id,
+                calimero_account::AccountId::from([7u8; DIGEST_SIZE]),
+            );
             context.xcall_origin = Some(origin);
             let mut logic = VMLogic::new(&mut storage, None, context, &limits, None);
             let mut store = Store::default();

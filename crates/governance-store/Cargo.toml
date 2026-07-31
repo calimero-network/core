@@ -26,6 +26,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
 tracing.workspace = true
 
+calimero-account.workspace = true
 calimero-context-config.workspace = true
 calimero-context-client.workspace = true
 calimero-governance-types.workspace = true

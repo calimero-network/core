@@ -9,6 +9,7 @@ description.workspace = true
 publish = true
 
 [dependencies]
+calimero-account.workspace = true
 actix.workspace = true
 async-stream.workspace = true
 blake3.workspace = true

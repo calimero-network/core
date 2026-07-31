@@ -54,7 +54,7 @@ fn test_merge_via_registry() {
     register_crdt_merge::<TestApp>();
 
     // Create state on node 1 with unique executor ID
-    env::set_executor_id([100; 32]);
+    env::set_device_id([100; 32]);
     let mut state1 = Root::new(|| TestApp {
         counter: Counter::new(),
         metadata: UnorderedMap::new(),
@@ -74,7 +74,7 @@ fn test_merge_via_registry() {
     let bytes1 = borsh::to_vec(&*state1).unwrap();
 
     // Create state on node 2 with different executor ID
-    env::set_executor_id([200; 32]);
+    env::set_device_id([200; 32]);
     let mut state2 = Root::new(|| TestApp {
         counter: Counter::new(),
         metadata: UnorderedMap::new(),
@@ -139,7 +139,7 @@ fn test_user_storage_reassign_deterministic_id_preserves_entries() {
     use crate::collections::UserStorage;
 
     env::reset_for_testing();
-    env::set_executor_id([0x11; 32]);
+    env::set_device_id([0x11; 32]);
 
     let mut storage = UserStorage::<u64>::new();
     let _ = storage.insert(7).expect("initial insert should succeed");
@@ -159,7 +159,7 @@ fn test_user_storage_reassign_deterministic_id_preserves_entries() {
         Some(7)
     );
 
-    env::set_executor_id([0x22; 32]);
+    env::set_device_id([0x22; 32]);
     let _ = storage
         .insert(11)
         .expect("second user insert should succeed");
@@ -1096,7 +1096,7 @@ fn test_merge_nested_document_with_rga() {
     register_crdt_merge::<CollabEditor>();
 
     // Node 1: Create document with "Hello" (use unique executor [111; 32])
-    env::set_executor_id([111; 32]);
+    env::set_device_id([111; 32]);
     let mut editor1 = Root::new(|| CollabEditor {
         documents: UnorderedMap::new(),
     });
@@ -1118,7 +1118,7 @@ fn test_merge_nested_document_with_rga() {
     let bytes1 = borsh::to_vec(&*editor1).unwrap();
 
     // Node 2: Same document base, but add " World" (use unique executor [222; 32])
-    env::set_executor_id([222; 32]);
+    env::set_device_id([222; 32]);
     let mut editor2 = Root::new(|| CollabEditor {
         documents: UnorderedMap::new(),
     });
@@ -1268,7 +1268,7 @@ fn test_merge_determinism_reproduces_e2e_issue() {
 
     // === Phase 1: Create initial state (after init on both nodes) ===
     // Both nodes should have identical initial state after init sync
-    env::set_executor_id([1; 32]); // Node 1's ID
+    env::set_device_id([1; 32]); // Node 1's ID
     let initial_state = Root::new(|| E2eKvStoreSimulation {
         file_counter: LwwRegister::new(0u64),
         file_owner: LwwRegister::new(String::new()),
@@ -1279,13 +1279,13 @@ fn test_merge_determinism_reproduces_e2e_issue() {
 
     // === Phase 2: Simulate set_with_handler on Node-1 ===
     // This increments file_counter, sets file_owner, and increments handler_counter
-    env::set_executor_id([1; 32]); // Node 1 is the executor
+    env::set_device_id([1; 32]); // Node 1 is the executor
     let mut node1_state: E2eKvStoreSimulation = borsh::from_slice(&initial_bytes).unwrap();
 
     // set_with_handler logic:
     // 1. file_counter += 1
     node1_state.file_counter.set(1u64);
-    // 2. file_owner = executor_id
+    // 2. file_owner = device_id
     node1_state.file_owner.set("e2e-node-1".to_string());
     // 3. Handler runs and increments counter (handler_counter is a GCounter by executor)
     node1_state.handler_counter.increment().unwrap();
@@ -1303,7 +1303,7 @@ fn test_merge_determinism_reproduces_e2e_issue() {
 
     // === Phase 3: Simulate Node-2 receiving and applying the delta ===
     // Node-2 starts from initial_state, receives node1_bytes, and merges
-    env::set_executor_id([2; 32]); // Node 2's ID
+    env::set_device_id([2; 32]); // Node 2's ID
 
     // Multiple merge attempts - all should produce IDENTICAL results
     let mut all_merge_results: Vec<Vec<u8>> = Vec::new();
@@ -1360,7 +1360,7 @@ fn test_merge_determinism_reproduces_e2e_issue() {
 fn test_counter_serialization_determinism() {
     env::reset_for_testing();
 
-    env::set_executor_id([1; 32]);
+    env::set_device_id([1; 32]);
     // Explicitly use GCounter (ALLOW_DECREMENT = false)
     let mut counter: Counter<false> = Counter::new();
     counter.increment().unwrap();
@@ -1449,7 +1449,7 @@ fn test_counter_serialization_architecture() {
 
     // === Create initial state and increment counter ===
     println!("\n=== Creating state with counter increment ===");
-    env::set_executor_id([1; 32]);
+    env::set_device_id([1; 32]);
     let mut state = Root::new(|| HandlerApp {
         handler_counter: Counter::new(),
     });
@@ -1554,7 +1554,7 @@ fn test_e2e_sync_flow_with_isolated_storage() {
     // === PHASE 1: Node-1 creates initial state ===
     println!("=== PHASE 1: Node-1 creates initial state ===");
     set_current_heads(vec![[0; 32]]); // Genesis
-    env::set_executor_id([1; 32]);
+    env::set_device_id([1; 32]);
 
     // Create state on Node-1 using LwwRegister (wrapped in Root/Collection)
     let mut node1_state = Root::<LwwRegister<String>, NodeStorage>::new_internal(|| {
@@ -1602,7 +1602,7 @@ fn test_e2e_sync_flow_with_isolated_storage() {
     println!("\n=== PHASE 2: Node-2 receives and applies the delta ===");
     reset_delta_context();
     set_current_heads(vec![[0; 32]]); // Node-2 starts fresh
-    env::set_executor_id([2; 32]);
+    env::set_device_id([2; 32]);
 
     // Node-2 has EMPTY storage - don't pre-initialize
     // This simulates a fresh node receiving state via delta sync
@@ -1713,7 +1713,7 @@ fn test_e2e_counter_sync_with_isolated_storage() {
 
     // Node-1 init
     set_current_heads(vec![[0; 32]]);
-    env::set_executor_id([1; 32]);
+    env::set_device_id([1; 32]);
 
     // Print ROOT_ID value
     println!("ROOT_ID = {}", crate::address::Id::root());
@@ -1818,7 +1818,7 @@ fn test_e2e_counter_sync_with_isolated_storage() {
 
     // Node-2 init - INDEPENDENTLY (same as Node-1, but on fresh storage)
     set_current_heads(vec![[0; 32]]);
-    env::set_executor_id([2; 32]);
+    env::set_device_id([2; 32]);
     let mut node2_initial = Root::<Counter, NodeStorage>::new_internal(Counter::new);
     node2_initial.reassign_deterministic_id("handler_counter");
     let initial_data2 = borsh::to_vec(&*node2_initial).unwrap();
@@ -1868,7 +1868,7 @@ fn test_e2e_counter_sync_with_isolated_storage() {
     println!("\n=== PHASE 2: Node-1 increments counter ===");
     reset_delta_context();
     set_current_heads(vec![node1_init_hash]); // Current state
-    env::set_executor_id([1; 32]);
+    env::set_device_id([1; 32]);
 
     // Fetch the counter via Root, increment it
     let mut node1_counter = Root::<Counter, NodeStorage>::fetch()
@@ -1930,7 +1930,7 @@ fn test_e2e_counter_sync_with_isolated_storage() {
     println!("\n=== PHASE 3: Node-2 applies update delta ===");
     reset_delta_context();
     set_current_heads(vec![node2_init_hash]); // Node-2's current state
-    env::set_executor_id([2; 32]);
+    env::set_device_id([2; 32]);
 
     // Apply delta via sync
     if let Some(delta) = update_delta {
@@ -1996,7 +1996,7 @@ mod frozen_sync_robustness {
     fn init_frozen(executor: [u8; 32]) {
         reset_delta_context();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(executor);
+        env::set_device_id(executor);
         let mut r = Root::<FrozenStorage<String>, NodeStorage>::new_internal(FrozenStorage::new);
         r.reassign_deterministic_id("frozen_items");
         r.commit();
@@ -2069,7 +2069,7 @@ mod frozen_sync_robustness {
         let init = root_full_hash();
         reset_delta_context();
         set_current_heads(vec![init]);
-        env::set_executor_id([1; 32]);
+        env::set_device_id([1; 32]);
         let mut n1 = Root::<FrozenStorage<String>, NodeStorage>::fetch().unwrap();
         n1.insert("synced".to_string()).unwrap();
         let d1 = borsh::to_vec(&*n1).unwrap();
@@ -2085,7 +2085,7 @@ mod frozen_sync_robustness {
         assert_eq!(init, init2, "init must match");
         reset_delta_context();
         set_current_heads(vec![init2]);
-        env::set_executor_id([2; 32]);
+        env::set_device_id([2; 32]);
         if let Some(delta) = delta {
             let payload = borsh::to_vec(&StorageDelta::Actions(delta.actions)).unwrap();
             Root::<FrozenStorage<String>, NodeStorage>::sync(&payload, &ApplyContext::empty())
@@ -2112,7 +2112,7 @@ mod frozen_sync_robustness {
             for v in values {
                 reset_delta_context();
                 set_current_heads(vec![head]);
-                env::set_executor_id([1; 32]);
+                env::set_device_id([1; 32]);
                 let mut n = Root::<FrozenStorage<String>, NodeStorage>::fetch().unwrap();
                 n.insert((*v).to_string()).unwrap();
                 let d = borsh::to_vec(&*n).unwrap();
@@ -2132,7 +2132,7 @@ mod frozen_sync_robustness {
             for actions in &deltas {
                 reset_delta_context();
                 set_current_heads(vec![base]);
-                env::set_executor_id([2; 32]);
+                env::set_device_id([2; 32]);
                 let payload = borsh::to_vec(&StorageDelta::Actions(actions.clone())).unwrap();
                 Root::<FrozenStorage<String>, NodeStorage>::sync(&payload, &ApplyContext::empty())
                     .expect("frozen delta apply must not error");
@@ -2193,7 +2193,7 @@ fn test_gcounter_concurrent_increments_converge_via_delta_sync() {
         reset_delta_context();
         register_crdt_merge::<Counter>();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(exec);
+        env::set_device_id(exec);
     };
 
     // Genesis: empty counter base shared by every node (carries collection ids).
@@ -2315,7 +2315,7 @@ fn test_nested_counter_in_map_concurrent_increments_converge() {
         reset_delta_context();
         register_crdt_merge::<NestedCounters>();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(exec);
+        env::set_device_id(exec);
     };
     let incr = || {
         let mut doc = Root::<NestedCounters, S>::fetch().unwrap();
@@ -2469,7 +2469,7 @@ fn test_nested_counter_first_touch_concurrent_converges() {
         reset_delta_context();
         register_crdt_merge::<NestedCounters>();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(exec);
+        env::set_device_id(exec);
     };
     let incr_create = || {
         let mut doc = Root::<NestedCounters, S>::fetch().unwrap();
@@ -2619,7 +2619,7 @@ fn test_nested_counter_first_touch_via_entry_api_converges() {
         reset_delta_context();
         register_crdt_merge::<NestedCounters>();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(exec);
+        env::set_device_id(exec);
     };
     let incr_create_via_entry = || {
         let mut doc = Root::<NestedCounters, S>::fetch().unwrap();
@@ -2762,7 +2762,7 @@ fn test_nested_map_first_touch_via_or_default_converges() {
         reset_delta_context();
         register_crdt_merge::<NestedMaps>();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(exec);
+        env::set_device_id(exec);
     };
     // First touch through `or_default()` at BOTH levels: vacant outer -> default
     // inner map; vacant inner -> default Counter; then increment.
@@ -2910,7 +2910,7 @@ fn test_nested_counter_first_touch_via_or_default_converges() {
         reset_delta_context();
         register_crdt_merge::<NestedCounters>();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(exec);
+        env::set_device_id(exec);
     };
     let incr_create_via_or_default = || {
         let mut doc = Root::<NestedCounters, S>::fetch().unwrap();
@@ -3050,7 +3050,7 @@ fn test_nested_counter_first_touch_via_extend_converges() {
         reset_delta_context();
         register_crdt_merge::<NestedCounters>();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(exec);
+        env::set_device_id(exec);
     };
     let incr_create_via_extend = || {
         let mut doc = Root::<NestedCounters, S>::fetch().unwrap();
@@ -3186,7 +3186,7 @@ fn test_nested_set_first_touch_concurrent_converges() {
         reset_delta_context();
         register_crdt_merge::<Tags>();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(exec);
+        env::set_device_id(exec);
     };
     let add_tag = |tag: &str| -> Vec<Action> {
         let mut doc = Root::<Tags, S>::fetch().unwrap();
@@ -3340,7 +3340,7 @@ fn test_nested_pncounter_single_writer_converges() {
         reset_delta_context();
         register_crdt_merge::<PnDoc>();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(exec);
+        env::set_device_id(exec);
     };
 
     // Genesis: empty map base.
@@ -3471,7 +3471,7 @@ fn test_nested_pncounter_concurrent_writers_converge() {
         reset_delta_context();
         register_crdt_merge::<PnDoc>();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(exec);
+        env::set_device_id(exec);
     };
 
     // Genesis: base with the "bal" PN-counter created once (shared ids), value 0.
@@ -3640,7 +3640,7 @@ fn test_kv_map_bidirectional_distinct_key_inserts_converge() {
         reset_delta_context();
         register_crdt_merge::<KvApp>();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(exec);
+        env::set_device_id(exec);
     };
     let insert_kv = |key: &str, val: &str| -> Vec<Action> {
         let mut doc = Root::<KvApp, S>::fetch().unwrap();
@@ -3778,7 +3778,7 @@ fn test_kv_map_same_key_concurrent_writes_converge() {
         reset_delta_context();
         register_crdt_merge::<KvApp>();
         set_current_heads(vec![[0; 32]]);
-        env::set_executor_id(exec);
+        env::set_device_id(exec);
     };
     let write_k = |val: &str| -> Vec<Action> {
         let mut doc = Root::<KvApp, S>::fetch().unwrap();
@@ -3877,7 +3877,7 @@ fn opaque_root_local_write_falls_back_to_lww_when_unregistered() {
 
     env::reset_for_testing();
     clear_merge_registry();
-    env::set_executor_id([7; 32]);
+    env::set_device_id([7; 32]);
 
     let root = Id::root();
 
@@ -3928,7 +3928,7 @@ fn non_opaque_root_local_write_still_errors_when_unregistered() {
 
     env::reset_for_testing();
     clear_merge_registry();
-    env::set_executor_id([8; 32]);
+    env::set_device_id([8; 32]);
 
     let root = Id::root();
     // A real (non-opaque) crdt_type marks this as an app-state root that is
@@ -3990,7 +3990,7 @@ fn js_root_local_write_falls_back_to_lww_when_unregistered() {
 
     env::reset_for_testing();
     clear_merge_registry();
-    env::set_executor_id([9; 32]);
+    env::set_device_id([9; 32]);
 
     let root = Id::root();
     let js_root = CrdtType::js_root();
@@ -4057,7 +4057,7 @@ fn js_root_update_reasserts_crdt_type_marker() {
 
     env::reset_for_testing();
     clear_merge_registry();
-    env::set_executor_id([11; 32]);
+    env::set_device_id([11; 32]);
 
     let root = Id::root();
 
@@ -4121,7 +4121,7 @@ fn save_root_entry_links_leaf_child_of_root() {
 
     env::reset_for_testing();
     clear_merge_registry();
-    env::set_executor_id([13; 32]);
+    env::set_device_id([13; 32]);
 
     let root = Id::root();
     let js_root = CrdtType::js_root();

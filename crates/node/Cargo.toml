@@ -9,6 +9,7 @@ license.workspace = true
 publish = true
 
 [dependencies]
+calimero-account.workspace = true
 actix.workspace = true
 async-trait.workspace = true
 borsh.workspace = true

@@ -1,17 +1,18 @@
 use calimero_context_config::MemberCapabilities;
 use calimero_server_primitives::admin::{
-    AddGroupMembersApiResponse, CreateGroupApiResponse, CreateGroupInvitationApiResponse,
-    CreateNamespaceApiResponse, DeleteGroupApiResponse, DeleteNamespaceApiResponse,
-    DetachContextFromGroupApiResponse, GetGroupUpgradeStatusApiResponse,
-    GetMemberCapabilitiesApiResponse, GetMetadataApiResponse, GroupInfoApiResponse,
-    JoinContextApiResponse, JoinGroupApiResponse, LeaveContextApiResponse, LeaveGroupApiResponse,
-    LeaveNamespaceApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
-    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
-    NamespaceApiResponse, NamespaceIdentityApiResponse, RegisterGroupSigningKeyApiResponse,
-    RemoveGroupMembersApiResponse, ReparentGroupApiResponse, SetDefaultCapabilitiesApiResponse,
-    SetMemberCapabilitiesApiResponse, SetMetadataApiResponse, SetSubgroupVisibilityApiResponse,
-    SyncGroupApiResponse, UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse,
-    UpgradeGroupApiResponse,
+    AddGroupMembersApiResponse, CreateAccountApiResponse, CreateGroupApiResponse,
+    CreateGroupInvitationApiResponse, CreateNamespaceApiResponse, DeleteGroupApiResponse,
+    DeleteNamespaceApiResponse, DetachContextFromGroupApiResponse,
+    GetGroupUpgradeStatusApiResponse, GetMemberCapabilitiesApiResponse, GetMetadataApiResponse,
+    GroupInfoApiResponse, JoinContextApiResponse, JoinGroupApiResponse, LeaveContextApiResponse,
+    LeaveGroupApiResponse, LeaveNamespaceApiResponse, ListGroupContextsApiResponse,
+    ListGroupMembersApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
+    ListSubgroupsApiResponse, NamespaceApiResponse, NamespaceIdentityApiResponse,
+    PairDeviceCompleteApiResponse, PairDeviceInitApiResponse, RegisterGroupSigningKeyApiResponse,
+    RemoveGroupMembersApiResponse, ReparentGroupApiResponse, RevokeDeviceApiResponse,
+    SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse, SetMetadataApiResponse,
+    SetSubgroupVisibilityApiResponse, SyncGroupApiResponse, UpdateGroupSettingsApiResponse,
+    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -55,6 +56,92 @@ impl Report for GroupInfoApiResponse {
         if let Some(ref upgrade) = d.active_upgrade {
             let _ = table.add_row(vec!["Active Upgrade Status", &upgrade.status]);
         }
+        println!("{table}");
+    }
+}
+
+impl Report for CreateAccountApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Device Enrolled").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Account ID", &self.data.account_id]);
+        let _ = table.add_row(vec!["Device ID", &self.data.device_id]);
+        let _ = table.add_row(vec!["Account root key", &self.data.account_root_key]);
+        // Shown because pairing a second device needs it: the other device
+        // computes its own id as H(account ‖ nonce), so without the nonce the
+        // account cannot be joined at all.
+        let _ = table.add_row(vec![
+            "Account nonce (for pairing)",
+            &self.data.account_nonce,
+        ]);
+        println!("{table}");
+    }
+}
+
+impl Report for PairDeviceInitApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Device Minted").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Account ID", &self.data.account_id]);
+        // All three are what `account pair-complete` needs on the other device.
+        // The device is inert until that runs: it holds no key, and nothing has
+        // certified it, so printing them is the whole point of this half.
+        let _ = table.add_row(vec!["Device ID", &self.data.device_id]);
+        let _ = table.add_row(vec!["Device KEM key", &self.data.kem_public_key]);
+        let _ = table.add_row(vec!["Device signing key", &self.data.sign_public_key]);
+        println!("{table}");
+    }
+}
+
+impl Report for PairDeviceCompleteApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Device Paired").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Account ID", &self.data.account_id]);
+        let _ = table.add_row(vec!["Device ID", &self.data.device_id]);
+        // Surfaced rather than folded into a flat success: the link confers
+        // authority on its own, but until the key lands the device cannot read.
+        let _ = table.add_row(vec![
+            "Scope key delivered",
+            if self.data.key_delivered {
+                "yes"
+            } else {
+                "no - the device's sync pull will retry"
+            },
+        ]);
+        println!("{table}");
+    }
+}
+
+impl Report for RevokeDeviceApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Device Revoked").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Account ID", &self.data.account_id]);
+        let _ = table.add_row(vec!["Device ID", &self.data.device_id]);
+        // Without the rotation the device stops writing but keeps the key it
+        // already holds — a silent reader. Say so rather than report a bare
+        // success.
+        let _ = table.add_row(vec![
+            "Scope key rotated",
+            if self.data.key_rotated {
+                "yes - the device can no longer read either"
+            } else {
+                "no - it can still READ until an admin rotates"
+            },
+        ]);
         println!("{table}");
     }
 }

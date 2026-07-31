@@ -409,7 +409,7 @@ impl E2eKvStore {
             authored_vec: AuthoredVector::<LwwRegister<String>>::new(),
             // Shared Storage — init caller becomes the sole initial writer
             shared_data: SharedStorage::new(
-                std::iter::once(env::executor_id().into()).collect(),
+                std::iter::once(env::device_id().into()).collect(),
                 false,
             ),
         }
@@ -648,7 +648,7 @@ impl E2eKvStore {
     // USER STORAGE - SIMPLE
 
     pub fn set_user_simple(&mut self, value: String) -> app::Result<()> {
-        let executor_id = env::executor_id();
+        let executor_id = env::device_id();
         app::log!(
             "Setting simple value for user {:?}: {:?}",
             executor_id,
@@ -663,7 +663,7 @@ impl E2eKvStore {
     }
 
     pub fn get_user_simple(&self) -> app::Result<Option<String>> {
-        let executor_id = env::executor_id();
+        let executor_id = env::device_id();
         app::log!("Getting simple value for user {:?}", executor_id);
         Ok(self.user_items_simple.get()?.map(|v| v.get().clone()))
     }
@@ -679,7 +679,7 @@ impl E2eKvStore {
     // USER STORAGE - NESTED
 
     pub fn set_user_nested(&mut self, key: String, value: String) -> app::Result<()> {
-        let executor_id = env::executor_id();
+        let executor_id = env::device_id();
         app::log!(
             "Setting nested key {:?} for user {:?}: {:?}",
             key,
@@ -700,7 +700,7 @@ impl E2eKvStore {
     }
 
     pub fn get_user_nested(&self, key: &str) -> app::Result<Option<String>> {
-        let executor_id = env::executor_id();
+        let executor_id = env::device_id();
         app::log!("Getting nested key {:?} for user {:?}", key, executor_id);
 
         let nested_map = self.user_items_nested.get()?;
@@ -762,7 +762,7 @@ impl E2eKvStore {
         };
         let guess_hash = Sha256::digest(guess.as_bytes());
         let guess_hash_hex = hex::encode(guess_hash);
-        let who_b = env::executor_id();
+        let who_b = env::device_id();
         let who = bs58::encode(who_b).into_string();
         let success = guess_hash_hex == public_hash_hex;
         app::emit!(Event::Guessed {
@@ -802,7 +802,7 @@ impl E2eKvStore {
         let file_id = format!("file_{current_counter}");
         self.file_counter.set(current_counter + 1);
 
-        let uploader_id = env::executor_id();
+        let uploader_id = env::device_id();
         let uploader = encode_blob_id_base58(&uploader_id);
         let timestamp = env::time_now();
 
@@ -1072,7 +1072,7 @@ impl E2eKvStore {
     // RGA DOCUMENT (from collaborative-editor)
 
     pub fn rga_insert_text(&mut self, position: usize, text: String) -> app::Result<()> {
-        let editor_id = env::executor_id();
+        let editor_id = env::device_id();
         let editor = encode_identity(&editor_id);
 
         app::log!(
@@ -1096,7 +1096,7 @@ impl E2eKvStore {
     }
 
     pub fn rga_delete_text(&mut self, start: usize, end: usize) -> app::Result<()> {
-        let editor_id = env::executor_id();
+        let editor_id = env::device_id();
         let editor = encode_identity(&editor_id);
 
         app::log!("Deleting text from {} to {} by {}", start, end, editor);
@@ -1127,7 +1127,7 @@ impl E2eKvStore {
             app::bail!("Title cannot be empty");
         }
 
-        let editor_id = env::executor_id();
+        let editor_id = env::device_id();
         let editor = encode_identity(&editor_id);
 
         let old_title = self.rga_get_title();
@@ -1176,7 +1176,7 @@ impl E2eKvStore {
     // AUTHORED MAP
 
     pub fn authored_insert(&mut self, key: String, value: String) -> app::Result<()> {
-        let owner = bs58::encode(env::executor_id()).into_string();
+        let owner = bs58::encode(env::device_id()).into_string();
         self.authored_items
             .insert(key.clone(), value.clone().into())?;
         app::emit!(Event::AuthoredInserted {
@@ -1227,7 +1227,7 @@ impl E2eKvStore {
     // SHARED STORAGE
 
     pub fn shared_set(&mut self, value: String) -> app::Result<()> {
-        let by = bs58::encode(env::executor_id()).into_string();
+        let by = bs58::encode(env::device_id()).into_string();
         self.shared_data.insert(LwwRegister::new(value.clone()))?;
         app::emit!(Event::SharedSet {
             value: value.clone(),
@@ -1290,7 +1290,7 @@ impl E2eKvStore {
 
     pub fn authored_vec_push(&mut self, value: String) -> app::Result<usize> {
         let index = self.authored_vec.push(LwwRegister::new(value.clone()))?;
-        let owner = bs58::encode(env::executor_id()).into_string();
+        let owner = bs58::encode(env::device_id()).into_string();
         app::emit!(Event::AuthoredVecPushed {
             index,
             value,

@@ -2878,7 +2878,7 @@ mod owner_driven_convert {
             field_name: None,
             schema_version: None,
         };
-        env::with_executor_id(*owner, || {
+        env::with_device_id(*owner, || {
             assert!(!env::in_merge_mode(), "convert must run on the normal path");
             MainInterface::save_raw(id, b"v2-bytes".to_vec(), convert_meta)
                 .expect("owner convert write");
@@ -2931,7 +2931,7 @@ mod owner_driven_convert {
         };
         // Executor is NOT the owner: the local-owner stamp branch must not fire,
         // so the entry is never converted (schema stays None, no owner signature).
-        env::with_executor_id(*not_owner, || {
+        env::with_device_id(*not_owner, || {
             MainInterface::save_raw(id, b"v2-bytes".to_vec(), convert_meta)
                 .expect("save_raw runs but does not stamp owner");
         });
@@ -2974,7 +2974,7 @@ mod owner_driven_convert {
         // as a fresh, monotonic, owner-signed delta — exactly the security
         // hazard PR-6c must avoid. Drive the owner write under
         // `with_merge_mode` and assert the entry stays unconverted.
-        let out = env::with_executor_id(*owner, || {
+        let out = env::with_device_id(*owner, || {
             env::with_merge_mode(|| MainInterface::save_raw(id, b"v2".to_vec(), convert_meta))
         });
         assert!(out.is_ok(), "the write itself still succeeds in merge mode");

@@ -2678,7 +2678,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
         // If this is a local user action, set the nonce
         if let StorageType::User { owner, .. } = metadata.storage_type {
-            if *owner == crate::env::executor_id() {
+            if *owner == crate::env::device_id() {
                 // Use the deletion timestamp as the nonce
                 metadata.storage_type = StorageType::User {
                     owner,
@@ -2719,19 +2719,19 @@ impl<S: StorageAdaptor> Interface<S> {
         // Same for a member delete: authorize against the ANCHOR's writers
         // (the member carries none), re-stamp the anchor pointer with a fresh
         // signature placeholder for the signer to fill in.
-        let member_to_stamp =
-            if let StorageType::SharedMember { anchor, .. } = &metadata.storage_type {
-                let executor: calimero_primitives::identity::PublicKey =
-                    crate::env::executor_id().into();
-                let writers = Self::resolve_anchor_writers(*anchor);
-                if writers.contains_key(&executor) {
-                    Some((*anchor, executor))
-                } else {
-                    None
-                }
+        let member_to_stamp = if let StorageType::SharedMember { anchor, .. } =
+            &metadata.storage_type
+        {
+            let executor: calimero_primitives::identity::PublicKey = crate::env::device_id().into();
+            let writers = Self::resolve_anchor_writers(*anchor);
+            if writers.contains_key(&executor) {
+                Some((*anchor, executor))
             } else {
                 None
-            };
+            }
+        } else {
+            None
+        };
         if let Some((anchor, signer)) = member_to_stamp {
             metadata.storage_type = StorageType::SharedMember {
                 anchor,
@@ -3572,7 +3572,7 @@ impl<S: StorageAdaptor> Interface<S> {
         claimed: &BTreeMap<PublicKey, OpMask>,
         stored: Option<&BTreeMap<PublicKey, OpMask>>,
     ) -> Result<Option<SharedStampAuthorization>, StorageError> {
-        let executor: PublicKey = crate::env::executor_id().into();
+        let executor: PublicKey = crate::env::device_id().into();
         let stored_has_executor = match stored {
             Some(stored) => stored.contains_key(&executor),
             None => <Index<S>>::get_metadata(id)?
@@ -3633,7 +3633,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // `apply_action`), so unconditionally stamping here is safe:
         // it only fires when the executor is the owner.
         if let StorageType::User { owner, .. } = metadata.storage_type {
-            if *owner == crate::env::executor_id() {
+            if *owner == crate::env::device_id() {
                 let nonce = *metadata.updated_at;
                 metadata.storage_type = StorageType::User {
                     owner,
@@ -3704,18 +3704,18 @@ impl<S: StorageAdaptor> Interface<S> {
         // Member upsert: a member carries no writer set, so there is no
         // claimed-set union — authority is purely the ANCHOR's resolved writers
         // (settled local state). Stamp the anchor pointer + signer placeholder.
-        let member_to_stamp =
-            if let StorageType::SharedMember { anchor, .. } = &metadata.storage_type {
-                let executor: calimero_primitives::identity::PublicKey =
-                    crate::env::executor_id().into();
-                if Self::resolve_anchor_writers(*anchor).contains_key(&executor) {
-                    Some((*anchor, executor))
-                } else {
-                    None
-                }
+        let member_to_stamp = if let StorageType::SharedMember { anchor, .. } =
+            &metadata.storage_type
+        {
+            let executor: calimero_primitives::identity::PublicKey = crate::env::device_id().into();
+            if Self::resolve_anchor_writers(*anchor).contains_key(&executor) {
+                Some((*anchor, executor))
             } else {
                 None
-            };
+            }
+        } else {
+            None
+        };
         if let Some((anchor, signer)) = member_to_stamp {
             let nonce = *metadata.updated_at;
             metadata.storage_type = StorageType::SharedMember {

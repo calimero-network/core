@@ -125,7 +125,7 @@ impl KvStore {
     fn log_handler_call(&mut self, handler_name: &str, details: &str) -> app::Result<()> {
         app::log!("Handler '{}' called: {}", handler_name, details);
 
-        // Increment CRDT counter (uses env::executor_id() internally)
+        // Increment CRDT counter (uses env::device_id() internally)
         self.handler_counter.increment()?;
 
         Ok(())

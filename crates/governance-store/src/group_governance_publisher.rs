@@ -1,5 +1,6 @@
 use crate::{
-    CapabilitiesRepository, GroupKeyring, MetaRepository, NamespaceRepository, PermissionChecker,
+    CapabilitiesRepository, GroupKeyring, KeyRecipient, MetaRepository, NamespaceRepository,
+    PermissionChecker,
 };
 use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp};
 use calimero_context_config::types::ContextGroupId;
@@ -18,6 +19,43 @@ pub struct GroupGovernancePublisher<'a> {
     store: &'a Store,
     node_client: &'a calimero_node_primitives::client::NodeClient,
     group_id: ContextGroupId,
+}
+
+/// Whether an op carries a key rotation, and who it must leave out.
+///
+/// A rotation's exclusion is expressed by MEMBER, not by recipient: a
+/// device-addressed recipient carries no member key of its own, so filtering by
+/// recipient could only drop the identity-addressed entry and would leave the
+/// excluded member's devices holding the fresh key.
+#[derive(Clone, Copy)]
+enum RotationPlan<'a> {
+    /// No rotation rides on this op.
+    None,
+    /// Rotate, and wrap for nobody belonging to this member — a removal or a
+    /// post-leave rotation.
+    ExcludingMember(&'a PublicKey),
+    /// Rotate and wrap for everyone still entitled, excluding nobody by name.
+    ///
+    /// For a device revocation, where the exclusion has already happened: the
+    /// revocation is applied before the recipient list is built, and live
+    /// bindings drop a revoked device, so the device is gone from the list
+    /// without the member going with it.
+    AllEntitled,
+}
+
+impl RotationPlan<'_> {
+    /// Whether this op mints and wraps a new key at all.
+    const fn rotates(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    /// Whether `member`'s recipients belong in the rotation.
+    fn keeps(self, member: PublicKey) -> bool {
+        match self {
+            Self::None | Self::AllEntitled => true,
+            Self::ExcludingMember(excluded) => member != *excluded,
+        }
+    }
 }
 
 impl<'a> GroupGovernancePublisher<'a> {
@@ -44,7 +82,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         signer_sk: &PrivateKey,
         op: GroupOp,
     ) -> EyreResult<Option<DeliveryReport>> {
-        self.sign_apply_and_publish_inner(ack_router, signer_sk, op, None)
+        self.sign_apply_and_publish_inner(ack_router, signer_sk, op, RotationPlan::None)
             .await
     }
 
@@ -107,7 +145,7 @@ impl<'a> GroupGovernancePublisher<'a> {
                 expected_group_state_hash,
                 expected_context_state_hashes,
             },
-            Some(removed_member),
+            RotationPlan::ExcludingMember(removed_member),
         )
         .await
     }
@@ -143,9 +181,40 @@ impl<'a> GroupGovernancePublisher<'a> {
             GroupOp::GroupKeyRotated {
                 departed: *departed,
             },
-            Some(departed),
+            RotationPlan::ExcludingMember(departed),
         )
         .await
+    }
+
+    /// Publish a device revocation and rotate the scope key in the same op.
+    ///
+    /// The rotation is what makes revocation mean anything: without it the
+    /// revoked device keeps the key it already holds and can go on reading
+    /// everything the group writes. Cutting off *authorship* alone leaves it a
+    /// silent reader.
+    ///
+    /// Unlike a member removal this excludes nobody by name. The revocation is
+    /// applied locally first, and `current_key_recipients` reads live bindings —
+    /// which already drop a revoked device — so recomputing the recipient list
+    /// after the apply naturally omits exactly that device and keeps the
+    /// account's other devices, who must not lose the key along with it.
+    ///
+    /// Admin-only, because the rotation sidecar is: peers accept a rotation only
+    /// from an admin at the op's cut. A self-service revocation therefore
+    /// withdraws authorship immediately but leaves the key rotation owed to an
+    /// admin — the device is locked out of writing at once, and out of reading
+    /// once someone with the authority rotates.
+    pub async fn sign_apply_and_publish_device_revocation(
+        &self,
+        ack_router: &AckRouter,
+        signer_sk: &PrivateKey,
+        op: GroupOp,
+    ) -> EyreResult<Option<DeliveryReport>> {
+        // Same fail-closed gate as a removal: never mint a key peers would reject.
+        self.ensure_rotation_is_publishable()?;
+
+        self.sign_apply_and_publish_inner(ack_router, signer_sk, op, RotationPlan::AllEntitled)
+            .await
     }
 
     async fn sign_apply_and_publish_inner(
@@ -153,7 +222,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         ack_router: &AckRouter,
         signer_sk: &PrivateKey,
         op: GroupOp,
-        removed_member: Option<&PublicKey>,
+        rotation: RotationPlan<'_>,
     ) -> EyreResult<Option<DeliveryReport>> {
         // Apply-FIRST, publish best-effort. `sign_apply_local_group_op_borsh`
         // below commits the local group-store mutation unconditionally; the
@@ -299,7 +368,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         //   blast radius) or flipping the subgroup to Restricted
         //   (the deferred Open→Restricted lifecycle work, which
         //   itself will mint a fresh subgroup key at flip time).
-        let key_rotation = if let Some(removed) = removed_member {
+        let key_rotation = if rotation.rotates() {
             if encrypting_group_id == self.group_id {
                 // Invariant: never STORE a key peers would reject. The rotation is
                 // accepted only from an admin of the group, checked against the
@@ -340,11 +409,22 @@ impl<'a> GroupGovernancePublisher<'a> {
                 // signer must be the same identity (the local per-group signing
                 // key used elsewhere can differ from the namespace identity).
                 let rotation_sender_sk = PrivateKey::from(namespace_identity.private_key);
-                Some(GroupKeyring::new(self.store, self.group_id).build_rotation(
-                    &new_group_key,
-                    &rotation_sender_sk,
-                    Some(removed),
-                )?)
+                let keyring = GroupKeyring::new(self.store, self.group_id);
+                // Build the recipient list here, where the reason for the
+                // exclusion is visible: the removed member must not receive the
+                // key they are being rotated out of.
+                // Filtering by `member` — not by recipient — is what makes the
+                // removed member's *devices* go with them. A device-addressed
+                // recipient carries no member key of its own, so dropping only
+                // the identity-addressed entry would leave their devices holding
+                // the fresh key.
+                let recipients: Vec<KeyRecipient> = keyring
+                    .current_key_recipients()?
+                    .into_iter()
+                    .filter(|entitled| rotation.keeps(entitled.member))
+                    .map(|entitled| entitled.recipient)
+                    .collect();
+                Some(keyring.build_rotation(&new_group_key, &rotation_sender_sk, &recipients)?)
             } else {
                 None
             }
