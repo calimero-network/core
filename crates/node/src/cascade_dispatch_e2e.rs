@@ -17,15 +17,15 @@
 //! defaults so the local apply runs and the cascade engine can be
 //! observed end-to-end without standing up a libp2p transport.
 
-use calimero_context::group_store::{
+use calimero_governance_store::{
     MembershipRepository, MetaRepository, MetadataRepository, NamespaceRepository,
     SigningKeysRepository, UpgradeLadderRepository, UpgradesRepository,
 };
 use std::time::Duration;
 
-use calimero_context::group_store::register_context_in_group;
 use calimero_context_client::group::UpgradeGroupRequest;
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::register_context_in_group;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};

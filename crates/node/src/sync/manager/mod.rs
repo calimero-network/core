@@ -2,7 +2,7 @@
 //!
 //! **Purpose**: Coordinates periodic syncs, selects peers, and delegates to protocols.
 //! **Strategy**: Try delta sync first, fallback to state sync on failure.
-use calimero_context::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
+use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -903,7 +903,7 @@ impl SyncManager {
     ) -> std::collections::BTreeSet<calimero_primitives::identity::PublicKey> {
         let store = self.context_client.datastore_handle().into_inner();
         let Ok(Some(group_id)) =
-            calimero_context::group_store::get_group_for_context(&store, context_id)
+            calimero_governance_store::get_group_for_context(&store, context_id)
         else {
             return std::collections::BTreeSet::new();
         };
@@ -943,7 +943,7 @@ impl SyncManager {
     ) -> Vec<(PeerId, GroupMemberRole)> {
         let store = self.context_client.datastore_handle().into_inner();
         let Ok(Some(group_id)) =
-            calimero_context::group_store::get_group_for_context(&store, context_id)
+            calimero_governance_store::get_group_for_context(&store, context_id)
         else {
             return Vec::new();
         };
@@ -1652,7 +1652,7 @@ impl SyncManager {
                 .and_then(|hosted| {
                     let store = self.context_client.datastore_handle().into_inner();
                     super::helpers::select_attributable_peer_identity(&hosted, |id| {
-                        calimero_context::group_store::is_currently_authorized_for_context(
+                        calimero_governance_store::is_currently_authorized_for_context(
                             &store,
                             &context_id,
                             id,
@@ -3181,7 +3181,7 @@ impl SyncManager {
             await_materialization_or_close(stream, deadline, MATERIALIZATION_POLL, || {
                 if !dialer_verified {
                     if let Some(group_id) =
-                        calimero_context::group_store::get_group_for_context(store, &context_id)?
+                        calimero_governance_store::get_group_for_context(store, &context_id)?
                     {
                         if self.peer_is_group_member(store, group_id, &their_identity)? {
                             dialer_verified = true;
@@ -3321,7 +3321,7 @@ impl SyncManager {
         let is_inherited_member = || -> eyre::Result<bool> {
             let store = self.context_client.datastore();
             let Some(group_id) =
-                calimero_context::group_store::get_group_for_context(store, &context_id)?
+                calimero_governance_store::get_group_for_context(store, &context_id)?
             else {
                 return Ok(false);
             };
@@ -3527,7 +3527,7 @@ impl SyncManager {
             self.handle_group_key_request(
                 *namespace_id,
                 *group_id,
-                calimero_context::group_store::KeyRequester {
+                calimero_governance_store::KeyRequester {
                     identity: *requester_public_key,
                     device: *requester_device,
                 },
@@ -3979,7 +3979,7 @@ pub(crate) fn pending_upgrade_stage_blob(
     store: &calimero_store::Store,
     context_id: &ContextId,
 ) -> Option<[u8; 32]> {
-    let group_id = calimero_context::group_store::get_group_for_context(store, context_id)
+    let group_id = calimero_governance_store::get_group_for_context(store, context_id)
         .ok()
         .flatten()?;
     let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
@@ -4023,7 +4023,7 @@ pub(crate) fn pending_upgrade_info(
         .ok()
         .flatten()?;
     let current_app = ctx_meta.application.application_id();
-    let group_id = calimero_context::group_store::get_group_for_context(store, context_id)
+    let group_id = calimero_governance_store::get_group_for_context(store, context_id)
         .ok()
         .flatten()?;
     let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
@@ -4154,8 +4154,8 @@ mod init_pop_gate_tests {
 mod pending_upgrade_tests {
     use std::sync::Arc;
 
-    use calimero_context::group_store::{register_context_in_group, MetaRepository};
     use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::{register_context_in_group, MetaRepository};
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::{ContextId, UpgradePolicy};
     use calimero_primitives::identity::PublicKey;

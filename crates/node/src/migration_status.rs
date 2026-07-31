@@ -17,7 +17,7 @@
 //! heartbeat has already been verified for signature AND namespace membership
 //! by the caller. The single legitimate caller is the receiver-side
 //! `network_event::namespace` dispatch, which calls
-//! `calimero_context::governance_broadcast::verify_migration_heartbeat`
+//! `calimero_governance_store::governance_broadcast::verify_migration_heartbeat`
 //! (sig + member-set check) BEFORE invoking `insert`. Putting verification
 //! inside `insert` would couple the cache to `&Store`, drag
 //! namespace-membership state into this module, and duplicate work since the
@@ -27,9 +27,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message};
-use calimero_context::group_store::NamespaceRepository;
 use calimero_context_client::group::MigrationFailureKind;
 use calimero_context_client::local_governance::{NamespaceTopicMsg, SignedMigrationHeartbeat};
+use calimero_governance_store::NamespaceRepository;
 use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::messages::MigrationStatusReport;
 use calimero_node_primitives::sync::BroadcastMessage;
@@ -377,7 +377,7 @@ fn namespace_tree_groups(
 ) -> Vec<calimero_context_config::types::ContextGroupId> {
     let mut groups = vec![*group_id];
     groups.extend(
-        calimero_context::group_store::NamespaceRepository::new(datastore)
+        calimero_governance_store::NamespaceRepository::new(datastore)
             .collect_descendants(group_id)
             .unwrap_or_default(),
     );
@@ -398,8 +398,8 @@ fn resolve_group_target_version(
     datastore: &Store,
     group_id: &calimero_context_config::types::ContextGroupId,
 ) -> u32 {
-    let upgrades = calimero_context::group_store::UpgradesRepository::new(datastore);
-    let namespaces = calimero_context::group_store::NamespaceRepository::new(datastore);
+    let upgrades = calimero_governance_store::UpgradesRepository::new(datastore);
+    let namespaces = calimero_governance_store::NamespaceRepository::new(datastore);
     let mut current = *group_id;
     for _ in 0..calimero_governance_store::MAX_NAMESPACE_DEPTH {
         if let Ok(Some(record)) = upgrades.load(&current) {
@@ -479,7 +479,7 @@ pub fn compute_namespace_migration_facts(
     for gid in &namespace_tree_groups(datastore, &root) {
         let target = resolve_group_target_version(datastore, gid);
         for context_id in
-            calimero_context::group_store::enumerate_group_contexts(datastore, gid, 0, usize::MAX)
+            calimero_governance_store::enumerate_group_contexts(datastore, gid, 0, usize::MAX)
                 .unwrap_or_default()
         {
             if let Ok(Some(entry)) =
@@ -858,7 +858,7 @@ impl MigrationEmitter {
             }
         };
 
-        let topic = calimero_context::governance_broadcast::ns_topic(ns_id.into());
+        let topic = calimero_governance_store::governance_broadcast::ns_topic(ns_id.into());
         // Wrap in the `BroadcastMessage::NamespaceGovernanceDelta` envelope
         // the receiver decodes on `ns/<id>` topics, then borsh the inner
         // `NamespaceTopicMsg::MigrationHeartbeat`. delta_id/parent_ids are
@@ -1019,7 +1019,7 @@ mod tests {
         // signed field, so flipping `residue_identity` after signing breaks it.
         //
         // NOTE: this is NOT the ingest gate. The actual receiver gate is
-        // `calimero_context::governance_broadcast::verify_migration_heartbeat`
+        // `calimero_governance_store::governance_broadcast::verify_migration_heartbeat`
         // (signature + cohort membership), exercised end-to-end in that crate's
         // `verify_migration_heartbeat_rejects_bad_signature` test — it needs a
         // `&Store` and namespace member-set, neither of which this pure cache
@@ -1244,8 +1244,8 @@ mod tests {
         // governance state. With no upgrade record the group is at the baseline
         // (`schema_version == 0`); once a record targets v2 the facts advertise
         // schema_version 2 — the value a rollup compares each member against.
-        use calimero_context::group_store::UpgradesRepository;
         use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::UpgradesRepository;
         use calimero_store::db::InMemoryDB;
         use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
         use std::sync::Arc;
@@ -1343,7 +1343,7 @@ mod tests {
                 ),
             )
             .expect("put ContextMeta");
-        calimero_context::group_store::register_context_in_group(store, group_id, &ctx.into())
+        calimero_governance_store::register_context_in_group(store, group_id, &ctx.into())
             .expect("register context in group");
     }
 
@@ -1355,8 +1355,8 @@ mod tests {
     /// counts toward `residue_auto` (its whole-root rebuild is still pending).
     #[test]
     fn facts_report_loaded_version_not_target_when_binary_behind() {
-        use calimero_context::group_store::UpgradesRepository;
         use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::UpgradesRepository;
         use calimero_store::db::InMemoryDB;
         use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
         use std::sync::Arc;
@@ -1406,8 +1406,8 @@ mod tests {
     /// "this member migrated" signal the rollup needs.
     #[test]
     fn facts_report_target_and_zero_residue_once_binary_swapped() {
-        use calimero_context::group_store::UpgradesRepository;
         use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::UpgradesRepository;
         use calimero_store::db::InMemoryDB;
         use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
         use std::sync::Arc;
@@ -1448,8 +1448,8 @@ mod tests {
     /// self-healing so a recovered member never produces a false `failed`.
     #[test]
     fn facts_report_failed_marker_only_while_context_below_target() {
-        use calimero_context::group_store::UpgradesRepository;
         use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::UpgradesRepository;
         use calimero_store::db::InMemoryDB;
         use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
         use std::sync::Arc;
@@ -1597,8 +1597,8 @@ mod tests {
     /// (the heartbeat reported `unknown` instead of `failed`).
     #[test]
     fn facts_enumerate_context_in_subgroup_and_surface_failure() {
-        use calimero_context::group_store::{NamespaceRepository, UpgradesRepository};
         use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::{NamespaceRepository, UpgradesRepository};
         use calimero_store::db::InMemoryDB;
         use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
         use std::sync::Arc;
@@ -1675,8 +1675,8 @@ mod tests {
     /// never read and the heartbeat reported success: the exact #37 failure.
     #[test]
     fn facts_resolve_target_from_subgroup_upgrade_record() {
-        use calimero_context::group_store::{NamespaceRepository, UpgradesRepository};
         use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::{NamespaceRepository, UpgradesRepository};
         use calimero_store::db::InMemoryDB;
         use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
         use std::sync::Arc;
@@ -1746,8 +1746,8 @@ mod tests {
     /// gated; only an unresolvable-target NoMigrationPath is honored.
     #[test]
     fn facts_surface_no_migration_path_when_target_unresolvable() {
-        use calimero_context::group_store::NamespaceRepository;
         use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::NamespaceRepository;
         use calimero_store::db::InMemoryDB;
         use std::sync::Arc;
 
@@ -1786,8 +1786,8 @@ mod tests {
     /// it suppressed (no false failed from a stale check-abort).
     #[test]
     fn facts_check_aborted_not_honored_when_target_unresolvable() {
-        use calimero_context::group_store::NamespaceRepository;
         use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::NamespaceRepository;
         use calimero_store::db::InMemoryDB;
         use std::sync::Arc;
 
@@ -1824,8 +1824,8 @@ mod tests {
     /// real facts (here: a stranded subgroup context's `NoMigrationPath`).
     #[test]
     fn self_migration_report_keys_local_identity_and_carries_failure() {
-        use calimero_context::group_store::{NamespaceRepository, UpgradesRepository};
         use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::{NamespaceRepository, UpgradesRepository};
         use calimero_store::db::InMemoryDB;
         use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
         use std::sync::Arc;

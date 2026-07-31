@@ -1,4 +1,4 @@
-use calimero_context::group_store::{MetadataRepository, NamespaceRepository};
+use calimero_governance_store::{MetadataRepository, NamespaceRepository};
 use std::sync::Arc;
 
 use axum::extract::Path;

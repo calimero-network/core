@@ -1,11 +1,11 @@
-use calimero_context::group_store::NamespaceRepository;
+use calimero_governance_store::NamespaceRepository;
 use std::sync::Arc;
 
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context::governance_broadcast::ObserveDelivery;
 use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_primitives::identity::PrivateKey;
 use calimero_server_primitives::admin::{ReparentGroupApiRequest, ReparentGroupApiResponse};
 use tracing::{error, info};
@@ -86,7 +86,7 @@ pub async fn handler(
         Ok(Some(p)) if p == new_parent_id,
     );
 
-    match calimero_context::group_store::sign_apply_and_publish_namespace_op(
+    match calimero_governance_store::sign_apply_and_publish_namespace_op(
         &state.store,
         &state.node_client,
         state.ctx_client.ack_router(),

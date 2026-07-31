@@ -87,7 +87,7 @@ pub(crate) fn authorize_delta_at_edge_projected(
     governance_position: Option<&calimero_context_config::types::GovernanceParentEdge>,
     resolve: impl FnOnce(calimero_context_config::types::ContextGroupId, &[[u8; 32]]) -> CutMembership,
 ) -> DeltaAuthOutcome {
-    let owning = match calimero_context::group_store::get_group_for_context(store, context_id) {
+    let owning = match calimero_governance_store::get_group_for_context(store, context_id) {
         Ok(owning) => owning,
         Err(err) => {
             tracing::warn!(

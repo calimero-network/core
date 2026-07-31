@@ -1271,14 +1271,17 @@ impl SyncManager {
         index: &[u8],
         schema: [u8; 32],
     ) -> Result<()> {
-        let record = calimero_context::group_store::AbsorbRecord::from_snapshot_entity(
+        let record = calimero_governance_store::AbsorbRecord::from_snapshot_entity(
             id,
             entry.to_vec(),
             index.to_vec(),
             schema,
         );
-        calimero_context::group_store::AbsorbRepository::new(self.context_client.datastore())
-            .save(&context_id, schema, &record)?;
+        calimero_governance_store::AbsorbRepository::new(self.context_client.datastore()).save(
+            &context_id,
+            schema,
+            &record,
+        )?;
         crate::node_metrics::record_delta_outcome("absorbed_snapshot_entity_future_schema");
         warn!(
             %context_id,
@@ -2081,7 +2084,7 @@ fn settle_snapshot_activation(
     context_id: ContextId,
     data_schema: Option<[u8; 32]>,
 ) -> Option<[u8; 32]> {
-    use calimero_context::group_store::{
+    use calimero_governance_store::{
         get_group_for_context, MetaRepository, NamespaceRepository, UpgradeLadderRepository,
     };
 
@@ -2739,8 +2742,8 @@ mod tests {
 
     #[test]
     fn settle_snapshot_activation_binds_to_group_app_key_and_clears_markers() {
-        use calimero_context::group_store::{register_context_in_group, MetaRepository};
         use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::{register_context_in_group, MetaRepository};
         use calimero_primitives::application::ApplicationId;
         use calimero_primitives::context::UpgradePolicy;
         use calimero_primitives::identity::PublicKey;
@@ -2815,8 +2818,8 @@ mod tests {
     /// recovered in the admin rollup promptly instead of lingering as `failed`.
     #[test]
     fn settle_snapshot_activation_returns_namespace_root_on_resync() {
-        use calimero_context::group_store::{register_context_in_group, MetaRepository};
         use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::{register_context_in_group, MetaRepository};
         use calimero_primitives::application::ApplicationId;
         use calimero_primitives::context::UpgradePolicy;
         use calimero_primitives::identity::PublicKey;
@@ -2886,8 +2889,8 @@ mod tests {
         // the synced state may be from a peer behind the target, and binding it
         // to the target would tell the lazy gate "up to date" over old-schema
         // state and silently skip the migration.
-        use calimero_context::group_store::{register_context_in_group, MetaRepository};
         use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::{register_context_in_group, MetaRepository};
         use calimero_primitives::application::ApplicationId;
         use calimero_primitives::context::UpgradePolicy;
         use calimero_primitives::identity::PublicKey;
@@ -2931,8 +2934,8 @@ mod tests {
         // group target. Settle must bind the marker to the schema the synced
         // data actually carried, not the target — otherwise the lazy gate would
         // treat old-schema state as up-to-date and silently skip the migration.
-        use calimero_context::group_store::{register_context_in_group, MetaRepository};
         use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::{register_context_in_group, MetaRepository};
         use calimero_primitives::application::ApplicationId;
         use calimero_primitives::context::UpgradePolicy;
         use calimero_primitives::identity::PublicKey;
@@ -2980,8 +2983,8 @@ mod tests {
         // Single-wasm group: the bound ApplicationId differs per version. After
         // a resync to the target schema, settle must advance ContextMeta's bound
         // id too — otherwise pending_upgrade_info (current != target) re-gates.
-        use calimero_context::group_store::{register_context_in_group, MetaRepository};
         use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::{register_context_in_group, MetaRepository};
         use calimero_primitives::application::ApplicationId;
         use calimero_primitives::context::UpgradePolicy;
         use calimero_primitives::identity::PublicKey;

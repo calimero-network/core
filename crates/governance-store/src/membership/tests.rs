@@ -1,11 +1,11 @@
-//! Tests for `group_store::membership::*`. Extracted from the monolithic
+//! Tests for `calimero_governance_store::membership::*`. Extracted from the monolithic
 //! `group_store/tests.rs` as part of issue #2306 (epic #2300).
 //!
 //! Test order is preserved from `tests.rs` to keep `git blame` useful;
 //! helpers that are only used by membership tests came along (e.g.
 //! `nest_for_test`). Helpers shared with non-membership tests
 //! (`test_store`, `test_group_id`, `test_meta`, `dummy_member_removed_op`)
-//! are imported from the parent `group_store::test_fixtures` module.
+//! are imported from the parent `calimero_governance_store::test_fixtures` module.
 
 use crate::{
     CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,

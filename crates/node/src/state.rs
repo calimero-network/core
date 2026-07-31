@@ -140,7 +140,7 @@ pub(crate) struct NodeState {
     /// passed). Consumed by sync-peer selection to preferentially target
     /// peers in the trusted-anchor set (`{Owner} ∪ {Admins} ∪
     /// {ReadOnlyTee}` — see
-    /// `calimero_context::group_store::trusted_anchors_for_group`).
+    /// `calimero_governance_store::trusted_anchors_for_group`).
     ///
     /// **Trust model**: entries reflect identities a peer has *proven*
     /// to control via signed-and-applied messages — spoofing is bounded

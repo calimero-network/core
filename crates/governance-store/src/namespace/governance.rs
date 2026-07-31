@@ -902,7 +902,7 @@ impl<'a> NamespaceGovernance<'a> {
     /// (PR #2473 finding 3 / #2474) is closed: a non-owner KeyDelivery can no
     /// longer pin the wrong admin.
     // `pub(crate)` (not private) so the repair/idempotency invariant below is
-    // directly exercisable from `group_store::tests` without driving a full
+    // directly exercisable from `calimero_governance_store::tests` without driving a full
     // `KeyDelivery` apply; it is not part of any published surface.
     pub(crate) fn seed_bootstrap_admin_if_absent(
         &self,

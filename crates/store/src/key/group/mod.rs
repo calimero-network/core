@@ -38,16 +38,12 @@ pub const GROUP_MEMBER_CAPABILITY_PREFIX: u8 = 0x26;
 pub const GROUP_DEFAULT_CAPS_PREFIX: u8 = 0x29;
 pub const GROUP_SUBGROUP_VIS_PREFIX: u8 = 0x2A;
 // 0x2B retired (was GROUP_CONTEXT_LAST_MIGRATION, pre-v2 migration markers).
-/// Legacy single-`u64` applied-nonce high-water mark per `(group_id, signer)`.
-/// Superseded by [`GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX`]; retained read-only so
-/// pre-window databases migrate their floor on first load. See
+// 0x2C retired (was GROUP_LOCAL_GOV_NONCE, the pre-window single-`u64`
+// applied-nonce high-water mark).
+/// Applied-nonce window per `(group_id, signer)` — contiguous floor plus the
+/// sparse above-floor set — serialized as ONE value so it is written with a
+/// single atomic `put` (no cross-key crash window). See
 /// `calimero-governance-store::nonce_window`.
-pub const GROUP_LOCAL_GOV_NONCE_PREFIX: u8 = 0x2C;
-/// Full applied-nonce window per `(group_id, signer)` — contiguous floor plus
-/// the sparse above-floor set — serialized as ONE value so it is written with a
-/// single atomic `put` (no cross-key crash window). Authoritative; takes
-/// precedence over the legacy [`GROUP_LOCAL_GOV_NONCE_PREFIX`] floor on load.
-/// See `calimero-governance-store::nonce_window`.
 pub const GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX: u8 = 0x3C;
 /// Per-group upgrade ladder: the ordered upgrade targets the group has moved
 /// through, captured as fold state when an upgrade op advances
@@ -170,62 +166,6 @@ impl Debug for GroupMember {
         f.debug_struct("GroupMember")
             .field("group_id", &self.group_id())
             .field("identity", &self.identity())
-            .finish()
-    }
-}
-
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupLocalGovNonce(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
-
-impl GroupLocalGovNonce {
-    #[must_use]
-    pub fn new(group_id: [u8; 32], signer: PrimitivePublicKey) -> Self {
-        Self(Key(GenericArray::from([GROUP_LOCAL_GOV_NONCE_PREFIX])
-            .concat(GenericArray::from(group_id))
-            .concat(GenericArray::from(*signer))))
-    }
-
-    #[must_use]
-    pub fn group_id(&self) -> [u8; 32] {
-        let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
-        id
-    }
-
-    #[must_use]
-    pub fn signer(&self) -> PrimitivePublicKey {
-        let mut pk = [0; 32];
-        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
-        pk.into()
-    }
-}
-
-impl AsKeyParts for GroupLocalGovNonce {
-    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
-
-    fn column() -> Column {
-        Column::Group
-    }
-
-    fn as_key(&self) -> &Key<Self::Components> {
-        &self.0
-    }
-}
-
-impl FromKeyParts for GroupLocalGovNonce {
-    type Error = Infallible;
-
-    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
-        Ok(Self(parts))
-    }
-}
-
-impl Debug for GroupLocalGovNonce {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GroupLocalGovNonce")
-            .field("group_id", &self.group_id())
-            .field("signer", &self.signer())
             .finish()
     }
 }
@@ -3249,7 +3189,6 @@ mod tests {
             GROUP_MEMBER_CAPABILITY_PREFIX,
             GROUP_DEFAULT_CAPS_PREFIX,
             GROUP_SUBGROUP_VIS_PREFIX,
-            GROUP_LOCAL_GOV_NONCE_PREFIX,
             GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX,
             GROUP_UPGRADE_LADDER_PREFIX,
             GROUP_MEMBER_METADATA_PREFIX,

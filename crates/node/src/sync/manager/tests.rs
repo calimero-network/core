@@ -232,8 +232,8 @@ fn test_max_depth_calculation() {
 mod governance_backfill_trigger {
     use std::sync::Arc;
 
-    use calimero_context::group_store::{register_context_in_group, NamespaceRepository};
     use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::{register_context_in_group, NamespaceRepository};
     use calimero_primitives::context::ContextId;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
@@ -338,11 +338,11 @@ mod governance_backfill_trigger {
 mod key_recovery_trigger {
     use std::sync::Arc;
 
-    use calimero_context::group_store::{
-        namespace_groups_awaiting_key, GroupKeyring, NamespaceOpLogService,
-    };
     use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
     use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::{
+        namespace_groups_awaiting_key, GroupKeyring, NamespaceOpLogService,
+    };
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
@@ -414,7 +414,7 @@ mod key_recovery_trigger {
     /// in — so recovery fires with no buffered op and no manual re-join.
     #[test]
     fn keyless_member_surfaces_for_recovery_without_any_buffered_op() {
-        use calimero_context::group_store::{
+        use calimero_governance_store::{
             namespace_groups_member_but_keyless, MembershipRepository, NamespaceRepository,
         };
         use calimero_primitives::context::GroupMemberRole;

@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
-use calimero_context::group_store::{apply_local_signed_group_op, get_local_gov_nonce};
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::group::{CreateGroupRequest, SetMemberAutoFollowRequest};
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::{apply_local_signed_group_op, get_local_gov_nonce};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::messages::{IdentTopic, Message, MessageId, NetworkEvent};
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
@@ -65,10 +65,10 @@ async fn apply_signed_group_op_via_context_client() {
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 
-    calimero_context::group_store::MetaRepository::new(&node.store)
+    calimero_governance_store::MetaRepository::new(&node.store)
         .save(&gid, &sample_meta(admin_pk))
         .expect("save_group_meta");
-    calimero_context::group_store::MembershipRepository::new(&node.store)
+    calimero_governance_store::MembershipRepository::new(&node.store)
         .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
         .expect("add admin");
 
@@ -97,7 +97,7 @@ async fn apply_signed_group_op_via_context_client() {
     }
 
     assert!(
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .is_member(&gid, &new_member)
             .expect("check_group_membership"),
         "member should be present after apply_signed_group_op"
@@ -128,7 +128,7 @@ async fn apply_signed_group_op_via_context_client() {
 /// actor (`mesh_peer_count_for_namespace`) — the apply-path admin-or-self
 /// bail and the apply itself live inside that block. Happy-path apply
 /// semantics and the admin-or-self rule are exhaustively covered by
-/// `group_store::tests::auto_follow_tests` (12 cases including admin-set,
+/// `calimero_governance_store::tests::auto_follow_tests` (12 cases including admin-set,
 /// self-set, non-admin-rejected, and non-member-target variants).
 #[tokio::test]
 #[serial(boot_test_node)]
@@ -142,19 +142,19 @@ async fn set_member_auto_follow_handler_error_paths() {
     let alice_sk = PrivateKey::random(&mut rng);
     let stranger = PrivateKey::random(&mut rng).public_key();
 
-    calimero_context::group_store::MetaRepository::new(&node.store)
+    calimero_governance_store::MetaRepository::new(&node.store)
         .save(&gid, &sample_meta(admin_sk.public_key()))
         .unwrap();
-    calimero_context::group_store::MembershipRepository::new(&node.store)
+    calimero_governance_store::MembershipRepository::new(&node.store)
         .add_member(&gid, &admin_sk.public_key(), GroupMemberRole::Admin)
         .unwrap();
-    calimero_context::group_store::MembershipRepository::new(&node.store)
+    calimero_governance_store::MembershipRepository::new(&node.store)
         .add_member(&gid, &alice_sk.public_key(), GroupMemberRole::Member)
         .unwrap();
 
     // Admin needs a signing key registered so preflight can resolve one
     // when admin acts as requester.
-    calimero_context::group_store::SigningKeysRepository::new(&node.store)
+    calimero_governance_store::SigningKeysRepository::new(&node.store)
         .store_key(&gid, &admin_sk.public_key(), admin_sk.as_bytes())
         .unwrap();
 
@@ -199,7 +199,7 @@ async fn set_member_auto_follow_handler_error_paths() {
     // Alice's flags remain at the default produced by `add_group_member`
     // — neither failed call mutated her row. The default is
     // `{ contexts: true, subgroups: false }` per #2422.
-    let alice_row = calimero_context::group_store::MembershipRepository::new(&node.store)
+    let alice_row = calimero_governance_store::MembershipRepository::new(&node.store)
         .member_value(&gid, &alice_sk.public_key())
         .unwrap()
         .expect("alice row");
@@ -314,10 +314,10 @@ fn provision_tee_owner_with_sk(
     let owner_sk = PrivateKey::random(rng);
     let owner_pk = owner_sk.public_key();
 
-    calimero_context::group_store::MetaRepository::new(&node.store)
+    calimero_governance_store::MetaRepository::new(&node.store)
         .save(gid, &sample_meta(owner_pk))
         .expect("save_group_meta");
-    calimero_context::group_store::MembershipRepository::new(&node.store)
+    calimero_governance_store::MembershipRepository::new(&node.store)
         .add_member(gid, &owner_pk, GroupMemberRole::Admin)
         .expect("add owner admin");
 
@@ -330,7 +330,7 @@ fn provision_tee_owner_with_sk(
     // production and a root TEE node would (incorrectly) fail to read Open
     // subgroups. `add_member` reads these defaults at add time, so it must be
     // set before any non-admin member is admitted.
-    calimero_context::group_store::CapabilitiesRepository::new(&node.store)
+    calimero_governance_store::CapabilitiesRepository::new(&node.store)
         .set_default_capabilities(
             gid,
             calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
@@ -340,7 +340,7 @@ fn provision_tee_owner_with_sk(
     // The namespace identity is what `admit_tee_node` uses as the verifier
     // identity AND signing key. Without it the handler bails with
     // "node has no configured group identity for TEE admission".
-    calimero_context::group_store::NamespaceRepository::new(&node.store)
+    calimero_governance_store::NamespaceRepository::new(&node.store)
         .store_identity(gid, &owner_pk, owner_sk.as_bytes(), &[0u8; 32])
         .expect("store_namespace_identity");
 
@@ -563,13 +563,13 @@ async fn ns_announce_admits_announcer_as_read_only_tee_member() {
 
     // Sanity: only the owner is a member before the announce.
     assert_eq!(
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .count(&gid)
             .expect("count"),
         1
     );
     assert!(
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .is_member(&gid, &owner_pk)
             .expect("owner membership"),
         "owner must be the sole member before the announce"
@@ -598,7 +598,7 @@ async fn ns_announce_admits_announcer_as_read_only_tee_member() {
         .expect("deliver NetworkEvent to node actor");
 
     let admitted = wait_until(|| {
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .member_value(&gid, &announcer_pk)
             .ok()
             .flatten()
@@ -612,7 +612,7 @@ async fn ns_announce_admits_announcer_as_read_only_tee_member() {
         "announcer must be admitted as a ReadOnlyTee member after a TeeAttestationAnnounce on the ns/ topic"
     );
     assert_eq!(
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .count(&gid)
             .expect("count after admit"),
         2,
@@ -660,7 +660,7 @@ async fn root_admitted_tee_is_member_of_open_subgroup() {
         .expect("deliver announce");
     assert!(
         wait_until(
-            || calimero_context::group_store::MembershipRepository::new(&node.store)
+            || calimero_governance_store::MembershipRepository::new(&node.store)
                 .is_member(&ns_gid, &tee_pk)
                 .unwrap_or(false)
         )
@@ -681,7 +681,7 @@ async fn root_admitted_tee_is_member_of_open_subgroup() {
 
     // Sanity: the subgroup chain to the namespace is genuinely Open.
     assert!(
-        calimero_context::group_store::CapabilitiesRepository::new(&node.store)
+        calimero_governance_store::CapabilitiesRepository::new(&node.store)
             .is_open_chain_to_namespace(&open_sub, &ns_gid)
             .expect("is_open_chain_to_namespace"),
         "the created subgroup must be Open all the way to the namespace root"
@@ -690,13 +690,13 @@ async fn root_admitted_tee_is_member_of_open_subgroup() {
     // 3) The root TEE node must be an inherited member of the Open subgroup
     //    WITHOUT any direct row in it.
     assert!(
-        !calimero_context::group_store::MembershipRepository::new(&node.store)
+        !calimero_governance_store::MembershipRepository::new(&node.store)
             .has_direct_member(&open_sub, &tee_pk)
             .unwrap(),
         "no direct row expected in the Open subgroup"
     );
     assert!(
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .is_member(&open_sub, &tee_pk)
             .unwrap(),
         "root TEE node must be an inherited member of the Open subgroup \
@@ -753,7 +753,7 @@ async fn root_admitted_tee_auto_follows_open_subgroup_context() {
         .expect("deliver announce");
     assert!(
         wait_until(
-            || calimero_context::group_store::MembershipRepository::new(&node.store)
+            || calimero_governance_store::MembershipRepository::new(&node.store)
                 .is_member(&ns_gid, &tee_pk)
                 .unwrap_or(false)
         )
@@ -773,7 +773,7 @@ async fn root_admitted_tee_auto_follows_open_subgroup_context() {
     //    an inherited member of it with no direct row (proven by the sibling test).
     let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
     assert!(
-        !calimero_context::group_store::MembershipRepository::new(&node.store)
+        !calimero_governance_store::MembershipRepository::new(&node.store)
             .has_direct_member(&open_sub, &tee_pk)
             .unwrap(),
         "the TEE must have NO direct row in the Open subgroup — the inheritance \
@@ -791,7 +791,7 @@ async fn root_admitted_tee_auto_follows_open_subgroup_context() {
     //    exactly the path Task 1 fixed. The TEE row carries the default
     //    `auto_follow.contexts = true` (set by `add_member` at admission), which
     //    the inheritance fall-through must honor via the root anchor.
-    calimero_context::group_store::NamespaceRepository::new(&node.store)
+    calimero_governance_store::NamespaceRepository::new(&node.store)
         .store_identity(&ns_gid, &tee_pk, tee_sk.as_bytes(), &[0u8; 32])
         .expect("re-point namespace identity to the TEE");
 
@@ -840,7 +840,7 @@ async fn root_admitted_tee_auto_follows_open_subgroup_context() {
     //    `OpEvent::ContextRegistered` the apply path queues
     //    (`ops/group/context_registered.rs`).
     let context_id = calimero_primitives::context::ContextId::from([0xC0u8; 32]);
-    calimero_context::group_store::register_context_in_group(&node.store, &open_sub, &context_id)
+    calimero_governance_store::register_context_in_group(&node.store, &open_sub, &context_id)
         .expect("register context -> open subgroup");
 
     // 7) The node — now acting as the inherited-only TEE member of the Open
@@ -956,7 +956,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
         .expect("deliver announce");
     assert!(
         wait_until(|| {
-            calimero_context::group_store::MembershipRepository::new(&node.store)
+            calimero_governance_store::MembershipRepository::new(&node.store)
                 .member_value(&ns_gid, &tee_pk)
                 .ok()
                 .flatten()
@@ -976,7 +976,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     //    root TEE inherits into it with NO direct row.
     let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
     assert!(
-        !calimero_context::group_store::MembershipRepository::new(&node.store)
+        !calimero_governance_store::MembershipRepository::new(&node.store)
             .has_direct_member(&open_sub, &tee_pk)
             .unwrap(),
         "T must have NO direct row in the Open subgroup — the inheritance \
@@ -997,38 +997,38 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     let regular = PrivateKey::random(&mut rng).public_key();
     let restricted_sub = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
 
-    calimero_context::group_store::NamespaceRepository::new(&node.store)
+    calimero_governance_store::NamespaceRepository::new(&node.store)
         .nest(&ns_gid, &restricted_sub)
         .expect("nest restricted_sub under root");
-    calimero_context::group_store::CapabilitiesRepository::new(&node.store)
+    calimero_governance_store::CapabilitiesRepository::new(&node.store)
         .set_subgroup_visibility(
             &restricted_sub,
             calimero_context_config::VisibilityMode::Restricted,
         )
         .expect("set restricted visibility");
-    calimero_context::group_store::MetaRepository::new(&node.store)
+    calimero_governance_store::MetaRepository::new(&node.store)
         .save(&restricted_sub, &sample_meta(restricted_admin_m))
         .expect("save restricted_sub meta (admin = M)");
-    calimero_context::group_store::MembershipRepository::new(&node.store)
+    calimero_governance_store::MembershipRepository::new(&node.store)
         .add_member(&restricted_sub, &restricted_admin_m, GroupMemberRole::Admin)
         .expect("add M as restricted_sub admin");
-    calimero_context::group_store::MembershipRepository::new(&node.store)
+    calimero_governance_store::MembershipRepository::new(&node.store)
         .add_member(&restricted_sub, &tee_pk, GroupMemberRole::ReadOnlyTee)
         .expect("add T as ReadOnlyTee in restricted_sub");
-    calimero_context::group_store::MembershipRepository::new(&node.store)
+    calimero_governance_store::MembershipRepository::new(&node.store)
         .add_member(&restricted_sub, &regular, GroupMemberRole::Member)
         .expect("add regular Member in restricted_sub");
 
     // Sanity: the seeded rows are present before any removal.
     assert_eq!(
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .role_of(&restricted_sub, &tee_pk)
             .unwrap(),
         Some(GroupMemberRole::ReadOnlyTee),
         "T must be a direct ReadOnlyTee member of restricted_sub before removal"
     );
     assert_eq!(
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .role_of(&restricted_sub, &regular)
             .unwrap(),
         Some(GroupMemberRole::Member),
@@ -1042,7 +1042,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     // Re-point THIS node's namespace identity to `T` so the auto-follow joiner
     // is the inherited-only TEE (root anchor, no open_sub row) — the path Fix B
     // changed. (See `root_admitted_tee_auto_follows_open_subgroup_context`.)
-    calimero_context::group_store::NamespaceRepository::new(&node.store)
+    calimero_governance_store::NamespaceRepository::new(&node.store)
         .store_identity(&ns_gid, &tee_pk, tee_sk.as_bytes(), &[0u8; 32])
         .expect("re-point namespace identity to T");
 
@@ -1079,7 +1079,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     // Register a context in the Open subgroup and drive the production
     // auto-follow trigger; assert `T` replicates it (durable `ContextMeta`).
     let context_id = calimero_primitives::context::ContextId::from([0xC1u8; 32]);
-    calimero_context::group_store::register_context_in_group(&node.store, &open_sub, &context_id)
+    calimero_governance_store::register_context_in_group(&node.store, &open_sub, &context_id)
         .expect("register context -> open subgroup");
 
     let replicating = wait_until(|| {
@@ -1121,7 +1121,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     // cascade test: the signed `expected_group_state_hash` is the pre-removal
     // hash (divergence is a non-fatal detection signal; the op still applies and
     // the cascade still runs).
-    let pre_hash = calimero_context::group_store::MetaRepository::new(&node.store)
+    let pre_hash = calimero_governance_store::MetaRepository::new(&node.store)
         .compute_state_hash(&ns_gid)
         .expect("compute pre-removal state hash");
     // The owner already signed ops (the policy set + the TEE admission via
@@ -1149,14 +1149,14 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     // are both gone (the cascade crossed into the Restricted subgroup whose
     // admin is M ≠ O).
     assert_eq!(
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .role_of(&ns_gid, &tee_pk)
             .unwrap(),
         None,
         "Fix A: T's root row must be removed"
     );
     assert_eq!(
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .role_of(&restricted_sub, &tee_pk)
             .unwrap(),
         None,
@@ -1165,7 +1165,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     );
     // The cascade deny-lists T in the subgroup.
     assert!(
-        calimero_context::group_store::DenyListRepository::new(&node.store)
+        calimero_governance_store::DenyListRepository::new(&node.store)
             .is_denied(&restricted_sub, &tee_pk)
             .unwrap(),
         "Fix A: cascade must deny-list T in the Restricted subgroup"
@@ -1174,7 +1174,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     // Scope guard: the regular Member is STILL a member of restricted_sub —
     // the cascade is TEE-scoped, not a blanket subtree wipe.
     assert_eq!(
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .role_of(&restricted_sub, &regular)
             .unwrap(),
         Some(GroupMemberRole::Member),
@@ -1254,7 +1254,7 @@ async fn restricted_subgroup_created_admits_existing_tee_member() {
         .expect("deliver announce");
 
     let admitted_root = wait_until(|| {
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .member_value(&ns_gid, &tee_pk)
             .ok()
             .flatten()
@@ -1288,7 +1288,7 @@ async fn restricted_subgroup_created_admits_existing_tee_member() {
     // 3) The subscriber must admit the existing root TEE member into the new
     //    Restricted subgroup.
     let admitted_sub = wait_until(|| {
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .member_value(&sub_gid, &tee_pk)
             .ok()
             .flatten()
@@ -1304,7 +1304,7 @@ async fn restricted_subgroup_created_admits_existing_tee_member() {
     // 4) And the creator node must hold the subgroup key (minted at create time
     //    and used by `admit_tee_node` to deliver to the admitted member).
     assert!(
-        calimero_context::group_store::GroupKeyring::new(&node.store, sub_gid)
+        calimero_governance_store::GroupKeyring::new(&node.store, sub_gid)
             .load_current_key()
             .expect("load key")
             .is_some(),
@@ -1368,7 +1368,7 @@ async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
         .expect("deliver announce");
     assert!(
         wait_until(
-            || calimero_context::group_store::MembershipRepository::new(&node.store)
+            || calimero_governance_store::MembershipRepository::new(&node.store)
                 .is_member(&ns_gid, &tee_pk)
                 .unwrap_or(false)
         )
@@ -1395,7 +1395,7 @@ async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
     // Sanity: the subgroup really is Open at the chain level (the property the
     // subscriber checks).
     assert!(
-        calimero_context::group_store::CapabilitiesRepository::new(&node.store)
+        calimero_governance_store::CapabilitiesRepository::new(&node.store)
             .is_open_chain_to_namespace(&open_sub, &ns_gid)
             .expect("is_open_chain_to_namespace"),
         "born-Open subgroup must form an Open chain to the namespace root \
@@ -1408,7 +1408,7 @@ async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
     //    written, this would observe it.
     for _ in 0..20 {
         assert!(
-            !calimero_context::group_store::MembershipRepository::new(&node.store)
+            !calimero_governance_store::MembershipRepository::new(&node.store)
                 .has_direct_member(&open_sub, &tee_pk)
                 .unwrap(),
             "tee-r2: the TEE must have NO direct membership row in a born-Open \
@@ -1418,7 +1418,7 @@ async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
         sleep(Duration::from_millis(25)).await;
     }
     assert_eq!(
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .role_of(&open_sub, &tee_pk)
             .expect("role_of"),
         None,
@@ -1429,7 +1429,7 @@ async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
     //    identity to the root-admitted TEE (inherited-only member of the
     //    subgroup), bind the auto-follow handler, register a context in the
     //    born-Open subgroup, and assert the TEE auto-joins it via inheritance.
-    calimero_context::group_store::NamespaceRepository::new(&node.store)
+    calimero_governance_store::NamespaceRepository::new(&node.store)
         .store_identity(&ns_gid, &tee_pk, tee_sk.as_bytes(), &[0u8; 32])
         .expect("re-point namespace identity to the TEE");
 
@@ -1463,7 +1463,7 @@ async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
         .expect("seed stub application meta");
 
     let context_id = calimero_primitives::context::ContextId::from([0xC1u8; 32]);
-    calimero_context::group_store::register_context_in_group(&node.store, &open_sub, &context_id)
+    calimero_governance_store::register_context_in_group(&node.store, &open_sub, &context_id)
         .expect("register context -> born-open subgroup");
 
     let replicating = wait_until(|| {
@@ -1521,7 +1521,7 @@ async fn tee_admitted_after_restricted_subgroup_exists_is_fanned_in() {
 
     // Sanity: the subgroup key is held on this node (the fan-in delivers under it).
     assert!(
-        calimero_context::group_store::GroupKeyring::new(&node.store, sub_gid)
+        calimero_governance_store::GroupKeyring::new(&node.store, sub_gid)
             .load_current_key()
             .expect("load key")
             .is_some(),
@@ -1563,7 +1563,7 @@ async fn tee_admitted_after_restricted_subgroup_exists_is_fanned_in() {
     //    subgroup (Task 4: OpEvent::TeeMemberAdmitted at root →
     //    handle_new_tee_member → admit into descendants we hold keys for).
     let fanned_in = wait_until(|| {
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .member_value(&sub_gid, &tee_pk)
             .ok()
             .flatten()
@@ -1578,7 +1578,7 @@ async fn tee_admitted_after_restricted_subgroup_exists_is_fanned_in() {
 
     // 5) The creator node still holds the subgroup key (fan-in delivers under it).
     assert!(
-        calimero_context::group_store::GroupKeyring::new(&node.store, sub_gid)
+        calimero_governance_store::GroupKeyring::new(&node.store, sub_gid)
             .load_current_key()
             .expect("load key")
             .is_some(),
@@ -1626,12 +1626,12 @@ async fn tee_admitted_after_restricted_subgroup_exists_is_fanned_in() {
 #[tokio::test]
 #[serial(boot_test_node)]
 async fn restricted_ctx_redriven_after_group_created() {
-    use calimero_context::group_store::{
-        apply_signed_namespace_op, get_group_for_context, GroupKeyring, MembershipRepository,
-        MetaRepository, NamespaceRepository,
-    };
     use calimero_context_client::local_governance::{
         GroupOp, NamespaceOp, RootOp, SignedNamespaceOp,
+    };
+    use calimero_governance_store::{
+        apply_signed_namespace_op, get_group_for_context, GroupKeyring, MembershipRepository,
+        MetaRepository, NamespaceRepository,
     };
 
     let store = Store::new(Arc::new(InMemoryDB::owned()));
@@ -1875,12 +1875,12 @@ async fn restricted_ctx_redriven_after_group_created() {
 #[tokio::test]
 #[serial(boot_test_node)]
 async fn open_ctx_redriven_after_group_created_via_namespace_key() {
-    use calimero_context::group_store::{
-        apply_signed_namespace_op, get_group_for_context, GroupKeyring, MembershipRepository,
-        MetaRepository, NamespaceRepository,
-    };
     use calimero_context_client::local_governance::{
         GroupOp, NamespaceOp, RootOp, SignedNamespaceOp,
+    };
+    use calimero_governance_store::{
+        apply_signed_namespace_op, get_group_for_context, GroupKeyring, MembershipRepository,
+        MetaRepository, NamespaceRepository,
     };
 
     let store = Store::new(Arc::new(InMemoryDB::owned()));
@@ -2092,7 +2092,7 @@ async fn group_topic_announce_is_not_routed_as_namespace_admission() {
     // So the moment we get here, the #2096-shape regression (synchronous
     // mis-routing) is already decided — no member row can exist.
     assert!(
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .member_value(&gid, &announcer_pk)
             .ok()
             .flatten()
@@ -2105,7 +2105,7 @@ async fn group_topic_announce_is_not_routed_as_namespace_admission() {
     // row, then assert none did. (There is no positive signal to await for a
     // correctly-ignored announce without adding a test hook to production code.)
     let leaked = wait_until(|| {
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .member_value(&gid, &announcer_pk)
             .ok()
             .flatten()
@@ -2118,7 +2118,7 @@ async fn group_topic_announce_is_not_routed_as_namespace_admission() {
         "a TeeAttestationAnnounce on a group/ topic must not be routed into namespace admission"
     );
     assert_eq!(
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .count(&gid)
             .expect("count"),
         1,
@@ -2218,12 +2218,12 @@ async fn group_topic_announce_is_not_routed_as_namespace_admission() {
 #[tokio::test]
 #[serial(boot_test_node)]
 async fn tee_matrix_restricted_late_join() {
-    use calimero_context::group_store::{
-        apply_signed_namespace_op, get_group_for_context, GroupKeyring, MembershipRepository,
-        MetaRepository, NamespaceRepository,
-    };
     use calimero_context_client::local_governance::{
         GroupOp, NamespaceOp, RootOp, SignedNamespaceOp,
+    };
+    use calimero_governance_store::{
+        apply_signed_namespace_op, get_group_for_context, GroupKeyring, MembershipRepository,
+        MetaRepository, NamespaceRepository,
     };
 
     let store = Store::new(Arc::new(InMemoryDB::owned()));
@@ -2426,7 +2426,7 @@ async fn tee_matrix_restricted_join_with_created() {
     // (b) CREATE the Restricted subgroup first (mints + holds its key).
     let sub_gid = create_restricted_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
     assert!(
-        calimero_context::group_store::GroupKeyring::new(&node.store, sub_gid)
+        calimero_governance_store::GroupKeyring::new(&node.store, sub_gid)
             .load_current_key()
             .expect("load key")
             .is_some(),
@@ -2455,7 +2455,7 @@ async fn tee_matrix_restricted_join_with_created() {
 
     // ---- MEMBERSHIP: the TEE is fanned into the pre-created subgroup ---------
     let fanned_in = wait_until(|| {
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .member_value(&sub_gid, &tee_pk)
             .ok()
             .flatten()
@@ -2474,7 +2474,7 @@ async fn tee_matrix_restricted_join_with_created() {
     // emits OpEvent::ContextRegistered — the auto-follow Join trigger.
     let mut events = calimero_governance_store::op_events::subscribe();
     let context_id = calimero_primitives::context::ContextId::from([0xCBu8; 32]);
-    calimero_context::group_store::register_context_in_group(&node.store, &sub_gid, &context_id)
+    calimero_governance_store::register_context_in_group(&node.store, &sub_gid, &context_id)
         .expect("register context -> restricted subgroup");
     // `register_context_in_group` only writes the mapping; emit the production
     // trigger event the apply path would queue so the auto-follow Join decision
@@ -2488,7 +2488,7 @@ async fn tee_matrix_restricted_join_with_created() {
 
     // ---- REPLICATION: the context is registered/known on this node ----------
     assert_eq!(
-        calimero_context::group_store::get_group_for_context(&node.store, &context_id)
+        calimero_governance_store::get_group_for_context(&node.store, &context_id)
             .expect("get_group_for_context"),
         Some(sub_gid),
         "join-with-created Restricted: the post-admission context must be \
@@ -2541,7 +2541,7 @@ async fn drive_open_auto_follow_replication(
     // The auto-follow gate and `join_context` resolve the joiner from the
     // node's namespace identity; point it at the inherited-only TEE so the
     // inheritance fall-through (root anchor, no subgroup row) is exercised.
-    calimero_context::group_store::NamespaceRepository::new(&node.store)
+    calimero_governance_store::NamespaceRepository::new(&node.store)
         .store_identity(ns_gid, tee_pk, tee_sk.as_bytes(), &[0u8; 32])
         .expect("re-point namespace identity to the TEE");
 
@@ -2573,7 +2573,7 @@ async fn drive_open_auto_follow_replication(
         )
         .expect("seed stub application meta");
 
-    calimero_context::group_store::register_context_in_group(&node.store, open_sub, &context_id)
+    calimero_governance_store::register_context_in_group(&node.store, open_sub, &context_id)
         .expect("register context -> open subgroup");
 
     wait_until(|| {
@@ -2619,16 +2619,16 @@ async fn tee_matrix_open_late_join() {
     // before any TEE is admitted.
     let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
     assert!(
-        calimero_context::group_store::CapabilitiesRepository::new(&node.store)
+        calimero_governance_store::CapabilitiesRepository::new(&node.store)
             .is_open_chain_to_namespace(&open_sub, &ns_gid)
             .expect("is_open_chain_to_namespace"),
         "the created subgroup must be Open all the way to the namespace root"
     );
     let context_id = calimero_primitives::context::ContextId::from([0xCDu8; 32]);
-    calimero_context::group_store::register_context_in_group(&node.store, &open_sub, &context_id)
+    calimero_governance_store::register_context_in_group(&node.store, &open_sub, &context_id)
         .expect("pre-register context -> open subgroup (late-join precondition)");
     assert_eq!(
-        calimero_context::group_store::get_group_for_context(&node.store, &context_id)
+        calimero_governance_store::get_group_for_context(&node.store, &context_id)
             .expect("get_group_for_context"),
         Some(open_sub),
         "the context must be registered to the Open subgroup before admission"
@@ -2654,7 +2654,7 @@ async fn tee_matrix_open_late_join() {
         .expect("deliver announce");
     assert!(
         wait_until(
-            || calimero_context::group_store::MembershipRepository::new(&node.store)
+            || calimero_governance_store::MembershipRepository::new(&node.store)
                 .is_member(&ns_gid, &tee_pk)
                 .unwrap_or(false)
         )
@@ -2664,13 +2664,13 @@ async fn tee_matrix_open_late_join() {
 
     // ---- MEMBERSHIP: inherited member of the Open subgroup, no direct row ----
     assert!(
-        !calimero_context::group_store::MembershipRepository::new(&node.store)
+        !calimero_governance_store::MembershipRepository::new(&node.store)
             .has_direct_member(&open_sub, &tee_pk)
             .unwrap(),
         "late-join Open: no direct row expected — inheritance is the path"
     );
     assert!(
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .is_member(&open_sub, &tee_pk)
             .unwrap(),
         "late-join Open: the root TEE must be an inherited member of the \
@@ -2715,7 +2715,7 @@ async fn tee_matrix_open_join_with_created() {
     // (b) CREATE the Open subgroup first.
     let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
     assert!(
-        calimero_context::group_store::CapabilitiesRepository::new(&node.store)
+        calimero_governance_store::CapabilitiesRepository::new(&node.store)
             .is_open_chain_to_namespace(&open_sub, &ns_gid)
             .expect("is_open_chain_to_namespace"),
         "the created subgroup must be Open all the way to the namespace root"
@@ -2740,7 +2740,7 @@ async fn tee_matrix_open_join_with_created() {
         .expect("deliver announce");
     assert!(
         wait_until(
-            || calimero_context::group_store::MembershipRepository::new(&node.store)
+            || calimero_governance_store::MembershipRepository::new(&node.store)
                 .is_member(&ns_gid, &tee_pk)
                 .unwrap_or(false)
         )
@@ -2750,13 +2750,13 @@ async fn tee_matrix_open_join_with_created() {
 
     // ---- MEMBERSHIP: inherited member of the Open subgroup, no direct row ----
     assert!(
-        !calimero_context::group_store::MembershipRepository::new(&node.store)
+        !calimero_governance_store::MembershipRepository::new(&node.store)
             .has_direct_member(&open_sub, &tee_pk)
             .unwrap(),
         "join-with-created Open: no direct row expected — inheritance is the path"
     );
     assert!(
-        calimero_context::group_store::MembershipRepository::new(&node.store)
+        calimero_governance_store::MembershipRepository::new(&node.store)
             .is_member(&open_sub, &tee_pk)
             .unwrap(),
         "join-with-created Open: the root TEE must be an inherited member of the \
@@ -2842,7 +2842,7 @@ async fn member_peers_for_context_resolves_cached_members_end_to_end() {
     let group_id = ContextGroupId::from([0x11; 32]);
     let other_group = ContextGroupId::from([0xAA; 32]);
     let context_id = calimero_primitives::context::ContextId::from([0x22; 32]);
-    calimero_context::group_store::register_context_in_group(&store, &group_id, &context_id)
+    calimero_governance_store::register_context_in_group(&store, &group_id, &context_id)
         .expect("register context -> group");
 
     // Real (random) member identities, matching the convention of the
@@ -2922,7 +2922,7 @@ async fn member_peers_for_context_resolves_cached_members_end_to_end() {
 /// despite the members being online.
 #[tokio::test]
 async fn member_peers_for_context_unions_root_group_for_subgroup_context() {
-    use calimero_context::group_store::{register_context_in_group, NamespaceRepository};
+    use calimero_governance_store::{register_context_in_group, NamespaceRepository};
 
     let (sync_manager, store, node_state, _tmp) = build_standalone_sync_manager().await;
 
@@ -2985,7 +2985,7 @@ async fn member_peers_for_context_unions_root_group_for_subgroup_context() {
 #[tokio::test]
 #[serial(boot_test_node)]
 async fn self_leave_drives_a_real_key_rotation_on_a_remaining_admin() {
-    use calimero_context::group_store::{
+    use calimero_governance_store::{
         GroupKeyring, MembershipRepository, PendingRotationRepository,
     };
 

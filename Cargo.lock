@@ -1705,6 +1705,7 @@ dependencies = [
  "calimero-context",
  "calimero-context-client",
  "calimero-context-config",
+ "calimero-governance-store",
  "calimero-network-primitives",
  "calimero-node-primitives",
  "calimero-primitives",

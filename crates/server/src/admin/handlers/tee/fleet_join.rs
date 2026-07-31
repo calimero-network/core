@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context::governance_broadcast::ObserveDelivery;
-use calimero_context::group_store::NamespaceRepository;
 use calimero_context_client::group::{JoinContextRequest, ListGroupContextsRequest};
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
+use calimero_governance_store::NamespaceRepository;
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_server_primitives::admin::FleetJoinRequest;
@@ -293,7 +293,7 @@ pub async fn handler(
                 // in the group auto-joins via the core auto-follow handler;
                 // no sidecar polling needed.
                 let our_sk_typed = calimero_primitives::identity::PrivateKey::from(our_sk);
-                match calimero_context::group_store::sign_apply_and_publish(
+                match calimero_governance_store::sign_apply_and_publish(
                     &state.store,
                     &state.node_client,
                     state.ctx_client.ack_router(),

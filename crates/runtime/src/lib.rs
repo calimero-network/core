@@ -382,6 +382,22 @@ impl Module {
         Ok(Vec::into_boxed_slice(bytes.into()))
     }
 
+    /// Whether this module exports a function called `name`.
+    ///
+    /// Answers "does the guest define this entry point?" from the export table,
+    /// which is the guest's own declaration. A caller that instead infers it
+    /// from a failed [`run`](Self::run) is reading a *resolution outcome*, and
+    /// `MethodNotFound` covers both "the guest never defined it" and "it should
+    /// be here but could not be resolved" — two cases that often warrant
+    /// opposite decisions (skip an optional hook vs refuse). Ask the module
+    /// first; then a `MethodNotFound` from the call is unambiguously the second.
+    #[must_use]
+    pub fn exports_function(&self, name: &str) -> bool {
+        self.module.exports().any(|export| {
+            export.name() == name && matches!(export.ty(), wasmer::ExternType::Function(_))
+        })
+    }
+
     /// Run a method with no cross-context origin (direct/RPC call). Thin
     /// wrapper over [`run_with_origin`](Self::run_with_origin).
     // The args are orthogonal (identity, method, I/O, storage, node client) with
@@ -684,6 +700,37 @@ mod integration_tests_package_usage {
 mod wasm_integration_tests {
     use super::*;
     use crate::store::InMemoryStorage;
+
+    /// `exports_function` answers from the export table: declared function names
+    /// are `true`, undeclared ones and non-function exports are `false`.
+    ///
+    /// Callers use this to tell "the guest defines no such hook" from "the hook
+    /// is declared but unresolvable", which a `MethodNotFound` from `run` cannot
+    /// distinguish. Getting the memory export wrong would break that: `memory`
+    /// is exported by every guest and must not read as a callable function.
+    #[test]
+    fn exports_function_reads_the_export_table() {
+        let wat = r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "__calimero_migration_check"))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let module = Engine::default()
+            .compile(&wasm)
+            .expect("Failed to compile module");
+
+        assert!(module.exports_function("__calimero_migration_check"));
+        assert!(
+            !module.exports_function("__calimero_migrate"),
+            "an undeclared function must not report as exported"
+        );
+        assert!(
+            !module.exports_function("memory"),
+            "an exported memory is not a callable function"
+        );
+    }
 
     /// Test that a simple WASM module runs successfully (baseline test)
     #[test]

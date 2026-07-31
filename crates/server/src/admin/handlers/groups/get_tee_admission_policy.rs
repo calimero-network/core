@@ -21,7 +21,7 @@ pub async fn handler(
 
     info!(group_id=%group_id_str, "Getting TEE admission policy");
 
-    match calimero_context::group_store::read_tee_admission_policy(&state.store, &group_id) {
+    match calimero_governance_store::read_tee_admission_policy(&state.store, &group_id) {
         Ok(Some(policy)) => ApiResponse {
             payload: GetTeeAdmissionPolicyApiResponse {
                 enabled: true,

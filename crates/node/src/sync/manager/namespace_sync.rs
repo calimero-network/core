@@ -5,10 +5,10 @@
 //! block, driven by the stream dispatcher and the `SyncDriverDispatch` trait.
 //! Methods that stay in `mod.rs` remain reachable here via ancestor privacy.
 
-use calimero_context::group_store::{
+use calimero_crypto::Nonce;
+use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
 };
-use calimero_crypto::Nonce;
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::{NamespaceJoinParams, OpenSubgroupJoinParams};
 use calimero_node_primitives::join_bundle::JoinBundle;
@@ -48,38 +48,38 @@ impl SyncManager {
         their_identity: &PublicKey,
     ) {
         let store = self.context_client.datastore();
-        let namespace_id =
-            match calimero_context::group_store::get_group_for_context(store, context_id) {
-                Ok(Some(group_id)) => match NamespaceRepository::new(store).resolve(&group_id) {
-                    Ok(ns) => ns.to_bytes(),
-                    Err(err) => {
-                        debug!(
-                            %context_id,
-                            %their_identity,
-                            %err,
-                            "failed to resolve namespace for governance catch-up"
-                        );
-                        return;
-                    }
-                },
-                Ok(None) => {
-                    debug!(
-                        %context_id,
-                        %their_identity,
-                        "context not in a group — no namespace to request catch-up from"
-                    );
-                    return;
-                }
+        let namespace_id = match calimero_governance_store::get_group_for_context(store, context_id)
+        {
+            Ok(Some(group_id)) => match NamespaceRepository::new(store).resolve(&group_id) {
+                Ok(ns) => ns.to_bytes(),
                 Err(err) => {
                     debug!(
                         %context_id,
                         %their_identity,
                         %err,
-                        "failed to resolve group for governance catch-up"
+                        "failed to resolve namespace for governance catch-up"
                     );
                     return;
                 }
-            };
+            },
+            Ok(None) => {
+                debug!(
+                    %context_id,
+                    %their_identity,
+                    "context not in a group — no namespace to request catch-up from"
+                );
+                return;
+            }
+            Err(err) => {
+                debug!(
+                    %context_id,
+                    %their_identity,
+                    %err,
+                    "failed to resolve group for governance catch-up"
+                );
+                return;
+            }
+        };
 
         let mut stream = match self.sync_network.open_stream(peer_id).await {
             Ok(s) => s,
@@ -424,11 +424,11 @@ impl SyncManager {
         stream: &mut Stream,
         nonce: Nonce,
     ) -> eyre::Result<()> {
-        use calimero_context::group_store::enumerate_group_contexts;
-        use calimero_context::group_store::NamespaceMembershipService;
-        use calimero_context::group_store::ReentryRepository;
         use calimero_context_config::types::ContextGroupId;
         use calimero_context_config::types::SignedGroupOpenInvitation;
+        use calimero_governance_store::enumerate_group_contexts;
+        use calimero_governance_store::NamespaceMembershipService;
+        use calimero_governance_store::ReentryRepository;
 
         let invitation: SignedGroupOpenInvitation = match borsh::from_slice(invitation_bytes) {
             Ok(inv) => inv,
@@ -468,7 +468,7 @@ impl SyncManager {
         // A wall-clock check is sound here because key delivery is
         // point-to-point, not folded governance state, so responders
         // disagreeing cannot diverge membership.
-        let now_secs = calimero_context::group_store::now_secs();
+        let now_secs = calimero_governance_store::now_secs();
         if let Err(err) = NamespaceMembershipService::new(&store, namespace_id.into())
             .validate_open_invitation(&invitation, now_secs)
         {
@@ -649,8 +649,8 @@ impl SyncManager {
         stream: &mut Stream,
         nonce: Nonce,
     ) -> eyre::Result<()> {
-        use calimero_context::group_store::MembershipPath;
         use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::MembershipPath;
 
         let subgroup_gid = ContextGroupId::from(subgroup_id);
         let store = self.context_client.datastore_handle().into_inner();
@@ -1471,9 +1471,9 @@ impl SyncManager {
         // be handed the very key the rotation excluded it from. `None` on a node
         // that has enrolled no device, which is served member-addressed only
         // while its member has no account in the group (the bootstrap case).
-        let requester = calimero_context::group_store::KeyRequester {
+        let requester = calimero_governance_store::KeyRequester {
             identity: requester_public_key,
-            device: calimero_context::group_store::NodeDeviceRepository::new(&store)
+            device: calimero_governance_store::NodeDeviceRepository::new(&store)
                 .device_secret(&ns_gid)
                 .unwrap_or_else(|err| {
                     debug!(%err, "failed to read node device identity for key recovery");
@@ -1485,7 +1485,7 @@ impl SyncManager {
         // `(group_id, key_id)` pairs we're stranded on — we ask each peer for
         // the EXACT key epoch a buffered op needs, so a rotated-out key can be
         // recovered (a current-key-only request could not deliver it).
-        let awaiting = match calimero_context::group_store::namespace_group_keys_awaiting(
+        let awaiting = match calimero_governance_store::namespace_group_keys_awaiting(
             &store,
             namespace_id.into(),
         ) {
@@ -1500,17 +1500,16 @@ impl SyncManager {
         // "joined, pending key" under a quiescent namespace never appears in
         // the op-driven `awaiting` set above and never recovers. Non-fatal on
         // error — fall back to the op-driven set alone.
-        let member_keyless =
-            match calimero_context::group_store::namespace_groups_member_but_keyless(
-                &store,
-                namespace_id.into(),
-            ) {
-                Ok(groups) => groups,
-                Err(err) => {
-                    debug!(%err, "failed to enumerate member-but-keyless groups");
-                    Vec::new()
-                }
-            };
+        let member_keyless = match calimero_governance_store::namespace_groups_member_but_keyless(
+            &store,
+            namespace_id.into(),
+        ) {
+            Ok(groups) => groups,
+            Err(err) => {
+                debug!(%err, "failed to enumerate member-but-keyless groups");
+                Vec::new()
+            }
+        };
         drop(store);
 
         // Merge into one request list of `(group_id, Option<key_id>)`: op-driven
@@ -1562,7 +1561,7 @@ impl SyncManager {
                     continue;
                 }
                 let store = self.context_client.datastore_handle().into_inner();
-                let outcome = calimero_context::group_store::apply_received_group_key(
+                let outcome = calimero_governance_store::apply_received_group_key(
                     &store,
                     namespace_id.into(),
                     group_id,
@@ -1641,7 +1640,7 @@ impl SyncManager {
         peer: PeerId,
         namespace_id: [u8; 32],
         group_id: [u8; 32],
-        requester: calimero_context::group_store::KeyRequester,
+        requester: calimero_governance_store::KeyRequester,
         key_id: Option<[u8; 32]>,
     ) -> Option<(Vec<u8>, PublicKey)> {
         use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
@@ -1715,7 +1714,7 @@ impl SyncManager {
         &self,
         namespace_id: [u8; 32],
         group_id: [u8; 32],
-        requester: calimero_context::group_store::KeyRequester,
+        requester: calimero_governance_store::KeyRequester,
         requested_key_id: Option<[u8; 32]>,
         stream: &mut Stream,
         nonce: Nonce,
@@ -1724,7 +1723,7 @@ impl SyncManager {
 
         let store = self.context_client.datastore_handle().into_inner();
         let (key_envelope_bytes, responder_identity) =
-            match calimero_context::group_store::build_group_key_delivery(
+            match calimero_governance_store::build_group_key_delivery(
                 &store,
                 namespace_id.into(),
                 group_id,

@@ -2,8 +2,8 @@
 //!
 //! When a node receives a delta with missing parents, it uses this protocol
 //! to request the missing deltas from peers.
-use calimero_context::group_store::NamespaceRepository;
 use calimero_crypto::Nonce;
+use calimero_governance_store::NamespaceRepository;
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 use calimero_primitives::context::ContextId;

@@ -1,11 +1,11 @@
 //! State delta handling for BroadcastMessage::StateDelta
 //!
 //! **SRP**: This module has ONE job - process state deltas from peers using DAG
-use calimero_context::group_store::{DenyListRepository, NamespaceRepository};
 use calimero_context::scope_projection::ScopeProjections;
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::GovernanceParentEdge;
 use calimero_crypto::Nonce;
+use calimero_governance_store::{DenyListRepository, NamespaceRepository};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::ExecutionEvent;
@@ -365,7 +365,7 @@ pub(crate) async fn apply_authorized_state_delta(
 
     let group_key = {
         let store = node_clients.context.datastore();
-        let gid = calimero_context::group_store::get_group_for_context(store, &context_id)?;
+        let gid = calimero_governance_store::get_group_for_context(store, &context_id)?;
         match gid {
             Some(g) => {
                 // Issue #2256: an `Open` subgroup encrypts state deltas
@@ -1939,9 +1939,12 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         )? {
             FenceDecision::Apply => {}
             FenceDecision::Buffer => {
-                let record = calimero_context::group_store::AbsorbRecord::from_buffered(&buffered);
-                calimero_context::group_store::AbsorbRepository::new(context_client.datastore())
-                    .save(&context_id, producing_app_key, &record)?;
+                let record = calimero_governance_store::AbsorbRecord::from_buffered(&buffered);
+                calimero_governance_store::AbsorbRepository::new(context_client.datastore()).save(
+                    &context_id,
+                    producing_app_key,
+                    &record,
+                )?;
                 warn!(
                     %context_id,
                     author = %buffered.author_id,
@@ -1968,7 +1971,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
 
     let group_key = {
         let store = context_client.datastore();
-        let gid = calimero_context::group_store::get_group_for_context(store, &context_id)?;
+        let gid = calimero_governance_store::get_group_for_context(store, &context_id)?;
         match gid {
             Some(g) => {
                 // Issue #2256 — Open-subgroup namespace-key fallback,
@@ -2268,11 +2271,11 @@ mod tests {
     mod fence_drop_tests {
         use std::sync::Arc;
 
-        use calimero_context::group_store::{
-            register_context_in_group, MetaRepository, UpgradesRepository,
-        };
         use calimero_context::hlc_fence::delta_is_fenced;
         use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::{
+            register_context_in_group, MetaRepository, UpgradesRepository,
+        };
         use calimero_primitives::application::ApplicationId;
         use calimero_primitives::context::{ContextId, UpgradePolicy};
         use calimero_primitives::identity::PublicKey;
@@ -2370,7 +2373,7 @@ mod tests {
 
         // ---- PR-6b Task 6b.4: absorb-don't-drop at the gossip fence ----
 
-        use calimero_context::group_store::{AbsorbRecord, AbsorbRepository};
+        use calimero_governance_store::{AbsorbRecord, AbsorbRepository};
         use calimero_node_primitives::delta_buffer::BufferedDelta;
 
         use super::super::{fence_and_maybe_absorb, FenceOutcome};

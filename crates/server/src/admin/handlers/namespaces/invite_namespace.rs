@@ -1,4 +1,4 @@
-use calimero_context::group_store::{
+use calimero_governance_store::{
     MembershipRepository, MetadataRepository, NamespaceRepository, SigningKeysRepository,
 };
 use std::sync::Arc;

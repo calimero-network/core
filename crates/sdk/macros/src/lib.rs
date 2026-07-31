@@ -291,8 +291,10 @@ pub fn migrate(args: TokenStream, input: TokenStream) -> TokenStream {
 ///   and the produced new v2 root via `env::input()`
 /// - **Read-only**: Pure predicate — never assigns deterministic ids and is not
 ///   wrapped in merge mode (no state is produced)
-/// - **Backwards Compatible**: Apps without this export migrate unchecked (the
-///   runtime treats a missing export as `Ok(true)`)
+/// - **Opt-in**: an app that does not define a check migrates unchecked. The
+///   runtime decides that from the module's export table, so it never confuses
+///   "no check defined" with a declared check it could not resolve — the latter
+///   fails closed
 /// - **Testing Support**: Preserves the original function signature for non-WASM testing
 #[proc_macro_attribute]
 pub fn migration_check(args: TokenStream, input: TokenStream) -> TokenStream {

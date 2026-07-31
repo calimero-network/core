@@ -92,19 +92,25 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     let admin_identity = calimero_primitives::identity::PublicKey::from(
                         invitation.invitation.inviter_identity.to_bytes(),
                     );
-                    // Use the application_id carried in the invitation when
-                    // present (added so joiners pre-populate `GroupMetaValue`
-                    // with the real value instead of zero — without it,
-                    // `compute_group_state_hash` diverges between the
-                    // originator and joining peers because
-                    // target_application_id is part of the hash). Falls
-                    // back to zero for backwards compatibility with
-                    // pre-field invitations; the zero case is
-                    // self-healing on the next context registration.
+                    // The invitation carries the application id so joiners
+                    // pre-populate `GroupMetaValue` with the real value:
+                    // `target_application_id` is part of
+                    // `compute_group_state_hash`, so a placeholder here
+                    // diverges the joiner's hash from the originator's.
+                    //
+                    // An invitation without it is refused rather than
+                    // defaulted. Every current producer sets it
+                    // (`create_group_invitation`), so absence means the
+                    // invitation was minted or re-serialized by something that
+                    // dropped the field — and joining on a zero id trades a
+                    // clear failure here for a state-hash divergence later.
+                    let Some(application_id) = invitation.application_id else {
+                        return Err(eyre::eyre!(
+                            "invitation for group {group_id:?} carries no application_id;                              refusing to join on a placeholder that would diverge                              compute_group_state_hash from the inviter's"
+                        ));
+                    };
                     let target_application_id =
-                        calimero_primitives::application::ApplicationId::from(
-                            invitation.application_id.unwrap_or([0u8; 32]),
-                        );
+                        calimero_primitives::application::ApplicationId::from(application_id);
                     // Prefer the invitation's `app_key` field when present.
                     // When it is missing (e.g. an older Python client on
                     // the wire deserialized the invitation against a

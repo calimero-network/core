@@ -15,7 +15,6 @@
 use std::sync::Arc;
 
 use calimero_account::{sign_device_cert, AccountGenesis, DeviceId, KemPublicKey};
-use calimero_context::group_store::{GroupKeyring, MembershipRepository, MetaRepository};
 use calimero_context::scope_projection::{op_from_namespace_op, ScopeProjections};
 use calimero_context_client::local_governance::{
     EncryptedGroupOp, GroupOp, NamespaceOp, SignedNamespaceOp,
@@ -23,6 +22,7 @@ use calimero_context_client::local_governance::{
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519SecretKey;
 use calimero_governance_store::AccountBindingRepository;
+use calimero_governance_store::{GroupKeyring, MembershipRepository, MetaRepository};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};

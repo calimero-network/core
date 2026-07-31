@@ -63,7 +63,7 @@ pub(crate) fn local_scope_root(
     context_id: &ContextId,
     entities_root: [u8; 32],
 ) -> Option<[u8; 32]> {
-    let group = calimero_context::group_store::get_group_for_context(store, context_id)
+    let group = calimero_governance_store::get_group_for_context(store, context_id)
         .ok()
         .flatten()?;
     calimero_context::scope_projection::ScopeProjections::group_scope_root_ephemeral(
@@ -219,7 +219,7 @@ fn extract_author_from_leaf_authorization(
 ///   that the gossip path runs unconditionally. The trade-off (over-
 ///   rejection of legitimate pre-removal writes that propagate via HC)
 ///   is documented on
-///   [`calimero_context::group_store::is_currently_authorized_for_context`].
+///   [`calimero_governance_store::is_currently_authorized_for_context`].
 pub fn is_leaf_currently_authorized(
     store: &Store,
     context_id: &ContextId,
@@ -243,7 +243,7 @@ pub fn is_leaf_currently_authorized(
             // keep the historical allow — the per-action checks downstream
             // remain the backstop.
             return match session_peer {
-                Some(peer) => calimero_context::group_store::is_currently_authorized_for_context(
+                Some(peer) => calimero_governance_store::is_currently_authorized_for_context(
                     store, context_id, &peer,
                 )
                 .unwrap_or(false),
@@ -251,9 +251,8 @@ pub fn is_leaf_currently_authorized(
             };
         }
     };
-    match calimero_context::group_store::is_currently_authorized_for_context(
-        store, context_id, &author,
-    ) {
+    match calimero_governance_store::is_currently_authorized_for_context(store, context_id, &author)
+    {
         Ok(true) => true,
         Ok(false) => {
             // Expected outcome under churn (post-removal authorship,
@@ -404,10 +403,9 @@ pub fn apply_leaf_with_crdt_merge_gated(
             // key (idempotent overwrite on re-delivery), under the *sender's*
             // schema so the drain only re-applies once this node advances to it.
             let leaf_bytes = borsh::to_vec(leaf)?;
-            let record = calimero_context::group_store::AbsorbRecord::from_leaf(
-                leaf.key, leaf_bytes, schema,
-            );
-            calimero_context::group_store::AbsorbRepository::new(store).save(
+            let record =
+                calimero_governance_store::AbsorbRecord::from_leaf(leaf.key, leaf_bytes, schema);
+            calimero_governance_store::AbsorbRepository::new(store).save(
                 &context_id,
                 schema,
                 &record,
@@ -1262,7 +1260,7 @@ mod tests {
         assert!(stored.is_none(), "future-schema leaf must NOT be stored");
 
         // And it landed in the absorb buffer for a later drain.
-        let pending = calimero_context::group_store::AbsorbRepository::new(&store)
+        let pending = calimero_governance_store::AbsorbRepository::new(&store)
             .enumerate_pending(&context_id)
             .expect("enumerate pending");
         assert_eq!(pending.len(), 1, "future-schema leaf must be buffered");

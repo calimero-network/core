@@ -1187,7 +1187,7 @@ pub struct ContextClient {
     /// specific `op_hash`. Shared with `ContextManager` (which wires
     /// publish-side subscriptions) — both hold a clone of the same Arc
     /// so acks routed here reach the awaiter without an actor mailbox
-    /// hop. See `calimero_context::governance_broadcast`.
+    /// hop. See `calimero_governance_store::governance_broadcast`.
     ack_router: Arc<AckRouter>,
 }
 

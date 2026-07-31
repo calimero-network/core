@@ -1,4 +1,4 @@
-use calimero_context::group_store::{
+use calimero_governance_store::{
     GroupKeyring, MetadataRepository, NamespaceRepository, SigningKeysRepository,
 };
 use std::sync::Arc;
@@ -7,7 +7,7 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use axum::Json;
-use calimero_context::governance_broadcast::ObserveDelivery;
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
@@ -158,7 +158,7 @@ pub async fn handler(
         },
     );
 
-    match calimero_context::group_store::sign_apply_and_publish_namespace_op(
+    match calimero_governance_store::sign_apply_and_publish_namespace_op(
         &state.store,
         &state.node_client,
         state.ctx_client.ack_router(),
@@ -193,7 +193,7 @@ pub async fn handler(
                     &calimero_primitives::metadata::MetadataRecord {
                         name: body.group_name.clone(),
                         data: std::collections::BTreeMap::new(),
-                        updated_at: calimero_context::group_store::now_millis(),
+                        updated_at: calimero_governance_store::now_millis(),
                         updated_by: signer_pk,
                     },
                 ) {

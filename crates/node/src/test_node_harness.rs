@@ -38,7 +38,7 @@ use crate::sync::{SyncConfig, SyncManager};
 use crate::{NodeManager, NodeState};
 
 /// Minimal stand-in for the real network actor. The governance publish path
-/// (`group_store::sign_apply_and_publish`) samples mesh peer count and best-
+/// (`calimero_governance_store::sign_apply_and_publish`) samples mesh peer count and best-
 /// effort-publishes before/after the local store apply; both go through the
 /// `LazyRecipient<NetworkMessage>`. Left uninitialised, a `send().await` on
 /// that recipient queues and never resolves, deadlocking the admission task.
