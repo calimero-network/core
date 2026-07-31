@@ -131,11 +131,22 @@ impl CausalDelta {
 /// - [`StorageDelta::Actions`] — local apply, snapshot leaf push,
 ///   SDK→host commits. The verifier falls back to v2 stored-writers
 ///   semantics for `Shared` actions in this variant.
-/// - [`StorageDelta::CausalActions`] — DAG-causal sync (#2266). The
-///   sync layer pre-resolves the writer set per Shared entity using
-///   the rotation log + DAG ancestry; the receiver's verifier
-///   validates Shared signatures against that pre-resolved set
-///   instead of stored writers.
+/// - [`StorageDelta::CausalActions`] — DAG-causal apply. The writer set
+///   per Shared entity is pre-resolved from the rotation log + DAG
+///   ancestry and the verifier validates Shared signatures against that
+///   set instead of stored writers.
+///
+/// # This is a host→guest envelope, not a peer→peer one
+///
+/// Only `Actions` crosses the network. `CausalActions` is built by the
+/// *applying* node (`ContextStorageApplier::apply`) and handed straight to
+/// the guest's sync entrypoint, because its writer set is an authorization
+/// input: whoever chooses it decides who may write. A peer that could
+/// choose it would name itself a writer of any Shared object and its
+/// signature would then verify against its own set. So the receive paths
+/// accept the `Actions` variant only — `decrypt_delta_actions` refuses
+/// anything else — and the applying node re-wraps those actions with a set
+/// it resolved itself.
 ///
 /// Wire tags are assigned by hand (see the [`BorshSerialize`]/
 /// [`BorshDeserialize`] impls below): `Actions` = 0, `CausalActions` = 2.
@@ -150,10 +161,10 @@ pub enum StorageDelta {
     ///
     /// `effective_writers` carries the pre-resolved writer set for
     /// every `Shared` entity touched by `actions`, computed by the
-    /// sender's sync layer via
-    /// `rotation_log_reader::writers_at(rotation_log, delta.parents, happens_before)`.
-    /// Entries for non-Shared entities are omitted (the verifier
-    /// doesn't consult them).
+    /// *applying* node — never by the sender — via
+    /// `rotation_log_reader::writers_at_authenticated(rotation_log, delta.parents, happens_before, verify)`
+    /// over its own copy of the rotation log. Entries for non-Shared
+    /// entities are omitted (the verifier doesn't consult them).
     CausalActions {
         /// Actions to apply.
         actions: Vec<Action>,
@@ -165,10 +176,12 @@ pub enum StorageDelta {
         /// the rotation-log write hook for sibling tiebreak (ADR 0001).
         delta_hlc: HybridTimestamp,
         /// Pre-resolved writer set per Shared entity touched by
-        /// `actions`. The receiver's verifier validates Shared
-        /// signatures against the entry for the action's entity id;
-        /// non-Shared entities (User / Frozen / Public) are absent
-        /// from the map.
+        /// `actions`. The verifier validates Shared signatures against
+        /// the entry for the action's entity id; non-Shared entities
+        /// (User / Frozen / Public) are absent from the map.
+        ///
+        /// Trusted, and only because it never comes off the wire — see
+        /// the variant docs above.
         effective_writers: BTreeMap<Id, BTreeMap<PublicKey, OpMask>>,
     },
 }

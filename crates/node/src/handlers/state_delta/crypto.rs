@@ -161,7 +161,18 @@ pub(super) fn decrypt_delta_actions(
             actions,
             events: sealed.events,
         }),
-        _ => bail!("Expected Actions variant in state delta"),
+        // A `CausalActions` artifact carries the writer set that the Shared
+        // verifier will authorize against. Accepting one off the wire would
+        // hand that decision to whoever sealed it: a group-key holder names
+        // itself a writer of any Shared object and its own signature then
+        // verifies against its own set. This node resolves the writer set for
+        // itself, from its own rotation log at the delta's causal cut, when it
+        // re-wraps these actions for the guest — so the only variant that may
+        // arrive here is the bare action list.
+        calimero_storage::delta::StorageDelta::CausalActions { .. } => bail!(
+            "state delta carried the CausalActions variant; a peer-supplied \
+             writer set is never trusted"
+        ),
     }
 }
 
@@ -210,6 +221,67 @@ mod tests {
         // Garbage ciphertext should fail to decrypt/deserialize
         let result = decrypt_delta_actions(vec![1, 2, 3, 4], nonce, sender_key);
         assert!(result.is_err());
+    }
+
+    /// A group-key holder seals a `CausalActions` artifact whose writer set
+    /// names only itself, for an entity it is not a writer of. Nothing
+    /// downstream re-derives that set — `Root::sync` feeds it straight to the
+    /// Shared verifier as the authoritative answer — so the wire boundary is
+    /// where it has to die. If this ever returns `Ok`, any group member can
+    /// write to any Shared object.
+    #[test]
+    fn decrypt_delta_actions_rejects_peer_supplied_writer_set() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        use calimero_storage::address::Id;
+        use calimero_storage::entities::OpMask;
+        use calimero_storage::logical_clock::HybridTimestamp;
+        use calimero_storage::tests::common::{build_signed_shared_action, pubkey_of};
+        use ed25519_dalek::SigningKey;
+
+        let mut rng = thread_rng();
+        let sender_key = PrivateKey::random(&mut rng);
+        let shared_key = SharedKey::from_sk(&sender_key);
+
+        // The attacker holds the group key (so AEAD proves nothing about
+        // authorization here) and signs a write to someone else's entity.
+        let attacker = SigningKey::from_bytes(&[7u8; 32]);
+        let attacker_pk = pubkey_of(&attacker);
+        let victim_entity = Id::new([42u8; 32]);
+        let action = build_signed_shared_action(
+            false,
+            victim_entity,
+            b"attacker-write".to_vec(),
+            BTreeSet::from([attacker_pk]),
+            1_000,
+            &attacker,
+            vec![],
+        );
+
+        let mut effective_writers = BTreeMap::new();
+        let _ =
+            effective_writers.insert(victim_entity, BTreeMap::from([(attacker_pk, OpMask::FULL)]));
+
+        let storage_delta = StorageDelta::CausalActions {
+            actions: vec![action],
+            delta_id: [1u8; 32],
+            delta_hlc: HybridTimestamp::default(),
+            effective_writers,
+        };
+        let sealed = SealedDeltaPayload {
+            root_hash: Hash::from([0u8; 32]),
+            artifact: borsh::to_vec(&storage_delta).expect("serialize"),
+            events: None,
+        };
+        let plaintext = borsh::to_vec(&sealed).expect("serialize");
+        let (nonce, cipher) = shared_key.encrypt(plaintext).expect("encryption failed");
+
+        let err = decrypt_delta_actions(cipher, nonce, sender_key)
+            .expect_err("a wire-supplied writer set must be refused");
+        assert!(
+            err.to_string().contains("never trusted"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
