@@ -1777,10 +1777,16 @@ impl JsSharedStorage {
             .collect()
     }
 
-    /// Returns whether the current executor is in the writer set (may `set`).
+    /// Returns whether the current **device** is in the writer set (may `set`).
+    ///
+    /// Device, not account: `SharedStorage`'s writer set is keyed by public key and
+    /// enforced at merge by verifying a signature, so the principal compared here
+    /// has to be the same shape `writers()` returns. #3344 moves the set to
+    /// accounts, at which point this becomes `account_id()` — and a person with two
+    /// devices stops needing both of them granted.
     #[must_use]
     pub fn writable_by_me(&self) -> bool {
-        let me: PublicKey = crate::env::executor_id().into();
+        let me: PublicKey = crate::env::device_id().into();
         self.shared.can(&me, Op::Write)
     }
 
