@@ -18,6 +18,16 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x46` is taken
+// except `0x2B` (retired, below); **the next free byte is `0x47`**.
+//
+// The constants themselves are declared beside the key types they belong to
+// rather than all in this block, which is why a ledger is needed at all: two
+// families sharing a prefix would collide silently, and several of these keys are
+// byte-identical in length, so the compiler cannot catch it either — a
+// `GroupRevokedDevice` key and a `GroupDeviceBinding` key are both `[u8; 65]`,
+// and only the prefix distinguishes them. Grep `u8 = 0x` in this file to
+// re-derive this list before claiming a byte.
 pub const GROUP_META_PREFIX: u8 = 0x20;
 pub const GROUP_MEMBER_PREFIX: u8 = 0x21;
 pub const GROUP_CONTEXT_INDEX_PREFIX: u8 = 0x22;
