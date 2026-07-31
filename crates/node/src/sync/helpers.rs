@@ -182,11 +182,11 @@ pub fn wire_authorization_for(
 ///
 /// * `User { owner, .. }` → `owner` is the author by definition.
 /// * `Shared { signature_data: Some(SignatureData { signer: Some(pk), .. }), .. }`
-///   → the per-action signature carries the explicit signer. When `signer`
-///   is `None` (older actions without the hint), returns `None` — the
-///   author can't be identified without scanning the writer set, and the
-///   caller treats this as "don't enforce membership here, defer to the
-///   per-action signature check inside `apply_action`."
+///   → the signature names its signer, which is the author. When `signer`
+///   is `None` there is no author to name, so this returns `None` and the
+///   caller treats it as "don't enforce membership here, defer to the
+///   per-action signature check inside `apply_action`" — which refuses an
+///   unnamed signed write outright.
 /// * `Public` / `Frozen` / authorization absent → `None`; no author to
 ///   check (the per-action signature path verifies what's verifiable).
 fn extract_author_from_leaf_authorization(
@@ -1167,8 +1167,9 @@ mod tests {
 
     #[test]
     fn extract_author_shared_without_signer_hint_returns_none() {
-        // Older actions can omit the signer hint — caller treats `None`
-        // as "defer to per-action signature verification inside apply_action."
+        // An authorization that names no signer yields no author — caller
+        // treats `None` as "defer to per-action signature verification inside
+        // apply_action", which is where it is refused.
         let st = StorageType::Shared {
             writers: std::collections::BTreeMap::from([(
                 PublicKey::from([1u8; 32]),
