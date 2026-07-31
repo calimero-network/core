@@ -19,7 +19,7 @@
 //! functions in this module so `SyncStateAccess`'s production impl in
 //! `crate::state` and the reconciler itself share a single source of
 //! truth. The fns are independently unit-testable.
-use calimero_context::group_store::MembershipRepository;
+use calimero_governance_store::MembershipRepository;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

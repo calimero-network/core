@@ -6,7 +6,7 @@
 //! and, if valid, admit the node via a `MemberJoinedViaTeeAttestation` governance op.
 //!
 //! The heavy lifting (policy lookup, governance op signing, DAG interaction) is
-//! delegated to `calimero_context::group_store` via the `ContextClient`.
+//! delegated to `calimero_governance_store` via the `ContextClient`.
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use calimero_tee_attestation::verify_attestation;

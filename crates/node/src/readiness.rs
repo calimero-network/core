@@ -14,7 +14,7 @@
 //! [`ReadinessCache::await_first_fresh_beacon`], plus `join_namespace`
 //! / `await_namespace_ready`) lives in Phase 8, partially in this
 //! module and partially in [`crate::join_namespace`].
-use calimero_context::group_store::NamespaceRepository;
+use calimero_governance_store::NamespaceRepository;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -308,7 +308,7 @@ impl ReadinessCache {
     /// already been verified for signature AND namespace membership by
     /// the caller. The single legitimate caller is the receiver-side
     /// `network_event::readiness::handle_readiness_beacon`, which calls
-    /// `calimero_context::governance_broadcast::verify_readiness_beacon`
+    /// `calimero_governance_store::governance_broadcast::verify_readiness_beacon`
     /// (sig + member-set check) BEFORE invoking `insert`. Putting
     /// verification inside `insert` would couple the cache to
     /// `&Store`, drag namespace-membership state into a pure-types
@@ -782,7 +782,7 @@ impl ReadinessManager {
         };
         beacon.signature = signature;
 
-        let topic = calimero_context::governance_broadcast::ns_topic(ns_id.into());
+        let topic = calimero_governance_store::governance_broadcast::ns_topic(ns_id.into());
         let bytes =
             match encode_namespace_topic_msg(ns_id, &NamespaceTopicMsg::ReadinessBeacon(beacon)) {
                 Ok(b) => b,
@@ -998,7 +998,7 @@ impl ReadinessManager {
             }
         };
         let net = self.node_client.network_client().clone();
-        let topic = calimero_context::governance_broadcast::ns_topic(ns_id.into());
+        let topic = calimero_governance_store::governance_broadcast::ns_topic(ns_id.into());
         actix::spawn(async move {
             match net.publish(topic, bytes).await {
                 Ok(_) => tracing::info!(

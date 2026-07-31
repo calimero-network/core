@@ -12,13 +12,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use actix::Actor;
-use calimero_context::group_store::{now_millis, MembershipRepository, NamespaceRepository};
 use calimero_context_client::local_governance::{
     NamespaceOp, NamespaceTopicMsg, RootOp, SignedNamespaceOp, SignedReadinessBeacon,
 };
 use calimero_context_config::types::{
     ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
+use calimero_governance_store::{now_millis, MembershipRepository, NamespaceRepository};
 use calimero_network_primitives::messages::{IdentTopic, Message, MessageId, NetworkEvent};
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::context::GroupMemberRole;

@@ -1,13 +1,13 @@
 use std::collections::HashSet;
 
 use actix::{AsyncContext, WrapFuture};
-use calimero_context::governance_broadcast::sign_ack;
-use calimero_context::group_store::{MembershipRepository, NamespaceRepository};
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, NamespaceTopicMsg, SignedNamespaceOp,
 };
 use calimero_context_client::messages::NamespaceApplyOutcome;
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::governance_broadcast::sign_ack;
+use calimero_governance_store::{MembershipRepository, NamespaceRepository};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
 use calimero_primitives::identity::PrivateKey;
@@ -92,7 +92,7 @@ pub(super) fn handle_namespace_governance_delta(
                 warn!("MigrationHeartbeat namespace_id mismatch with topic; dropping");
                 return;
             }
-            if !calimero_context::governance_broadcast::verify_migration_heartbeat(
+            if !calimero_governance_store::governance_broadcast::verify_migration_heartbeat(
                 &this.datastore,
                 &heartbeat,
             ) {

@@ -1,6 +1,6 @@
 //! Two logical nodes (separate stores) receive the same gossip payloads and converge to identical group membership.
 //!
-//! Each peer applies `borsh(SignedGroupOp)` payloads via `group_store::apply_local_signed_group_op`
+//! Each peer applies `borsh(SignedGroupOp)` payloads via `calimero_governance_store::apply_local_signed_group_op`
 //! (same path as `ContextClient::apply_signed_group_op`).
 //! Real libp2p gossip on `group/<hex>` is covered by `calimero-network` (`tests/gossipsub_group_topic.rs`).
 
@@ -8,16 +8,16 @@ use std::sync::Arc;
 
 use borsh::to_vec as borsh_to_vec;
 use calimero_context::governance_dag::{signed_op_to_delta, GroupGovernanceApplier};
-use calimero_context::group_store::{
-    self, apply_local_signed_group_op, get_op_head, read_op_log_after, MembershipRepository,
-    MetaRepository,
-};
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::{
     ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
 use calimero_context_config::MemberCapabilities;
 use calimero_dag::DagStore;
+use calimero_governance_store::{
+    self, apply_local_signed_group_op, get_op_head, read_op_log_after, MembershipRepository,
+    MetaRepository,
+};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -150,12 +150,12 @@ fn two_nodes_converge_on_same_signed_op_sequence() {
 
     assert_same_group_view(&store_a, &store_b, &gid);
     assert!(
-        calimero_context::group_store::MembershipRepository::new(&store_a)
+        calimero_governance_store::MembershipRepository::new(&store_a)
             .is_member(&gid, &new_member)
             .unwrap()
     );
     assert!(
-        calimero_context::group_store::MembershipRepository::new(&store_b)
+        calimero_governance_store::MembershipRepository::new(&store_b)
             .is_member(&gid, &new_member)
             .unwrap()
     );
@@ -170,13 +170,13 @@ fn two_nodes_converge_on_same_signed_op_sequence() {
     assert_same_group_view(&store_a, &store_b, &gid);
 
     assert_eq!(
-        group_store::get_local_gov_nonce(&store_a, &gid, &admin_pk)
+        calimero_governance_store::get_local_gov_nonce(&store_a, &gid, &admin_pk)
             .unwrap()
             .unwrap(),
         2
     );
     assert_eq!(
-        group_store::get_local_gov_nonce(&store_b, &gid, &admin_pk)
+        calimero_governance_store::get_local_gov_nonce(&store_b, &gid, &admin_pk)
             .unwrap()
             .unwrap(),
         2
@@ -309,16 +309,16 @@ fn two_nodes_converge_on_namespace_member_joined() {
     )
     .expect("sign MemberJoined");
 
-    group_store::apply_signed_namespace_op(&store_a, &ns_op).unwrap();
-    group_store::apply_signed_namespace_op(&store_b, &ns_op).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store_a, &ns_op).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store_b, &ns_op).unwrap();
 
     assert!(
-        calimero_context::group_store::MembershipRepository::new(&store_a)
+        calimero_governance_store::MembershipRepository::new(&store_a)
             .is_member(&gid, &joiner_pk)
             .unwrap()
     );
     assert!(
-        calimero_context::group_store::MembershipRepository::new(&store_b)
+        calimero_governance_store::MembershipRepository::new(&store_b)
             .is_member(&gid, &joiner_pk)
             .unwrap()
     );
@@ -360,7 +360,7 @@ fn member_joined_at_rejects_expired_invitation() {
     )
     .expect("sign MemberJoinedAt");
 
-    let err = group_store::apply_signed_namespace_op(&store, &ns_op)
+    let err = calimero_governance_store::apply_signed_namespace_op(&store, &ns_op)
         .expect_err("expired MemberJoinedAt must be rejected on apply");
     assert!(
         format!("{err:#}").contains("expired"),
@@ -410,7 +410,7 @@ fn member_joined_rejects_when_expiration_set_and_joined_at_absent() {
     )
     .expect("sign MemberJoined");
 
-    let err = group_store::apply_signed_namespace_op(&store, &ns_op)
+    let err = calimero_governance_store::apply_signed_namespace_op(&store, &ns_op)
         .expect_err("MemberJoined with non-zero expiration must be rejected");
     assert!(
         format!("{err:#}").contains("joined_at is absent"),
@@ -464,8 +464,8 @@ fn member_joined_at_accepts_in_window_invitation() {
     )
     .expect("sign MemberJoinedAt");
 
-    group_store::apply_signed_namespace_op(&store_a, &ns_op).unwrap();
-    group_store::apply_signed_namespace_op(&store_b, &ns_op).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store_a, &ns_op).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store_b, &ns_op).unwrap();
 
     for store in [&store_a, &store_b] {
         assert!(MembershipRepository::new(store)
@@ -516,7 +516,7 @@ fn member_joined_at_backdated_joined_at_bypasses_apply_gate_documented_residual(
     )
     .expect("sign MemberJoinedAt");
 
-    group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
     assert!(
         MembershipRepository::new(&store)
             .is_member(&gid, &joiner_pk)
@@ -567,8 +567,8 @@ fn member_joined_at_in_window_converges_when_expiration_already_past_wallclock()
     )
     .expect("sign MemberJoinedAt");
 
-    group_store::apply_signed_namespace_op(&store_a, &ns_op).unwrap();
-    group_store::apply_signed_namespace_op(&store_b, &ns_op).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store_a, &ns_op).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store_b, &ns_op).unwrap();
 
     for store in [&store_a, &store_b] {
         assert!(MembershipRepository::new(store)
@@ -612,7 +612,7 @@ fn member_joined_at_ignores_zero_expiration() {
     )
     .expect("sign MemberJoinedAt");
 
-    group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
     assert!(MembershipRepository::new(&store)
         .is_member(&gid, &joiner_pk)
         .unwrap());
@@ -646,28 +646,28 @@ fn recursive_invite_joins_all_descendant_groups() {
     }
 
     // Setup nesting: ns_id → child_a → grandchild, ns_id → child_b
-    calimero_context::group_store::NamespaceRepository::new(&store)
+    calimero_governance_store::NamespaceRepository::new(&store)
         .nest(&ns_id, &child_a)
         .unwrap();
-    calimero_context::group_store::NamespaceRepository::new(&store)
+    calimero_governance_store::NamespaceRepository::new(&store)
         .nest(&ns_id, &child_b)
         .unwrap();
-    calimero_context::group_store::NamespaceRepository::new(&store)
+    calimero_governance_store::NamespaceRepository::new(&store)
         .nest(&child_a, &grandchild)
         .unwrap();
 
     // Verify tree structure
-    let children = calimero_context::group_store::NamespaceRepository::new(&store)
+    let children = calimero_governance_store::NamespaceRepository::new(&store)
         .list_children(&ns_id)
         .unwrap();
     assert_eq!(children.len(), 2);
-    let descendants = calimero_context::group_store::NamespaceRepository::new(&store)
+    let descendants = calimero_governance_store::NamespaceRepository::new(&store)
         .collect_descendants(&ns_id)
         .unwrap();
     assert_eq!(descendants.len(), 3); // child_a, child_b, grandchild
 
     // Recursive invite for ns_id (covers all 4 groups including ns_id itself)
-    let invitations = calimero_context::group_store::NamespaceRepository::new(&store)
+    let invitations = calimero_governance_store::NamespaceRepository::new(&store)
         .create_recursive_invitations(&ns_id, &admin_sk, 365 * 24 * 3600, 1)
         .unwrap();
 
@@ -689,54 +689,46 @@ fn recursive_invite_joins_all_descendant_groups() {
         )
         .expect("sign MemberJoinedAt");
 
-        group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
+        calimero_governance_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
     }
 
     // Verify joiner is member of ALL groups
-    assert!(
-        calimero_context::group_store::MembershipRepository::new(&store)
-            .is_member(&ns_id, &joiner_pk)
-            .unwrap()
-    );
-    assert!(
-        calimero_context::group_store::MembershipRepository::new(&store)
-            .is_member(&child_a, &joiner_pk)
-            .unwrap()
-    );
-    assert!(
-        calimero_context::group_store::MembershipRepository::new(&store)
-            .is_member(&child_b, &joiner_pk)
-            .unwrap()
-    );
-    assert!(
-        calimero_context::group_store::MembershipRepository::new(&store)
-            .is_member(&grandchild, &joiner_pk)
-            .unwrap()
-    );
+    assert!(calimero_governance_store::MembershipRepository::new(&store)
+        .is_member(&ns_id, &joiner_pk)
+        .unwrap());
+    assert!(calimero_governance_store::MembershipRepository::new(&store)
+        .is_member(&child_a, &joiner_pk)
+        .unwrap());
+    assert!(calimero_governance_store::MembershipRepository::new(&store)
+        .is_member(&child_b, &joiner_pk)
+        .unwrap());
+    assert!(calimero_governance_store::MembershipRepository::new(&store)
+        .is_member(&grandchild, &joiner_pk)
+        .unwrap());
 
     // Recursive remove from ns_id (should remove from all 4)
-    let removed = calimero_context::group_store::NamespaceRepository::new(&store)
+    let removed = calimero_governance_store::NamespaceRepository::new(&store)
         .recursive_remove_member(&ns_id, &joiner_pk)
         .unwrap();
     assert_eq!(removed.len(), 4);
 
     assert!(
-        !calimero_context::group_store::MembershipRepository::new(&store)
+        !calimero_governance_store::MembershipRepository::new(&store)
             .is_member(&ns_id, &joiner_pk)
             .unwrap()
     );
     assert!(
-        !calimero_context::group_store::MembershipRepository::new(&store)
+        !calimero_governance_store::MembershipRepository::new(&store)
             .is_member(&child_a, &joiner_pk)
             .unwrap()
     );
     assert!(
-        !calimero_context::group_store::MembershipRepository::new(&store)
+        !calimero_governance_store::MembershipRepository::new(&store)
             .is_member(&child_b, &joiner_pk)
             .unwrap()
     );
     assert!(
-        !calimero_context::group_store::MembershipRepository::new(&store)
+        !calimero_governance_store::MembershipRepository::new(&store)
             .is_member(&grandchild, &joiner_pk)
             .unwrap()
     );
@@ -761,16 +753,16 @@ fn nest_group_rejects_cycles() {
     }
 
     // A → B → C
-    calimero_context::group_store::NamespaceRepository::new(&store)
+    calimero_governance_store::NamespaceRepository::new(&store)
         .nest(&group_a, &group_b)
         .unwrap();
-    calimero_context::group_store::NamespaceRepository::new(&store)
+    calimero_governance_store::NamespaceRepository::new(&store)
         .nest(&group_b, &group_c)
         .unwrap();
 
     // C → A would create A → B → C → A cycle
     let result =
-        calimero_context::group_store::NamespaceRepository::new(&store).nest(&group_c, &group_a);
+        calimero_governance_store::NamespaceRepository::new(&store).nest(&group_c, &group_a);
     assert!(result.is_err(), "should reject cycle");
     assert!(
         result.unwrap_err().to_string().contains("cycle"),
@@ -779,12 +771,12 @@ fn nest_group_rejects_cycles() {
 
     // Self-nesting
     let result =
-        calimero_context::group_store::NamespaceRepository::new(&store).nest(&group_a, &group_a);
+        calimero_governance_store::NamespaceRepository::new(&store).nest(&group_a, &group_a);
     assert!(result.is_err(), "should reject self-nesting");
 
     // B already has a parent (A), can't give it a second
     let result =
-        calimero_context::group_store::NamespaceRepository::new(&store).nest(&group_c, &group_b);
+        calimero_governance_store::NamespaceRepository::new(&store).nest(&group_c, &group_b);
     assert!(result.is_err(), "should reject double-parent");
 }
 
@@ -814,7 +806,7 @@ fn two_nodes_converge_on_context_alias_as_admin() {
         MembershipRepository::new(store)
             .add_member(&gid, &creator_pk, GroupMemberRole::Member)
             .unwrap();
-        calimero_context::group_store::CapabilitiesRepository::new(store)
+        calimero_governance_store::CapabilitiesRepository::new(store)
             .set_member_capability(
                 &gid,
                 &creator_pk,
@@ -859,7 +851,7 @@ fn two_nodes_converge_on_context_alias_as_admin() {
     }
 
     assert_eq!(
-        calimero_context::group_store::MetadataRepository::new(&store_a)
+        calimero_governance_store::MetadataRepository::new(&store_a)
             .context_metadata(&gid, &context_id)
             .unwrap()
             .and_then(|r| r.name)
@@ -867,7 +859,7 @@ fn two_nodes_converge_on_context_alias_as_admin() {
         Some("wire-alias")
     );
     assert_eq!(
-        calimero_context::group_store::MetadataRepository::new(&store_b)
+        calimero_governance_store::MetadataRepository::new(&store_b)
             .context_metadata(&gid, &context_id)
             .unwrap()
             .and_then(|r| r.name)
@@ -1017,17 +1009,17 @@ fn offline_node_replays_missed_ops_from_log() {
     }
 
     assert!(
-        calimero_context::group_store::MembershipRepository::new(&store_online)
+        calimero_governance_store::MembershipRepository::new(&store_online)
             .is_member(&gid, &member1)
             .unwrap()
     );
     assert!(
-        calimero_context::group_store::MembershipRepository::new(&store_online)
+        calimero_governance_store::MembershipRepository::new(&store_online)
             .is_member(&gid, &member2)
             .unwrap()
     );
     assert!(
-        !calimero_context::group_store::MembershipRepository::new(&store_offline)
+        !calimero_governance_store::MembershipRepository::new(&store_offline)
             .is_member(&gid, &member1)
             .unwrap()
     );
@@ -1042,12 +1034,12 @@ fn offline_node_replays_missed_ops_from_log() {
 
     assert_same_group_view(&store_online, &store_offline, &gid);
     assert!(
-        calimero_context::group_store::MembershipRepository::new(&store_offline)
+        calimero_governance_store::MembershipRepository::new(&store_offline)
             .is_member(&gid, &member1)
             .unwrap()
     );
     assert!(
-        calimero_context::group_store::MembershipRepository::new(&store_offline)
+        calimero_governance_store::MembershipRepository::new(&store_offline)
             .is_member(&gid, &member2)
             .unwrap()
     );
@@ -1108,7 +1100,7 @@ async fn dag_applies_ops_in_causal_order() {
     let applied = dag.add_delta(delta2, &applier).await.unwrap();
     assert!(!applied, "op2 should be pending because op1 hasn't arrived");
     assert!(
-        !calimero_context::group_store::MembershipRepository::new(&store)
+        !calimero_governance_store::MembershipRepository::new(&store)
             .is_member(&gid, &member2)
             .unwrap()
     );
@@ -1118,16 +1110,12 @@ async fn dag_applies_ops_in_causal_order() {
     assert!(applied, "op1 should apply immediately");
 
     // Both members should now be present
-    assert!(
-        calimero_context::group_store::MembershipRepository::new(&store)
-            .is_member(&gid, &member1)
-            .unwrap()
-    );
-    assert!(
-        calimero_context::group_store::MembershipRepository::new(&store)
-            .is_member(&gid, &member2)
-            .unwrap()
-    );
+    assert!(calimero_governance_store::MembershipRepository::new(&store)
+        .is_member(&gid, &member1)
+        .unwrap());
+    assert!(calimero_governance_store::MembershipRepository::new(&store)
+        .is_member(&gid, &member2)
+        .unwrap());
 
     // DAG should have 1 head (op2, since it's the tip)
     let heads = dag.get_heads();
@@ -1188,16 +1176,12 @@ async fn dag_concurrent_ops_create_two_heads() {
         .await
         .unwrap();
 
-    assert!(
-        calimero_context::group_store::MembershipRepository::new(&store)
-            .is_member(&gid, &member1)
-            .unwrap()
-    );
-    assert!(
-        calimero_context::group_store::MembershipRepository::new(&store)
-            .is_member(&gid, &member2)
-            .unwrap()
-    );
+    assert!(calimero_governance_store::MembershipRepository::new(&store)
+        .is_member(&gid, &member1)
+        .unwrap());
+    assert!(calimero_governance_store::MembershipRepository::new(&store)
+        .is_member(&gid, &member2)
+        .unwrap());
 
     // Two heads (concurrent branches)
     let heads = dag.get_heads();
@@ -1317,7 +1301,7 @@ async fn dag_deep_chain_with_out_of_order_delivery() {
 
     // Nonce should be at 5 for the admin
     assert_eq!(
-        group_store::get_local_gov_nonce(&store, &gid, &admin_pk)
+        calimero_governance_store::get_local_gov_nonce(&store, &gid, &admin_pk)
             .unwrap()
             .unwrap(),
         5
@@ -1515,7 +1499,7 @@ fn concurrent_independent_member_adds_converge() {
 
     // Both nodes converge to {A, C admins + D, E members}, regardless of order.
     for (label, store) in [("node_b", &node_b), ("node_c", &node_c)] {
-        let m = calimero_context::group_store::MembershipRepository::new(store);
+        let m = calimero_governance_store::MembershipRepository::new(store);
         assert!(
             m.is_member(&gid, &admin_a_pk).unwrap(),
             "{label}: A present"
@@ -1603,7 +1587,7 @@ fn cascade_removal_on_member_kick() {
 
     let context_id = ContextId::from([0xCC; 32]);
 
-    group_store::register_context_in_group(&store, &gid, &context_id).unwrap();
+    calimero_governance_store::register_context_in_group(&store, &gid, &context_id).unwrap();
 
     // Write a ContextIdentity entry for the member (simulating context access).
     {
@@ -1639,7 +1623,7 @@ fn cascade_removal_on_member_kick() {
     apply_local_signed_group_op(&store, &op).unwrap();
 
     assert!(
-        !calimero_context::group_store::MembershipRepository::new(&store)
+        !calimero_governance_store::MembershipRepository::new(&store)
             .is_member(&gid, &member_pk)
             .unwrap()
     );
@@ -1681,8 +1665,8 @@ fn cascade_removal_deterministic_across_nodes() {
         MembershipRepository::new(store)
             .add_member(&gid, &member_pk, GroupMemberRole::Member)
             .unwrap();
-        group_store::register_context_in_group(store, &gid, &ctx1).unwrap();
-        group_store::register_context_in_group(store, &gid, &ctx2).unwrap();
+        calimero_governance_store::register_context_in_group(store, &gid, &ctx1).unwrap();
+        calimero_governance_store::register_context_in_group(store, &gid, &ctx2).unwrap();
 
         use calimero_store::key::ContextIdentity;
         let mut handle = store.handle();
@@ -1720,7 +1704,7 @@ fn cascade_removal_deterministic_across_nodes() {
             );
         }
         assert!(
-            !calimero_context::group_store::MembershipRepository::new(store)
+            !calimero_governance_store::MembershipRepository::new(store)
                 .is_member(&gid, &member_pk)
                 .unwrap(),
             "{label}: member should be removed from group"
@@ -1748,7 +1732,7 @@ fn group_member_with_keys_persists_and_retrieves() {
     let member_pk = member_sk.public_key();
     let sender_sk = PrivateKey::random(&mut rng);
 
-    calimero_context::group_store::MembershipRepository::new(&store)
+    calimero_governance_store::MembershipRepository::new(&store)
         .add_member_with_keys(
             &gid,
             &member_pk,
@@ -1758,13 +1742,11 @@ fn group_member_with_keys_persists_and_retrieves() {
         )
         .unwrap();
 
-    assert!(
-        calimero_context::group_store::MembershipRepository::new(&store)
-            .is_member(&gid, &member_pk)
-            .unwrap()
-    );
+    assert!(calimero_governance_store::MembershipRepository::new(&store)
+        .is_member(&gid, &member_pk)
+        .unwrap());
 
-    let value = calimero_context::group_store::MembershipRepository::new(&store)
+    let value = calimero_governance_store::MembershipRepository::new(&store)
         .member_value(&gid, &member_pk)
         .unwrap()
         .expect("member value should exist");
@@ -1787,11 +1769,11 @@ fn group_member_without_keys_has_none_keys() {
         .unwrap();
 
     let remote_pk = PrivateKey::random(&mut rng).public_key();
-    calimero_context::group_store::MembershipRepository::new(&store)
+    calimero_governance_store::MembershipRepository::new(&store)
         .add_member(&gid, &remote_pk, GroupMemberRole::Member)
         .unwrap();
 
-    let value = calimero_context::group_store::MembershipRepository::new(&store)
+    let value = calimero_governance_store::MembershipRepository::new(&store)
         .member_value(&gid, &remote_pk)
         .unwrap()
         .expect("member value should exist");
@@ -1811,9 +1793,9 @@ fn group_member_without_keys_has_none_keys() {
 /// governance cut").
 #[test]
 fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
-    use calimero_context::group_store::NamespaceDagService;
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_context_config::types::GovernanceParentEdge;
+    use calimero_governance_store::NamespaceDagService;
 
     let mut rng = OsRng;
     let gid = sample_group_id();
@@ -1887,17 +1869,15 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
     };
 
     // 1) "Publish locally": apply the op once.
-    group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
     read_state("after publish");
     // 2) "Re-receive via sync backfill": the same op arrives again, twice.
-    group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
     read_state("after 1st re-receive");
-    group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
     read_state("after 2nd re-receive");
 
-    assert!(
-        calimero_context::group_store::MembershipRepository::new(&store)
-            .is_member(&gid, &joiner_pk)
-            .unwrap()
-    );
+    assert!(calimero_governance_store::MembershipRepository::new(&store)
+        .is_member(&gid, &joiner_pk)
+        .unwrap());
 }

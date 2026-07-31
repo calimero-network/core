@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use calimero_context::group_store::MembershipRepository;
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::MembershipRepository;
 use calimero_server_primitives::ws::{SubscribeRequest, SubscribeResponse};
 use calimero_server_primitives::Infallible;
 use eyre::Result as EyreResult;

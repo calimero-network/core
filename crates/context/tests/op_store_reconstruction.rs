@@ -25,15 +25,15 @@
 
 use std::sync::Arc;
 
-use calimero_context::group_store::{
-    GroupKeyring, MembershipRepository, MetaRepository, NamespaceDagService, NamespaceOpLogService,
-};
 use calimero_context::scope_projection::{op_from_namespace_op, ScopeProjections};
 use calimero_context::unified_op_store::{load_scope_ops, persist_op};
 use calimero_context_client::local_governance::{
     EncryptedGroupOp, GroupOp, NamespaceOp, SignedNamespaceOp,
 };
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::{
+    GroupKeyring, MembershipRepository, MetaRepository, NamespaceDagService, NamespaceOpLogService,
+};
 use calimero_op::ScopeId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};

@@ -1144,11 +1144,11 @@ mod tests {
     // deletion), so the gate must use deny-list-aware `effective_capabilities`, not `is_member`.
     #[tokio::test]
     async fn group_subscribe_denied_for_deny_listed_inherited_member() {
-        use calimero_context::group_store::{
-            CapabilitiesRepository, DenyListRepository, MembershipRepository, NamespaceRepository,
-        };
         use calimero_context_config::types::ContextGroupId;
         use calimero_context_config::{MemberCapabilities, VisibilityMode};
+        use calimero_governance_store::{
+            CapabilitiesRepository, DenyListRepository, MembershipRepository, NamespaceRepository,
+        };
         use calimero_primitives::context::GroupMemberRole;
 
         let bob_sk = calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng);

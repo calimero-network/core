@@ -112,11 +112,6 @@ impl PredefinedEntry for key::GroupSubgroupVis {
     type DataType<'a> = key::GroupSubgroupVisValue;
 }
 
-impl PredefinedEntry for key::GroupLocalGovNonce {
-    type Codec = Borsh;
-    type DataType<'a> = u64;
-}
-
 impl PredefinedEntry for key::GroupLocalGovNonceWindow {
     type Codec = Borsh;
     type DataType<'a> = key::GroupLocalGovNonceWindowValue;

@@ -6,10 +6,9 @@
 //! The bulk of this file is the original `crates/context/src/
 //! group_store/mod.rs` moved here verbatim; helper modules
 //! (`governance_broadcast`, `metrics`, `op_events`,
-//! `registration_notify`) live alongside it. External callers
-//! continue to import via `calimero_context::group_store::*` /
-//! `calimero_context::governance_broadcast::*` through curated
-//! re-export shims kept in `calimero-context` for backward compat.
+//! `registration_notify`) live alongside it. Callers import from this
+//! crate directly — the `calimero_context::group_store` /
+//! `::governance_broadcast` aliases that eased the extraction are gone.
 
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;

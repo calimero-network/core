@@ -5,7 +5,7 @@
 //!
 //! Submodules group by axis of concern, and the public surface below
 //! mirrors what `group_store/mod.rs` previously re-exported so callers
-//! continue to see the same symbol set at `calimero_context::group_store::*`.
+//! are re-exported from the crate root, so callers see one symbol set.
 //!
 //! Issue #2480 / epic #2300. Mirror of #2306 for the namespace side.
 mod core;

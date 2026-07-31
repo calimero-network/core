@@ -86,7 +86,7 @@ pub(super) async fn drain_governance_pending(input: &StateDeltaContext, context_
         // INVARIANT: `ContextManager` serializes governance ops, so no
         // concurrent group reassignment can interleave between this lookup and
         // the membership resolution below.
-        let owning_group = match calimero_context::group_store::get_group_for_context(
+        let owning_group = match calimero_governance_store::get_group_for_context(
             datastore, context_id,
         ) {
             Ok(Some(group)) => group,
@@ -330,8 +330,8 @@ pub(crate) async fn drain_absorbed(input: &StateDeltaContext, context_id: &Conte
 /// path uses); the record is deleted only on success (idempotent on the key).
 async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId) -> Result<()> {
     use borsh::BorshDeserialize;
-    use calimero_context::group_store::AbsorbRepository;
     use calimero_context::hlc_fence::loaded_reader_app_key;
+    use calimero_governance_store::AbsorbRepository;
     use calimero_node_primitives::sync::storage_bridge::create_runtime_env;
     use calimero_node_primitives::sync::TreeLeafData;
 
@@ -470,8 +470,8 @@ where
     F: Fn(calimero_node_primitives::delta_buffer::BufferedDelta) -> Fut,
     Fut: std::future::Future<Output = Result<bool>>,
 {
-    use calimero_context::group_store::AbsorbRepository;
     use calimero_context::hlc_fence::{loaded_reader_app_key, target_reader_app_key};
+    use calimero_governance_store::AbsorbRepository;
 
     // The schema this node can read *right now*. `None` (non-group context /
     // unresolvable meta) means we cannot tell whether any record is readable,
@@ -558,7 +558,7 @@ where
 /// behind the loaded reader, so the pass is a no-op for contexts that haven't
 /// caught up. Returns immediately when nothing is buffered.
 pub(crate) async fn drain_all_absorbed(input: &StateDeltaContext) {
-    use calimero_context::group_store::AbsorbRepository;
+    use calimero_governance_store::AbsorbRepository;
 
     let store = input.node_clients.context.datastore();
     let context_ids = match AbsorbRepository::new(store).enumerate_all_contexts() {
@@ -597,7 +597,7 @@ where
     F: Fn(ContextId, calimero_node_primitives::delta_buffer::BufferedDelta) -> Fut + Clone,
     Fut: std::future::Future<Output = Result<bool>>,
 {
-    use calimero_context::group_store::AbsorbRepository;
+    use calimero_governance_store::AbsorbRepository;
 
     let context_ids = AbsorbRepository::new(store).enumerate_all_contexts()?;
     if context_ids.is_empty() {
@@ -671,7 +671,7 @@ pub(crate) async fn recover_absorbed_on_startup(input: &StateDeltaContext) {
     // stranded without this. `drain_absorbed_leaves` handles both leaf- and
     // entity-shaped records, so run it over every context with a pending
     // absorb; it is a no-op for contexts holding only delta records.
-    let leaf_contexts = match calimero_context::group_store::AbsorbRepository::new(store)
+    let leaf_contexts = match calimero_governance_store::AbsorbRepository::new(store)
         .enumerate_all_contexts()
     {
         Ok(ids) => ids,
@@ -728,8 +728,8 @@ pub(super) fn fence_and_maybe_absorb(
     bypass: bool,
     build_buffered: impl FnOnce() -> calimero_node_primitives::delta_buffer::BufferedDelta,
 ) -> Result<FenceOutcome> {
-    use calimero_context::group_store::{AbsorbRecord, AbsorbRepository};
     use calimero_context::hlc_fence::{delta_fence_decision, FenceDecision};
+    use calimero_governance_store::{AbsorbRecord, AbsorbRepository};
 
     // Drain-replay bypass: an absorb-drain re-feeds an already-decided straggler
     // through the apply path once the node reached the migration target. The

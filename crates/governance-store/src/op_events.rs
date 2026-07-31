@@ -137,7 +137,7 @@ pub enum OpEvent {
 /// events must disambiguate (e.g. by tagging each event's `group_id`
 /// with a unique value and filtering on it in `recv`). The pattern is
 /// used by `tests` in this module and in
-/// `group_store::tests::auto_follow_tests::end_to_end_event_fires_after_op_apply`.
+/// `calimero_governance_store::tests::auto_follow_tests::end_to_end_event_fires_after_op_apply`.
 static NOTIFIER: OnceLock<broadcast::Sender<OpEvent>> = OnceLock::new();
 
 fn sender() -> &'static broadcast::Sender<OpEvent> {

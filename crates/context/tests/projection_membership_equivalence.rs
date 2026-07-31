@@ -11,9 +11,6 @@
 
 use std::sync::Arc;
 
-use calimero_context::group_store::{
-    self, CapabilitiesRepository, MembershipRepository, MetaRepository, NamespaceRepository,
-};
 use calimero_context::scope_projection::{op_from_namespace_op, ScopeProjections};
 use calimero_context_client::local_governance::{
     EncryptedGroupOp, GroupOp, NamespaceOp, RootOp, SignedNamespaceOp,
@@ -22,6 +19,9 @@ use calimero_context_config::types::{
     ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
+use calimero_governance_store::{
+    self, CapabilitiesRepository, MembershipRepository, MetaRepository, NamespaceRepository,
+};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
@@ -217,7 +217,7 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         }),
     )
     .expect("sign join_ns");
-    group_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     let id1 = [0xA1; 32];
     proj.ingest_op(&op_from_namespace_op(&join_ns, None, id1, hlc(1), &[s2]));
 
@@ -234,7 +234,7 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         }),
     )
     .expect("sign join_sub");
-    group_store::apply_signed_namespace_op(&store, &join_sub).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store, &join_sub).unwrap();
     let id2 = [0xA2; 32];
     proj.ingest_op(&op_from_namespace_op(&join_sub, None, id2, hlc(2), &[id1]));
 
@@ -370,7 +370,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         }),
     )
     .unwrap();
-    group_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     proj.ingest_op(&op_from_namespace_op(
         &join_ns,
         None,
@@ -390,7 +390,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         }),
     )
     .unwrap();
-    group_store::apply_signed_namespace_op(&store, &join_sub).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store, &join_sub).unwrap();
     proj.ingest_op(&op_from_namespace_op(
         &join_sub,
         None,
@@ -448,7 +448,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         }),
     )
     .unwrap();
-    group_store::apply_signed_namespace_op(&store, &rejoin_ns).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store, &rejoin_ns).unwrap();
     proj.ingest_op(&op_from_namespace_op(
         &rejoin_ns,
         None,
@@ -528,7 +528,7 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         }),
     )
     .unwrap();
-    group_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     let join_sub = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
@@ -540,7 +540,7 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         }),
     )
     .unwrap();
-    group_store::apply_signed_namespace_op(&store, &join_sub).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store, &join_sub).unwrap();
     assert!(
         MembershipRepository::new(&store)
             .is_member(&subgroup, &joiner)
@@ -636,7 +636,7 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         }),
     )
     .unwrap();
-    group_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
     let join_sub = SignedNamespaceOp::sign(
         &joiner_sk,
         ns.to_bytes().into(),
@@ -648,7 +648,7 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         }),
     )
     .unwrap();
-    group_store::apply_signed_namespace_op(&store, &join_sub).unwrap();
+    calimero_governance_store::apply_signed_namespace_op(&store, &join_sub).unwrap();
 
     let id_root_join = [0x5A; 32];
     let id_sub_join = [0x5B; 32];

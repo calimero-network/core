@@ -382,7 +382,7 @@ impl PublishReadiness {
 ///
 /// `authoritative_ack` is true when at least one ack came from an
 /// owner / admin / TEE identity (see
-/// `group_store::membership::is_authoritative_namespace_identity`).
+/// `calimero_governance_store::membership::is_authoritative_namespace_identity`).
 ///
 /// `Ready` requires `authoritative_ack && ack_count > 0` — an
 /// authoritative ack cannot exist without an ack, so `authoritative_ack`

@@ -6,12 +6,12 @@
 
 use std::sync::Arc;
 
-use calimero_context::group_store::{
-    apply_local_signed_group_op, MembershipRepository, MetaRepository, NamespaceRepository,
-};
 use calimero_context::handlers::get_cascade_status::collect_cascade_status;
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::{
+    apply_local_signed_group_op, MembershipRepository, MetaRepository, NamespaceRepository,
+};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};

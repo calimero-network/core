@@ -8,10 +8,9 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
-    GroupLocalGovNonce, GroupLocalGovNonceWindow, GroupLocalGovNonceWindowValue,
-    GroupMemberContext, GroupOpHead, GroupOpHeadValue, GroupOpLog, NamespaceGovHead,
-    NamespaceGovOp, NamespaceIdentity, GROUP_MEMBER_CONTEXT_PREFIX, GROUP_OP_LOG_PREFIX,
-    NAMESPACE_GOV_OP_PREFIX,
+    GroupLocalGovNonceWindow, GroupLocalGovNonceWindowValue, GroupMemberContext, GroupOpHead,
+    GroupOpHeadValue, GroupOpLog, NamespaceGovHead, NamespaceGovOp, NamespaceIdentity,
+    GROUP_MEMBER_CONTEXT_PREFIX, GROUP_OP_LOG_PREFIX, NAMESPACE_GOV_OP_PREFIX,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -22,11 +21,10 @@ use crate::nonce_window::NonceWindow;
 /// Read the contiguous applied-nonce floor for a (group, signer), or `None` if
 /// nothing has ever been persisted.
 ///
-/// Reads the floor out of the authoritative [`GroupLocalGovNonceWindow`],
-/// falling back to the legacy [`GroupLocalGovNonce`] high-water mark for
-/// databases written before the window existed. It returns the FLOOR ONLY —
-/// callers that need to know whether a specific (possibly out-of-order) nonce
-/// was applied must use [`load_nonce_window`] + [`NonceWindow::contains`].
+/// Reads the floor out of the [`GroupLocalGovNonceWindow`], which is the only
+/// place it lives. Returns the FLOOR ONLY — callers that need to know whether a
+/// specific (possibly out-of-order) nonce was applied must use
+/// [`load_nonce_window`] + [`NonceWindow::contains`].
 pub fn get_local_gov_nonce(
     store: &Store,
     group_id: &ContextGroupId,
@@ -34,11 +32,9 @@ pub fn get_local_gov_nonce(
 ) -> EyreResult<Option<u64>> {
     let handle = store.handle();
     let gid = group_id.to_bytes();
-    if let Some(window) = handle.get(&GroupLocalGovNonceWindow::new(gid, *signer))? {
-        return Ok(Some(window.floor));
-    }
-    // Legacy fallback: a pre-window database only has the single-`u64` key.
-    Ok(handle.get(&GroupLocalGovNonce::new(gid, *signer))?)
+    Ok(handle
+        .get(&GroupLocalGovNonceWindow::new(gid, *signer))?
+        .map(|window| window.floor))
 }
 
 /// Force the persisted window to a bare floor with an empty above-set.
@@ -61,11 +57,8 @@ pub fn set_local_gov_nonce(
 
 /// Load the applied-nonce window for a (group, signer).
 ///
-/// Reads the authoritative [`GroupLocalGovNonceWindow`] (floor + above-set in
-/// one value). If it is absent, migrates from the legacy [`GroupLocalGovNonce`]
-/// floor — a pre-window database loads as `floor` with an empty above-set and
-/// dedups exactly like the old `nonce <= last` high-water-mark guard. Both
-/// absent → a fresh `(0, {})` window.
+/// Reads the [`GroupLocalGovNonceWindow`] (floor + above-set in one value).
+/// Absent → a fresh `(0, {})` window.
 pub fn load_nonce_window(
     store: &Store,
     group_id: &ContextGroupId,
@@ -73,13 +66,12 @@ pub fn load_nonce_window(
 ) -> EyreResult<NonceWindow> {
     let handle = store.handle();
     let gid = group_id.to_bytes();
-    if let Some(window) = handle.get(&GroupLocalGovNonceWindow::new(gid, *signer))? {
-        return Ok(NonceWindow::new(window.floor, window.above));
-    }
-    let floor = handle
-        .get(&GroupLocalGovNonce::new(gid, *signer))?
-        .unwrap_or(0);
-    Ok(NonceWindow::new(floor, []))
+    Ok(handle
+        .get(&GroupLocalGovNonceWindow::new(gid, *signer))?
+        .map_or_else(
+            || NonceWindow::new(0, []),
+            |window| NonceWindow::new(window.floor, window.above),
+        ))
 }
 
 /// Persist an applied-nonce window under [`GroupLocalGovNonceWindow`] as a
@@ -89,8 +81,6 @@ pub fn load_nonce_window(
 /// floor-without-above state, so neither an already-applied nonce can be
 /// resurrected as unapplied nor an unapplied one skipped.
 ///
-/// The legacy [`GroupLocalGovNonce`] key is intentionally NOT written: it is
-/// read-only migration state, superseded by the window value on first store.
 pub fn store_nonce_window(
     store: &Store,
     group_id: &ContextGroupId,
@@ -117,13 +107,11 @@ fn delete_local_gov_nonce_for_signer(
     let mut handle = store.handle();
     let gid = group_id.to_bytes();
     handle.delete(&GroupLocalGovNonceWindow::new(gid, *signer))?;
-    // Drop the legacy floor key too, so a future signer reusing this
-    // (group, signer) doesn't inherit a stale migration floor.
-    handle.delete(&GroupLocalGovNonce::new(gid, *signer))?;
     Ok(())
 }
 
-/// Delete all [`GroupLocalGovNonce`] rows for current group members (best-effort; ignores missing).
+/// Delete all [`GroupLocalGovNonceWindow`] rows for current group members
+/// (best-effort; ignores missing).
 fn delete_local_gov_nonces_for_listed_members(
     store: &Store,
     group_id: &ContextGroupId,

@@ -40,7 +40,7 @@
 //! AND lets us assert that the second (Op B) apply lands in the
 //! predicate-skip branch, which is the C1 regression guard.
 
-use calimero_context::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
+use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use std::sync::Arc;
 
 use calimero_context::governance_dag::{signed_op_to_delta, GroupGovernanceApplier};

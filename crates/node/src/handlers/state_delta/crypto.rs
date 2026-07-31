@@ -4,8 +4,8 @@
 //! delta's group encryption key (with a bounded wait for a late
 //! `KeyDelivery`) and decrypting the borsh-encoded storage delta.
 
-use calimero_context::group_store::{GroupKeyring, NamespaceRepository};
 use calimero_crypto::Nonce;
+use calimero_governance_store::{GroupKeyring, NamespaceRepository};
 use calimero_node_primitives::sync::{SealedDeltaPayload, MAX_STATE_DELTA_PLAINTEXT_BYTES};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PrivateKey;

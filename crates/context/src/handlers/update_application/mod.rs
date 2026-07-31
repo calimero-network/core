@@ -567,9 +567,21 @@ fn verify_appkey_continuity(
         );
     };
 
-    // Check signerId continuity
-    // Note: Empty signer_id is used as a sentinel for legacy non-bundle applications.
-    // We allow updates from/to legacy applications with empty signer_id for backwards compatibility.
+    // Check signerId continuity.
+    //
+    // An empty `signer_id` means UNSIGNED, not "legacy". It is minted today, by
+    // live paths: a dev or URL install has no bundle manifest to sign, and the
+    // sync layer writes one for every non-bundle application it fetches from a
+    // peer (`blob_fetch`). So accepting it is not a compatibility shim to be
+    // removed — refusing it would mean no unsigned application could ever be
+    // upgraded, including one a late joiner acquired by blob sync.
+    //
+    // What the gate does enforce, and what actually matters:
+    //   signed → same signer      allow  (the ordinary upgrade)
+    //   signed → different signer refuse (a hijack: someone else's key)
+    //   signed → unsigned         refuse (a downgrade out of signature coverage)
+    //   unsigned → signed         allow  (adopting signing is an improvement)
+    //   unsigned → unsigned       allow  (nothing to compare)
     let old_signer_id = old_app_meta.signer_id.as_ref();
     let new_signer_id = new_app_meta.signer_id.as_ref();
 
@@ -596,13 +608,13 @@ fn verify_appkey_continuity(
         error!(
             context_id = %context.id,
             old_signer_id = %old_signer_id,
-            "Security downgrade rejected: Cannot update from signed application to unsigned (legacy) application"
+            "Security downgrade rejected: cannot update from a signed application to an unsigned one"
         );
         bail!(
             "Security downgrade rejected: Cannot update from signed application (signerId: '{}') \
-             to unsigned (legacy) application. \
+             to an unsigned one. \
              Signed-to-unsigned downgrades are disallowed to prevent security vulnerabilities. \
-             If you need to use a legacy unsigned application, you must create a new context.",
+             To run an unsigned application, create a new context for it.",
             old_signer_id
         );
     }
@@ -612,7 +624,7 @@ fn verify_appkey_continuity(
         info!(
             context_id = %context.id,
             new_signer_id = %new_signer_id,
-            "Upgrading from unsigned (legacy) to signed application - security improvement"
+            "Upgrading from an unsigned to a signed application - security improvement"
         );
     }
 
@@ -1130,9 +1142,15 @@ pub(crate) struct MigrateExportMissing {
 /// Decode the verdict of a `__calimero_migration_check` invocation from its
 /// `outcome.returns`.
 ///
+/// Only ever called for a module whose export table declares the check — the
+/// caller checks that first (see [`run_migration_check`]), so an app that
+/// defines no check never reaches here.
+///
 /// Decision matrix:
-/// - **Missing export** (`MethodNotFound`) ⇒ `Ok(true)`: an app that defines no
-///   check is never blocked. This keeps the flow backwards-compatible.
+/// - **`MethodNotFound`** ⇒ `Ok(false)`: fail-closed. The export table said the
+///   check exists, so failing to resolve it is a broken module, not an app
+///   without a check. Treating it as a pass is how a declared check silently
+///   stopped running.
 /// - **Any other execution error** (a WASM trap, host error, …) ⇒ `Ok(false)`:
 ///   fail-closed. A check that could not complete must not be treated as a pass.
 /// - **`Ok(Some(bytes))`** ⇒ `borsh::from_slice::<bool>(&bytes)`. The verdict
@@ -1154,11 +1172,17 @@ fn decode_migration_check_verdict(
     use calimero_runtime::errors::{FunctionCallError, MethodResolutionError};
 
     match returns {
-        // No `__calimero_migration_check` export ⇒ no check defined ⇒ never
-        // block (backwards compatible).
+        // The export table declared the check (the caller verified that), so an
+        // unresolvable method is a broken module. Fail closed.
         Err(FunctionCallError::MethodResolutionError(MethodResolutionError::MethodNotFound {
             ..
-        })) => Ok(true),
+        })) => {
+            warn!(
+                "migration_check is exported but could not be resolved; failing closed \
+                 (logical abort)"
+            );
+            Ok(false)
+        }
         // The export exists but trapped / errored. Fail closed: a check that
         // could not run must not pass.
         Err(e) => {
@@ -1180,7 +1204,17 @@ fn decode_migration_check_verdict(
 }
 
 /// Run the app's `__calimero_migration_check` export over the produced v2 root,
-/// returning its verdict (or `Ok(true)` when no check is defined).
+/// returning its verdict (or `Ok(true)` when the module declares no check).
+///
+/// Whether a check exists is read from the module's **export table**, not
+/// inferred from a `MethodNotFound` on the call. `#[app::migration_check]` is
+/// opt-in, so most apps genuinely define none and must not be blocked — but
+/// inferring that from the call's error also swallowed the opposite case, where
+/// an app *does* define a check and the method cannot be resolved (a stripped
+/// export, or the wrong service module of a multi-service bundle). That read as
+/// "no check defined" and passed, so the gate could not tell a missing feature
+/// from a missing enforcement. Asking the module separates them: undeclared
+/// skips without invoking, declared-but-unresolvable fails closed.
 ///
 /// The check is a read-only predicate: it reads the still-v1 old root via
 /// `read_raw()` and receives the produced `new_state_bytes` (the same bytes
@@ -1210,6 +1244,17 @@ async fn run_migration_check(
     storage: ContextStorage,
 ) -> eyre::Result<(bool, ContextStorage)> {
     let context_id = context.id;
+
+    // No declaration, no check — and no invocation either, so a resolution
+    // failure can never be mistaken for this case.
+    if !module.exports_function("__calimero_migration_check") {
+        debug!(
+            %context_id,
+            "app declares no migration_check export; migrating unchecked"
+        );
+        return Ok((true, storage));
+    }
+
     // The check runs against the SAME uncommitted staging buffer the migrate
     // wrote into: `new` (and its collections) reads the produced v2 state
     // through the shadow, while `old` (via `read_raw`) still sees the pristine
@@ -1935,15 +1980,16 @@ mod tests {
     }
 
     #[test]
-    fn test_appkey_continuity_passes_with_empty_signer_ids_legacy_apps() {
-        // Setup: Test backward compatibility with legacy unsigned applications
+    fn test_appkey_continuity_passes_with_empty_signer_ids_unsigned_apps() {
+        // Both sides unsigned: nothing to compare, so the update is allowed.
         let store = create_test_store();
 
         // Create old and new application IDs
         let old_app_id = ApplicationId::from([10u8; 32]);
         let new_app_id = ApplicationId::from([20u8; 32]);
 
-        // Create application metadata with empty signerIds (legacy applications)
+        // Empty signerId on both sides = unsigned, which dev/URL installs and
+        // blob-synced non-bundle apps produce today.
         let old_app_meta = create_app_meta("");
         let new_app_meta = create_app_meta("");
 
@@ -1960,18 +2006,18 @@ mod tests {
         let context_id = ContextId::from([1u8; 32]);
         let context = create_test_context(context_id, old_app_id);
 
-        // Verify AppKey continuity passes (legacy to legacy is allowed)
+        // Verify AppKey continuity passes (unsigned to unsigned is allowed)
         let result = verify_appkey_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_ok(),
-            "AppKey continuity check should pass for legacy apps: {:?}",
+            "AppKey continuity check should pass for unsigned apps: {:?}",
             result.err()
         );
     }
 
     #[test]
     fn test_appkey_continuity_passes_when_upgrading_from_unsigned_to_signed() {
-        // Setup: Test upgrading from unsigned (legacy) to signed application
+        // Setup: upgrading from an unsigned to a signed application
         let store = create_test_store();
         let new_signer_id = "did:key:z6MkNewSignerKey123456789";
 
@@ -1979,7 +2025,7 @@ mod tests {
         let old_app_id = ApplicationId::from([10u8; 32]);
         let new_app_id = ApplicationId::from([20u8; 32]);
 
-        // Create old app with empty signerId (legacy) and new app with signerId
+        // Create old app with empty signerId (unsigned) and new app with signerId
         let old_app_meta = create_app_meta("");
         let new_app_meta = create_app_meta(new_signer_id);
 
@@ -2007,7 +2053,7 @@ mod tests {
 
     #[test]
     fn test_appkey_continuity_rejects_downgrade_from_signed_to_unsigned() {
-        // Setup: Test downgrading from signed to unsigned (legacy) application
+        // Setup: downgrading from a signed to an unsigned application
         // Security: This is explicitly rejected to prevent security vulnerabilities
         let store = create_test_store();
         let old_signer_id = "did:key:z6MkOldSignerKey123456789";
@@ -2016,9 +2062,9 @@ mod tests {
         let old_app_id = ApplicationId::from([10u8; 32]);
         let new_app_id = ApplicationId::from([20u8; 32]);
 
-        // Create old app with signerId and new app without signerId (legacy)
+        // Create old app with signerId and new app without one (unsigned)
         let old_app_meta = create_app_meta(old_signer_id);
-        let new_app_meta = create_app_meta(""); // Empty signerId (legacy)
+        let new_app_meta = create_app_meta(""); // Empty signerId = unsigned
 
         // Store both applications in the database
         let mut handle = store.handle();
@@ -2607,11 +2653,18 @@ mod tests {
         );
     }
 
-    /// A missing `__calimero_migration_check` export must be treated as a pass
-    /// (`Ok(true)`) so apps that do not define a check are never blocked — the
-    /// backwards-compatible default.
+    /// `MethodNotFound` reaching the decoder means the export table declared the
+    /// check and the method still could not be resolved — a broken module, so it
+    /// fails closed.
+    ///
+    /// "App defines no check" is decided earlier, off the module's export table,
+    /// and never invokes the check at all (see `run_migration_check`). That
+    /// separation is the point: while this arm returned `Ok(true)`, a declared
+    /// check that failed to resolve — a stripped export, or the wrong service
+    /// module of a multi-service bundle — was indistinguishable from an app that
+    /// never had one, and passed.
     #[test]
-    fn migration_check_verdict_missing_export_passes() {
+    fn migration_check_verdict_unresolvable_declared_export_fails_closed() {
         use calimero_runtime::errors::{FunctionCallError, MethodResolutionError};
 
         let returns: Result<Option<Vec<u8>>, FunctionCallError> = Err(
@@ -2620,11 +2673,36 @@ mod tests {
             }),
         );
 
-        let verdict =
-            super::decode_migration_check_verdict(returns).expect("missing export must not error");
+        let verdict = super::decode_migration_check_verdict(returns)
+            .expect("an unresolvable export must not error");
         assert!(
-            verdict,
-            "a missing migration_check export must pass (Ok(true)) for backwards compatibility"
+            !verdict,
+            "a declared but unresolvable migration_check must fail closed, not pass"
+        );
+    }
+
+    /// The source-level guarantee behind the test above: the export-table probe
+    /// gates the invocation, so the decoder is only ever reached for a module
+    /// that declares the check.
+    ///
+    /// Asserted on source order because the alternative is a WASM fixture pair
+    /// (one module with the export, one without) built and run per test — and
+    /// what could regress here is the probe being dropped or moved after the
+    /// `module.run` call, which is a source-order property.
+    #[test]
+    fn migration_check_probes_the_export_table_before_invoking() {
+        let source = include_str!("mod.rs");
+
+        let probe = source
+            .find(r#"if !module.exports_function("__calimero_migration_check")"#)
+            .expect("run_migration_check must probe the export table");
+        let invocation = source
+            .find(r#""__calimero_migration_check","#)
+            .expect("the check invocation should exist in this file");
+        assert!(
+            probe < invocation,
+            "the export-table probe must gate the invocation; without it a \
+             MethodNotFound cannot be told apart from an app that declares no check"
         );
     }
 

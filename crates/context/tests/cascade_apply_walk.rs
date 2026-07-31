@@ -7,15 +7,15 @@
 //! (`handlers/upgrade_group.rs::dispatch_cascade`) is not exercised
 //! here: it sits one layer above and requires a full actor context.
 //! The cascade engine's *behaviour* lives in `cascade::walk_for_predicate`
-//! + the apply arm in `group_store::apply_group_op_mutations`, and that
+//! + the apply arm in `calimero_governance_store::apply_group_op_mutations`, and that
 //!   is exactly what `apply_local_signed_group_op` drives.
 
-use calimero_context::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
+use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use std::sync::Arc;
 
-use calimero_context::group_store::apply_local_signed_group_op;
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::apply_local_signed_group_op;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};

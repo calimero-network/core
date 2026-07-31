@@ -20,9 +20,9 @@
 //! duplicate iff it's `<= floor` or already in the set; otherwise it's
 //! applied once and the floor advances through any now-contiguous run.
 //!
-//! Persistence keeps `floor` under the existing `GroupLocalGovNonce` key
-//! (so old single-`u64` rows are read as `floor` with an empty set — no
-//! migration) and the above-floor set under a sibling key.
+//! Persistence keeps the whole window — floor plus above-floor set — in ONE
+//! value under `GroupLocalGovNonceWindow`, so it lands in a single atomic
+//! `put` with no cross-key crash window.
 
 use std::collections::BTreeSet;
 

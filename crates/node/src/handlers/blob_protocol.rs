@@ -5,8 +5,8 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use calimero_context::group_store::{get_group_for_context, MembershipRepository};
 use calimero_context_client::client::{ContextClient, ContextRegistry};
+use calimero_governance_store::{get_group_for_context, MembershipRepository};
 use calimero_network_primitives::{
     blob_types::{BlobAuthPayload, BlobChunk, BlobRequest, BlobResponse},
     stream::{Message as StreamMessage, Stream},
@@ -418,12 +418,12 @@ mod tests {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use calimero_context::group_store::{
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use calimero_governance_store::{
         register_context_in_group, CapabilitiesRepository, MembershipRepository,
         NamespaceRepository,
     };
-    use calimero_context_config::types::ContextGroupId;
-    use calimero_context_config::{MemberCapabilities, VisibilityMode};
     use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload, BlobRequest};
     use calimero_primitives::blobs::BlobId;
     use calimero_primitives::context::{ContextId, GroupMemberRole};

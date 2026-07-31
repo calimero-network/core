@@ -15,13 +15,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use calimero_context::governance_broadcast::ns_topic;
-use calimero_context::group_store::NamespaceGovernance;
-use calimero_context::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use calimero_context_client::local_governance::{
     AckRouter, NamespaceOp, NamespaceTopicMsg, ReadinessProbe, RootOp,
 };
 use calimero_context_config::types::{ContextGroupId, SignedGroupOpenInvitation};
+use calimero_governance_store::governance_broadcast::ns_topic;
+use calimero_governance_store::NamespaceGovernance;
+use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::application::ApplicationId;
@@ -125,7 +125,7 @@ pub async fn join_namespace(
     // step 1: validate invitation expiration locally.
     let group_id = invitation.invitation.group_id;
     let expiration = invitation.invitation.expiration_timestamp;
-    if expiration != 0 && calimero_context::group_store::now_secs() > expiration {
+    if expiration != 0 && calimero_governance_store::now_secs() > expiration {
         return Err(JoinError::InvalidInvitation("invitation expired".into()));
     }
 
@@ -134,7 +134,7 @@ pub async fn join_namespace(
     // root of trust for readiness-beacon / ack / heartbeat verification and
     // `is_admin`, and genesis won't overwrite a seeded non-placeholder admin —
     // so a forged invitation must never reach the seed.
-    calimero_context::group_store::NamespaceMembershipService::verify_open_invitation_signature(
+    calimero_governance_store::NamespaceMembershipService::verify_open_invitation_signature(
         &invitation,
     )
     .map_err(|e| JoinError::InvalidInvitation(format!("invalid invitation signature: {e}")))?;
@@ -373,7 +373,7 @@ pub async fn await_namespace_ready(
     // point is self-contained regardless of call order. The `join_namespace`
     // fast path already verifies before seeding, but a direct/refactored caller
     // of `await_namespace_ready` must not be able to bypass the check.
-    calimero_context::group_store::NamespaceMembershipService::verify_open_invitation_signature(
+    calimero_governance_store::NamespaceMembershipService::verify_open_invitation_signature(
         &invitation,
     )
     .map_err(|e| ReadyError::InvalidInvitation(format!("invalid invitation signature: {e}")))?;
@@ -381,7 +381,7 @@ pub async fn await_namespace_ready(
     // step 3: publish MemberJoined via three-phase contract.
     // Local fast-fail on an already-expired invitation; the
     // authoritative deterministic expiry gate runs on apply.
-    let now_secs = calimero_context::group_store::now_secs();
+    let now_secs = calimero_governance_store::now_secs();
     let expiration = invitation.invitation.expiration_timestamp;
     if expiration != 0 && now_secs > expiration {
         return Err(ReadyError::InvalidInvitation(

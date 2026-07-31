@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context::group_store::enumerate_group_contexts;
-use calimero_context::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::enumerate_group_contexts;
+use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use calimero_server_primitives::admin::{NamespaceUsage, NamespaceUsageBytes, UsageResponse};
 use calimero_store::db::Column;
 use calimero_store::key::{
@@ -323,7 +323,7 @@ mod tests {
         let ctx_out = ContextId::from([0xBB; 32]);
 
         // Register ctx_in in the namespace; ctx_out is written but unattached.
-        calimero_context::group_store::register_context_in_group(&store, &ns, &ctx_in)
+        calimero_governance_store::register_context_in_group(&store, &ns, &ctx_in)
             .expect("register context");
 
         write_state(&store, ctx_in, 0x01, 100);

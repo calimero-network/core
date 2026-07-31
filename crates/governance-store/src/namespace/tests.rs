@@ -1,10 +1,10 @@
-//! Tests for `group_store::namespace::*`. Extracted from the monolithic
+//! Tests for `calimero_governance_store::namespace::*`. Extracted from the monolithic
 //! `group_store/tests.rs` as part of issue #2480 (epic #2300).
 //!
 //! Helpers shared with non-namespace tests (`test_store`, `test_group_id`,
 //! `test_meta`, `dummy_member_removed_op`, `nest_for_test`,
 //! `sample_meta_with_admin`) are imported from the parent
-//! `group_store::test_fixtures` module. Namespace-only inline helpers
+//! `calimero_governance_store::test_fixtures` module. Namespace-only inline helpers
 //! (`raw_namespace_dag_heads`) came along with the move.
 
 use calimero_governance_types::NamespaceId;

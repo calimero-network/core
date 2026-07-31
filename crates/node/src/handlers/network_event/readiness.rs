@@ -19,9 +19,11 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use actix::{AsyncContext, WrapFuture};
-use calimero_context::governance_broadcast::{beacon_admission_provable, verify_readiness_beacon};
-use calimero_context::group_store::now_millis;
 use calimero_context_client::local_governance::{ReadinessProbe, SignedReadinessBeacon};
+use calimero_governance_store::governance_broadcast::{
+    beacon_admission_provable, verify_readiness_beacon,
+};
+use calimero_governance_store::now_millis;
 use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
