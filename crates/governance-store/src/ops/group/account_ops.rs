@@ -155,7 +155,36 @@ pub(crate) fn apply_device_unlinked(
 ) -> EyreResult<()> {
     let group_id = *ctx.group_id();
 
+    // A proof establishes that its signer holds the root of the account it NAMES —
+    // and nothing else. The `DeviceId` inside is whatever the signer chose; owning
+    // that device is not a precondition of signing a statement about it. So the
+    // proof alone is not self-service authority: an attacker holding any account
+    // root could name their own account beside somebody else's device and spend
+    // that replica id for good, since a tombstone is terminal. That is the same
+    // hole the admin path was gated for, arriving by the other door.
+    //
+    // The stored binding is what ties the two together. `authz`'s unified-plane
+    // arm already requires it; this is the governance path catching up.
+    //
+    // A device with NO binding here is deliberately not a refusal — an admin must
+    // still be able to eject one whose link this replica has not folded. It only
+    // means the self-service claim cannot be checked, so it does not authorize, and
+    // the admin gate below decides.
+    let device_belongs_to_account = AccountBindingRepository::new(ctx.store())
+        .raw_binding(&group_id, *device)?
+        .is_some_and(|binding| binding.account == *account.as_bytes());
+
     let self_service = match proof {
+        Some(_) if !device_belongs_to_account => {
+            tracing::warn!(
+                group_id = ?group_id,
+                account = %account,
+                device = %device,
+                "account device unlink: revocation proof names an account this group \
+                 does not have this device bound to; falling back to the admin gate"
+            );
+            false
+        }
         Some(proof) => match proof.authorises(*account, *device) {
             Ok(()) => true,
             Err(err) => {

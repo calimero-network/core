@@ -10175,6 +10175,190 @@ mod account_plane_apply {
     }
 
     #[test]
+    fn a_root_signed_proof_revokes_the_account_s_own_device_without_an_admin() {
+        // The self-service path itself — the lost-laptop case, where the owner may be
+        // the only person who knows. It has to work for a NON-ADMIN, or the feature
+        // is admin-only revocation with extra steps.
+        //
+        // Kept beside the negative case deliberately: the gate that stops an attacker
+        // spending somebody else's device id is one `binding.account == account`
+        // check away from refusing every legitimate self-revocation too, and nothing
+        // else in the suite would notice.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let owner_sk = key(9);
+        let repo = MembershipRepository::new(&store);
+        repo.add_member(&gid, &owner_sk.public_key(), GroupMemberRole::Member)
+            .unwrap();
+
+        let owner_root = key(9);
+        let genesis = AccountGenesis::new(owner_root.public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [5u8; 16]);
+        let cert = sign_device_cert(
+            &owner_root,
+            account,
+            device,
+            &key(5).public_key(),
+            &KemPublicKey::from([5u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::sign_account_endorsement(&owner_sk, account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+        let bindings = AccountBindingRepository::new(&store);
+        assert_eq!(bindings.live_bindings(&gid).unwrap().len(), 1);
+
+        // The owner's own root withdraws its own device, and the op is signed by a
+        // plain member — NOT the admin. The proof is the whole authority.
+        let proof = calimero_account::SignedDeviceRevocation {
+            genesis,
+            chain: vec![],
+            revocation: calimero_account::sign_device_revocation(&owner_root, account, device, 0)
+                .unwrap(),
+        };
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &owner_sk,
+            GroupOp::AccountDeviceUnlinked {
+                account,
+                device,
+                proof: Some(proof),
+            },
+        )
+        .unwrap();
+
+        assert!(
+            bindings.is_revoked(&gid, device).unwrap(),
+            "an account's own root-signed proof must withdraw its own device with no \
+             admin involved — that is the lost-laptop case the proof exists for"
+        );
+        assert!(
+            bindings.live_bindings(&gid).unwrap().is_empty(),
+            "and the binding must no longer be in force"
+        );
+    }
+
+    #[test]
+    fn a_revocation_proof_does_not_authorize_revoking_someone_elses_device() {
+        // The self-service path's hole, and it reintroduces on this path exactly the
+        // bug the admin path was fixed for. A `SignedDeviceRevocation` is a
+        // self-signed statement: it proves the signer holds the root of the account
+        // it NAMES, and nothing more. The `DeviceId` in it is whatever the signer
+        // chose — owning that device is not a precondition of signing about it.
+        //
+        // So an attacker who holds any account root signs "my account withdraws
+        // device D" for the victim's D, and if `self_service` rests on the proof
+        // alone it is honoured. Revocation is TERMINAL, so that spends the victim's
+        // replica id for good: it can never be linked again, in any account. A
+        // permanent denial of service any account holder could inflict on any other.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let victim_sk = key(9);
+        let attacker_sk = key(7);
+        let repo = MembershipRepository::new(&store);
+        repo.add_member(&gid, &victim_sk.public_key(), GroupMemberRole::Member)
+            .unwrap();
+        repo.add_member(&gid, &attacker_sk.public_key(), GroupMemberRole::Member)
+            .unwrap();
+
+        // The victim's device, linked and in force.
+        let victim_root = key(9);
+        let genesis = AccountGenesis::new(victim_root.public_key(), [9u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [5u8; 16]);
+        let cert = sign_device_cert(
+            &victim_root,
+            account,
+            device,
+            &key(5).public_key(),
+            &KemPublicKey::from([5u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::sign_account_endorsement(&victim_sk, account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+        let bindings = AccountBindingRepository::new(&store);
+        assert_eq!(bindings.live_bindings(&gid).unwrap().len(), 1);
+
+        // The attacker's OWN account, and a proof naming it beside the victim's
+        // device. Every signature here is genuine; that is the point.
+        let attacker_root = key(7);
+        let attacker_genesis = AccountGenesis::new(attacker_root.public_key(), [7u8; 16]);
+        let attacker_account = attacker_genesis.account_id();
+        let forged = calimero_account::SignedDeviceRevocation {
+            genesis: attacker_genesis,
+            chain: vec![],
+            revocation: calimero_account::sign_device_revocation(
+                &attacker_root,
+                attacker_account,
+                device,
+                0,
+            )
+            .unwrap(),
+        };
+        assert!(
+            forged.authorises(attacker_account, device).is_ok(),
+            "the proof itself is valid — it proves account ownership, not device \
+             ownership, which is exactly why it cannot stand alone"
+        );
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &attacker_sk,
+            GroupOp::AccountDeviceUnlinked {
+                account: attacker_account,
+                device,
+                proof: Some(forged),
+            },
+        )
+        .unwrap();
+
+        assert!(
+            !bindings.is_revoked(&gid, device).unwrap(),
+            "a proof for the attacker's OWN account must not spend a device bound to \
+             somebody else's — the tombstone is terminal"
+        );
+        assert_eq!(
+            bindings.live_bindings(&gid).unwrap().len(),
+            1,
+            "the victim's device must still be in force"
+        );
+    }
+
+    #[test]
     fn a_plain_member_cannot_revoke_another_members_device() {
         // A revocation is terminal — the DeviceId is spent for good — so an
         // ungated one is a permanent denial of service any member could inflict
