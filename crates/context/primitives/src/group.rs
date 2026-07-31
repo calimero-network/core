@@ -865,6 +865,17 @@ pub struct PairDeviceCompleteRequest {
     /// a request without it cannot be completed, because then the three values
     /// would be bare assertions by whoever sent them.
     pub statement: [u8; 64],
+    /// The confirmation code the account holder was read from the pairing
+    /// device, checked against the one this side derives from the key material
+    /// that actually arrived.
+    ///
+    /// Required, so the check cannot be skipped. The signature above proves the
+    /// keys and the statement agree with each other, which an attacker holding
+    /// both can always arrange; this is the value it cannot produce, because it
+    /// comes from the other device by a channel it does not control. If the code
+    /// travels beside the keys it describes it proves nothing — that is a
+    /// property of the channel the operator chooses, not of this field.
+    pub confirmation_code: String,
 }
 
 /// What pairing established.
@@ -882,14 +893,9 @@ pub struct PairDeviceCompleteResponse {
     /// missing. It does mean the device stays unable to read until that pull
     /// lands, which is worth surfacing rather than reporting a flat success.
     pub key_delivered: bool,
-    /// The confirmation code derived from the key material this certified, for
-    /// the operator to compare against the one the pairing device printed.
-    ///
-    /// Reported after the fact rather than required up front, deliberately: a
-    /// code supplied as input would be compared by the same machine that already
-    /// accepted the payload, which checks nothing. The comparison only means
-    /// something where the two halves of the exchange actually meet, which is a
-    /// person.
+    /// The confirmation code for the key material that was certified — the same
+    /// value the request had to carry, echoed so the operator can see what the
+    /// certificate actually names.
     pub confirmation_code: String,
 }
 

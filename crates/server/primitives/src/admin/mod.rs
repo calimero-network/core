@@ -2041,12 +2041,28 @@ pub struct PairDeviceCompleteApiRequest {
     /// sender, and certifying them would make attacker-supplied keys a trusted
     /// device of this account.
     pub statement: String,
+    /// The confirmation code the account holder was read from the pairing
+    /// device, e.g. `7BC0-DAAC-CCB4-84A4`. Grouping and case are ignored.
+    ///
+    /// Required so the comparison cannot be skipped: this side derives the code
+    /// for the key material that actually arrived and refuses a mismatch. Its
+    /// value depends on the code reaching the operator independently of the
+    /// payload — carried beside the keys, it proves nothing.
+    pub confirmation_code: String,
 }
 
 impl Validate for PairDeviceCompleteApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
         // 64 hex chars for each 32-byte key, 128 for the 64-byte signature.
+        // The confirmation code is free-form here (grouping and case are
+        // normalized at the point of comparison, which is the only place that
+        // can say whether it is *right*); an empty one is refused up front.
+        if self.confirmation_code.trim().is_empty() {
+            errors.push(ValidationError::EmptyField {
+                field: "confirmationCode",
+            });
+        }
         for (field, value, expected) in [
             ("deviceId", &self.device_id, 64),
             ("kemPublicKey", &self.kem_public_key, 64),
@@ -2084,9 +2100,9 @@ pub struct PairDeviceCompleteApiResponseData {
     /// authority, and the device's own sync pull re-requests the key. It does
     /// mean the device cannot read until that lands.
     pub key_delivered: bool,
-    /// The confirmation code for the key material this certified. Compare it
-    /// with the one the pairing device printed; a mismatch means the payload was
-    /// altered in transit and the device should be revoked.
+    /// The confirmation code for the key material this certified — the same value
+    /// the request carried, echoed so the operator can see what the certificate
+    /// names.
     pub confirmation_code: String,
 }
 

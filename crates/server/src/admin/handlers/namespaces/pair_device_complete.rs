@@ -84,6 +84,7 @@ pub async fn handler(
             kem_pk,
             sign_pk,
             statement,
+            confirmation_code: req.confirmation_code,
         })
         .await
         .map_err(parse_api_error);

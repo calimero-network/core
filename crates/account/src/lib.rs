@@ -544,6 +544,46 @@ pub fn pairing_confirmation_code(
         .join("-")
 }
 
+/// Whether `supplied` is the confirmation code for this key material.
+///
+/// Comparison is on the hex digits only, upper-cased, so the grouping dashes and
+/// whatever case a person typed do not decide a security question.
+///
+/// This is the check that makes the code more than advice: the account holder
+/// supplies the code they were *read* — from the pairing device's own output —
+/// and the certifying side derives one from the payload that actually arrived.
+/// A substituting attacker's keys derive a different code, so the two disagree
+/// and the pairing is refused.
+///
+/// Its strength is exactly the independence of the two channels. A code that
+/// travelled beside the keys it describes proves nothing — an attacker
+/// rewriting the payload rewrites the code with it. What requiring it does buy,
+/// unconditionally, is that the comparison can no longer be skipped by an
+/// operator in a hurry.
+///
+/// No constant-time comparison: the code is derived from public values and the
+/// attacker already knows the genuine one. There is no secret here to leak.
+#[must_use]
+pub fn pairing_code_matches(
+    supplied: &str,
+    account: AccountId,
+    device: DeviceId,
+    kem_pk: &KemPublicKey,
+    sign_pk: &PublicKey,
+) -> bool {
+    let normalize = |code: &str| -> String {
+        code.chars()
+            .filter(|c| c.is_ascii_hexdigit())
+            .map(|c| c.to_ascii_uppercase())
+            .collect()
+    };
+    let expected = pairing_confirmation_code(account, device, kem_pk, sign_pk);
+    let supplied = normalize(supplied);
+    // A caller that stripped the code to nothing must not match a code that
+    // normalizes to nothing either — refuse empty outright.
+    !supplied.is_empty() && supplied == normalize(&expected)
+}
+
 /// Rolls an account's root key from epoch `from_epoch` to `from_epoch + 1`.
 ///
 /// Signed by the **outgoing** key, so the chain from the genesis forward is a
@@ -1295,6 +1335,58 @@ mod tests {
         // Pinned: both ends of a pairing must derive the same code, so a change
         // to the derivation is a change to the wire and has to be deliberate.
         assert_eq!(code, "7BC0-DAAC-CCB4-84A4", "code derivation is stable");
+    }
+
+    #[test]
+    fn the_confirmation_code_matches_however_a_person_typed_it() {
+        let (account, device, device_sk, kem_pk) = pairing_fixture();
+        let sign_pk = device_sk.public_key();
+        let code = pairing_confirmation_code(account, device, &kem_pk, &sign_pk);
+
+        for variant in [
+            code.clone(),
+            code.to_lowercase(),
+            code.replace('-', ""),
+            code.replace('-', " "),
+            format!("  {code}  "),
+        ] {
+            assert!(
+                pairing_code_matches(&variant, account, device, &kem_pk, &sign_pk),
+                "grouping and case must not decide this: {variant}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_code_for_other_key_material_is_refused() {
+        // The wholesale substitution: the attacker replaced both keys and
+        // re-signed, so the statement verifies — and this is what still refuses
+        // it, because the code the account holder was read came from the real
+        // device and does not describe the attacker's keys.
+        let (account, device, device_sk, kem_pk) = pairing_fixture();
+        let honest_code =
+            pairing_confirmation_code(account, device, &kem_pk, &device_sk.public_key());
+
+        let attacker_sk = PrivateKey::from([0xBB; 32]);
+        let attacker_kem = KemPublicKey::from([0xAA; 32]);
+        assert!(
+            !pairing_code_matches(
+                &honest_code,
+                account,
+                device,
+                &attacker_kem,
+                &attacker_sk.public_key()
+            ),
+            "a code that describes the honest keys must not match substituted ones"
+        );
+
+        // And nothing empty-ish slips through.
+        for junk in ["", "   ", "----", "not-hex-at-all"] {
+            assert!(
+                !pairing_code_matches(junk, account, device, &kem_pk, &device_sk.public_key()),
+                "must refuse: {junk:?}"
+            );
+        }
     }
 
     #[test]
