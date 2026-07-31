@@ -1153,6 +1153,52 @@ impl ScopeProjections {
     /// the fold is ahead of the materialized rows, which is the same divergence
     /// this module already defers to live over — silently returning a member
     /// whose key we cannot name would be worse than reporting the gap.
+    /// The member key one account maps to, without building the whole dictionary.
+    ///
+    /// [`accounts_to_member_keys`](Self::accounts_to_member_keys) is the right shape
+    /// for a *set* — its callers translate a whole enumeration at once. A caller
+    /// resolving a SINGLE account (the per-op shadow-compare) paid for a full
+    /// `list() + enumerate_inherited()` dictionary per op to look up one entry.
+    ///
+    /// This short-circuits on the first match and only touches the inherited rows
+    /// when the direct ones do not contain it. Still a scan — an `AccountId` is a
+    /// one-way hash, so the only way to invert it is to hash candidates until one
+    /// matches — but no map is allocated and the second query is now conditional.
+    ///
+    /// Re-derived per call rather than cached, for the same reason as its batch
+    /// sibling: a reverse map could only be populated while decoding ops, so it would
+    /// come back empty after a projection rebuild from the persisted (account-only)
+    /// op log, silently naming nobody.
+    pub(crate) fn member_key_for_account(
+        store: &Store,
+        group: &ContextGroupId,
+        account: AccountId,
+    ) -> Option<PublicKey> {
+        let live = MembershipRepository::new(store);
+        if let Ok(rows) = live.list(group, 0, usize::MAX) {
+            if let Some((pk, _)) = rows
+                .into_iter()
+                .find(|(pk, _)| legacy_account_id(pk) == account)
+            {
+                return Some(pk);
+            }
+        }
+        if let Ok(inherited) = live.enumerate_inherited(group) {
+            if let Some((pk, _)) = inherited
+                .into_iter()
+                .find(|(pk, _)| legacy_account_id(pk) == account)
+            {
+                return Some(pk);
+            }
+        }
+        tracing::warn!(
+            %account,
+            group = ?group,
+            "folded member account has no live membership row; cannot name it"
+        );
+        None
+    }
+
     pub(crate) fn accounts_to_member_keys(
         store: &Store,
         group: &ContextGroupId,

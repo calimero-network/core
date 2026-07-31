@@ -87,6 +87,21 @@ pub enum Rejected {
         /// The account the op claimed.
         claimed: AccountId,
     },
+    /// A root-key rotation authored by an account other than the one it rotates.
+    ///
+    /// Its own variant rather than [`Rejected::DeviceAccountMismatch`], which used
+    /// to be reused here: that one describes a device bound to a different account
+    /// than the op claims, and a rotation involves no device binding at all. Reusing
+    /// it produced a message that named the two accounts in the wrong roles — the
+    /// author's account is the *established* one (`check_device_speaks_for_author`
+    /// has already proved it), and the handoff's account is the claim.
+    #[error("rotation of {account} was authored by {author}, which is not that account")]
+    RotationNotByAccount {
+        /// The account whose root key the handoff would roll.
+        account: AccountId,
+        /// The account that actually authored the op.
+        author: AccountId,
+    },
     /// The op was signed with a key the device has since rotated away from.
     #[error("device {device} signed with a superseded key")]
     DeviceKeyStale {
@@ -858,10 +873,9 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
             // checked by `admit_key_rotation`; this is the separate question of
             // whether the *op* was authored under that account's authority.
             if op.author() != handoff.account {
-                return Err(Rejected::DeviceAccountMismatch {
-                    device: op.device(),
-                    bound: handoff.account,
-                    claimed: op.author(),
+                return Err(Rejected::RotationNotByAccount {
+                    account: handoff.account,
+                    author: op.author(),
                 });
             }
             admit_key_rotation(&acl_at_cut.accounts, handoff)
@@ -972,6 +986,44 @@ mod tests {
     /// at the policy layer: without a binding they would be turned away by the
     /// device precondition, and the test would stop proving anything about the
     /// policy rule it names.
+    #[test]
+    fn a_rotation_authored_by_another_account_is_refused_with_the_roles_named() {
+        // Only the account may roll its own key. The refusal used to reuse
+        // `DeviceAccountMismatch`, whose fields mean "the account the device is bound
+        // to" and "the account the op claimed" — and it passed the handoff's account
+        // as `bound`. That is backwards: `check_device_speaks_for_author` has already
+        // established the author's account, so the author is the settled identity and
+        // the handoff's account is the claim. The message then named both accounts in
+        // the wrong roles, on a rotation where no device binding is in question at
+        // all.
+        //
+        // Asserting the payload, not just the rejection: getting refused was never
+        // the bug.
+        let owner = AccountId::from([0x11; 32]);
+        let stranger = AccountId::from([0x22; 32]);
+        let view = bind_account(bind_test_devices(AclView::default()), stranger);
+
+        let handoff = RootKeyHandoff {
+            account: owner,
+            from_epoch: 0,
+            new_root_sign_pk: calimero_primitives::identity::PrivateKey::from([0x33; 32])
+                .public_key(),
+            signature: [0u8; 64],
+        };
+        let op = op_with(stranger, OpPayload::AccountKeysRotated { handoff });
+
+        match authorize(&op, &view) {
+            Err(Rejected::RotationNotByAccount { account, author }) => {
+                assert_eq!(
+                    account, owner,
+                    "`account` must name what the handoff rotates"
+                );
+                assert_eq!(author, stranger, "`author` must name who actually signed");
+            }
+            other => panic!("expected RotationNotByAccount, got {other:?}"),
+        }
+    }
+
     fn bind_account(mut view: AclView, account: AccountId) -> AclView {
         let _ = view.devices.insert(
             test_device(account),

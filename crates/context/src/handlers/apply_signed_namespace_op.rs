@@ -171,13 +171,7 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                                 // ops would be empty after a projection rebuild
                                 // from the persisted (account-only) op log.
                                 let live = crate::scope_projection::ScopeProjections::
-                                    accounts_to_member_keys(
-                                        &compare_store,
-                                        &group,
-                                        &core::iter::once(member).collect(),
-                                    )
-                                    .into_iter()
-                                    .next()
+                                    member_key_for_account(&compare_store, &group, member)
                                     .and_then(|pk| {
                                         calimero_governance_store::MembershipRepository::new(
                                             &compare_store,
