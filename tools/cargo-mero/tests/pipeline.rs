@@ -48,6 +48,71 @@ fn new_build_test_bundle_ladder() {
     assert!(mpk.exists(), "expected bundle at {}", mpk.display());
 }
 
+/// The `calimero_abi_v1` section read back off the built wasm - the only copy
+/// the node consults when it resolves a migration plan.
+fn embedded_abi(wasm_path: &Path) -> serde_json::Value {
+    let wasm = std::fs::read(wasm_path).unwrap();
+    let section = wasmparser::Parser::new(0)
+        .parse_all(&wasm)
+        .filter_map(Result::ok)
+        .find_map(|p| match p {
+            wasmparser::Payload::CustomSection(s) if s.name() == "calimero_abi_v1" => {
+                Some(s.data().to_vec())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{} must carry calimero_abi_v1", wasm_path.display()));
+    serde_json::from_slice(&section).expect("calimero_abi_v1 section must be valid JSON")
+}
+
+/// The wasm's exported function names, i.e. what the bytecode actually offers.
+fn wasm_exports(wasm_path: &Path) -> Vec<String> {
+    let wasm = std::fs::read(wasm_path).unwrap();
+    wasmparser::Parser::new(0)
+        .parse_all(&wasm)
+        .filter_map(Result::ok)
+        .filter_map(|p| match p {
+            wasmparser::Payload::ExportSection(s) => Some(s),
+            _ => None,
+        })
+        .flat_map(|s| s.into_iter().filter_map(Result::ok))
+        .map(|e| e.name.to_owned())
+        .collect()
+}
+
+/// `--features` has to reach the compile AND the ABI emit, or the bundle ships
+/// bytecode and a `calimero_abi_v1` section that describe different schemas -
+/// which surfaces as a silently wrong migration plan, not a build error.
+#[test]
+#[ignore = "slow: compiles the fixture services twice"]
+fn features_select_the_same_schema_in_the_wasm_and_the_embedded_abi() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi-app");
+    let build = |extra: &[&str]| {
+        let status = Command::new(env!("CARGO_BIN_EXE_cargo-mero"))
+            .args(["mero", "build"])
+            .args(extra)
+            .current_dir(&fixture)
+            .status()
+            .unwrap();
+        assert!(status.success(), "cargo mero build {extra:?} failed");
+    };
+    let svc_a = fixture.join("crates/svc-a/res/svc_a.wasm");
+    let svc_b = fixture.join("crates/svc-b/res/svc_b.wasm");
+
+    build(&["--features", "schema_v2"]);
+    assert_eq!(embedded_abi(&svc_a)["state_root"], "SvcAV2");
+    assert!(
+        wasm_exports(&svc_a).contains(&"revision".to_owned()),
+        "the wasm itself must be the v2 build, not just its ABI"
+    );
+    // svc-b does not declare `schema_v2`, and must still be built and embedded.
+    assert_eq!(embedded_abi(&svc_b)["state_root"], "SvcB");
+
+    build(&[]);
+    assert_eq!(embedded_abi(&svc_a)["state_root"], "SvcA");
+    assert!(!wasm_exports(&svc_a).contains(&"revision".to_owned()));
+}
+
 #[test]
 #[ignore = "slow: compiles the fixture app"]
 fn build_produces_embedded_abi_wasm() {
@@ -59,22 +124,9 @@ fn build_produces_embedded_abi_wasm() {
         .unwrap();
     assert!(status.success());
 
-    let wasm = std::fs::read(fixture.join("res/demo_app.wasm")).unwrap();
-    let section = wasmparser::Parser::new(0)
-        .parse_all(&wasm)
-        .filter_map(Result::ok)
-        .find_map(|p| match p {
-            wasmparser::Payload::CustomSection(s) if s.name() == "calimero_abi_v1" => {
-                Some(s.data().to_vec())
-            }
-            _ => None,
-        })
-        .expect("built wasm must carry calimero_abi_v1");
-
     // A non-empty `methods` array proves the full ABI was embedded, and that
     // canonicalization ran: the fixture's methods are declared unsorted.
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&section).expect("calimero_abi_v1 section must be valid JSON");
+    let manifest = embedded_abi(&fixture.join("res/demo_app.wasm"));
     let methods = manifest["methods"]
         .as_array()
         .expect("embedded ABI must have a methods array");

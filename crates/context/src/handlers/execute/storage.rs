@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use calimero_primitives::context::ContextId;
+use calimero_primitives::utils::prefix_upper_bound;
 use calimero_runtime::store::{Key, Storage, Value};
 use calimero_store::db::Column;
 use calimero_store::layer::temporal::Temporal;
@@ -36,21 +37,6 @@ pub struct ContextStorage {
     // for read-heavy contexts).
     // todo! revisit the shape of WriteLayer to own keys (since they are now fixed-sized)
     keys: RefCell<HashMap<[u8; 32], Arc<key::ContextState>>>,
-}
-
-/// The exclusive upper bound for a byte prefix (smallest key not starting with
-/// `prefix`) — used to scan/clear "all keys under this prefix".
-fn prefix_upper_bound(prefix: &[u8]) -> Vec<u8> {
-    let mut end = prefix.to_vec();
-    while let Some(&last) = end.last() {
-        if last == 0xFF {
-            let _ = end.pop();
-        } else {
-            *end.last_mut().expect("non-empty") += 1;
-            return end;
-        }
-    }
-    vec![0xFF; prefix.len() + 1]
 }
 
 /// Node-local private storage that is NOT synchronized across nodes.

@@ -46,7 +46,10 @@ fn assemble_cargo_test_args(manifest_path: Option<&Utf8Path>, user_args: &[Strin
 /// Best-effort warning, never blocks: a missing `testing` feature means the
 /// TestHost tests won't build, but `cargo test` will say so loudly on its own.
 fn preflight(args: &TestArgs) {
-    if let Ok(metadata) = workspace::metadata_for(args.manifest_path.as_deref()) {
+    // Default features: this only inspects dev-dependencies, which no feature
+    // selection changes.
+    let features = workspace::FeatureArgs::default();
+    if let Ok(metadata) = workspace::metadata_for(args.manifest_path.as_deref(), &features) {
         if let Some(hint) = missing_testing_feature(&metadata, args.manifest_path.as_deref()) {
             eprintln!("warning: {hint}");
         }

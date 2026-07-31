@@ -2,14 +2,50 @@
 //! directory. The `[metadata.calimero]` schema itself lives in `meta`.
 
 use camino::{Utf8Path, Utf8PathBuf};
-use cargo_metadata::{Metadata, MetadataCommand, Package};
+use cargo_metadata::{CargoOpt, Metadata, MetadataCommand, Package};
 use eyre::{Context, Result};
 
-/// Run `cargo metadata`, scoped to `manifest_path` when given.
-pub fn metadata_for(manifest_path: Option<&Utf8Path>) -> Result<Metadata> {
+/// Cargo's feature-selection flags, shared by `build` and `bundle`.
+///
+/// They must reach `cargo metadata` as well as `cargo build`: the ABI is emitted
+/// against the resolve graph, so a build-only flag would embed an ABI describing
+/// a different schema than the bytecode it ships with.
+#[derive(clap::Args, Clone, Default)]
+pub struct FeatureArgs {
+    /// Cargo features to activate, comma or space separated (repeatable)
+    #[arg(long, value_name = "FEATURES")]
+    features: Vec<String>,
+
+    /// Do not activate the `default` feature
+    #[arg(long)]
+    no_default_features: bool,
+}
+
+impl FeatureArgs {
+    /// Spell these flags onto a `cargo` command line. Values pass through
+    /// verbatim; cargo itself splits them on commas and spaces.
+    pub fn apply_to(&self, cmd: &mut std::process::Command) {
+        for features in &self.features {
+            cmd.arg("--features").arg(features);
+        }
+        if self.no_default_features {
+            cmd.arg("--no-default-features");
+        }
+    }
+}
+
+/// Run `cargo metadata`, scoped to `manifest_path` when given and resolved
+/// against the same features the build will use.
+pub fn metadata_for(manifest_path: Option<&Utf8Path>, features: &FeatureArgs) -> Result<Metadata> {
     let mut cmd = MetadataCommand::new();
     if let Some(path) = manifest_path {
         let _ = cmd.manifest_path(path);
+    }
+    if !features.features.is_empty() {
+        let _ = cmd.features(CargoOpt::SomeFeatures(features.features.clone()));
+    }
+    if features.no_default_features {
+        let _ = cmd.features(CargoOpt::NoDefaultFeatures);
     }
     cmd.exec().wrap_err("failed to run `cargo metadata`")
 }
@@ -47,7 +83,60 @@ fn canonical(dir: &Utf8Path) -> Utf8PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
+
+    /// `--features` and `--no-default-features` must both reach `cargo metadata`.
+    /// They are independent knobs on `MetadataCommand`, so neither can drop the
+    /// other; if one did, the ABI would be emitted for a different feature set
+    /// than the wasm is compiled with.
+    #[test]
+    fn metadata_applies_features_and_no_default_features_together() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Utf8Path::from_path(tmp.path()).unwrap();
+        std::fs::create_dir(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "").unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"feature-probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+             \n[features]\ndefault = [\"baseline\"]\nbaseline = []\nschema_v2 = []\n\n[workspace]\n",
+        )
+        .unwrap();
+        let manifest = dir.join("Cargo.toml");
+
+        let resolved = |args: &FeatureArgs| {
+            let metadata = metadata_for(Some(&manifest), args).expect("cargo metadata");
+            let pkg = metadata
+                .packages
+                .iter()
+                .find(|p| p.name.as_str() == "feature-probe")
+                .unwrap();
+            let resolve = metadata.resolve.as_ref().unwrap();
+            let node = resolve.nodes.iter().find(|n| n.id == pkg.id).unwrap();
+            node.features
+                .iter()
+                .map(ToString::to_string)
+                .collect::<BTreeSet<_>>()
+        };
+
+        let defaults = resolved(&FeatureArgs::default());
+        assert!(defaults.contains("default"), "got {defaults:?}");
+        assert!(!defaults.contains("schema_v2"), "got {defaults:?}");
+
+        let both = resolved(&FeatureArgs {
+            features: vec!["schema_v2".to_owned()],
+            no_default_features: true,
+        });
+        assert!(
+            both.contains("schema_v2"),
+            "--no-default-features must not drop --features, got {both:?}"
+        );
+        assert!(
+            !both.contains("default") && !both.contains("baseline"),
+            "--features must not drop --no-default-features, got {both:?}"
+        );
+    }
 
     #[test]
     fn manifest_dir_resolves_a_noncanonical_path() {

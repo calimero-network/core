@@ -32,7 +32,7 @@ pub fn run(args: &BundleArgs) -> Result<PathBuf> {
     // Resolve signing first: a missing or bad key must fail before a long build.
     let sign_mode = resolve_sign_mode(args)?;
 
-    let metadata = workspace::metadata_for(args.manifest_path.as_deref())?;
+    let metadata = workspace::metadata_for(args.manifest_path.as_deref(), &args.features)?;
     let base = base_dir(&metadata, args);
     let bundle_meta = resolve_meta(&metadata, &base, args)?;
 
@@ -42,6 +42,7 @@ pub fn run(args: &BundleArgs) -> Result<PathBuf> {
         profiling: args.profiling,
         package: None,
         manifest_path: args.manifest_path.clone(),
+        features: args.features.clone(),
     })?;
 
     let staging = prepare_staging(&base)?;
