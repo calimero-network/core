@@ -1493,3 +1493,65 @@ fn permute<T: Clone>(slice: &mut Vec<T>, k: usize, f: &mut impl FnMut(&[T])) {
         slice.swap(k, i);
     }
 }
+
+#[test]
+fn a_padded_candidate_slot_stays_bounded_and_order_independent() {
+    // Keying candidates by signature stopped a forged handoff from DISPLACING a
+    // real one, but it let one `(account, epoch)` slot grow without limit instead —
+    // and every candidate in a slot costs an Ed25519 verification on every
+    // `resolved_accounts` walk, i.e. on every projection read. So the slot is
+    // trimmed to a fixed size.
+    //
+    // Trimming is the dangerous half: drop the WRONG candidates and two replicas
+    // that saw the same ops in different orders keep different sets, resolve
+    // different root keys, and split `scope_root`. Dropping the highest keys makes
+    // the retained set the lowest-N of everything offered — a function of the set,
+    // not the order — and that is what this asserts.
+    let mut fx = Fixture::new();
+    let mut victim = Account::new(10);
+    let phone = victim.enroll(11, 0);
+    fx.push(grant_membership(&fx.admin, victim.id, 30, fx.head.clone()));
+    fx.push(victim.link_op(&phone, 40, fx.head.clone()));
+
+    let real = victim.rotate_to(12);
+    fx.push(phone.sign_op(
+        50,
+        fx.head.clone(),
+        OpPayload::AccountKeysRotated { handoff: real },
+    ));
+
+    // Well past the cap, all at the same `(account, from_epoch)`, each a distinct
+    // map key because only the signature differs. Authored by the account's own
+    // device: a stranger cannot reach this slot at all (a bare rotation is refused
+    // unless its author is the account, and a device-link chain absorbs only
+    // entries naming its own certificate's account), so an over-full slot always
+    // means the account padded it itself.
+    for i in 0..32u8 {
+        let mut forged = real;
+        forged.signature = [i; 64];
+        fx.push(phone.sign_op(
+            100 + u64::from(i),
+            fx.head.clone(),
+            OpPayload::AccountKeysRotated { handoff: forged },
+        ));
+    }
+
+    let forward = ScopeState::from_ops(&fx.log).root();
+
+    let mut reversed = fx.log.clone();
+    reversed.reverse();
+    assert_eq!(
+        ScopeState::from_ops(&reversed).root(),
+        forward,
+        "trimming a padded candidate slot must keep the retained set a function of \
+         the op set, not of arrival order — otherwise the trim itself splits the root"
+    );
+
+    let mut rotated = fx.log.clone();
+    rotated.rotate_left(fx.log.len() / 2);
+    assert_eq!(
+        ScopeState::from_ops(&rotated).root(),
+        forward,
+        "same set, third delivery order, same root"
+    );
+}

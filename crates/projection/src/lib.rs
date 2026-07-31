@@ -74,6 +74,18 @@ struct SubgroupSlot {
 /// see `absorb_handoff` for why displacement was exploitable.
 type HandoffCandidates = BTreeMap<([u8; 32], [u8; 64]), RootKeyHandoff>;
 
+/// How many candidate handoffs one `(account, epoch)` slot may retain.
+///
+/// Keying candidates by signature stopped a forged handoff from *displacing* a
+/// real one, but it let a slot grow without limit instead, and every candidate in
+/// it costs an Ed25519 verification on every `resolved_accounts` walk — i.e. on
+/// every projection read. Unbounded, that turns some accepted ops into permanent
+/// per-read work for every node in the scope.
+///
+/// A slot only ever holds genuinely concurrent rotations from the same epoch by
+/// devices sharing one root key, so this is far above any legitimate need.
+const MAX_HANDOFF_CANDIDATES: usize = 8;
+
 /// The deterministic projection of one scope's op-log: values + ACL + groups,
 /// each slot resolved last-writer-wins by `(hlc, op_id)`.
 #[derive(Clone, Debug, Default)]
@@ -413,11 +425,24 @@ impl ScopeState {
             *AsRef::<[u8; 32]>::as_ref(&handoff.new_root_sign_pk),
             handoff.signature,
         );
-        let _ = self
-            .handoffs
-            .entry(key)
-            .or_default()
-            .insert(candidate, handoff);
+        let slot = self.handoffs.entry(key).or_default();
+        let _ = slot.insert(candidate, handoff);
+
+        // Bounded by dropping the HIGHEST keys, so the retained set is the lowest
+        // `MAX_HANDOFF_CANDIDATES` of everything ever offered — a function of the
+        // set, not of arrival order, which is what keeps replicas identical.
+        // Trimming to a fixed size is only safe because a slot is no longer
+        // writable by strangers: the device-link path absorbs a chain entry only
+        // when `handoff.account` matches the certificate's account, and a bare
+        // rotation is refused unless its author IS the account. So an over-full
+        // slot means that account authored the padding, and the only chain it can
+        // truncate is its own.
+        while slot.len() > MAX_HANDOFF_CANDIDATES {
+            let highest = slot.keys().next_back().copied();
+            if let Some(highest) = highest {
+                let _ = slot.remove(&highest);
+            }
+        }
     }
 
     /// Device bindings that are actually in force, once the account's final
