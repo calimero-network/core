@@ -939,6 +939,14 @@ impl VMHostFunctions<'_> {
         })
     }
 
+    pub fn js_crdt_delete_collection(
+        &mut self,
+        id_ptr: u64,
+        register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| host.crdt_delete_collection(id_ptr, register_id))
+    }
+
     fn crdt_map_new(&mut self, dest_register_id: u64) -> VMLogicResult<i32> {
         let outcome =
             panic::catch_unwind(AssertUnwindSafe(|| -> Result<JsUnorderedMap, String> {
@@ -3775,6 +3783,35 @@ impl VMHostFunctions<'_> {
         }
     }
 
+    /// Delete a root-level collection entity by id and unlink it from the root.
+    ///
+    /// Used by the JS SDK's deterministic-id reassignment to reclaim the
+    /// random-id collection that is orphaned when a top-level `@State` field is
+    /// re-opened at its deterministic id. Every JS collection is created as a
+    /// child of [`Id::root()`], so the orphan is always a root child.
+    ///
+    /// Delegates to [`Interface::remove_child_from`], which cascades the subtree,
+    /// refuses to delete Frozen data (which peers would reject, causing a
+    /// split-brain), and enforces writer authority for a `Shared` cell — so a
+    /// caller can only delete a collection it legitimately created. The
+    /// reassignment runs on fresh state, where the create and this delete land in
+    /// the same genesis delta, so every replica converges with no orphan.
+    ///
+    /// Returns 1 if an entity was deleted, 0 if none existed at that id
+    /// (idempotent), or -1 with an error message in `dest_register_id`.
+    fn crdt_delete_collection(&mut self, id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+        let id = match self.read_map_id(id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match Interface::<MainStorage>::remove_child_from(Id::root(), id) {
+            Ok(true) => Ok(1),
+            Ok(false) => Ok(0),
+            Err(err) => self.write_error_message(dest_register_id, err.to_string()),
+        }
+    }
+
     /// Reads a writer set (a buffer of concatenated 32-byte public keys) from
     /// guest memory, returning a decoding error string if the length is not a
     /// multiple of 32.
@@ -4561,6 +4598,45 @@ mod tests {
     const VALUE_DESC_PTR: u64 = 300;
     const WRITERS_DATA_PTR: u64 = 4000;
     const WRITERS_DESC_PTR: u64 = 400;
+
+    /// Deleting a collection removes it from the root's children: the first
+    /// delete reports it removed one entity, and a second delete of the same id
+    /// is a no-op — proving the orphan is gone. Mirrors how the JS SDK reclaims
+    /// the random-id collection orphaned by deterministic-id reassignment.
+    #[test]
+    fn test_js_crdt_delete_collection_removes_and_is_idempotent() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let id: [u8; 32] = [9u8; 32];
+        host.borrow_memory()
+            .write(ID_DATA_PTR, &id)
+            .expect("write id");
+        prepare_guest_buf_descriptor(&host, ID_DESC_PTR, ID_DATA_PTR, id.len() as u64);
+
+        // Create a collection at the id (a root child).
+        assert_eq!(
+            host.js_crdt_map_new_with_id(ID_DESC_PTR, 1).unwrap(),
+            0,
+            "constructor should succeed"
+        );
+
+        // First delete removes it.
+        assert_eq!(
+            host.js_crdt_delete_collection(ID_DESC_PTR, 2).unwrap(),
+            1,
+            "first delete removes the collection"
+        );
+
+        // Second delete finds nothing — idempotent, proving it was unlinked.
+        assert_eq!(
+            host.js_crdt_delete_collection(ID_DESC_PTR, 3).unwrap(),
+            0,
+            "second delete is a no-op"
+        );
+    }
 
     /// A `*_new_with_id` constructor must place the collection at exactly the
     /// caller-supplied id, and two handles built at the same id must address the
