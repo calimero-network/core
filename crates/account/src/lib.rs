@@ -84,6 +84,15 @@ const ACCOUNT_ENDORSEMENT_SIGN_DOMAIN: &[u8] = b"calimero.account.endorsement.v1
 /// Domain for a root-signed device revocation.
 const DEVICE_REVOCATION_SIGN_DOMAIN: &[u8] = b"calimero.device.revocation.v1";
 
+/// Domain for a pairing device's statement over the key material it minted.
+const PAIRING_STATEMENT_SIGN_DOMAIN: &[u8] = b"calimero.device.pairing.v1";
+
+/// Domain for the pairing confirmation code. Separate from the statement's
+/// signing domain because the code is a value humans read aloud, not a
+/// signature preimage — sharing a domain would make the code a truncated
+/// disclosure of bytes something signs over.
+const PAIRING_CONFIRMATION_DOMAIN: &[u8] = b"calimero.device.pairing.confirm.v1";
+
 /// Every signing domain used by this crate, for the test that asserts they are
 /// pairwise distinct. A collision here would let a signature minted for one
 /// purpose be replayed as another.
@@ -95,6 +104,8 @@ const ALL_DOMAINS: &[&[u8]] = &[
     DEVICE_CERT_SIGN_DOMAIN,
     ACCOUNT_ENDORSEMENT_SIGN_DOMAIN,
     DEVICE_REVOCATION_SIGN_DOMAIN,
+    PAIRING_STATEMENT_SIGN_DOMAIN,
+    PAIRING_CONFIRMATION_DOMAIN,
 ];
 
 /// Hash `domain ‖ parts` — the one hashing helper, so every content address and
@@ -400,6 +411,139 @@ pub fn verify_account_endorsement(
         .map_err(|_| AccountError::EndorsementSignatureInvalid)
 }
 
+/// Number of hex characters in a [`pairing_confirmation_code`], excluding its
+/// separators. Eight bytes of digest.
+const PAIRING_CONFIRMATION_HEX_LEN: usize = 16;
+
+/// Canonical bytes a pairing device signs over the key material it minted.
+///
+/// Covers the account it is joining, its own replica id, and **both** keys the
+/// certificate will name. The account is in the preimage so a statement produced
+/// for one account cannot be presented while pairing into another; the keys are
+/// there because they are the entire content of what gets certified.
+#[must_use]
+pub fn pairing_statement_payload(
+    account: AccountId,
+    device: DeviceId,
+    kem_pk: &KemPublicKey,
+    sign_pk: &PublicKey,
+) -> [u8; 32] {
+    domain_hash(
+        PAIRING_STATEMENT_SIGN_DOMAIN,
+        &[
+            account.as_bytes(),
+            device.as_bytes(),
+            kem_pk.as_bytes(),
+            AsRef::<[u8; 32]>::as_ref(sign_pk),
+        ],
+    )
+}
+
+/// Sign the pairing statement with the device's own signing key.
+///
+/// `sign_pk` is derived from `device_sk` rather than passed in: the statement is
+/// a proof of possession, so a caller that could name a key it does not hold
+/// would defeat the point.
+///
+/// # Errors
+/// [`AccountError::SigningFailed`] if the key cannot sign.
+pub fn sign_pairing_statement(
+    device_sk: &PrivateKey,
+    account: AccountId,
+    device: DeviceId,
+    kem_pk: &KemPublicKey,
+) -> Result<[u8; 64], AccountError> {
+    let sign_pk = device_sk.public_key();
+    let payload = pairing_statement_payload(account, device, kem_pk, &sign_pk);
+    Ok(device_sk
+        .sign(&payload)
+        .map_err(|_| AccountError::SigningFailed)?
+        .to_bytes())
+}
+
+/// Check that the party offering this key material is the party that generated
+/// it — that `signature` is `sign_pk`'s over exactly these four values.
+///
+/// # What this closes, and what it does not
+///
+/// Without it, `pair-complete` certifies whatever keys arrive beside a
+/// `DeviceId`. An attacker cannot mint a `DeviceId` (it is `H(account ‖ nonce)`
+/// and the nonce never leaves the pairing node), but it can substitute key
+/// material *under* a captured one, and the resulting certificate names the
+/// attacker's keys as a trusted device of somebody else's account.
+///
+/// This refuses the partial substitution: swapping the KEM key while keeping the
+/// real signing key breaks the signature, and the attacker cannot re-sign
+/// without that key. It does **not** by itself refuse a wholesale substitution —
+/// an attacker that replaces both keys and re-signs with its own produces a
+/// statement that verifies, because nothing here commits to the genuine keys in
+/// advance. Binding the keys into the `DeviceId` would fix that, and is
+/// deliberately not available: [`DeviceId::mint`] excludes them so a device
+/// keeps its replica identity across key rotation.
+///
+/// [`pairing_confirmation_code`] is what covers the remaining case, by giving
+/// the two humans a value to compare that an attacker cannot reproduce.
+///
+/// # Errors
+/// [`AccountError::PairingStatementInvalid`] if the signature does not verify.
+pub fn verify_pairing_statement(
+    account: AccountId,
+    device: DeviceId,
+    kem_pk: &KemPublicKey,
+    sign_pk: &PublicKey,
+    signature: &[u8; 64],
+) -> Result<(), AccountError> {
+    let payload = pairing_statement_payload(account, device, kem_pk, sign_pk);
+    sign_pk
+        .verify_raw_signature(&payload, signature)
+        .map_err(|_| AccountError::PairingStatementInvalid)
+}
+
+/// A short value both ends of a pairing derive independently, for the two humans
+/// to compare out of band.
+///
+/// Both sides compute it from what they hold: the pairing device from what it
+/// minted, the account holder from what arrived. Equal codes mean the same key
+/// material is on both ends, which is the one thing no signature can establish —
+/// a substituting attacker can always re-sign, but it cannot make its own keys
+/// hash to the code the other side is reading.
+///
+/// # Why it is this long
+///
+/// The attacker sees the genuine payload, so it knows the target code and can
+/// grind its own keypairs offline until one matches. The code's length *is* the
+/// work factor: 64 bits puts that at roughly 2^64 hashes, whereas the six digits
+/// a human would prefer to read is 2^20 — instant. Grouped in fours so it can be
+/// compared by eye and read aloud without losing the length that makes it worth
+/// comparing.
+#[must_use]
+pub fn pairing_confirmation_code(
+    account: AccountId,
+    device: DeviceId,
+    kem_pk: &KemPublicKey,
+    sign_pk: &PublicKey,
+) -> String {
+    let digest = domain_hash(
+        PAIRING_CONFIRMATION_DOMAIN,
+        &[
+            account.as_bytes(),
+            device.as_bytes(),
+            kem_pk.as_bytes(),
+            AsRef::<[u8; 32]>::as_ref(sign_pk),
+        ],
+    );
+    let hex: String = digest
+        .iter()
+        .take(PAIRING_CONFIRMATION_HEX_LEN / 2)
+        .map(|byte| format!("{byte:02X}"))
+        .collect();
+    hex.as_bytes()
+        .chunks(4)
+        .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
 /// Rolls an account's root key from epoch `from_epoch` to `from_epoch + 1`.
 ///
 /// Signed by the **outgoing** key, so the chain from the genesis forward is a
@@ -643,6 +787,10 @@ pub enum AccountError {
     /// A member endorsement's signature does not verify under the key it names.
     #[error("account endorsement is not validly signed by the member it names")]
     EndorsementSignatureInvalid,
+    /// A pairing statement does not verify under the signing key it offers, so
+    /// the party presenting this key material is not the party that generated it.
+    #[error("pairing statement is not validly signed by the device key it offers")]
+    PairingStatementInvalid,
     /// The supplied chain is longer than [`MAX_ROOT_KEY_HANDOFFS`].
     #[error("handoff chain has {found} entries, over the {limit} cap")]
     ChainTooLong {
@@ -1005,6 +1153,148 @@ mod tests {
             signature: root.sign(&payload).expect("sign").to_bytes(),
         };
         (genesis, handoff)
+    }
+
+    /// The account, device and honest key material a pairing produces.
+    fn pairing_fixture() -> (AccountId, DeviceId, PrivateKey, KemPublicKey) {
+        let root = PrivateKey::from([7u8; 32]);
+        let account = AccountGenesis::new(root.public_key(), [0x11; 16]).account_id();
+        let device = DeviceId::mint(account, [0x22; 16]);
+        (
+            account,
+            device,
+            PrivateKey::from([9u8; 32]),
+            KemPublicKey::from([0x33; 32]),
+        )
+    }
+
+    #[test]
+    fn a_pairing_statement_verifies_against_the_key_that_signed_it() {
+        let (account, device, device_sk, kem_pk) = pairing_fixture();
+        let statement = sign_pairing_statement(&device_sk, account, device, &kem_pk).expect("sign");
+
+        assert!(verify_pairing_statement(
+            account,
+            device,
+            &kem_pk,
+            &device_sk.public_key(),
+            &statement
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn substituted_key_material_under_a_valid_device_id_is_refused() {
+        // The attack the statement exists to refuse. An attacker cannot mint a
+        // DeviceId, so it captures a real one in transit and offers its OWN KEM
+        // key beneath it — which is what the certificate would then name as the
+        // recipient of every scope key the account can read.
+        let (account, device, device_sk, kem_pk) = pairing_fixture();
+        let statement = sign_pairing_statement(&device_sk, account, device, &kem_pk).expect("sign");
+
+        let attacker_kem = KemPublicKey::from([0xAA; 32]);
+        assert!(matches!(
+            verify_pairing_statement(
+                account,
+                device,
+                &attacker_kem,
+                &device_sk.public_key(),
+                &statement
+            ),
+            Err(AccountError::PairingStatementInvalid),
+        ));
+
+        // Nor can it keep the honest KEM key and slip its own signing key in,
+        // which would make it the author of the device's ops.
+        let attacker_sk = PrivateKey::from([0xBB; 32]);
+        assert!(matches!(
+            verify_pairing_statement(
+                account,
+                device,
+                &kem_pk,
+                &attacker_sk.public_key(),
+                &statement
+            ),
+            Err(AccountError::PairingStatementInvalid),
+        ));
+    }
+
+    #[test]
+    fn a_statement_does_not_carry_to_another_account() {
+        let (account, device, device_sk, kem_pk) = pairing_fixture();
+        let statement = sign_pairing_statement(&device_sk, account, device, &kem_pk).expect("sign");
+
+        let other =
+            AccountGenesis::new(PrivateKey::from([8u8; 32]).public_key(), [0x11; 16]).account_id();
+        assert!(matches!(
+            verify_pairing_statement(other, device, &kem_pk, &device_sk.public_key(), &statement),
+            Err(AccountError::PairingStatementInvalid),
+        ));
+    }
+
+    #[test]
+    fn the_confirmation_code_changes_when_any_certified_value_does() {
+        // What the two humans compare. A wholesale substitution re-signs its own
+        // statement and passes verification, so the code is the only thing left
+        // that distinguishes it — it has to move when anything the certificate
+        // names moves.
+        let (account, device, device_sk, kem_pk) = pairing_fixture();
+        let sign_pk = device_sk.public_key();
+        let honest = pairing_confirmation_code(account, device, &kem_pk, &sign_pk);
+
+        let attacker_sk = PrivateKey::from([0xBB; 32]);
+        for (label, code) in [
+            (
+                "substituted KEM key",
+                pairing_confirmation_code(
+                    account,
+                    device,
+                    &KemPublicKey::from([0xAA; 32]),
+                    &sign_pk,
+                ),
+            ),
+            (
+                "substituted signing key",
+                pairing_confirmation_code(account, device, &kem_pk, &attacker_sk.public_key()),
+            ),
+            (
+                "different device",
+                pairing_confirmation_code(
+                    account,
+                    DeviceId::mint(account, [0x44; 16]),
+                    &kem_pk,
+                    &sign_pk,
+                ),
+            ),
+        ] {
+            assert_ne!(honest, code, "code must move: {label}");
+        }
+
+        // Same inputs on both ends must agree, or there is nothing to compare.
+        assert_eq!(
+            honest,
+            pairing_confirmation_code(account, device, &kem_pk, &sign_pk)
+        );
+    }
+
+    #[test]
+    fn the_confirmation_code_is_wide_enough_to_resist_grinding() {
+        // The attacker knows the honest code and can grind keypairs offline until
+        // one matches, so the code's width IS the work factor. Anything short
+        // enough to be comfortable to read aloud (six digits, say) is instant.
+        let (account, device, device_sk, kem_pk) = pairing_fixture();
+        let code = pairing_confirmation_code(account, device, &kem_pk, &device_sk.public_key());
+
+        let hex: String = code.chars().filter(|c| *c != '-').collect();
+        assert_eq!(
+            hex.len(),
+            PAIRING_CONFIRMATION_HEX_LEN,
+            "64 bits of digest, or the comparison stops being worth making"
+        );
+        assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
+        // Pinned: both ends of a pairing must derive the same code, so a change
+        // to the derivation is a change to the wire and has to be deliberate.
+        assert_eq!(code, "7BC0-DAAC-CCB4-84A4", "code derivation is stable");
     }
 
     #[test]

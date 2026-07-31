@@ -803,6 +803,16 @@ pub struct PairDeviceInitResponse {
     /// certificate naming a key no signature ever matches, leaving the device
     /// linked but unable to author.
     pub sign_pk: PublicKey,
+    /// This device's signature over the account, its own id and both keys above.
+    ///
+    /// Travels with them and is checked before anything is certified, so the
+    /// party offering the key material has to be the party that generated it.
+    /// Without it `pair-complete` certifies whatever arrives beside a `DeviceId`.
+    pub statement: [u8; 64],
+    /// The value the two humans compare out of band, derived from the same four
+    /// values the statement signs. Carried rather than recomputed by the caller
+    /// so both halves of the exchange print a code from one implementation.
+    pub confirmation_code: String,
 }
 
 impl PairDeviceInitResponse {
@@ -815,12 +825,16 @@ impl PairDeviceInitResponse {
         device: DeviceId,
         kem_pk: KemPublicKey,
         sign_pk: PublicKey,
+        statement: [u8; 64],
+        confirmation_code: String,
     ) -> Self {
         Self {
             account,
             device,
             kem_pk,
             sign_pk,
+            statement,
+            confirmation_code,
         }
     }
 }
@@ -846,6 +860,11 @@ pub struct PairDeviceCompleteRequest {
     pub kem_pk: KemPublicKey,
     /// The key that device will sign its ops with.
     pub sign_pk: PublicKey,
+    /// The pairing device's signature over the three values above and the
+    /// account, from its `pair-init`. Verified before the certificate is signed;
+    /// a request without it cannot be completed, because then the three values
+    /// would be bare assertions by whoever sent them.
+    pub statement: [u8; 64],
 }
 
 /// What pairing established.
@@ -863,6 +882,15 @@ pub struct PairDeviceCompleteResponse {
     /// missing. It does mean the device stays unable to read until that pull
     /// lands, which is worth surfacing rather than reporting a flat success.
     pub key_delivered: bool,
+    /// The confirmation code derived from the key material this certified, for
+    /// the operator to compare against the one the pairing device printed.
+    ///
+    /// Reported after the fact rather than required up front, deliberately: a
+    /// code supplied as input would be compared by the same machine that already
+    /// accepted the payload, which checks nothing. The comparison only means
+    /// something where the two halves of the exchange actually meet, which is a
+    /// person.
+    pub confirmation_code: String,
 }
 
 impl PairDeviceCompleteResponse {
@@ -870,11 +898,17 @@ impl PairDeviceCompleteResponse {
     /// [`CreateAccountResponse::new`] — the struct is `#[non_exhaustive]` and
     /// the producer lives in another crate.
     #[must_use]
-    pub const fn new(account: AccountId, device: DeviceId, key_delivered: bool) -> Self {
+    pub const fn new(
+        account: AccountId,
+        device: DeviceId,
+        key_delivered: bool,
+        confirmation_code: String,
+    ) -> Self {
         Self {
             account,
             device,
             key_delivered,
+            confirmation_code,
         }
     }
 }

@@ -1999,6 +1999,20 @@ pub struct PairDeviceInitApiResponseData {
     /// The account holder cannot derive this — it is minted here — and the
     /// certificate names it, so it has to travel with the other two.
     pub sign_public_key: String,
+    /// Hex-encoded Ed25519 signature (64 bytes) by `signPublicKey` over the
+    /// account, the device id and both keys above.
+    ///
+    /// Travels with them and `pair-complete` refuses without it, so the three
+    /// values arrive as a statement by the device that minted them rather than
+    /// as assertions by whoever relayed them.
+    pub statement: String,
+    /// The value to read out to the account holder, who compares it with what
+    /// their `pair-complete` reports.
+    ///
+    /// A substituting attacker can re-sign its own statement, so this is the
+    /// part it cannot fake: it would have to make its own keys derive the code
+    /// the other side is reading.
+    pub confirmation_code: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2021,20 +2035,28 @@ pub struct PairDeviceCompleteApiRequest {
     pub kem_public_key: String,
     /// Hex-encoded Ed25519 key that device signs its ops with (32 bytes).
     pub sign_public_key: String,
+    /// Hex-encoded Ed25519 signature (64 bytes) from that node's pair-init.
+    ///
+    /// Not optional: without it the three values above are only claims by the
+    /// sender, and certifying them would make attacker-supplied keys a trusted
+    /// device of this account.
+    pub statement: String,
 }
 
 impl Validate for PairDeviceCompleteApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
-        for (field, value) in [
-            ("deviceId", &self.device_id),
-            ("kemPublicKey", &self.kem_public_key),
-            ("signPublicKey", &self.sign_public_key),
+        // 64 hex chars for each 32-byte key, 128 for the 64-byte signature.
+        for (field, value, expected) in [
+            ("deviceId", &self.device_id, 64),
+            ("kemPublicKey", &self.kem_public_key, 64),
+            ("signPublicKey", &self.sign_public_key, 64),
+            ("statement", &self.statement, 128),
         ] {
-            if value.len() != 64 {
+            if value.len() != expected {
                 errors.push(ValidationError::InvalidLength {
                     field,
-                    expected: 64,
+                    expected,
                     actual: value.len(),
                 });
             } else if hex::decode(value).is_err() {
@@ -2062,6 +2084,10 @@ pub struct PairDeviceCompleteApiResponseData {
     /// authority, and the device's own sync pull re-requests the key. It does
     /// mean the device cannot read until that lands.
     pub key_delivered: bool,
+    /// The confirmation code for the key material this certified. Compare it
+    /// with the one the pairing device printed; a mismatch means the payload was
+    /// altered in transit and the device should be revoked.
+    pub confirmation_code: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

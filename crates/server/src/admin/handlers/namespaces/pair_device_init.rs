@@ -19,8 +19,9 @@ use crate::AdminState;
 /// Mint a device on this node for an account that already exists elsewhere.
 ///
 /// The first half of pairing. It publishes nothing and needs no scope key — it
-/// only produces the `DeviceId` and KEM key that the account holder's
-/// `pair-complete` will certify.
+/// produces the `DeviceId` and KEM key that the account holder's
+/// `pair-complete` will certify, the device's signature over them, and the code
+/// to read out to the account holder.
 pub async fn handler(
     Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
@@ -92,6 +93,8 @@ pub async fn handler(
                         device_id: hex::encode(resp.device.as_bytes()),
                         kem_public_key: hex::encode(resp.kem_pk.as_bytes()),
                         sign_public_key: hex::encode(AsRef::<[u8; 32]>::as_ref(&resp.sign_pk)),
+                        statement: hex::encode(resp.statement),
+                        confirmation_code: resp.confirmation_code,
                     },
                 },
             }

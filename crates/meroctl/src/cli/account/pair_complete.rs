@@ -8,8 +8,13 @@ use crate::cli::Environment;
 ///
 /// The second half of pairing, run on the device that already **holds** the
 /// account — it is the only one with the account root that can sign the
-/// certificate. The three values come from `account pair-init` on the new
-/// device.
+/// certificate. The values come from `account pair-init` on the new device.
+///
+/// The statement is what makes them more than claims by whoever relayed them:
+/// it is the new device's signature over its own id and both keys, and this
+/// refuses to certify without it. Compare the confirmation code printed here
+/// with the one `pair-init` printed on the other machine before trusting the
+/// pairing — they differ if anything was altered on the way over.
 ///
 /// This publishes two ops: the link, which confers authority, and a key
 /// delivery, without which the new device is linked but still cannot read
@@ -43,6 +48,13 @@ pub struct PairCompleteCommand {
         help = "The device signing key printed by pair-init, 64 hex chars"
     )]
     pub sign_key: String,
+
+    #[clap(
+        long,
+        value_name = "HEX",
+        help = "The pairing statement printed by pair-init, 128 hex chars"
+    )]
+    pub statement: String,
 }
 
 impl PairCompleteCommand {
@@ -55,6 +67,7 @@ impl PairCompleteCommand {
                     device_id: self.device_id,
                     kem_public_key: self.kem_key,
                     sign_public_key: self.sign_key,
+                    statement: self.statement,
                 },
             )
             .await?;

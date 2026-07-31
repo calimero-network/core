@@ -32,7 +32,9 @@
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::{sign_account_endorsement, sign_device_cert};
+use calimero_account::{
+    pairing_confirmation_code, sign_account_endorsement, sign_device_cert, verify_pairing_statement,
+};
 use calimero_context_client::group::{PairDeviceCompleteRequest, PairDeviceCompleteResponse};
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp};
 use calimero_crypto::X25519PublicKey;
@@ -52,6 +54,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
             device,
             kem_pk,
             sign_pk,
+            statement,
         }: PairDeviceCompleteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -80,6 +83,34 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         };
         let genesis = account_root.genesis_for(&namespace_id);
         let account = genesis.account_id();
+
+        // Check the key material before anything is signed over it. The
+        // certificate minted below is what makes these keys a trusted device of
+        // this account, and until this point they are three values a caller
+        // supplied: an attacker who can alter the pairing payload substitutes its
+        // own keys under a captured `DeviceId` and receives the scope-key
+        // fan-out. The statement is the pairing device's own signature over
+        // exactly what is being certified, so it can only be produced by
+        // whoever holds the signing key it names.
+        //
+        // It does not cover a substitution that replaces both keys and re-signs
+        // — nothing here has a prior commitment to the genuine ones, and binding
+        // them into the `DeviceId` is ruled out because the id must survive key
+        // rotation. The confirmation code returned below is what closes that,
+        // out of band and by a person.
+        if let Err(err) = verify_pairing_statement(account, device, &kem_pk, &sign_pk, &statement) {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "refusing to certify device {device}: {err}. The key material does not \
+                 come with a valid signature from the device that minted it — re-run \
+                 `account pair-init` and carry its statement across unaltered"
+            )));
+        }
+
+        // Derived from the same values the statement covers, and reported so the
+        // operator can compare it with what `pair-init` printed on the other
+        // machine. Computed before the publishes so a failure there still leaves
+        // the operator able to tell whether they certified the right device.
+        let confirmation_code = pairing_confirmation_code(account, device, &kem_pk, &sign_pk);
 
         // Refuse if this node is not itself a device of that account. A node
         // that paired INTO somebody else's account holds a device whose account
@@ -249,6 +280,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                     account,
                     device,
                     key_delivered,
+                    confirmation_code,
                 ))
             }
             .into_actor(self),

@@ -11,8 +11,12 @@ use crate::cli::Environment;
 /// account, and the account holder cannot certify that device until it knows the
 /// id and agreement key. So this command produces those two values and stops.
 ///
-/// Hand the printed `deviceId` and `kemPublicKey` to the device that already
-/// holds the account, and run `account pair-complete` there.
+/// Hand every printed value to the device that already holds the account and run
+/// `account pair-complete` there. The statement travels with them — that side
+/// refuses to certify key material that does not come with the signature of the
+/// device that minted it. Then read the confirmation code out to whoever is
+/// running `pair-complete`: if it does not match theirs, the payload was altered
+/// in transit and the device must not be certified.
 ///
 /// The root key and nonce come from that device — `account create` prints both.
 /// Neither is a secret: a genesis is public data, and naming an account you do

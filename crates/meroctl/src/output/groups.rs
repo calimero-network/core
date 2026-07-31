@@ -95,6 +95,14 @@ impl Report for PairDeviceInitApiResponse {
         let _ = table.add_row(vec!["Device ID", &self.data.device_id]);
         let _ = table.add_row(vec!["Device KEM key", &self.data.kem_public_key]);
         let _ = table.add_row(vec!["Device signing key", &self.data.sign_public_key]);
+        let _ = table.add_row(vec!["Pairing statement", &self.data.statement]);
+        // Read aloud, not transcribed: the point of the code is that a person
+        // compares it against the other machine's. Anything the payload carries
+        // is something an attacker rewriting the payload also controls.
+        let _ = table.add_row(vec![
+            "Confirmation code (read aloud)",
+            &self.data.confirmation_code,
+        ]);
         println!("{table}");
     }
 }
@@ -117,6 +125,10 @@ impl Report for PairDeviceCompleteApiResponse {
             } else {
                 "no - the device's sync pull will retry"
             },
+        ]);
+        let _ = table.add_row(vec![
+            "Confirmation code (must match pair-init)",
+            &self.data.confirmation_code,
         ]);
         println!("{table}");
     }

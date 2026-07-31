@@ -28,6 +28,17 @@ fn decode32(value: &str, field: &str) -> Result<[u8; 32], ApiError> {
         })
 }
 
+/// Same, for the 64-byte pairing statement.
+fn decode64(value: &str, field: &str) -> Result<[u8; 64], ApiError> {
+    hex::decode(value)
+        .ok()
+        .and_then(|b| <[u8; 64]>::try_from(b).ok())
+        .ok_or_else(|| ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: format!("{field} must be 128 hex chars (64 bytes)"),
+        })
+}
+
 /// Certify a device another node minted, link it, and deliver the scope key.
 ///
 /// The second half of pairing. Run on the node that holds the account — it is
@@ -54,6 +65,10 @@ pub async fn handler(
         Ok(bytes) => PublicKey::from(bytes),
         Err(err) => return err.into_response(),
     };
+    let statement = match decode64(&req.statement, "statement") {
+        Ok(bytes) => bytes,
+        Err(err) => return err.into_response(),
+    };
 
     info!(
         namespace_id = %namespace_id_str,
@@ -68,6 +83,7 @@ pub async fn handler(
             device,
             kem_pk,
             sign_pk,
+            statement,
         })
         .await
         .map_err(parse_api_error);
@@ -79,6 +95,7 @@ pub async fn handler(
                 account = %resp.account,
                 device = %resp.device,
                 key_delivered = resp.key_delivered,
+                confirmation_code = %resp.confirmation_code,
                 "paired device linked"
             );
             ApiResponse {
@@ -87,6 +104,7 @@ pub async fn handler(
                         account_id: hex::encode(resp.account.as_bytes()),
                         device_id: hex::encode(resp.device.as_bytes()),
                         key_delivered: resp.key_delivered,
+                        confirmation_code: resp.confirmation_code,
                     },
                 },
             }
