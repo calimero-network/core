@@ -222,11 +222,18 @@ pub(crate) fn apply_device_unlinked(
 /// against at all, and `ensure_live_fallback_is_sound` is what separates that
 /// from an unfolded cut — where falling back would answer against a different
 /// cut and let two replicas decide the same op differently.
+/// A refusal here is reported with **both** verdicts, because "the projection says
+/// no while live says yes" is not a detail — it is the signature of a divergence.
+/// The publisher applies its own op through the live resolver, so a receiver whose
+/// projection disagrees records nothing for an op the publisher recorded, and the
+/// two `scope_root`s part company with no later op able to reconcile them. Logging
+/// only "not a member" leaves that indistinguishable from an ordinary refusal.
 fn endorser_is_member(
     ctx: &GroupApplyCtx<'_>,
     endorser: &calimero_primitives::identity::PublicKey,
 ) -> EyreResult<bool> {
-    let path = match ctx.projection_membership_path(endorser) {
+    let projected = ctx.projection_membership_path(endorser);
+    let path = match projected {
         Some(projected) => projected,
         None => {
             ctx.ensure_live_fallback_is_sound(endorser)?;
@@ -237,7 +244,27 @@ fn endorser_is_member(
             }
         }
     };
-    Ok(path != AtCutMembershipPath::None)
+
+    let is_member = path != AtCutMembershipPath::None;
+    if !is_member {
+        // Read live too, purely to classify the refusal. Best-effort: a store
+        // fault here must not turn a decided refusal into an error.
+        let live = MembershipRepository::new(ctx.store())
+            .check_path(ctx.group_id(), endorser)
+            .ok();
+        let live_is_member = live.map(|path| path != MembershipPath::None);
+        tracing::warn!(
+            group_id = ?ctx.group_id(),
+            %endorser,
+            verdict = if projected.is_some() { "projection" } else { "live-fallback" },
+            ?live_is_member,
+            cut_len = ctx.cut().len(),
+            cut_head = ?ctx.cut().first().map(hex::encode),
+            divergence_risk = projected.is_some() && live_is_member == Some(true),
+            "endorser is not a member at this op's cut"
+        );
+    }
+    Ok(is_member)
 }
 
 /// `GroupOp::AccountKeysRotated` — roll an account's root key.

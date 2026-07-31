@@ -303,3 +303,91 @@ fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
          accepted by its publisher"
     );
 }
+
+/// The production shape, and the divergence the acceptance scenario hit.
+///
+/// `account create` records the device's `sign_pk` as the node's NAMESPACE
+/// IDENTITY — the very key the group's membership row is keyed under. So a member
+/// who enrols a device becomes, at every cut that contains its own link, a key that
+/// `account_for_author` resolves to the account's real `AccountId` — while
+/// membership on this plane is keyed by `legacy_account_id`. The member disappears.
+///
+/// The blast radius is every at-cut authority read for that key, not just the
+/// device-link gate: the endorser check refuses their next link, and the cross-DAG
+/// check refuses their devices' state deltas. Worse, the publisher decides its own
+/// op from LIVE state and accepts, so receivers refuse an op the publisher recorded
+/// and `scope_root` parts company with no later op able to reconcile it.
+///
+/// The device binding is a FALLTHROUGH for keys that are members of nothing — never
+/// an override for a key that is a member in its own right.
+#[test]
+fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
+    let member_sk = PrivateKey::random(&mut OsRng);
+    let member = member_sk.public_key();
+    let (store, mut proj, ns, member_cut) = namespace_with_member(member);
+
+    assert_eq!(
+        proj.member_at_cut(&store, ns, &member, &[member_cut]),
+        Some(true),
+        "baseline: a member resolves at the cut that added them"
+    );
+
+    // `account create`: the member enrols its own device, and the certificate names
+    // the member's own namespace identity as the device's signing key.
+    let account_root = PrivateKey::from([0x42; 32]);
+    let genesis = AccountGenesis::new(account_root.public_key(), [0xAB; 16]);
+    let account = genesis.account_id();
+    let cert = sign_device_cert(
+        &account_root,
+        account,
+        DeviceId::mint(account, [0xAB; 16]),
+        &member,
+        &KemPublicKey::from(*X25519SecretKey::from([0x33; 32]).public_key().as_bytes()),
+        0,
+        0,
+    )
+    .unwrap();
+    let link = GroupOp::AccountDeviceLinked {
+        genesis,
+        chain: vec![],
+        cert,
+        endorsement: calimero_account::sign_account_endorsement(&member_sk, account).unwrap(),
+    };
+    let ns_bytes = ns.to_bytes();
+    let group_key = [0x5A; 32];
+    let signed = SignedNamespaceOp {
+        version: 1,
+        namespace_id: ns_bytes.into(),
+        parent_op_hashes: vec![member_cut],
+        signer: member,
+        nonce: 2,
+        op: NamespaceOp::Group {
+            group_id: ns_bytes.into(),
+            key_id: GroupKeyring::new(&store, ns)
+                .load_current_key()
+                .unwrap()
+                .expect("the fixture stored a key")
+                .0
+                .into(),
+            encrypted: GroupKeyring::encrypt_op(&group_key, &link).unwrap(),
+            key_rotation: None,
+        },
+        signature: [0u8; 64],
+    };
+    let link_cut = signed.content_hash().unwrap();
+    proj.ingest_op(&op_from_namespace_op(
+        &signed,
+        Some(&link),
+        link_cut,
+        hlc(2),
+        &[member_cut],
+    ));
+
+    assert_eq!(
+        proj.member_at_cut(&store, ns, &member, &[link_cut]),
+        Some(true),
+        "a member must not stop being a member because they enrolled a device — the \
+         binding is a fallthrough for keys that are members of nothing, not an \
+         override for one that is a member in its own right"
+    );
+}

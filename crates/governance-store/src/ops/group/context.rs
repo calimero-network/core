@@ -118,6 +118,15 @@ impl<'a> GroupApplyCtx<'a> {
         &self.context_registration
     }
 
+    /// The op's causal cut — its parent op hashes.
+    ///
+    /// Exposed so a gate can *report* which cut it decided against. An authority
+    /// decision that differs between two replicas is only debuggable if the cut it
+    /// was made at is in the log beside the verdict.
+    pub(crate) const fn cut(&self) -> &'a [[u8; 32]] {
+        self.parents
+    }
+
     /// The projection's at-cut membership path for `member` in this group.
     ///
     /// `None` means the projection has no verdict — either there is no cut to

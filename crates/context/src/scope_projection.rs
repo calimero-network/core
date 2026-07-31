@@ -87,8 +87,22 @@ type AuthCutContext = (
 /// then fail to author with them: delivery resolved the device, authorization did
 /// not.
 ///
-/// The folded bindings are consulted first; `legacy_account_id` is the fallback
-/// for a key nobody has linked, which is every member key today.
+/// **A key that is a member in its own right is that member — the binding is a
+/// FALLTHROUGH, never an override.** This order is load-bearing, not stylistic.
+/// `account create` records the device's `sign_pk` as the node's namespace
+/// identity, which is exactly the key the group's membership row is keyed under. So
+/// preferring the binding made a member who enrolled a device resolve to the
+/// account's real `AccountId` at every cut containing its own link — while
+/// membership on this plane is keyed by `legacy_account_id`. The member simply
+/// disappeared: its next device link was refused as "account is not a member", its
+/// devices' state deltas were refused at the cross-DAG check, and because a
+/// publisher decides its own op from LIVE state and accepts, receivers refused an op
+/// the publisher recorded and `scope_root` parted company for good.
+///
+/// The bindings are consulted only for a key membership does not know, which is what
+/// the fallthrough is for: a paired device signs with a namespace identity that is a
+/// member of nothing, so `legacy_account_id` would answer about somebody who does
+/// not exist. That is the case this function exists for, and it still holds.
 ///
 /// Resolved from `view` — **at the cut** — deliberately. Reading the live binding
 /// rows would make the verdict depend on how much this replica has folded, and two
@@ -100,10 +114,26 @@ type AuthCutContext = (
 /// only be populated while observing bindings, so it comes back empty after a
 /// projection rebuild and silently reverts every device to the fallback.
 fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> AccountId {
+    let own = legacy_account_id(key);
+    if view_knows_author(view, &own) {
+        return own;
+    }
     view.devices
         .values()
         .find(|binding| binding.sign_pk == *key)
-        .map_or_else(|| legacy_account_id(key), |binding| binding.account)
+        .map_or(own, |binding| binding.account)
+}
+
+/// Does this view carry any authority for `account` in its own name?
+///
+/// Deliberately broader than membership: an admin may appear only as a group or root
+/// admin, with no member row, and resolving such a key through a device binding
+/// would strip its admin authority exactly as it stripped membership above. Any
+/// authority at all is enough to say "this key speaks for itself".
+fn view_knows_author(view: &calimero_authz::AclView, account: &AccountId) -> bool {
+    view.is_scope_member(account)
+        || view.is_root_admin(account)
+        || view.group_admin.values().any(|admin| admin == account)
 }
 
 fn build_op(
