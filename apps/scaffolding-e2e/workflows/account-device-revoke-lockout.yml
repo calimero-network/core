@@ -67,13 +67,21 @@ description: >
        halves matter: a revocation that also breaks the surviving device would
        pass a naive lockout assertion while being useless.
 
-    7. The revoked device cannot recover the key by asking a peer for it. This is
-       the subtle one. A `GroupKeyRequest` names the requester's *identity* key,
-       and node-3's node is still in the namespace — so before the pull path
-       was made device-addressed, step 6 would pass and then the node would
-       quietly re-fetch the new key on its next sync round and start reading
-       again. Asserted by log signal, because the failure is an absence of
-       delivery rather than an error.
+    7. The revoked device cannot READ past the rotation. This is the subtle one,
+       and the one a naive lockout test misses: cutting off writes leaves a
+       silent reader, which is the failure the whole feature exists to prevent.
+       Asserted as the property — node-3 reads the survivor's key and must still
+       see the PRE-revocation value, because the post-rotation delta is
+       undecryptable to it. A device that had recovered the key returns the new
+       value and fails here.
+
+       Deliberately NOT asserted via the pull path's refusal log. A node asks a
+       peer for a key when it is a member of a group it holds no key for, or when
+       a governance op is buffered on an epoch it is stranded at. A revoked device
+       is neither — it is a member of nothing, and it still holds the old key with
+       nothing buffered — so it never asks, and a log assertion would wait on a
+       line no code path emits in this shape. The refusal is still logged at
+       `info` on the responder for the day a scenario can drive it.
 
   What this does NOT cover (intentionally):
     * Self-service revocation (an account revoking its own lost device without
@@ -402,12 +410,34 @@ steps:
     type: wait
     seconds: 20
 
-  - name: A peer refused to serve the key to the revoked device
-    type: assert_log_present
-    nodes:
-      - account-revoke-node-1
-    patterns:
-      - "not serving group key: the requester's account has no live device"
+  # Asserted as the PROPERTY, not as a log signal, because this shape cannot
+  # trigger the pull path at all. A node asks for a key when it is a member of a
+  # group it holds no key for, or when a governance op is buffered on an epoch it
+  # is stranded at. The revoked device is neither: it is a member of NOTHING (that
+  # is what makes it a device rather than a member), and it still holds the
+  # pre-rotation key with nothing buffered — so it never asks, and asserting on the
+  # responder's refusal would be waiting for a line no code path emits here.
+  #
+  # What the feature actually promises is observable directly: a revoked device
+  # must not go on reading. It is frozen at the state it had, so the survivor's
+  # post-rotation write is invisible to it — this read returns the value from
+  # BEFORE the revocation. A device that had recovered the key would return
+  # `laptop-still-works` and fail here, which is exactly the "silent reader" this
+  # whole scenario exists to catch.
+  - name: The revoked device reads the group as it was, not as it is
+    type: call
+    node: account-revoke-node-3
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: from-laptop
+    outputs:
+      revoked_view: result
+
+  - name: The revoked device cannot read past the rotation
+    type: json_assert
+    statements:
+      - 'json_equal({{revoked_view}}, {"output": "laptop-wrote-this"})'
 
   - name: The revoked device still cannot write after the recovery window
     type: call
