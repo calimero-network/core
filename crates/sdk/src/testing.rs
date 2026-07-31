@@ -467,7 +467,7 @@ where
 /// This is the property the whole migration model rests on — every node runs the
 /// migrate independently and must land on the same root. The root hash folds in
 /// every child-collection entry, so a per-node value baked *anywhere* in the
-/// migrated state — `env::executor_id()` written into a field, an
+/// migrated state — `env::device_id()` written into a field, an
 /// `LwwRegister::set` inside a *carried* collection, a Counter increment — makes
 /// the hashes differ and fails here, instead of silently forking a real network.
 ///
