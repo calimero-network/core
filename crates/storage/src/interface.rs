@@ -97,6 +97,20 @@ fn is_opaque_root_crdt_type(crdt_type: &Option<crate::collections::crdt_meta::Cr
 /// - `effective_writers: Some(set)` → caller pre-resolved the
 ///   ADR-0001-compliant writer set as of the delta's causal point.
 ///   The Shared verifier MUST validate against this set.
+///
+///   This set is the authorization decision itself, so storage takes it on
+///   trust and the caller owes it two properties. It must be resolved from
+///   the *local* rotation log — a set chosen by whoever authored the delta
+///   would let a peer name itself a writer of any Shared object and then
+///   satisfy the signature check against its own set (a signature proves
+///   possession of a key, never whose key it is). And it must be resolved
+///   with `writers_at_authenticated`, not `writers_at`, because the
+///   rotation log rides ordinary sync: each entry earns its place only when
+///   its signer held ADMIN in the set resolved just before it. The node's
+///   `ContextStorageApplier::apply` is the only production caller that
+///   passes `Some`, and it does both — which is also why the sync paths
+///   refuse a wire-supplied `StorageDelta::CausalActions` outright rather
+///   than forwarding the writer set it carries.
 /// - `effective_writers: None` → caller has no DAG context (snapshot
 ///   leaf push, local apply, tests). The verifier falls back to the
 ///   entity's currently-stored `metadata.storage_type.writers` (v2
@@ -108,8 +122,9 @@ fn is_opaque_root_crdt_type(crdt_type: &Option<crate::collections::crdt_meta::Cr
 pub struct ApplyContext {
     /// Pre-resolved authoritative writer set for `Shared` actions. When
     /// `Some`, the verifier validates the signature against this set and
-    /// skips the v2 stored-writers fallback. Resolved by the node sync
-    /// layer per #2266.
+    /// skips the v2 stored-writers fallback. Resolved by the applying
+    /// node's own sync layer from its own rotation log; see the trust
+    /// contract on the type docs before adding a caller that passes `Some`.
     pub effective_writers: Option<BTreeMap<PublicKey, OpMask>>,
 
     /// Hash of the `CausalDelta` containing the action being applied. Used
