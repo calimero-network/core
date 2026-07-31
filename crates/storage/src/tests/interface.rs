@@ -1244,6 +1244,90 @@ mod shared_storage_rotation_authentication {
     }
 
     #[test]
+    fn a_shared_write_that_names_no_signer_is_refused() {
+        use crate::entities::Metadata;
+        use ed25519_dalek::Signer as _;
+
+        // The write must name its author. Verification used to fall back to trying
+        // every writer's key until one verified, which made an unverifiable
+        // signature cost one `ed25519_verify` PER WRITER on a path any peer can
+        // drive — and, more importantly, conflated two separable questions: who
+        // signed this, and is that principal a writer.
+        //
+        // Keeping them separate is what lets a writer set name accounts rather
+        // than keys: "resolve the author, then ask whether that principal may
+        // write" is expressible, while "try every key in the set" is not, because
+        // an account is not a key.
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let alice_sk = make_signing_key(0xA1);
+        let alice = pubkey_of(&alice_sk);
+        let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let id = Id::new([0x41; 32]);
+
+        // A genuine write by a genuine writer, accepted — the baseline that makes
+        // the rejection below meaningful rather than vacuous.
+        let good = build_signed_shared_action(
+            true,
+            id,
+            b"one".to_vec(),
+            writers.clone(),
+            env::time_now(),
+            &alice_sk,
+            vec![root],
+        );
+        MainInterface::apply_action(good, &ApplyContext::empty())
+            .expect("the baseline write must be accepted, or this test proves nothing");
+
+        // Now the same writer, but the action carries NO signer from the outset and
+        // is signed over that payload — so the signature is genuinely valid and
+        // alice genuinely is a writer. Stripping the field after signing would only
+        // have produced a payload mismatch, which proves nothing about this rule:
+        // the old scan would have found alice here and accepted the write.
+        let nonce = env::time_now() + 1_000_000;
+        let mut anonymous = crate::action::Action::Update {
+            id,
+            data: b"two".to_vec(),
+            ancestors: vec![],
+            metadata: Metadata {
+                created_at: nonce,
+                updated_at: nonce.into(),
+                storage_type: StorageType::Shared {
+                    writers: crate::entities::full_mask(writers),
+                    signature_data: Some(crate::entities::SignatureData {
+                        signature: [0; 64],
+                        nonce,
+                        signer: None,
+                    }),
+                },
+                crdt_type: None,
+                field_name: None,
+                schema_version: None,
+            },
+        };
+        let payload = anonymous.payload_for_signing();
+        let signature = alice_sk.sign(&payload).to_bytes();
+        if let crate::action::Action::Update { metadata, .. } = &mut anonymous {
+            if let StorageType::Shared {
+                signature_data: Some(sd),
+                ..
+            } = &mut metadata.storage_type
+            {
+                sd.signature = signature;
+            }
+        }
+        assert!(
+            matches!(
+                MainInterface::apply_action(anonymous, &ApplyContext::empty()),
+                Err(StorageError::InvalidSignature)
+            ),
+            "a write naming no signer must be refused even when its signature would \
+             verify under a writer — the author is not optional"
+        );
+    }
+
+    #[test]
     fn forged_shared_rotation_rejected_at_merge() {
         env::reset_for_testing();
         let root = setup_root_for_main();

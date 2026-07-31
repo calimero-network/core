@@ -553,39 +553,45 @@ impl<S: StorageAdaptor> Interface<S> {
         }
     }
 
-    /// Resolve which writer in `writers` produced `sig_data`'s signature over
-    /// `payload`, returning that writer's key on success.
+    /// Resolve which writer produced `sig_data`'s signature over `payload`,
+    /// returning that writer's key on success.
     ///
-    /// Fast path: if `sig_data` carries a `signer` hint that is in `writers`,
-    /// do exactly one `ed25519_verify` against the hint. Slow path (no hint, or
-    /// a hint not in the set): linear scan over `writers`, returning the first
-    /// key whose signature verifies. `None` means no writer in the set produced
-    /// this signature — callers map that to `InvalidSignature`.
+    /// **A write must name its signer.** One `ed25519_verify` against the named
+    /// key, and the key must hold an entry in `writers`. `None` means the write
+    /// named nobody, named a non-writer, or the signature does not verify —
+    /// callers map all three to `InvalidSignature`.
     ///
-    /// This is the single source of truth for the signer-hint-then-scan
-    /// authorization check shared by every signed `Shared`/`SharedMember` arm
-    /// (upsert and delete) and the snapshot verifiers. Callers needing only a
-    /// yes/no answer use `.is_some()`; callers needing the signer for the
-    /// operation-granularity gate use the returned key directly.
+    /// The hint used to be optional, falling back to a linear scan that tried
+    /// every writer's key until one verified. Two reasons that had to go, and the
+    /// second is why this function is shaped the way it is now:
+    ///
+    /// - **It was verification amplification.** A signature that verifies under
+    ///   nobody costs one `ed25519_verify` per writer, on a path any peer can
+    ///   drive by sending a malformed delta. The `[0; 64]` placeholder bail only
+    ///   covered the trivial case.
+    /// - **A scan cannot exist once a writer set names accounts rather than
+    ///   keys.** There would be no keys to scan. Requiring the signature to name
+    ///   its author is what makes "resolve the author, then ask whether that
+    ///   principal is a writer" expressible at all — and those are two separable
+    ///   questions, which the scan conflated into one.
+    ///
+    /// This is the single source of truth for that check, shared by every signed
+    /// `Shared`/`SharedMember` arm (upsert and delete) and the snapshot verifiers.
+    /// Callers needing only a yes/no answer use `.is_some()`; callers needing the
+    /// signer for the operation-granularity gate use the returned key.
     ///
     /// The caller is responsible for the `[0; 64]` placeholder reject before
-    /// calling this — that O(1) bail avoids a full writer-set scan of
-    /// `ed25519_verify` calls on a known-bad signature.
+    /// calling this.
     fn resolve_signer(
         writers: &BTreeMap<PublicKey, OpMask>,
         sig_data: &crate::entities::SignatureData,
         payload: &[u8],
     ) -> Option<PublicKey> {
-        match sig_data.signer {
-            Some(hint) if writers.contains_key(&hint) => {
-                crate::env::ed25519_verify(&sig_data.signature, hint.digest(), payload)
-                    .then_some(hint)
-            }
-            _ => writers
-                .keys()
-                .copied()
-                .find(|w| crate::env::ed25519_verify(&sig_data.signature, w.digest(), payload)),
+        let signer = sig_data.signer?;
+        if !writers.contains_key(&signer) {
+            return None;
         }
+        crate::env::ed25519_verify(&sig_data.signature, signer.digest(), payload).then_some(signer)
     }
 
     /// Verify the writer's signature on a snapshot-supplied entity

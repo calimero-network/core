@@ -55,6 +55,29 @@ jobs:
     name: Build Image
     uses: ./.github/workflows/build-merod-image.yml
 
+  # ── Scenario convergence lint ──
+  # Static, no nodes, seconds not minutes — so it runs ahead of everything that
+  # boots docker and fails fast on the cheapest class of e2e bug there is.
+  #
+  # A scenario that reads another node's state without a barrier establishing the
+  # state arrived is not merely flaky; it fails with a symptom that names the wrong
+  # thing. Three did in one afternoon: a null where a schema version was expected,
+  # the literal string "undefined" reaching a base58 parser, and a key-less join.
+  # Each cost an investigation into whichever feature the PR happened to touch
+  # before the timing was even suspected.
+  #
+  # Ratcheted against scripts/e2e-convergence-baseline.txt: pre-existing findings
+  # are an accepted backlog and only a NEW one fails.
+  convergence-lint:
+    name: Scenario convergence lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+      - name: Lint merobox scenarios for unbarriered convergence reads
+        run: python3 scripts/lint-e2e-convergence.py
+
   # ── Auth seam: client-token e2e over real HTTP ──
   # Proves a client token minted the way the auth frontend mints it can call
   # the routes the SDK uses (the 0.11.0-rc.9 login-loop outage shape).
