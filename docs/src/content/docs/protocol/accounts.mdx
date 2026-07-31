@@ -161,13 +161,19 @@ Pairing is a **two-way exchange**, and the ordering is forced rather than stylis
   steps={[
     { from: 1, to: 0, label: 'root_pk + nonce (out of band)', dashed: true },
     { from: 0, to: 0, label: 'account = H(root_pk, nonce); mint DeviceId, sign key, KEM key' },
-    { from: 0, to: 1, label: 'deviceId + kemPk + signPk (out of band)', dashed: true },
+    { from: 0, to: 1, label: 'deviceId + kemPk + signPk + statement (out of band)', dashed: true },
+    { from: 0, to: 1, label: 'confirmation code (read out, separate channel)', dashed: true },
+    { from: 1, to: 1, label: 'verify statement AND the code against the keys that arrived, else refuse' },
     { from: 1, to: 1, label: 'cert signed by account root; endorsement by member key' },
     { from: 1, to: 2, label: 'AccountDeviceLinked (encrypted GroupOp)' },
     { from: 1, to: 0, label: 'RootOp::KeyDelivery — scope key wrapped to the KEM key', color: '#a5ff11' },
     { from: 0, to: 2, label: 'the paired device can now read and write' },
   ]}
 />
+
+**Two things gate the certificate, and they answer different questions.** The new device signs a statement over the account, its own id and both keys, so the values arrive as a statement by the device that minted them rather than as claims by whoever relayed them. But a signature only proves the payload agrees with itself, and an attacker holding both keys can arrange that — so `pair-complete` also **requires** the confirmation code, and refuses if it does not describe the key material that arrived. The account holder gets that code from whoever is at the pairing device; it is the one value an attacker rewriting the payload cannot produce.
+
+Requiring it rather than printing it for comparison is the point: an advisory step is one an operator in a hurry skips. What the requirement cannot do is force the code to travel *separately* from the keys — pasted along with them it proves nothing, since whoever rewrote the payload rewrote the code too. That part is the operator's channel, and it is the whole security assumption of pairing. See [Known limits](#known-limits) for why the code is 64 bits rather than a friendlier six digits.
 
 **The key delivery must be a cleartext root operation.** The pairing device holds no scope key, so a device-addressed envelope carried inside an *encrypted* group operation would be unreadable by its only recipient — the same bootstrap deadlock again. `KeyDelivery` being a root operation is what breaks the cycle.
 
@@ -312,7 +318,7 @@ Account operations travel as `GroupOp` variants because that is the transport th
 - **The root is not yet exportable.** It is generated into the node's own store, plaintext unless at-rest encryption is enabled. Until an export exists, calling it a recovery key overstates it — tracked in [#3335](https://github.com/calimero-network/core/issues/3335).
 - **Revocation latency is per scope.** A scope that has not folded the revocation still honours the old binding. Inherent to causal revocation.
 - **Self-service revocation cannot rotate.** The device stops writing at once but can read until an admin rotates.
-- **Pairing trusts the out-of-band channel.** Whoever can substitute the device id and keys during the exchange gets certified into the account.
+- **Pairing is only as good as the channel the confirmation code travels on.** `pair-init` signs a statement over the account, the device id and both keys, and `pair-complete` refuses to certify key material that does not carry it — so nobody can swap the KEM key under a captured device id, which is what previously made the exchange only as safe as the channel carrying it. What a signature cannot settle is a *wholesale* substitution: an attacker that replaces both keys and re-signs with its own produces a statement that verifies, because nothing on the certifying side commits to the genuine keys in advance. Binding the keys into the `DeviceId` would fix it and is deliberately unavailable — the id excludes them so a device survives key rotation. What closes it instead is the confirmation code: a 64-bit value over exactly what gets certified, which `pair-complete` **requires** and checks against the keys that arrived, so the comparison cannot be skipped. It is 64 bits and not the six digits that would be pleasant to read aloud because the attacker knows the genuine code and can grind its own keypairs offline until one matches — the width is the work factor. What remains is not a gap in the check but in the channel: a code pasted alongside the keys it describes was rewritten by the same hand, so the code has to reach the account holder some other way — read out, or over a channel the payload did not take.
 - **Root-side revocation has no operator surface.** Revoking a device requires the account's authority, which a user who merely *lost* the device still has — and recovering from the offline root works in principle, since an account id is recomputable from its root alone. But no CLI or admin endpoint drives it, so today that is a capability rather than a feature. A device cannot revoke itself: if it could, compromising it would hand the attacker a revocation primitive instead of taking one away.
 - **Key-delivery fan-out is quadratic in group size.** `current_key_recipients` resolves devices per member, and each resolution scans the group's bindings, so a rotation costs on the order of members × devices. It runs at rotation and join time — never per operation — and each recipient already needs a KEM wrap, which dominates. Hoisting one binding scan out of the loop collapses it when group sizes justify the change.
 - **A member with no live device cannot self-recover.** Re-enrolling needs an encrypted group operation, which needs the key — so they depend on an admin to re-deliver it or to publish the replacement link. If they could re-key themselves, revocation would mean nothing.

@@ -3,8 +3,9 @@
 //!
 //! The first half of pairing, and the half that runs on the *new* device. It
 //! produces the three values the account holder needs in order to certify this
-//! device — the `DeviceId`, the KEM public key, and the signing key — and
-//! nothing else. It publishes no op.
+//! device — the `DeviceId`, the KEM public key, and the signing key — plus a
+//! signature over them and the confirmation code for the two humans to compare.
+//! It publishes no op.
 //!
 //! All three have to be minted here, which is what forces the exchange to be
 //! two-way: the id is `H(account ‖ nonce)` so it needs the account, while the
@@ -25,8 +26,10 @@
 //! for. Since nothing is published here there is no encrypted op to gate on.
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
+use calimero_account::{pairing_confirmation_code, sign_pairing_statement};
 use calimero_context_client::group::{PairDeviceInitRequest, PairDeviceInitResponse};
 use calimero_governance_store::NodeDeviceRepository;
+use calimero_primitives::identity::PrivateKey;
 use tracing::info;
 
 use crate::ContextManager;
@@ -45,8 +48,8 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
         // Provision this node's signing identity for the namespace. Not a
         // membership claim and not gated on one — it is the key this node will
         // sign its own ops with once the account holder has linked it.
-        let sign_pk = match self.get_or_create_namespace_identity(&namespace_id) {
-            Ok((_, sign_pk, _, _)) => sign_pk,
+        let (sign_pk, sign_sk) = match self.get_or_create_namespace_identity(&namespace_id) {
+            Ok((_, sign_pk, sign_sk, _)) => (sign_pk, PrivateKey::from(sign_sk)),
             Err(err) => {
                 return ActorResponse::reply(Err(eyre::eyre!(
                     "failed to provision a namespace identity for {namespace_id:?}: {err}"
@@ -72,11 +75,43 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
                 Err(err) => return ActorResponse::reply(Err(err)),
             };
 
+        // Sign what we minted. The three values below are otherwise bare
+        // assertions by the time they reach the account holder — anyone able to
+        // alter the payload in transit could put their own keys under this
+        // device id, and the certificate would name them. Signing with the
+        // device's own key proves the party offering the material generated it.
+        //
+        // The signature cannot rule out an attacker replacing both keys and
+        // re-signing with its own; that is what the confirmation code below is
+        // for, and why it is derived here rather than left to callers.
+        let statement = match sign_pairing_statement(
+            &sign_sk,
+            enrolled.account,
+            enrolled.device(),
+            &enrolled.kem_public_key(),
+        ) {
+            Ok(statement) => statement,
+            Err(err) => {
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "failed to sign the pairing statement: {err}"
+                )))
+            }
+        };
+
+        let confirmation_code = pairing_confirmation_code(
+            enrolled.account,
+            enrolled.device(),
+            &enrolled.kem_public_key(),
+            &sign_pk,
+        );
+
         let response = PairDeviceInitResponse::new(
             enrolled.account,
             enrolled.device(),
             enrolled.kem_public_key(),
             sign_pk,
+            statement,
+            confirmation_code,
         );
 
         let node_client = self.node_client.clone();

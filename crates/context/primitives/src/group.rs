@@ -803,6 +803,16 @@ pub struct PairDeviceInitResponse {
     /// certificate naming a key no signature ever matches, leaving the device
     /// linked but unable to author.
     pub sign_pk: PublicKey,
+    /// This device's signature over the account, its own id and both keys above.
+    ///
+    /// Travels with them and is checked before anything is certified, so the
+    /// party offering the key material has to be the party that generated it.
+    /// Without it `pair-complete` certifies whatever arrives beside a `DeviceId`.
+    pub statement: [u8; 64],
+    /// The value the two humans compare out of band, derived from the same four
+    /// values the statement signs. Carried rather than recomputed by the caller
+    /// so both halves of the exchange print a code from one implementation.
+    pub confirmation_code: String,
 }
 
 impl PairDeviceInitResponse {
@@ -815,12 +825,16 @@ impl PairDeviceInitResponse {
         device: DeviceId,
         kem_pk: KemPublicKey,
         sign_pk: PublicKey,
+        statement: [u8; 64],
+        confirmation_code: String,
     ) -> Self {
         Self {
             account,
             device,
             kem_pk,
             sign_pk,
+            statement,
+            confirmation_code,
         }
     }
 }
@@ -846,6 +860,22 @@ pub struct PairDeviceCompleteRequest {
     pub kem_pk: KemPublicKey,
     /// The key that device will sign its ops with.
     pub sign_pk: PublicKey,
+    /// The pairing device's signature over the three values above and the
+    /// account, from its `pair-init`. Verified before the certificate is signed;
+    /// a request without it cannot be completed, because then the three values
+    /// would be bare assertions by whoever sent them.
+    pub statement: [u8; 64],
+    /// The confirmation code the account holder was read from the pairing
+    /// device, checked against the one this side derives from the key material
+    /// that actually arrived.
+    ///
+    /// Required, so the check cannot be skipped. The signature above proves the
+    /// keys and the statement agree with each other, which an attacker holding
+    /// both can always arrange; this is the value it cannot produce, because it
+    /// comes from the other device by a channel it does not control. If the code
+    /// travels beside the keys it describes it proves nothing — that is a
+    /// property of the channel the operator chooses, not of this field.
+    pub confirmation_code: String,
 }
 
 /// What pairing established.
@@ -863,6 +893,10 @@ pub struct PairDeviceCompleteResponse {
     /// missing. It does mean the device stays unable to read until that pull
     /// lands, which is worth surfacing rather than reporting a flat success.
     pub key_delivered: bool,
+    /// The confirmation code for the key material that was certified — the same
+    /// value the request had to carry, echoed so the operator can see what the
+    /// certificate actually names.
+    pub confirmation_code: String,
 }
 
 impl PairDeviceCompleteResponse {
@@ -870,11 +904,17 @@ impl PairDeviceCompleteResponse {
     /// [`CreateAccountResponse::new`] — the struct is `#[non_exhaustive]` and
     /// the producer lives in another crate.
     #[must_use]
-    pub const fn new(account: AccountId, device: DeviceId, key_delivered: bool) -> Self {
+    pub const fn new(
+        account: AccountId,
+        device: DeviceId,
+        key_delivered: bool,
+        confirmation_code: String,
+    ) -> Self {
         Self {
             account,
             device,
             key_delivered,
+            confirmation_code,
         }
     }
 }
