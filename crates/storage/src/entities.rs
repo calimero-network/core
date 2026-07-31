@@ -437,11 +437,12 @@ pub struct SignatureData {
     pub signature: [u8; 64],
     /// Nonce (counter/timestamp) to avoid replaying attacks.
     pub nonce: u64,
-    /// Optional hint identifying which key produced the signature. Used by
-    /// `StorageType::Shared` to make verification O(1) (skip the per-writer
-    /// linear scan); ignored for `User` where the owner is already known.
-    /// `None` means "fall back to scanning the writer set" — older actions
-    /// without this hint still verify.
+    /// Which key produced the signature. `Option` for wire compatibility
+    /// only — a signed `Shared`/`SharedMember` write that names nobody is
+    /// rejected as `InvalidSignature`, because resolving the author is what
+    /// makes "is this principal a writer?" a separate question from "does
+    /// this signature verify?". Ignored for `User`, where the owner is
+    /// already known.
     pub signer: Option<PublicKey>,
 }
 

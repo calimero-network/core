@@ -625,8 +625,8 @@ impl<S: StorageAdaptor> Interface<S> {
     /// * `User` / `Shared` with `signature_data: Some(_)` — compute
     ///   `payload_for_signing` from a synthetic `Action::Add { id,
     ///   data, ancestors: vec![], metadata }` and `ed25519_verify`
-    ///   against the writer (owner for User, signer-hint or
-    ///   writer-set scan for Shared).
+    ///   against the writer (owner for User, the signature's named
+    ///   signer for Shared).
     /// * `User` / `Shared` with `signature_data: None` — rejected as
     ///   `InvalidSignature`. After the bootstrap-signing fix
     ///   (`persist_signed_signatures` in
@@ -720,16 +720,14 @@ impl<S: StorageAdaptor> Interface<S> {
                 signature_data: Some(sig_data),
             } => {
                 // Same `[0; 64]` placeholder reject as the User arm
-                // above — particularly important for `Shared` since
-                // the writer-set scan would do up to N ed25519
-                // verifies (one per writer) before the crypto
-                // library rejects the placeholder, which is a free
-                // CPU-burn vector for a misbehaving peer.
+                // above: an all-zero signature is never valid, so
+                // refuse it here rather than paying an ed25519 verify
+                // to learn the same thing.
                 if sig_data.signature == [0u8; 64] {
                     return Err(StorageError::InvalidSignature);
                 }
-                // Fast path: signer hint + verify once. Slow path:
-                // linear scan over writers. Mirrors `apply_action`.
+                // The signature must name its signer, and that signer must
+                // be a writer — one verify, no scan. Mirrors `apply_action`.
                 if Self::resolve_signer(writers, sig_data, &payload).is_some() {
                     Ok(())
                 } else {
@@ -780,7 +778,8 @@ impl<S: StorageAdaptor> Interface<S> {
     /// arrive in a later page anyway, so the node instead resolves the writers
     /// from the anchor's own snapshot record (itself signature-verified) and
     /// passes them here. Otherwise identical to the member arm above:
-    /// placeholder reject, signer-hint fast path, else a scan over `writers`.
+    /// placeholder reject, then one verify against the signature's named
+    /// signer, which must appear in `writers`.
     ///
     /// `metadata.storage_type` must be `SharedMember`; any other variant is a
     /// caller error and is rejected as `InvalidData`.
@@ -1541,18 +1540,16 @@ impl<S: StorageAdaptor> Interface<S> {
                         // no-op; an unauthenticated stale action must
                         // still reject as InvalidSignature.
                         //
-                        // Identify the signer. Fast path: if the
-                        // action carries a `signer` hint and that
-                        // signer is in the authoritative set, do
-                        // exactly one verify. Slow path (no hint):
-                        // linear scan over authoritative writers.
+                        // Identify the signer: the action must name it,
+                        // that name must appear in the authoritative
+                        // set, and its signature must verify — one
+                        // ed25519 verify, no scan over the writer set.
+                        // A write that names nobody is refused.
                         //
-                        // Per the #2233 epic compatibility rule, the
-                        // signer hint is validated against the
-                        // *causal* writer set above, not stored —
-                        // that's already how it works here since
-                        // `authoritative_writers` is now the
-                        // DAG-causal answer when available.
+                        // The named signer is checked against the
+                        // *causal* writer set, not the stored one:
+                        // `authoritative_writers` is the DAG-causal
+                        // answer whenever the caller supplied one.
                         let payload = action.payload_for_signing();
                         let Some(signer) =
                             Self::resolve_signer(&authoritative_writers, sig_data, &payload)
@@ -1898,10 +1895,10 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // types — see the User DeleteRef arm for
                                 // the full rationale.
                                 //
-                                // Identify the signer.
-                                // Fast path: if the action carries a `signer` hint and that
-                                // signer is in the authoritative set, do exactly one verify.
-                                // Slow path (no hint): linear scan (matches Add/Update arm).
+                                // Identify the signer: the delete must name it,
+                                // that name must be a writer, and its signature
+                                // must verify — one verify, no scan (matches
+                                // the Add/Update arm).
                                 let payload = action.payload_for_signing();
                                 let Some(signer) =
                                     Self::resolve_signer(existing_writers, sig_data, &payload)
