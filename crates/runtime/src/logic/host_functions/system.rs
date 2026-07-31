@@ -584,6 +584,27 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
+    /// `device_id` under its former name, for WASM built before the split.
+    ///
+    /// **A linking shim, not an API.** `calimero-sys` does not declare it, so no
+    /// app compiled against the current SDK can import it and `env::executor_id()`
+    /// does not exist — the deletion that forces every new call site to choose
+    /// between an account and a device is intact. This exists because the import
+    /// name is baked into every already-built blob: dropping it turns a stale
+    /// fixture into `Link(Import("env", "executor_id", UnknownImport))` at
+    /// instantiation, which is a 500 on the first context creation and looks
+    /// nothing like an ABI change.
+    ///
+    /// It returns the DEVICE, which is exactly what those blobs were getting.
+    /// Removable once every consumer that pins a pre-split blob has rebuilt.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::InvalidMemoryAccess` if the register operation fails (e.g., exceeds limits).
+    pub fn executor_id(&mut self, dest_register_id: u64) -> VMLogicResult<()> {
+        self.device_id(dest_register_id)
+    }
+
     /// Writes the xcall origin (the source context id) into `dest_register_id`
     /// and returns `1` when this execution was dispatched via `xcall`. Returns
     /// `0` and leaves the register untouched for a direct/RPC call.
