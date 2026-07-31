@@ -269,16 +269,21 @@ steps:
     node: account-revoke-node-3
     context_id: '{{context_id}}'
 
+  # node-3 is listed too, and that is the point of this step rather than an
+  # afterthought: the very next step has the paired device write, which only
+  # succeeds once node-2's KeyDelivery has actually reached and been applied by
+  # node-3. Waiting only on 1 and 2 leaves that a race against gossip timing.
   - name: Settle after pairing
     type: wait_for_sync
     nodes:
       - account-revoke-node-1
       - account-revoke-node-2
+      - account-revoke-node-3
     context_id: '{{context_id}}'
 
   # The paired device holds no scope key of its own, so this write only works if
   # the on-link backfill wrapped the current keys for it.
-  - name: Node-2 writes from the paired device
+  - name: Node-3 (paired device) writes
     type: call
     node: account-revoke-node-3
     context_id: '{{context_id}}'

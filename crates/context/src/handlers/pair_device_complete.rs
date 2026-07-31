@@ -151,7 +151,18 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                 )))
             }
         };
-        debug_assert_eq!(endorsement.member, self_pk);
+        // A hard check, not a `debug_assert`. The endorsement is what makes this
+        // link self-service, and the two keys in play here (account root vs
+        // namespace identity) are trivially crossed — that mistake produces a link
+        // every peer refuses while looking perfectly healthy locally. Compiled out
+        // in release, this would publish the mismatch instead of refusing it.
+        if endorsement.member != self_pk {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "endorsement names {} but this node signs as {self_pk}; refusing to \
+                 publish a link no peer can admit",
+                endorsement.member,
+            )));
+        }
 
         let link = GroupOp::AccountDeviceLinked {
             genesis,

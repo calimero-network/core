@@ -860,11 +860,30 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
                 Some(binding) if binding.account == op.author() && binding.account == *account => {
                     Ok(())
                 }
+                // An admin may eject any device, but may not MISNAME it. Authority
+                // and accuracy are separate questions: the payload's `account` is
+                // folded and read by account-scoped consumers, so an admin revoking
+                // a device bound to X while claiming Y writes a falsehood into
+                // state that outlives the op. Admin status is not a licence to do
+                // that, and nothing about ejecting a device requires it.
+                Some(binding) if acl_at_cut.is_root_admin(&op.author()) => {
+                    if binding.account == *account {
+                        Ok(())
+                    } else {
+                        Err(Rejected::DeviceAccountMismatch {
+                            device: *device,
+                            bound: binding.account,
+                            claimed: *account,
+                        })
+                    }
+                }
                 // "No binding at this cut" is not a refusal, because an admin
                 // must still be able to eject a device whose link this cut has
                 // not folded. It only means the *self-service* claim cannot be
-                // checked, so it does not authorize.
-                _ if acl_at_cut.is_root_admin(&op.author()) => Ok(()),
+                // checked, so it does not authorize — and with no binding there is
+                // no bound account to check the claim against, so the payload's
+                // `account` is necessarily taken on trust here.
+                None if acl_at_cut.is_root_admin(&op.author()) => Ok(()),
                 _ => Err(Rejected::NotRootAdmin),
             }
         }

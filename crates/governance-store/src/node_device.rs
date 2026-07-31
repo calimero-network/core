@@ -114,13 +114,27 @@ static NODE_DEVICE_MINT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// values, and requiring the account's root key just to read a secret would make
 /// every receive path depend on resolving an identity it does not otherwise care
 /// about.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct DeviceSecret {
     /// The replica this node speaks as.
     pub device: DeviceId,
     /// The agreement secret matching the certificate's `kem_pk`.
     pub kem_secret: X25519SecretKey,
+}
+
+impl std::fmt::Debug for DeviceSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never derived, for the same reason as `AccountRoot`. `kem_secret` is the
+        // only thing that opens scope keys addressed to this device, so one
+        // `tracing::debug!(?secret, ..)` added later would hand every rotation this
+        // device receives to whoever can read the logs. `NodeDevice` derives its
+        // `Debug` and reaches this field through here, so redacting once covers both.
+        f.debug_struct("DeviceSecret")
+            .field("device", &self.device)
+            .field("kem_secret", &"[redacted]")
+            .finish()
+    }
 }
 
 /// This node's full enrollment for one namespace.

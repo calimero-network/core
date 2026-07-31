@@ -399,7 +399,23 @@ impl ScopeState {
                 let _ = self.devices.remove(device);
             }
             OpPayload::AccountKeysRotated { handoff } => {
-                self.absorb_handoff(*handoff);
+                // Only the account may write its own epoch slots. `authorize`
+                // refuses a rotation authored by anyone else
+                // (`Rejected::RotationNotByAccount`), but the check has to exist
+                // HERE too: the fold is reachable without it — `from_ops` and the
+                // sync convergence path both fold raw logs — and this arm is what
+                // decides what lands in `handoffs`.
+                //
+                // Relying on the authz layer alone was an exploitable gap. A slot is
+                // capped, and the cap evicts by key order, so a stranger able to
+                // absorb into a victim's slot could fill it with forged low-keyed
+                // candidates, evict the real rotation, and freeze that account's
+                // chain at the epoch before it — permanently, convergently, and
+                // therefore invisibly. That is a worse outcome than the unbounded
+                // growth the cap was added to prevent.
+                if handoff.account == op.authorship.account {
+                    self.absorb_handoff(*handoff);
+                }
             }
         }
     }

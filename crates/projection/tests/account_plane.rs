@@ -1555,3 +1555,71 @@ fn a_padded_candidate_slot_stays_bounded_and_order_independent() {
         "same set, third delivery order, same root"
     );
 }
+
+#[test]
+fn a_stranger_cannot_freeze_an_account_by_padding_its_epoch_slot() {
+    // The exploit that the candidate-slot CAP introduced, and the reason the
+    // ownership check has to live in the fold rather than only in `authorize`.
+    //
+    // A slot is bounded and the bound evicts by key order. So a stranger who can
+    // absorb into someone else's `(account, epoch)` slot does not merely waste
+    // work — they fill it with forged candidates keyed BELOW the real rotation,
+    // evict the real one, and the chain walk then finds nothing that verifies at
+    // that epoch and stops. The account is frozen at the previous root key,
+    // permanently and on every replica, which is strictly worse than the unbounded
+    // growth the cap was added to prevent.
+    //
+    // `authorize` does refuse a rotation authored by another account, but the fold
+    // is reachable without it — `from_ops` and the sync convergence path both fold
+    // raw logs — so the gate has to be here.
+    let mut fx = Fixture::new();
+    let mut victim = Account::new(10);
+    let phone = victim.enroll(11, 0);
+    fx.push(grant_membership(&fx.admin, victim.id, 30, fx.head.clone()));
+    fx.push(victim.link_op(&phone, 40, fx.head.clone()));
+
+    // The victim genuinely rotates onto key(12).
+    let real = victim.rotate_to(12);
+    fx.push(phone.sign_op(
+        50,
+        fx.head.clone(),
+        OpPayload::AccountKeysRotated { handoff: real },
+    ));
+
+    let mallory = Account::new(20);
+    let mallory_device = mallory.enroll(21, 0);
+    fx.push(grant_membership(&fx.admin, mallory.id, 60, fx.head.clone()));
+    fx.push(mallory.link_op(&mallory_device, 70, fx.head.clone()));
+
+    // An all-zero new-root key sorts below any real one, so every forged candidate
+    // beats the real rotation in the eviction order. More than the cap, so the real
+    // candidate is the one trimmed.
+    // Comfortably past MAX_HANDOFF_CANDIDATES (8).
+    for i in 0..12u8 {
+        let mut forged = real;
+        forged.new_root_sign_pk = calimero_primitives::identity::PublicKey::from([0u8; 32]);
+        forged.signature = [i; 64];
+        fx.push(mallory_device.sign_op(
+            100 + u64::from(i),
+            fx.head.clone(),
+            OpPayload::AccountKeysRotated { handoff: forged },
+        ));
+    }
+
+    let view = ScopeState::from_ops(&fx.log).acl_view();
+    let resolved = view
+        .accounts
+        .get(&victim.id)
+        .expect("the victim's account is still known");
+    assert_eq!(
+        resolved.epoch, 1,
+        "a stranger's forged handoffs must not be absorbed into the victim's slot: \
+         the victim's own rotation has to survive, or its chain freezes at the \
+         superseded key on every replica"
+    );
+    assert_eq!(
+        resolved.root_pk,
+        key(12).public_key(),
+        "the victim must resolve to the key it actually rotated onto"
+    );
+}
