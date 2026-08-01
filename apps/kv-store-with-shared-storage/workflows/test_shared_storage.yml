@@ -146,6 +146,17 @@ steps:
   # storage test `forged_shared_rotation_rejected_at_merge`.)
   # ============================================
 
+  # Node 2's ACCOUNT — what a writer set names. Its public key is what it signs
+  # with; a grant names the person, so one grant covers every device they hold.
+  # An account is derived and therefore has to be asked for.
+  - name: Account of node 2
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: my_account
+    outputs:
+      acct_node2: result
+
   - name: Node 2 (non-writer) attempts to rotate the writer set to itself
     type: call
     node: new-calimero-node-2
@@ -153,7 +164,7 @@ steps:
     method: try_rotate_writers
     args:
       new_writers:
-        - "{{public_key_new-calimero-node-2}}"
+        - "{{acct_node2}}"
     outputs:
       node2_rotate_accepted: result
 
@@ -186,7 +197,7 @@ steps:
     method: rotate_writers
     args:
       new_writers:
-        - "{{public_key_new-calimero-node-2}}"
+        - "{{acct_node2}}"
 
   - name: Wait for rotation to sync
     type: wait_for_sync

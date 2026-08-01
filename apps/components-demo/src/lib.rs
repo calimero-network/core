@@ -47,6 +47,15 @@ impl ComponentsDemo {
         }
     }
 
+    /// This node's account, hex-encoded — what a writer set or a role grant names.
+    ///
+    /// An account is derived, so it appears on no wire: a caller that needs to name
+    /// this node has to ask it. Operators use `meroctl account show`; an e2e
+    /// scenario captures this call's output.
+    pub fn my_account(&self) -> app::Result<String> {
+        Ok(AccountId::from(env::account_id()).to_string())
+    }
+
     /// Grant a role to a member. Admin-only (fail-fast here, enforced at merge).
     pub fn grant_role(&mut self, role: String, who: AccountId) -> app::Result<()> {
         self.roles.grant(&role, who)?;

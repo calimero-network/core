@@ -148,6 +148,30 @@ steps:
       value: "authored_val_4"
 
   # Add all nodes as SharedStorage writers so any node can write during the fuzzy test
+  # Accounts, not keys: a writer set names people, so one grant covers every
+  # device they hold. Derived values, so each node has to be asked.
+  - name: Account of node-2
+    type: call
+    node: fuzzy-e2e-node-2
+    context_id: '{{context_id}}'
+    method: my_account
+    outputs:
+      acct_node2: result
+  - name: Account of node-3
+    type: call
+    node: fuzzy-e2e-node-3
+    context_id: '{{context_id}}'
+    method: my_account
+    outputs:
+      acct_node3: result
+  - name: Account of node-4
+    type: call
+    node: fuzzy-e2e-node-4
+    context_id: '{{context_id}}'
+    method: my_account
+    outputs:
+      acct_node4: result
+
   - name: Add node-2 as shared writer
     type: call
     node: fuzzy-e2e-node-1
@@ -155,7 +179,7 @@ steps:
     executor_public_key: "{{node1_key}}"
     method: shared_add_writer
     args:
-      writer_bs58: "{{public_key_fuzzy-e2e-node-2}}"
+      writer: "{{acct_node2}}"
 
   - name: Add node-3 as shared writer
     type: call
@@ -164,7 +188,7 @@ steps:
     executor_public_key: "{{node1_key}}"
     method: shared_add_writer
     args:
-      writer_bs58: "{{public_key_fuzzy-e2e-node-3}}"
+      writer: "{{acct_node3}}"
 
   - name: Add node-4 as shared writer
     type: call
@@ -173,7 +197,7 @@ steps:
     executor_public_key: "{{node1_key}}"
     method: shared_add_writer
     args:
-      writer_bs58: "{{public_key_fuzzy-e2e-node-4}}"
+      writer: "{{acct_node4}}"
 
   # Seed an initial SharedStorage value so shared_get always returns something
   - name: Seed initial shared storage value

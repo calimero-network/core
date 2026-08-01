@@ -92,6 +92,15 @@ steps:
   # AccessControl — admin (node 1) grants node 2 the "editor" role; it converges.
   # ============================================
 
+  # Node 2's ACCOUNT — a role grant names the person, not one of their machines.
+  - name: Account of node 2
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: my_account
+    outputs:
+      acct_node2: result
+
   - name: Node 1 (admin) grants editor to node 2
     type: call
     node: new-calimero-node-1
@@ -99,7 +108,7 @@ steps:
     method: grant_role
     args:
       role: "editor"
-      who: "{{public_key_new-calimero-node-2}}"
+      who: "{{acct_node2}}"
 
   - name: Wait for the grant to sync
     type: wait_for_sync
@@ -117,7 +126,7 @@ steps:
     method: has_role
     args:
       role: "editor"
-      who: "{{public_key_new-calimero-node-2}}"
+      who: "{{acct_node2}}"
     outputs:
       node2_has_editor: result
 
@@ -141,7 +150,7 @@ steps:
     method: try_grant_role
     args:
       role: "viewer"
-      who: "{{public_key_new-calimero-node-2}}"
+      who: "{{acct_node2}}"
     outputs:
       node2_grant_accepted: result
 

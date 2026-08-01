@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
-use calimero_sdk::app;
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::AccountId;
+use calimero_sdk::{app, env};
 use calimero_storage::collections::{LwwRegister, SharedStorage, UnorderedMap};
 use thiserror::Error;
 
@@ -87,6 +87,15 @@ impl KvStore {
     /// staying guarded by the original set for its adversarial step). This is an
     /// example app; production apps should name such methods per the field they
     /// rotate to avoid surprising callers.
+    /// This node's account, hex-encoded — what a writer set or a role grant names.
+    ///
+    /// An account is derived, so it appears on no wire: a caller that needs to name
+    /// this node has to ask it. Operators use `meroctl account show`; an e2e
+    /// scenario captures this call's output.
+    pub fn my_account(&self) -> app::Result<String> {
+        Ok(AccountId::from(env::account_id()).to_string())
+    }
+
     pub fn rotate_writers(&mut self, new_writers: Vec<AccountId>) -> app::Result<()> {
         app::log!("Rotating writers: {:?}", new_writers);
         let set: BTreeSet<AccountId> = new_writers.into_iter().collect();
