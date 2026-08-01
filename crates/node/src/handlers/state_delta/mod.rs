@@ -810,11 +810,29 @@ fn arm_signer_resolver_for_cut(
     context_id: &ContextId,
     governance_position: Option<&calimero_context_config::types::GovernanceParentEdge>,
 ) {
-    let Some(group) = calimero_governance_store::get_group_for_context(datastore, context_id)
-        .ok()
-        .flatten()
-    else {
-        return;
+    let group = match calimero_governance_store::get_group_for_context(datastore, context_id) {
+        Ok(Some(group)) => group,
+        // No group, or the lookup failed: CLEAR the slot rather than returning.
+        //
+        // The slot is only ever replaced, so an early return would leave the
+        // resolver armed for a PREVIOUS delta — a different cut, possibly a
+        // different context — and this delta's author and rotation entries would be
+        // resolved against it. That is exactly the "one view of the bindings"
+        // invariant this function exists to uphold, so failing to arm has to mean
+        // armed-with-nothing, which refuses and retries, and never means
+        // armed-with-something-stale.
+        other => {
+            if let Err(err) = &other {
+                tracing::warn!(
+                    %context_id,
+                    %err,
+                    "cannot resolve the context's group to arm the signer resolver; \
+                     signed Shared actions in this delta will be refused and retried"
+                );
+            }
+            delta_store.clear_signer_resolver();
+            return;
+        }
     };
     let heads: Vec<[u8; 32]> = governance_position
         .map(|gp| gp.governance_dag_heads.clone())

@@ -37,7 +37,26 @@ pub async fn handler(
     info!(namespace_id = %namespace_id_str, "Resolving this node's account");
 
     let store = state.ctx_client.datastore();
-    let account = match calimero_governance_store::account_for_group(store, &group_id) {
+
+    // Resolve the namespace ONCE and use it for both reads. An account is scoped to
+    // the namespace, and `NodeDevice` rows are keyed by it — so a subgroup id in the
+    // path would otherwise report an account for the namespace beside a device
+    // lookup against the subgroup, which misses an existing enrollment and answers
+    // "no device" for a node that has one.
+    let namespace =
+        match calimero_governance_store::NamespaceRepository::new(store).resolve(&group_id) {
+            Ok(namespace) => namespace,
+            Err(err) => {
+                error!(error = ?err, "Failed to resolve the namespace");
+                return ApiError {
+                    status_code: StatusCode::NOT_FOUND,
+                    message: format!("No namespace found for '{namespace_id_str}'"),
+                }
+                .into_response();
+            }
+        };
+
+    let account = match calimero_governance_store::account_for_group(store, &namespace) {
         Ok(account) => account,
         Err(err) => {
             error!(error = ?err, "Failed to resolve the node's account");
@@ -49,18 +68,26 @@ pub async fn handler(
         }
     };
 
-    // The device is genuinely optional; a missing one is not an error.
-    let device = calimero_governance_store::NodeDeviceRepository::new(store)
-        .get(&group_id)
-        .ok()
-        .flatten()
-        .map(|enrolled| hex::encode(enrolled.device().as_bytes()));
+    // A missing device is a real answer; a failed READ is not, and reporting the two
+    // the same way would tell an operator "not enrolled" when the truth is "could
+    // not look".
+    let device = match calimero_governance_store::NodeDeviceRepository::new(store).get(&namespace) {
+        Ok(enrolled) => enrolled.map(|enrolled| hex::encode(enrolled.device().as_bytes())),
+        Err(err) => {
+            error!(error = ?err, "Failed to read this node's device row");
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to read this node's device".to_owned(),
+            }
+            .into_response();
+        }
+    };
 
     ApiResponse {
         payload: NamespaceAccountApiResponse {
             data: NamespaceAccountApiResponseData {
                 account_id: hex::encode(account.as_bytes()),
-                namespace_id: hex::encode(group_id.to_bytes()),
+                namespace_id: hex::encode(namespace.to_bytes()),
                 device_id: device,
             },
         },

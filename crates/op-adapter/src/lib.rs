@@ -572,7 +572,6 @@ mod tests {
         // log's writer set is account-keyed at the source. The equivalence is
         // therefore direct, and still catches the bridge dropping or renaming a
         // writer.
-        let expected: BTreeMap<AccountId, OpMask> = expected.clone();
         assert_eq!(
             resolved, expected,
             "ScopeState ACL fold must resolve the same writer set as resolve_local"

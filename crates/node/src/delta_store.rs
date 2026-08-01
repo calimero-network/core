@@ -1374,6 +1374,23 @@ impl DeltaStore {
             .unwrap_or_else(|e| e.into_inner()) = Some(resolver);
     }
 
+    /// Disarm the resolver.
+    ///
+    /// The counterpart every caller of [`Self::arm_signer_resolver`] owes on its
+    /// failure path. The slot is replaced, never implicitly emptied, so a caller
+    /// that gives up without clearing leaves the PREVIOUS delta's resolver armed —
+    /// bound to a different cut, possibly a different context — and this delta's
+    /// author would be resolved against it. Disarmed means nothing resolves, which
+    /// refuses and retries; that is the safe failure, and inheriting a stale cut is
+    /// not.
+    pub fn clear_signer_resolver(&self) {
+        *self
+            .applier
+            .signer_resolver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
     /// Creates a new delta store
     pub fn new(
         root: [u8; 32],
