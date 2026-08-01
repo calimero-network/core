@@ -180,9 +180,54 @@ impl ScopeState {
     }
 
     /// Apply one op with an explicit causal `generation` for its LWW stamp.
+    ///
+    /// # Where `authorize` is load-bearing, and where it must not be
+    ///
+    /// **This fold is not an authorization boundary** — `calimero_authz::authorize`
+    /// is. But it is reachable *without* one: [`Self::from_ops`] and the sync
+    /// convergence path both fold raw logs. So an arm that leans on the authz
+    /// layer for a **security** property is only as safe as the next caller who
+    /// folds a log directly, and a precondition enforced in a different layer than
+    /// the invariant depending on it is not a precondition. That is not
+    /// hypothetical: `AccountKeysRotated` absorbed into any account's epoch slot,
+    /// and because the slot is capped and evicts by key order, a stranger could
+    /// crowd out a victim's real rotation and freeze their chain at the root key
+    /// they rotated away from — convergently, so with no divergence to notice.
+    ///
+    /// The line between what this fold checks and what it delegates is **whether
+    /// the precondition is a function of the op alone**:
+    ///
+    /// | plane | arms | checked where | why |
+    /// | --- | --- | --- | --- |
+    /// | account | `DeviceLinked`, `AccountKeysRotated` | **here** | op-local: a genesis hashes to the id it claims, a certificate is signed by the account root, a handoff by the departing root, and ownership is a field comparison. All answerable from the op, so all answerable identically on every replica mid-fold |
+    /// | account | `DeviceRevoked` | **authz only** | two legitimate authors (the account, or any root admin), and "is the author an admin" is a question about the *cut*. See the arm |
+    /// | data, ACL, governance | everything else | **authz only** | every rule is relational — was the author a writer / member / admin *at this cut*. A streaming fold has no cut, so an answer here would depend on how much had folded, which is a split root |
+    ///
+    /// The consequence for the third row: folding a raw log that contains
+    /// unauthorized data, ACL or governance ops *does* write their effects. That is
+    /// by design and safe only because the live apply path authorizes before
+    /// appending, so such an op is never in a log any node folds. Anything that
+    /// constructs a log some other way owes that check itself.
+    ///
+    /// Adding an arm? If its precondition is op-local, enforce it here — the authz
+    /// layer will still check it, and the duplication is the point. The adversarial
+    /// property test in `tests/account_plane.rs`
+    /// (`no_unauthorized_op_writes_another_accounts_plane_state`) folds
+    /// unauthorized ops raw and asserts no cross-account state is written; it
+    /// compares the victim's whole account-plane slice, so a new per-account map is
+    /// covered without extending the test.
     pub fn apply_with_generation(&mut self, op: &Op, generation: u32) {
         let stamp: Stamp = (op.hlc, generation, op.id());
         match &op.payload {
+            // ---- data, ACL and governance planes: authorization is authz's ----
+            //
+            // None of the arms down to `Noop` gate on the author. Every rule they
+            // would need — was this author a writer of this object, a member of
+            // this group, this scope's admin — is a question about the causal cut,
+            // and a streaming fold has no cut. Answering one here would answer it
+            // differently depending on how much had folded, which is a split root
+            // rather than a refused write. See this method's docs for the full
+            // division of labour.
             OpPayload::Put { entity, value } => {
                 if wins(stamp, self.data_clock.get(entity)) {
                     let _ = self.entities.insert(*entity, value.clone());
@@ -379,6 +424,23 @@ impl ScopeState {
                 );
             }
             OpPayload::DeviceRevoked { device, .. } => {
+                // The one account-plane arm with NO ownership gate, and the only
+                // thing standing between a stranger and permanently spending
+                // somebody else's device id is `authorize`. Unlike
+                // `AccountKeysRotated` below, that cannot be fixed by moving the
+                // check here: a revocation has two legitimate authors — the
+                // account itself, or any root admin — and whether the author is an
+                // admin depends on the cut, which this fold does not have. A
+                // gate that consulted the mid-fold admin set would decide
+                // differently depending on how much had folded, turning a
+                // refused op into a split root.
+                //
+                // The tombstone below is also TERMINAL and grow-only, so a
+                // wrongly-admitted one can never be undone. Pinned by
+                // `a_revocation_tombstone_is_written_unconditionally_and_only_authz_stops_it`,
+                // which asserts both halves: authz refuses it, and the fold
+                // writes it anyway.
+                //
                 // Written unconditionally, even for a device this scope has
                 // never seen linked. A revocation that folds before its link
                 // must still win: the tombstone is what the link consults.
