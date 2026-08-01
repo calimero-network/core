@@ -189,21 +189,21 @@ steps:
     context_id: '{{ctx}}'
     method: my_account
     outputs:
-      acct_a: output
+      acct_a: result.output
   - name: Account B (node-2)
     type: call
     node: e2e-node-2
     context_id: '{{ctx}}'
     method: my_account
     outputs:
-      acct_b: output
+      acct_b: result.output
   - name: Account C (node-3)
     type: call
     node: e2e-node-3
     context_id: '{{ctx}}'
     method: my_account
     outputs:
-      acct_c: output
+      acct_c: result.output
 
   # ---------- Baseline: writer set {A, B} + member entries ----------
 

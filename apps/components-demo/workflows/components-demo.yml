@@ -99,7 +99,7 @@ steps:
     context_id: '{{context_id}}'
     method: my_account
     outputs:
-      acct_node2: output
+      acct_node2: result.output
 
   - name: Node 1 (admin) grants editor to node 2
     type: call

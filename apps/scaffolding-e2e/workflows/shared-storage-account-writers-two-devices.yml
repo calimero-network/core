@@ -179,7 +179,7 @@ steps:
     context_id: '{{context_id}}'
     method: my_account
     outputs:
-      alice_account: output
+      alice_account: result.output
 
   - name: Node-1 grants Alice's account as a writer
     type: call
@@ -204,7 +204,7 @@ steps:
     context_id: '{{context_id}}'
     method: shared_get_writers
     outputs:
-      writers_after_grant: output
+      writers_after_grant: result
 
   - name: Alice's account is a writer
     type: call
@@ -214,7 +214,7 @@ steps:
     args:
       account: '{{alice_account}}'
     outputs:
-      alice_is_writer: output
+      alice_is_writer: result
 
   - name: The grant landed on both nodes
     type: json_assert
@@ -246,7 +246,7 @@ steps:
     context_id: '{{context_id}}'
     method: shared_get
     outputs:
-      shared_after_laptop: output
+      shared_after_laptop: result
 
   - name: The granted device's write converged
     type: json_assert
@@ -302,7 +302,7 @@ steps:
     context_id: '{{context_id}}'
     method: my_account
     outputs:
-      phone_account: output
+      phone_account: result.output
 
   # The precondition the whole scenario rests on. If these differed, the phone's
   # write below would be proving something about a second grant instead.
@@ -337,7 +337,7 @@ steps:
     context_id: '{{context_id}}'
     method: shared_get
     outputs:
-      shared_n1: output
+      shared_n1: result
 
   - name: Node-2 reads the phone's write
     type: call
@@ -345,7 +345,7 @@ steps:
     context_id: '{{context_id}}'
     method: shared_get
     outputs:
-      shared_n2: output
+      shared_n2: result
 
   - name: The writer set as node-1 sees it after the phone's write
     type: call
@@ -353,7 +353,7 @@ steps:
     context_id: '{{context_id}}'
     method: shared_get_writers
     outputs:
-      writers_final: output
+      writers_final: result
 
   - name: An ungranted device of a granted account wrote, and converged
     type: json_assert
@@ -428,7 +428,7 @@ steps:
     args:
       key: notes
     outputs:
-      authored_n1: output
+      authored_n1: result
 
   - name: Only the owning device's update landed
     type: json_assert
