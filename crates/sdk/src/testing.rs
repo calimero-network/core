@@ -81,6 +81,7 @@ pub trait TestState: Sized {
 
     /// Runs `f` with the storage-layer executor identity set to `id`.
     fn __test_with_device(id: [u8; 32], f: &mut dyn FnMut());
+    fn __test_with_account(id: [u8; 32], f: &mut dyn FnMut());
 
     /// Mirrors the committed root `Entry` into the SDK host map so
     /// [`read_raw`](crate::read_raw) observes it (the storage and SDK layers use
@@ -218,6 +219,24 @@ where
         }
     }
 
+    /// Run `f` with the STORAGE layer's account aligned to the SDK host's.
+    ///
+    /// The two layers keep separate mock identities: app logic reads the SDK
+    /// host's, while an access-control gate inside `calimero-storage` reads
+    /// storage's. Left to drift, an app records an owner under one account and is
+    /// checked against another — which reads as "not authorised" from a test that
+    /// looks obviously correct. Every entry point goes through here so they cannot
+    /// disagree.
+    fn with_aligned_account<R>(f: impl FnOnce() -> R) -> R {
+        let account = host::account_id();
+        let mut f = Some(f);
+        let mut out = None;
+        S::__test_with_account(account, &mut || {
+            out = Some((f.take().expect("aligned closure invoked once"))());
+        });
+        out.expect("the aligned closure ran")
+    }
+
     /// Runs a mutating method against the state and commits the result.
     ///
     /// The closure receives `&mut S`, mirroring how the WASM runtime hands a
@@ -226,8 +245,10 @@ where
     pub fn call<R>(&mut self, f: impl FnOnce(&mut S) -> R) -> R {
         let mut out = None;
         let mut f = Some(f);
-        S::__test_with_mut(&mut |state| {
-            out = Some((f.take().expect("call closure invoked once"))(state));
+        Self::with_aligned_account(|| {
+            S::__test_with_mut(&mut |state| {
+                out = Some((f.take().expect("call closure invoked once"))(state));
+            });
         });
         // Keep `read_raw()` consistent with the post-mutation root (so a later
         // `migrate` sees the up-to-date pre-migration state).
@@ -239,8 +260,10 @@ where
     pub fn view<R>(&self, f: impl FnOnce(&S) -> R) -> R {
         let mut out = None;
         let mut f = Some(f);
-        S::__test_with_ref(&mut |state| {
-            out = Some((f.take().expect("view closure invoked once"))(state));
+        Self::with_aligned_account(|| {
+            S::__test_with_ref(&mut |state| {
+                out = Some((f.take().expect("view closure invoked once"))(state));
+            });
         });
         out.expect("state was loaded and the closure ran")
     }
@@ -291,13 +314,15 @@ where
         // body below (and restores it on the way out). We switch the SDK device
         // *inside* that body so both layers are aligned before any user code runs
         // and restored together as the body unwinds.
-        S::__test_with_device(device, &mut || {
-            let _sdk = SdkDeviceGuard(host::device_id());
-            host::set_device_id(device);
+        Self::with_aligned_account(|| {
+            S::__test_with_device(device, &mut || {
+                let _sdk = SdkDeviceGuard(host::device_id());
+                host::set_device_id(device);
 
-            let mut inner = f.take();
-            S::__test_with_mut(&mut |state| {
-                out = Some((inner.take().expect("call_as closure invoked once"))(state));
+                let mut inner = f.take();
+                S::__test_with_mut(&mut |state| {
+                    out = Some((inner.take().expect("call_as closure invoked once"))(state));
+                });
             });
         });
         S::__test_mirror_root();

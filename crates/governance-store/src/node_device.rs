@@ -198,6 +198,28 @@ pub fn account_for_context(store: &Store, context_id: &ContextId) -> EyreResult<
         .account_for(&scope))
 }
 
+/// The account this node executes as inside `group` — the same answer
+/// [`account_for_context`] gives, resolved from the group directly.
+///
+/// **Use this wherever the group is known but the context→group row may not be
+/// written yet.** `account_for_context` reads that row to find the namespace, and
+/// falls back to scoping the account to the context itself when it is missing. For
+/// a context whose row lands *later* — creation being exactly that case — the two
+/// calls therefore return DIFFERENT accounts: `init` seeds a writer set under the
+/// context-scoped account, every later call presents the namespace-scoped one, and
+/// the creator is refused write access to the object it just created. The fallback
+/// is correct only for a context that has no group at all, never for one whose row
+/// has not been written yet.
+///
+/// # Errors
+/// Propagates the namespace resolution or account-root generation failure.
+pub fn account_for_group(store: &Store, group: &ContextGroupId) -> EyreResult<AccountId> {
+    let scope = NamespaceRepository::new(store).resolve(group)?;
+    Ok(NodeDeviceRepository::new(store)
+        .ensure_account_root()?
+        .account_for(&scope))
+}
+
 /// What a revocation of one device is about, resolved from the group's own
 /// bindings rather than from anything this node derives for itself.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

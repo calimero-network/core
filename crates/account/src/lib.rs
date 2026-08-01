@@ -204,6 +204,24 @@ macro_rules! content_address_id {
             }
         }
 
+        /// Serializes as the hex string [`Display`] writes.
+        ///
+        /// A string, not a byte array: these ids cross the JSON-RPC boundary as
+        /// app method arguments, and an app author typing an account into a call
+        /// should be typing the same thing the CLI printed.
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.collect_str(self)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let raw = <std::borrow::Cow<'de, str> as serde::Deserialize>::deserialize(d)?;
+                raw.parse().map_err(serde::de::Error::custom)
+            }
+        }
+
         /// Parses the hex form [`Display`] writes.
         ///
         /// Hex rather than bs58, which is what a *key* is written in around

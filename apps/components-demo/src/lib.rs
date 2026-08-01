@@ -146,12 +146,31 @@ mod tests {
     #[test]
     fn non_owner_cannot_set_config() {
         let mut app = TestHost::new(ComponentsDemo::init);
+        // A different PERSON: the account moves, not just the device.
+        //
         // This exercises the fail-fast *API* guard only. The authoritative
         // boundary is merge-time signature verification against the writer set,
         // which requires a 2-node adversarial e2e (design doc §6.3) — a
         // single-host unit test cannot reach the merge path.
-        let result = app.call_as(OTHER, |s| s.set_config("forged".to_owned()));
+        let result =
+            app.call_as_account(OTHER, OTHER_DEVICE, |s| s.set_config("forged".to_owned()));
         assert!(result.is_err());
+    }
+
+    /// The owner's SECOND DEVICE can write, without being granted anything.
+    ///
+    /// The counterpart to the test above, and the reason the gate moved to
+    /// accounts: `call_as` moves the device and leaves the account alone, which is
+    /// one person on two machines. Before the writer sets were account-keyed this
+    /// was refused — the owner's own phone was a stranger to their laptop.
+    #[test]
+    fn owners_second_device_can_set_config() {
+        const OWNER_PHONE: [u8; 32] = [0x1D; 32];
+
+        let mut app = TestHost::new(ComponentsDemo::init);
+        app.call_as(OWNER_PHONE, |s| s.set_config("from-my-phone".to_owned()))
+            .expect("a second device of the owning account must be able to write");
+        assert_eq!(app.view(|s| s.get_config()).unwrap(), "from-my-phone");
     }
 
     #[test]

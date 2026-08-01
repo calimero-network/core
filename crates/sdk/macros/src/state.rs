@@ -974,6 +974,10 @@ fn generate_test_state_impl(
                 ::calimero_storage::env::with_device_id(id, || f());
             }
 
+            fn __test_with_account(id: [u8; 32], f: &mut dyn ::core::ops::FnMut()) {
+                ::calimero_storage::env::with_account_id(id, || f());
+            }
+
             fn __test_mirror_root() {
                 // Application state lives in `calimero_storage`'s native mock,
                 // but `calimero_sdk::read_raw()` reads a *separate* SDK host

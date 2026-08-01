@@ -128,8 +128,8 @@ pub use self::namespace::{
     NamespaceOpLogService, NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
 };
 pub use self::node_device::{
-    account_for_context, AccountRoot, DeviceSecret, NodeDevice, NodeDeviceRepository,
-    RevocationTarget,
+    account_for_context, account_for_group, AccountRoot, DeviceSecret, NodeDevice,
+    NodeDeviceRepository, RevocationTarget,
 };
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::PermissionChecker;
