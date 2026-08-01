@@ -1,4 +1,5 @@
 [
+  "GET /admin-api/namespaces/:namespace_id/account",
   "GET /admin-api/ready",
   "POST /admin-api/namespaces/:namespace_id/account",
   "POST /admin-api/namespaces/:namespace_id/account/pair-complete",

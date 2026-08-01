@@ -7,6 +7,7 @@ mod create;
 mod pair_complete;
 mod pair_init;
 mod revoke;
+mod show;
 
 /// Account and device management.
 ///
@@ -27,12 +28,14 @@ pub enum AccountSubCommands {
     PairInit(pair_init::PairInitCommand),
     PairComplete(pair_complete::PairCompleteCommand),
     Revoke(revoke::RevokeCommand),
+    Show(show::ShowCommand),
 }
 
 impl AccountCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         match self.subcommand {
             AccountSubCommands::Create(cmd) => cmd.run(environment).await,
+            AccountSubCommands::Show(cmd) => cmd.run(environment).await,
             AccountSubCommands::PairInit(cmd) => cmd.run(environment).await,
             AccountSubCommands::PairComplete(cmd) => cmd.run(environment).await,
             AccountSubCommands::Revoke(cmd) => cmd.run(environment).await,
