@@ -190,12 +190,10 @@ impl NodeDevice {
 /// Propagates the store read or the account-root generation failure.
 pub fn account_for_context(store: &Store, context_id: &ContextId) -> EyreResult<AccountId> {
     let scope = match crate::get_group_for_context(store, context_id)? {
-        Some(group) => NamespaceRepository::new(store).resolve(&group)?,
+        Some(group) => group,
         None => ContextGroupId::from(*context_id.as_ref()),
     };
-    Ok(NodeDeviceRepository::new(store)
-        .ensure_account_root()?
-        .account_for(&scope))
+    account_for_group(store, &scope)
 }
 
 /// The account this node executes as inside `group` — the same answer
@@ -214,10 +212,15 @@ pub fn account_for_context(store: &Store, context_id: &ContextId) -> EyreResult<
 /// # Errors
 /// Propagates the namespace resolution or account-root generation failure.
 pub fn account_for_group(store: &Store, group: &ContextGroupId) -> EyreResult<AccountId> {
-    let scope = NamespaceRepository::new(store).resolve(group)?;
-    Ok(NodeDeviceRepository::new(store)
-        .ensure_account_root()?
-        .account_for(&scope))
+    let namespace = NamespaceRepository::new(store).resolve(group)?;
+    // The key this node signs with in that namespace. Its binding — if this node
+    // has enrolled — names the real account; otherwise the key writes as its own
+    // stand-in, which is the only value a PEER can derive for it.
+    let (_, sign_pk, ..) = NamespaceRepository::new(store).get_or_create_identity(&namespace)?;
+    let binding = crate::AccountBindingRepository::new(store)
+        .binding_for_sign_pk(&namespace, &sign_pk)?
+        .map(|binding| binding.account);
+    Ok(calimero_op_adapter::writer_account(binding, &sign_pk))
 }
 
 /// What a revocation of one device is about, resolved from the group's own

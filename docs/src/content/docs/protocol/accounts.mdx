@@ -183,17 +183,29 @@ Only the **current** scope key is delivered. Peers retain rotated-out keys, so h
 
 ## Reading your account
 
-An `AccountId` is *derived* — from the node's account root and the namespace — so
-it appears on no wire and in no operation. That makes it recoverable from the root
-alone, and it also means a node has to be asked:
+An `AccountId` appears on no wire and in no operation, so a node has to be asked
+which one it writes as:
 
 ```bash
 meroctl account show <NAMESPACE_ID>     # GET /admin-api/namespaces/:id/account
 ```
 
-It answers before `account create` has ever run: the id exists as soon as the node
-has a root. What is absent until then is the **device** — an account nobody has
-heard of yet, with nothing yet speaking for it.
+The answer changes at enrollment, and the reason is worth understanding:
+
+- **After `account create`**, the node writes as its real `AccountId` — derived
+  from its account root and the namespace, published as a device binding. That
+  binding is what lets a peer map its signing key to it, and what lets a *second*
+  device of the same person write under the same principal.
+- **Before**, there is no binding, so no peer can compute a root-derived id — it
+  is derived from a secret. The node therefore writes as the stand-in any peer
+  *can* derive from its signing key alone. Naming the root-derived id in a writer
+  set at this point would produce a grant nothing could ever match.
+
+Both ends use one rule for this — the node deciding what to put in a writer set
+and the peer resolving an incoming signature — because a disagreement means a
+node's own writes are refused everywhere else. The consequence to plan around: a
+writer set seeded before the writer enrolled holds the stand-in, so **re-grant
+after `account create`**.
 
 Everything that names a person needs this first: granting a writer, revoking a
 device, or an app method that takes an `AccountId`. Naming them by signing key

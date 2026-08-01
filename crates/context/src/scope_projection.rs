@@ -1537,7 +1537,18 @@ impl ScopeProjections {
             .ok()?
             .to_bytes();
         let view = self.acl_view_at(&ScopeId::from(namespace_id), heads)?;
-        Some(account_for_author(&view, key))
+        // NOT `account_for_author`, which is the MEMBERSHIP plane's resolution and
+        // treats a binding as a fallthrough — a key that is a member in its own
+        // right resolves to its own stand-in there, because membership rows are
+        // keyed that way. The writer plane is populated from `env::account_id()`,
+        // which resolves binding-first, so it has to answer in the same space or a
+        // node's own writes are refused by every peer. Same rule, one function.
+        let binding = view
+            .devices
+            .values()
+            .find(|binding| binding.sign_pk == *key)
+            .map(|binding| binding.account);
+        Some(calimero_op_adapter::writer_account(binding, key))
     }
 
     pub fn member_at_cut(
