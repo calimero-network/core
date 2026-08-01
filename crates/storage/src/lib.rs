@@ -97,6 +97,8 @@ pub mod tests {
     pub mod crdt;
     /// Delta creation and commit tests.
     #[cfg(test)]
+    pub mod deferred_signer_convergence;
+
     pub mod delta;
     /// LWW (Last-Write-Wins) Register CRDT tests.
     #[cfg(test)]
