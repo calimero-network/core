@@ -153,6 +153,17 @@ fn account_for(r: usize) -> [u8; 32] {
     id
 }
 
+/// The single account every replica writes as under
+/// [`one_account`](Converge::one_account) — one person holding N devices. Shaped
+/// like [`account_for`]'s ids (and so distinct from every device id) but tied to
+/// no replica index.
+const SHARED_ACCOUNT: [u8; 32] = {
+    let mut id = [0u8; 32];
+    id[0] = 0xA1;
+    id[1] = 0xAC;
+    id
+};
+
 /// Executor identity for replica `r`. Distinct, non-zero, and deterministic so
 /// concurrent writes from different replicas genuinely diverge before merge.
 fn executor_for(r: usize) -> [u8; 32] {
@@ -177,6 +188,9 @@ pub struct Converge<T> {
     // SAME wrong value, so a data-loss bug passes the hash check. Invariants let
     // a test assert the merged *value* is right.
     invariants: InvariantList<T>,
+    // Whether all replicas write as ONE account (distinct devices, one
+    // principal) instead of one account each. See `one_account`.
+    shared_account: bool,
 }
 
 /// Start a CRDT convergence assertion for state type `T`, using [`Default`] as
@@ -211,6 +225,7 @@ where
         ops: Vec::new(),
         host_setup: None,
         invariants: Vec::new(),
+        shared_account: false,
     }
 }
 
@@ -240,6 +255,7 @@ where
         ops: Vec::new(),
         host_setup: Some(Box::new(|| calimero_sdk::event::register::<T>())),
         invariants: Vec::new(),
+        shared_account: false,
     }
 }
 
@@ -298,6 +314,29 @@ where
         self
     }
 
+    /// Model **one person on N devices**: every replica keeps its own device id,
+    /// but they all write as the same account.
+    ///
+    /// The default is one account per replica — N unrelated people — which is
+    /// the right model for most convergence questions. Reach for this one to test
+    /// what the account plane added: a grant covers every device its holder
+    /// owns, while per-writer state (counter slots, owner stamps, HLC seeds) must
+    /// stay per device. Those two pull in opposite directions, and a harness
+    /// where each replica is its own account cannot exercise the tension at all.
+    pub fn one_account(mut self) -> Self {
+        self.shared_account = true;
+        self
+    }
+
+    /// The account replica `r` writes as, honouring [`one_account`](Self::one_account).
+    fn account_of(&self, r: usize) -> [u8; 32] {
+        if self.shared_account {
+            SHARED_ACCOUNT
+        } else {
+            account_for(r)
+        }
+    }
+
     /// Run the simulation and assert every replica converges to the same root
     /// hash. Panics (failing the test) on divergence, printing the seed and the
     /// per-replica hashes so the interleaving can be reproduced.
@@ -328,7 +367,7 @@ where
         // into every replica so all replicas share identical ids + base hash.
         let genesis: Store = new_store();
         env::with_runtime_env(
-            env_for(&genesis, GENESIS_EXECUTOR, account_for(usize::MAX)),
+            env_for(&genesis, GENESIS_EXECUTOR, self.account_of(usize::MAX)),
             || {
                 Root::new(|| (self.build)()).commit();
             },
@@ -357,7 +396,7 @@ where
             ));
 
             let mut replica_deltas = Vec::with_capacity(order.len());
-            env::with_runtime_env(env_for(store, executor_for(r), account_for(r)), || {
+            env::with_runtime_env(env_for(store, executor_for(r), self.account_of(r)), || {
                 for &op_idx in &order {
                     let mut app = Root::<T>::fetch().expect("converge: genesis not installed");
                     (self.ops[op_idx])(&mut app);
@@ -383,7 +422,7 @@ where
             ));
 
             let failed =
-                env::with_runtime_env(env_for(store, executor_for(r), account_for(r)), || {
+                env::with_runtime_env(env_for(store, executor_for(r), self.account_of(r)), || {
                     for (s, k) in foreign {
                         Root::<T>::sync(&deltas[s][k], &ApplyContext::empty())
                             .expect("converge: delta apply failed");

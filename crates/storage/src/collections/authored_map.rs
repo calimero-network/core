@@ -539,6 +539,57 @@ mod tests {
         assert_eq!(map.get(&"alice_key".to_owned()).unwrap(), Some(1));
     }
 
+    /// **Two devices of one account own their entries separately.**
+    ///
+    /// Authorization moved onto accounts so that one grant covers every device a
+    /// person holds. The owner stamp deliberately did not: it is per-writer
+    /// state, and two devices of one account writing concurrently must stay
+    /// distinguishable or they overwrite each other.
+    ///
+    /// The sharp assertion is the last one. Equal owners would fail visibly, but
+    /// an account-keyed stamp also makes the phone the *owner* of the laptop's
+    /// entry — so `update` starts succeeding, and one person's devices silently
+    /// clobber each other's entries. Both ids are 32 bytes, so that change
+    /// compiles and every other test in this file still passes.
+    #[test]
+    #[serial]
+    fn two_devices_of_one_account_own_their_entries_separately() {
+        // One account; two of its devices. The account is unlike either device id
+        // on purpose — where they matched, a device-keyed stamp would satisfy
+        // every assertion below.
+        const ACCOUNT: [u8; 32] = [0xAC; 32];
+        const LAPTOP: [u8; 32] = [0xD1; 32];
+        const PHONE: [u8; 32] = [0xD2; 32];
+
+        env::reset_for_testing();
+        env::set_account_id(ACCOUNT);
+
+        let mut notes = Root::new(AuthoredMap::<String, u64>::new);
+
+        env::set_device_id(LAPTOP);
+        notes.insert("from-laptop".to_owned(), 1).unwrap();
+        env::set_device_id(PHONE);
+        notes.insert("from-phone".to_owned(), 2).unwrap();
+
+        assert_eq!(notes.len().unwrap(), 2, "neither device's entry was lost");
+        assert_eq!(
+            notes.owner_of(&"from-laptop".to_owned()).unwrap(),
+            Some(pk(LAPTOP))
+        );
+        assert_eq!(
+            notes.owner_of(&"from-phone".to_owned()).unwrap(),
+            Some(pk(PHONE))
+        );
+
+        // Still the phone, and still the same account as the laptop.
+        assert!(
+            notes.update(&"from-laptop".to_owned(), 99).is_err(),
+            "one account, but the phone is not the laptop: an account-keyed stamp \
+             would let this succeed and let two devices clobber each other's \
+             per-writer state"
+        );
+    }
+
     #[test]
     #[serial]
     fn owner_of_missing_key_is_none() {
