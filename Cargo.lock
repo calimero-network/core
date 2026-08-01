@@ -1665,6 +1665,7 @@ name = "calimero-sdk"
 version = "0.0.0"
 dependencies = [
  "borsh",
+ "calimero-account",
  "calimero-prelude",
  "calimero-primitives",
  "calimero-sdk-macros",
@@ -1765,6 +1766,7 @@ name = "calimero-storage"
 version = "0.0.0"
 dependencies = [
  "borsh",
+ "calimero-account",
  "calimero-prelude",
  "calimero-primitives",
  "calimero-sdk",

@@ -36,6 +36,7 @@ impl VMHostFunctions<'_> {
                 logic.storage,
                 logic.context.context_id,
                 logic.context.executor_public_key,
+                logic.context.account_id,
             ))
         })
     }

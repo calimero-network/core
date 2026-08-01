@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use calimero_sdk::app;
 use calimero_sdk::env;
 use calimero_sdk::serde::Serialize;
-use calimero_sdk::PublicKey;
+use calimero_sdk::AccountId;
 use calimero_storage::collections::{LwwRegister, SharedStorage};
 
 const SCHEMA_VERSION_V1: &str = "1.0.0";
@@ -31,10 +31,11 @@ pub struct SchemaInfo {
 impl ScenarioSharedStorageV1 {
     #[app::init]
     pub fn init() -> ScenarioSharedStorageV1 {
-        // Seed the writer set with the creating node so it can write.
+        // Seed the writer set with the creating ACCOUNT so it can write — and so
+        // its second device can too, without being granted separately.
         let mut writers = BTreeSet::new();
-        let executor: PublicKey = env::device_id().into();
-        writers.insert(executor);
+        let creator: AccountId = env::account_id().into();
+        writers.insert(creator);
         ScenarioSharedStorageV1 {
             doc: SharedStorage::new(writers, false),
             title: LwwRegister::new("untitled".to_owned()),

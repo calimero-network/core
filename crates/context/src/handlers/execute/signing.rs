@@ -157,12 +157,17 @@ pub(crate) fn persist_signed_signatures(
     let callbacks = create_storage_callbacks(store, context.id);
     let context_id_bytes: [u8; 32] = *context.id.as_ref();
     let executor_id_bytes: [u8; 32] = *identity_private_key.public_key().as_ref();
+    // This node's own account for the context — the same resolution the execute
+    // path uses, so the signing pass gates identically to the execution that
+    // produced these actions.
+    let account = calimero_governance_store::account_for_context(store, &context.id)?;
     let env = RuntimeEnv::new(
         callbacks.read,
         callbacks.write,
         callbacks.remove,
         context_id_bytes,
         executor_id_bytes,
+        *account.as_bytes(),
     );
 
     // Collect failures inside the env scope and propagate after.

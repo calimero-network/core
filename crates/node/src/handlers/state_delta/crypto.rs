@@ -236,7 +236,7 @@ mod tests {
         use calimero_storage::address::Id;
         use calimero_storage::entities::OpMask;
         use calimero_storage::logical_clock::HybridTimestamp;
-        use calimero_storage::tests::common::{build_signed_shared_action, pubkey_of};
+        use calimero_storage::tests::common::{account_of_key, build_signed_shared_action};
         use ed25519_dalek::SigningKey;
 
         let mut rng = thread_rng();
@@ -246,27 +246,33 @@ mod tests {
         // The attacker holds the group key (so AEAD proves nothing about
         // authorization here) and signs a write to someone else's entity.
         let attacker = SigningKey::from_bytes(&[7u8; 32]);
-        let attacker_pk = pubkey_of(&attacker);
+        // The writer set names an ACCOUNT; the action is signed by a KEY. The
+        // attacker holds both halves — which is the point: even a self-consistent
+        // pair must not reach the verifier off the wire.
+        let attacker_account = account_of_key(&attacker);
         let victim_entity = Id::new([42u8; 32]);
         let action = build_signed_shared_action(
             false,
             victim_entity,
             b"attacker-write".to_vec(),
-            BTreeSet::from([attacker_pk]),
+            BTreeSet::from([attacker_account]),
             1_000,
             &attacker,
             vec![],
         );
 
         let mut effective_writers = BTreeMap::new();
-        let _ =
-            effective_writers.insert(victim_entity, BTreeMap::from([(attacker_pk, OpMask::FULL)]));
+        let _ = effective_writers.insert(
+            victim_entity,
+            BTreeMap::from([(attacker_account, OpMask::FULL)]),
+        );
 
         let storage_delta = StorageDelta::CausalActions {
             actions: vec![action],
             delta_id: [1u8; 32],
             delta_hlc: HybridTimestamp::default(),
             effective_writers,
+            signer_account: Some(attacker_account),
         };
         let sealed = SealedDeltaPayload {
             root_hash: Hash::from([0u8; 32]),

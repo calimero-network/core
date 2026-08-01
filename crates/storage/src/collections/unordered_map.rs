@@ -1024,6 +1024,7 @@ mod tests {
     use crate::collections::unordered_map::Entry;
     use crate::collections::{Root, UnorderedMap};
     use crate::store::MainStorage;
+    use calimero_account::AccountId;
 
     #[test]
     fn test_unordered_map_basic_operations() {
@@ -1444,8 +1445,6 @@ mod tests {
     fn insert_inherits_collection_storage_domain() {
         use std::collections::BTreeSet;
 
-        use calimero_primitives::identity::PublicKey;
-
         use crate::address::Id;
         use crate::collections::compute_id;
         use crate::entities::{Data, StorageType};
@@ -1483,7 +1482,7 @@ mod tests {
         // at merge — not just the wrapper. This is the core of guarding a
         // collection by a writer set.
         let mut guarded = UnorderedMap::<String, String>::new();
-        let writers: BTreeSet<PublicKey> = std::iter::once(PublicKey::from([7u8; 32])).collect();
+        let writers: BTreeSet<AccountId> = std::iter::once(AccountId::from([7u8; 32])).collect();
         guarded.element_mut().set_shared_domain(writers.clone());
         let _ignored = guarded
             .insert("k".to_owned(), "v".to_owned())
@@ -1500,8 +1499,6 @@ mod tests {
     #[test]
     fn entry_or_default_inherits_collection_storage_domain() {
         use std::collections::BTreeSet;
-
-        use calimero_primitives::identity::PublicKey;
 
         use crate::address::Id;
         use crate::collections::compute_id;
@@ -1526,7 +1523,7 @@ mod tests {
         // inherit the domain too, otherwise guarding silently fails for the
         // blessed nested-CRDT mutation API.
         let mut guarded = UnorderedMap::<String, String>::new();
-        let writers: BTreeSet<PublicKey> = std::iter::once(PublicKey::from([7u8; 32])).collect();
+        let writers: BTreeSet<AccountId> = std::iter::once(AccountId::from([7u8; 32])).collect();
         guarded.element_mut().set_shared_domain(writers.clone());
         {
             let mut value = guarded

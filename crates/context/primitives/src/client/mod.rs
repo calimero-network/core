@@ -306,12 +306,12 @@ mod borsh_layout_round_trip {
 
     #[test]
     fn shared_writers_map_round_trips() {
-        // Previously-broken case: `writers` is `BTreeMap<PublicKey, OpMask>`
+        // Previously-broken case: `writers` is `BTreeMap<AccountId, OpMask>`
         // (32-byte key + 1-byte mask), not `BTreeSet<[u8; 32]>`. A set-shaped
         // mirror under-reads one byte per writer and misaligns everything after.
-        let mut writers: BTreeMap<PublicKey, OpMask> = BTreeMap::new();
-        let _ = writers.insert(PublicKey::from([0x44; 32]), OpMask::FULL);
-        let _ = writers.insert(PublicKey::from([0x55; 32]), OpMask::WRITE);
+        let mut writers: BTreeMap<calimero_account::AccountId, OpMask> = BTreeMap::new();
+        let _ = writers.insert(calimero_account::AccountId::from([0x44; 32]), OpMask::FULL);
+        let _ = writers.insert(calimero_account::AccountId::from([0x55; 32]), OpMask::WRITE);
 
         let decoded = round_trip(StorageType::Shared {
             writers,

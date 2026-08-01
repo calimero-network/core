@@ -244,7 +244,8 @@ async fn run_initiator_impl<T: SyncTransport>(
     let mut stats = LevelWiseStats::default();
 
     // Set up storage bridge
-    let runtime_env = create_runtime_env(store, context_id, identity);
+    let account = calimero_governance_store::account_for_context(store, &context_id)?;
+    let runtime_env = create_runtime_env(store, context_id, identity, account);
 
     // Track which parent IDs to query at next level
     // Start with None = request all nodes at level 0 (root's children)
@@ -718,7 +719,8 @@ async fn run_responder_impl<T: SyncTransport>(
     }
 
     // Set up storage bridge
-    let runtime_env = create_runtime_env(store, context_id, identity);
+    let account = calimero_governance_store::account_for_context(store, &context_id)?;
+    let runtime_env = create_runtime_env(store, context_id, identity, account);
 
     let mut sequence_id = 0u64;
 

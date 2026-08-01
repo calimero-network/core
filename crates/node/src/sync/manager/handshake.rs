@@ -58,7 +58,11 @@ impl SyncManager {
         let store = self.context_client.datastore_handle().into_inner();
         // SAFETY: identity is unused for read-only Index queries via RuntimeEnv
         let identity = calimero_primitives::identity::PublicKey::from([0u8; 32]);
-        let env = create_runtime_env(&store, *context_id, identity);
+        // `None` rather than `?`: this is a read-only index query in an
+        // Option-returning helper, so an unresolvable account means "no answer",
+        // not a failure to propagate.
+        let account = calimero_governance_store::account_for_context(&store, context_id).ok()?;
+        let env = create_runtime_env(&store, *context_id, identity, account);
 
         let root_id = Id::new(*context_id.as_ref());
 

@@ -355,7 +355,8 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
     }
 
     let identity = choose_owned_identity(&input.node_clients.context, context_id).await?;
-    let runtime_env = create_runtime_env(store, *context_id, identity);
+    let account = calimero_governance_store::account_for_context(store, context_id)?;
+    let runtime_env = create_runtime_env(store, *context_id, identity, account);
 
     let mut drained = 0usize;
     for ((producing_app_key, delta_id), record) in pending {

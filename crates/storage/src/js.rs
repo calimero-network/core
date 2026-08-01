@@ -20,6 +20,7 @@ use crate::store::MainStorage;
 use crate::{address::Id, Interface, StorageError};
 use calimero_primitives::identity::PublicKey;
 
+use calimero_account::AccountId;
 /// Macro support for deriving storage traits on the wrapper types.
 use calimero_storage_macros::AtomicUnit;
 
@@ -1773,7 +1774,7 @@ impl JsSharedStorage {
         self.shared
             .writers()
             .into_iter()
-            .map(|pk| *pk.as_ref())
+            .map(|a| *a.as_bytes())
             .collect()
     }
 
@@ -1786,7 +1787,9 @@ impl JsSharedStorage {
     /// devices stops needing both of them granted.
     #[must_use]
     pub fn writable_by_me(&self) -> bool {
-        let me: PublicKey = crate::env::device_id().into();
+        // A gate, so the account — this is the question "may this person write",
+        // which is exactly what a second device must answer yes to.
+        let me: AccountId = crate::env::account_id().into();
         self.shared.can(&me, Op::Write)
     }
 
@@ -1829,8 +1832,8 @@ impl JsSharedStorage {
 
 /// Decodes a list of 32-byte public keys into the `BTreeSet<PublicKey>` the
 /// writer-set constructors take.
-fn writer_set(writers: Vec<[u8; 32]>) -> BTreeSet<PublicKey> {
-    writers.into_iter().map(PublicKey::from).collect()
+fn writer_set(writers: Vec<[u8; 32]>) -> BTreeSet<AccountId> {
+    writers.into_iter().map(AccountId::from).collect()
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

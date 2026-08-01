@@ -98,11 +98,11 @@ pub fn payload_from_action(action: &Action) -> Option<OpPayload> {
 pub fn set_writers_payload(object: Id, entry: &RotationLogEntry) -> OpPayload {
     OpPayload::SetWriters {
         object,
-        writers: entry
-            .new_writers
-            .iter()
-            .map(|(member, mask)| (legacy_account_id(member), *mask))
-            .collect(),
+        // Passed through, not bridged: a rotation log's writer set is ALREADY
+        // account-keyed, so there is no key here to stand in for. The entry's
+        // `signer` still needs `legacy_account_id`, because a signature names a
+        // key — which is exactly the split the account plane draws.
+        writers: entry.new_writers.clone(),
     }
 }
 
@@ -481,12 +481,15 @@ mod tests {
     fn acl_plane_matches_resolve_local_for_sequential_rotations() {
         let object = Id::new([0xA0; 32]);
         let scope = ScopeId::from([0u8; 32]);
+        // The admin SIGNS, so it is a key; the writers are granted, so they are
+        // accounts. Different domains — the bridge derives a stand-in account for
+        // the signer, and passes the writer set through untouched.
         let admin = PublicKey::from([1u8; 32]);
-        let w1 = PublicKey::from([0x11; 32]);
-        let w2 = PublicKey::from([0x22; 32]);
+        let w1 = AccountId::from([0x11; 32]);
+        let w2 = AccountId::from([0x22; 32]);
 
         // Three sequential rotations: {w1} → {w1,w2} → {w2}.
-        let sets: Vec<BTreeMap<PublicKey, OpMask>> = vec![
+        let sets: Vec<BTreeMap<AccountId, OpMask>> = vec![
             [(w1, OpMask::FULL)].into_iter().collect(),
             [(w1, OpMask::FULL), (w2, OpMask::FULL)]
                 .into_iter()
@@ -535,27 +538,17 @@ mod tests {
             .unwrap_or_default();
 
         // Fold-equivalence still holds under the account model, modulo the
-        // one derivation the bridge applies: `resolve_local` answers in member
-        // keys, the projection answers in the self-accounts those keys speak
-        // for. Mapping the expectation through `account_of` — rather than
-        // loosening the assertion — keeps this a real equivalence proof and
-        // would catch the bridge dropping or renaming a writer.
-        let expected: BTreeMap<AccountId, OpMask> = expected
-            .iter()
-            .map(|(member, mask)| (legacy_account_id(member), *mask))
-            .collect();
+        // No mapping any more: both sides speak accounts, because the rotation
+        // log's writer set is account-keyed at the source. The equivalence is
+        // therefore direct, and still catches the bridge dropping or renaming a
+        // writer.
+        let expected: BTreeMap<AccountId, OpMask> = expected.clone();
         assert_eq!(
             resolved, expected,
             "ScopeState ACL fold must resolve the same writer set as resolve_local"
         );
         // Sanity: the latest rotation ({w2}) wins.
-        assert_eq!(
-            resolved,
-            sets[2]
-                .iter()
-                .map(|(member, mask)| (legacy_account_id(member), *mask))
-                .collect::<BTreeMap<_, _>>()
-        );
+        assert_eq!(resolved, sets[2]);
     }
 
     /// Encoding a rotation's payload then folding it yields the rotation's
@@ -565,7 +558,7 @@ mod tests {
         let object = Id::new([0xB0; 32]);
         let scope = ScopeId::from([0u8; 32]);
         let admin = PublicKey::from([1u8; 32]);
-        let writers: BTreeMap<PublicKey, OpMask> = [(PublicKey::from([7u8; 32]), OpMask::FULL)]
+        let writers: BTreeMap<AccountId, OpMask> = [(AccountId::from([7u8; 32]), OpMask::FULL)]
             .into_iter()
             .collect();
 
@@ -595,13 +588,9 @@ mod tests {
             .get(&object)
             .cloned()
             .unwrap_or_default();
-        assert_eq!(
-            resolved,
-            writers
-                .iter()
-                .map(|(member, mask)| (legacy_account_id(member), *mask))
-                .collect::<BTreeMap<_, _>>()
-        );
+        // Verbatim: the payload carries the log's own account-keyed set, so a
+        // round trip must return exactly it.
+        assert_eq!(resolved, writers);
     }
 
     #[test]

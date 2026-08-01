@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::io;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_primitives::identity::PublicKey;
+use calimero_account::AccountId;
 use sha2::{Digest, Sha256};
 
 use crate::action::Action;
@@ -182,7 +182,23 @@ pub enum StorageDelta {
         ///
         /// Trusted, and only because it never comes off the wire — see
         /// the variant docs above.
-        effective_writers: BTreeMap<Id, BTreeMap<PublicKey, OpMask>>,
+        effective_writers: BTreeMap<Id, BTreeMap<AccountId, OpMask>>,
+        /// The ACCOUNT the delta's author speaks for, resolved by the applying
+        /// node at the governance cut this delta cites.
+        ///
+        /// Rides here rather than in a separate channel because this and
+        /// `effective_writers` are two halves of one question — "who may write"
+        /// and "who is writing" — and a writer set resolved at one cut matched
+        /// against a principal resolved at another can disagree.
+        ///
+        /// One value for the whole batch: a delta is authored by a single device,
+        /// so a single account answers for every action in it.
+        ///
+        /// Trusted for exactly the same reason as the writer set above, and no
+        /// other: it never comes off the wire. `None` means the applying node
+        /// could not resolve the author, and every consumer treats that as a
+        /// refusal — never as "authorize as whoever is applying".
+        signer_account: Option<AccountId>,
     },
 }
 
@@ -203,12 +219,14 @@ impl BorshSerialize for StorageDelta {
                 delta_id,
                 delta_hlc,
                 effective_writers,
+                signer_account,
             } => {
                 2u8.serialize(writer)?;
                 actions.serialize(writer)?;
                 delta_id.serialize(writer)?;
                 delta_hlc.serialize(writer)?;
                 effective_writers.serialize(writer)?;
+                signer_account.serialize(writer)?;
             }
         }
         Ok(())
@@ -232,6 +250,7 @@ impl BorshDeserialize for StorageDelta {
                 delta_id: <[u8; 32]>::deserialize_reader(reader)?,
                 delta_hlc: HybridTimestamp::deserialize_reader(reader)?,
                 effective_writers: BTreeMap::deserialize_reader(reader)?,
+                signer_account: Option::deserialize_reader(reader)?,
             }),
             Some(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid tag")),
         }
@@ -583,11 +602,12 @@ mod borsh_roundtrip_tests {
     #[test]
     fn causal_actions_variant_roundtrips() {
         // The #2266 wire format: actions + delta_id + delta_hlc +
-        // BTreeMap<Id, BTreeSet<PublicKey>>.
+        // BTreeMap<Id, BTreeMap<AccountId, OpMask>> — accounts, because the
+        // writer set names people rather than the keys that sign for them.
         let entity_a = Id::from([0xA1_u8; 32]);
         let entity_b = Id::from([0xB2_u8; 32]);
-        let writer1 = PublicKey::from([0xAA_u8; 32]);
-        let writer2 = PublicKey::from([0xBB_u8; 32]);
+        let writer1 = AccountId::from([0xAA_u8; 32]);
+        let writer2 = AccountId::from([0xBB_u8; 32]);
 
         let mut effective_writers = BTreeMap::new();
         let _ = effective_writers.insert(
@@ -601,6 +621,7 @@ mod borsh_roundtrip_tests {
             delta_id: [0xCD; 32],
             delta_hlc: make_hlc(12_345),
             effective_writers: effective_writers.clone(),
+            signer_account: Some(AccountId::from([0xAC; 32])),
         };
 
         let bytes = to_vec(&original).unwrap();
@@ -613,6 +634,7 @@ mod borsh_roundtrip_tests {
                 delta_id,
                 delta_hlc,
                 effective_writers: ew,
+                signer_account: _,
             } => {
                 assert_actions_equal(&actions, &[make_action(0xFE)]);
                 assert_eq!(delta_id, [0xCD; 32]);
@@ -632,6 +654,7 @@ mod borsh_roundtrip_tests {
             delta_id: [0; 32],
             delta_hlc: make_hlc(0),
             effective_writers: BTreeMap::new(),
+            signer_account: None,
         };
         let bytes = to_vec(&original).unwrap();
         let decoded: StorageDelta = from_slice(&bytes).unwrap();

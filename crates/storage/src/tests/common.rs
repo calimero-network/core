@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_account::AccountId;
 use calimero_primitives::identity::PublicKey;
 use ed25519_dalek::{Signer, SigningKey};
 
@@ -8,7 +9,7 @@ use crate::action::Action;
 use crate::address::Id;
 use crate::collections::crdt_meta::{MergeError, Mergeable};
 use crate::entities::{
-    AtomicUnit, ChildInfo, Collection, Data, Element, Metadata, SignatureData, StorageType,
+    AtomicUnit, ChildInfo, Collection, Data, Element, Metadata, OpMask, SignatureData, StorageType,
 };
 use crate::env;
 use crate::interface::MainInterface;
@@ -347,6 +348,66 @@ pub fn create_signed_user_add_action(
     action
 }
 
+/// The account a test device key speaks for.
+///
+/// Storage authorizes **accounts** and authenticates **keys**, and it resolves
+/// neither: the node hands it `ApplyContext.signer_account`, resolved at the
+/// action's causal cut. So a test has to supply both halves itself, and this
+/// keeps them consistent — grant `account_of_key(&sk)`, sign with `sk`, pass
+/// `signer_account: Some(account_of_key(&sk))`.
+///
+/// Deliberately NOT the key's own bytes. Both types are 32 bytes, so code that
+/// confused an account for a key would still compile and would still pass a test
+/// that made them equal. Deriving different bytes means such a mix-up fails.
+///
+/// For two devices of ONE account (the case the whole feature exists for), don't
+/// use this — use [`test_account`] and sign with two different keys.
+#[must_use]
+pub fn account_of_key(sk: &SigningKey) -> AccountId {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"calimero.storage.test.account-of-key");
+    hasher.update(sk.verifying_key().as_bytes());
+    AccountId::from(<[u8; 32]>::from(hasher.finalize()))
+}
+
+/// An account named by seed rather than by a key, for tests where one account
+/// holds several devices.
+///
+/// Distinct from every [`account_of_key`] value (different domain), so a test
+/// cannot accidentally grant the seed account and satisfy it with a key's own
+/// account.
+#[must_use]
+pub fn test_account(seed: u8) -> AccountId {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"calimero.storage.test.account-seed");
+    hasher.update([seed]);
+    AccountId::from(<[u8; 32]>::from(hasher.finalize()))
+}
+
+/// The writer set granting `accounts` full rights.
+#[must_use]
+pub fn writers_of(accounts: impl IntoIterator<Item = AccountId>) -> BTreeMap<AccountId, OpMask> {
+    crate::entities::full_mask(accounts.into_iter().collect())
+}
+
+/// An apply context for a delta-less local apply that authorizes `account`.
+///
+/// The `effective_writers`-free shape: the verifier falls back to the entity's
+/// stored writers, and `signer_account` is what lets the signature be attributed
+/// at all. `ApplyContext::empty()` cannot be used for a signed `Shared` action
+/// any more — with no account to resolve to, every such action is refused.
+#[must_use]
+pub fn apply_ctx_for(account: AccountId) -> crate::interface::ApplyContext {
+    crate::interface::ApplyContext {
+        effective_writers: None,
+        delta_id: None,
+        delta_hlc: None,
+        signer_account: Some(account),
+    }
+}
+
 /// Returns the `PublicKey` corresponding to a `SigningKey`.
 pub fn pubkey_of(sk: &SigningKey) -> PublicKey {
     PublicKey::from(*sk.verifying_key().as_bytes())
@@ -391,7 +452,7 @@ pub fn build_signed_shared_action(
     add: bool,
     id: Id,
     data: Vec<u8>,
-    writers: BTreeSet<PublicKey>,
+    writers: BTreeSet<AccountId>,
     hlc_ns: u64,
     signer_sk: &SigningKey,
     ancestors: Vec<ChildInfo>,

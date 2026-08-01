@@ -8,7 +8,6 @@ use thiserror::Error as ThisError;
 
 use crate::address::Id;
 use crate::collections::crdt_meta::MergeError;
-use calimero_primitives::identity::PublicKey;
 
 /// Errors that can occur when working with the storage system.
 #[derive(Debug, ThisError)]
@@ -88,7 +87,11 @@ pub enum StorageError {
     /// A remote action was rejected due to an invalid (old or reused) nonce.
     /// `PublicKey` is `Box`ed to reduce the enum's size.
     #[error("Nonce replay detected for user {}: received nonce {}", 0.0, 0.1)]
-    NonceReplay(Box<(PublicKey, u64)>),
+    /// Whoever replayed, as raw bytes — deliberately not a typed principal.
+    /// The shape genuinely differs by storage type: a `User` entity's owner is a
+    /// DEVICE (per-writer state), while a `Shared` writer is an ACCOUNT. This is a
+    /// diagnostic payload, so it carries the id and lets the message say which.
+    NonceReplay(Box<([u8; 32], u64)>),
 
     /// The requested record was not found, but in the context it was asked for,
     /// it was expected to be found and so this represents an error or some kind
@@ -143,7 +146,7 @@ impl Serialize for StorageError {
             )),
             Self::NonceReplay(ref data) => {
                 let (pk, nonce) = &**data;
-                serializer.serialize_str(&format!("Nonce replay for {pk}: {nonce}"))
+                serializer.serialize_str(&format!("Nonce replay for {}: {nonce}", hex::encode(pk)))
             }
             Self::StoreError(ref err) => serializer.serialize_str(&err.to_string()),
             Self::DuplicateRotationInDelta(delta_id) => serializer.serialize_str(&format!(

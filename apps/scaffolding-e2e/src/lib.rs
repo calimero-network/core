@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
-use calimero_sdk::{app, env, PublicKey};
+use calimero_sdk::{app, env, AccountId, PublicKey};
 use calimero_storage::collections::{
     AuthoredMap, AuthoredVector, Counter, FrozenStorage, GCounter, LwwRegister, Mergeable,
     PNCounter, ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet, UnorderedMap,
@@ -409,7 +409,7 @@ impl E2eKvStore {
             authored_vec: AuthoredVector::<LwwRegister<String>>::new(),
             // Shared Storage — init caller becomes the sole initial writer
             shared_data: SharedStorage::new(
-                std::iter::once(env::device_id().into()).collect(),
+                std::iter::once(AccountId::from(env::account_id())).collect(),
                 false,
             ),
         }
@@ -1249,8 +1249,11 @@ impl E2eKvStore {
             .collect())
     }
 
+    /// Add a writer. The argument is an ACCOUNT in hex (what `writers()` prints),
+    /// not a bs58 key: the writer set grants people, so granting one covers every
+    /// device they hold.
     pub fn shared_add_writer(&mut self, writer_bs58: String) -> app::Result<()> {
-        let new_writer: PublicKey = writer_bs58.parse()?;
+        let new_writer: AccountId = writer_bs58.parse()?;
         let mut new_writers = self.shared_data.writers().clone();
         new_writers.insert(new_writer);
         self.shared_data.rotate_writers(new_writers)?;
@@ -1267,8 +1270,8 @@ impl E2eKvStore {
     pub fn shared_rotate_writers(&mut self, writers: Vec<String>) -> app::Result<()> {
         let mut new_writers = BTreeSet::new();
         for w in &writers {
-            let pk: PublicKey = w.parse()?;
-            let _inserted = new_writers.insert(pk);
+            let account: AccountId = w.parse()?;
+            let _inserted = new_writers.insert(account);
         }
         self.shared_data.rotate_writers(new_writers)?;
         for w in writers {
@@ -1278,8 +1281,8 @@ impl E2eKvStore {
     }
 
     pub fn shared_is_writer(&self, key_bs58: String) -> app::Result<bool> {
-        let pk: PublicKey = key_bs58.parse()?;
-        Ok(self.shared_data.writers().contains(&pk))
+        let account: AccountId = key_bs58.parse()?;
+        Ok(self.shared_data.writers().contains(&account))
     }
 
     pub fn shared_is_frozen(&self) -> app::Result<bool> {

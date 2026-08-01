@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use calimero_sdk::app;
 use calimero_sdk::serde::Serialize;
-use calimero_sdk::PublicKey;
+use calimero_sdk::AccountId;
 use calimero_storage::collections::{LwwRegister, SharedStorage, UnorderedMap};
 use thiserror::Error;
 
@@ -37,7 +37,9 @@ impl KvStore {
     /// Use `rotate_writers` to add or replace writers.
     #[app::init]
     pub fn init() -> KvStore {
-        let initializer: PublicKey = calimero_sdk::env::device_id().into();
+        // The writer set names accounts, so the initializer grants itself as a
+        // person rather than as this one installation.
+        let initializer: AccountId = calimero_sdk::env::account_id().into();
         let mut writers = BTreeSet::new();
         writers.insert(initializer);
         KvStore {
@@ -85,9 +87,9 @@ impl KvStore {
     /// staying guarded by the original set for its adversarial step). This is an
     /// example app; production apps should name such methods per the field they
     /// rotate to avoid surprising callers.
-    pub fn rotate_writers(&mut self, new_writers: Vec<PublicKey>) -> app::Result<()> {
+    pub fn rotate_writers(&mut self, new_writers: Vec<AccountId>) -> app::Result<()> {
         app::log!("Rotating writers: {:?}", new_writers);
-        let set: BTreeSet<PublicKey> = new_writers.into_iter().collect();
+        let set: BTreeSet<AccountId> = new_writers.into_iter().collect();
         let count = set.len() as u32;
         self.shared_value.rotate_writers(set)?;
         app::emit!(Event::WritersRotated { count });
@@ -114,8 +116,8 @@ impl KvStore {
     /// *forged rotation delta* (one that bypasses this local gate) happens at
     /// merge and is covered by the storage test
     /// `forged_shared_rotation_rejected_at_merge`.
-    pub fn try_rotate_writers(&mut self, new_writers: Vec<PublicKey>) -> app::Result<bool> {
-        let set: BTreeSet<PublicKey> = new_writers.into_iter().collect();
+    pub fn try_rotate_writers(&mut self, new_writers: Vec<AccountId>) -> app::Result<bool> {
+        let set: BTreeSet<AccountId> = new_writers.into_iter().collect();
         match self.shared_value.rotate_writers(set) {
             Ok(()) => Ok(true),
             Err(_) => Ok(false),
@@ -145,7 +147,7 @@ mod tests {
     fn rotate_writers_emits_event() {
         let mut app = TestHost::new(KvStore::init);
 
-        let me: PublicKey = app.device_id().into();
+        let me: AccountId = app.account_id().into();
         app.call(|s| s.rotate_writers(vec![me])).unwrap();
 
         assert!(app.events().iter().any(|e| e.kind == "WritersRotated"));

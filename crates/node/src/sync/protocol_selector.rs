@@ -506,8 +506,23 @@ pub(crate) async fn dispatch_deferred_root_merges(
 
     // Build a runtime env so storage callbacks resolve against the
     // right context — mirrors what HC initiator does for its DFS.
-    let runtime_env =
-        calimero_node_primitives::sync::create_runtime_env(store, context_id, our_identity);
+    // This helper returns `()`; an unresolvable account cannot be propagated, and
+    // it also cannot be invented — so log and skip the deferred batch rather than
+    // gate it on the wrong principal. The next sync tick retries.
+    let Ok(account) = calimero_governance_store::account_for_context(store, &context_id) else {
+        tracing::warn!(
+            %context_id,
+            "cannot resolve this node's account for the context; skipping the \
+             deferred-leaf pass (retried on the next sync tick)"
+        );
+        return;
+    };
+    let runtime_env = calimero_node_primitives::sync::create_runtime_env(
+        store,
+        context_id,
+        our_identity,
+        account,
+    );
 
     for (key, incoming, incoming_hlc_ts) in deferred {
         let entity_id = Id::new(*key);

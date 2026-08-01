@@ -4,7 +4,7 @@ use calimero_sdk::app;
 use calimero_sdk::borsh::BorshDeserialize;
 use calimero_sdk::env;
 use calimero_sdk::serde::Serialize;
-use calimero_sdk::PublicKey;
+use calimero_sdk::AccountId;
 use calimero_storage::collections::{LwwRegister, SharedStorage};
 
 const SCHEMA_VERSION_V1: &str = "1.0.0";
@@ -62,8 +62,8 @@ impl ScenarioSharedStorageV2 {
     pub fn init() -> ScenarioSharedStorageV2 {
         // Seed the writer set with the creating node so it can write.
         let mut writers = BTreeSet::new();
-        let executor: PublicKey = env::device_id().into();
-        writers.insert(executor);
+        let creator: AccountId = env::account_id().into();
+        writers.insert(creator);
         ScenarioSharedStorageV2 {
             doc: SharedStorage::new(writers, false),
             title: LwwRegister::new("untitled".to_owned()),

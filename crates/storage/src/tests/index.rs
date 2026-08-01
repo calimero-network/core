@@ -1601,7 +1601,7 @@ mod verify_ancestor_integrity_tests {
 mod verify_snapshot_entity_signature_tests {
     use std::collections::BTreeSet;
 
-    use calimero_primitives::identity::PublicKey;
+    use calimero_account::AccountId;
 
     use crate::address::Id;
     use crate::entities::{Metadata, SignatureData, StorageType};
@@ -1620,7 +1620,7 @@ mod verify_snapshot_entity_signature_tests {
         }
     }
 
-    fn meta_shared_unsigned(writers: BTreeSet<PublicKey>) -> Metadata {
+    fn meta_shared_unsigned(writers: BTreeSet<AccountId>) -> Metadata {
         Metadata {
             created_at: 0,
             updated_at: 0.into(),
@@ -1634,7 +1634,7 @@ mod verify_snapshot_entity_signature_tests {
         }
     }
 
-    fn meta_shared_signed_invalid(writers: BTreeSet<PublicKey>) -> Metadata {
+    fn meta_shared_signed_invalid(writers: BTreeSet<AccountId>) -> Metadata {
         // Signature is just zeros — cryptographically invalid against any payload.
         Metadata {
             created_at: 0,
@@ -1674,11 +1674,14 @@ mod verify_snapshot_entity_signature_tests {
         // should carry signature_data: None past the runtime sign
         // step. A snapshot record with `None` is from a buggy or
         // hostile peer — reject.
-        let writer = PublicKey::from([0xAA; 32]);
+        let writer = AccountId::from([0xAA; 32]);
         let mut writers = BTreeSet::new();
         writers.insert(writer);
 
         let id = Id::new([0x11; 32]);
+        // `signer_account` is irrelevant here — an unsigned record is refused
+        // before any account is consulted — but pass the granted one so a change
+        // that made this pass for lack of a resolution would show up.
         let result = <Interface<MockedStorage<3006>>>::verify_snapshot_entity_signature(
             id,
             b"data",
@@ -1695,11 +1698,13 @@ mod verify_snapshot_entity_signature_tests {
         // A tampered or forged record with a zero signature must fail
         // verification — this is the core property the wire-format
         // redesign (#2387) gives Snapshot.
-        let writer = PublicKey::from([0xBB; 32]);
+        let writer = AccountId::from([0xBB; 32]);
         let mut writers = BTreeSet::new();
         writers.insert(writer);
 
         let id = Id::new([0x12; 32]);
+        // Resolves to the granted account, so the refusal below is the signature
+        // failing and not an unresolvable signer.
         let result = <Interface<MockedStorage<3007>>>::verify_snapshot_entity_signature(
             id,
             b"data",
@@ -1720,6 +1725,7 @@ mod verify_snapshot_entity_signature_tests {
 mod update_signature_in_place_tests {
     use std::collections::BTreeSet;
 
+    use calimero_account::AccountId;
     use calimero_primitives::identity::PublicKey;
 
     use crate::address::Id;
@@ -1729,13 +1735,15 @@ mod update_signature_in_place_tests {
     use crate::interface::Interface;
     use crate::store::MockedStorage;
 
-    fn shared_writers(writer: u8) -> BTreeSet<PublicKey> {
+    /// A writer set granting one account. These tests never sign, so the
+    /// account is named by raw bytes.
+    fn shared_writers(writer: u8) -> BTreeSet<AccountId> {
         let mut writers = BTreeSet::new();
-        let _ = writers.insert(PublicKey::from([writer; 32]));
+        let _ = writers.insert(AccountId::from([writer; 32]));
         writers
     }
 
-    fn shared_signed(writers: BTreeSet<PublicKey>, sig: [u8; 64]) -> StorageType {
+    fn shared_signed(writers: BTreeSet<AccountId>, sig: [u8; 64]) -> StorageType {
         StorageType::Shared {
             writers: crate::entities::full_mask(writers),
             signature_data: Some(SignatureData {
@@ -1757,7 +1765,7 @@ mod update_signature_in_place_tests {
         }
     }
 
-    fn shared_unsigned(writers: BTreeSet<PublicKey>) -> StorageType {
+    fn shared_unsigned(writers: BTreeSet<AccountId>) -> StorageType {
         StorageType::Shared {
             writers: crate::entities::full_mask(writers),
             signature_data: None,

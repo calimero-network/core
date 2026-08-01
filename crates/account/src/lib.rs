@@ -203,8 +203,29 @@ macro_rules! content_address_id {
                 write!(f, "{}", hex::encode(self.0))
             }
         }
+
+        /// Parses the hex form [`Display`] writes.
+        ///
+        /// Hex rather than bs58, which is what a *key* is written in around
+        /// here: an id that renders like a key invites being pasted where a key
+        /// belongs, and both are 32 bytes, so nothing downstream would object.
+        impl core::str::FromStr for $name {
+            type Err = IdParseError;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                let bytes = hex::decode(s).map_err(|_| IdParseError)?;
+                <[u8; 32]>::try_from(bytes)
+                    .map(Self)
+                    .map_err(|_| IdParseError)
+            }
+        }
     };
 }
+
+/// A string was not 64 hex characters, so it names no id.
+#[derive(Clone, Copy, Debug, ThisError)]
+#[error("expected 64 hex characters (32 bytes)")]
+pub struct IdParseError;
 
 content_address_id! {
     /// Stable identity of a person or agent — the **only** authorization

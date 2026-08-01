@@ -13,6 +13,7 @@
 #[path = "tests/entities.rs"]
 mod tests;
 
+use calimero_account::AccountId;
 use calimero_primitives::identity::PublicKey;
 use core::fmt::{self, Debug, Display, Formatter};
 use std::collections::{BTreeMap, BTreeSet};
@@ -371,7 +372,7 @@ impl Element {
     /// writer gets [`OpMask::FULL`] — the default group-writable behaviour. Use
     /// [`set_shared_domain_scoped`](Self::set_shared_domain_scoped) to grant
     /// restricted masks.
-    pub fn set_shared_domain(&mut self, writers: BTreeSet<PublicKey>) {
+    pub fn set_shared_domain(&mut self, writers: BTreeSet<AccountId>) {
         self.metadata.storage_type = StorageType::Shared {
             writers: full_mask(writers),
             signature_data: None, // Will be signed later
@@ -381,7 +382,7 @@ impl Element {
 
     /// Like [`set_shared_domain`](Self::set_shared_domain) but with explicit
     /// per-writer [`OpMask`]s.
-    pub fn set_shared_domain_scoped(&mut self, writers: BTreeMap<PublicKey, OpMask>) {
+    pub fn set_shared_domain_scoped(&mut self, writers: BTreeMap<AccountId, OpMask>) {
         self.metadata.storage_type = StorageType::Shared {
             writers,
             signature_data: None, // Will be signed later
@@ -507,8 +508,8 @@ impl OpMask {
 /// Build a writer map granting every key [`OpMask::FULL`] — the default
 /// group-writable behaviour (every writer may do anything).
 #[must_use]
-pub fn full_mask(keys: BTreeSet<PublicKey>) -> BTreeMap<PublicKey, OpMask> {
-    keys.into_iter().map(|k| (k, OpMask::FULL)).collect()
+pub fn full_mask(accounts: BTreeSet<AccountId>) -> BTreeMap<AccountId, OpMask> {
+    accounts.into_iter().map(|a| (a, OpMask::FULL)).collect()
 }
 
 impl Default for OpMask {
@@ -562,12 +563,19 @@ pub enum StorageType {
     /// O(1) and retroactively revokes access for the entire subtree without
     /// changing any member's bytes (no per-entity churn → no split-brain).
     Shared {
-        /// The public keys authorized to write or rotate, each with its
-        /// [`OpMask`] (which operations it may perform). The map keys are the
-        /// writer set (membership); a key's mask defaults to [`OpMask::FULL`]
-        /// when granted without restriction, so plain group-writable storage is
-        /// unchanged.
-        writers: BTreeMap<PublicKey, OpMask>,
+        /// The **accounts** authorized to write or rotate, each with its
+        /// [`OpMask`]. The map keys are the writer set (membership); a mask
+        /// defaults to [`OpMask::FULL`] when granted without restriction.
+        ///
+        /// Accounts, not keys, so a person with several devices is ONE writer and
+        /// granting them does not mean enumerating their machines.
+        ///
+        /// Authentication stays key-based and cannot be otherwise: a signature
+        /// verifies against a public key, and an `AccountId` is a content hash. The
+        /// two are bridged at verification time — the signature is checked against
+        /// [`SignatureData::signer`], and that key is resolved to its account at the
+        /// write's causal cut before this map is consulted.
+        writers: BTreeMap<AccountId, OpMask>,
         /// A signature and nonce. The signature must be from a key in `writers`
         /// (the *currently stored* set, not the action's claimed set).
         signature_data: Option<SignatureData>,

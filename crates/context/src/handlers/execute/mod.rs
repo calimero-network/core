@@ -2274,6 +2274,10 @@ async fn internal_execute(
                     callbacks.remove,
                     *context.id.as_ref(),
                     *identity_private_key.public_key().as_ref(),
+                    // The same account the execution itself ran as, so the
+                    // recompute sees the writer sets the app just wrote rather
+                    // than gating on a different principal.
+                    *account.as_bytes(),
                 );
                 let recomputed_root =
                     with_runtime_env(env, || -> eyre::Result<Option<[u8; 32]>> {

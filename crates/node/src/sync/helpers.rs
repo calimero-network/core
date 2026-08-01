@@ -1146,9 +1146,11 @@ mod tests {
     #[test]
     fn extract_author_shared_with_signer_hint_returns_signer() {
         let signer = PublicKey::from([9u8; 32]);
+        // The writer set names an ACCOUNT; the signer hint names the KEY. This test
+        // is about extracting the hint, so the two are deliberately unrelated.
         let st = StorageType::Shared {
             writers: std::collections::BTreeMap::from([(
-                signer,
+                calimero_account::AccountId::from([0x9A; 32]),
                 calimero_storage::entities::OpMask::FULL,
             )]),
             signature_data: Some(SignatureData {
@@ -1170,7 +1172,7 @@ mod tests {
         // apply_action", which is where it is refused.
         let st = StorageType::Shared {
             writers: std::collections::BTreeMap::from([(
-                PublicKey::from([1u8; 32]),
+                calimero_account::AccountId::from([1u8; 32]),
                 calimero_storage::entities::OpMask::FULL,
             )]),
             signature_data: Some(SignatureData {
@@ -1234,7 +1236,10 @@ mod tests {
         let identity = PublicKey::from([0u8; 32]);
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let runtime_env = calimero_node_primitives::sync::storage_bridge::create_runtime_env(
-            &store, context_id, identity,
+            &store,
+            context_id,
+            identity,
+            calimero_account::AccountId::from([0xAC; 32]),
         );
 
         let leaf_key = [0x42u8; 32];
@@ -1272,7 +1277,10 @@ mod tests {
         let identity = PublicKey::from([0u8; 32]);
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let runtime_env = calimero_node_primitives::sync::storage_bridge::create_runtime_env(
-            &store, context_id, identity,
+            &store,
+            context_id,
+            identity,
+            calimero_account::AccountId::from([0xAC; 32]),
         );
 
         let leaf_key = [0x43u8; 32];
@@ -1295,7 +1303,10 @@ mod tests {
         let identity = PublicKey::from([0u8; 32]);
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let runtime_env = calimero_node_primitives::sync::storage_bridge::create_runtime_env(
-            &store, context_id, identity,
+            &store,
+            context_id,
+            identity,
+            calimero_account::AccountId::from([0xAC; 32]),
         );
 
         let leaf_key = [0x44u8; 32];
@@ -1322,7 +1333,10 @@ mod tests {
         let identity = PublicKey::from([0u8; 32]);
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let runtime_env = calimero_node_primitives::sync::storage_bridge::create_runtime_env(
-            &store, context_id, identity,
+            &store,
+            context_id,
+            identity,
+            calimero_account::AccountId::from([0xAC; 32]),
         );
 
         let leaf_key = [0x45u8; 32];
@@ -1363,7 +1377,10 @@ mod tests {
         let identity = PublicKey::from([0u8; 32]);
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let runtime_env = calimero_node_primitives::sync::storage_bridge::create_runtime_env(
-            &store, context_id, identity,
+            &store,
+            context_id,
+            identity,
+            calimero_account::AccountId::from([0xAC; 32]),
         );
 
         let leaf_key = [0x46u8; 32];

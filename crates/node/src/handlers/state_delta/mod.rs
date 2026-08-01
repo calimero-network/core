@@ -487,6 +487,13 @@ pub(crate) async fn apply_authorized_state_delta(
     // property the signature provides only holds for the originating
     // node — every relay would drop the signature and downstream
     // peers couldn't verify.
+    arm_signer_resolver_for_cut(
+        &delta_store_ref,
+        &node_state,
+        &node_clients.context.datastore_handle().into_inner(),
+        &context_id,
+        governance_position.as_ref(),
+    );
     let add_result = delta_store_ref
         .add_delta_with_events(
             delta,
@@ -786,6 +793,47 @@ pub(crate) async fn apply_authorized_state_delta(
 /// lock is taken. Writing `if let Some(ns) = read().namespace_to_refresh()` keeps
 /// the read guard alive for the whole `if let` body (Rust temporary lifetime), so
 /// the `write()` inside would deadlock against the read held by this same thread.
+/// Arm the delta store's key→account resolver for the cut this delta cites.
+///
+/// The gossip path has just resolved the author's *membership* at this cut; the
+/// writer plane needs the same cut to answer a different question — which account
+/// a signing key speaks for — for the delta's author and for every rotation-log
+/// entry the writer-set fold walks. Arming one resolver means all of those are
+/// placed against one folded view instead of three.
+///
+/// A resolver that cannot answer returns `None`, and the apply refuses rather than
+/// guessing, so the delta is retried once the cited ancestry folds.
+fn arm_signer_resolver_for_cut(
+    delta_store: &crate::delta_store::DeltaStore,
+    node_state: &crate::NodeState,
+    datastore: &calimero_store::Store,
+    context_id: &ContextId,
+    governance_position: Option<&calimero_context_config::types::GovernanceParentEdge>,
+) {
+    let Some(group) = calimero_governance_store::get_group_for_context(datastore, context_id)
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
+    let heads: Vec<[u8; 32]> = governance_position
+        .map(|gp| gp.governance_dag_heads.clone())
+        .unwrap_or_default();
+    // The projection is refreshed for this cut by the membership check that runs
+    // just before; arming a reader over the same handle keeps both answers on one
+    // fold rather than two.
+    let projections = std::sync::Arc::clone(&node_state.scope_projections);
+    let store = datastore.clone();
+    delta_store.arm_signer_resolver(std::sync::Arc::new(
+        move |key: &calimero_primitives::identity::PublicKey| {
+            projections
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .device_account_at_cut(&store, group, key, &heads)
+        },
+    ));
+}
+
 fn refresh_projection_for_cut(
     node_state: &crate::NodeState,
     datastore: &calimero_store::Store,
