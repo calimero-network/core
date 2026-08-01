@@ -153,21 +153,21 @@ steps:
   - name: Account of node-2
     type: call
     node: fuzzy-e2e-node-2
-    context_id: '{{context_id}}'
+    context_id: "{{e2e_context_id}}"
     method: my_account
     outputs:
       acct_node2: result
   - name: Account of node-3
     type: call
     node: fuzzy-e2e-node-3
-    context_id: '{{context_id}}'
+    context_id: "{{e2e_context_id}}"
     method: my_account
     outputs:
       acct_node3: result
   - name: Account of node-4
     type: call
     node: fuzzy-e2e-node-4
-    context_id: '{{context_id}}'
+    context_id: "{{e2e_context_id}}"
     method: my_account
     outputs:
       acct_node4: result
