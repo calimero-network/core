@@ -433,6 +433,28 @@ pub fn ed25519_verify(signature: &[u8; 64], public_key: &[u8; 32], message: &[u8
     imp::ed25519_verify(signature, public_key, message)
 }
 
+/// How many signature verifications the native verifier has performed on this
+/// thread, since the last [`reset_ed25519_verify_calls`].
+///
+/// Exists for one property: authorization order. A signed write is checked
+/// against the writer set BEFORE its signature is verified, so a signature that
+/// speaks for nobody costs no verification. Without that ordering, any peer can
+/// make a receiver perform one `ed25519_verify` per writer by sending garbage —
+/// so the ordering is a security property, and a security property with no test
+/// is one refactor away from gone. It cannot be observed from the outside (both
+/// orders refuse the write), hence the counter.
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "testing")))]
+#[must_use]
+pub fn ed25519_verify_calls() -> u64 {
+    mocked::ed25519_verify_calls()
+}
+
+/// Zero the counter read by [`ed25519_verify_calls`].
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "testing")))]
+pub fn reset_ed25519_verify_calls() {
+    mocked::reset_ed25519_verify_calls();
+}
+
 /// Returns the current context ID.
 ///
 /// In WASM, this calls the host function. In tests, returns a fixed value.
@@ -1166,6 +1188,23 @@ mod mocked {
             .as_nanos() as u64
     }
 
+    #[cfg(any(test, feature = "testing"))]
+    thread_local! {
+        /// Verification count, for the authorization-order test. See
+        /// [`super::ed25519_verify_calls`].
+        static VERIFY_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub(super) fn ed25519_verify_calls() -> u64 {
+        VERIFY_CALLS.with(std::cell::Cell::get)
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub(super) fn reset_ed25519_verify_calls() {
+        VERIFY_CALLS.with(|c| c.set(0));
+    }
+
     /// Verifies an Ed25519 signature.
     ///
     /// Uses a pure-Rust implementation for testing.
@@ -1174,6 +1213,9 @@ mod mocked {
         public_key: &[u8; 32],
         message: &[u8],
     ) -> bool {
+        #[cfg(any(test, feature = "testing"))]
+        VERIFY_CALLS.with(|c| c.set(c.get().saturating_add(1)));
+
         // We need to parse the public key.
         // If parsing fails, the signature is invalid.
         let Ok(public_key) = VerifyingKey::from_bytes(public_key) else {

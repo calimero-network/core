@@ -279,3 +279,129 @@ fn the_refusal_tracks_the_account_and_not_the_signature() {
     Interface::<S<8303>>::apply_action(mk_update(), &ctx_resolving(Some(alice)))
         .expect("the same signature, resolved to the granted account, applies");
 }
+
+/// **A signature that speaks for nobody costs no signature verification.**
+///
+/// The writer-set check runs first, so a non-writer is refused before any
+/// `ed25519_verify`. Both orders refuse the write, which is why this asserts the
+/// count rather than the result: with the checks the other way round, a peer
+/// sending garbage makes the receiver verify once per writer, on a path any peer
+/// can drive. The property is cheap to keep and invisible to lose.
+#[test]
+fn a_non_writer_is_refused_before_any_signature_is_verified() {
+    crate::env::reset_for_testing();
+    let root = setup_root::<S<8304>>();
+
+    let alice_sk = make_signing_key(0xA1);
+    let alice = account_of_key(&alice_sk);
+    let mallory_sk = make_signing_key(0x3D);
+    let mallory = account_of_key(&mallory_sk);
+    let id = Id::new([0x5D; 32]);
+
+    let bootstrap = build_signed_shared_action(
+        true,
+        id,
+        b"v0".to_vec(),
+        [alice].into_iter().collect(),
+        1_000,
+        &alice_sk,
+        vec![root],
+    );
+    Interface::<S<8304>>::apply_action(bootstrap, &ctx_resolving(Some(alice))).expect("bootstrap");
+
+    let forged = build_signed_shared_action(
+        false,
+        id,
+        b"forged".to_vec(),
+        [alice].into_iter().collect(),
+        2_000,
+        &mallory_sk,
+        vec![],
+    );
+    crate::env::reset_ed25519_verify_calls();
+    let refused = Interface::<S<8304>>::apply_action(forged, &ctx_resolving(Some(mallory)));
+    assert!(
+        matches!(refused, Err(StorageError::InvalidSignature)),
+        "precondition: the non-writer's action must be refused: {refused:?}"
+    );
+    assert_eq!(
+        crate::env::ed25519_verify_calls(),
+        0,
+        "a signer the writer set does not name must be refused on the cheap check \
+         alone — verifying first lets any peer impose one verification per writer"
+    );
+
+    // And the counter is measuring something: the authorized path does verify.
+    let genuine = build_signed_shared_action(
+        false,
+        id,
+        b"v1".to_vec(),
+        [alice].into_iter().collect(),
+        3_000,
+        &alice_sk,
+        vec![],
+    );
+    crate::env::reset_ed25519_verify_calls();
+    Interface::<S<8304>>::apply_action(genuine, &ctx_resolving(Some(alice))).expect("the write");
+    assert!(
+        crate::env::ed25519_verify_calls() > 0,
+        "a test that never observes a verification would pass with the verifier \
+         removed altogether"
+    );
+}
+
+/// **A writer's account does not excuse a bad signature.**
+///
+/// The fourth resolution case, and the one an account-keyed writer set makes
+/// easy to lose: the account is granted and the resolution succeeds, so only the
+/// signature stands between a corrupted action and the state.
+#[test]
+fn a_granted_account_with_a_broken_signature_is_refused() {
+    crate::env::reset_for_testing();
+    let root = setup_root::<S<8305>>();
+
+    let alice_sk = make_signing_key(0xA1);
+    let alice = account_of_key(&alice_sk);
+    let id = Id::new([0x5E; 32]);
+
+    let bootstrap = build_signed_shared_action(
+        true,
+        id,
+        b"v0".to_vec(),
+        [alice].into_iter().collect(),
+        1_000,
+        &alice_sk,
+        vec![root],
+    );
+    Interface::<S<8305>>::apply_action(bootstrap, &ctx_resolving(Some(alice))).expect("bootstrap");
+    let before = root_hash::<S<8305>>();
+
+    // Alice's own action, signed by Alice, with the payload swapped after signing
+    // — the shape a corrupted or tampered delta takes on the wire.
+    let mut tampered = build_signed_shared_action(
+        false,
+        id,
+        b"v1".to_vec(),
+        [alice].into_iter().collect(),
+        2_000,
+        &alice_sk,
+        vec![],
+    );
+    match &mut tampered {
+        crate::action::Action::Add { data, .. } | crate::action::Action::Update { data, .. } => {
+            *data = b"tampered".to_vec();
+        }
+        other => panic!("expected an upsert action, got {other:?}"),
+    }
+
+    let refused = Interface::<S<8305>>::apply_action(tampered, &ctx_resolving(Some(alice)));
+    assert!(
+        matches!(refused, Err(StorageError::InvalidSignature)),
+        "a granted account is not a licence to skip the signature: {refused:?}"
+    );
+    assert_eq!(
+        root_hash::<S<8305>>(),
+        before,
+        "and nothing of the tampered payload reached the state"
+    );
+}
