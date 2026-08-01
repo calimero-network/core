@@ -360,4 +360,14 @@ Account operations travel as `GroupOp` variants because that is the transport th
 
   Two limits remain, both closed by the unified-log cutover. The *writer set* half still resolves from the per-object rotation log at the data-DAG cut, because rotation operations bridged into the ACL plane carry no causal parents and are therefore unreachable from any cut. And a historical rotation's author is checked against the bindings at the cut the **current** write cites, not the cut the rotation happened at — every replica resolves the cited cut identically, so it converges, but it is not causal honour for rotations.
 
+  The networked half of both planes is pinned by a scenario each, and they are
+  deliberately separate: `account-device-revoke-lockout` covers **membership**
+  (one grant, two devices, and revocation that sticks for reads as well as
+  writes), while `shared-storage-account-writers-two-devices` covers **writer
+  sets** (a granted account's second device writes a `SharedStorage` object it
+  was never named in, and still cannot update the first device's authored
+  entry). A paired device can be a perfectly good context member and have every
+  guarded write refused — that was a real bug, from the two account spaces above
+  — so passing one scenario says nothing about the other.
+
 - **A snapshot leaf is verified by signature alone.** It is state, not an operation: it has no causal parents, so "was this account a writer *then*" has nothing to resolve against. Asking today's bindings instead would refuse a leaf written by a since-rotated-out writer even though the sender's own root hash includes it, leaving the receiver unable to match the root it just accepted. What still holds a snapshot together: the sender is a member, the delivered contents hash to the root it claims, and every subsequent operation is authorized at its own cut.

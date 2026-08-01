@@ -316,6 +316,9 @@ jobs:
           - workflow: shared-storage-concurrent-rotation-converge
             file: workflows/shared-storage-concurrent-rotation-converge.yml
             app: scaffolding-e2e
+          - workflow: shared-storage-account-writers-two-devices
+            file: workflows/shared-storage-account-writers-two-devices.yml
+            app: scaffolding-e2e
           - workflow: group-subgroup-visibility-inheritance
             file: workflows/group-subgroup-visibility-inheritance.yml
             app: scaffolding-e2e
