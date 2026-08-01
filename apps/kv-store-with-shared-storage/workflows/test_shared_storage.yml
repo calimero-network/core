@@ -155,7 +155,7 @@ steps:
     context_id: '{{context_id}}'
     method: my_account
     outputs:
-      acct_node2: result
+      acct_node2: output
 
   - name: Node 2 (non-writer) attempts to rotate the writer set to itself
     type: call

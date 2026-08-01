@@ -156,21 +156,21 @@ steps:
     context_id: "{{e2e_context_id}}"
     method: my_account
     outputs:
-      acct_node2: result
+      acct_node2: output
   - name: Account of node-3
     type: call
     node: fuzzy-e2e-node-3
     context_id: "{{e2e_context_id}}"
     method: my_account
     outputs:
-      acct_node3: result
+      acct_node3: output
   - name: Account of node-4
     type: call
     node: fuzzy-e2e-node-4
     context_id: "{{e2e_context_id}}"
     method: my_account
     outputs:
-      acct_node4: result
+      acct_node4: output
 
   - name: Add node-2 as shared writer
     type: call
