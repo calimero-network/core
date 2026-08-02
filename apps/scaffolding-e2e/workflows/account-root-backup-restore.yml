@@ -34,16 +34,27 @@ description: >
        `json_assert` has no inequality operator — proving the root changed by
        showing what it changed *to*.
 
-    5. Restore the original phrase, restart the node, and assert `account_show`
-       reports the SAME account id it had before any of this. That is the
-       recovery property end to end: a phrase plus a namespace id is enough to
-       come back as yourself, with nothing per-namespace stored.
+    5. WIPE node-2's data directory. Everything above proves the encoding round
+       trips; restoring a key into the store it came from proves nothing about
+       recovery. Nothing of node-2 survives here except the phrase — no config,
+       no identity, no datastore.
 
-  What this does NOT cover: the peer-assisted half — a node whose disk is *gone*
-  re-joining, enrolling a device into the recovered account, and being delivered
-  the current scope key by a peer. That needs a wipe + re-init + re-invite flow
-  and is the remaining open criterion on #3335. This scenario restores into the
-  same node, so it proves the CLI and the derivation, not the rejoin.
+       Then re-init, import (with NO `--force`: an empty store has no root to
+       refuse to replace, and needing the flag would be a bug), restart, and log
+       in — a fresh node auto-creates its admin on first login.
+
+    6. Rejoin and prove it came back as itself. The node's IDENTITY is new, so it
+       needs a fresh invitation; the ACCOUNT is not, which is the whole point.
+       Enrolling mints a NEW device under the RESTORED root, and the account id
+       it derives must equal the one from before the wipe — nothing per-namespace
+       was backed up, because the nonce is derived from the root secret and the
+       namespace id.
+
+       Finally it reads a value written before the wipe. That is the
+       peer-assisted half: a node holding no scope key of its own can only read
+       that if a peer delivered the current key to its new device. A recovery
+       that restored the identity but not access passes the account assertion
+       and fails this one.
 
 force_pull_image: false
 near_devnet: false
@@ -142,6 +153,26 @@ steps:
     timeout: 60
     trigger_sync: true
 
+  # Something to come back to. If recovery only restored the key and not access to
+  # the context, this is the read that would fail.
+  - name: Node-2 writes a value before losing the disk
+    type: call
+    node: backup-node-2
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: survives-the-wipe
+      value: written-before-the-disk-died
+
+  - name: Settle so the write reaches node-1
+    type: wait_for_sync
+    nodes:
+      - backup-node-1
+      - backup-node-2
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
   # ── Phase 2: export, which needs the node stopped ─────────────────
 
   - name: Stop node-2 so its datastore can be opened
@@ -192,54 +223,140 @@ steps:
     statements:
       - 'json_equal({{swapped_phrase}}, "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title")'
 
-  # ── Phase 5: restore, and come back as the same account ───────────
+  # ── Phase 5: the disk is gone ─────────────────────────────────────
+  #
+  # Everything above proves the encoding round trips. This is the part that proves
+  # RECOVERY: nothing of node-2 survives except the phrase, and it has to come back
+  # as the same account with access to what it wrote.
 
-  - name: Restore the original root
+  - name: The disk is gone
+    type: script
+    script: scripts/wipe-node-data.sh
+    target: local
+    args:
+      - backup-node-2
+
+  # A wiped node is a new machine: no config, no identity, no store. Re-init with
+  # the ports merobox mapped, or the container comes back unreachable.
+  - name: Re-initialise the empty node
+    type: node_exec
+    node: backup-node-2
+    args:
+      - 'init'
+      - '--server-host'
+      - '0.0.0.0'
+      - '--server-port'
+      - '2528'
+      - '--swarm-port'
+      - '2428'
+      - '--auth-mode'
+      - 'embedded'
+
+  # No --force: the store is empty, so there is no root to refuse to replace.
+  # That the plain import succeeds here is itself the assertion — recovery must
+  # not require the flag that exists to protect an existing key.
+  - name: Import the backed-up root into the empty node
     type: node_exec
     node: backup-node-2
     files:
       /app/data/restore.txt: '{{original_phrase}}'
-    args: ['account', 'import', '--from', '/app/data/restore.txt', '--force']
+    args: ['account', 'import', '--from', '/app/data/restore.txt']
 
-  - name: Export once more to confirm the restore took
-    type: node_exec
-    node: backup-node-2
-    args: ['account', 'export']
-    outputs:
-      restored_phrase: stdout_first_line
-
-  - name: The restored phrase is the one we started with
-    type: json_assert
-    statements:
-      - 'json_equal({{restored_phrase}}, {{original_phrase}})'
-
-  - name: Start node-2 again
+  - name: Start the recovered node
     type: start_node
     node: backup-node-2
 
-  - name: Settle after the restart
+  # A fresh node auto-creates its admin on the first user_password login, so the
+  # recovered machine needs no credential plumbing.
+  - name: Log in to the recovered node
+    type: login
+    node: backup-node-2
+    username: dev
+    password: dev-password
+
+  # ── Phase 6: rejoin as the same account ───────────────────────────
+  #
+  # The node's IDENTITY is new — the old member row belongs to a keypair that no
+  # longer exists — so it needs a fresh invitation. The ACCOUNT is not new, and
+  # that is the whole point: grants naming the account still name this node.
+
+  - name: Reinstall the application on the recovered node
+    type: install_application
+    node: backup-node-2
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Invite the recovered node back
+    type: create_namespace_invitation
+    node: backup-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      rejoin_invitation: invitation
+
+  - name: The recovered node rejoins the namespace
+    type: join_namespace
+    node: backup-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{rejoin_invitation}}'
+
+  - name: The recovered node rejoins the context
+    type: join_context
+    node: backup-node-2
+    context_id: '{{context_id}}'
+
+  - name: Settle after the rejoin
     type: wait_for_sync
     nodes:
       - backup-node-1
       - backup-node-2
     context_id: '{{context_id}}'
-    timeout: 60
+    timeout: 90
     trigger_sync: true
 
-  # The recovery property: a phrase plus a namespace id is enough to be yourself
-  # again. The account id is derived from the root and the namespace, so nothing
-  # per-namespace had to survive — and this is the id every writer grant and
-  # membership row already names.
-  - name: The node speaks for the same account as before
-    type: account_show
+  # Enrolling now mints a NEW device — the old one died with the disk — but under
+  # the RESTORED root, so the account id it derives is the one from before.
+  - name: Enrol a device into the recovered account
+    type: account_create
     node: backup-node-2
     namespace_id: '{{namespace_id}}'
     outputs:
       recovered_account: accountId
 
-  - name: The account survived export and restore
+  - name: Settle after the new device link
+    type: wait_for_sync
+    nodes:
+      - backup-node-1
+      - backup-node-2
+    context_id: '{{context_id}}'
+    timeout: 90
+    trigger_sync: true
+
+  # The recovery property, end to end: a phrase plus a namespace id is enough to
+  # come back as yourself. Nothing per-namespace was backed up — the nonce is
+  # derived from the root secret and the namespace id — and this is the id every
+  # writer grant and membership row already names.
+  - name: The recovered node owns the same account as before the wipe
     type: json_assert
     statements:
       - 'json_equal({{recovered_account}}, {{original_account}})'
+
+  # And the peer-assisted half: a node that holds no scope key of its own can only
+  # read this if a peer delivered the current key to its new device. A recovery
+  # that restored the identity but not access would pass the assertion above and
+  # fail here.
+  - name: The recovered node can read what it wrote before the wipe
+    type: call
+    node: backup-node-2
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: survives-the-wipe
+    outputs:
+      recovered_value: result
+
+  - name: Its pre-wipe data came back with it
+    type: json_assert
+    statements:
+      - 'json_equal({{recovered_value}}, {"output": "written-before-the-disk-died"})'
 
 stop_all_nodes: false
