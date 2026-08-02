@@ -55,7 +55,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_primitives::identity::PublicKey;
+use calimero_account::AccountId;
 
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
 use super::{compute_collection_id, compute_id, Collection, StoreError};
@@ -135,7 +135,7 @@ where
     /// canonicalises the id via [`reassign_deterministic_id`] after `init`.
     ///
     /// [`reassign_deterministic_id`]: WriterSetCell::reassign_deterministic_id
-    pub fn new(writers: BTreeSet<PublicKey>, frozen: bool) -> Self {
+    pub fn new(writers: BTreeSet<AccountId>, frozen: bool) -> Self {
         let inner = Collection::new_shared(None, None, CrdtType::SharedStorage, writers.clone());
         Self::from_inner(inner, writers, frozen)
     }
@@ -144,7 +144,7 @@ where
     /// `field_name`. Use this for top-level state fields.
     pub fn new_with_field_name(
         field_name: &str,
-        writers: BTreeSet<PublicKey>,
+        writers: BTreeSet<AccountId>,
         frozen: bool,
     ) -> Self {
         // Pass the deterministic id explicitly — `new_shared(None, ..)` would
@@ -174,7 +174,7 @@ where
     #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     fn from_inner(
         mut inner: Collection<T, MainStorage>,
-        _writers: BTreeSet<PublicKey>,
+        _writers: BTreeSet<AccountId>,
         frozen: bool,
     ) -> Self {
         // The wrapper entity is the `Shared` anchor (stamped by `new_shared`
@@ -388,7 +388,16 @@ where
     /// writer-signed update, not single-owner). Resolves via the same
     /// rotation-log-aware path as the write gate.
     pub fn writable_by_me(&self) -> bool {
-        let executor: PublicKey = env::device_id().into();
+        // The GATE resolves the account, not the device. This is the whole point of
+        // account-keying the writer set: a person with two devices is one principal
+        // here, so granting them does not mean enumerating their machines.
+        //
+        // Only the gate moves. Owner STAMPS written into `UserStorage`/`AuthoredMap`/
+        // `SharedStorage` stay device-shaped, because they are per-writer state — two
+        // devices of one account acting concurrently must remain distinguishable or
+        // they share a counter slot and an HLC seed and silently lose each other's
+        // writes.
+        let executor: AccountId = env::account_id().into();
         self.current_writers().contains_key(&executor)
     }
 
@@ -425,7 +434,7 @@ where
     /// act on has an index entry (construction and sync-apply both write one);
     /// if neither source has a writer set, fail closed with the empty set rather
     /// than trust unverified bytes.
-    fn current_writers(&self) -> BTreeMap<PublicKey, OpMask> {
+    fn current_writers(&self) -> BTreeMap<AccountId, OpMask> {
         // Delegate to the SINGLE resolver shared with the merge/verify path
         // (`Interface::resolve_anchor_writers`): it unions the hashed child
         // collection AND the side store, then runs the order-invariant
@@ -444,12 +453,12 @@ where
     /// present a "members with edit rights" UI and compute incremental
     /// rotations. Use [`capabilities`](Self::capabilities) for the per-writer
     /// [`OpMask`]s.
-    pub fn writers(&self) -> BTreeSet<PublicKey> {
+    pub fn writers(&self) -> BTreeSet<AccountId> {
         self.current_writers().into_keys().collect()
     }
 
     /// The current writers with their [`OpMask`]s.
-    pub fn capabilities(&self) -> BTreeMap<PublicKey, OpMask> {
+    pub fn capabilities(&self) -> BTreeMap<AccountId, OpMask> {
         self.current_writers()
     }
 
@@ -483,7 +492,7 @@ where
     /// # Errors
     /// Returns `ActionNotAllowed` if the executor is not in the writer set.
     pub fn insert(&mut self, value: T) -> Result<Option<T>, StoreError> {
-        let executor: PublicKey = env::device_id().into();
+        let executor: AccountId = env::account_id().into();
         let writers = self.current_writers();
         if !writers.contains_key(&executor) {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
@@ -524,7 +533,7 @@ where
     /// # Errors
     /// Returns `ActionNotAllowed` if `frozen`, if `new_writers` is empty, or if
     /// the executor is not currently in the writer set.
-    pub fn rotate_writers(&mut self, new_writers: BTreeSet<PublicKey>) -> Result<(), StoreError> {
+    pub fn rotate_writers(&mut self, new_writers: BTreeSet<AccountId>) -> Result<(), StoreError> {
         // Convenience: every writer gets `OpMask::FULL` (today's behaviour).
         self.rotate_writers_scoped(new_writers.into_iter().map(|w| (w, OpMask::FULL)).collect())
     }
@@ -538,7 +547,7 @@ where
     /// the executor is not currently in the writer set.
     pub fn rotate_writers_scoped(
         &mut self,
-        new_writers: BTreeMap<PublicKey, OpMask>,
+        new_writers: BTreeMap<AccountId, OpMask>,
     ) -> Result<(), StoreError> {
         if self.frozen {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
@@ -550,7 +559,7 @@ where
                 "Cannot rotate to an empty writer set".to_owned(),
             )));
         }
-        let executor: PublicKey = env::device_id().into();
+        let executor: AccountId = env::account_id().into();
         let writers = self.current_writers();
         if !writers.contains_key(&executor) {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
@@ -672,13 +681,13 @@ mod tests {
     use std::collections::BTreeSet;
 
     use borsh::{BorshDeserialize, BorshSerialize};
-    use calimero_primitives::identity::PublicKey;
     use serial_test::serial;
 
     use super::WriterSetCell;
     use crate::collections::crdt_meta::{MergeError, Mergeable};
     use crate::collections::Root;
     use crate::env;
+    use calimero_account::AccountId;
 
     const ALICE: [u8; 32] = [0x11; 32];
     const BOB: [u8; 32] = [0x22; 32];
@@ -707,11 +716,13 @@ mod tests {
         }
     }
 
-    fn pk(bytes: [u8; 32]) -> PublicKey {
-        bytes.into()
+    /// An account named by raw bytes. Called `pk` from when writer sets held
+    /// keys; they name accounts now, and the signing key is a separate value.
+    fn pk(bytes: [u8; 32]) -> AccountId {
+        AccountId::from(bytes)
     }
 
-    fn writers(keys: &[[u8; 32]]) -> BTreeSet<PublicKey> {
+    fn writers(keys: &[[u8; 32]]) -> BTreeSet<AccountId> {
         keys.iter().copied().map(pk).collect()
     }
 
@@ -725,7 +736,7 @@ mod tests {
         use crate::entities::Data;
 
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let _root: Root<TestVal> = Root::new(TestVal::default);
 
         let expected = compute_collection_id(None, "doc");
@@ -755,7 +766,7 @@ mod tests {
         use crate::store::MainStorage;
 
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE]), false));
         s.insert(TestVal(1)).unwrap();
@@ -794,7 +805,7 @@ mod tests {
 
         // The newly-added writer can write — authorization resolves from the
         // anchor's (rotated) writer set, and the entry stays an anchored member.
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         s.insert(TestVal(2)).unwrap();
         assert_member_of(storage_type_of(value_id));
     }
@@ -808,7 +819,7 @@ mod tests {
         use crate::store::MainStorage;
 
         env::reset_for_testing();
-        env::set_device_id([7u8; 32]);
+        env::set_account_id([7u8; 32]);
 
         type Map = UnorderedMap<String, LwwRegister<String>>;
 
@@ -848,7 +859,7 @@ mod tests {
     #[serial]
     fn get_returns_default_before_insert() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
         assert_eq!(s.get().unwrap(), &TestVal::default());
@@ -858,7 +869,7 @@ mod tests {
     #[serial]
     fn value_schema_version_and_writability_reflect_stored_metadata() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
         s.insert(TestVal(42)).expect("writer inserts");
@@ -871,9 +882,9 @@ mod tests {
 
         // Writability tracks the writer set, not single ownership.
         assert!(s.writable_by_me()); // ALICE
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         assert!(s.writable_by_me()); // BOB
-        env::set_device_id(CAROL);
+        env::set_account_id(CAROL);
         assert!(!s.writable_by_me()); // CAROL is not a writer
     }
 
@@ -881,7 +892,7 @@ mod tests {
     #[serial]
     fn insert_by_writer_succeeds() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
         s.insert(TestVal(42)).expect("alice (writer) inserts");
@@ -892,7 +903,7 @@ mod tests {
     #[serial]
     fn insert_by_non_writer_short_circuits() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[BOB, CAROL]), false));
         let err = s
@@ -909,7 +920,7 @@ mod tests {
     #[serial]
     fn rotate_writers_by_current_writer_succeeds() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
         s.insert(TestVal(1)).unwrap();
@@ -924,7 +935,7 @@ mod tests {
         assert!(err.to_string().to_lowercase().contains("writer"));
 
         // Bob (new writer) can.
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         s.insert(TestVal(99)).expect("bob (new writer) inserts");
         assert_eq!(s.get().unwrap(), &TestVal(99));
     }
@@ -933,12 +944,12 @@ mod tests {
     #[serial]
     fn rotate_writers_by_non_writer_rejected() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE]), false));
         s.insert(TestVal(1)).unwrap();
 
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         let err = s
             .rotate_writers(writers(&[BOB]))
             .expect_err("non-writer rotation must fail");
@@ -949,7 +960,7 @@ mod tests {
     #[serial]
     fn rotate_to_empty_writer_set_rejected() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
         s.insert(TestVal(1)).unwrap();
@@ -971,7 +982,7 @@ mod tests {
     #[serial]
     fn writers_accessor_reflects_bootstrap_then_rotation() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
 
@@ -989,7 +1000,7 @@ mod tests {
     #[serial]
     fn is_frozen_accessor_reflects_construction_and_blocks_rotation() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE]), true));
 
@@ -1017,7 +1028,7 @@ mod tests {
         // freeze an honest node's rotation. Merge leaves the local value intact
         // in both directions.
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         // Establish ROOT so the wrapper's `add_child_to(ROOT)` succeeds.
         let _root: Root<TestVal> = Root::new(TestVal::default);
         let mut a = WriterSetCell::<TestVal>::new(writers(&[ALICE]), false);
@@ -1042,7 +1053,7 @@ mod tests {
     #[serial]
     fn frozen_at_construction_blocks_rotation() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), true));
         s.insert(TestVal(1)).unwrap();

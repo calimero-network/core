@@ -203,8 +203,47 @@ macro_rules! content_address_id {
                 write!(f, "{}", hex::encode(self.0))
             }
         }
+
+        /// Serializes as the hex string [`Display`] writes.
+        ///
+        /// A string, not a byte array: these ids cross the JSON-RPC boundary as
+        /// app method arguments, and an app author typing an account into a call
+        /// should be typing the same thing the CLI printed.
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.collect_str(self)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let raw = <std::borrow::Cow<'de, str> as serde::Deserialize>::deserialize(d)?;
+                raw.parse().map_err(serde::de::Error::custom)
+            }
+        }
+
+        /// Parses the hex form [`Display`] writes.
+        ///
+        /// Hex rather than bs58, which is what a *key* is written in around
+        /// here: an id that renders like a key invites being pasted where a key
+        /// belongs, and both are 32 bytes, so nothing downstream would object.
+        impl core::str::FromStr for $name {
+            type Err = IdParseError;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                let bytes = hex::decode(s).map_err(|_| IdParseError)?;
+                <[u8; 32]>::try_from(bytes)
+                    .map(Self)
+                    .map_err(|_| IdParseError)
+            }
+        }
     };
 }
+
+/// A string was not 64 hex characters, so it names no id.
+#[derive(Clone, Copy, Debug, ThisError)]
+#[error("expected 64 hex characters (32 bytes)")]
+pub struct IdParseError;
 
 content_address_id! {
     /// Stable identity of a person or agent — the **only** authorization

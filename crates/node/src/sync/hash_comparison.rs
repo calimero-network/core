@@ -110,7 +110,8 @@ impl SyncManager {
 
         // Create RuntimeEnv once for all requests (optimization: avoids per-request allocation)
         let datastore = self.context_client.datastore_handle().into_inner();
-        let runtime_env = create_runtime_env(&datastore, context_id, our_identity);
+        let account = calimero_governance_store::account_for_context(&datastore, &context_id)?;
+        let runtime_env = create_runtime_env(&datastore, context_id, our_identity, account);
 
         // PR-6b Task 6b.7: the responder's loaded-reader schema, stamped onto
         // every leaf it emits so a peer on an older reader can decline+buffer a
@@ -454,7 +455,14 @@ mod deleted_children_tests {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let context_id = ContextId::from([7u8; 32]);
         let identity = PublicKey::from([0u8; 32]);
-        let env = create_runtime_env(&store, context_id, identity);
+        let env = create_runtime_env(
+            &store,
+            context_id,
+            identity,
+            // Nothing here is writer-set guarded; distinct from the device so the
+            // two stay distinguishable.
+            calimero_account::AccountId::from([0xAC; 32]),
+        );
 
         let root_id = Id::new(*context_id.as_ref());
         let container_id = Id::new([1u8; 32]);

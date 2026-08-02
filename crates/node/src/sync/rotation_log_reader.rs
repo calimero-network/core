@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 
-use calimero_primitives::identity::PublicKey;
+use calimero_account::AccountId;
 use calimero_storage::entities::OpMask;
 use calimero_storage::rotation_log::{RotationLog, RotationLogEntry};
 
@@ -36,7 +36,7 @@ use calimero_storage::rotation_log::{RotationLog, RotationLogEntry};
 /// [`writers_at_authenticated`]. This variant is for contexts where the log is
 /// already trusted (tests, local apply of self-authored state).
 #[must_use]
-pub fn latest_writers(log: &RotationLog) -> Option<BTreeMap<PublicKey, OpMask>> {
+pub fn latest_writers(log: &RotationLog) -> Option<BTreeMap<AccountId, OpMask>> {
     if let Some(entry) = log.entries.last() {
         return Some(entry.new_writers.clone());
     }
@@ -81,7 +81,7 @@ pub fn writers_at<F>(
     log: &RotationLog,
     causal_parents: &[[u8; 32]],
     happens_before: F,
-) -> Option<BTreeMap<PublicKey, OpMask>>
+) -> Option<BTreeMap<AccountId, OpMask>>
 where
     F: Fn(&[u8; 32], &[u8; 32]) -> bool,
 {
@@ -147,22 +147,34 @@ where
 /// ancestor in the log — is self-authorizing: its signature establishes the
 /// initial set (the context creator bootstraps the writers).
 ///
-/// `verify` is injected (rather than calling `ed25519_verify` directly) so the
-/// fold is pure and unit-testable, and so the caller owns the
-/// commitment-binding policy (the entry's signature must commit to its
-/// `new_writers`/nonce — see the wiring site). It receives each candidate entry
-/// and returns whether the signature is cryptographically valid.
+/// Two things are injected, for the same reason: the fold stays pure and
+/// unit-testable, and the caller owns the policy.
+///
+/// - `verify` answers "did this entry's KEY produce this signature", and owns the
+///   commitment-binding policy (the signature must commit to the entry's
+///   `new_writers`/nonce — see the wiring site).
+/// - `signer_account` answers "which ACCOUNT did that key speak for", which is the
+///   question the prior writer set can actually be asked, since it names accounts.
+///   It is injected rather than read off the entry because an account is *derived*
+///   state: storing it would put a resolution result into the log's hashed bytes,
+///   where two nodes that resolved differently would fork the root hash instead of
+///   merely disagreeing about one write. `None` means the caller could not resolve
+///   the author, and the entry is then treated as unauthenticated — the caller is
+///   responsible for deferring rather than accepting a write it could not
+///   authorize (see `DeltaAuthOutcome::Buffer`).
 ///
 /// Returns `None` only when there is neither a reachable entry nor a snapshot.
-pub fn writers_at_authenticated<H, V>(
+pub fn writers_at_authenticated<H, V, A>(
     log: &RotationLog,
     causal_parents: &[[u8; 32]],
     happens_before: H,
     verify: V,
-) -> Option<BTreeMap<PublicKey, OpMask>>
+    signer_account: A,
+) -> Option<BTreeMap<AccountId, OpMask>>
 where
     H: Fn(&[u8; 32], &[u8; 32]) -> bool,
     V: Fn(&RotationLogEntry) -> bool,
+    A: Fn(&RotationLogEntry) -> Option<AccountId>,
 {
     let mut reachable: Vec<&RotationLogEntry> = if causal_parents.is_empty() {
         log.entries.iter().collect()
@@ -200,21 +212,22 @@ where
         }
     });
 
-    let mut current: Option<BTreeMap<PublicKey, OpMask>> =
+    let mut current: Option<BTreeMap<AccountId, OpMask>> =
         log.snapshot.as_ref().map(|s| s.writers.clone());
 
     for entry in reachable {
         let authorized = match &current {
             // Genesis: self-authorizing — the bootstrap establishes the set.
             None => verify(entry),
-            // Rotation: signer must have held ADMIN in the prior set, and the
-            // signature must verify. Otherwise the entry is forged/unauthorized
-            // and the prior set carries forward.
+            // Rotation: the entry's AUTHOR must have held ADMIN in the prior set,
+            // and the signature must verify. Two questions about two different
+            // values — the prior set names accounts, so ADMIN is asked of the
+            // resolved account, while `verify` asks whether the entry's KEY
+            // produced the signature. An author the caller cannot resolve is
+            // treated as unauthenticated and the prior set carries forward.
             Some(prior) => {
-                entry
-                    .signer
-                    .as_ref()
-                    .and_then(|s| prior.get(s))
+                signer_account(entry)
+                    .and_then(|account| prior.get(&account).copied())
                     .is_some_and(|mask| mask.contains(OpMask::ADMIN))
                     && verify(entry)
             }
@@ -231,6 +244,7 @@ where
 mod tests {
     use core::num::NonZeroU128;
 
+    use calimero_primitives::identity::PublicKey;
     use calimero_storage::entities::OpMask;
     use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
     use calimero_storage::rotation_log::{RotationLog, RotationLogEntry, RotationSnapshot};
@@ -239,6 +253,15 @@ mod tests {
 
     fn pk(b: u8) -> PublicKey {
         PublicKey::from([b; 32])
+    }
+
+    /// The account the device key `pk(b)` speaks for. Different bytes for the same
+    /// seed, so a fold that confused the two 32-byte ids fails a test here rather
+    /// than authorizing a stranger on a real node.
+    fn acct(b: u8) -> AccountId {
+        let mut bytes = [b; 32];
+        bytes[0] = b ^ 0xA5;
+        AccountId::from(bytes)
     }
 
     fn entry(
@@ -262,7 +285,7 @@ mod tests {
             new_writers: writers
                 .iter()
                 .copied()
-                .map(|b| (pk(b), OpMask::FULL))
+                .map(|b| (acct(b), OpMask::FULL))
                 .collect(),
             writers_nonce: nonce,
         }
@@ -275,14 +298,14 @@ mod tests {
         }
     }
 
-    fn sorted_keys(writers: &BTreeMap<PublicKey, OpMask>) -> Vec<PublicKey> {
-        let mut k: Vec<PublicKey> = writers.keys().copied().collect();
+    fn sorted_keys(writers: &BTreeMap<AccountId, OpMask>) -> Vec<AccountId> {
+        let mut k: Vec<AccountId> = writers.keys().copied().collect();
         k.sort();
         k
     }
 
-    fn expect(bytes: &[u8]) -> Vec<PublicKey> {
-        let mut v: Vec<PublicKey> = bytes.iter().copied().map(pk).collect();
+    fn expect(bytes: &[u8]) -> Vec<AccountId> {
+        let mut v: Vec<AccountId> = bytes.iter().copied().map(acct).collect();
         v.sort();
         v
     }
@@ -307,7 +330,15 @@ mod tests {
             entry(3, 300, 0xCC, &[0xCC], 3), // Carol (NOT a writer) forges a rotation
         ]);
         // All signatures "valid"; the fold still rejects Carol's rotation.
-        let writers = writers_at_authenticated(&log, &[], hb, |_| true).unwrap();
+        let writers = writers_at_authenticated(
+            &log,
+            &[],
+            hb,
+            |_| true,
+            // In these tests key `pk(b)` speaks for account `acct(b)`.
+            |entry: &RotationLogEntry| entry.signer.map(|k| acct(AsRef::<[u8; 32]>::as_ref(&k)[0])),
+        )
+        .unwrap();
         assert_eq!(
             sorted_keys(&writers),
             expect(&[0xAA, 0xBB]),
@@ -325,7 +356,15 @@ mod tests {
             entry(2, 200, 0xAA, &[0xAA, 0xBB], 2), // Alice authorized as signer...
         ]);
         // ...but `verify` rejects entry 2's signature → rotation dropped.
-        let writers = writers_at_authenticated(&log, &[], hb, |e| e.delta_id[0] == 1).unwrap();
+        let writers = writers_at_authenticated(
+            &log,
+            &[],
+            hb,
+            |e| e.delta_id[0] == 1,
+            // In these tests key `pk(b)` speaks for account `acct(b)`.
+            |entry: &RotationLogEntry| entry.signer.map(|k| acct(AsRef::<[u8; 32]>::as_ref(&k)[0])),
+        )
+        .unwrap();
         assert_eq!(
             sorted_keys(&writers),
             expect(&[0xAA]),
@@ -343,7 +382,15 @@ mod tests {
             entry(2, 200, 0xAA, &[0xAA, 0xBB], 2),
             entry(3, 300, 0xBB, &[0xBB], 3), // Bob (ADMIN in {Alice,Bob}) rotates to {Bob}
         ]);
-        let writers = writers_at_authenticated(&log, &[], hb, |_| true).unwrap();
+        let writers = writers_at_authenticated(
+            &log,
+            &[],
+            hb,
+            |_| true,
+            // In these tests key `pk(b)` speaks for account `acct(b)`.
+            |entry: &RotationLogEntry| entry.signer.map(|k| acct(AsRef::<[u8; 32]>::as_ref(&k)[0])),
+        )
+        .unwrap();
         assert_eq!(sorted_keys(&writers), expect(&[0xBB]));
     }
 
@@ -355,7 +402,12 @@ mod tests {
         ]);
         assert_eq!(
             latest_writers(&log),
-            Some([0xBB].into_iter().map(|b| (pk(b), OpMask::FULL)).collect())
+            Some(
+                [0xBB]
+                    .into_iter()
+                    .map(|b| (acct(b), OpMask::FULL))
+                    .collect()
+            )
         );
     }
 
@@ -368,7 +420,12 @@ mod tests {
         ]);
         assert_eq!(
             writers_at(&log, &[], |_, _| false),
-            Some([0xBB].into_iter().map(|b| (pk(b), OpMask::FULL)).collect())
+            Some(
+                [0xBB]
+                    .into_iter()
+                    .map(|b| (acct(b), OpMask::FULL))
+                    .collect()
+            )
         );
     }
 
@@ -390,7 +447,7 @@ mod tests {
             Some(
                 [0xAA, 0xBB]
                     .into_iter()
-                    .map(|b| (pk(b), OpMask::FULL))
+                    .map(|b| (acct(b), OpMask::FULL))
                     .collect()
             )
         );
@@ -401,7 +458,7 @@ mod tests {
             Some(
                 [0xBB, 0xCC]
                     .into_iter()
-                    .map(|b| (pk(b), OpMask::FULL))
+                    .map(|b| (acct(b), OpMask::FULL))
                     .collect()
             )
         );
@@ -420,7 +477,12 @@ mod tests {
         let writers = writers_at(&log, &[[1; 32], [2; 32]], none_precede);
         assert_eq!(
             writers,
-            Some([0xBB].into_iter().map(|b| (pk(b), OpMask::FULL)).collect())
+            Some(
+                [0xBB]
+                    .into_iter()
+                    .map(|b| (acct(b), OpMask::FULL))
+                    .collect()
+            )
         );
     }
 
@@ -441,7 +503,7 @@ mod tests {
             new_writers: writers
                 .iter()
                 .copied()
-                .map(|b| (pk(b), OpMask::FULL))
+                .map(|b| (acct(b), OpMask::FULL))
                 .collect(),
             writers_nonce: 10,
         };
@@ -455,7 +517,7 @@ mod tests {
             Some(
                 [0xAA, 0xCC]
                     .into_iter()
-                    .map(|b| (pk(b), OpMask::FULL))
+                    .map(|b| (acct(b), OpMask::FULL))
                     .collect()
             )
         );
@@ -474,7 +536,12 @@ mod tests {
         let writers = writers_at(&log, &[[2; 32]], happens_before);
         assert_eq!(
             writers,
-            Some([0xBB].into_iter().map(|b| (pk(b), OpMask::FULL)).collect())
+            Some(
+                [0xBB]
+                    .into_iter()
+                    .map(|b| (acct(b), OpMask::FULL))
+                    .collect()
+            )
         );
     }
 
@@ -490,8 +557,10 @@ mod tests {
     #[test]
     fn writers_at_falls_back_to_snapshot_when_entries_unreachable() {
         // P6 compaction wrote a snapshot but no live entries reach the query.
-        let snap_writers: BTreeMap<PublicKey, OpMask> =
-            [0xEE].into_iter().map(|b| (pk(b), OpMask::FULL)).collect();
+        let snap_writers: BTreeMap<AccountId, OpMask> = [0xEE]
+            .into_iter()
+            .map(|b| (acct(b), OpMask::FULL))
+            .collect();
         let log = RotationLog {
             snapshot: Some(RotationSnapshot {
                 writers: snap_writers.clone(),
@@ -549,13 +618,13 @@ mod tests {
             Some(
                 [0xBB, 0xCC]
                     .into_iter()
-                    .map(|b| (pk(b), OpMask::FULL))
+                    .map(|b| (acct(b), OpMask::FULL))
                     .collect()
             )
         );
         // C is in both concurrent sets, so it survives whichever wins — the
         // property the e2e relies on to pick a guaranteed-authorized settler.
-        assert!(from_node1.unwrap().contains_key(&pk(0xCC)));
+        assert!(from_node1.unwrap().contains_key(&acct(0xCC)));
     }
 
     #[test]
@@ -587,13 +656,13 @@ mod tests {
             resolved,
             [0xAA, 0xCC]
                 .into_iter()
-                .map(|b| (pk(b), OpMask::FULL))
+                .map(|b| (acct(b), OpMask::FULL))
                 .collect()
         );
         // ...and B is retroactively revoked everywhere (the bonus the e2e
         // asserts by rejecting B's post-settle write).
-        assert!(!resolved.contains_key(&pk(0xBB)));
-        assert!(resolved.contains_key(&pk(0xAA)));
-        assert!(resolved.contains_key(&pk(0xCC)));
+        assert!(!resolved.contains_key(&acct(0xBB)));
+        assert!(resolved.contains_key(&acct(0xAA)));
+        assert!(resolved.contains_key(&acct(0xCC)));
     }
 }

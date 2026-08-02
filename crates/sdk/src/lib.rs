@@ -30,6 +30,12 @@ pub mod state;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod testing;
 pub mod types;
+/// The authorization principal an app names: one person, however many devices.
+///
+/// Re-exported because app APIs now take accounts wherever they used to take a
+/// key — a writer set, a role grant, an owner. `PublicKey` stays exported for
+/// the places that genuinely mean a KEY: an owner stamp, a signature's signer.
+pub use calimero_account::AccountId;
 pub use calimero_primitives::blobs::BlobId;
 pub use calimero_primitives::context::ContextId;
 pub use calimero_primitives::identity::PublicKey;

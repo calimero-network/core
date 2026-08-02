@@ -195,6 +195,14 @@ impl Node {
         }
     }
 
+    /// This node's account. Distinct from its device (`executor`) so the two stay
+    /// distinguishable; nothing in this scenario is writer-set guarded.
+    fn account(&self) -> calimero_account::AccountId {
+        let mut bytes = *AsRef::<[u8; 32]>::as_ref(&self.executor);
+        bytes[1] = 0xAC;
+        calimero_account::AccountId::from(bytes)
+    }
+
     fn ctx(&self) -> ContextId {
         ContextId::from(CTX)
     }
@@ -250,7 +258,7 @@ fn copy_state(from: &Store, to: &Store) {
 /// Read the app-root entity's stored bytes + metadata on `node` (what the
 /// deferred-root-merge dispatcher reads as `existing`).
 fn read_root(node: &Node) -> (Vec<u8>, Metadata) {
-    let env = create_runtime_env(&node.store, node.ctx(), node.executor);
+    let env = create_runtime_env(&node.store, node.ctx(), node.executor, node.account());
     with_runtime_env(env, || {
         let id = Id::new(ROOT_ENTRY_ID);
         let meta = Index::<MainStorage>::get_index(id)
@@ -285,7 +293,12 @@ fn apply_foreign_delta(
         StorageDelta::Actions(a) => a,
         StorageDelta::CausalActions { actions, .. } => actions,
     };
-    let env = create_runtime_env(&receiver.store, receiver.ctx(), receiver.executor);
+    let env = create_runtime_env(
+        &receiver.store,
+        receiver.ctx(),
+        receiver.executor,
+        receiver.account(),
+    );
     with_runtime_env(env, || {
         for action in actions {
             if calimero_storage::collections::is_app_root_entry(action.id()) {
@@ -353,7 +366,12 @@ fn apply_foreign_delta(
     // 4. Write the merged bytes back via the native pre-merged root-state path.
     let mut new_meta = existing_meta.clone();
     new_meta.updated_at = existing_ts.max(incoming_ts).into();
-    let env = create_runtime_env(&receiver.store, receiver.ctx(), receiver.executor);
+    let env = create_runtime_env(
+        &receiver.store,
+        receiver.ctx(),
+        receiver.executor,
+        receiver.account(),
+    );
     with_runtime_env(env, || {
         Interface::<MainStorage>::write_pre_merged_root_state(
             Id::new(ROOT_ENTRY_ID),

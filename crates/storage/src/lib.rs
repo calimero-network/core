@@ -95,6 +95,9 @@ pub mod tests {
     /// Comprehensive CRDT behavior tests.
     #[cfg(test)]
     pub mod crdt;
+    /// Deferral-vs-rejection tests for unresolvable signers.
+    #[cfg(test)]
+    pub mod deferred_signer_convergence;
     /// Delta creation and commit tests.
     #[cfg(test)]
     pub mod delta;

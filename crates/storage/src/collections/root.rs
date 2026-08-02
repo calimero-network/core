@@ -353,10 +353,19 @@ where
                 delta_id,
                 delta_hlc,
                 effective_writers,
+                signer_account,
             } => Self::apply_actions(actions, |action| crate::interface::ApplyContext {
                 effective_writers: effective_writers.get(&action.id()).cloned(),
                 delta_id: Some(delta_id),
                 delta_hlc: Some(delta_hlc),
+                // From the artifact, which the APPLYING node built — the same
+                // place `effective_writers` comes from and the same resolution
+                // pass. Not from the guest's `ctx`, which is an empty template
+                // (`__calimero_sync_next` has no way to know the author), and not
+                // from anything a sender chose: a peer cannot put this variant on
+                // the wire at all, because the gossip path accepts only `Actions`
+                // and the sync path's wire type carries none of this.
+                signer_account,
             }),
         }
         .inspect_err(|e| {

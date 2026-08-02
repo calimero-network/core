@@ -629,7 +629,7 @@ impl SyncManager {
         // anchor's own record is signature-verified in pass 1).
         let mut anchor_writers: HashMap<
             Id,
-            BTreeMap<calimero_primitives::identity::PublicKey, calimero_storage::entities::OpMask>,
+            BTreeMap<calimero_account::AccountId, calimero_storage::entities::OpMask>,
         > = HashMap::new();
         // (id, entry blob, index blob, sender's stamped schema_app_key) — the
         // schema is carried so a context whose entities are ALL SharedMember
@@ -992,7 +992,7 @@ impl SyncManager {
                                                 // member; defensive only.
                                                 _ => continue,
                                             };
-                                            let Some(writers) = anchor_writers.get(&anchor) else {
+                                            let Some(_writers) = anchor_writers.get(&anchor) else {
                                                 warn!(
                                                     %context_id,
                                                     id = ?id_obj.as_bytes(),
@@ -1005,7 +1005,7 @@ impl SyncManager {
                                             };
                                             if let Err(e) =
                                                 Interface::<MainStorage>::verify_snapshot_member_signature(
-                                                    id_obj, &entry, &metadata, writers,
+                                                    id_obj, &entry, &metadata,
                                                 )
                                             {
                                                 warn!(

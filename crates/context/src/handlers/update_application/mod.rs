@@ -1579,12 +1579,14 @@ fn write_migration_state(
 
     let context_id_bytes: [u8; 32] = *context_id.as_ref();
     let executor_id_bytes: [u8; 32] = *executor_identity.as_ref();
+    let account = calimero_governance_store::account_for_context(datastore, &context_id)?;
     let runtime_env = RuntimeEnv::new(
         callbacks.read,
         callbacks.write,
         callbacks.remove,
         context_id_bytes,
         executor_id_bytes,
+        *account.as_bytes(),
     );
 
     let root_entry_id = Id::new(ROOT_STORAGE_ENTRY_ID);
@@ -2792,6 +2794,9 @@ mod tests {
             std::rc::Rc::new(noop_write),
             std::rc::Rc::new(noop_remove),
             *context_id.as_ref(),
+            [0u8; 32],
+            // A read-only hash query: no gate is consulted, and the writes are
+            // no-ops, so neither identity is load-bearing here.
             [0u8; 32],
         );
         let _ = ROOT_STORAGE_ENTRY_ID;

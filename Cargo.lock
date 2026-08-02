@@ -1125,6 +1125,7 @@ dependencies = [
  "borsh",
  "calimero-primitives",
  "hex",
+ "serde",
  "sha2 0.10.9",
  "thiserror 1.0.69",
 ]
@@ -1665,6 +1666,7 @@ name = "calimero-sdk"
 version = "0.0.0"
 dependencies = [
  "borsh",
+ "calimero-account",
  "calimero-prelude",
  "calimero-primitives",
  "calimero-sdk-macros",
@@ -1765,6 +1767,7 @@ name = "calimero-storage"
 version = "0.0.0"
 dependencies = [
  "borsh",
+ "calimero-account",
  "calimero-prelude",
  "calimero-primitives",
  "calimero-sdk",

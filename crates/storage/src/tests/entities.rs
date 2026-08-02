@@ -439,9 +439,11 @@ mod metadata__needs_owner_convert {
     fn shared_meta(schema: Option<u32>) -> Metadata {
         let mut m = Metadata::new(1, 1);
         m.storage_type = StorageType::Shared {
-            writers: [key(0xBB)]
+            // An account, not a key: the writer set names who may write, and the
+            // key that signs is named by `signature_data.signer`.
+            writers: [calimero_account::AccountId::from([0xBB; 32])]
                 .into_iter()
-                .map(|k| (k, crate::entities::OpMask::FULL))
+                .map(|a| (a, crate::entities::OpMask::FULL))
                 .collect(),
             signature_data: None,
         };

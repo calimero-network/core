@@ -350,10 +350,12 @@ async fn create_context(
     group_id: ContextGroupId,
     name: Option<String>,
 ) -> eyre::Result<Hash> {
-    // The account this node runs `init` as. Resolved before `datastore` is
-    // consumed below, and from the store rather than the caller for the same
-    // reason as every other execution: it is a fact about this node.
-    let account = calimero_governance_store::account_for_context(&datastore, &context.id)?;
+    // The account this node runs `init` as. Resolved from the GROUP, not the
+    // context: the context→group row is written after this runs, so
+    // `account_for_context` would fall back to scoping the account to the context
+    // itself — and `init` would seed a writer set under an account no later call
+    // presents, locking the creator out of the object it just created.
+    let account = calimero_governance_store::account_for_group(&datastore, &group_id)?;
     let storage = ContextStorage::from(datastore.clone(), context.id);
     // Create private storage (node-local, NOT synchronized)
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
@@ -450,7 +452,7 @@ async fn create_context(
                 bail!("Failed to sign init actions: {:?}", e);
             }
             if let Err(e) =
-                persist_signed_signatures(&datastore, &context, &identity_secret, &actions)
+                persist_signed_signatures(&datastore, &context, account, &identity_secret, &actions)
             {
                 error!(?e, %context.id, "Failed to persist signed init signatures");
                 bail!("Failed to persist signed init signatures: {:?}", e);

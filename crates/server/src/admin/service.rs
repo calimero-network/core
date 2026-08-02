@@ -313,7 +313,7 @@ pub(crate) fn setup(
         .route("/groups/join", post(groups::join_group::handler))
         .route(
             "/namespaces/:namespace_id/account",
-            post(namespaces::create_account::handler),
+            post(namespaces::create_account::handler).get(namespaces::get_account::handler),
         )
         .route(
             "/namespaces/:namespace_id/account/pair-init",

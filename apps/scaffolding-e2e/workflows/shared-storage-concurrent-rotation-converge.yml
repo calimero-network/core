@@ -176,25 +176,34 @@ steps:
     node: e2e-node-3
     context_id: '{{ctx}}'
 
-  # Capture each node's identity (A/B/C).
-  - name: Identity A (node-1)
-    type: get_namespace_identity
+  # Capture each node's ACCOUNT (A/B/C) — what a writer set names.
+  #
+  # The identities below are signing KEYS and are still what a node signs with,
+  # but a grant names the person: one grant covers every device they hold, and a
+  # key would silently exclude the same person's second device. An account is
+  # derived from a node's root rather than carried on the wire, so the only way to
+  # learn one is to ask the node (`meroctl account show`, or this view method).
+  - name: Account A (node-1)
+    type: call
     node: e2e-node-1
-    namespace_id: '{{ns}}'
+    context_id: '{{ctx}}'
+    method: my_account
     outputs:
-      id_a: publicKey
-  - name: Identity B (node-2)
-    type: get_namespace_identity
+      acct_a: result.output
+  - name: Account B (node-2)
+    type: call
     node: e2e-node-2
-    namespace_id: '{{ns}}'
+    context_id: '{{ctx}}'
+    method: my_account
     outputs:
-      id_b: publicKey
-  - name: Identity C (node-3)
-    type: get_namespace_identity
+      acct_b: result.output
+  - name: Account C (node-3)
+    type: call
     node: e2e-node-3
-    namespace_id: '{{ns}}'
+    context_id: '{{ctx}}'
+    method: my_account
     outputs:
-      id_c: publicKey
+      acct_c: result.output
 
   # ---------- Baseline: writer set {A, B} + member entries ----------
 
@@ -237,7 +246,7 @@ steps:
     context_id: '{{ctx}}'
     method: shared_add_writer
     args:
-      writer_bs58: '{{id_b}}'
+      writer: '{{acct_b}}'
 
   - name: Converge the {A, B} rotation onto every node's rotation log
     type: wait_for_sync
@@ -291,7 +300,7 @@ steps:
     context_id: '{{ctx}}'
     method: shared_is_writer
     args:
-      key_bs58: '{{id_a}}'
+      account: '{{acct_a}}'
     outputs:
       base_a_n2: result
   - name: Baseline — node-2 sees itself (B) as writer
@@ -300,7 +309,7 @@ steps:
     context_id: '{{ctx}}'
     method: shared_is_writer
     args:
-      key_bs58: '{{id_b}}'
+      account: '{{acct_b}}'
     outputs:
       base_b_n2: result
   - name: Baseline — node-2 does NOT yet see C as writer
@@ -309,7 +318,7 @@ steps:
     context_id: '{{ctx}}'
     method: shared_is_writer
     args:
-      key_bs58: '{{id_c}}'
+      account: '{{acct_c}}'
     outputs:
       base_c_n2: result
   - name: Baseline — node-3 sees A as writer
@@ -318,7 +327,7 @@ steps:
     context_id: '{{ctx}}'
     method: shared_is_writer
     args:
-      key_bs58: '{{id_a}}'
+      account: '{{acct_a}}'
     outputs:
       base_a_n3: result
   - name: Baseline — node-3 sees B as writer
@@ -327,7 +336,7 @@ steps:
     context_id: '{{ctx}}'
     method: shared_is_writer
     args:
-      key_bs58: '{{id_b}}'
+      account: '{{acct_b}}'
     outputs:
       base_b_n3: result
   - name: Baseline — node-3 does NOT yet see C as writer
@@ -336,7 +345,7 @@ steps:
     context_id: '{{ctx}}'
     method: shared_is_writer
     args:
-      key_bs58: '{{id_c}}'
+      account: '{{acct_c}}'
     outputs:
       base_c_n3: result
 
@@ -390,8 +399,8 @@ steps:
     method: shared_rotate_writers
     args:
       writers:
-        - '{{id_a}}'
-        - '{{id_c}}'
+        - '{{acct_a}}'
+        - '{{acct_c}}'
   - name: Node-1 writes member entry during the split
     type: call
     node: e2e-node-1
@@ -429,7 +438,7 @@ steps:
     method: shared_rotate_writers
     args:
       writers:
-        - '{{id_a}}'
+        - '{{acct_a}}'
 
   - name: Node-2 writes member entry during the split
     type: call
@@ -496,7 +505,7 @@ steps:
     context_id: '{{ctx}}'
     method: shared_is_writer
     args:
-      key_bs58: '{{id_a}}'
+      account: '{{acct_a}}'
     outputs:
       a_n1: result
   - name: node-1 — is B a writer?
@@ -505,7 +514,7 @@ steps:
     context_id: '{{ctx}}'
     method: shared_is_writer
     args:
-      key_bs58: '{{id_b}}'
+      account: '{{acct_b}}'
     outputs:
       b_n1: result
   - name: node-1 — is C a writer?
@@ -514,7 +523,7 @@ steps:
     context_id: '{{ctx}}'
     method: shared_is_writer
     args:
-      key_bs58: '{{id_c}}'
+      account: '{{acct_c}}'
     outputs:
       c_n1: result
 
@@ -524,7 +533,7 @@ steps:
     context_id: '{{ctx}}'
     method: shared_is_writer
     args:
-      key_bs58: '{{id_a}}'
+      account: '{{acct_a}}'
     outputs:
       a_n2: result
   - name: node-2 — is B a writer?
@@ -533,7 +542,7 @@ steps:
     context_id: '{{ctx}}'
     method: shared_is_writer
     args:
-      key_bs58: '{{id_b}}'
+      account: '{{acct_b}}'
     outputs:
       b_n2: result
   - name: node-2 — is C a writer?
@@ -542,7 +551,7 @@ steps:
     context_id: '{{ctx}}'
     method: shared_is_writer
     args:
-      key_bs58: '{{id_c}}'
+      account: '{{acct_c}}'
     outputs:
       c_n2: result
 
@@ -552,7 +561,7 @@ steps:
     context_id: '{{ctx}}'
     method: shared_is_writer
     args:
-      key_bs58: '{{id_a}}'
+      account: '{{acct_a}}'
     outputs:
       a_n3: result
   - name: node-3 — is B a writer?
@@ -561,7 +570,7 @@ steps:
     context_id: '{{ctx}}'
     method: shared_is_writer
     args:
-      key_bs58: '{{id_b}}'
+      account: '{{acct_b}}'
     outputs:
       b_n3: result
   - name: node-3 — is C a writer?
@@ -570,7 +579,7 @@ steps:
     context_id: '{{ctx}}'
     method: shared_is_writer
     args:
-      key_bs58: '{{id_c}}'
+      account: '{{acct_c}}'
     outputs:
       c_n3: result
 

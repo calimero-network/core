@@ -22,7 +22,7 @@ use ed25519_dalek::SigningKey;
 
 use std::collections::BTreeSet;
 
-use calimero_primitives::identity::PublicKey;
+use calimero_account::AccountId;
 
 use crate::address::Id;
 use crate::entities::{ChildInfo, Metadata};
@@ -30,7 +30,7 @@ use crate::index::Index;
 use crate::interface::{ApplyContext, Interface};
 use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use crate::store::{MockedStorage, StorageAdaptor};
-use crate::tests::common::{build_signed_shared_action, pubkey_of};
+use crate::tests::common::{account_of_key, build_signed_shared_action};
 
 type S<const SCOPE: usize> = MockedStorage<SCOPE>;
 
@@ -65,11 +65,17 @@ fn entity_id(seed: u8) -> Id {
 
 /// Apply context with delta_id/delta_hlc populated (so the write hook fires)
 /// but no `effective_writers` (verifier falls through to v2 stored-writers).
-fn ctx(delta_id: [u8; 32], delta_hlc_ns: u64) -> ApplyContext {
+///
+/// Takes the signing key so `signer_account` names the account that key speaks
+/// for — the node resolves that at the delta's cut in production, and a context
+/// without it refuses every signed `Shared` action. Passing the key rather than
+/// the account keeps the two from drifting apart at a call site.
+fn ctx(delta_id: [u8; 32], delta_hlc_ns: u64, signer_sk: &SigningKey) -> ApplyContext {
     ApplyContext {
         effective_writers: None,
         delta_id: Some(delta_id),
         delta_hlc: Some(hlc(delta_hlc_ns)),
+        signer_account: Some(account_of_key(signer_sk)),
     }
 }
 
@@ -80,11 +86,17 @@ fn ctx(delta_id: [u8; 32], delta_hlc_ns: u64) -> ApplyContext {
 /// point rather than the locally-stored set. Use `ctx_ew` in tests that
 /// exercise concurrent-rotation scenarios where the signer may have been
 /// rotated out of the locally-stored set between authoring and delivery.
-fn ctx_ew(delta_id: [u8; 32], delta_hlc_ns: u64, effective: BTreeSet<PublicKey>) -> ApplyContext {
+fn ctx_ew(
+    delta_id: [u8; 32],
+    delta_hlc_ns: u64,
+    effective: BTreeSet<AccountId>,
+    signer_sk: &SigningKey,
+) -> ApplyContext {
     ApplyContext {
         effective_writers: Some(crate::entities::full_mask(effective)),
         delta_id: Some(delta_id),
         delta_hlc: Some(hlc(delta_hlc_ns)),
+        signer_account: Some(account_of_key(signer_sk)),
     }
 }
 
@@ -112,8 +124,8 @@ fn write_hook_relies_on_stale_stored_writers_for_rotation_detection() {
 
     let alice_sk = make_signing_key(0xAB);
     let bob_sk = make_signing_key(0xBB);
-    let alice = pubkey_of(&alice_sk);
-    let bob = pubkey_of(&bob_sk);
+    let alice = account_of_key(&alice_sk);
+    let bob = account_of_key(&bob_sk);
     let id = entity_id(0x48);
 
     // Bootstrap with {Alice, Bob}.
@@ -126,7 +138,7 @@ fn write_hook_relies_on_stale_stored_writers_for_rotation_detection() {
         &alice_sk,
         vec![root.clone()],
     );
-    Interface::<S<408>>::apply_action(bootstrap, &ctx([0xE0; 32], hlc_at(0))).unwrap();
+    Interface::<S<408>>::apply_action(bootstrap, &ctx([0xE0; 32], hlc_at(0), &alice_sk)).unwrap();
 
     // D1: Alice rotates Bob out → writers = {Alice}. Logged as a rotation.
     let rotation = build_signed_shared_action(
@@ -138,7 +150,7 @@ fn write_hook_relies_on_stale_stored_writers_for_rotation_detection() {
         &alice_sk,
         vec![],
     );
-    Interface::<S<408>>::apply_action(rotation, &ctx([0xE1; 32], hlc_at(1))).unwrap();
+    Interface::<S<408>>::apply_action(rotation, &ctx([0xE1; 32], hlc_at(1), &alice_sk)).unwrap();
     assert_eq!(
         Interface::<S<408>>::load_rotation_log_child(id)
             .unwrap()
@@ -170,8 +182,11 @@ fn write_hook_relies_on_stale_stored_writers_for_rotation_detection() {
         &alice_sk,
         vec![],
     );
-    Interface::<S<408>>::apply_action(value_write_with_stale_writers, &ctx([0xE2; 32], hlc_at(2)))
-        .unwrap();
+    Interface::<S<408>>::apply_action(
+        value_write_with_stale_writers,
+        &ctx([0xE2; 32], hlc_at(2), &alice_sk),
+    )
+    .unwrap();
 
     let log = Interface::<S<408>>::load_rotation_log_child(id).unwrap();
     assert_eq!(
@@ -211,7 +226,7 @@ fn apply_two_shared_writes_in_order<const SCOPE: usize>(
     first_sk: &SigningKey,
     second_data: &[u8],
     second_sk: &SigningKey,
-    writers: &BTreeSet<PublicKey>,
+    writers: &BTreeSet<AccountId>,
     nonce: u64,
 ) -> Vec<u8> {
     crate::env::reset_for_testing();
@@ -227,7 +242,7 @@ fn apply_two_shared_writes_in_order<const SCOPE: usize>(
         first_sk,
         vec![root.clone()],
     );
-    Interface::<S<SCOPE>>::apply_action(first, &ctx([0xA0; 32], nonce)).unwrap();
+    Interface::<S<SCOPE>>::apply_action(first, &ctx([0xA0; 32], nonce, first_sk)).unwrap();
 
     let second = build_signed_shared_action(
         false,
@@ -238,7 +253,7 @@ fn apply_two_shared_writes_in_order<const SCOPE: usize>(
         second_sk,
         vec![],
     );
-    Interface::<S<SCOPE>>::apply_action(second, &ctx([0xB0; 32], nonce)).unwrap();
+    Interface::<S<SCOPE>>::apply_action(second, &ctx([0xB0; 32], nonce, second_sk)).unwrap();
 
     Interface::<S<SCOPE>>::find_by_id_raw(id).expect("entity must exist after two writes")
 }
@@ -251,9 +266,9 @@ fn apply_two_shared_writes_in_order<const SCOPE: usize>(
 fn shared_equal_nonce_different_writers_converge_regardless_of_order() {
     let alice_sk = make_signing_key(0xA1);
     let bob_sk = make_signing_key(0xB2);
-    let alice = pubkey_of(&alice_sk);
-    let bob = pubkey_of(&bob_sk);
-    let writers: BTreeSet<PublicKey> = [alice, bob].into_iter().collect();
+    let alice = account_of_key(&alice_sk);
+    let bob = account_of_key(&bob_sk);
+    let writers: BTreeSet<AccountId> = [alice, bob].into_iter().collect();
     let nonce = hlc_at(0);
 
     // Node X applies Alice's write then Bob's (same nonce, different data).
@@ -296,19 +311,19 @@ fn shared_equal_nonce_different_writers_converge_regardless_of_order() {
 fn apply_concurrent_rotations_in_order<const SCOPE: usize>(
     r1_first: bool,
 ) -> (
-    Vec<std::collections::BTreeMap<PublicKey, crate::entities::OpMask>>,
+    Vec<std::collections::BTreeMap<AccountId, crate::entities::OpMask>>,
     [u8; 32],
 ) {
     crate::env::reset_for_testing();
     let root = setup_root::<S<SCOPE>>();
 
     let alice_sk = make_signing_key(0xA1);
-    let alice = pubkey_of(&alice_sk);
-    let bob = pubkey_of(&make_signing_key(0xB2));
-    let dave = pubkey_of(&make_signing_key(0xD4));
+    let alice = account_of_key(&alice_sk);
+    let bob = account_of_key(&make_signing_key(0xB2));
+    let dave = account_of_key(&make_signing_key(0xD4));
     let id = entity_id(0x71);
 
-    let genesis: BTreeSet<PublicKey> = [alice, bob].into_iter().collect();
+    let genesis: BTreeSet<AccountId> = [alice, bob].into_iter().collect();
 
     // Bootstrap {Alice, Bob}.
     let bootstrap = build_signed_shared_action(
@@ -320,8 +335,11 @@ fn apply_concurrent_rotations_in_order<const SCOPE: usize>(
         &alice_sk,
         vec![root.clone()],
     );
-    Interface::<S<SCOPE>>::apply_action(bootstrap, &ctx_ew([0xE0; 32], 100, genesis.clone()))
-        .unwrap();
+    Interface::<S<SCOPE>>::apply_action(
+        bootstrap,
+        &ctx_ew([0xE0; 32], 100, genesis.clone(), &alice_sk),
+    )
+    .unwrap();
 
     // R1 → {Bob} (nonce 200), R2 → {Bob, Dave} (nonce 150). Rotation is
     // hash-neutral, so the value bytes stay "v0".
@@ -350,15 +368,27 @@ fn apply_concurrent_rotations_in_order<const SCOPE: usize>(
 
     if r1_first {
         // R2 arrives with a nonce BELOW the stored nonce → strictly stale.
-        Interface::<S<SCOPE>>::apply_action(mk_r1(), &ctx_ew([0xE1; 32], 200, genesis.clone()))
-            .unwrap();
-        Interface::<S<SCOPE>>::apply_action(mk_r2(), &ctx_ew([0xE2; 32], 150, genesis.clone()))
-            .unwrap();
+        Interface::<S<SCOPE>>::apply_action(
+            mk_r1(),
+            &ctx_ew([0xE1; 32], 200, genesis.clone(), &alice_sk),
+        )
+        .unwrap();
+        Interface::<S<SCOPE>>::apply_action(
+            mk_r2(),
+            &ctx_ew([0xE2; 32], 150, genesis.clone(), &alice_sk),
+        )
+        .unwrap();
     } else {
-        Interface::<S<SCOPE>>::apply_action(mk_r2(), &ctx_ew([0xE2; 32], 150, genesis.clone()))
-            .unwrap();
-        Interface::<S<SCOPE>>::apply_action(mk_r1(), &ctx_ew([0xE1; 32], 200, genesis.clone()))
-            .unwrap();
+        Interface::<S<SCOPE>>::apply_action(
+            mk_r2(),
+            &ctx_ew([0xE2; 32], 150, genesis.clone(), &alice_sk),
+        )
+        .unwrap();
+        Interface::<S<SCOPE>>::apply_action(
+            mk_r1(),
+            &ctx_ew([0xE1; 32], 200, genesis.clone(), &alice_sk),
+        )
+        .unwrap();
     }
 
     let log = Interface::<S<SCOPE>>::load_rotation_log_child(id)
@@ -392,8 +422,8 @@ fn apply_concurrent_rotations_in_order<const SCOPE: usize>(
 /// orders converge on the same log.
 #[test]
 fn concurrent_rotations_converge_in_log_regardless_of_apply_order() {
-    let bob = pubkey_of(&make_signing_key(0xB2));
-    let dave = pubkey_of(&make_signing_key(0xD4));
+    let bob = account_of_key(&make_signing_key(0xB2));
+    let dave = account_of_key(&make_signing_key(0xD4));
     let with_dave = crate::entities::full_mask([bob, dave].into_iter().collect());
 
     // Node X applies R1 (higher nonce) first, then R2 (lower nonce → stale).

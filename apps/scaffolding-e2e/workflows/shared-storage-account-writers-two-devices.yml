@@ -1,0 +1,447 @@
+name: E2E Shared Storage - One Granted Account, Two Devices Writing
+description: >
+  The acceptance test for account-keyed writer sets (#3344). A `SharedStorage`
+  writer set names ACCOUNTS, so one grant must cover every device its holder
+  owns — and a signature only ever names a KEY, so the receiver has to resolve
+  that key to an account at the write's causal cut before it can match the set.
+  Everything about that resolution is unit-tested; this is the only thing that
+  proves it over the real wire, where the two nodes hold different amounts of
+  the device-binding history.
+
+  Distinct from `account-device-revoke-lockout`, which proves the same
+  one-account-two-devices story on the MEMBERSHIP plane with plain KV writes.
+  Membership and writer sets are separate gates resolved by separate code: a
+  paired device can be a perfectly good context member and still have every
+  guarded write refused. That is precisely the bug this scenario would have
+  caught — two account spaces, where a node's own writes were refused by every
+  peer — so the planes need separate coverage.
+
+  What each phase is load-bearing for:
+
+    1. Three nodes. node-1 is admin and the context creator, so it is the sole
+       initial writer. node-2 is Alice's laptop, a namespace member. node-3 is
+       Alice's phone: DELIBERATELY never invited, never granted, and never named
+       in the writer set. One device per node, because `NodeDeviceIdentity` is
+       keyed per namespace.
+
+    2. node-1 grants Alice's ACCOUNT — one call, `shared_add_writer`. The
+       account has to be read out of node-2 (`my_account`), because an account is
+       derived from a node's root rather than carried on the wire, so a scenario
+       has no other way to learn one.
+
+    3. The laptop writes the shared value and node-1 reads it. Baseline: the
+       grant works for the device that was present when it was made.
+
+    4. The phone is paired onto Alice's account and writes the SAME shared
+       value, with no second grant and no rotation. This is the feature. Two
+       assertions carry it: the phone's `my_account` equals the laptop's — one
+       principal, two devices — and the writer set is byte-identical before and
+       after the phone's write, so nothing was added on its behalf.
+
+       It is also the step that needs the receiver-side resolution: the phone's
+       action is signed by a key that appears in no writer set anywhere. A
+       receiver that resolved the signer from its own identity, or refused a key
+       it could not name, would drop this write — and a receiver that accepted
+       it unresolved would let any key claim any account.
+
+    5. Stamps stay per device while the gate moves to accounts. The phone may
+       write the shared value (an account gate) and may NOT update the laptop's
+       authored entry (a per-device owner stamp), and the laptop still can. Both
+       halves matter: authorization keyed by device breaks step 4, and stamps
+       keyed by account make the phone the owner of the laptop's entry, so two
+       devices of one person silently overwrite each other's per-writer state.
+       Both mistakes compile — `AccountId` and `PublicKey` are both 32 bytes.
+
+  What this does NOT cover (intentionally):
+    * A deferral: a receiver that has not yet folded the binding must retry
+      rather than refuse. Real nodes here settle before every read, so the gap
+      never opens. It is pinned in `calimero-storage`'s
+      `deferred_signer_convergence` tests, which can hold two receivers at
+      different fold depths on purpose.
+    * Revocation of the paired device. That is `account-device-revoke-lockout`'s
+      job, on the membership plane; the writer plane's half is unit-tested in
+      `calimero-op-adapter`.
+
+  User-visible failure mode this guards against: "I was granted write access,
+  and then my second device got permission denied."
+
+force_pull_image: false
+near_devnet: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: shared-account-node
+
+steps:
+  - name: Login on shared-account-node-1
+    type: login
+    node: shared-account-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on shared-account-node-2
+    type: login
+    node: shared-account-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on shared-account-node-3
+    type: login
+    node: shared-account-node-3
+    username: dev
+    password: dev-password
+
+  # ── Phase 1: namespace, membership, context ───────────────────────
+
+  - name: Install application on shared-account-node-1
+    type: install_application
+    node: shared-account-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on shared-account-node-2
+    type: install_application
+    node: shared-account-node-2
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Node-1 creates the namespace
+    type: create_namespace
+    node: shared-account-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2 to the namespace
+    type: create_namespace_invitation
+    node: shared-account-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation: invitation
+
+  - name: Node-2 joins the namespace
+    type: join_namespace
+    node: shared-account-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation}}'
+
+  # The creator's account becomes the sole initial writer of `shared_data`.
+  - name: Node-1 creates the context
+    type: create_context
+    node: shared-account-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      context_id: contextId
+
+  - name: Node-2 joins the context
+    type: join_context
+    node: shared-account-node-2
+    context_id: '{{context_id}}'
+
+  - name: Settle before reading node-2's account
+    type: wait_for_sync
+    nodes:
+      - shared-account-node-1
+      - shared-account-node-2
+    context_id: '{{context_id}}'
+
+  # ── Phase 2: node-2 enrolls its first device ──────────────────────
+  #
+  # After the context join, not before: a device link travels as an encrypted
+  # GroupOp, so the node must already hold the scope key.
+
+  - name: Node-2 enrolls a device for a fresh account
+    type: script
+    script: scripts/account-create.sh
+    target: local
+    args:
+      - shared-account-node-2
+      - '{{namespace_id}}'
+
+  - name: Settle after the link op
+    type: wait_for_sync
+    nodes:
+      - shared-account-node-1
+      - shared-account-node-2
+    context_id: '{{context_id}}'
+
+  # ── Phase 3: one grant, made to the account ───────────────────────
+
+  - name: Read Alice's account off her laptop
+    type: call
+    node: shared-account-node-2
+    context_id: '{{context_id}}'
+    method: my_account
+    outputs:
+      alice_account: result.output
+
+  - name: Node-1 grants Alice's account as a writer
+    type: call
+    node: shared-account-node-1
+    context_id: '{{context_id}}'
+    method: shared_add_writer
+    args:
+      writer: '{{alice_account}}'
+
+  - name: Settle so the rotation reaches the laptop
+    type: wait_for_sync
+    nodes:
+      - shared-account-node-1
+      - shared-account-node-2
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: The granted writer set, as node-1 sees it
+    type: call
+    node: shared-account-node-1
+    context_id: '{{context_id}}'
+    method: shared_get_writers
+    outputs:
+      writers_after_grant: result
+
+  - name: Alice's account is a writer
+    type: call
+    node: shared-account-node-2
+    context_id: '{{context_id}}'
+    method: shared_is_writer
+    args:
+      account: '{{alice_account}}'
+    outputs:
+      alice_is_writer: result
+
+  - name: The grant landed on both nodes
+    type: json_assert
+    statements:
+      - 'json_equal({{alice_is_writer}}, {"output": true})'
+
+  # ── Phase 4: the granted device writes ────────────────────────────
+
+  - name: The laptop writes the shared value
+    type: call
+    node: shared-account-node-2
+    context_id: '{{context_id}}'
+    method: shared_set
+    args:
+      value: from-laptop
+
+  - name: Settle so the laptop's delta reaches node-1
+    type: wait_for_sync
+    nodes:
+      - shared-account-node-1
+      - shared-account-node-2
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-1 reads the laptop's write
+    type: call
+    node: shared-account-node-1
+    context_id: '{{context_id}}'
+    method: shared_get
+    outputs:
+      shared_after_laptop: result
+
+  - name: The granted device's write converged
+    type: json_assert
+    statements:
+      - 'json_equal({{shared_after_laptop}}, {"output": "from-laptop"})'
+
+  # ── Phase 5: pair a second device onto the SAME account ───────────
+  #
+  # node-3 is never invited and never granted. Its only route in is being a
+  # device of Alice's account.
+
+  # Installed here rather than with the other two: node-3 has nothing to do until
+  # it pairs, and an earlier install is a mutation on a node no barrier can cover
+  # — it is not in the context yet, so a `wait_for_sync` cannot name it.
+  - name: Install application on shared-account-node-3
+    type: install_application
+    node: shared-account-node-3
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Pair node-3 onto Alice's account
+    type: script
+    script: scripts/account-pair.sh
+    target: local
+    args:
+      - shared-account-node-2
+      - shared-account-node-3
+      - '{{namespace_id}}'
+
+  # Following the context writes the keyless identity marker the RPC layer
+  # resolves an executor from. A paired device is a member of nothing, so this
+  # only works because the join gate accepts a live device of a member's account.
+  - name: Node-3 follows the context as a device of Alice's account
+    type: join_context
+    node: shared-account-node-3
+    context_id: '{{context_id}}'
+
+  # All three, and node-3 especially: the next step has the paired device write,
+  # which needs node-2's wrapped key to have arrived and been applied.
+  - name: Settle after pairing
+    type: wait_for_sync
+    nodes:
+      - shared-account-node-1
+      - shared-account-node-2
+      - shared-account-node-3
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: Read the account the phone speaks for
+    type: call
+    node: shared-account-node-3
+    context_id: '{{context_id}}'
+    method: my_account
+    outputs:
+      phone_account: result.output
+
+  # The precondition the whole scenario rests on. If these differed, the phone's
+  # write below would be proving something about a second grant instead.
+  - name: The phone speaks for the same account as the laptop
+    type: json_assert
+    statements:
+      - 'json_equal({{phone_account}}, {{alice_account}})'
+
+  # ── Phase 6: the ungranted device of a granted account writes ─────
+
+  - name: The phone writes the shared value
+    type: call
+    node: shared-account-node-3
+    context_id: '{{context_id}}'
+    method: shared_set
+    args:
+      value: from-phone
+
+  - name: Settle so the phone's delta reaches the other two
+    type: wait_for_sync
+    nodes:
+      - shared-account-node-1
+      - shared-account-node-2
+      - shared-account-node-3
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-1 reads the phone's write
+    type: call
+    node: shared-account-node-1
+    context_id: '{{context_id}}'
+    method: shared_get
+    outputs:
+      shared_n1: result
+
+  - name: Node-2 reads the phone's write
+    type: call
+    node: shared-account-node-2
+    context_id: '{{context_id}}'
+    method: shared_get
+    outputs:
+      shared_n2: result
+
+  - name: The writer set as node-1 sees it after the phone's write
+    type: call
+    node: shared-account-node-1
+    context_id: '{{context_id}}'
+    method: shared_get_writers
+    outputs:
+      writers_final: result
+
+  - name: An ungranted device of a granted account wrote, and converged
+    type: json_assert
+    statements:
+      - 'json_equal({{shared_n1}}, {"output": "from-phone"})'
+      - 'json_equal({{shared_n2}}, {"output": "from-phone"})'
+      # And nothing was granted on the phone's behalf to make that work: the
+      # writer set is unchanged since the single grant in phase 3. Without this,
+      # a scenario that quietly rotated the set in would look identical.
+      - 'json_equal({{writers_final}}, {{writers_after_grant}})'
+
+  # ── Phase 7: the gate moved to accounts, the stamps did not ───────
+
+  - name: The laptop files an authored entry
+    type: call
+    node: shared-account-node-2
+    context_id: '{{context_id}}'
+    method: authored_insert
+    args:
+      key: notes
+      value: laptop-wrote-this
+
+  - name: Settle so the authored entry reaches the phone
+    type: wait_for_sync
+    nodes:
+      - shared-account-node-1
+      - shared-account-node-2
+      - shared-account-node-3
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  # Same account, different device — and an authored entry's owner is the DEVICE.
+  # This must fail even though the phone may write the shared value above, which
+  # is exactly the gates-vs-stamps split. If stamps were account-keyed this
+  # would succeed, and one person's devices would clobber each other silently.
+  - name: The phone cannot update the laptop's authored entry
+    type: call
+    node: shared-account-node-3
+    context_id: '{{context_id}}'
+    method: authored_update
+    args:
+      key: notes
+      value: phone-should-not-land
+    expected_failure: true
+
+  # The other half: the owner check refuses the phone specifically, not everyone.
+  - name: The laptop can still update its own authored entry
+    type: call
+    node: shared-account-node-2
+    context_id: '{{context_id}}'
+    method: authored_update
+    args:
+      key: notes
+      value: laptop-wrote-this-again
+
+  - name: Settle before reading the authored entry cross-node
+    type: wait_for_sync
+    nodes:
+      - shared-account-node-1
+      - shared-account-node-2
+      - shared-account-node-3
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-1 reads the authored entry
+    type: call
+    node: shared-account-node-1
+    context_id: '{{context_id}}'
+    method: authored_get
+    args:
+      key: notes
+    outputs:
+      authored_n1: result
+
+  - name: Only the owning device's update landed
+    type: json_assert
+    statements:
+      - 'json_equal({{authored_n1}}, {"output": "laptop-wrote-this-again"})'
+
+  # ── Phase 8: the identity relationship behind all of it ───────────
+
+  - name: The two devices authored as one account but distinct replicas
+    type: script
+    script: scripts/assert-same-account-distinct-devices.sh
+    target: local
+    args:
+      - '{{namespace_id}}'
+
+stop_all_nodes: false

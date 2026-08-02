@@ -233,7 +233,8 @@ async fn run_initiator_impl<T: SyncTransport>(
     let mut stats = HashComparisonStats::default();
 
     // Set up storage bridge
-    let runtime_env = create_runtime_env(store, context_id, identity);
+    let account = calimero_governance_store::account_for_context(store, &context_id)?;
+    let runtime_env = create_runtime_env(store, context_id, identity, account);
 
     // PR-6b Task 6b.7: the sender's loaded-reader schema, stamped onto every
     // leaf we emit so a peer on an older reader can decline+buffer a
@@ -876,7 +877,8 @@ async fn run_responder_impl<T: SyncTransport>(
     }
 
     // Set up storage bridge (reused across all requests)
-    let runtime_env = create_runtime_env(store, context_id, identity);
+    let account = calimero_governance_store::account_for_context(store, &context_id)?;
+    let runtime_env = create_runtime_env(store, context_id, identity, account);
 
     // PR-6b Task 6b.7: the sender's loaded-reader schema, stamped onto every
     // leaf we emit (see `run_initiator_impl`).
@@ -1685,6 +1687,13 @@ fn apply_hc_leaf_gated(
     }
 }
 
+/// A stand-in account for tests that build a runtime env directly. Distinct from
+/// the identity they pass as the device, so the two stay distinguishable.
+#[cfg(test)]
+fn test_env_account() -> calimero_account::AccountId {
+    calimero_account::AccountId::from([0xAC; 32])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1723,7 +1732,7 @@ mod tests {
         let context_id = ContextId::from([0xCA; 32]);
         let identity = PublicKey::from([0u8; 32]);
         let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let runtime_env = create_runtime_env(&store, context_id, identity);
+        let runtime_env = create_runtime_env(&store, context_id, identity, test_env_account());
 
         // `Id::new([118; 32])` == `Root::<T>::entry_id()` — an opaque leaf.
         let root_id = Id::new(*context_id.as_ref());
@@ -1827,7 +1836,7 @@ mod tests {
         let context_id = ContextId::from([0xCA; 32]);
         let identity = PublicKey::from([0u8; 32]);
         let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let runtime_env = create_runtime_env(&store, context_id, identity);
+        let runtime_env = create_runtime_env(&store, context_id, identity, test_env_account());
 
         let root_id = Id::new(*context_id.as_ref());
         let frozen_id = Id::new([0x42u8; 32]);
@@ -1935,7 +1944,7 @@ mod tests {
         let context_id = ContextId::from([0xCC; 32]);
         let identity = PublicKey::from([0u8; 32]);
         let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let runtime_env = create_runtime_env(&store, context_id, identity);
+        let runtime_env = create_runtime_env(&store, context_id, identity, test_env_account());
 
         let root_id = Id::new(*context_id.as_ref());
         let frozen_id = Id::new([0x77u8; 32]);
@@ -2017,7 +2026,7 @@ mod tests {
         let context_id = ContextId::from([0xCB; 32]);
         let identity = PublicKey::from([0u8; 32]);
         let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let runtime_env = create_runtime_env(&store, context_id, identity);
+        let runtime_env = create_runtime_env(&store, context_id, identity, test_env_account());
 
         let root_id = Id::new(*context_id.as_ref());
         let entry_id = Id::new([0x77u8; 32]);
@@ -2147,7 +2156,7 @@ mod tests {
         let context_id = ContextId::from([0xCD; 32]);
         let identity = PublicKey::from([0u8; 32]);
         let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let runtime_env = create_runtime_env(&store, context_id, identity);
+        let runtime_env = create_runtime_env(&store, context_id, identity, test_env_account());
 
         let leaf_key = [0x45u8; 32];
         // No schema marker — under `Ok(None)` (no gate) this WOULD apply, so the
@@ -2188,7 +2197,7 @@ mod tests {
         let context_id = ContextId::from([0xCE; 32]);
         let identity = PublicKey::from([0u8; 32]);
         let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let runtime_env = create_runtime_env(&store, context_id, identity);
+        let runtime_env = create_runtime_env(&store, context_id, identity, test_env_account());
 
         let leaf_key = [0x46u8; 32];
         let leaf = hc_opaque_leaf(leaf_key, None);
@@ -2232,7 +2241,7 @@ mod tests {
         use calimero_storage::entities::{full_mask, ChildInfo, Metadata};
         use calimero_storage::interface::ApplyContext;
         use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-        use calimero_storage::tests::common::{build_signed_shared_action, pubkey_of};
+        use calimero_storage::tests::common::{account_of_key, build_signed_shared_action};
         use calimero_store::db::InMemoryDB;
         use calimero_store::Store;
         use ed25519_dalek::SigningKey;
@@ -2250,15 +2259,15 @@ mod tests {
         let rotation_delta_id = [0xE1; 32];
 
         let alice_sk = SigningKey::from_bytes(&[0xA1; 32]);
-        let alice = pubkey_of(&alice_sk);
-        let bob = pubkey_of(&SigningKey::from_bytes(&[0xB2; 32]));
-        let carol = pubkey_of(&SigningKey::from_bytes(&[0xC3; 32]));
-        let genesis: BTreeSet<PublicKey> = [alice, bob].into_iter().collect();
-        let rotated: BTreeSet<PublicKey> = [alice, carol].into_iter().collect();
+        let alice = account_of_key(&alice_sk);
+        let bob = account_of_key(&SigningKey::from_bytes(&[0xB2; 32]));
+        let carol = account_of_key(&SigningKey::from_bytes(&[0xC3; 32]));
+        let genesis: BTreeSet<calimero_account::AccountId> = [alice, bob].into_iter().collect();
+        let rotated: BTreeSet<calimero_account::AccountId> = [alice, carol].into_iter().collect();
 
         // Bootstrap a `Shared` anchor {Alice,Bob} under the context root.
         let bootstrap = |store: &Store| {
-            let env = create_runtime_env(store, context_id, identity);
+            let env = create_runtime_env(store, context_id, identity, test_env_account());
             with_runtime_env(env, || {
                 let root_id = Id::new(*context_id.as_ref());
                 Interface::<MainStorage>::apply_action(
@@ -2294,6 +2303,7 @@ mod tests {
                         effective_writers: Some(full_mask(genesis.clone())),
                         delta_id: Some([0xE0; 32]),
                         delta_hlc: Some(hlc(10)),
+                        signer_account: Some(alice),
                     },
                 )
                 .expect("bootstrap shared anchor");
@@ -2301,7 +2311,7 @@ mod tests {
         };
 
         let anchor_full_hash = |store: &Store| -> [u8; 32] {
-            let env = create_runtime_env(store, context_id, identity);
+            let env = create_runtime_env(store, context_id, identity, test_env_account());
             with_runtime_env(env, || {
                 Index::<MainStorage>::get_hashes_for(anchor_id)
                     .unwrap()
@@ -2327,17 +2337,21 @@ mod tests {
         // appends the entry to the hashed rotation-log collection.
         let receiver = Store::new(Arc::new(InMemoryDB::owned()));
         bootstrap(&receiver);
-        with_runtime_env(create_runtime_env(&receiver, context_id, identity), || {
-            Interface::<MainStorage>::apply_action(
-                rotation(),
-                &ApplyContext {
-                    effective_writers: Some(full_mask(genesis.clone())),
-                    delta_id: Some(rotation_delta_id),
-                    delta_hlc: Some(hlc(30)),
-                },
-            )
-            .expect("receiver applies rotation");
-        });
+        with_runtime_env(
+            create_runtime_env(&receiver, context_id, identity, test_env_account()),
+            || {
+                Interface::<MainStorage>::apply_action(
+                    rotation(),
+                    &ApplyContext {
+                        effective_writers: Some(full_mask(genesis.clone())),
+                        delta_id: Some(rotation_delta_id),
+                        delta_hlc: Some(hlc(30)),
+                        signer_account: Some(alice),
+                    },
+                )
+                .expect("receiver applies rotation");
+            },
+        );
 
         // Originator: records the SAME rotation via the post-delta self-log
         // primitive (the local write predates this delta_id, so the
@@ -2345,7 +2359,7 @@ mod tests {
         let originator = Store::new(Arc::new(InMemoryDB::owned()));
         bootstrap(&originator);
         with_runtime_env(
-            create_runtime_env(&originator, context_id, identity),
+            create_runtime_env(&originator, context_id, identity, test_env_account()),
             || {
                 let changed = Interface::<MainStorage>::self_log_own_rotations(
                     &[rotation()],

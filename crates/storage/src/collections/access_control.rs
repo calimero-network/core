@@ -40,7 +40,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_primitives::identity::PublicKey;
+use calimero_account::AccountId;
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
 use super::permissioned::{Authorizer, PermissionedStorage, SharedStorage};
@@ -88,7 +88,7 @@ impl AccessControl {
     /// Create an `AccessControl` with `admin` as the sole initial admin. Use for
     /// nested fields; the `#[app::state]` macro canonicalises the id via
     /// [`reassign_deterministic_id`](Self::reassign_deterministic_id).
-    pub fn new(admin: PublicKey) -> Self {
+    pub fn new(admin: AccountId) -> Self {
         Self {
             grants: SharedStorage::new(BTreeSet::from([admin]), false),
         }
@@ -97,7 +97,16 @@ impl AccessControl {
     /// Create an `AccessControl` administered by the current executor (the
     /// common case in `init`).
     pub fn new_admin_caller() -> Self {
-        let me: PublicKey = env::device_id().into();
+        // The GATE resolves the account, not the device. This is the whole point of
+        // account-keying the writer set: a person with two devices is one principal
+        // here, so granting them does not mean enumerating their machines.
+        //
+        // Only the gate moves. Owner STAMPS written into `UserStorage`/`AuthoredMap`/
+        // `SharedStorage` stay device-shaped, because they are per-writer state — two
+        // devices of one account acting concurrently must remain distinguishable or
+        // they share a counter slot and an HLC seed and silently lose each other's
+        // writes.
+        let me: AccountId = env::account_id().into();
         Self::new(me)
     }
 
@@ -133,20 +142,20 @@ impl AccessControl {
     /// Composite registry key for `(role, member)`. Member is hex of its 32
     /// bytes — a stable, separator-free encoding. Callers must `check_role`
     /// first so `role` cannot contain the separator.
-    fn key(role: &str, member: &PublicKey) -> String {
-        let member_hex = hex::encode(member.as_ref() as &[u8; 32]);
+    fn key(role: &str, member: &AccountId) -> String {
+        let member_hex = hex::encode(member.as_bytes());
         format!("{role}{ROLE_MEMBER_SEP}{member_hex}")
     }
 
     // --- admin tier (the writer set) ---
 
     /// The current admin set (the backing storage's writers).
-    pub fn admins(&self) -> BTreeSet<PublicKey> {
+    pub fn admins(&self) -> BTreeSet<AccountId> {
         self.grants.writers()
     }
 
     /// Whether `who` is an admin.
-    pub fn is_admin(&self, who: &PublicKey) -> bool {
+    pub fn is_admin(&self, who: &AccountId) -> bool {
         self.grants.writers().contains(who)
     }
 
@@ -155,7 +164,7 @@ impl AccessControl {
     /// # Errors
     /// `ActionNotAllowed` if the current executor is not an admin.
     pub fn only_admin(&self) -> Result<(), StoreError> {
-        let me: PublicKey = env::device_id().into();
+        let me: AccountId = env::account_id().into();
         if self.is_admin(&me) {
             Ok(())
         } else {
@@ -181,7 +190,7 @@ impl AccessControl {
     ///
     /// # Errors
     /// `ActionNotAllowed` if the executor is not a current admin.
-    pub fn grant_admin(&mut self, who: PublicKey) -> Result<(), StoreError> {
+    pub fn grant_admin(&mut self, who: AccountId) -> Result<(), StoreError> {
         let mut admins = self.grants.writers();
         if !admins.insert(who) {
             // Already an admin: no set change, so skip the (otherwise no-op)
@@ -204,7 +213,7 @@ impl AccessControl {
     /// # Errors
     /// `ActionNotAllowed` if the executor is not a current admin, or if removing
     /// `who` would leave no admins.
-    pub fn revoke_admin(&mut self, who: &PublicKey) -> Result<(), StoreError> {
+    pub fn revoke_admin(&mut self, who: &AccountId) -> Result<(), StoreError> {
         let mut admins = self.grants.writers();
         if !admins.remove(who) {
             // `who` is not an admin: no set change, so skip the no-op rotation —
@@ -235,7 +244,7 @@ impl AccessControl {
     /// # Errors
     /// `ActionNotAllowed` if `role` contains the separator byte; propagates a
     /// storage error from the registry lookup.
-    pub fn has_role(&self, role: &str, who: &PublicKey) -> Result<bool, StoreError> {
+    pub fn has_role(&self, role: &str, who: &AccountId) -> Result<bool, StoreError> {
         Self::check_role(role)?;
         let key = Self::key(role, who);
         Ok(self
@@ -253,7 +262,7 @@ impl AccessControl {
     /// `ActionNotAllowed` if the current executor does not hold `role`;
     /// propagates a storage error from the lookup.
     pub fn only_role(&self, role: &str) -> Result<(), StoreError> {
-        let me: PublicKey = env::device_id().into();
+        let me: AccountId = env::account_id().into();
         if self.has_role(role, &me)? {
             Ok(())
         } else {
@@ -275,7 +284,7 @@ impl AccessControl {
     /// # Errors
     /// `ActionNotAllowed` if the executor is not an admin or `role` contains the
     /// separator byte; propagates a storage error from the write.
-    pub fn grant(&mut self, role: &str, who: PublicKey) -> Result<(), StoreError> {
+    pub fn grant(&mut self, role: &str, who: AccountId) -> Result<(), StoreError> {
         self.only_admin()?;
         Self::check_role(role)?;
         let key = Self::key(role, &who);
@@ -295,7 +304,7 @@ impl AccessControl {
     /// # Errors
     /// `ActionNotAllowed` if the executor is not an admin or `role` contains the
     /// separator byte; propagates a storage error from the write.
-    pub fn revoke(&mut self, role: &str, who: &PublicKey) -> Result<(), StoreError> {
+    pub fn revoke(&mut self, role: &str, who: &AccountId) -> Result<(), StoreError> {
         self.only_admin()?;
         Self::check_role(role)?;
         let key = Self::key(role, who);
@@ -314,7 +323,7 @@ impl AccessControl {
     /// # Errors
     /// `ActionNotAllowed` if `role` contains the separator byte; propagates a
     /// storage error from the scan.
-    pub fn members_of(&self, role: &str) -> Result<Vec<PublicKey>, StoreError> {
+    pub fn members_of(&self, role: &str) -> Result<Vec<AccountId>, StoreError> {
         Self::check_role(role)?;
         let prefix = format!("{role}{ROLE_MEMBER_SEP}");
         let mut out = Vec::new();
@@ -329,7 +338,7 @@ impl AccessControl {
             }
             if let Ok(bytes) = hex::decode(hex_tail) {
                 if let Ok(arr) = <[u8; 32]>::try_from(bytes) {
-                    out.push(PublicKey::from(arr));
+                    out.push(AccountId::from(arr));
                 }
             }
         }
@@ -359,7 +368,7 @@ impl AccessControl {
         T: BorshSerialize + BorshDeserialize + Mergeable + Default,
         A: Authorizer,
     {
-        let mut caps: BTreeMap<PublicKey, OpMask> = BTreeMap::new();
+        let mut caps: BTreeMap<AccountId, OpMask> = BTreeMap::new();
         for (role, mask) in role_masks {
             for member in self.members_of(role)? {
                 let entry = caps.entry(member).or_insert(OpMask::NONE);
@@ -428,11 +437,93 @@ mod tests {
     const BOB: [u8; 32] = [0x22; 32];
     const CAROL: [u8; 32] = [0x33; 32];
 
+    /// **The headline property of account-keyed gates, and the reason this feature
+    /// exists.** One person, two devices, granted once.
+    ///
+    /// The gate resolves `env::account_id()`, so moving the DEVICE while the
+    /// account stays put must change nothing. Before stage 2 the gate read
+    /// `env::device_id()` and this test fails: the second device is refused
+    /// because it was never granted, which is the "your phone is a stranger to
+    /// your laptop" bug in one assertion.
+    #[test]
+    #[serial]
+    fn a_second_device_of_a_granted_account_is_not_a_stranger() {
+        const LAPTOP: [u8; 32] = [0xD1; 32];
+        const PHONE: [u8; 32] = [0xD2; 32];
+
+        env::reset_for_testing();
+        env::set_account_id(ALICE);
+        env::set_device_id(LAPTOP);
+        let mut ac = Root::new(AccessControl::new_admin_caller);
+
+        // Alice is admin from her laptop, and grants Bob's ACCOUNT a role.
+        assert!(ac.is_admin(&ALICE.into()));
+        ac.grant("editor", BOB.into()).unwrap();
+
+        // Same person, second device: only the device moves.
+        env::set_device_id(PHONE);
+        assert!(
+            ac.is_admin(&ALICE.into()),
+            "the account is the principal, so a second device of it is still admin"
+        );
+        ac.grant("reviewer", CAROL.into())
+            .expect("a second device of an admin account must be able to grant");
+
+        // And the negative half, which is what stops this from being vacuous: a
+        // device of an ACCOUNT that was never granted is refused, however
+        // familiar the device looks.
+        env::set_account_id(BOB); // Bob holds "editor", but is not an admin
+        assert!(!ac.is_admin(&BOB.into()), "a role grant is not adminship");
+        assert!(
+            ac.grant("editor", CAROL.into()).is_err(),
+            "a non-admin account must be refused no matter which device it uses"
+        );
+    }
+
+    /// Two devices of one account must NOT collapse into one writer for the
+    /// purposes of per-writer state.
+    ///
+    /// The gate is account-keyed; owner stamps stay device-keyed. If someone
+    /// "simplifies" by moving stamps onto accounts, the gate tests above all keep
+    /// passing and this is the one that fails — two devices would then share a
+    /// counter slot and an HLC seed, and silently lose each other's writes.
+    #[test]
+    #[serial]
+    fn the_gate_moves_to_accounts_but_stamps_stay_per_device() {
+        const LAPTOP: [u8; 32] = [0xD1; 32];
+        const PHONE: [u8; 32] = [0xD2; 32];
+
+        env::reset_for_testing();
+        env::set_account_id(ALICE);
+
+        env::set_device_id(LAPTOP);
+        let from_laptop = env::device_id();
+        let account_from_laptop = env::account_id();
+
+        env::set_device_id(PHONE);
+        let from_phone = env::device_id();
+        let account_from_phone = env::account_id();
+
+        assert_eq!(
+            account_from_laptop, account_from_phone,
+            "one person is one principal for authorization"
+        );
+        assert_ne!(
+            from_laptop, from_phone,
+            "but two devices must stay two writers, or their per-writer state merges"
+        );
+        assert_ne!(
+            account_from_laptop, from_laptop,
+            "and an account is never its device's id — a test where they matched \
+             could not tell an account-keyed gate from a device-keyed one"
+        );
+    }
+
     #[test]
     #[serial]
     fn admin_can_grant_and_revoke_roles() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
 
         assert!(ac.is_admin(&ALICE.into()));
@@ -449,11 +540,11 @@ mod tests {
     #[serial]
     fn non_admin_cannot_grant() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
 
         // Bob is not an admin — the fail-fast guard rejects his grant.
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         assert!(ac.grant("editor", CAROL.into()).is_err());
         assert!(ac.only_admin().is_err());
     }
@@ -462,14 +553,14 @@ mod tests {
     #[serial]
     fn admin_tier_rotation() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
 
         ac.grant_admin(BOB.into()).unwrap();
         assert!(ac.is_admin(&BOB.into()));
 
         // Bob, now an admin, can grant.
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         ac.grant("editor", CAROL.into()).unwrap();
         assert!(ac.has_role("editor", &CAROL.into()).unwrap());
 
@@ -483,7 +574,7 @@ mod tests {
     #[serial]
     fn roles_are_independent() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
 
         ac.grant("editor", BOB.into()).unwrap();
@@ -498,13 +589,13 @@ mod tests {
     #[serial]
     fn only_role_gates_on_held_role() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
         ac.grant("editor", BOB.into()).unwrap();
 
         // Alice (admin, but no editor role) is refused; Bob (editor) passes.
         assert!(ac.only_role("editor").is_err());
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         assert!(ac.only_role("editor").is_ok());
     }
 
@@ -514,7 +605,7 @@ mod tests {
         // grant -> revoke -> has_role within one execution must read `false`
         // (the registry is read from storage, not a stale in-memory snapshot).
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
 
         ac.grant("editor", BOB.into()).unwrap();
@@ -528,7 +619,7 @@ mod tests {
     fn role_name_with_separator_is_rejected() {
         // A NUL in the role name could otherwise craft a colliding key.
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
 
         assert!(ac.grant("editor\0evil", BOB.into()).is_err());
@@ -540,7 +631,7 @@ mod tests {
     #[serial]
     fn over_long_role_name_is_rejected() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
 
         let long = "r".repeat(super::MAX_ROLE_NAME_LEN + 1);
@@ -554,7 +645,7 @@ mod tests {
     #[serial]
     fn members_of_lists_current_holders() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let mut ac = Root::new(AccessControl::new_admin_caller);
 
         ac.grant("editor", BOB.into()).unwrap();
@@ -594,7 +685,7 @@ mod tests {
         ];
 
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let mut s = Root::new(|| St {
             ac: AccessControl::new(ALICE.into()),
             data: PermissionedStorage::new(BTreeSet::from([ALICE.into()]), false),

@@ -18,7 +18,7 @@
 //! use calimero_node_primitives::sync::storage_bridge::create_runtime_env;
 //!
 //! // Works with any Store backend (RocksDB or InMemoryDB)
-//! let runtime_env = create_runtime_env(&store, context_id, identity);
+//! let runtime_env = create_runtime_env(&store, context_id, identity, test_account());
 //!
 //! // Use with storage APIs
 //! with_runtime_env(runtime_env, || {
@@ -30,6 +30,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use calimero_account::AccountId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_primitives::utils::prefix_upper_bound;
@@ -49,12 +50,24 @@ use tracing::warn;
 ///
 /// * `store` - The underlying store (works with both RocksDB and InMemoryDB)
 /// * `context_id` - The context being accessed
-/// * `executor_id` - The identity executing operations
+/// * `executor_id` - The DEVICE identity executing operations (the replica id,
+///   and what owner stamps record)
+/// * `account_id` - The ACCOUNT that device speaks for here (the principal a
+///   writer set grants). Callers in `calimero-node` get it from
+///   `calimero_governance_store::account_for_context`, which is the same
+///   resolution the execute path uses, so a native storage operation and a
+///   guest one agree about who this node is.
+///
+/// Both are required, and passing the device for both is a bug rather than a
+/// shortcut: gates read the account and stamps read the device, so collapsing
+/// them re-creates the "your second device is a stranger" behaviour the account
+/// plane exists to remove — and silently, because both are 32 bytes.
 ///
 /// # Example
 ///
 /// ```ignore
-/// let env = create_runtime_env(&store, context_id, identity);
+/// let account = calimero_governance_store::account_for_context(&store, &context_id)?;
+/// let env = create_runtime_env(&store, context_id, identity, account);
 /// let result = with_runtime_env(env, || {
 ///     Index::<MainStorage>::get_index(entity_id)
 /// });
@@ -63,6 +76,7 @@ pub fn create_runtime_env(
     store: &Store,
     context_id: ContextId,
     executor_id: PublicKey,
+    account_id: AccountId,
 ) -> RuntimeEnv {
     let callbacks = create_storage_callbacks(store, context_id);
     RuntimeEnv::new(
@@ -71,6 +85,7 @@ pub fn create_runtime_env(
         callbacks.remove,
         *context_id.as_ref(),
         *executor_id.as_ref(),
+        *account_id.as_bytes(),
     )
     .with_index(create_index_callbacks(store, context_id))
 }
@@ -277,6 +292,13 @@ fn create_storage_callbacks(store: &Store, context_id: ContextId) -> StorageCall
 
 #[cfg(test)]
 mod tests {
+    /// A stand-in account for these tests, deliberately unequal to the identity
+    /// they pass as the device — nothing here is writer-set guarded, so the pair
+    /// only has to be distinguishable.
+    fn test_account() -> AccountId {
+        AccountId::from([0xAC; 32])
+    }
+
     use std::sync::Arc;
 
     use super::*;
@@ -296,7 +318,7 @@ mod tests {
         let identity = PublicKey::from([2u8; 32]);
 
         // Create RuntimeEnv - should not panic
-        let env = create_runtime_env(&store, context_id, identity);
+        let env = create_runtime_env(&store, context_id, identity, test_account());
 
         // Use it with storage APIs
         let result = with_runtime_env(env, || {
@@ -325,7 +347,7 @@ mod tests {
         let context_id = ContextId::from([1u8; 32]);
         let identity = PublicKey::from([2u8; 32]);
 
-        let env = create_runtime_env(&store, context_id, identity);
+        let env = create_runtime_env(&store, context_id, identity, test_account());
 
         // Write: create root entity
         let root_id = Id::new(*context_id.as_ref());
@@ -388,7 +410,7 @@ mod tests {
         }
 
         // Read from store2 via bridge (like the HashComparison responder)
-        let env2 = create_runtime_env(&store2, context_id, identity);
+        let env2 = create_runtime_env(&store2, context_id, identity, test_account());
         let read_result2 = with_runtime_env(env2, || Index::<MainStorage>::get_index(root_id));
         eprintln!("Read from store2: {read_result2:?}");
         assert!(
@@ -430,18 +452,21 @@ mod tests {
         // Build the set host-side through the bridge → index + marker land in the
         // RocksDB SortedIndex / SortedIndexMeta columns. Capture the delta a peer
         // would apply.
-        let delta = with_runtime_env(create_runtime_env(&store, context_id, identity), || {
-            let mut set = Root::new(SortedSet::<String, MainStorage>::new);
-            assert!(set.insert("a".to_owned()).unwrap());
-            assert!(set.insert("b".to_owned()).unwrap());
-            // Warm the ordered index (rebuild + stamp marker) in RocksDB.
-            assert_eq!(
-                set.iter().unwrap().collect::<Vec<_>>(),
-                vec!["a".to_owned(), "b".to_owned()]
-            );
-            set.commit();
-            take_last_artifact().expect("commit emitted a delta")
-        });
+        let delta = with_runtime_env(
+            create_runtime_env(&store, context_id, identity, test_account()),
+            || {
+                let mut set = Root::new(SortedSet::<String, MainStorage>::new);
+                assert!(set.insert("a".to_owned()).unwrap());
+                assert!(set.insert("b".to_owned()).unwrap());
+                // Warm the ordered index (rebuild + stamp marker) in RocksDB.
+                assert_eq!(
+                    set.iter().unwrap().collect::<Vec<_>>(),
+                    vec!["a".to_owned(), "b".to_owned()]
+                );
+                set.commit();
+                take_last_artifact().expect("commit emitted a delta")
+            },
+        );
 
         // Sanity: the ordered index really is in RocksDB (bridge is wired), not
         // the mock — there is at least one SortedIndex row for this context.
@@ -474,19 +499,22 @@ mod tests {
 
         // CONTROL: the O(1) marker-only read trusts the matching marker and
         // serves the stale (empty) index — the bug.
-        with_runtime_env(create_runtime_env(&store, context_id, identity), || {
-            let set = Root::<SortedSet<String, MainStorage>>::fetch().expect("state present");
-            assert!(
-                set.contains("a").unwrap(),
-                "child 'a' still present in state"
-            );
-            assert_eq!(set.len().unwrap(), 2, "both children enumerable");
-            assert_eq!(
-                set.iter().unwrap().collect::<Vec<String>>(),
-                Vec::<String>::new(),
-                "control: matching marker → stale (empty) ordered index served"
-            );
-        });
+        with_runtime_env(
+            create_runtime_env(&store, context_id, identity, test_account()),
+            || {
+                let set = Root::<SortedSet<String, MainStorage>>::fetch().expect("state present");
+                assert!(
+                    set.contains("a").unwrap(),
+                    "child 'a' still present in state"
+                );
+                assert_eq!(set.len().unwrap(), 2, "both children enumerable");
+                assert_eq!(
+                    set.iter().unwrap().collect::<Vec<String>>(),
+                    Vec::<String>::new(),
+                    "control: matching marker → stale (empty) ordered index served"
+                );
+            },
+        );
 
         // Drive the REAL receiver apply path: replay the collection's own child
         // links through native apply_action (idempotent → full_hash unchanged, so
@@ -495,29 +523,35 @@ mod tests {
             StorageDelta::Actions(a) => a,
             StorageDelta::CausalActions { actions, .. } => actions,
         };
-        with_runtime_env(create_runtime_env(&store, context_id, identity), || {
-            for action in actions {
-                if action.id().is_root() {
-                    continue;
+        with_runtime_env(
+            create_runtime_env(&store, context_id, identity, test_account()),
+            || {
+                for action in actions {
+                    if action.id().is_root() {
+                        continue;
+                    }
+                    Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())
+                        .expect("apply_action");
                 }
-                Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())
-                    .expect("apply_action");
-            }
-        });
+            },
+        );
 
         // The apply cleared the RocksDB marker, so the next ordered read rebuilds
         // and serves the full converged set.
-        with_runtime_env(create_runtime_env(&store, context_id, identity), || {
-            let set = Root::<SortedSet<String, MainStorage>>::fetch().expect("state present");
-            assert_eq!(
-                set.iter().unwrap().collect::<Vec<String>>(),
-                vec!["a".to_owned(), "b".to_owned()],
-                "host-side ordered iter() stayed stale — the native apply did not \
+        with_runtime_env(
+            create_runtime_env(&store, context_id, identity, test_account()),
+            || {
+                let set = Root::<SortedSet<String, MainStorage>>::fetch().expect("state present");
+                assert_eq!(
+                    set.iter().unwrap().collect::<Vec<String>>(),
+                    vec!["a".to_owned(), "b".to_owned()],
+                    "host-side ordered iter() stayed stale — the native apply did not \
                  invalidate the RocksDB SortedIndexMeta marker (sdk-js#87)"
-            );
-            assert_eq!(set.first().unwrap(), Some("a".to_owned()));
-            assert_eq!(set.last().unwrap(), Some("b".to_owned()));
-        });
+                );
+                assert_eq!(set.first().unwrap(), Some("a".to_owned()));
+                assert_eq!(set.last().unwrap(), Some("b".to_owned()));
+            },
+        );
     }
 
     /// TRUE concurrent-writer reproduction for core#3333 on the REAL RocksDB
@@ -551,34 +585,40 @@ mod tests {
 
         // Node A: insert "a", warm the ordered index, capture the delta.
         let store_a = Store::new(Arc::new(InMemoryDB::owned()));
-        let delta_a = with_runtime_env(create_runtime_env(&store_a, context_id, identity), || {
-            let mut set = Root::new(SortedSet::<String, MainStorage>::new);
-            // Pin the collection to the deterministic field-name id (what the
-            // `#[app::state]` macro does after `init`) so both nodes address the
-            // SAME collection — otherwise each `Root::new` mints a random id and
-            // node A's element can never merge into node B's set.
-            set.reassign_deterministic_id("tags");
-            assert!(set.insert("a".to_owned()).unwrap());
-            assert_eq!(
-                set.iter().unwrap().collect::<Vec<_>>(),
-                vec!["a".to_owned()]
-            );
-            set.commit();
-            take_last_artifact().expect("commit emitted a delta")
-        });
+        let delta_a = with_runtime_env(
+            create_runtime_env(&store_a, context_id, identity, test_account()),
+            || {
+                let mut set = Root::new(SortedSet::<String, MainStorage>::new);
+                // Pin the collection to the deterministic field-name id (what the
+                // `#[app::state]` macro does after `init`) so both nodes address the
+                // SAME collection — otherwise each `Root::new` mints a random id and
+                // node A's element can never merge into node B's set.
+                set.reassign_deterministic_id("tags");
+                assert!(set.insert("a".to_owned()).unwrap());
+                assert_eq!(
+                    set.iter().unwrap().collect::<Vec<_>>(),
+                    vec!["a".to_owned()]
+                );
+                set.commit();
+                take_last_artifact().expect("commit emitted a delta")
+            },
+        );
 
         // Node B: insert "b", warm its own ordered index (index={b}, marker=H_b).
         let store_b = Store::new(Arc::new(InMemoryDB::owned()));
-        with_runtime_env(create_runtime_env(&store_b, context_id, identity), || {
-            let mut set = Root::new(SortedSet::<String, MainStorage>::new);
-            set.reassign_deterministic_id("tags");
-            assert!(set.insert("b".to_owned()).unwrap());
-            assert_eq!(
-                set.iter().unwrap().collect::<Vec<_>>(),
-                vec!["b".to_owned()]
-            );
-            set.commit();
-        });
+        with_runtime_env(
+            create_runtime_env(&store_b, context_id, identity, test_account()),
+            || {
+                let mut set = Root::new(SortedSet::<String, MainStorage>::new);
+                set.reassign_deterministic_id("tags");
+                assert!(set.insert("b".to_owned()).unwrap());
+                assert_eq!(
+                    set.iter().unwrap().collect::<Vec<_>>(),
+                    vec!["b".to_owned()]
+                );
+                set.commit();
+            },
+        );
 
         // Node B applies node A's child actions (the "a" element + its ancestors)
         // via the real receiver apply path.
@@ -586,27 +626,33 @@ mod tests {
             StorageDelta::Actions(a) => a,
             StorageDelta::CausalActions { actions, .. } => actions,
         };
-        with_runtime_env(create_runtime_env(&store_b, context_id, identity), || {
-            for action in actions {
-                if action.id().is_root() {
-                    continue;
+        with_runtime_env(
+            create_runtime_env(&store_b, context_id, identity, test_account()),
+            || {
+                for action in actions {
+                    if action.id().is_root() {
+                        continue;
+                    }
+                    Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())
+                        .expect("apply_action");
                 }
-                Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())
-                    .expect("apply_action");
-            }
-        });
+            },
+        );
 
         // Node B: element set converged, and the ordered read must too.
-        with_runtime_env(create_runtime_env(&store_b, context_id, identity), || {
-            let set = Root::<SortedSet<String, MainStorage>>::fetch().expect("state present");
-            assert!(set.contains("a").unwrap(), "membership converged: 'a'");
-            assert!(set.contains("b").unwrap(), "membership converged: 'b'");
-            assert_eq!(set.len().unwrap(), 2, "both elements enumerable");
-            assert_eq!(
-                set.iter().unwrap().collect::<Vec<String>>(),
-                vec!["a".to_owned(), "b".to_owned()],
-                "ordered iter() diverged after concurrent writes (core#3333)"
-            );
-        });
+        with_runtime_env(
+            create_runtime_env(&store_b, context_id, identity, test_account()),
+            || {
+                let set = Root::<SortedSet<String, MainStorage>>::fetch().expect("state present");
+                assert!(set.contains("a").unwrap(), "membership converged: 'a'");
+                assert!(set.contains("b").unwrap(), "membership converged: 'b'");
+                assert_eq!(set.len().unwrap(), 2, "both elements enumerable");
+                assert_eq!(
+                    set.iter().unwrap().collect::<Vec<String>>(),
+                    vec!["a".to_owned(), "b".to_owned()],
+                    "ordered iter() diverged after concurrent writes (core#3333)"
+                );
+            },
+        );
     }
 }

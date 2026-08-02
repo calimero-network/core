@@ -132,7 +132,14 @@ fn env_for(s: &Store, ex: [u8; 32]) -> RuntimeEnv {
         Rc::new(move |k: Key, v: &[u8]| w.borrow_mut().insert(k.to_bytes(), v.to_vec()).is_some());
     let rm = s.clone();
     let remover = Rc::new(move |k: &Key| rm.borrow_mut().remove(&k.to_bytes()).is_some());
-    RuntimeEnv::new(reader, writer, remover, [7u8; 32], ex)
+    // `ex` is the device; its account is a distinct value so the two cannot be
+    // confused. Nothing here is writer-set guarded — this is re-key bookkeeping.
+    let account = {
+        let mut a = ex;
+        a[1] = 0xAC;
+        a
+    };
+    RuntimeEnv::new(reader, writer, remover, [7u8; 32], ex, account)
 }
 
 /// Two replicas each record one win for the same team under their own executor

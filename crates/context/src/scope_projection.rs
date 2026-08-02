@@ -1510,6 +1510,47 @@ impl ScopeProjections {
             .then_some(true)
     }
 
+    /// The account `key` speaks for at the cut `heads`, for the writer plane.
+    ///
+    /// The same resolution [`member_at_cut`](Self::member_at_cut) performs on the
+    /// membership plane, exposed because storage's writer sets name accounts while
+    /// a signature can only name a key. Without it a signed `Shared` write could
+    /// never be matched against a writer set at all.
+    ///
+    /// `None` when the cut's ancestry is not fully folded — the caller must DEFER
+    /// such a write, not refuse it: "I cannot answer yet" and "that key speaks for
+    /// nobody" are different, and collapsing them turns a timing gap into
+    /// permanent data loss. `Some` is a settled answer, identical on every replica
+    /// that has the cited ancestry, which is what keeps two replicas from deciding
+    /// the same write differently.
+    pub fn device_account_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        key: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> Option<AccountId> {
+        // Governance is keyed by namespace, as in `member_at_cut`: the cut heads are
+        // namespace-DAG nodes.
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        let view = self.acl_view_at(&ScopeId::from(namespace_id), heads)?;
+        // NOT `account_for_author`, which is the MEMBERSHIP plane's resolution and
+        // treats a binding as a fallthrough — a key that is a member in its own
+        // right resolves to its own stand-in there, because membership rows are
+        // keyed that way. The writer plane is populated from `env::account_id()`,
+        // which resolves binding-first, so it has to answer in the same space or a
+        // node's own writes are refused by every peer. Same rule, one function.
+        let binding = view
+            .devices
+            .values()
+            .find(|binding| binding.sign_pk == *key)
+            .map(|binding| binding.account);
+        Some(calimero_op_adapter::writer_account(binding, key))
+    }
+
     pub fn member_at_cut(
         &self,
         store: &Store,
@@ -2216,9 +2257,11 @@ mod tests {
     fn rotation_entry_maps_to_set_writers_op() {
         let scope = ScopeId::from([0u8; 32]);
         let object = Id::new([0xB0; 32]);
+        // The signer names a KEY (it authorizes the rotation); the writer names an
+        // ACCOUNT (it is granted).
         let signer = PublicKey::from([1u8; 32]);
-        let writer = PublicKey::from([9u8; 32]);
-        let writers: std::collections::BTreeMap<PublicKey, OpMask> =
+        let writer = calimero_account::AccountId::from([9u8; 32]);
+        let writers: std::collections::BTreeMap<calimero_account::AccountId, OpMask> =
             [(writer, OpMask::FULL)].into_iter().collect();
 
         let entry = RotationLogEntry {
@@ -2242,10 +2285,9 @@ mod tests {
             op.payload,
             OpPayload::SetWriters {
                 object,
-                writers: writers
-                    .iter()
-                    .map(|(pk, m)| (legacy_account_id(pk), *m))
-                    .collect()
+                // Verbatim: the rotation log is account-keyed, so there is
+                // nothing to bridge here — only the entry's signer is a key.
+                writers: writers.clone()
             }
         );
 

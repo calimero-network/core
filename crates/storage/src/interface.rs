@@ -40,6 +40,7 @@ use core::marker::PhantomData;
 use std::collections::BTreeMap;
 
 use borsh::{from_slice, to_vec};
+use calimero_account::AccountId;
 use calimero_primitives::identity::PublicKey;
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
@@ -125,7 +126,7 @@ pub struct ApplyContext {
     /// skips the v2 stored-writers fallback. Resolved by the applying
     /// node's own sync layer from its own rotation log; see the trust
     /// contract on the type docs before adding a caller that passes `Some`.
-    pub effective_writers: Option<BTreeMap<PublicKey, OpMask>>,
+    pub effective_writers: Option<BTreeMap<AccountId, OpMask>>,
 
     /// Hash of the `CausalDelta` containing the action being applied. Used
     /// by the rotation-log write hook to record the originating delta on
@@ -136,6 +137,31 @@ pub struct ApplyContext {
     /// rotation-log write hook (sibling tiebreak per ADR 0001). `None` for
     /// callers without a `CausalDelta` in scope.
     pub delta_hlc: Option<crate::logical_clock::HybridTimestamp>,
+
+    /// The account the action's signing key speaks for, resolved by the node at
+    /// the action's causal cut.
+    ///
+    /// The writer set names accounts; a signature names a key. This is the bridge,
+    /// and it is resolved by the caller because that resolution needs the device
+    /// bindings folded to this action's cut — neither of which this crate has.
+    /// Resolving it live instead would let two nodes at different fold depths
+    /// disagree about who may write, which splits the root rather than rejecting a
+    /// write.
+    ///
+    /// `None` means "could not be resolved", and every consumer treats that as a
+    /// refusal. It must never fall back to the locally executing account: a remote
+    /// action would then authorize itself.
+    ///
+    /// **Contract the caller owes, which this crate cannot check.** This must be
+    /// the resolution of *this action's own* `signature_data.signer`. Storage
+    /// verifies two things — that the signature is valid under the key the action
+    /// names, and that this account is in the writer set — but it has no bindings
+    /// with which to confirm the two describe the same principal. Hand it an
+    /// authorized account beside an unrelated key's valid signature and the write
+    /// is accepted. Production cannot produce that pair (one delta has one author,
+    /// and the account is resolved *from* that author's key), which is exactly why
+    /// the resolution must stay in one place instead of being assembled from two.
+    pub signer_account: Option<AccountId>,
 }
 
 impl ApplyContext {
@@ -149,6 +175,7 @@ impl ApplyContext {
             effective_writers: None,
             delta_id: None,
             delta_hlc: None,
+            signer_account: None,
         }
     }
 }
@@ -251,7 +278,7 @@ enum RemoveMode {
 /// A resolved local `Shared` stamp authorization: the writer set to persist
 /// paired with the signer to record. Produced by
 /// [`Interface::authorize_local_shared_stamp`].
-type SharedStampAuthorization = (BTreeMap<PublicKey, OpMask>, PublicKey);
+type SharedStampAuthorization = (BTreeMap<AccountId, OpMask>, PublicKey);
 
 /// The primary interface for the storage system.
 #[derive(Debug, Default, Clone)]
@@ -298,7 +325,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// anchors created post-P4. It remains for local execution (correct there)
     /// and for legacy anchors whose log predates P4 (a vanishing set after a
     /// state reset).
-    pub(crate) fn resolve_anchor_writers(anchor: Id) -> BTreeMap<PublicKey, OpMask> {
+    pub(crate) fn resolve_anchor_writers(anchor: Id) -> BTreeMap<AccountId, OpMask> {
         // core#2716 P3: the rotation log is a real `UnorderedMap` child of the
         // anchor (see `rotation_log_map`) and is THE authoritative, synced
         // source — it converges identically on every node via HashComparison's
@@ -339,7 +366,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// [`rotation_log::resolve_local_as_of`]. Falls back to the anchor's stored
     /// writers (last-applied) for a value authored before any signed rotation,
     /// or a legacy anchor with no collection.
-    pub(crate) fn resolve_anchor_writers_as_of(anchor: Id, at: u64) -> BTreeMap<PublicKey, OpMask> {
+    pub(crate) fn resolve_anchor_writers_as_of(anchor: Id, at: u64) -> BTreeMap<AccountId, OpMask> {
         if let Some(child_log) = Self::load_rotation_log_child(anchor) {
             if let Some(writers) = crate::rotation_log::resolve_local_as_of(&child_log, at) {
                 return writers;
@@ -554,11 +581,11 @@ impl<S: StorageAdaptor> Interface<S> {
     /// known to be a current writer; this is the operation-granularity gate. An
     /// absent signer (shouldn't happen post-verify) fails closed.
     fn enforce_op_mask(
-        signer: &PublicKey,
+        signer_account: &AccountId,
         required: OpMask,
-        writers: &BTreeMap<PublicKey, OpMask>,
+        writers: &BTreeMap<AccountId, OpMask>,
     ) -> Result<(), StorageError> {
-        let granted = writers.get(signer).copied().unwrap_or(OpMask::NONE);
+        let granted = writers.get(signer_account).copied().unwrap_or(OpMask::NONE);
         if granted.contains(required) {
             Ok(())
         } else {
@@ -598,15 +625,69 @@ impl<S: StorageAdaptor> Interface<S> {
     /// The caller is responsible for the `[0; 64]` placeholder reject before
     /// calling this.
     fn resolve_signer(
-        writers: &BTreeMap<PublicKey, OpMask>,
+        writers: &BTreeMap<AccountId, OpMask>,
         sig_data: &crate::entities::SignatureData,
         payload: &[u8],
-    ) -> Option<PublicKey> {
+        signer_account: Option<AccountId>,
+    ) -> Option<AccountId> {
+        // The two questions, in order. Authentication is about a KEY: only the
+        // named signing key can produce this signature, and only a device holds a
+        // key. Authorization is about an ACCOUNT: the writer set names people, so a
+        // person's second device passes without being granted separately.
+        //
+        // `signer_account` is the node's resolution of `sig_data.signer` to the
+        // account it speaks for, taken at the write's causal cut. It is a parameter
+        // rather than something looked up here because this crate has no store and
+        // no cut — and resolving live would reintroduce the divergence class the
+        // account plane spent its review on: two nodes that folded different amounts
+        // of the device-binding history would disagree about who may write, which is
+        // a split root rather than a rejected write.
+        //
+        // `None` is a hard reject, never a fallback to the locally executing
+        // account. A remote delta whose signer this node cannot yet resolve must be
+        // refused (and retried once the binding folds), because defaulting to the
+        // local account would let any delta authorize itself.
         let signer = sig_data.signer?;
-        if !writers.contains_key(&signer) {
+        let account = signer_account?;
+
+        // Cheap check before the expensive one — this ordering is what stage 1
+        // bought: a signature that verifies under nobody used to cost one
+        // `ed25519_verify` per writer, on a path any peer can drive.
+        if !writers.contains_key(&account) {
             return None;
         }
-        crate::env::ed25519_verify(&sig_data.signature, signer.digest(), payload).then_some(signer)
+        crate::env::ed25519_verify(&sig_data.signature, signer.digest(), payload).then_some(account)
+    }
+
+    /// Whether `sig_data`'s signature over `payload` verifies under the key it
+    /// names — the whole of what a snapshot leaf can prove.
+    ///
+    /// **Deliberately does not ask whether that signer was a writer.** That is an
+    /// at-cut question, and a snapshot leaf has no cut: it is state, not an op, so
+    /// there are no parents to resolve "was this account a writer *then*" against.
+    /// Resolving against the receiver's *current* bindings instead answers a
+    /// different question and answers it wrongly in both directions — a leaf
+    /// written by a since-revoked device would be refused even though the sender's
+    /// root hash includes it, leaving the receiver unable to match the root it just
+    /// accepted and sending HashComparison to repair an entity it will refuse
+    /// again.
+    ///
+    /// What still holds a snapshot together: the sender is a member, the delivered
+    /// contents hash to the root the sender claims, and every subsequent *op* is
+    /// authorized at its own cut. What this check adds on top is that no leaf
+    /// carries a forged or placeholder signature. The writer half resumes the
+    /// moment the entity is next written by a delta.
+    fn snapshot_signature_verifies(
+        sig_data: &crate::entities::SignatureData,
+        payload: &[u8],
+    ) -> bool {
+        let Some(signer) = sig_data.signer else {
+            return false;
+        };
+        if sig_data.signature == [0u8; 64] {
+            return false;
+        }
+        crate::env::ed25519_verify(&sig_data.signature, signer.digest(), payload)
     }
 
     /// Verify the writer's signature on a snapshot-supplied entity
@@ -622,11 +703,15 @@ impl<S: StorageAdaptor> Interface<S> {
     /// * `Public` / `Frozen` — accept unconditionally (Public has
     ///   no signature; Frozen is content-addressed and verified
     ///   elsewhere).
-    /// * `User` / `Shared` with `signature_data: Some(_)` — compute
+    /// * `User` with `signature_data: Some(_)` — compute
     ///   `payload_for_signing` from a synthetic `Action::Add { id,
     ///   data, ancestors: vec![], metadata }` and `ed25519_verify`
-    ///   against the writer (owner for User, the signature's named
-    ///   signer for Shared).
+    ///   against the owner.
+    /// * `Shared` / `SharedMember` with `signature_data: Some(_)` — the same
+    ///   payload, verified under the key the signature NAMES. The writer set is
+    ///   not consulted; see
+    ///   [`snapshot_signature_verifies`](Self::snapshot_signature_verifies) for
+    ///   why it cannot be, and where the writer check happens instead.
     /// * `User` / `Shared` with `signature_data: None` — rejected as
     ///   `InvalidSignature`. After the bootstrap-signing fix
     ///   (`persist_signed_signatures` in
@@ -636,14 +721,13 @@ impl<S: StorageAdaptor> Interface<S> {
     ///   peer.
     ///
     /// Returns `Ok(())` if the entity is verified or doesn't require
-    /// verification; `Err(StorageError::InvalidSignature)` otherwise.
-    /// Does not write to storage.
+    /// verification; `Err(StorageError::InvalidSignature)` otherwise. Does not
+    /// write to storage.
     ///
     /// # Errors
-    /// - `InvalidSignature` if the `signature_data` is `None`,
-    ///   carries the `[0; 64]` placeholder, or fails ed25519
-    ///   verification against the access-control rules in
-    ///   `metadata.storage_type`.
+    /// `InvalidSignature` if the `signature_data` is `None`, names no signer,
+    /// carries the `[0; 64]` placeholder, or fails ed25519 verification under the
+    /// key it names.
     pub fn verify_snapshot_entity_signature(
         id: crate::address::Id,
         data: &[u8],
@@ -726,9 +810,13 @@ impl<S: StorageAdaptor> Interface<S> {
                 if sig_data.signature == [0u8; 64] {
                     return Err(StorageError::InvalidSignature);
                 }
-                // The signature must name its signer, and that signer must
-                // be a writer — one verify, no scan. Mirrors `apply_action`.
-                if Self::resolve_signer(writers, sig_data, &payload).is_some() {
+                // The signature must name its signer — one verify, no scan, as
+                // `apply_action` does. What is NOT asked here is whether that
+                // signer is a writer: see `snapshot_signature_verifies`. `writers`
+                // is still carried on the leaf and still gates every later
+                // delta-borne write.
+                let _ = writers;
+                if Self::snapshot_signature_verifies(sig_data, &payload) {
                     Ok(())
                 } else {
                     Err(StorageError::InvalidSignature)
@@ -745,15 +833,14 @@ impl<S: StorageAdaptor> Interface<S> {
                 if sig_data.signature == [0u8; 64] {
                     return Err(StorageError::InvalidSignature);
                 }
-                // A member carries no writer set: resolve it from the anchor's
-                // locally-verified state, AS OF this member write's own HLC
-                // (`sig_data.nonce`) so a value authored under an earlier rotation
-                // verifies against the set then in effect, not the latest
-                // (core#2716/#2673). An unsynced anchor yields the empty set,
-                // which fails verification (the scan finds no writer) — fail
-                // closed rather than accept an unverifiable member.
-                let writers = Self::resolve_anchor_writers_as_of(*anchor, sig_data.nonce);
-                if Self::resolve_signer(&writers, sig_data, &payload).is_some() {
+                // Signature only, as above. The anchor's writer set is not
+                // consulted: resolving it "as of" this leaf's HLC was the closest
+                // a snapshot could get to a cut, and it still asks the writer
+                // question against whatever the receiver has folded rather than
+                // against the author's own ancestry. A member's authorization is
+                // re-established the moment a delta writes it.
+                let _ = anchor;
+                if Self::snapshot_signature_verifies(sig_data, &payload) {
                     Ok(())
                 } else {
                     Err(StorageError::InvalidSignature)
@@ -785,14 +872,16 @@ impl<S: StorageAdaptor> Interface<S> {
     /// caller error and is rejected as `InvalidData`.
     ///
     /// # Errors
-    /// `InvalidSignature` if `signature_data` is `None`, carries the `[0; 64]`
-    /// placeholder, or fails ed25519 verification against `writers`;
-    /// `InvalidData` if `metadata.storage_type` is not `SharedMember`.
+    /// `InvalidSignature` if `signature_data` is `None`, names no signer, carries
+    /// the `[0; 64]` placeholder, or fails ed25519 verification under the key it
+    /// names; `InvalidData` if `metadata.storage_type` is not `SharedMember`.
+    ///
+    /// Does not ask whether the signer was a writer — see
+    /// [`snapshot_signature_verifies`](Self::snapshot_signature_verifies).
     pub fn verify_snapshot_member_signature(
         id: crate::address::Id,
         data: &[u8],
         metadata: &crate::entities::Metadata,
-        writers: &BTreeMap<PublicKey, OpMask>,
     ) -> Result<(), StorageError> {
         use crate::action::Action;
         use crate::entities::StorageType;
@@ -815,7 +904,7 @@ impl<S: StorageAdaptor> Interface<S> {
             metadata: metadata.clone(),
         };
         let payload = action.payload_for_signing();
-        if Self::resolve_signer(writers, sig_data, &payload).is_some() {
+        if Self::snapshot_signature_verifies(sig_data, &payload) {
             Ok(())
         } else {
             Err(StorageError::InvalidSignature)
@@ -1551,9 +1640,12 @@ impl<S: StorageAdaptor> Interface<S> {
                         // `authoritative_writers` is the DAG-causal
                         // answer whenever the caller supplied one.
                         let payload = action.payload_for_signing();
-                        let Some(signer) =
-                            Self::resolve_signer(&authoritative_writers, sig_data, &payload)
-                        else {
+                        let Some(signer) = Self::resolve_signer(
+                            &authoritative_writers,
+                            sig_data,
+                            &payload,
+                            ctx.signer_account,
+                        ) else {
                             return Err(StorageError::InvalidSignature);
                         };
                         // Operation-granularity gate: the signer is a current
@@ -1699,9 +1791,12 @@ impl<S: StorageAdaptor> Interface<S> {
                         // Verify signature first (same hint-fast-path / scan as
                         // Shared), against the anchor-resolved set.
                         let payload = action.payload_for_signing();
-                        let Some(signer) =
-                            Self::resolve_signer(&authoritative_writers, sig_data, &payload)
-                        else {
+                        let Some(signer) = Self::resolve_signer(
+                            &authoritative_writers,
+                            sig_data,
+                            &payload,
+                            ctx.signer_account,
+                        ) else {
                             return Err(StorageError::InvalidSignature);
                         };
                         // Operation-granularity gate (member resolves the anchor's masks).
@@ -1845,7 +1940,8 @@ impl<S: StorageAdaptor> Interface<S> {
                                 let last_nonce = *existing_metadata.updated_at;
                                 if new_nonce < last_nonce {
                                     return Err(StorageError::NonceReplay(Box::new((
-                                        *owner, new_nonce,
+                                        *owner.as_ref(),
+                                        new_nonce,
                                     ))));
                                 }
                             }
@@ -1900,9 +1996,12 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // must verify — one verify, no scan (matches
                                 // the Add/Update arm).
                                 let payload = action.payload_for_signing();
-                                let Some(signer) =
-                                    Self::resolve_signer(existing_writers, sig_data, &payload)
-                                else {
+                                let Some(signer) = Self::resolve_signer(
+                                    existing_writers,
+                                    sig_data,
+                                    &payload,
+                                    ctx.signer_account,
+                                ) else {
                                     return Err(StorageError::InvalidSignature);
                                 };
                                 // Operation-granularity gate: deletes need DELETE.
@@ -1929,9 +2028,9 @@ impl<S: StorageAdaptor> Interface<S> {
                                         .keys()
                                         .copied()
                                         .next()
-                                        .unwrap_or_else(|| [0u8; 32].into());
+                                        .unwrap_or_else(|| AccountId::from([0u8; 32]));
                                     return Err(StorageError::NonceReplay(Box::new((
-                                        placeholder,
+                                        *placeholder.as_bytes(),
                                         new_nonce,
                                     ))));
                                 }
@@ -1984,9 +2083,12 @@ impl<S: StorageAdaptor> Interface<S> {
                                     });
 
                                 let payload = action.payload_for_signing();
-                                let Some(signer) =
-                                    Self::resolve_signer(&existing_writers, sig_data, &payload)
-                                else {
+                                let Some(signer) = Self::resolve_signer(
+                                    &existing_writers,
+                                    sig_data,
+                                    &payload,
+                                    ctx.signer_account,
+                                ) else {
                                     return Err(StorageError::InvalidSignature);
                                 };
                                 // Operation-granularity gate: deletes need DELETE.
@@ -2002,9 +2104,9 @@ impl<S: StorageAdaptor> Interface<S> {
                                         .keys()
                                         .copied()
                                         .next()
-                                        .unwrap_or_else(|| [0u8; 32].into());
+                                        .unwrap_or_else(|| AccountId::from([0u8; 32]));
                                     return Err(StorageError::NonceReplay(Box::new((
-                                        placeholder,
+                                        *placeholder.as_bytes(),
                                         new_nonce,
                                     ))));
                                 }
@@ -2340,7 +2442,7 @@ impl<S: StorageAdaptor> Interface<S> {
     pub fn build_rotation_entry(
         metadata: &Metadata,
         ctx: &ApplyContext,
-        pre_apply_writers: Option<&BTreeMap<PublicKey, OpMask>>,
+        pre_apply_writers: Option<&BTreeMap<AccountId, OpMask>>,
         signed_payload: Option<[u8; 32]>,
     ) -> Option<crate::rotation_log::RotationLogEntry> {
         let StorageType::Shared {
@@ -2737,19 +2839,25 @@ impl<S: StorageAdaptor> Interface<S> {
         // Same for a member delete: authorize against the ANCHOR's writers
         // (the member carries none), re-stamp the anchor pointer with a fresh
         // signature placeholder for the signer to fill in.
-        let member_to_stamp = if let StorageType::SharedMember { anchor, .. } =
-            &metadata.storage_type
-        {
-            let executor: calimero_primitives::identity::PublicKey = crate::env::device_id().into();
-            let writers = Self::resolve_anchor_writers(*anchor);
-            if writers.contains_key(&executor) {
-                Some((*anchor, executor))
+        let member_to_stamp =
+            if let StorageType::SharedMember { anchor, .. } = &metadata.storage_type {
+                // Authorize by ACCOUNT, but stamp the KEY. `SignatureData.signer` names
+                // whatever will actually verify this write, and only a device holds a
+                // signing key — so the gate and the stamp read different identities on
+                // purpose. Collapsing them either way breaks something: an account in
+                // `signer` verifies against nothing, and a device in the writer-set check
+                // is the per-device gate this change exists to remove.
+                let executor: AccountId = crate::env::account_id().into();
+                let device: PublicKey = crate::env::device_id().into();
+                let writers = Self::resolve_anchor_writers(*anchor);
+                if writers.contains_key(&executor) {
+                    Some((*anchor, device))
+                } else {
+                    None
+                }
             } else {
                 None
-            }
-        } else {
-            None
-        };
+            };
         if let Some((anchor, signer)) = member_to_stamp {
             metadata.storage_type = StorageType::SharedMember {
                 anchor,
@@ -3587,10 +3695,10 @@ impl<S: StorageAdaptor> Interface<S> {
     /// looked up here.
     fn authorize_local_shared_stamp(
         id: Id,
-        claimed: &BTreeMap<PublicKey, OpMask>,
-        stored: Option<&BTreeMap<PublicKey, OpMask>>,
+        claimed: &BTreeMap<AccountId, OpMask>,
+        stored: Option<&BTreeMap<AccountId, OpMask>>,
     ) -> Result<Option<SharedStampAuthorization>, StorageError> {
-        let executor: PublicKey = crate::env::device_id().into();
+        let executor: AccountId = crate::env::account_id().into();
         let stored_has_executor = match stored {
             Some(stored) => stored.contains_key(&executor),
             None => <Index<S>>::get_metadata(id)?
@@ -3602,7 +3710,10 @@ impl<S: StorageAdaptor> Interface<S> {
                 .unwrap_or(false),
         };
         let authorized = stored_has_executor || claimed.contains_key(&executor);
-        Ok(authorized.then(|| (claimed.clone(), executor)))
+        // Same split as the other stamp site: authorized by account, stamped with the
+        // key that will verify.
+        let device: PublicKey = crate::env::device_id().into();
+        Ok(authorized.then(|| (claimed.clone(), device)))
     }
 
     /// Saves raw serialized data with orphan checking.
@@ -3722,20 +3833,22 @@ impl<S: StorageAdaptor> Interface<S> {
         // Member upsert: a member carries no writer set, so there is no
         // claimed-set union — authority is purely the ANCHOR's resolved writers
         // (settled local state). Stamp the anchor pointer + signer placeholder.
-        let member_to_stamp = if let StorageType::SharedMember { anchor, .. } =
-            &metadata.storage_type
-        {
-            let executor: calimero_primitives::identity::PublicKey = crate::env::device_id().into();
-            if Self::resolve_anchor_writers(*anchor).contains_key(&executor) {
-                Some((*anchor, executor))
+        let member_to_stamp =
+            if let StorageType::SharedMember { anchor, .. } = &metadata.storage_type {
+                let executor: AccountId = crate::env::account_id().into();
+                if Self::resolve_anchor_writers(*anchor).contains_key(&executor) {
+                    Some((*anchor, executor))
+                } else {
+                    None
+                }
             } else {
                 None
-            }
-        } else {
-            None
-        };
-        if let Some((anchor, signer)) = member_to_stamp {
+            };
+        if let Some((anchor, _authorized_account)) = member_to_stamp {
             let nonce = *metadata.updated_at;
+            // Authorize by account, stamp the key that will verify — see the sibling
+            // sites. The account is what passed the gate; it is not what signs.
+            let signer: PublicKey = crate::env::device_id().into();
             metadata.storage_type = StorageType::SharedMember {
                 anchor,
                 signature_data: Some(SignatureData {

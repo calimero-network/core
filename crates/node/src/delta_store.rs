@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
+use calimero_account::AccountId;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::{ContextAtomic, ContextAtomicKey};
 use calimero_dag::{
@@ -89,6 +90,12 @@ pub struct BatchDeltaInput {
     pub governance_position_blob: Option<Vec<u8>>,
     pub delta_signature: Option<[u8; 64]>,
 }
+
+/// Resolves a signing key to the account it speaks for, at one causal cut.
+///
+/// Boxed rather than generic because it is armed per delta through a shared
+/// applier that the `DeltaApplier` trait hands only the delta itself.
+pub type DeviceAccountResolver = dyn Fn(&PublicKey) -> Option<AccountId> + Send + Sync;
 
 /// Result of [`DeltaStore::add_deltas_batch`].
 #[derive(Debug, Default)]
@@ -246,12 +253,23 @@ enum ParentPlan {
     },
 }
 
+impl std::fmt::Debug for ContextStorageApplier {
+    /// Hand-rolled because the armed key→account resolver is a closure. Reports
+    /// whether one is armed, which is the operationally interesting part.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContextStorageApplier")
+            .field("context_id", &self.context_id)
+            .field("our_identity", &self.our_identity)
+            .field("signer_resolver_armed", &self.armed_resolver().is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Applier that applies actions to WASM storage via ContextClient
 ///
 /// Supports two application modes:
 /// 1. **Sequential**: When delta's parent matches our current state - verify hash
 /// 2. **Merge**: When concurrent branches detected - CRDT merge, skip hash check
-#[derive(Debug)]
 struct ContextStorageApplier {
     context_client: ContextClient,
     context_id: ContextId,
@@ -314,6 +332,37 @@ struct ContextStorageApplier {
     /// most one guard at a time (the per-context lock is not re-entrant); a
     /// cascaded buffered-child apply reuses it via `ContextAtomic::Held`.
     apply_lock_slot: std::sync::Mutex<Option<ContextAtomicKey>>,
+    /// Resolves a signing key to the account it speaks for, at the causal cut the
+    /// delta about to be applied cites. Armed by the caller beside the author
+    /// below, because resolution needs the folded device bindings and the cited
+    /// governance heads — neither of which this applier has, and both of which the
+    /// receive path already holds (it resolves membership at the same cut).
+    ///
+    /// Used for both halves of the same question: the delta's own author, and the
+    /// author of each rotation-log entry the writer-set fold walks. One armed
+    /// resolver, so the two cannot be resolved against different views.
+    signer_resolver: std::sync::Mutex<Option<Arc<DeviceAccountResolver>>>,
+    /// The signing key that authored the delta about to be applied, armed by the
+    /// caller immediately before `dag.add_delta` and read once inside `apply`.
+    ///
+    /// A slot rather than an `apply` parameter because `apply` is the
+    /// `DeltaApplier` trait method and the trait carries only the delta — the same
+    /// reason [`Self::apply_lock_slot`] exists. Safe for the same reason: a
+    /// `dag.add_delta` processes its primary delta and any cascaded children
+    /// strictly sequentially on one task, so the slot is never read by a second
+    /// apply between arming and consumption.
+    ///
+    /// **Taken, not read.** `apply` consumes it, so a delta cascaded inside the
+    /// same `dag.add_delta` — a buffered child unblocked by the primary — finds it
+    /// empty rather than inheriting an author that is not its own. That costs the
+    /// child a retry (it is refused, stays pending, and is re-driven later with
+    /// its own author armed) and buys the guarantee that no delta is ever
+    /// authorized as somebody else.
+    ///
+    /// `None` therefore means "no author claim for THIS delta", and resolution
+    /// yields `None`, and every consumer treats that as a refusal — never as a
+    /// fallback to the applying node, which would let a delta authorize itself.
+    author_slot: std::sync::Mutex<Option<PublicKey>>,
 }
 
 impl ContextStorageApplier {
@@ -402,11 +451,28 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
                 ApplyError::Application(format!("Failed to resolve effective writers: {e}"))
             })?;
 
+        // The other half of the same resolution: who is writing, resolved at the
+        // same cut as who may write. The author's signing key comes from the
+        // caller's armed slot; the account it speaks for is resolved from the
+        // device bindings, and an unresolvable author yields `None` — which every
+        // consumer downstream treats as a refusal rather than authorizing the
+        // delta as whoever happens to be applying it.
+        let signer_account = self.resolve_signer_account_for_delta();
+        if signer_account.is_none() {
+            debug!(
+                context_id = %self.context_id,
+                delta_id = %Hash::from(delta.id),
+                "no account resolved for this delta's author; signed Shared actions \
+                 in it will be refused and retried once the binding folds"
+            );
+        }
+
         let artifact = borsh::to_vec(&StorageDelta::CausalActions {
             actions: delta.payload.clone(),
             delta_id: delta.id,
             delta_hlc: delta.hlc,
             effective_writers,
+            signer_account,
         })
         .map_err(|e| ApplyError::Application(format!("Failed to serialize delta: {e}")))?;
 
@@ -824,6 +890,42 @@ impl ContextStorageApplier {
         false
     }
 
+    /// The account this delta's author speaks for, through the armed resolver.
+    ///
+    /// The author's signing KEY is what verified the delta's signature; the
+    /// ACCOUNT it speaks for is what a writer set can be asked about. This is the
+    /// bridge, and without it a signature could never be matched against a writer
+    /// set at all.
+    ///
+    /// Takes the author, so a delta cascaded inside the same `dag.add_delta` does
+    /// not inherit it — see [`Self::author_slot`].
+    ///
+    /// `None` when no author was armed for this delta, or when the resolver cannot
+    /// place the key at the cited cut (unbound, revoked, or the cut's ancestry not
+    /// yet folded). Every consumer treats that as a refusal, so an unresolvable
+    /// delta is retried once the binding folds rather than authorized on a guess.
+    fn resolve_signer_account_for_delta(&self) -> Option<AccountId> {
+        let author = self.take_armed_author()?;
+        let resolver = self.armed_resolver()?;
+        resolver(&author)
+    }
+
+    /// The armed key→account resolver for the delta being applied, if any.
+    fn armed_resolver(&self) -> Option<Arc<DeviceAccountResolver>> {
+        self.signer_resolver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Take this delta's armed author, leaving the slot empty.
+    fn take_armed_author(&self) -> Option<PublicKey> {
+        self.author_slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+
     /// Resolve the writer set for every Shared entity touched by `delta`.
     ///
     /// Iterates the action payload, picks out Shared `Add`/`Update`/
@@ -844,7 +946,7 @@ impl ContextStorageApplier {
     async fn resolve_effective_writers_for_delta(
         &self,
         delta: &CausalDelta<Vec<Action>>,
-    ) -> Result<BTreeMap<Id, BTreeMap<PublicKey, OpMask>>> {
+    ) -> Result<BTreeMap<Id, BTreeMap<AccountId, OpMask>>> {
         let mut shared_entities: BTreeSet<Id> = BTreeSet::new();
         // (member entity id, its anchor id). A `SharedMember` carries no writer
         // set of its own; it resolves the ANCHOR's writers and the result is
@@ -868,7 +970,7 @@ impl ContextStorageApplier {
             }
         }
 
-        let mut out: BTreeMap<Id, BTreeMap<PublicKey, OpMask>> = BTreeMap::new();
+        let mut out: BTreeMap<Id, BTreeMap<AccountId, OpMask>> = BTreeMap::new();
         if shared_entities.is_empty() && members.is_empty() {
             return Ok(out);
         }
@@ -879,6 +981,14 @@ impl ContextStorageApplier {
         // inner `Arc` makes this a refcount bump rather than a deep clone
         // of the whole map; the guard is released immediately.
         let topology_snapshot = Arc::clone(&*self.topology.read().await);
+
+        // Armed by the caller for this delta. Absent means no rotation can be
+        // authenticated, so every rotated entity resolves to its prior set and a
+        // write depending on a rotation is refused and retried — never accepted on
+        // an unresolved author.
+        let resolver = self.armed_resolver();
+        let resolver =
+            move |key: &PublicKey| -> Option<AccountId> { resolver.as_ref().and_then(|r| r(key)) };
 
         for entity_id in shared_entities {
             // Read the rotation log directly from the datastore rather
@@ -902,6 +1012,10 @@ impl ContextStorageApplier {
                 &delta.parents,
                 |a, b| happens_before_in_topology(&topology_snapshot, a, b),
                 verify_rotation_entry,
+                // Same armed resolver the delta's own author goes through, so the
+                // writer set and the principal matched against it are resolved
+                // against one view of the bindings.
+                |entry| entry.signer.and_then(|key| resolver(&key)),
             );
 
             if let Some(set) = resolved {
@@ -917,7 +1031,7 @@ impl ContextStorageApplier {
         // has rotated. When the anchor is absent entirely, the fallback yields
         // the empty set and verification fails closed (the member is retried
         // once the anchor syncs).
-        let mut anchor_cache: BTreeMap<Id, Option<BTreeMap<PublicKey, OpMask>>> = BTreeMap::new();
+        let mut anchor_cache: BTreeMap<Id, Option<BTreeMap<AccountId, OpMask>>> = BTreeMap::new();
         for (member_id, anchor) in members {
             let resolved = match anchor_cache.get(&anchor) {
                 Some(cached) => cached.clone(),
@@ -932,6 +1046,7 @@ impl ContextStorageApplier {
                             &delta.parents,
                             |a, b| happens_before_in_topology(&topology_snapshot, a, b),
                             verify_rotation_entry,
+                            |entry| entry.signer.and_then(|key| resolver(&key)),
                         ),
                         Ok(None) => None,
                         Err(e) => {
@@ -1236,6 +1351,46 @@ struct CascadePersistOutcome {
 }
 
 impl DeltaStore {
+    /// Arm the key→account resolver used for the next delta(s) applied through
+    /// this store.
+    ///
+    /// The receive path calls this with a resolver closed over the delta's cited
+    /// governance cut — the same cut it resolves the author's membership at — so
+    /// the writer set, the delta's author, and every rotation entry's author are
+    /// all placed against one view of the device bindings.
+    ///
+    /// Left armed across a batch on purpose: every delta in one batch cites the
+    /// same context, and the resolver answers per key rather than per delta. What
+    /// is per-delta is the AUTHOR, which is armed separately and consumed by the
+    /// apply (see `ContextStorageApplier::author_slot`).
+    ///
+    /// Unarmed, nothing resolves: a signed `Shared` action is refused and retried
+    /// rather than authorized on a guess.
+    pub fn arm_signer_resolver(&self, resolver: Arc<DeviceAccountResolver>) {
+        *self
+            .applier
+            .signer_resolver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(resolver);
+    }
+
+    /// Disarm the resolver.
+    ///
+    /// The counterpart every caller of [`Self::arm_signer_resolver`] owes on its
+    /// failure path. The slot is replaced, never implicitly emptied, so a caller
+    /// that gives up without clearing leaves the PREVIOUS delta's resolver armed —
+    /// bound to a different cut, possibly a different context — and this delta's
+    /// author would be resolved against it. Disarmed means nothing resolves, which
+    /// refuses and retries; that is the safe failure, and inheriting a stale cut is
+    /// not.
+    pub fn clear_signer_resolver(&self) {
+        *self
+            .applier
+            .signer_resolver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
     /// Creates a new delta store
     pub fn new(
         root: [u8; 32],
@@ -1263,6 +1418,8 @@ impl DeltaStore {
             topology: Arc::new(RwLock::new(Arc::new(IndexMap::new()))),
             retain_apply_lock: std::sync::atomic::AtomicBool::new(false),
             apply_lock_slot: std::sync::Mutex::new(None),
+            signer_resolver: std::sync::Mutex::new(None),
+            author_slot: std::sync::Mutex::new(None),
         });
 
         Self {
@@ -1826,7 +1983,18 @@ impl DeltaStore {
             .store(true, std::sync::atomic::Ordering::Release);
         let mut failed_ids: HashSet<[u8; 32]> = HashSet::new();
         for (input, dag_delta) in inputs.iter().zip(dag_deltas) {
-            if let Err(e) = dag.add_delta(dag_delta, &*self.applier).await {
+            *self
+                .applier
+                .author_slot
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = input.author_id;
+            let outcome = dag.add_delta(dag_delta, &*self.applier).await;
+            *self
+                .applier
+                .author_slot
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+            if let Err(e) = outcome {
                 warn!(
                     ?e,
                     context_id = %self.applier.context_id,
@@ -2315,7 +2483,22 @@ impl DeltaStore {
         self.applier
             .retain_apply_lock
             .store(true, std::sync::atomic::Ordering::Release);
+        // Arm the author for the apply that is about to run. Cleared immediately
+        // after so a later apply on this task (a cascaded child, a `try_process_
+        // pending` sweep) cannot inherit an author that is not its own — an
+        // inherited author would be resolved to an account and could authorize a
+        // write nobody made.
+        *self
+            .applier
+            .author_slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = author_id;
         let add_outcome = dag.add_delta(delta, &*self.applier).await;
+        *self
+            .applier
+            .author_slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         self.applier
             .retain_apply_lock
             .store(false, std::sync::atomic::Ordering::Release);

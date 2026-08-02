@@ -181,7 +181,21 @@ impl SimStorage {
         let context_bytes: [u8; 32] = *self.context_id.as_ref();
         let executor_bytes: [u8; 32] = *self.executor_id.as_ref();
 
-        RuntimeEnv::new(read, write, remove, context_bytes, executor_bytes)
+        // The device, plus the account it speaks for. Distinct values so a gate
+        // reading the wrong one fails the sim instead of passing it.
+        let account_bytes = {
+            let mut a = executor_bytes;
+            a[1] = 0xAC;
+            a
+        };
+        RuntimeEnv::new(
+            read,
+            write,
+            remove,
+            context_bytes,
+            executor_bytes,
+            account_bytes,
+        )
     }
 
     // =========================================================================

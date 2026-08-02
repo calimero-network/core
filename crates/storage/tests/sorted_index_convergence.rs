@@ -60,6 +60,10 @@ const CONTEXT_ID: [u8; 32] = [7u8; 32];
 /// `executor`. The node-local ordered index is NOT part of `RuntimeEnv` — it
 /// stays in the process's native index mock, which is what makes "reset the
 /// index between nodes, keep the state" a faithful per-node model.
+/// `executor` is the DEVICE. Its account is derived from it here so the two
+/// nodes in this test are two devices of two different accounts — the ordered
+/// index is per-node state and nothing in this scenario is writer-set guarded,
+/// so the pairing only has to be consistent, not related to any real binding.
 fn env_for(state: &SharedState, executor: [u8; 32]) -> RuntimeEnv {
     let r = Rc::clone(state);
     let reader = Rc::new(move |key: &Key| r.borrow().get(&key.to_bytes()).cloned());
@@ -71,7 +75,12 @@ fn env_for(state: &SharedState, executor: [u8; 32]) -> RuntimeEnv {
     });
     let rm = Rc::clone(state);
     let remover = Rc::new(move |key: &Key| rm.borrow_mut().remove(&key.to_bytes()).is_some());
-    RuntimeEnv::new(reader, writer, remover, CONTEXT_ID, executor)
+    let account = {
+        let mut a = executor;
+        a[0] ^= 0xA0; // a different value than the device id, so the two cannot be confused
+        a
+    };
+    RuntimeEnv::new(reader, writer, remover, CONTEXT_ID, executor, account)
 }
 
 /// SortedSet: node A builds the set + its index; node B shares node A's converged

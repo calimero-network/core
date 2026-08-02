@@ -56,6 +56,36 @@ pub fn legacy_account_id(member: &PublicKey) -> AccountId {
     AccountId::from(digest)
 }
 
+/// The account a signing key writes as, on the **writer** plane.
+///
+/// One rule, used at both ends: the node deciding what to put in a writer set
+/// (`env::account_id()`), and the peer resolving an incoming signature against
+/// one. They have to agree, and they can only agree by sharing this.
+///
+/// `binding` is that key's device binding — its real [`AccountId`] — if one has
+/// been published. Absent that, the key writes as its own stand-in, which is what
+/// any peer can derive from the key alone. That fallback is what makes an
+/// unenrolled node usable at all: it has an account nobody else can compute (an
+/// id derived from its private root), so naming *that* in a writer set would
+/// produce a grant no peer could ever match.
+///
+/// **The precedence is the opposite of the membership plane's, deliberately.**
+/// There, a key that is a member in its own right *is* that member and a binding
+/// is only a fallthrough — preferring the binding erased members whose rows are
+/// keyed by the stand-in. Here the writer set is populated from
+/// `env::account_id()`, so resolution has to answer in whatever space that
+/// returns, and the binding is what makes a person's second device write under
+/// the same principal as their first. The two planes converge when the legacy
+/// bridge retires.
+///
+/// Consequence worth stating: a writer set seeded BEFORE the writer enrolled
+/// holds the stand-in, so enrolling afterwards changes what that key writes as and
+/// the old grant goes stale. Re-grant after `account create`.
+#[must_use]
+pub fn writer_account(binding: Option<AccountId>, key: &PublicKey) -> AccountId {
+    binding.unwrap_or_else(|| legacy_account_id(key))
+}
+
 /// The [`Authorship`] a bridged legacy op carries.
 ///
 /// Legacy ops name only a signing key, so the device is derived from the
@@ -98,11 +128,11 @@ pub fn payload_from_action(action: &Action) -> Option<OpPayload> {
 pub fn set_writers_payload(object: Id, entry: &RotationLogEntry) -> OpPayload {
     OpPayload::SetWriters {
         object,
-        writers: entry
-            .new_writers
-            .iter()
-            .map(|(member, mask)| (legacy_account_id(member), *mask))
-            .collect(),
+        // Passed through, not bridged: a rotation log's writer set is ALREADY
+        // account-keyed, so there is no key here to stand in for. The entry's
+        // `signer` still needs `legacy_account_id`, because a signature names a
+        // key — which is exactly the split the account plane draws.
+        writers: entry.new_writers.clone(),
     }
 }
 
@@ -419,6 +449,147 @@ mod tests {
         );
     }
 
+    /// **Revoking a device withdraws the authority its key had to write as its
+    /// account** — on the writer plane, not just the membership plane.
+    ///
+    /// The writer plane resolves a signature to a principal through
+    /// [`writer_account`], which is what `ScopeProjections::device_account_at_cut`
+    /// arms the receiver with. Revocation removes the binding, so the key stops
+    /// resolving to the account and a writer set naming that account no longer
+    /// matches it.
+    ///
+    /// The refusal is checked to follow from the revocation and not from some
+    /// incidental gap: the tombstone is asserted present while the binding is
+    /// asserted gone, which is what distinguishes a revoked device from one whose
+    /// link this node simply has not folded yet. Those two must not be confused —
+    /// the second is a timing gap that has to defer, the first is terminal.
+    #[test]
+    fn revoking_a_device_withdraws_its_authority_on_the_writer_plane() {
+        use calimero_account::{sign_device_cert, AccountGenesis, DeviceId, KemPublicKey};
+        use calimero_primitives::identity::PrivateKey;
+
+        let root = PrivateKey::from([1u8; 32]);
+        let genesis = AccountGenesis::new(root.public_key(), [1u8; 16]);
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [5u8; 16]);
+        let device_sk = PrivateKey::from([5u8; 32]);
+        let device_key = device_sk.public_key();
+        let cert = sign_device_cert(
+            &root,
+            account,
+            device,
+            &device_key,
+            &KemPublicKey::from([5u8; 32]),
+            0,
+            0,
+        )
+        .expect("sign cert");
+        let group = ContextGroupId::from([9u8; 32]);
+
+        // The receiver's rule, verbatim: find a live binding for the signing key,
+        // else fall back to the key's stand-in account.
+        let resolve = |view: &calimero_authz::AclView, key: &PublicKey| {
+            let binding = view
+                .devices
+                .values()
+                .find(|b| b.sign_pk == *key)
+                .map(|b| b.account);
+            writer_account(binding, key)
+        };
+
+        let link = Op::from_parts(
+            [7u8; 32],
+            ScopeId::from([9u8; 32]),
+            vec![],
+            legacy_authorship(root.public_key()),
+            hlc(1),
+            payload_from_group_op(
+                group,
+                &GroupOp::AccountDeviceLinked {
+                    genesis,
+                    chain: vec![],
+                    cert,
+                    endorsement: calimero_account::sign_account_endorsement(&root, account)
+                        .expect("sign endorsement"),
+                },
+            )
+            .expect("device link maps to a payload"),
+            [0u8; 32],
+            [0u8; 64],
+        );
+        let revoke = Op::from_parts(
+            [8u8; 32],
+            ScopeId::from([9u8; 32]),
+            vec![[7u8; 32]],
+            legacy_authorship(root.public_key()),
+            hlc(2),
+            OpPayload::DeviceRevoked { account, device },
+            [0u8; 32],
+            [0u8; 64],
+        );
+
+        // At the cut before the revocation the device writes as its account, so a
+        // writer set naming the account admits it.
+        let mut linked = ScopeState::default();
+        linked.apply(&link);
+        let before = linked.acl_view();
+        assert_eq!(
+            resolve(&before, &device_key),
+            account,
+            "precondition: while bound, the device's key must resolve to its              account, or the assertion below would hold for a device that never              had authority in the first place"
+        );
+
+        // Fold the revocation. The binding is gone, the tombstone is there.
+        let mut revoked_state = linked;
+        revoked_state.apply(&revoke);
+        let after = revoked_state.acl_view();
+        assert!(
+            after.revoked_devices.contains(&device),
+            "the revocation must be recorded, or the refusal below proves nothing              about revocation"
+        );
+        assert!(
+            !after.devices.contains_key(&device),
+            "and the binding must be withdrawn — a revocation that left the              binding in force would resolve the thief's key to the account"
+        );
+
+        let resolved = resolve(&after, &device_key);
+        assert_ne!(
+            resolved, account,
+            "a revoked device must no longer write as the account it was              withdrawn from"
+        );
+        assert_eq!(
+            resolved,
+            legacy_account_id(&device_key),
+            "it falls back to speaking only for itself"
+        );
+
+        // **The caveat, asserted rather than assumed.** The fallback is a stable
+        // account, so a writer set that names a device's STAND-IN — as happens
+        // when a set is seeded for a key before its account exists — keeps
+        // admitting that key after revocation. That is consistent rather than a
+        // hole: revoking a device withdraws its authority to speak for an
+        // ACCOUNT, and says nothing about a grant made to the key itself, which
+        // is undone by rotating the writer set. Worth pinning, because "I revoked
+        // the device and it can still write" is a surprising way to learn it.
+        assert_eq!(
+            resolved,
+            resolve(&after, &device_key),
+            "the stand-in is stable, so this refusal is permanent rather than a              retryable one — the caller must not treat it as a timing gap"
+        );
+
+        // Causal honour on the writer plane: the pre-revocation cut still resolves
+        // to the account, so a write authored before the revocation stays
+        // authorized when re-judged at its own cut. `device_account_at_cut` takes
+        // the write's heads for exactly this reason — resolving at the receiver's
+        // latest cut would retroactively invalidate history the sender's root hash
+        // already includes, leaving the two unable to agree on a root.
+        assert_eq!(
+            resolve(&before, &device_key),
+            account,
+            "an earlier cut must keep its answer after a later revocation folds"
+        );
+    }
+
     fn hlc(ns: u64) -> HybridTimestamp {
         HybridTimestamp::new(Timestamp::new(
             NTP64(ns),
@@ -481,12 +652,15 @@ mod tests {
     fn acl_plane_matches_resolve_local_for_sequential_rotations() {
         let object = Id::new([0xA0; 32]);
         let scope = ScopeId::from([0u8; 32]);
+        // The admin SIGNS, so it is a key; the writers are granted, so they are
+        // accounts. Different domains — the bridge derives a stand-in account for
+        // the signer, and passes the writer set through untouched.
         let admin = PublicKey::from([1u8; 32]);
-        let w1 = PublicKey::from([0x11; 32]);
-        let w2 = PublicKey::from([0x22; 32]);
+        let w1 = AccountId::from([0x11; 32]);
+        let w2 = AccountId::from([0x22; 32]);
 
         // Three sequential rotations: {w1} → {w1,w2} → {w2}.
-        let sets: Vec<BTreeMap<PublicKey, OpMask>> = vec![
+        let sets: Vec<BTreeMap<AccountId, OpMask>> = vec![
             [(w1, OpMask::FULL)].into_iter().collect(),
             [(w1, OpMask::FULL), (w2, OpMask::FULL)]
                 .into_iter()
@@ -535,27 +709,16 @@ mod tests {
             .unwrap_or_default();
 
         // Fold-equivalence still holds under the account model, modulo the
-        // one derivation the bridge applies: `resolve_local` answers in member
-        // keys, the projection answers in the self-accounts those keys speak
-        // for. Mapping the expectation through `account_of` — rather than
-        // loosening the assertion — keeps this a real equivalence proof and
-        // would catch the bridge dropping or renaming a writer.
-        let expected: BTreeMap<AccountId, OpMask> = expected
-            .iter()
-            .map(|(member, mask)| (legacy_account_id(member), *mask))
-            .collect();
+        // No mapping any more: both sides speak accounts, because the rotation
+        // log's writer set is account-keyed at the source. The equivalence is
+        // therefore direct, and still catches the bridge dropping or renaming a
+        // writer.
         assert_eq!(
             resolved, expected,
             "ScopeState ACL fold must resolve the same writer set as resolve_local"
         );
         // Sanity: the latest rotation ({w2}) wins.
-        assert_eq!(
-            resolved,
-            sets[2]
-                .iter()
-                .map(|(member, mask)| (legacy_account_id(member), *mask))
-                .collect::<BTreeMap<_, _>>()
-        );
+        assert_eq!(resolved, sets[2]);
     }
 
     /// Encoding a rotation's payload then folding it yields the rotation's
@@ -565,7 +728,7 @@ mod tests {
         let object = Id::new([0xB0; 32]);
         let scope = ScopeId::from([0u8; 32]);
         let admin = PublicKey::from([1u8; 32]);
-        let writers: BTreeMap<PublicKey, OpMask> = [(PublicKey::from([7u8; 32]), OpMask::FULL)]
+        let writers: BTreeMap<AccountId, OpMask> = [(AccountId::from([7u8; 32]), OpMask::FULL)]
             .into_iter()
             .collect();
 
@@ -595,13 +758,9 @@ mod tests {
             .get(&object)
             .cloned()
             .unwrap_or_default();
-        assert_eq!(
-            resolved,
-            writers
-                .iter()
-                .map(|(member, mask)| (legacy_account_id(member), *mask))
-                .collect::<BTreeMap<_, _>>()
-        );
+        // Verbatim: the payload carries the log's own account-keyed set, so a
+        // round trip must return exactly it.
+        assert_eq!(resolved, writers);
     }
 
     #[test]

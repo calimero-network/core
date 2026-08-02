@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
-use calimero_sdk::{app, env, PublicKey};
+use calimero_sdk::{app, env, AccountId, PublicKey};
 use calimero_storage::collections::{
     AuthoredMap, AuthoredVector, Counter, FrozenStorage, GCounter, LwwRegister, Mergeable,
     PNCounter, ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet, UnorderedMap,
@@ -409,7 +409,7 @@ impl E2eKvStore {
             authored_vec: AuthoredVector::<LwwRegister<String>>::new(),
             // Shared Storage — init caller becomes the sole initial writer
             shared_data: SharedStorage::new(
-                std::iter::once(env::device_id().into()).collect(),
+                std::iter::once(AccountId::from(env::account_id())).collect(),
                 false,
             ),
         }
@@ -1249,13 +1249,24 @@ impl E2eKvStore {
             .collect())
     }
 
-    pub fn shared_add_writer(&mut self, writer_bs58: String) -> app::Result<()> {
-        let new_writer: PublicKey = writer_bs58.parse()?;
+    /// This node's account, hex-encoded — what a writer set names.
+    ///
+    /// Exists for the e2e: granting a writer needs an account id, and an account
+    /// is derived from the node's root rather than carried on the wire, so a
+    /// scenario has no other way to learn one. (Operators use
+    /// `meroctl account show`; a workflow captures this call's output.)
+    pub fn my_account(&self) -> app::Result<String> {
+        Ok(AccountId::from(env::account_id()).to_string())
+    }
+
+    /// Add a writer, by ACCOUNT — the writer set grants people, so one grant
+    /// covers every device they hold.
+    pub fn shared_add_writer(&mut self, writer: AccountId) -> app::Result<()> {
         let mut new_writers = self.shared_data.writers().clone();
-        new_writers.insert(new_writer);
+        let _inserted = new_writers.insert(writer);
         self.shared_data.rotate_writers(new_writers)?;
         app::emit!(Event::SharedWriterAdded {
-            writer: writer_bs58.clone(),
+            writer: writer.to_string(),
         });
         Ok(())
     }
@@ -1264,22 +1275,22 @@ impl E2eKvStore {
     /// which only unions in a single key). Lets a test drop a writer — required
     /// to exercise concurrent rotations that diverge on membership and to assert
     /// retroactive revocation. The caller must be a current writer.
-    pub fn shared_rotate_writers(&mut self, writers: Vec<String>) -> app::Result<()> {
+    pub fn shared_rotate_writers(&mut self, writers: Vec<AccountId>) -> app::Result<()> {
         let mut new_writers = BTreeSet::new();
         for w in &writers {
-            let pk: PublicKey = w.parse()?;
-            let _inserted = new_writers.insert(pk);
+            let _inserted = new_writers.insert(*w);
         }
         self.shared_data.rotate_writers(new_writers)?;
         for w in writers {
-            app::emit!(Event::SharedWriterAdded { writer: w });
+            app::emit!(Event::SharedWriterAdded {
+                writer: w.to_string()
+            });
         }
         Ok(())
     }
 
-    pub fn shared_is_writer(&self, key_bs58: String) -> app::Result<bool> {
-        let pk: PublicKey = key_bs58.parse()?;
-        Ok(self.shared_data.writers().contains(&pk))
+    pub fn shared_is_writer(&self, account: AccountId) -> app::Result<bool> {
+        Ok(self.shared_data.writers().contains(&account))
     }
 
     pub fn shared_is_frozen(&self) -> app::Result<bool> {

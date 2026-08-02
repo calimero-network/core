@@ -487,6 +487,7 @@ mod tests {
     use crate::collections::{Root, UnorderedSet};
     use crate::entities::Data;
     use crate::store::MainStorage;
+    use calimero_account::AccountId;
 
     #[test]
     fn test_new_plus_reassign_matches_new_with_field_name() {
@@ -586,8 +587,6 @@ mod tests {
     fn insert_inherits_collection_storage_domain() {
         use std::collections::BTreeSet;
 
-        use calimero_primitives::identity::PublicKey;
-
         use crate::collections::compute_id;
         use crate::entities::StorageType;
         use crate::interface::Interface;
@@ -598,7 +597,7 @@ mod tests {
         // A set inserts entries via the bare `Collection::insert`, so guarding the
         // set element propagates `Shared{writers}` to every member entity.
         let mut guarded = UnorderedSet::<String>::new();
-        let writers: BTreeSet<PublicKey> = std::iter::once(PublicKey::from([7u8; 32])).collect();
+        let writers: BTreeSet<AccountId> = std::iter::once(AccountId::from([7u8; 32])).collect();
         guarded
             .inner
             .element_mut()
@@ -629,8 +628,6 @@ mod tests {
     fn reassign_preserves_per_entry_storage_type() {
         use std::collections::BTreeSet;
 
-        use calimero_primitives::identity::PublicKey;
-
         use crate::collections::{compute_collection_id, compute_id};
         use crate::entities::{full_mask, StorageType};
         use crate::interface::Interface;
@@ -640,7 +637,7 @@ mod tests {
 
         // Random inner id => the real clear+reinsert path (not the no-op).
         let mut set = UnorderedSet::<String>::new();
-        let writers: BTreeSet<PublicKey> = std::iter::once(PublicKey::from([9u8; 32])).collect();
+        let writers: BTreeSet<AccountId> = std::iter::once(AccountId::from([9u8; 32])).collect();
         let shared = StorageType::Shared {
             writers: full_mask(writers.clone()),
             signature_data: None,

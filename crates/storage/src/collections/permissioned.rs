@@ -40,7 +40,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_primitives::identity::PublicKey;
+use calimero_account::AccountId;
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
 use super::shared::WriterSetCell;
@@ -105,7 +105,7 @@ impl Op {
 pub trait Authorizer {
     /// Is `who` permitted to perform `op`, given the resource's current
     /// capability map (each writer with its [`OpMask`])? Pure: no I/O.
-    fn authorize(who: &PublicKey, op: Op, caps: &BTreeMap<PublicKey, OpMask>) -> bool;
+    fn authorize(who: &AccountId, op: Op, caps: &BTreeMap<AccountId, OpMask>) -> bool;
 }
 
 /// Membership policy: any writer may perform any op. This is exactly what the
@@ -115,7 +115,7 @@ pub trait Authorizer {
 pub struct WriterSetAcl;
 
 impl Authorizer for WriterSetAcl {
-    fn authorize(who: &PublicKey, _op: Op, caps: &BTreeMap<PublicKey, OpMask>) -> bool {
+    fn authorize(who: &AccountId, _op: Op, caps: &BTreeMap<AccountId, OpMask>) -> bool {
         // Membership only — any writer may perform any op (today's default).
         caps.contains_key(who)
     }
@@ -129,7 +129,7 @@ impl Authorizer for WriterSetAcl {
 pub struct OwnerAcl;
 
 impl Authorizer for OwnerAcl {
-    fn authorize(who: &PublicKey, op: Op, caps: &BTreeMap<PublicKey, OpMask>) -> bool {
+    fn authorize(who: &AccountId, op: Op, caps: &BTreeMap<AccountId, OpMask>) -> bool {
         // Same predicate as `WriterSetAcl` (membership); delegate so the two
         // cannot drift if the rule ever changes. The single-owner distinction is
         // an API-surface + constructor invariant, not a different merge rule.
@@ -145,7 +145,7 @@ impl Authorizer for OwnerAcl {
 pub struct ProtocolAuthorizer;
 
 impl Authorizer for ProtocolAuthorizer {
-    fn authorize(who: &PublicKey, op: Op, caps: &BTreeMap<PublicKey, OpMask>) -> bool {
+    fn authorize(who: &AccountId, op: Op, caps: &BTreeMap<AccountId, OpMask>) -> bool {
         match op.required_mask() {
             None => true, // Read — anyone may read a replicated value.
             Some(required) => caps.get(who).is_some_and(|m| m.contains(required)),
@@ -190,7 +190,7 @@ where
     /// for nested fields; the `#[app::state]` macro canonicalises the id via
     /// [`reassign_deterministic_id`](Self::reassign_deterministic_id) after
     /// `init`.
-    pub fn new(writers: BTreeSet<PublicKey>, frozen: bool) -> Self {
+    pub fn new(writers: BTreeSet<AccountId>, frozen: bool) -> Self {
         Self {
             inner: WriterSetCell::new(writers, frozen),
             _policy: PhantomData,
@@ -201,7 +201,7 @@ where
     /// top-level state fields constructed outside the `#[app::state]` macro.
     pub fn new_with_field_name(
         field_name: &str,
-        writers: BTreeSet<PublicKey>,
+        writers: BTreeSet<AccountId>,
         frozen: bool,
     ) -> Self {
         Self {
@@ -219,7 +219,7 @@ where
 
     /// Whether `who` may perform `op` under policy `A`, against the current
     /// writer set. Pure; no side effects.
-    pub fn can(&self, who: &PublicKey, op: Op) -> bool {
+    pub fn can(&self, who: &AccountId, op: Op) -> bool {
         A::authorize(who, op, &self.inner.capabilities())
     }
 
@@ -231,7 +231,16 @@ where
     /// `ActionNotAllowed` if the current executor is not authorised for `op`
     /// under policy `A`.
     pub fn guard(&self, op: Op) -> Result<(), StoreError> {
-        let me: PublicKey = env::device_id().into();
+        // The GATE resolves the account, not the device. This is the whole point of
+        // account-keying the writer set: a person with two devices is one principal
+        // here, so granting them does not mean enumerating their machines.
+        //
+        // Only the gate moves. Owner STAMPS written into `UserStorage`/`AuthoredMap`/
+        // `SharedStorage` stay device-shaped, because they are per-writer state — two
+        // devices of one account acting concurrently must remain distinguishable or
+        // they share a counter slot and an HLC seed and silently lose each other's
+        // writes.
+        let me: AccountId = env::account_id().into();
         if self.can(&me, op) {
             Ok(())
         } else {
@@ -264,7 +273,7 @@ where
     }
 
     /// The current writer set, resolved from verified local sources.
-    pub fn writers(&self) -> BTreeSet<PublicKey> {
+    pub fn writers(&self) -> BTreeSet<AccountId> {
         self.inner.writers()
     }
 
@@ -284,7 +293,7 @@ where
     /// # Errors
     /// `ActionNotAllowed` if frozen, if `new_writers` is empty, or if the
     /// executor is not a current writer.
-    pub fn rotate_writers(&mut self, new_writers: BTreeSet<PublicKey>) -> Result<(), StoreError> {
+    pub fn rotate_writers(&mut self, new_writers: BTreeSet<AccountId>) -> Result<(), StoreError> {
         // Single API-surface policy gate (honours a custom `Authorizer`).
         // `WriterSetCell::rotate_writers` is authoritative: it re-checks
         // membership and enforces the frozen / non-empty rules.
@@ -293,7 +302,7 @@ where
     }
 
     /// The current writers with their [`OpMask`]s.
-    pub fn capabilities(&self) -> BTreeMap<PublicKey, OpMask> {
+    pub fn capabilities(&self) -> BTreeMap<AccountId, OpMask> {
         self.inner.capabilities()
     }
 
@@ -304,7 +313,7 @@ where
     /// # Errors
     /// `ActionNotAllowed` if frozen or the executor is not authorised for
     /// `Op::Admin`.
-    pub fn grant_capability(&mut self, who: PublicKey, mask: OpMask) -> Result<(), StoreError> {
+    pub fn grant_capability(&mut self, who: AccountId, mask: OpMask) -> Result<(), StoreError> {
         self.guard(Op::Admin)?;
         let mut caps = self.inner.capabilities();
         let _prev = caps.insert(who, mask);
@@ -317,7 +326,7 @@ where
     /// # Errors
     /// `ActionNotAllowed` if frozen, not authorised for `Op::Admin`, or if
     /// removing `who` would empty the writer set.
-    pub fn revoke_capability(&mut self, who: &PublicKey) -> Result<(), StoreError> {
+    pub fn revoke_capability(&mut self, who: &AccountId) -> Result<(), StoreError> {
         self.guard(Op::Admin)?;
         let mut caps = self.inner.capabilities();
         let _removed = caps.remove(who);
@@ -333,7 +342,7 @@ where
     /// is empty.
     pub fn set_capabilities(
         &mut self,
-        caps: BTreeMap<PublicKey, OpMask>,
+        caps: BTreeMap<AccountId, OpMask>,
     ) -> Result<(), StoreError> {
         self.guard(Op::Admin)?;
         self.inner.rotate_writers_scoped(caps)
@@ -436,13 +445,13 @@ where
     T: BorshSerialize + BorshDeserialize + Mergeable + Default,
 {
     /// New owned cell whose sole writer (owner) is `owner`.
-    pub fn new_owned_by(owner: PublicKey) -> Self {
+    pub fn new_owned_by(owner: AccountId) -> Self {
         Self::new(BTreeSet::from([owner]), false)
     }
 
     /// New owned cell owned by the current executor (the common case in `init`).
     pub fn new_owned_by_caller() -> Self {
-        let me: PublicKey = env::device_id().into();
+        let me: AccountId = env::account_id().into();
         Self::new_owned_by(me)
     }
 
@@ -453,7 +462,7 @@ where
     /// rather than an arbitrary writer — `debug_assert` still flags the
     /// invariant violation in tests, but release builds fail safe instead of
     /// returning a non-deterministic owner.
-    pub fn owner(&self) -> Option<PublicKey> {
+    pub fn owner(&self) -> Option<AccountId> {
         let mut writers = self.writers().into_iter();
         let first = writers.next();
         if writers.next().is_some() {
@@ -467,7 +476,7 @@ where
     }
 
     /// Whether `who` is the owner.
-    pub fn is_owner(&self, who: &PublicKey) -> bool {
+    pub fn is_owner(&self, who: &AccountId) -> bool {
         self.writers().contains(who)
     }
 
@@ -484,7 +493,7 @@ where
     ///
     /// # Errors
     /// `ActionNotAllowed` if frozen or the executor is not the current owner.
-    pub fn transfer_ownership(&mut self, new_owner: PublicKey) -> Result<(), StoreError> {
+    pub fn transfer_ownership(&mut self, new_owner: AccountId) -> Result<(), StoreError> {
         // Owner-gated through `rotate_writers`, which guards `Op::Admin` — for
         // `OwnerAcl` that is exactly the owner check. One gate, no redundancy.
         self.rotate_writers(BTreeSet::from([new_owner]))
@@ -496,7 +505,6 @@ mod tests {
     use std::collections::BTreeSet;
 
     use borsh::{BorshDeserialize, BorshSerialize};
-    use calimero_primitives::identity::PublicKey;
     use serial_test::serial;
 
     use super::{Op, Ownable, PermissionedStorage, ProtocolAuthorizer};
@@ -504,6 +512,7 @@ mod tests {
     use crate::collections::Root;
     use crate::entities::{Data, OpMask};
     use crate::{collections::compute_collection_id, env};
+    use calimero_account::AccountId;
 
     const ALICE: [u8; 32] = [0x11; 32];
     const BOB: [u8; 32] = [0x22; 32];
@@ -531,11 +540,13 @@ mod tests {
         }
     }
 
-    fn pk(bytes: [u8; 32]) -> PublicKey {
-        bytes.into()
+    /// An account named by raw bytes. Called `pk` from when writer sets held
+    /// keys; they name accounts now, and the signing key is a separate value.
+    fn pk(bytes: [u8; 32]) -> AccountId {
+        AccountId::from(bytes)
     }
 
-    fn writers(keys: &[[u8; 32]]) -> BTreeSet<PublicKey> {
+    fn writers(keys: &[[u8; 32]]) -> BTreeSet<AccountId> {
         keys.iter().copied().map(pk).collect()
     }
 
@@ -543,7 +554,7 @@ mod tests {
     #[serial]
     fn new_with_field_name_is_deterministic() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let _root: Root<TestVal> = Root::new(TestVal::default);
 
         let expected = compute_collection_id(None, "doc");
@@ -559,7 +570,7 @@ mod tests {
         // field-derived id when the macro calls `reassign_deterministic_id`,
         // or two nodes would mint different ids for the same field and diverge.
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let mut p = Root::new(|| PermissionedStorage::<TestVal>::new(writers(&[ALICE]), false));
         p.reassign_deterministic_id("doc");
         assert_eq!(p.element().id(), compute_collection_id(None, "doc"));
@@ -569,7 +580,7 @@ mod tests {
     #[serial]
     fn writer_can_write_non_writer_rejected() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let mut p = Root::new(|| PermissionedStorage::<TestVal>::new(writers(&[ALICE]), false));
 
         // Writer succeeds.
@@ -577,7 +588,7 @@ mod tests {
         assert_eq!(p.get().unwrap(), &TestVal(1));
 
         // Non-writer is rejected at the API gate (and would be at merge).
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         assert!(p.insert(TestVal(2)).is_err());
         assert!(!p.can(&pk(BOB), Op::Write));
         assert!(p.guard(Op::Write).is_err());
@@ -587,7 +598,7 @@ mod tests {
     #[serial]
     fn ownable_reports_owner_and_gates() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let p = Root::new(Ownable::<TestVal>::new_owned_by_caller);
 
         assert_eq!(p.owner(), Some(pk(ALICE)));
@@ -595,7 +606,7 @@ mod tests {
         assert!(!p.is_owner(&pk(BOB)));
         assert!(p.only_owner().is_ok());
 
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         assert!(p.only_owner().is_err());
     }
 
@@ -603,7 +614,7 @@ mod tests {
     #[serial]
     fn transfer_ownership_rotates_writer_set() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let mut p = Root::new(|| Ownable::<TestVal>::new_owned_by(pk(ALICE)));
         p.insert(TestVal(1)).unwrap();
 
@@ -612,9 +623,9 @@ mod tests {
         assert_eq!(p.owner(), Some(pk(BOB)));
 
         // Bob is now the writer; Alice is not.
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         p.insert(TestVal(2)).unwrap();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         assert!(p.insert(TestVal(3)).is_err());
     }
 
@@ -622,7 +633,7 @@ mod tests {
     #[serial]
     fn protocol_authorizer_enforces_op_masks() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         // Alice starts with FULL (the `new` default).
         let mut p = Root::new(|| {
             PermissionedStorage::<TestVal, ProtocolAuthorizer>::new(writers(&[ALICE]), false)
@@ -639,11 +650,11 @@ mod tests {
         assert!(p.can(&pk(BOB), Op::Read), "anyone may read");
 
         // Bob (WRITE-only) cannot grant — Admin gate refuses him.
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         assert!(p.grant_capability(pk(ALICE), OpMask::FULL).is_err());
 
         // Alice can revoke Bob.
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         p.revoke_capability(&pk(BOB)).unwrap();
         assert!(!p.can(&pk(BOB), Op::Write), "revoked Bob may not write");
     }

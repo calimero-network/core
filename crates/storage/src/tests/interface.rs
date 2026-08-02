@@ -1142,9 +1142,11 @@ mod shared_storage_replay_protection {
     use crate::address::Id;
     use crate::env;
     use crate::index::Index;
-    use crate::interface::{ApplyContext, MainInterface};
+    use crate::interface::MainInterface;
     use crate::store::MainStorage;
-    use crate::tests::common::{build_signed_shared_action, pubkey_of, setup_root_for_main};
+    use crate::tests::common::{
+        account_of_key, apply_ctx_for, build_signed_shared_action, setup_root_for_main,
+    };
 
     fn make_signing_key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
@@ -1160,7 +1162,7 @@ mod shared_storage_replay_protection {
         let root = setup_root_for_main();
 
         let alice_sk = make_signing_key(0xA1);
-        let alice = pubkey_of(&alice_sk);
+        let alice = account_of_key(&alice_sk);
         let writers: BTreeSet<_> = [alice].into_iter().collect();
         let id = Id::new([0x5E; 32]);
 
@@ -1175,7 +1177,7 @@ mod shared_storage_replay_protection {
             &alice_sk,
             vec![root.clone()],
         );
-        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+        MainInterface::apply_action(bootstrap, &apply_ctx_for(account_of_key(&alice_sk))).unwrap();
 
         sleep(Duration::from_millis(2));
 
@@ -1191,7 +1193,7 @@ mod shared_storage_replay_protection {
             &alice_sk,
             vec![],
         );
-        let result = MainInterface::apply_action(stale, &ApplyContext::empty());
+        let result = MainInterface::apply_action(stale, &apply_ctx_for(account_of_key(&alice_sk)));
         assert!(
             result.is_ok(),
             "stale-but-signed Shared upsert must be silently skipped, got {result:?}"
@@ -1235,8 +1237,8 @@ mod shared_storage_rotation_authentication {
     use crate::interface::{ApplyContext, MainInterface, StorageError};
     use crate::store::MainStorage;
     use crate::tests::common::{
-        build_signed_member_action, build_signed_member_delete, build_signed_shared_action,
-        pubkey_of, setup_root_for_main,
+        account_of_key, apply_ctx_for, build_signed_member_action, build_signed_member_delete,
+        build_signed_shared_action, pubkey_of, setup_root_for_main,
     };
 
     fn make_signing_key(seed: u8) -> SigningKey {
@@ -1262,7 +1264,7 @@ mod shared_storage_rotation_authentication {
         let root = setup_root_for_main();
 
         let alice_sk = make_signing_key(0xA1);
-        let alice = pubkey_of(&alice_sk);
+        let alice = account_of_key(&alice_sk);
         let writers: BTreeSet<_> = [alice].into_iter().collect();
         let id = Id::new([0x41; 32]);
 
@@ -1277,7 +1279,7 @@ mod shared_storage_rotation_authentication {
             &alice_sk,
             vec![root],
         );
-        MainInterface::apply_action(good, &ApplyContext::empty())
+        MainInterface::apply_action(good, &apply_ctx_for(account_of_key(&alice_sk)))
             .expect("the baseline write must be accepted, or this test proves nothing");
 
         // Now the same writer, but the action carries NO signer from the outset and
@@ -1319,7 +1321,7 @@ mod shared_storage_rotation_authentication {
         }
         assert!(
             matches!(
-                MainInterface::apply_action(anonymous, &ApplyContext::empty()),
+                MainInterface::apply_action(anonymous, &apply_ctx_for(account_of_key(&alice_sk))),
                 Err(StorageError::InvalidSignature)
             ),
             "a write naming no signer must be refused even when its signature would \
@@ -1333,9 +1335,9 @@ mod shared_storage_rotation_authentication {
         let root = setup_root_for_main();
 
         let alice_sk = make_signing_key(0xA1);
-        let alice = pubkey_of(&alice_sk);
+        let alice = account_of_key(&alice_sk);
         let mallory_sk = make_signing_key(0x4D); // a context member, NOT a writer
-        let mallory = pubkey_of(&mallory_sk);
+        let mallory = account_of_key(&mallory_sk);
 
         let writers: BTreeSet<_> = [alice].into_iter().collect();
         let id = Id::new([0x5E; 32]);
@@ -1351,7 +1353,7 @@ mod shared_storage_rotation_authentication {
             &alice_sk,
             vec![root],
         );
-        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+        MainInterface::apply_action(bootstrap, &apply_ctx_for(account_of_key(&alice_sk))).unwrap();
 
         // Mallory forges a rotation: an Update that swaps the writer set to
         // {mallory}, signed by mallory (who is not a current writer). The
@@ -1367,10 +1369,15 @@ mod shared_storage_rotation_authentication {
             &mallory_sk,
             vec![],
         );
+        // The ctx resolves Mallory's KEY to Mallory's ACCOUNT — which is the
+        // honest resolution a node would make. The refusal below therefore has to
+        // come from that account not being in the writer set, not from an
+        // unresolvable signer, which would pass this assertion for free.
         let ctx = ApplyContext {
             effective_writers: Some(crate::entities::full_mask(writers.clone())),
             delta_id: None,
             delta_hlc: None,
+            signer_account: Some(account_of_key(&mallory_sk)),
         };
         let result = MainInterface::apply_action(forged, &ctx);
         assert!(
@@ -1404,9 +1411,9 @@ mod shared_storage_rotation_authentication {
         let root = setup_root_for_main();
 
         let alice_sk = make_signing_key(0xA1);
-        let alice = pubkey_of(&alice_sk);
+        let alice = account_of_key(&alice_sk);
         let mallory_sk = make_signing_key(0x4D);
-        let mallory = pubkey_of(&mallory_sk);
+        let mallory = account_of_key(&mallory_sk);
 
         let writers: BTreeSet<_> = [alice].into_iter().collect();
         let id = Id::new([0x5E; 32]);
@@ -1421,7 +1428,7 @@ mod shared_storage_rotation_authentication {
             &alice_sk,
             vec![root],
         );
-        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+        MainInterface::apply_action(bootstrap, &apply_ctx_for(account_of_key(&alice_sk))).unwrap();
 
         // Empty ctx → no effective_writers → verifier falls back to stored
         // writers {alice}; mallory's signature is not from a stored writer.
@@ -1434,7 +1441,8 @@ mod shared_storage_rotation_authentication {
             &mallory_sk,
             vec![],
         );
-        let result = MainInterface::apply_action(forged, &ApplyContext::empty());
+        let result =
+            MainInterface::apply_action(forged, &apply_ctx_for(account_of_key(&mallory_sk)));
         assert!(
             matches!(result, Err(StorageError::InvalidSignature)),
             "forged rotation must be rejected via the stored-writers fallback, got {result:?}"
@@ -1455,9 +1463,9 @@ mod shared_storage_rotation_authentication {
         let root = setup_root_for_main();
 
         let alice_sk = make_signing_key(0xA1);
-        let alice = pubkey_of(&alice_sk);
+        let alice = account_of_key(&alice_sk);
         let bob_sk = make_signing_key(0xB0);
-        let bob = pubkey_of(&bob_sk);
+        let bob = account_of_key(&bob_sk);
 
         let writers: BTreeSet<_> = [alice].into_iter().collect();
         let id = Id::new([0x5E; 32]);
@@ -1472,7 +1480,7 @@ mod shared_storage_rotation_authentication {
             &alice_sk,
             vec![root],
         );
-        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+        MainInterface::apply_action(bootstrap, &apply_ctx_for(account_of_key(&alice_sk))).unwrap();
 
         // Alice (a current writer) rotates the set to {alice, bob}. Verified
         // against the current set {alice}; alice's signature is valid.
@@ -1500,6 +1508,7 @@ mod shared_storage_rotation_authentication {
             effective_writers: Some(crate::entities::full_mask(writers.clone())),
             delta_id: Some([0xD1; 32]),
             delta_hlc: Some(delta_hlc),
+            signer_account: Some(account_of_key(&alice_sk)),
         };
         MainInterface::apply_action(rotation, &ctx)
             .expect("authentic rotation by a current writer must be accepted");
@@ -1533,9 +1542,9 @@ mod shared_storage_rotation_authentication {
         let root = setup_root_for_main();
 
         let alice_sk = make_signing_key(0xA1);
-        let alice = pubkey_of(&alice_sk);
+        let alice = account_of_key(&alice_sk);
         let bob_sk = make_signing_key(0xB0);
-        let bob = pubkey_of(&bob_sk);
+        let bob = account_of_key(&bob_sk);
 
         let anchor = Id::new([0xA0; 32]);
         let member = Id::new([0x3E; 32]);
@@ -1553,17 +1562,22 @@ mod shared_storage_rotation_authentication {
             &alice_sk,
             vec![root.clone()],
         );
-        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+        MainInterface::apply_action(bootstrap, &apply_ctx_for(account_of_key(&alice_sk))).unwrap();
 
-        let pre_ctx = || ApplyContext {
+        // Both factories take the signing key: the writer set is the same for
+        // every write at that causal point, but `signer_account` is per-write, and
+        // the whole point of the assertions below is WHO is being refused.
+        let pre_ctx = |signer: &SigningKey| ApplyContext {
             effective_writers: Some(crate::entities::full_mask(pre.clone())),
             delta_id: None,
             delta_hlc: None,
+            signer_account: Some(account_of_key(signer)),
         };
-        let post_ctx = || ApplyContext {
+        let post_ctx = |signer: &SigningKey| ApplyContext {
             effective_writers: Some(crate::entities::full_mask(post.clone())),
             delta_id: None,
             delta_hlc: None,
+            signer_account: Some(account_of_key(signer)),
         };
 
         // BEFORE rotation: Bob (a writer) writes the member — accepted.
@@ -1576,7 +1590,7 @@ mod shared_storage_rotation_authentication {
             &bob_sk,
             vec![root.clone()],
         );
-        MainInterface::apply_action(bob_add, &pre_ctx())
+        MainInterface::apply_action(bob_add, &pre_ctx(&bob_sk))
             .expect("a writer's member write must be accepted before rotation");
 
         // The stored member is anchored — no inline writer set.
@@ -1599,7 +1613,7 @@ mod shared_storage_rotation_authentication {
             &bob_sk,
             vec![],
         );
-        let result = MainInterface::apply_action(bob_revoked, &post_ctx());
+        let result = MainInterface::apply_action(bob_revoked, &post_ctx(&bob_sk));
         assert!(
             matches!(result, Err(StorageError::InvalidSignature)),
             "a rotated-out writer's member write must be rejected, got {result:?}"
@@ -1616,7 +1630,7 @@ mod shared_storage_rotation_authentication {
             &alice_sk,
             vec![],
         );
-        MainInterface::apply_action(alice_write, &post_ctx())
+        MainInterface::apply_action(alice_write, &post_ctx(&alice_sk))
             .expect("a current writer's member write must still be accepted");
     }
 
@@ -1630,7 +1644,7 @@ mod shared_storage_rotation_authentication {
         let root = setup_root_for_main();
 
         let alice_sk = make_signing_key(0xA1);
-        let alice = pubkey_of(&alice_sk);
+        let alice = account_of_key(&alice_sk);
         let mallory_sk = make_signing_key(0x4D); // a context member, NOT a writer
         let _mallory = pubkey_of(&mallory_sk);
 
@@ -1649,7 +1663,7 @@ mod shared_storage_rotation_authentication {
             &alice_sk,
             vec![root.clone()],
         );
-        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+        MainInterface::apply_action(bootstrap, &apply_ctx_for(account_of_key(&alice_sk))).unwrap();
         let member_add = build_signed_member_action(
             true,
             member,
@@ -1659,12 +1673,13 @@ mod shared_storage_rotation_authentication {
             &alice_sk,
             vec![root.clone()],
         );
-        MainInterface::apply_action(member_add, &ApplyContext::empty())
+        MainInterface::apply_action(member_add, &apply_ctx_for(account_of_key(&alice_sk)))
             .expect("writer's member add must be accepted");
 
         // Mallory (non-writer) tries to delete the member → rejected.
         let forged_delete = build_signed_member_delete(member, anchor, &mallory_sk, n0 + 2_000_000);
-        let result = MainInterface::apply_action(forged_delete, &ApplyContext::empty());
+        let result =
+            MainInterface::apply_action(forged_delete, &apply_ctx_for(account_of_key(&mallory_sk)));
         assert!(
             matches!(result, Err(StorageError::InvalidSignature)),
             "a non-writer's member delete must be rejected, got {result:?}"
@@ -1672,7 +1687,7 @@ mod shared_storage_rotation_authentication {
 
         // Alice (a writer) deletes the member → accepted.
         let ok_delete = build_signed_member_delete(member, anchor, &alice_sk, n0 + 3_000_000);
-        MainInterface::apply_action(ok_delete, &ApplyContext::empty())
+        MainInterface::apply_action(ok_delete, &apply_ctx_for(account_of_key(&alice_sk)))
             .expect("a writer's member delete must be accepted");
     }
 
@@ -1687,7 +1702,7 @@ mod shared_storage_rotation_authentication {
         let root = setup_root_for_main();
 
         let alice_sk = make_signing_key(0xA1);
-        let alice = pubkey_of(&alice_sk);
+        let alice = account_of_key(&alice_sk);
         let anchor = Id::new([0xA0; 32]);
         let member = Id::new([0x3E; 32]);
         let writers: BTreeSet<_> = [alice].into_iter().collect();
@@ -1703,7 +1718,7 @@ mod shared_storage_rotation_authentication {
             &alice_sk,
             vec![root.clone()],
         );
-        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+        MainInterface::apply_action(bootstrap, &apply_ctx_for(account_of_key(&alice_sk))).unwrap();
         let member_add = build_signed_member_action(
             true,
             member,
@@ -1713,13 +1728,17 @@ mod shared_storage_rotation_authentication {
             &alice_sk,
             vec![root.clone()],
         );
-        MainInterface::apply_action(member_add, &ApplyContext::empty()).unwrap();
+        MainInterface::apply_action(member_add, &apply_ctx_for(account_of_key(&alice_sk))).unwrap();
 
         // Alice's resolved capability is WRITE-only (no DELETE).
         let write_only = |id, hlc| crate::interface::ApplyContext {
             effective_writers: Some([(alice, OpMask::WRITE)].into_iter().collect()),
             delta_id: id,
             delta_hlc: hlc,
+            // Alice signs every action in this test, and she IS the granted
+            // account — so a refusal below can only be the op-mask gate, which is
+            // what it is testing.
+            signer_account: Some(alice),
         };
 
         // An update is permitted (WRITE ⊇ WRITE).
@@ -1748,22 +1767,35 @@ mod shared_storage_rotation_authentication {
             effective_writers: Some([(alice, OpMask::FULL)].into_iter().collect()),
             delta_id: None,
             delta_hlc: None,
+            signer_account: Some(alice),
         };
         let del2 = build_signed_member_delete(member, anchor, &alice_sk, n0 + 4_000_000);
         MainInterface::apply_action(del2, &full).expect("FULL writer's delete must be accepted");
     }
 
-    /// Snapshot verification of a member resolves the anchor's writers (the
-    /// snapshot path bypasses the delta pipeline, so it must independently reach
-    /// the anchor). A writer-signed member verifies; a non-writer-signed one is
-    /// rejected.
+    /// Snapshot verification of a member checks the SIGNATURE and nothing more.
+    ///
+    /// It used to resolve the anchor's writers and reject a non-writer's leaf.
+    /// That was the closest a snapshot could get to authorization, and it was the
+    /// wrong question: a snapshot leaf is state, not an op, so it has no causal
+    /// parents to resolve "was this account a writer *then*" against. Asking
+    /// against the receiver's *current* writers instead refuses a leaf written by
+    /// a since-rotated-out writer even though the sender's root hash includes it —
+    /// leaving the receiver unable to match the root it just accepted and sending
+    /// HashComparison to repair an entity it will refuse again.
+    ///
+    /// So the writer half is not asked here. What a snapshot still rests on: the
+    /// sender is a member, the delivered contents hash to the root it claims, and
+    /// every subsequent *delta* is authorized at its own cut — which is where a
+    /// non-writer's write is refused, as the tests above cover. What this check
+    /// still buys is that no leaf carries a forged or placeholder signature.
     #[test]
-    fn snapshot_verify_member_resolves_anchor_writers() {
+    fn snapshot_verify_member_checks_the_signature_not_the_writer_set() {
         env::reset_for_testing();
         let root = setup_root_for_main();
 
         let alice_sk = make_signing_key(0xA1);
-        let alice = pubkey_of(&alice_sk);
+        let alice = account_of_key(&alice_sk);
         let mallory_sk = make_signing_key(0x4D);
 
         let anchor = Id::new([0xA0; 32]);
@@ -1781,7 +1813,7 @@ mod shared_storage_rotation_authentication {
             &alice_sk,
             vec![root],
         );
-        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+        MainInterface::apply_action(bootstrap, &apply_ctx_for(account_of_key(&alice_sk))).unwrap();
 
         // A member action signed by a writer (alice) — extract its metadata and
         // verify as a snapshot leaf.
@@ -1801,10 +1833,13 @@ mod shared_storage_rotation_authentication {
         };
         assert!(
             MainInterface::verify_snapshot_entity_signature(member, &data, &writer_meta).is_ok(),
-            "a writer-signed member snapshot leaf must verify against the anchor's writers"
+            "a validly-signed member snapshot leaf must verify"
         );
 
-        // The same leaf signed by a non-writer (mallory) must be rejected.
+        // A leaf signed by someone who is NOT a writer of the anchor also
+        // verifies, because the writer question is not askable here. It is asked —
+        // and this signer refused — the moment a delta writes the same member; see
+        // `rotating_anchor_retroactively_revokes_member_writes`.
         let by_nonwriter = build_signed_member_action(
             true,
             member,
@@ -1819,11 +1854,21 @@ mod shared_storage_rotation_authentication {
             _ => unreachable!(),
         };
         assert!(
+            MainInterface::verify_snapshot_entity_signature(member, &data, &nonwriter_meta).is_ok(),
+            "a snapshot leaf is verified by signature alone — the writer set has no \
+             cut to be resolved at here"
+        );
+
+        // What the check does still refuse: a leaf whose signature is forged. Same
+        // signer, same metadata, one flipped byte in the payload it covers.
+        let mut tampered = data.clone();
+        tampered[0] ^= 0xFF;
+        assert!(
             matches!(
-                MainInterface::verify_snapshot_entity_signature(member, &data, &nonwriter_meta),
+                MainInterface::verify_snapshot_entity_signature(member, &tampered, &writer_meta),
                 Err(StorageError::InvalidSignature)
             ),
-            "a non-writer-signed member snapshot leaf must be rejected"
+            "a leaf whose signature does not cover its data must be rejected"
         );
     }
 }

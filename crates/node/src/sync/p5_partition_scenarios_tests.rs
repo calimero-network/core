@@ -10,7 +10,6 @@
 
 use core::num::NonZeroU128;
 
-use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::entities::{ChildInfo, Metadata};
@@ -20,7 +19,7 @@ use calimero_storage::interface::{
 };
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_storage::store::{MockedStorage, StorageAdaptor};
-use calimero_storage::tests::common::{build_signed_shared_action, pubkey_of};
+use calimero_storage::tests::common::{account_of_key, build_signed_shared_action};
 use ed25519_dalek::SigningKey;
 
 use crate::sync::rotation_log_reader;
@@ -40,6 +39,9 @@ struct Delta {
     parents: Vec<[u8; 32]>,
     hlc_ns: u64,
     action: Action,
+    /// The key that signed `action`. Carried so `deliver` can state the account
+    /// it speaks for, which is what the node resolves at the delta's cut.
+    signer: SigningKey,
 }
 
 fn hlc(ns: u64) -> HybridTimestamp {
@@ -54,7 +56,7 @@ fn hlc(ns: u64) -> HybridTimestamp {
 fn deliver<S: StorageAdaptor>(delta: &Delta, dag: &Dag) -> Result<(), StorageError> {
     let entity_id = delta.action.id();
     let effective_writers: Option<
-        std::collections::BTreeMap<PublicKey, calimero_storage::entities::OpMask>,
+        std::collections::BTreeMap<calimero_account::AccountId, calimero_storage::entities::OpMask>,
     > = match Interface::<S>::load_rotation_log_child(entity_id) {
         Some(log) => {
             rotation_log_reader::writers_at(&log, &delta.parents, |a, b| dag.happens_before(a, b))
@@ -65,6 +67,9 @@ fn deliver<S: StorageAdaptor>(delta: &Delta, dag: &Dag) -> Result<(), StorageErr
         effective_writers,
         delta_id: Some(delta.id),
         delta_hlc: Some(hlc(delta.hlc_ns)),
+        // The delta carries its author's key; the account it speaks for is what
+        // the node resolves at the cut, mirrored here by the test's own mapping.
+        signer_account: Some(account_of_key(&delta.signer)),
     };
     Interface::<S>::apply_action(delta.action.clone(), &ctx)
 }
@@ -92,7 +97,9 @@ fn writers_at_frontier<S: StorageAdaptor, F>(
     id: Id,
     frontier: &[[u8; 32]],
     happens_before: F,
-) -> Option<std::collections::BTreeMap<PublicKey, calimero_storage::entities::OpMask>>
+) -> Option<
+    std::collections::BTreeMap<calimero_account::AccountId, calimero_storage::entities::OpMask>,
+>
 where
     F: Fn(&[u8; 32], &[u8; 32]) -> bool,
 {
@@ -122,8 +129,8 @@ fn update_vs_rotation_race_pre_rotation_write_accepted() {
 
     let alice_sk = make_signing_key(0xA1);
     let bob_sk = make_signing_key(0xB1);
-    let alice = pubkey_of(&alice_sk);
-    let bob = pubkey_of(&bob_sk);
+    let alice = account_of_key(&alice_sk);
+    let bob = account_of_key(&bob_sk);
     let id = Id::new([0x50; 32]);
 
     let mut dag = Dag::new();
@@ -143,6 +150,7 @@ fn update_vs_rotation_race_pre_rotation_write_accepted() {
             &alice_sk,
             vec![root.clone()],
         ),
+        signer: alice_sk.clone(),
     };
     dag.record(d_root.id, d_root.parents.clone());
     deliver::<Carol>(&d_root, &dag).expect("bootstrap delivered to Carol");
@@ -162,6 +170,7 @@ fn update_vs_rotation_race_pre_rotation_write_accepted() {
             &alice_sk,
             vec![],
         ),
+        signer: alice_sk.clone(),
     };
     dag.record(d1.id, d1.parents.clone());
 
@@ -181,6 +190,7 @@ fn update_vs_rotation_race_pre_rotation_write_accepted() {
             &bob_sk,
             vec![],
         ),
+        signer: bob_sk.clone(),
     };
     dag.record(d2.id, d2.parents.clone());
 
@@ -217,8 +227,8 @@ fn self_removal_mid_flight_pre_accepted_post_rejected() {
 
     let alice_sk = make_signing_key(0xA2);
     let bob_sk = make_signing_key(0xB2);
-    let alice = pubkey_of(&alice_sk);
-    let bob = pubkey_of(&bob_sk);
+    let alice = account_of_key(&alice_sk);
+    let bob = account_of_key(&bob_sk);
     let id = Id::new([0x51; 32]);
 
     let mut dag = Dag::new();
@@ -238,6 +248,7 @@ fn self_removal_mid_flight_pre_accepted_post_rejected() {
             &alice_sk,
             vec![root.clone()],
         ),
+        signer: alice_sk.clone(),
     };
     dag.record(d_root.id, d_root.parents.clone());
     deliver::<Carol>(&d_root, &dag).unwrap();
@@ -257,6 +268,7 @@ fn self_removal_mid_flight_pre_accepted_post_rejected() {
             &alice_sk,
             vec![],
         ),
+        signer: alice_sk.clone(),
     };
     dag.record(d2.id, d2.parents.clone());
 
@@ -275,6 +287,7 @@ fn self_removal_mid_flight_pre_accepted_post_rejected() {
             &alice_sk,
             vec![],
         ),
+        signer: alice_sk.clone(),
     };
     dag.record(d1.id, d1.parents.clone());
 
@@ -293,6 +306,7 @@ fn self_removal_mid_flight_pre_accepted_post_rejected() {
             &alice_sk,
             vec![],
         ),
+        signer: alice_sk.clone(),
     };
     dag.record(d3.id, d3.parents.clone());
 
@@ -328,8 +342,8 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
 
     let alice_sk = make_signing_key(0xA3);
     let bob_sk = make_signing_key(0xB3);
-    let alice = pubkey_of(&alice_sk);
-    let bob = pubkey_of(&bob_sk);
+    let alice = account_of_key(&alice_sk);
+    let bob = account_of_key(&bob_sk);
     let id = Id::new([0x52; 32]);
 
     let mut dag = Dag::new();
@@ -349,6 +363,7 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
             &alice_sk,
             vec![carol_root.clone()],
         ),
+        signer: alice_sk.clone(),
     };
     let d_root_dave = Delta {
         id: d_root_id,
@@ -363,6 +378,7 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
             &alice_sk,
             vec![dave_root.clone()],
         ),
+        signer: alice_sk.clone(),
     };
     dag.record(d_root_carol.id, d_root_carol.parents.clone());
     deliver::<Carol>(&d_root_carol, &dag).unwrap();
@@ -383,6 +399,7 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
             &alice_sk,
             vec![],
         ),
+        signer: alice_sk.clone(),
     };
     dag.record(d1.id, d1.parents.clone());
 
@@ -401,6 +418,7 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
             &bob_sk,
             vec![],
         ),
+        signer: bob_sk.clone(),
     };
     dag.record(d2.id, d2.parents.clone());
 
@@ -460,10 +478,10 @@ fn long_partition_reconciliation_converges() {
     let bob_sk = make_signing_key(0xB4);
     let carol_sk = make_signing_key(0xC4);
     let dave_sk = make_signing_key(0xD4);
-    let alice = pubkey_of(&alice_sk);
-    let bob = pubkey_of(&bob_sk);
-    let carol = pubkey_of(&carol_sk);
-    let dave = pubkey_of(&dave_sk);
+    let alice = account_of_key(&alice_sk);
+    let bob = account_of_key(&bob_sk);
+    let carol = account_of_key(&carol_sk);
+    let dave = account_of_key(&dave_sk);
     let id = Id::new([0x53; 32]);
 
     let mut dag = Dag::new();
@@ -483,6 +501,7 @@ fn long_partition_reconciliation_converges() {
             &alice_sk,
             vec![left_root.clone()],
         ),
+        signer: alice_sk.clone(),
     };
     let bootstrap_right = Delta {
         id: g0,
@@ -497,6 +516,7 @@ fn long_partition_reconciliation_converges() {
             &alice_sk,
             vec![right_root.clone()],
         ),
+        signer: alice_sk.clone(),
     };
     dag.record(g0, vec![]);
     deliver::<Left>(&bootstrap_left, &dag).unwrap();
@@ -517,6 +537,7 @@ fn long_partition_reconciliation_converges() {
             &alice_sk,
             vec![],
         ),
+        signer: alice_sk.clone(),
     };
     dag.record(l1, vec![g0]);
     deliver::<Left>(&l1_delta, &dag).unwrap();
@@ -535,6 +556,7 @@ fn long_partition_reconciliation_converges() {
             &carol_sk,
             vec![],
         ),
+        signer: carol_sk.clone(),
     };
     dag.record(l2, vec![l1]);
     deliver::<Left>(&l2_delta, &dag).unwrap();
@@ -554,6 +576,7 @@ fn long_partition_reconciliation_converges() {
             &bob_sk,
             vec![],
         ),
+        signer: bob_sk.clone(),
     };
     dag.record(r1, vec![g0]);
     deliver::<Right>(&r1_delta, &dag).unwrap();
@@ -572,6 +595,7 @@ fn long_partition_reconciliation_converges() {
             &dave_sk,
             vec![],
         ),
+        signer: dave_sk.clone(),
     };
     dag.record(r2, vec![r1]);
     deliver::<Right>(&r2_delta, &dag).unwrap();

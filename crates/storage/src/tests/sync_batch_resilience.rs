@@ -25,7 +25,7 @@ use core::num::NonZeroU128;
 use std::collections::{BTreeMap, BTreeSet};
 
 use borsh::to_vec;
-use calimero_primitives::identity::PublicKey;
+use calimero_account::AccountId;
 use ed25519_dalek::SigningKey;
 
 use crate::action::Action;
@@ -34,10 +34,10 @@ use crate::collections::Root;
 use crate::delta::StorageDelta;
 use crate::entities::{ChildInfo, Metadata, OpMask, StorageType};
 use crate::index::Index;
-use crate::interface::{ApplyContext, Interface};
+use crate::interface::Interface;
 use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use crate::store::MockedStorage;
-use crate::tests::common::{build_signed_shared_action, pubkey_of, EmptyData};
+use crate::tests::common::{account_of_key, apply_ctx_for, build_signed_shared_action, EmptyData};
 use crate::{env, merge};
 
 type S = MockedStorage<4716>;
@@ -74,7 +74,7 @@ fn setup() -> ChildInfo {
 /// hand because the signing helpers always attach a signature.
 fn unsigned_shared_add(
     id: Id,
-    writers: BTreeSet<PublicKey>,
+    writers: BTreeSet<AccountId>,
     hlc_ns: u64,
     root: &ChildInfo,
 ) -> Action {
@@ -106,8 +106,11 @@ fn unsigned_shared_action_does_not_abort_the_sync_batch() {
     let root = setup();
 
     let alice_sk = make_signing_key(0xA1);
-    let alice = pubkey_of(&alice_sk);
-    let writers: BTreeSet<PublicKey> = [alice].into_iter().collect();
+    // Alice's ACCOUNT is what the writer set grants; her device key is what
+    // signs. `signer_account` below is the node's resolution of the one to the
+    // other, which is why the test has to state both.
+    let alice = account_of_key(&alice_sk);
+    let writers: BTreeSet<AccountId> = [alice].into_iter().collect();
 
     let bad_id = entity_id(0xBA); // unsigned Shared — must be skipped
     let good_id = entity_id(0x60); // valid signed Shared — must apply
@@ -127,7 +130,7 @@ fn unsigned_shared_action_does_not_abort_the_sync_batch() {
     // The receiver's per-action `effective_writers` map (#2266). The good
     // action verifies against {Alice}; the bad one is rejected before any
     // writer check, so its entry is irrelevant.
-    let mut effective_writers: BTreeMap<Id, BTreeMap<PublicKey, OpMask>> = BTreeMap::new();
+    let mut effective_writers: BTreeMap<Id, BTreeMap<AccountId, OpMask>> = BTreeMap::new();
     let _ = effective_writers.insert(good_id, crate::entities::full_mask(writers.clone()));
 
     let payload = to_vec(&StorageDelta::CausalActions {
@@ -135,11 +138,18 @@ fn unsigned_shared_action_does_not_abort_the_sync_batch() {
         delta_id: [0xD1; 32],
         delta_hlc: hlc(300),
         effective_writers,
+        // The delta's author, as the applying node resolved it at its cut.
+        signer_account: Some(alice),
     })
     .unwrap();
 
     // Must NOT return Err — that is what becomes the fatal panic in production.
-    Root::<EmptyData, S>::sync(&payload, &ApplyContext::empty())
+    // The outer context carries the node's resolution of the delta's author. One
+    // delta, one author, so one account answers for every action in the batch —
+    // `Root::sync` hands it to each per-action context. With `empty()` here the
+    // good sibling would be refused for want of a resolved signer, and the test
+    // would "pass" while proving nothing about batch resilience.
+    Root::<EmptyData, S>::sync(&payload, &apply_ctx_for(alice))
         .expect("a single unsigned action must not abort the whole sync batch (#2716)");
 
     // The valid sibling applied despite the unsigned action ahead of it.

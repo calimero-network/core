@@ -33,6 +33,7 @@ pub(super) fn build_runtime_env(
     storage: &mut dyn RuntimeStorage,
     context_id: [u8; DIGEST_SIZE],
     executor_id: [u8; DIGEST_SIZE],
+    account_id: [u8; DIGEST_SIZE],
 ) -> RuntimeEnv {
     // Erase the borrow lifetime of the storage trait object so the callbacks
     // can satisfy `RuntimeEnv`'s `'static` closure bound. Crucially we keep the
@@ -102,7 +103,10 @@ pub(super) fn build_runtime_env(
     //   calls that do not install an override will continue to use the mock /
     //   WASM backends.
 
-    let base = RuntimeEnv::new(reader, writer, remover, context_id, executor_id);
+    // Both identities travel: native storage code inside this execution gates on
+    // the account (`env::account_id`) and stamps with the device
+    // (`env::device_id`), exactly as the guest does through the host functions.
+    let base = RuntimeEnv::new(reader, writer, remover, context_id, executor_id, account_id);
 
     // Only bridge the ordered index when the backend actually persists it (the
     // real `ContextStorage`). A backend that doesn't (test mocks) leaves the
@@ -1218,6 +1222,7 @@ impl VMHostFunctions<'_> {
                 logic.storage,
                 logic.context.context_id,
                 logic.context.executor_public_key,
+                logic.context.account_id,
             );
 
             let payload = payload_opt
@@ -1272,6 +1277,7 @@ impl VMHostFunctions<'_> {
                 logic.storage,
                 logic.context.context_id,
                 logic.context.executor_public_key,
+                logic.context.account_id,
             );
 
             let maybe_bytes = with_runtime_env(env, Interface::<MainStorage>::read_root_entry);
@@ -1332,6 +1338,7 @@ impl VMHostFunctions<'_> {
                 logic.storage,
                 logic.context.context_id,
                 logic.context.executor_public_key,
+                logic.context.account_id,
             );
 
             with_runtime_env(env.clone(), || {
@@ -1396,6 +1403,7 @@ impl VMHostFunctions<'_> {
                 logic.storage,
                 logic.context.context_id,
                 logic.context.executor_public_key,
+                logic.context.account_id,
             );
 
             let root_hash = with_runtime_env(env.clone(), || {

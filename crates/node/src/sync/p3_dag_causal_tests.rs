@@ -22,7 +22,7 @@ use calimero_storage::interface::{ApplyContext, Interface, StorageError};
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_storage::rotation_log::RotationLogEntry;
 use calimero_storage::store::{MockedStorage, StorageAdaptor};
-use calimero_storage::tests::common::{build_signed_shared_action, pubkey_of};
+use calimero_storage::tests::common::{account_of_key, apply_ctx_for, build_signed_shared_action};
 use core::num::NonZeroU128;
 use ed25519_dalek::SigningKey;
 
@@ -86,6 +86,7 @@ fn ctx_for<S: StorageAdaptor>(
     delta_id: [u8; 32],
     delta_hlc_ns: u64,
     dag: &Dag,
+    signer_sk: &SigningKey,
 ) -> ApplyContext {
     let effective_writers = match Interface::<S>::load_rotation_log_child(entity) {
         Some(log) => {
@@ -97,6 +98,9 @@ fn ctx_for<S: StorageAdaptor>(
         effective_writers,
         delta_id: Some(delta_id),
         delta_hlc: Some(hlc(delta_hlc_ns)),
+        // Per-apply: the writer set is the same at one causal point, but WHO is
+        // writing is not, and these tests turn on exactly that difference.
+        signer_account: Some(account_of_key(signer_sk)),
     }
 }
 
@@ -112,7 +116,7 @@ fn verifier_without_dag_context_uses_stored_writers() {
     let root = setup_root::<S<6400>>();
 
     let alice_sk = make_signing_key(0xA1);
-    let alice = pubkey_of(&alice_sk);
+    let alice = account_of_key(&alice_sk);
     let id = entity_id(0x40);
 
     let bootstrap = build_signed_shared_action(
@@ -124,7 +128,7 @@ fn verifier_without_dag_context_uses_stored_writers() {
         &alice_sk,
         vec![root.clone()],
     );
-    Interface::<S<6400>>::apply_action(bootstrap, &ApplyContext::empty())
+    Interface::<S<6400>>::apply_action(bootstrap, &apply_ctx_for(account_of_key(&alice_sk)))
         .expect("bootstrap accepted with v2 fallback");
 
     let update = build_signed_shared_action(
@@ -136,7 +140,7 @@ fn verifier_without_dag_context_uses_stored_writers() {
         &alice_sk,
         vec![],
     );
-    Interface::<S<6400>>::apply_action(update, &ApplyContext::empty())
+    Interface::<S<6400>>::apply_action(update, &apply_ctx_for(account_of_key(&alice_sk)))
         .expect("update by writer accepted");
 }
 
@@ -147,7 +151,7 @@ fn verifier_without_dag_context_rejects_non_writer() {
 
     let alice_sk = make_signing_key(0xA2);
     let bob_sk = make_signing_key(0xB2);
-    let alice = pubkey_of(&alice_sk);
+    let alice = account_of_key(&alice_sk);
     let id = entity_id(0x41);
 
     let bootstrap = build_signed_shared_action(
@@ -159,7 +163,8 @@ fn verifier_without_dag_context_rejects_non_writer() {
         &alice_sk,
         vec![root.clone()],
     );
-    Interface::<S<6401>>::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+    Interface::<S<6401>>::apply_action(bootstrap, &apply_ctx_for(account_of_key(&alice_sk)))
+        .unwrap();
 
     // Bob is not in the stored writer set — must reject.
     let forged = build_signed_shared_action(
@@ -171,7 +176,10 @@ fn verifier_without_dag_context_rejects_non_writer() {
         &bob_sk,
         vec![],
     );
-    let result = Interface::<S<6401>>::apply_action(forged, &ApplyContext::empty());
+    // Bob's key resolves to Bob's account — an honest resolution — so the refusal
+    // below is "that account is not a writer", not "unresolvable signer".
+    let result =
+        Interface::<S<6401>>::apply_action(forged, &apply_ctx_for(account_of_key(&bob_sk)));
     assert!(matches!(result, Err(StorageError::InvalidSignature)));
 }
 
@@ -186,8 +194,9 @@ fn verifier_with_dag_context_uses_rotation_log() {
 
     let alice_sk = make_signing_key(0xA3);
     let bob_sk = make_signing_key(0xB3);
-    let alice = pubkey_of(&alice_sk);
-    let bob = pubkey_of(&bob_sk);
+    let alice = account_of_key(&alice_sk);
+    let alice_pk = calimero_storage::tests::common::pubkey_of(&alice_sk);
+    let bob = account_of_key(&bob_sk);
     let id = entity_id(0x42);
 
     // Bootstrap with Bob as the stored writer.
@@ -200,7 +209,7 @@ fn verifier_with_dag_context_uses_rotation_log() {
         &bob_sk,
         vec![root.clone()],
     );
-    Interface::<S<6402>>::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+    Interface::<S<6402>>::apply_action(bootstrap, &apply_ctx_for(account_of_key(&bob_sk))).unwrap();
 
     // Pre-populate the rotation log: as-of delta D1, the writer set was {Alice}.
     let d1 = [0xD1; 32];
@@ -209,7 +218,7 @@ fn verifier_with_dag_context_uses_rotation_log() {
         &RotationLogEntry {
             delta_id: d1,
             delta_hlc: hlc(hlc_at(0)),
-            signer: Some(alice),
+            signer: Some(alice_pk),
             signature: None,
             signed_payload: None,
             new_writers: [alice]
@@ -233,7 +242,7 @@ fn verifier_with_dag_context_uses_rotation_log() {
     );
     let mut dag = Dag::new();
     dag.record(d1, vec![]);
-    let ctx = ctx_for::<S<6402>>(id, &[d1], [0xD2; 32], hlc_at(2), &dag);
+    let ctx = ctx_for::<S<6402>>(id, &[d1], [0xD2; 32], hlc_at(2), &dag, &alice_sk);
 
     // Without DAG-causal this would be rejected (sig vs stored {Bob} fails).
     // With DAG-causal it's accepted because writers_at returns {Alice}.
@@ -250,8 +259,9 @@ fn verifier_with_dag_context_rejects_non_causal_writer() {
     let alice_sk = make_signing_key(0xA4);
     let bob_sk = make_signing_key(0xB4);
     let mallory_sk = make_signing_key(0xC4);
-    let alice = pubkey_of(&alice_sk);
-    let bob = pubkey_of(&bob_sk);
+    let alice = account_of_key(&alice_sk);
+    let alice_pk = calimero_storage::tests::common::pubkey_of(&alice_sk);
+    let bob = account_of_key(&bob_sk);
     let id = entity_id(0x43);
 
     let bootstrap = build_signed_shared_action(
@@ -263,7 +273,7 @@ fn verifier_with_dag_context_rejects_non_causal_writer() {
         &bob_sk,
         vec![root.clone()],
     );
-    Interface::<S<6403>>::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+    Interface::<S<6403>>::apply_action(bootstrap, &apply_ctx_for(account_of_key(&bob_sk))).unwrap();
 
     let d1 = [0xD1; 32];
     Interface::<S<6403>>::append_rotation_to_child(
@@ -271,7 +281,7 @@ fn verifier_with_dag_context_rejects_non_causal_writer() {
         &RotationLogEntry {
             delta_id: d1,
             delta_hlc: hlc(hlc_at(0)),
-            signer: Some(alice),
+            signer: Some(alice_pk),
             signature: None,
             signed_payload: None,
             new_writers: [alice]
@@ -295,7 +305,12 @@ fn verifier_with_dag_context_rejects_non_causal_writer() {
     );
     let mut dag = Dag::new();
     dag.record(d1, vec![]);
-    let ctx = ctx_for::<S<6403>>(id, &[d1], [0xD2; 32], hlc_at(2), &dag);
+    // The ctx resolves MALLORY's account, because that is what a node does: it
+    // resolves the account from the action's own signer. Passing Alice's account
+    // beside Mallory's signature would be a resolution mismatch that cannot arise
+    // in production (one delta, one author, one resolution) and that storage has no
+    // way to detect — see `resolve_signer`'s contract.
+    let ctx = ctx_for::<S<6403>>(id, &[d1], [0xD2; 32], hlc_at(2), &dag, &mallory_sk);
 
     let result = Interface::<S<6403>>::apply_action(forged, &ctx);
     assert!(matches!(result, Err(StorageError::InvalidSignature)));
@@ -311,7 +326,8 @@ fn write_hook_appends_on_bootstrap_with_ctx() {
     let root = setup_root::<S<6404>>();
 
     let alice_sk = make_signing_key(0xA5);
-    let alice = pubkey_of(&alice_sk);
+    let alice = account_of_key(&alice_sk);
+    let alice_pk = calimero_storage::tests::common::pubkey_of(&alice_sk);
     let id = entity_id(0x44);
 
     let bootstrap = build_signed_shared_action(
@@ -324,14 +340,17 @@ fn write_hook_appends_on_bootstrap_with_ctx() {
         vec![root.clone()],
     );
     let dag = Dag::new();
-    let ctx = ctx_for::<S<6404>>(id, &[], [0xAA; 32], hlc_at(0), &dag);
+    let ctx = ctx_for::<S<6404>>(id, &[], [0xAA; 32], hlc_at(0), &dag, &alice_sk);
     Interface::<S<6404>>::apply_action(bootstrap, &ctx).unwrap();
 
     let log = Interface::<S<6404>>::load_rotation_log_child(id)
         .expect("rotation log exists after Shared apply with delta ctx");
     assert_eq!(log.entries.len(), 1);
     assert_eq!(log.entries[0].delta_id, [0xAA; 32]);
-    assert_eq!(log.entries[0].signer, Some(alice));
+    // The entry names the KEY that signed. The account it speaks for is resolved
+    // at read time, not stored — see `writers_at_authenticated`'s injected
+    // resolver.
+    assert_eq!(log.entries[0].signer, Some(alice_pk));
     assert_eq!(
         log.entries[0].new_writers,
         [alice]
@@ -348,7 +367,7 @@ fn write_hook_skips_when_ctx_lacks_delta_id() {
     let root = setup_root::<S<6405>>();
 
     let alice_sk = make_signing_key(0xA6);
-    let alice = pubkey_of(&alice_sk);
+    let alice = account_of_key(&alice_sk);
     let id = entity_id(0x45);
 
     let bootstrap = build_signed_shared_action(
@@ -360,7 +379,8 @@ fn write_hook_skips_when_ctx_lacks_delta_id() {
         &alice_sk,
         vec![root.clone()],
     );
-    Interface::<S<6405>>::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+    Interface::<S<6405>>::apply_action(bootstrap, &apply_ctx_for(account_of_key(&alice_sk)))
+        .unwrap();
 
     assert_eq!(Interface::<S<6405>>::load_rotation_log_child(id), None);
 }
@@ -371,7 +391,7 @@ fn write_hook_skips_when_writers_unchanged() {
     let root = setup_root::<S<6406>>();
 
     let alice_sk = make_signing_key(0xA7);
-    let alice = pubkey_of(&alice_sk);
+    let alice = account_of_key(&alice_sk);
     let id = entity_id(0x46);
 
     let mut dag = Dag::new();
@@ -389,7 +409,7 @@ fn write_hook_skips_when_writers_unchanged() {
     dag.record(bootstrap_id, vec![]);
     Interface::<S<6406>>::apply_action(
         bootstrap,
-        &ctx_for::<S<6406>>(id, &[], bootstrap_id, hlc_at(0), &dag),
+        &ctx_for::<S<6406>>(id, &[], bootstrap_id, hlc_at(0), &dag, &alice_sk),
     )
     .unwrap();
     assert_eq!(
@@ -414,7 +434,7 @@ fn write_hook_skips_when_writers_unchanged() {
     dag.record(vw_id, vec![bootstrap_id]);
     Interface::<S<6406>>::apply_action(
         value_write,
-        &ctx_for::<S<6406>>(id, &[bootstrap_id], vw_id, hlc_at(1), &dag),
+        &ctx_for::<S<6406>>(id, &[bootstrap_id], vw_id, hlc_at(1), &dag, &alice_sk),
     )
     .unwrap();
 
@@ -429,8 +449,8 @@ fn write_hook_appends_on_writer_set_change() {
 
     let alice_sk = make_signing_key(0xA8);
     let bob_sk = make_signing_key(0xB8);
-    let alice = pubkey_of(&alice_sk);
-    let bob = pubkey_of(&bob_sk);
+    let alice = account_of_key(&alice_sk);
+    let bob = account_of_key(&bob_sk);
     let id = entity_id(0x47);
 
     let mut dag = Dag::new();
@@ -448,7 +468,7 @@ fn write_hook_appends_on_writer_set_change() {
     dag.record(d0, vec![]);
     Interface::<S<6407>>::apply_action(
         bootstrap,
-        &ctx_for::<S<6407>>(id, &[], d0, hlc_at(0), &dag),
+        &ctx_for::<S<6407>>(id, &[], d0, hlc_at(0), &dag, &alice_sk),
     )
     .unwrap();
 
@@ -466,7 +486,7 @@ fn write_hook_appends_on_writer_set_change() {
     dag.record(d1, vec![d0]);
     Interface::<S<6407>>::apply_action(
         rotation,
-        &ctx_for::<S<6407>>(id, &[d0], d1, hlc_at(1), &dag),
+        &ctx_for::<S<6407>>(id, &[d0], d1, hlc_at(1), &dag, &alice_sk),
     )
     .unwrap();
 
@@ -495,8 +515,8 @@ fn adr_example_d_pre_rotation_write_accepted_after_rotation() {
 
     let alice_sk = make_signing_key(0xA9);
     let bob_sk = make_signing_key(0xB9);
-    let alice = pubkey_of(&alice_sk);
-    let bob = pubkey_of(&bob_sk);
+    let alice = account_of_key(&alice_sk);
+    let bob = account_of_key(&bob_sk);
     let id = entity_id(0x60);
 
     let mut dag = Dag::new();
@@ -515,7 +535,7 @@ fn adr_example_d_pre_rotation_write_accepted_after_rotation() {
     );
     Interface::<S<6420>>::apply_action(
         bootstrap,
-        &ctx_for::<S<6420>>(id, &[], d_root, hlc_at(0), &dag),
+        &ctx_for::<S<6420>>(id, &[], d_root, hlc_at(0), &dag, &alice_sk),
     )
     .unwrap();
 
@@ -534,7 +554,7 @@ fn adr_example_d_pre_rotation_write_accepted_after_rotation() {
     );
     Interface::<S<6420>>::apply_action(
         rotation,
-        &ctx_for::<S<6420>>(id, &[d_root], d1, hlc_at(1), &dag),
+        &ctx_for::<S<6420>>(id, &[d_root], d1, hlc_at(1), &dag, &alice_sk),
     )
     .unwrap();
 
@@ -557,7 +577,7 @@ fn adr_example_d_pre_rotation_write_accepted_after_rotation() {
         &bob_sk,
         vec![],
     );
-    let ctx = ctx_for::<S<6420>>(id, &[d_root], d2, hlc_at(2), &dag);
+    let ctx = ctx_for::<S<6420>>(id, &[d_root], d2, hlc_at(2), &dag, &alice_sk);
 
     // Crucial: even though stored writers (post-D1) is {Alice}, D2 is causally
     // a sibling of D1 — it never saw the rotation. writers_at(D2.parents=[D_root])
@@ -578,8 +598,8 @@ fn write_post_rotation_by_removed_writer_rejected() {
 
     let alice_sk = make_signing_key(0xAA);
     let bob_sk = make_signing_key(0xBA);
-    let alice = pubkey_of(&alice_sk);
-    let bob = pubkey_of(&bob_sk);
+    let alice = account_of_key(&alice_sk);
+    let bob = account_of_key(&bob_sk);
     let id = entity_id(0x61);
 
     let mut dag = Dag::new();
@@ -597,7 +617,7 @@ fn write_post_rotation_by_removed_writer_rejected() {
     );
     Interface::<S<6421>>::apply_action(
         bootstrap,
-        &ctx_for::<S<6421>>(id, &[], d_root, hlc_at(0), &dag),
+        &ctx_for::<S<6421>>(id, &[], d_root, hlc_at(0), &dag, &alice_sk),
     )
     .unwrap();
 
@@ -615,7 +635,7 @@ fn write_post_rotation_by_removed_writer_rejected() {
     );
     Interface::<S<6421>>::apply_action(
         rotation,
-        &ctx_for::<S<6421>>(id, &[d_root], d1, hlc_at(1), &dag),
+        &ctx_for::<S<6421>>(id, &[d_root], d1, hlc_at(1), &dag, &alice_sk),
     )
     .unwrap();
 
@@ -631,7 +651,10 @@ fn write_post_rotation_by_removed_writer_rejected() {
         &bob_sk,
         vec![],
     );
-    let ctx = ctx_for::<S<6421>>(id, &[d1], d2, hlc_at(2), &dag);
+    // Bob authored this write, so the ctx resolves BOB's account — the honest
+    // resolution. He was rotated out at D1, so the refusal below is authorization
+    // at the cut, not a mismatched principal.
+    let ctx = ctx_for::<S<6421>>(id, &[d1], d2, hlc_at(2), &dag, &bob_sk);
 
     // writers_at(D2.parents=[D1]) returns {Alice} — Bob is no longer a writer
     // and his signature must fail.

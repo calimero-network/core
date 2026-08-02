@@ -13,7 +13,7 @@
 
 use std::collections::BTreeSet;
 
-use calimero_sdk::{app, env, PublicKey};
+use calimero_sdk::{app, env, AccountId};
 use calimero_storage::collections::{
     AccessControl, LwwRegister, Ownable, PermissionedStorage, UnorderedMap,
 };
@@ -36,7 +36,10 @@ impl ComponentsDemo {
     /// The installer becomes the config owner, sole settings writer, and admin.
     #[app::init]
     pub fn init() -> ComponentsDemo {
-        let me: PublicKey = env::device_id().into();
+        // `account_id`, not `device_id`: these are all authorization principals,
+        // and an account is one person however many devices they install on.
+        // Owner stamps elsewhere still record the device — see `env::device_id`.
+        let me: AccountId = env::account_id().into();
         ComponentsDemo {
             config: Ownable::new_owned_by(me),
             settings: PermissionedStorage::new(BTreeSet::from([me]), false),
@@ -44,20 +47,29 @@ impl ComponentsDemo {
         }
     }
 
+    /// This node's account, hex-encoded — what a writer set or a role grant names.
+    ///
+    /// An account is derived, so it appears on no wire: a caller that needs to name
+    /// this node has to ask it. Operators use `meroctl account show`; an e2e
+    /// scenario captures this call's output.
+    pub fn my_account(&self) -> app::Result<String> {
+        Ok(AccountId::from(env::account_id()).to_string())
+    }
+
     /// Grant a role to a member. Admin-only (fail-fast here, enforced at merge).
-    pub fn grant_role(&mut self, role: String, who: PublicKey) -> app::Result<()> {
+    pub fn grant_role(&mut self, role: String, who: AccountId) -> app::Result<()> {
         self.roles.grant(&role, who)?;
         Ok(())
     }
 
     /// Revoke a role from a member. Admin-only.
-    pub fn revoke_role(&mut self, role: String, who: PublicKey) -> app::Result<()> {
+    pub fn revoke_role(&mut self, role: String, who: AccountId) -> app::Result<()> {
         self.roles.revoke(&role, &who)?;
         Ok(())
     }
 
     /// Whether a member holds a role (anyone may query).
-    pub fn has_role(&self, role: String, who: PublicKey) -> app::Result<bool> {
+    pub fn has_role(&self, role: String, who: AccountId) -> app::Result<bool> {
         Ok(self.roles.has_role(&role, &who)?)
     }
 
@@ -70,8 +82,8 @@ impl ComponentsDemo {
     /// than masquerading as a refusal. The authoritative rejection of a *forged
     /// grant delta* that bypasses this gate happens at merge (the same
     /// writer-set-guarded mechanism the settings adversarial step proves).
-    pub fn try_grant_role(&mut self, role: String, who: PublicKey) -> app::Result<bool> {
-        let me: PublicKey = env::device_id().into();
+    pub fn try_grant_role(&mut self, role: String, who: AccountId) -> app::Result<bool> {
+        let me: AccountId = env::account_id().into();
         if !self.roles.is_admin(&me) {
             return Ok(false);
         }
@@ -94,14 +106,14 @@ impl ComponentsDemo {
     }
 
     /// The current owner of the config cell.
-    pub fn owner(&self) -> app::Result<Option<PublicKey>> {
+    pub fn owner(&self) -> app::Result<Option<AccountId>> {
         Ok(self.config.owner())
     }
 
     /// Transfer ownership to `new_owner`. Only the current owner may; the
     /// rotation is authenticated at merge, so a non-owner's forged transfer is
     /// rejected.
-    pub fn transfer(&mut self, new_owner: PublicKey) -> app::Result<()> {
+    pub fn transfer(&mut self, new_owner: AccountId) -> app::Result<()> {
         self.config.transfer_ownership(new_owner)?;
         Ok(())
     }
@@ -127,6 +139,10 @@ mod tests {
 
     use super::*;
 
+    /// A device belonging to `OTHER`. Distinct from the account: `call_as` moves
+    /// only the device, which for an account-keyed gate is the SAME principal —
+    /// so a test that means "somebody else" has to move the account too.
+    const OTHER_DEVICE: [u8; 32] = [0x2D; 32];
     const OTHER: [u8; 32] = [0x22; 32];
 
     #[test]
@@ -139,24 +155,43 @@ mod tests {
     #[test]
     fn non_owner_cannot_set_config() {
         let mut app = TestHost::new(ComponentsDemo::init);
+        // A different PERSON: the account moves, not just the device.
+        //
         // This exercises the fail-fast *API* guard only. The authoritative
         // boundary is merge-time signature verification against the writer set,
         // which requires a 2-node adversarial e2e (design doc §6.3) — a
         // single-host unit test cannot reach the merge path.
-        let result = app.call_as(OTHER, |s| s.set_config("forged".to_owned()));
+        let result =
+            app.call_as_account(OTHER, OTHER_DEVICE, |s| s.set_config("forged".to_owned()));
         assert!(result.is_err());
+    }
+
+    /// The owner's SECOND DEVICE can write, without being granted anything.
+    ///
+    /// The counterpart to the test above, and the reason the gate moved to
+    /// accounts: `call_as` moves the device and leaves the account alone, which is
+    /// one person on two machines. Before the writer sets were account-keyed this
+    /// was refused — the owner's own phone was a stranger to their laptop.
+    #[test]
+    fn owners_second_device_can_set_config() {
+        const OWNER_PHONE: [u8; 32] = [0x1D; 32];
+
+        let mut app = TestHost::new(ComponentsDemo::init);
+        app.call_as(OWNER_PHONE, |s| s.set_config("from-my-phone".to_owned()))
+            .expect("a second device of the owning account must be able to write");
+        assert_eq!(app.view(|s| s.get_config()).unwrap(), "from-my-phone");
     }
 
     #[test]
     fn transfer_moves_control_to_new_owner() {
         let mut app = TestHost::new(ComponentsDemo::init);
-        let other: PublicKey = OTHER.into();
+        let other: AccountId = OTHER.into();
 
         app.call(|s| s.transfer(other)).unwrap();
         assert_eq!(app.view(|s| s.owner()).unwrap(), Some(other));
 
         // The new owner can write; the old owner no longer can.
-        app.call_as(OTHER, |s| s.set_config("by-other".to_owned()))
+        app.call_as_account(OTHER, OTHER_DEVICE, |s| s.set_config("by-other".to_owned()))
             .unwrap();
         assert_eq!(app.view(|s| s.get_config()).unwrap(), "by-other");
         assert!(app.call(|s| s.set_config("nope".to_owned())).is_err());
@@ -165,7 +200,7 @@ mod tests {
     #[test]
     fn admin_grants_role_non_admin_cannot() {
         let mut app = TestHost::new(ComponentsDemo::init);
-        let other: PublicKey = OTHER.into();
+        let other: AccountId = OTHER.into();
 
         // Admin (the installer) grants a role.
         app.call(|s| s.grant_role("editor".to_owned(), other))
@@ -176,8 +211,10 @@ mod tests {
 
         // A non-admin's grant is rejected by the fail-fast guard (and would be
         // at merge). Merge-time enforcement needs a 2-node e2e (design §6.3).
-        let third: PublicKey = [0x33; 32].into();
-        let denied = app.call_as(OTHER, |s| s.grant_role("editor".to_owned(), third));
+        let third: AccountId = [0x33; 32].into();
+        let denied = app.call_as_account(OTHER, OTHER_DEVICE, |s| {
+            s.grant_role("editor".to_owned(), third)
+        });
         assert!(denied.is_err());
 
         // Admin can revoke.

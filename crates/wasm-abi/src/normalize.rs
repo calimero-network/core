@@ -535,6 +535,13 @@ fn normalize_scalar_type(
         // `resolve_local` fallback below can't see them — describe them here
         // with the same fixed-size-bytes shape as `PublicKey`.
         "BlobId" | "ContextId" | "ApplicationId" => Ok(TypeRef::bytes_with_size(32, None)),
+        // Account-plane content addresses (`calimero_account`, re-exported as
+        // `calimero_sdk::AccountId`). Same 32-byte fixed shape as the identity
+        // newtypes above, and like them they cross JSON as their canonical TEXT
+        // form — hex here, where a key is base58. The distinction is deliberate:
+        // an id that rendered like a key would invite being pasted where a key
+        // belongs, and both are 32 bytes, so nothing downstream would object.
+        "AccountId" | "DeviceId" => Ok(TypeRef::bytes_with_size(32, None)),
         // Storage CRDT wrappers – treat as opaque blobs until ABI definitions exist.
         // GCounter/PNCounter are `pub type` aliases of Counter; syn does not expand
         // aliases, so each spelling is matched here (bare form is legal - generics default).

@@ -152,6 +152,7 @@ pub struct RuntimeEnv {
     storage_remove: StorageRemoveFn,
     context_id: [u8; 32],
     device_id: [u8; 32],
+    account_id: [u8; 32],
     index: Option<IndexCallbacks>,
 }
 
@@ -169,6 +170,7 @@ impl RuntimeEnv {
         storage_remove: StorageRemoveFn,
         context_id: [u8; 32],
         device_id: [u8; 32],
+        account_id: [u8; 32],
     ) -> Self {
         Self {
             storage_read,
@@ -176,6 +178,7 @@ impl RuntimeEnv {
             storage_remove,
             context_id,
             device_id,
+            account_id,
             index: None,
         }
     }
@@ -225,6 +228,13 @@ impl RuntimeEnv {
     /// Returns the current executor identifier.
     pub const fn device_id(&self) -> [u8; 32] {
         self.device_id
+    }
+
+    #[must_use]
+    /// Returns the account this execution is authorized as — the writer-set
+    /// principal, resolved by the node from the executing device's binding.
+    pub const fn account_id(&self) -> [u8; 32] {
+        self.account_id
     }
 }
 
@@ -423,6 +433,28 @@ pub fn ed25519_verify(signature: &[u8; 64], public_key: &[u8; 32], message: &[u8
     imp::ed25519_verify(signature, public_key, message)
 }
 
+/// How many signature verifications the native verifier has performed on this
+/// thread, since the last [`reset_ed25519_verify_calls`].
+///
+/// Exists for one property: authorization order. A signed write is checked
+/// against the writer set BEFORE its signature is verified, so a signature that
+/// speaks for nobody costs no verification. Without that ordering, any peer can
+/// make a receiver perform one `ed25519_verify` per writer by sending garbage —
+/// so the ordering is a security property, and a security property with no test
+/// is one refactor away from gone. It cannot be observed from the outside (both
+/// orders refuse the write), hence the counter.
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "testing")))]
+#[must_use]
+pub fn ed25519_verify_calls() -> u64 {
+    mocked::ed25519_verify_calls()
+}
+
+/// Zero the counter read by [`ed25519_verify_calls`].
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "testing")))]
+pub fn reset_ed25519_verify_calls() {
+    mocked::reset_ed25519_verify_calls();
+}
+
 /// Returns the current context ID.
 ///
 /// In WASM, this calls the host function. In tests, returns a fixed value.
@@ -445,6 +477,17 @@ pub fn context_id() -> [u8; 32] {
 #[must_use]
 pub fn device_id() -> [u8; 32] {
     imp::device_id()
+}
+
+/// The **account** this execution is authorized as — the writer-set principal.
+///
+/// The counterpart to [`device_id`], and the one that belongs in an access-control
+/// set: a person with several devices is one account, so granting them does not
+/// mean enumerating their machines. Never use it where per-replica uniqueness is
+/// required; see [`device_id`] for that list.
+#[must_use]
+pub fn account_id() -> [u8; 32] {
+    imp::account_id()
 }
 
 /// Prints the log.
@@ -522,6 +565,40 @@ pub fn drop_sorted_index_entry_for_testing(order_key: &[u8]) {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn set_device_id(id: [u8; 32]) {
     imp::set_device_id(id);
+}
+
+/// Set the account ID — the writer-set principal. `pub(crate)` for the same
+/// reason as [`set_device_id`]: outside callers use the scoped
+/// [`with_account_id`] guard, which restores on panic.
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "in-crate tests are the only callers; the `testing`-feature build                   compiles the same file without cfg(test), where they are invisible"
+    )
+)]
+pub(crate) fn set_account_id(id: [u8; 32]) {
+    imp::set_account_id(id);
+}
+
+/// Run `f` as `account`, then restore the prior account — even on panic.
+///
+/// The account is what a writer set grants, so this is how a test says "the same
+/// person, from a different device": hold the device fixed and move the account,
+/// or hold the account and move the device with [`with_device_id`]. Moving both
+/// at once cannot distinguish an account-keyed gate from a device-keyed one.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn with_account_id<T>(account: [u8; 32], f: impl FnOnce() -> T) -> T {
+    struct Restore([u8; 32]);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            imp::set_account_id(self.0);
+        }
+    }
+    let _restore = Restore(imp::account_id_fallback());
+    imp::set_account_id(account);
+    f()
 }
 
 /// Run `f` with the executor identity set to `id`, then restore the prior
@@ -683,9 +760,14 @@ mod calimero_vm {
         env::context_id()
     }
 
-    /// Return the executor id.
+    /// Return the executing device id.
     pub(super) fn device_id() -> [u8; 32] {
         env::device_id()
+    }
+
+    /// Return the executing account id.
+    pub(super) fn account_id() -> [u8; 32] {
+        env::account_id()
     }
 
     /// Prints the log
@@ -1023,6 +1105,8 @@ mod mocked {
 
     thread_local! {
         static EXECUTOR_ID: std::cell::Cell<[u8; 32]> = const { std::cell::Cell::new([237; 32]) };
+        /// Deliberately NOT equal to `EXECUTOR_ID`'s default — see `account_id`.
+        static ACCOUNT_ID: std::cell::Cell<[u8; 32]> = const { std::cell::Cell::new([173; 32]) };
     }
 
     /// Return the executor id (for testing, returns a fixed value).
@@ -1031,6 +1115,19 @@ mod mocked {
             .with(|env| env.borrow().clone())
             .map(|env| env.device_id)
             .unwrap_or_else(|| EXECUTOR_ID.with(|id| id.get()))
+    }
+
+    /// Return the account id (for testing, a fixed value **distinct** from the
+    /// device default).
+    ///
+    /// The two mock defaults must never be equal: a test that confuses the writer-set
+    /// principal with the replica id would pass under identical defaults and fail only
+    /// on a real node, where they are never the same value.
+    pub(super) fn account_id() -> [u8; 32] {
+        RUNTIME_ENV
+            .with(|env| env.borrow().clone())
+            .map(|env| env.account_id)
+            .unwrap_or_else(|| ACCOUNT_ID.with(|id| id.get()))
     }
 
     /// Routes the log line through `tracing` (this is the host/native build, so
@@ -1047,6 +1144,23 @@ mod mocked {
     /// can't forget to restore prior state on panic.
     pub(super) fn set_device_id(new_id: [u8; 32]) {
         EXECUTOR_ID.with(|id| id.set(new_id));
+    }
+
+    /// Sets the thread-local account ID — the writer-set principal.
+    ///
+    /// Separate from [`set_device_id`] on purpose: a test that moves the device
+    /// and expects the gate to follow is testing the pre-account behaviour, and a
+    /// test that moves both together cannot tell an account-keyed gate from a
+    /// device-keyed one. Move them independently.
+    pub(super) fn set_account_id(new_id: [u8; 32]) {
+        ACCOUNT_ID.with(|id| id.set(new_id));
+    }
+
+    /// Reads the thread-local account ID fallback, bypassing `RUNTIME_ENV` —
+    /// the symmetric partner of [`device_id_fallback`], for the scoped guard's
+    /// save/restore.
+    pub(super) fn account_id_fallback() -> [u8; 32] {
+        ACCOUNT_ID.with(|id| id.get())
     }
 
     /// Reads the thread-local executor ID fallback, bypassing
@@ -1074,6 +1188,23 @@ mod mocked {
             .as_nanos() as u64
     }
 
+    #[cfg(any(test, feature = "testing"))]
+    thread_local! {
+        /// Verification count, for the authorization-order test. See
+        /// [`super::ed25519_verify_calls`].
+        static VERIFY_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub(super) fn ed25519_verify_calls() -> u64 {
+        VERIFY_CALLS.with(std::cell::Cell::get)
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub(super) fn reset_ed25519_verify_calls() {
+        VERIFY_CALLS.with(|c| c.set(0));
+    }
+
     /// Verifies an Ed25519 signature.
     ///
     /// Uses a pure-Rust implementation for testing.
@@ -1082,6 +1213,9 @@ mod mocked {
         public_key: &[u8; 32],
         message: &[u8],
     ) -> bool {
+        #[cfg(any(test, feature = "testing"))]
+        VERIFY_CALLS.with(|c| c.set(c.get().saturating_add(1)));
+
         // We need to parse the public key.
         // If parsing fails, the signature is invalid.
         let Ok(public_key) = VerifyingKey::from_bytes(public_key) else {

@@ -35,6 +35,7 @@
   "GET /admin-api/is-authed",
   "GET /admin-api/namespaces",
   "GET /admin-api/namespaces/:namespace_id",
+  "GET /admin-api/namespaces/:namespace_id/account",
   "GET /admin-api/namespaces/:namespace_id/groups",
   "GET /admin-api/namespaces/:namespace_id/identity",
   "GET /admin-api/namespaces/for-application/:application_id",

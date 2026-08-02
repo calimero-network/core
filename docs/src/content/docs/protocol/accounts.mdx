@@ -181,6 +181,37 @@ The new device is **never a member**. It obtains a namespace identity and a goss
 
 Only the **current** scope key is delivered. Peers retain rotated-out keys, so history *could* be handed back, but that would make every newly paired device a full-history reader — a capability decision that deserves its own change. The paired device converges on forward state and cannot decrypt operations sealed under retired epochs.
 
+## Reading your account
+
+An `AccountId` appears on no wire and in no operation, so a node has to be asked
+which one it writes as:
+
+```bash
+meroctl account show <NAMESPACE_ID>     # GET /admin-api/namespaces/:id/account
+```
+
+The answer changes at enrollment, and the reason is worth understanding:
+
+- **After `account create`**, the node writes as its real `AccountId` — derived
+  from its account root and the namespace, published as a device binding. That
+  binding is what lets a peer map its signing key to it, and what lets a *second*
+  device of the same person write under the same principal.
+- **Before**, there is no binding, so no peer can compute a root-derived id — it
+  is derived from a secret. The node therefore writes as the stand-in any peer
+  *can* derive from its signing key alone. Naming the root-derived id in a writer
+  set at this point would produce a grant nothing could ever match.
+
+Both ends use one rule for this — the node deciding what to put in a writer set
+and the peer resolving an incoming signature — because a disagreement means a
+node's own writes are refused everywhere else. The consequence to plan around: a
+writer set seeded before the writer enrolled holds the stand-in, so **re-grant
+after `account create`**.
+
+Everything that names a person needs this first: granting a writer, revoking a
+device, or an app method that takes an `AccountId`. Naming them by signing key
+instead would look friendlier and be wrong — a grant to a key excludes that
+person's other devices, and stops meaning anything the moment they re-key.
+
 ## Key delivery is device-first
 
 ```
@@ -323,8 +354,20 @@ Account operations travel as `GroupOp` variants because that is the transport th
 - **Key-delivery fan-out is quadratic in group size.** `current_key_recipients` resolves devices per member, and each resolution scans the group's bindings, so a rotation costs on the order of members × devices. It runs at rotation and join time — never per operation — and each recipient already needs a KEM wrap, which dominates. Hoisting one binding scan out of the loop collapses it when group sizes justify the change.
 - **A member with no live device cannot self-recover.** Re-enrolling needs an encrypted group operation, which needs the key — so they depend on an admin to re-deliver it or to publish the replacement link. If they could re-key themselves, revocation would mean nothing.
 - **Member-addressed delivery remains reachable by admin action.** Re-admission and an explicit key delivery both wrap to a member identity, so an admin can hand a key to a node still running a revoked device. An explicit privileged act, not an automatic path.
-- **Storage-level admin and capability sets are still device-keyed.** `AccessControl`'s admins *are* the backing `SharedStorage`'s writer set, and `PermissionedStorage`'s capability map is keyed the same way — so a person with two devices must be granted on each, which is the "second device is a stranger" problem this page opens with, resurfacing one layer above governance.
+- **Storage gates take accounts; storage stamps keep devices.** `AccessControl`'s admins *are* the backing `SharedStorage`'s writer set, and `PermissionedStorage`'s capability map is keyed the same way — both now name **accounts**, so one grant covers every device a person holds. Owner stamps in `UserStorage`, `AuthoredMap` and `AuthoredVector` still name the **device**, and must: they are per-writer state, and two devices sharing a counter slot or an HLC seed lose each other's writes. The rule for any change here is the one this page opens with — if correctness depends on two devices of one account being distinct, it stays device-keyed.
 
-  It cannot simply be re-keyed onto `AccountId`, and the reason is worth stating because it looks like an oversight: those sets are enforced at **merge**, by verifying a signature. An `AccountId` is a content hash, not a key, so nothing can verify against it. Admitting "any device of this account" needs the signing-key→account mapping resolved at the write's causal cut — which the storage plane has neither the bindings nor a cut for. That is the same resolution the governance path gained for per-device authorization, and extending it below governance is cutover work, not a local change.
+  A writer set names accounts while a signature can only name a key, so the two are bridged by `ApplyContext.signer_account`: the account the signing key speaks for, resolved by the applying node at the governance cut the delta cites, through the same at-cut fold the membership check uses. `None` means "cannot resolve yet" and the write is deferred, not refused — a not-yet-folded device binding is a timing gap, and collapsing it into "that key speaks for nobody" would turn it into permanent data loss.
 
-  Being fixed in [#3344](https://github.com/calimero-network/core/pull/3344), which moves the writer set to accounts while leaving authentication key-based — the node resolves the signing key to its account at the write's causal cut, the same way it already pre-resolves the writer set itself. Until that lands the split is: *who may participate* is account-shaped, *who may write this object* is device-shaped, and an app wanting per-person capability sets projects them itself.
+  Two limits remain, both closed by the unified-log cutover. The *writer set* half still resolves from the per-object rotation log at the data-DAG cut, because rotation operations bridged into the ACL plane carry no causal parents and are therefore unreachable from any cut. And a historical rotation's author is checked against the bindings at the cut the **current** write cites, not the cut the rotation happened at — every replica resolves the cited cut identically, so it converges, but it is not causal honour for rotations.
+
+  The networked half of both planes is pinned by a scenario each, and they are
+  deliberately separate: `account-device-revoke-lockout` covers **membership**
+  (one grant, two devices, and revocation that sticks for reads as well as
+  writes), while `shared-storage-account-writers-two-devices` covers **writer
+  sets** (a granted account's second device writes a `SharedStorage` object it
+  was never named in, and still cannot update the first device's authored
+  entry). A paired device can be a perfectly good context member and have every
+  guarded write refused — that was a real bug, from the two account spaces above
+  — so passing one scenario says nothing about the other.
+
+- **A snapshot leaf is verified by signature alone.** It is state, not an operation: it has no causal parents, so "was this account a writer *then*" has nothing to resolve against. Asking today's bindings instead would refuse a leaf written by a since-rotated-out writer even though the sender's own root hash includes it, leaving the receiver unable to match the root it just accepted. What still holds a snapshot together: the sender is a member, the delivered contents hash to the root it claims, and every subsequent operation is authorized at its own cut.

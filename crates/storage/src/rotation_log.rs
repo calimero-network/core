@@ -46,6 +46,7 @@
 use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_account::AccountId;
 use calimero_primitives::identity::PublicKey;
 
 use crate::entities::OpMask;
@@ -111,7 +112,7 @@ pub struct RotationLogEntry {
     /// Resolved writer set after this rotation, each writer with its
     /// [`OpMask`]. `BTreeMap` so the on-wire representation is canonical
     /// (sorted by key), matching the rest of the `Shared` storage path.
-    pub new_writers: BTreeMap<PublicKey, OpMask>,
+    pub new_writers: BTreeMap<AccountId, OpMask>,
 
     /// Per-entity monotonic counter at the time of rotation. Preserved for
     /// debugging and v2 compatibility; the ADR rule does not depend on it.
@@ -127,7 +128,7 @@ pub struct RotationLogEntry {
 pub struct RotationSnapshot {
     /// Writer set as-of the boundary. When a query's `causal_parents` only
     /// reach into the compacted region, this is the answer.
-    pub writers: BTreeMap<PublicKey, OpMask>,
+    pub writers: BTreeMap<AccountId, OpMask>,
 
     /// Index into the original (uncompacted) entry stream that the snapshot
     /// represents. Compacted entries had indices `[0, cutoff_index)`; live
@@ -193,7 +194,7 @@ impl RotationLog {
 /// Returns `None` only when the log has neither entries nor a compaction
 /// snapshot.
 #[must_use]
-pub fn resolve_local(log: &RotationLog) -> Option<BTreeMap<PublicKey, OpMask>> {
+pub fn resolve_local(log: &RotationLog) -> Option<BTreeMap<AccountId, OpMask>> {
     if let Some(entry) = log.entries.iter().max_by(|a, b| {
         // HLC first (causally monotonic post-#2635), then signer as the
         // ADR-0001 tiebreak: smaller signer bytes win, `None` (unsigned legacy)
@@ -250,7 +251,7 @@ pub fn resolve_local(log: &RotationLog) -> Option<BTreeMap<PublicKey, OpMask>> {
 /// only authorize a signer against an *earlier* set that genuinely contained
 /// them.
 #[must_use]
-pub fn resolve_local_as_of(log: &RotationLog, at: u64) -> Option<BTreeMap<PublicKey, OpMask>> {
+pub fn resolve_local_as_of(log: &RotationLog, at: u64) -> Option<BTreeMap<AccountId, OpMask>> {
     let eligible = log
         .entries
         .iter()
@@ -279,6 +280,18 @@ pub fn resolve_local_as_of(log: &RotationLog, at: u64) -> Option<BTreeMap<Public
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The account the device key `pk(b)` speaks for.
+    ///
+    /// A rotation entry's `signer` names a KEY — only a key can produce the
+    /// signature that authorizes the rotation — while `new_writers` names
+    /// ACCOUNTS. Distinct bytes for the same seed, so a mix-up between the two
+    /// 32-byte ids fails a test rather than passing one.
+    fn acct(b: u8) -> AccountId {
+        let mut bytes = [b; 32];
+        bytes[0] = b ^ 0xA5;
+        AccountId::from(bytes)
+    }
 
     fn pk(b: u8) -> PublicKey {
         PublicKey::from([b; 32])
@@ -310,7 +323,7 @@ mod tests {
             new_writers: writers
                 .iter()
                 .copied()
-                .map(|b| (pk(b), OpMask::FULL))
+                .map(|b| (acct(b), OpMask::FULL))
                 .collect(),
             writers_nonce: nonce,
         }
@@ -343,7 +356,7 @@ mod tests {
             Some(
                 [0xAA, 0xBB]
                     .into_iter()
-                    .map(|b| (pk(b), OpMask::FULL))
+                    .map(|b| (acct(b), OpMask::FULL))
                     .collect()
             )
         );
@@ -358,8 +371,10 @@ mod tests {
         // must resolve to {C}, so A (removed) is correctly rejected. Resolving
         // the LATEST set ({C}) for the pre-rotation value is the
         // concurrent-rotation `SharedMember` reject bug this resolver fixes.
-        let genesis: BTreeMap<PublicKey, OpMask> =
-            [0xAA].into_iter().map(|b| (pk(b), OpMask::FULL)).collect();
+        let genesis: BTreeMap<AccountId, OpMask> = [0xAA]
+            .into_iter()
+            .map(|b| (acct(b), OpMask::FULL))
+            .collect();
         let log = RotationLog {
             snapshot: Some(RotationSnapshot {
                 writers: genesis.clone(),
@@ -372,8 +387,10 @@ mod tests {
         // Before the rotation → genesis {A}.
         assert_eq!(resolve_local_as_of(&log, 150), Some(genesis.clone()));
         // At/after the rotation → {C}.
-        let post: BTreeMap<PublicKey, OpMask> =
-            [0xCC].into_iter().map(|b| (pk(b), OpMask::FULL)).collect();
+        let post: BTreeMap<AccountId, OpMask> = [0xCC]
+            .into_iter()
+            .map(|b| (acct(b), OpMask::FULL))
+            .collect();
         assert_eq!(resolve_local_as_of(&log, 200), Some(post.clone()));
         assert_eq!(resolve_local_as_of(&log, 250), Some(post));
     }
@@ -384,8 +401,10 @@ mod tests {
         // cannot authoritatively rotate, so it must never form the as-of cut —
         // otherwise a value would be authorized against (or rejected by) a set
         // no one signed. Here only the genesis {A} is trustworthy at nonce 250.
-        let genesis: BTreeMap<PublicKey, OpMask> =
-            [0xAA].into_iter().map(|b| (pk(b), OpMask::FULL)).collect();
+        let genesis: BTreeMap<AccountId, OpMask> = [0xAA]
+            .into_iter()
+            .map(|b| (acct(b), OpMask::FULL))
+            .collect();
         let mut unsigned = entry(1, 300, 0xBB, &[0xCC], 0);
         unsigned.signer = None;
         let log = RotationLog {
@@ -416,7 +435,7 @@ mod tests {
             Some(
                 [0xBB, 0xCC]
                     .into_iter()
-                    .map(|b| (pk(b), OpMask::FULL))
+                    .map(|b| (acct(b), OpMask::FULL))
                     .collect()
             )
         );
@@ -440,7 +459,7 @@ mod tests {
                 new_writers: writers
                     .iter()
                     .copied()
-                    .map(|b| (pk(b), OpMask::FULL))
+                    .map(|b| (acct(b), OpMask::FULL))
                     .collect(),
                 writers_nonce: 1,
             }
@@ -455,7 +474,7 @@ mod tests {
             Some(
                 [0xAA, 0xCC]
                     .into_iter()
-                    .map(|b| (pk(b), OpMask::FULL))
+                    .map(|b| (acct(b), OpMask::FULL))
                     .collect()
             )
         );
@@ -464,8 +483,10 @@ mod tests {
     #[test]
     fn resolve_local_falls_back_to_snapshot() {
         // Compacted log with no live entries → the snapshot's writer set.
-        let snap: BTreeMap<PublicKey, OpMask> =
-            [0xEE].into_iter().map(|b| (pk(b), OpMask::FULL)).collect();
+        let snap: BTreeMap<AccountId, OpMask> = [0xEE]
+            .into_iter()
+            .map(|b| (acct(b), OpMask::FULL))
+            .collect();
         let log = RotationLog {
             snapshot: Some(RotationSnapshot {
                 writers: snap.clone(),

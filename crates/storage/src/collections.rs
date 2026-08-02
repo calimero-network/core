@@ -352,7 +352,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         id: Option<Id>,
         field_name: Option<&str>,
         crdt_type: CrdtType,
-        writers: std::collections::BTreeSet<calimero_primitives::identity::PublicKey>,
+        writers: std::collections::BTreeSet<calimero_account::AccountId>,
     ) -> Self {
         let id = id.unwrap_or_else(Id::random);
 

@@ -123,7 +123,13 @@ fn new_store() -> Store {
 /// Build a [`RuntimeEnv`] routing all `MainStorage` I/O into `store`, under the
 /// given executor identity. Mirrors the runtime's wiring in
 /// `crates/runtime/src/logic/host_functions/system.rs`.
-fn env_for(store: &Store, executor: [u8; 32]) -> RuntimeEnv {
+///
+/// `executor` is the DEVICE — the replica id, which is what convergence tests
+/// vary. Each replica also gets a distinct ACCOUNT (see [`account_for`]), never
+/// equal to its device: a harness where the two matched would let an
+/// account-keyed gate and a device-keyed one behave identically, and the
+/// difference between those is the thing worth testing.
+fn env_for(store: &Store, executor: [u8; 32], account: [u8; 32]) -> RuntimeEnv {
     let r = Rc::clone(store);
     let reader = Rc::new(move |key: &Key| r.borrow().get(&key.to_bytes()).cloned());
     let w = Rc::clone(store);
@@ -134,8 +140,29 @@ fn env_for(store: &Store, executor: [u8; 32]) -> RuntimeEnv {
     });
     let rm = Rc::clone(store);
     let remover = Rc::new(move |key: &Key| rm.borrow_mut().remove(&key.to_bytes()).is_some());
-    RuntimeEnv::new(reader, writer, remover, CONTEXT_ID, executor)
+    RuntimeEnv::new(reader, writer, remover, CONTEXT_ID, executor, account)
 }
+
+/// The account replica `r` writes as. Distinct from its device id
+/// ([`executor_for`]) so the two can never be confused, and distinct per replica
+/// so each is its own principal.
+fn account_for(r: usize) -> [u8; 32] {
+    let mut id = [0u8; 32];
+    id[0] = (r as u8).wrapping_add(1);
+    id[1] = 0xAC; // marks this as an account, and keeps it != the device id
+    id
+}
+
+/// The single account every replica writes as under
+/// [`one_account`](Converge::one_account) — one person holding N devices. Shaped
+/// like [`account_for`]'s ids (and so distinct from every device id) but tied to
+/// no replica index.
+const SHARED_ACCOUNT: [u8; 32] = {
+    let mut id = [0u8; 32];
+    id[0] = 0xA1;
+    id[1] = 0xAC;
+    id
+};
 
 /// Executor identity for replica `r`. Distinct, non-zero, and deterministic so
 /// concurrent writes from different replicas genuinely diverge before merge.
@@ -161,6 +188,9 @@ pub struct Converge<T> {
     // SAME wrong value, so a data-loss bug passes the hash check. Invariants let
     // a test assert the merged *value* is right.
     invariants: InvariantList<T>,
+    // Whether all replicas write as ONE account (distinct devices, one
+    // principal) instead of one account each. See `one_account`.
+    shared_account: bool,
 }
 
 /// Start a CRDT convergence assertion for state type `T`, using [`Default`] as
@@ -195,6 +225,7 @@ where
         ops: Vec::new(),
         host_setup: None,
         invariants: Vec::new(),
+        shared_account: false,
     }
 }
 
@@ -224,6 +255,7 @@ where
         ops: Vec::new(),
         host_setup: Some(Box::new(|| calimero_sdk::event::register::<T>())),
         invariants: Vec::new(),
+        shared_account: false,
     }
 }
 
@@ -282,6 +314,29 @@ where
         self
     }
 
+    /// Model **one person on N devices**: every replica keeps its own device id,
+    /// but they all write as the same account.
+    ///
+    /// The default is one account per replica — N unrelated people — which is
+    /// the right model for most convergence questions. Reach for this one to test
+    /// what the account plane added: a grant covers every device its holder
+    /// owns, while per-writer state (counter slots, owner stamps, HLC seeds) must
+    /// stay per device. Those two pull in opposite directions, and a harness
+    /// where each replica is its own account cannot exercise the tension at all.
+    pub fn one_account(mut self) -> Self {
+        self.shared_account = true;
+        self
+    }
+
+    /// The account replica `r` writes as, honouring [`one_account`](Self::one_account).
+    fn account_of(&self, r: usize) -> [u8; 32] {
+        if self.shared_account {
+            SHARED_ACCOUNT
+        } else {
+            account_for(r)
+        }
+    }
+
     /// Run the simulation and assert every replica converges to the same root
     /// hash. Panics (failing the test) on divergence, printing the seed and the
     /// per-replica hashes so the interleaving can be reproduced.
@@ -311,9 +366,12 @@ where
         // Genesis: install the base state once, then snapshot it byte-for-byte
         // into every replica so all replicas share identical ids + base hash.
         let genesis: Store = new_store();
-        env::with_runtime_env(env_for(&genesis, GENESIS_EXECUTOR), || {
-            Root::new(|| (self.build)()).commit();
-        });
+        env::with_runtime_env(
+            env_for(&genesis, GENESIS_EXECUTOR, self.account_of(usize::MAX)),
+            || {
+                Root::new(|| (self.build)()).commit();
+            },
+        );
         let base = genesis.borrow().clone();
 
         let stores: Vec<Store> = (0..n)
@@ -338,7 +396,7 @@ where
             ));
 
             let mut replica_deltas = Vec::with_capacity(order.len());
-            env::with_runtime_env(env_for(store, executor_for(r)), || {
+            env::with_runtime_env(env_for(store, executor_for(r), self.account_of(r)), || {
                 for &op_idx in &order {
                     let mut app = Root::<T>::fetch().expect("converge: genesis not installed");
                     (self.ops[op_idx])(&mut app);
@@ -363,19 +421,20 @@ where
                 self.seed ^ 0xDEAD_BEEF ^ (r as u64).wrapping_mul(0x85EB_CA77),
             ));
 
-            let failed = env::with_runtime_env(env_for(store, executor_for(r)), || {
-                for (s, k) in foreign {
-                    Root::<T>::sync(&deltas[s][k], &ApplyContext::empty())
-                        .expect("converge: delta apply failed");
-                }
-                // Check value-level invariants while we're in this replica's env.
-                let app = Root::<T>::fetch().expect("converge: state vanished after sync");
-                self.invariants
-                    .iter()
-                    .filter(|(_, check)| !check(&app))
-                    .map(|(desc, _)| desc.clone())
-                    .collect::<Vec<_>>()
-            });
+            let failed =
+                env::with_runtime_env(env_for(store, executor_for(r), self.account_of(r)), || {
+                    for (s, k) in foreign {
+                        Root::<T>::sync(&deltas[s][k], &ApplyContext::empty())
+                            .expect("converge: delta apply failed");
+                    }
+                    // Check value-level invariants while we're in this replica's env.
+                    let app = Root::<T>::fetch().expect("converge: state vanished after sync");
+                    self.invariants
+                        .iter()
+                        .filter(|(_, check)| !check(&app))
+                        .map(|(desc, _)| desc.clone())
+                        .collect::<Vec<_>>()
+                });
             hashes.push(env::root_hash());
             assert!(
                 failed.is_empty(),

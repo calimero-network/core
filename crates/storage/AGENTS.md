@@ -193,6 +193,37 @@ src/
     └── ...
 ```
 
+## Gates take accounts; stamps keep devices
+
+The one rule to get right when touching access control here. Both ids are 32
+bytes, so confusing them **compiles**, and most tests pass either way.
+
+| | reads | why |
+| --- | --- | --- |
+| **Gate** — "may this person write?" | `env::account_id()` | a writer set names people, so one grant covers every device they hold |
+| **Stamp** — "who wrote this?" | `env::device_id()` | per-writer state: two devices sharing a counter slot or an HLC seed lose each other's writes |
+
+The boundary is **per file**, not per symbol: `shared.rs`, `access_control.rs` and
+`permissioned.rs` are entirely principals; `user.rs` and `authored_*.rs` are
+entirely stamps. Do not run a blanket `PublicKey → AccountId` replace — it builds,
+and it silently moves owner stamps onto accounts.
+
+A signature can only name a **key**, so the bridge is
+`ApplyContext.signer_account`: the account that key speaks for, resolved by the
+NODE at the write's causal cut and passed in. This crate has no store and no cut,
+so it cannot resolve one itself, and it must never fall back to the locally
+executing account — a remote action would then authorize itself. `None` is a
+refusal.
+
+**The caller owes a contract this crate cannot check:** `signer_account` must be
+the resolution of *that action's own* signer. Storage verifies the signature under
+the key the action names and checks the account against the writer set, but has no
+bindings with which to confirm the two describe the same principal.
+
+Writing a test here? Derive the account from a different domain than the key (see
+`tests::common::account_of_key`). A test where the two are equal cannot tell an
+account-keyed gate from a device-keyed one.
+
 ## CIP Invariants (Sync Protocol)
 
 When working with merge logic, these invariants MUST be preserved:

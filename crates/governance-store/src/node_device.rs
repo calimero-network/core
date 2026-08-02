@@ -190,12 +190,37 @@ impl NodeDevice {
 /// Propagates the store read or the account-root generation failure.
 pub fn account_for_context(store: &Store, context_id: &ContextId) -> EyreResult<AccountId> {
     let scope = match crate::get_group_for_context(store, context_id)? {
-        Some(group) => NamespaceRepository::new(store).resolve(&group)?,
+        Some(group) => group,
         None => ContextGroupId::from(*context_id.as_ref()),
     };
-    Ok(NodeDeviceRepository::new(store)
-        .ensure_account_root()?
-        .account_for(&scope))
+    account_for_group(store, &scope)
+}
+
+/// The account this node executes as inside `group` — the same answer
+/// [`account_for_context`] gives, resolved from the group directly.
+///
+/// **Use this wherever the group is known but the context→group row may not be
+/// written yet.** `account_for_context` reads that row to find the namespace, and
+/// falls back to scoping the account to the context itself when it is missing. For
+/// a context whose row lands *later* — creation being exactly that case — the two
+/// calls therefore return DIFFERENT accounts: `init` seeds a writer set under the
+/// context-scoped account, every later call presents the namespace-scoped one, and
+/// the creator is refused write access to the object it just created. The fallback
+/// is correct only for a context that has no group at all, never for one whose row
+/// has not been written yet.
+///
+/// # Errors
+/// Propagates the namespace resolution or account-root generation failure.
+pub fn account_for_group(store: &Store, group: &ContextGroupId) -> EyreResult<AccountId> {
+    let namespace = NamespaceRepository::new(store).resolve(group)?;
+    // The key this node signs with in that namespace. Its binding — if this node
+    // has enrolled — names the real account; otherwise the key writes as its own
+    // stand-in, which is the only value a PEER can derive for it.
+    let (_, sign_pk, ..) = NamespaceRepository::new(store).get_or_create_identity(&namespace)?;
+    let binding = crate::AccountBindingRepository::new(store)
+        .binding_for_sign_pk(&namespace, &sign_pk)?
+        .map(|binding| binding.account);
+    Ok(calimero_op_adapter::writer_account(binding, &sign_pk))
 }
 
 /// What a revocation of one device is about, resolved from the group's own
@@ -804,6 +829,49 @@ mod tests {
         assert_eq!(
             root.account_for(&ns_a),
             root.genesis_for(&ns_a).account_id()
+        );
+    }
+
+    #[test]
+    fn the_two_account_resolvers_disagree_while_the_context_group_row_is_missing() {
+        // The trap that made `account_for_group` necessary, pinned so it stays
+        // visible. `account_for_context` finds the namespace through the
+        // context→group row, and falls back to scoping the account to the CONTEXT
+        // when that row is absent. During creation the row lands after `init`, so
+        // the two resolvers answer differently for the very same context — `init`
+        // seeds a writer set under the context-scoped account, every later call
+        // presents the namespace-scoped one, and the creator is locked out of the
+        // object it just created.
+        //
+        // Asserting they DIFFER (rather than that either is "right") is the point:
+        // a future change that makes `account_for_context` safe to call during
+        // creation should delete this test deliberately, and one that quietly
+        // swaps a call site back will fail it.
+        let store = test_store();
+        let namespace = ContextGroupId::from([0x77u8; 32]);
+        let context = ContextId::from([0x99u8; 32]);
+
+        // No context→group row written yet — exactly the state `init` runs in.
+        let during_creation = account_for_context(&store, &context).expect("resolve by context");
+        let from_the_group = account_for_group(&store, &namespace).expect("resolve by group");
+
+        assert_ne!(
+            during_creation, from_the_group,
+            "with the row missing, the context-scoped fallback must not be mistaken \
+             for the namespace-scoped account — if these ever match, this test is \
+             no longer guarding anything and the call-site distinction looks \
+             cosmetic"
+        );
+
+        // And once the row exists, the two agree — so the split is a creation-time
+        // ordering fix, not two permanently different notions of "my account".
+        crate::context_tree::ContextTreeService::new(&store, namespace)
+            .register_context(&context)
+            .expect("write the context→group row");
+        assert_eq!(
+            account_for_context(&store, &context).expect("resolve by context"),
+            from_the_group,
+            "after the row lands, either resolver answers the same"
         );
     }
 

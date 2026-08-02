@@ -311,7 +311,7 @@ fn hash_authorization_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
             // OpMask is committed with its key, so a peer cannot forge or
             // escalate a mask — the masks are part of the signed authorization.
             for (writer, mask) in writers {
-                hasher.update(writer.as_ref() as &[u8; 32]);
+                hasher.update(writer.as_bytes());
                 hasher.update([mask.bits()]);
             }
             // sig-data presence tag — see "Domain separation" in the
@@ -375,6 +375,7 @@ mod tests {
     use super::*;
     use crate::address::Id;
     use crate::entities::{ChildInfo, Metadata, SignatureData, StorageType};
+    use calimero_account::AccountId;
 
     fn meta_public() -> Metadata {
         Metadata {
@@ -405,7 +406,7 @@ mod tests {
         }
     }
 
-    fn meta_shared(writers: BTreeSet<PublicKey>, nonce: u64) -> Metadata {
+    fn meta_shared(writers: BTreeSet<AccountId>, nonce: u64) -> Metadata {
         Metadata {
             created_at: 100,
             updated_at: nonce.into(),
@@ -516,7 +517,9 @@ mod tests {
 
         let a = upsert(id, data.clone(), vec![], meta_public());
         let b = upsert(id, data.clone(), vec![], meta_user(owner, 1));
-        let writers: BTreeSet<PublicKey> = std::iter::once(owner).collect();
+        // `User` stamps an owner KEY; `Shared` grants an ACCOUNT. Different
+        // domains, so the bytes are deliberately unrelated here.
+        let writers: BTreeSet<AccountId> = std::iter::once(AccountId::from([0x11; 32])).collect();
         let c = upsert(id, data, vec![], meta_shared(writers, 1));
 
         assert_ne!(a.payload_for_signing(), b.payload_for_signing());
@@ -533,11 +536,11 @@ mod tests {
         // someone replayed them with a new writer-set claim).
         let id = Id::new([0xAA; 32]);
         let data = b"v".to_vec();
-        let alice = PublicKey::from([0x10; 32]);
-        let bob = PublicKey::from([0x20; 32]);
+        let alice = AccountId::from([0x10; 32]);
+        let bob = AccountId::from([0x20; 32]);
 
-        let w1: BTreeSet<PublicKey> = std::iter::once(alice).collect();
-        let w2: BTreeSet<PublicKey> = [alice, bob].into_iter().collect();
+        let w1: BTreeSet<AccountId> = std::iter::once(alice).collect();
+        let w2: BTreeSet<AccountId> = [alice, bob].into_iter().collect();
         let a = upsert(id, data.clone(), vec![], meta_shared(w1, 1));
         let b = upsert(id, data, vec![], meta_shared(w2, 1));
         assert_ne!(a.payload_for_signing(), b.payload_for_signing());
@@ -596,8 +599,11 @@ mod tests {
         // after the type tag.
         let id = Id::new([0xAA; 32]);
         let data = b"v".to_vec();
-        let a_writer = PublicKey::from([0xA0; 32]);
-        let b_writer = PublicKey::from([0xB0; 32]);
+        let a_writer = AccountId::from([0xA0; 32]);
+        let b_writer = AccountId::from([0xB0; 32]);
+        // The signer hint names a KEY, not an account — the layout-collision this
+        // guards is about the byte stream, so the hint's own bytes are what matter.
+        let b_signer = PublicKey::from([0xB0; 32]);
 
         let two_writers_no_hint = {
             let mut writers = BTreeSet::new();
@@ -614,7 +620,7 @@ mod tests {
                 ..
             } = m.storage_type
             {
-                sd.signer = Some(b_writer);
+                sd.signer = Some(b_signer);
             }
             m
         };
@@ -638,7 +644,7 @@ mod tests {
         // no bytes at all. The presence tag (`[1u8]` vs `[0u8]`)
         // before the sig-data block separates them.
         let id = Id::new([0xAA; 32]);
-        let writer = PublicKey::from([0xA0; 32]);
+        let writer = AccountId::from([0xA0; 32]);
         let mut writers = BTreeSet::new();
         writers.insert(writer);
 

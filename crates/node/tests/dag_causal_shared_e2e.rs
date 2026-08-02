@@ -56,7 +56,6 @@ use std::sync::Arc;
 use borsh::{from_slice, to_vec};
 use calimero_dag::{ApplyError, CausalDelta, DagStore, DeltaApplier, DeltaKind};
 use calimero_node::sync::{happens_before_in_topology, rotation_log_reader};
-use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::delta::StorageDelta;
@@ -67,7 +66,7 @@ use calimero_storage::interface::{
 };
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_storage::store::MainStorage;
-use calimero_storage::tests::common::{build_signed_shared_action, pubkey_of};
+use calimero_storage::tests::common::{account_of_key, build_signed_shared_action};
 use core::num::NonZeroU128;
 use ed25519_dalek::SigningKey;
 use tokio::sync::RwLock;
@@ -132,6 +131,10 @@ struct SharedRotationApplier {
     /// Successful-apply log (id + action count + serialized artifact
     /// size) for assertions.
     applied: Arc<RwLock<Vec<AppliedDelta>>>,
+    /// The account of the delta about to be applied, standing in for the node's
+    /// at-cut resolution of that delta's author. Armed per delta, exactly as
+    /// production arms its author slot before `dag.add_delta`.
+    signer_account: Arc<RwLock<Option<calimero_account::AccountId>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -143,11 +146,19 @@ struct AppliedDelta {
 }
 
 impl SharedRotationApplier {
-    fn new() -> Self {
+    /// `author` is the account the first delta is authored by; call
+    /// [`Self::set_author`] before delivering a delta authored by anyone else.
+    fn new(author: calimero_account::AccountId) -> Self {
         Self {
             topology: Arc::new(RwLock::new(IndexMap::new())),
             applied: Arc::new(RwLock::new(Vec::new())),
+            signer_account: Arc::new(RwLock::new(Some(author))),
         }
+    }
+
+    /// Arm the author of the next delta to be applied.
+    async fn set_author(&self, author: calimero_account::AccountId) {
+        *self.signer_account.write().await = Some(author);
     }
 
     async fn applied(&self) -> Vec<AppliedDelta> {
@@ -159,7 +170,8 @@ impl SharedRotationApplier {
     async fn resolve_effective_writers(
         &self,
         delta: &CausalDelta<Vec<Action>>,
-    ) -> BTreeMap<Id, BTreeMap<PublicKey, calimero_storage::entities::OpMask>> {
+    ) -> BTreeMap<Id, BTreeMap<calimero_account::AccountId, calimero_storage::entities::OpMask>>
+    {
         // Collect Shared-entity ids touched by this delta.
         let mut shared_entities: BTreeSet<Id> = BTreeSet::new();
         for action in &delta.payload {
@@ -173,8 +185,10 @@ impl SharedRotationApplier {
             }
         }
 
-        let mut out: BTreeMap<Id, BTreeMap<PublicKey, calimero_storage::entities::OpMask>> =
-            BTreeMap::new();
+        let mut out: BTreeMap<
+            Id,
+            BTreeMap<calimero_account::AccountId, calimero_storage::entities::OpMask>,
+        > = BTreeMap::new();
         if shared_entities.is_empty() {
             return out;
         }
@@ -213,6 +227,9 @@ impl DeltaApplier<Vec<Action>> for SharedRotationApplier {
             delta_id: delta.id,
             delta_hlc: delta.hlc,
             effective_writers,
+            // The applying node's resolution of this delta's author. One delta,
+            // one author, so one account answers for the whole batch.
+            signer_account: *self.signer_account.read().await,
         })
         .map_err(|e| ApplyError::Application(format!("serialize artifact: {e}")))?;
         let artifact_size = artifact.len();
@@ -221,13 +238,20 @@ impl DeltaApplier<Vec<Action>> for SharedRotationApplier {
         // `Root::sync`'s `CausalActions` branch.
         let storage_delta: StorageDelta = from_slice(&artifact)
             .map_err(|e| ApplyError::Application(format!("deserialize artifact: {e}")))?;
-        let (actions, recv_delta_id, recv_hlc, recv_writers) = match storage_delta {
+        let (actions, recv_delta_id, recv_hlc, recv_writers, recv_account) = match storage_delta {
             StorageDelta::CausalActions {
                 actions,
                 delta_id,
                 delta_hlc,
                 effective_writers,
-            } => (actions, delta_id, delta_hlc, effective_writers),
+                signer_account,
+            } => (
+                actions,
+                delta_id,
+                delta_hlc,
+                effective_writers,
+                signer_account,
+            ),
             other => {
                 return Err(ApplyError::Application(format!(
                     "unexpected variant on receive: {other:?}"
@@ -240,6 +264,7 @@ impl DeltaApplier<Vec<Action>> for SharedRotationApplier {
                 effective_writers: recv_writers.get(&action.id()).cloned(),
                 delta_id: Some(recv_delta_id),
                 delta_hlc: Some(recv_hlc),
+                signer_account: recv_account,
             };
             Interface::<MainStorage>::apply_action(action.clone(), &ctx)
                 .map_err(|e: StorageError| ApplyError::Application(e.to_string()))?;
@@ -295,11 +320,11 @@ async fn update_vs_rotation_race_pre_rotation_write_accepted_through_full_sync_p
 
     let alice_sk = make_signing_key(0xA1);
     let bob_sk = make_signing_key(0xB1);
-    let alice = pubkey_of(&alice_sk);
-    let bob = pubkey_of(&bob_sk);
+    let alice = account_of_key(&alice_sk);
+    let bob = account_of_key(&bob_sk);
     let entity_id = Id::new([0x70; 32]);
 
-    let applier = SharedRotationApplier::new();
+    let applier = SharedRotationApplier::new(alice);
     let mut dag = DagStore::new([0; 32]);
 
     // D_root: Alice bootstraps with writers = {Alice, Bob}.
@@ -405,11 +430,11 @@ async fn post_rotation_forgery_by_revoked_writer_rejected() {
 
     let alice_sk = make_signing_key(0xA2);
     let bob_sk = make_signing_key(0xB2);
-    let alice = pubkey_of(&alice_sk);
-    let bob = pubkey_of(&bob_sk);
+    let alice = account_of_key(&alice_sk);
+    let bob = account_of_key(&bob_sk);
     let entity_id = Id::new([0x71; 32]);
 
-    let applier = SharedRotationApplier::new();
+    let applier = SharedRotationApplier::new(alice);
     let mut dag = DagStore::new([0; 32]);
 
     // D_root: bootstrap with {Alice, Bob}.
@@ -466,6 +491,10 @@ async fn post_rotation_forgery_by_revoked_writer_rejected() {
         )],
     );
 
+    // Bob authored the forgery, so the node resolves BOB's account — the honest
+    // resolution. He was rotated out at D1, so the rejection below is
+    // authorization at the cut rather than a mismatched principal.
+    applier.set_author(bob).await;
     let result = dag.add_delta(d3, &applier).await;
     // `StorageError::InvalidSignature` displays as "Invalid signature for
     // user-owned data" — match on the rejection, not the exact prose, so
@@ -504,11 +533,11 @@ async fn buffered_pre_rotation_write_resolves_correctly_after_parents_arrive() {
 
     let alice_sk = make_signing_key(0xA3);
     let bob_sk = make_signing_key(0xB3);
-    let alice = pubkey_of(&alice_sk);
-    let bob = pubkey_of(&bob_sk);
+    let alice = account_of_key(&alice_sk);
+    let bob = account_of_key(&bob_sk);
     let entity_id = Id::new([0x72; 32]);
 
-    let applier = SharedRotationApplier::new();
+    let applier = SharedRotationApplier::new(alice);
     let mut dag = DagStore::new([0; 32]);
 
     let d_root_id = [0xF0; 32];
