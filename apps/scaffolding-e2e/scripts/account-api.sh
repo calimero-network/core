@@ -66,13 +66,3 @@ api_post() {
     }
     echo "${_resp}"
 }
-
-# Where a pairing step records what it minted, so a later step can read it.
-#
-# A file rather than a workflow variable because merobox `script` steps do not
-# support custom `outputs:` — they export only `script_output_local`, which the
-# next script step overwrites. Keyed by namespace so two scenarios cannot
-# collide.
-state_file() {
-    echo "${TMPDIR:-/tmp}/calimero-e2e-account-$1-$2"
-}

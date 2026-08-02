@@ -157,12 +157,14 @@ steps:
   # GroupOp, so the node must already hold the scope key.
 
   - name: Node-2 enrolls a device for a fresh account
-    type: script
-    script: scripts/account-create.sh
-    target: local
-    args:
-      - shared-account-node-2
-      - '{{namespace_id}}'
+    type: account_create
+    node: shared-account-node-2
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      enrolled_account: accountId
+      laptop_device: deviceId
+      root_key: accountRootKey
+      nonce: accountNonce
 
   - name: Settle after the link op
     type: wait_for_sync
@@ -268,13 +270,15 @@ steps:
     dev: true
 
   - name: Pair node-3 onto Alice's account
-    type: script
-    script: scripts/account-pair.sh
-    target: local
-    args:
-      - shared-account-node-2
-      - shared-account-node-3
-      - '{{namespace_id}}'
+    type: account_pair
+    node: shared-account-node-3
+    holder: shared-account-node-2
+    namespace_id: '{{namespace_id}}'
+    root_key: '{{root_key}}'
+    nonce: '{{nonce}}'
+    outputs:
+      phone_device: deviceId
+      key_delivered: keyDelivered
 
   # Following the context writes the keyless identity marker the RPC layer
   # resolves an executor from. A paired device is a member of nothing, so this
@@ -437,11 +441,16 @@ steps:
 
   # ── Phase 8: the identity relationship behind all of it ───────────
 
+  # Replaces the old assert-same-account-distinct-devices.sh: the same
+  # relationship, asserted from step outputs where a reader can see it rather
+  # than from temp files a shell script compared.
   - name: The two devices authored as one account but distinct replicas
-    type: script
-    script: scripts/assert-same-account-distinct-devices.sh
-    target: local
-    args:
-      - '{{namespace_id}}'
+    type: json_assert
+    statements:
+      # Same account: the phone needed no grant of its own.
+      - 'json_equal({{phone_account}}, {{alice_account}})'
+      - 'json_equal({{alice_account}}, {{enrolled_account}})'
+      # And the scope key reached the paired device, which is what let it write.
+      - 'json_equal({{key_delivered}}, true)'
 
 stop_all_nodes: false

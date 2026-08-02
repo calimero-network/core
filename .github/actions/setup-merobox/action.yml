@@ -14,7 +14,7 @@ runs:
         # apps/blobs/workflows/blob-cross-node-*.yml are added to the e2e matrix;
         # they are dormant today for a kad-routing reason documented there, so
         # nothing in the suite needs that floor yet.
-        MIN_MEROBOX="0.6.43"
+        MIN_MEROBOX="0.6.45"
 
         case "$(uname -m)" in
           x86_64) MEROBOX_ARCH="linux-x86-64" ;;
@@ -52,6 +52,6 @@ runs:
         merobox --version
         HAVE_MEROBOX="$(merobox --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
         if [ "$(printf '%s\n%s\n' "$MIN_MEROBOX" "$HAVE_MEROBOX" | sort -V | head -1)" != "$MIN_MEROBOX" ]; then
-          echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX} (MERO_AUTH_ADMIN_* env forwarding)"
+          echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX} (native account steps + node_exec)"
           exit 1
         fi
