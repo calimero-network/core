@@ -833,6 +833,49 @@ mod tests {
     }
 
     #[test]
+    fn the_two_account_resolvers_disagree_while_the_context_group_row_is_missing() {
+        // The trap that made `account_for_group` necessary, pinned so it stays
+        // visible. `account_for_context` finds the namespace through the
+        // context→group row, and falls back to scoping the account to the CONTEXT
+        // when that row is absent. During creation the row lands after `init`, so
+        // the two resolvers answer differently for the very same context — `init`
+        // seeds a writer set under the context-scoped account, every later call
+        // presents the namespace-scoped one, and the creator is locked out of the
+        // object it just created.
+        //
+        // Asserting they DIFFER (rather than that either is "right") is the point:
+        // a future change that makes `account_for_context` safe to call during
+        // creation should delete this test deliberately, and one that quietly
+        // swaps a call site back will fail it.
+        let store = test_store();
+        let namespace = ContextGroupId::from([0x77u8; 32]);
+        let context = ContextId::from([0x99u8; 32]);
+
+        // No context→group row written yet — exactly the state `init` runs in.
+        let during_creation = account_for_context(&store, &context).expect("resolve by context");
+        let from_the_group = account_for_group(&store, &namespace).expect("resolve by group");
+
+        assert_ne!(
+            during_creation, from_the_group,
+            "with the row missing, the context-scoped fallback must not be mistaken \
+             for the namespace-scoped account — if these ever match, this test is \
+             no longer guarding anything and the call-site distinction looks \
+             cosmetic"
+        );
+
+        // And once the row exists, the two agree — so the split is a creation-time
+        // ordering fix, not two permanently different notions of "my account".
+        crate::context_tree::ContextTreeService::new(&store, namespace)
+            .register_context(&context)
+            .expect("write the context→group row");
+        assert_eq!(
+            account_for_context(&store, &context).expect("resolve by context"),
+            from_the_group,
+            "after the row lands, either resolver answers the same"
+        );
+    }
+
+    #[test]
     fn a_paired_device_adopts_an_account_it_did_not_mint() {
         // The pairing half. node-B enrolls into an account rooted at node-A's key,
         // and the row has to be self-describing afterwards: nothing on node-B knows

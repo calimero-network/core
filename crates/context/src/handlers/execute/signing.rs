@@ -3,6 +3,7 @@
 //! persisting their signatures into the store. Extracted from the execute
 //! handler; shared with `handlers::create_context`.
 
+use calimero_account::AccountId;
 use calimero_primitives::context::Context;
 use calimero_primitives::identity::PrivateKey;
 use calimero_storage::action::Action;
@@ -148,19 +149,27 @@ pub(crate) fn sign_authorized_actions(
 /// reads + writes the entity's `EntityIndex` blob through this runtime
 /// env, which routes via `create_storage_callbacks` to the same
 /// RocksDB keys that `storage.commit()` just wrote.
+/// `account` MUST be the account the execution that produced `actions` ran as —
+/// passed in rather than re-resolved here, and the difference is not cosmetic.
+/// Re-resolving via `account_for_context` looks equivalent and is not during
+/// context creation: the context→group row lands after `init`, so that lookup
+/// falls back to a context-scoped account while `init` itself ran under the
+/// namespace-scoped one. Nothing on this path reads the account today
+/// (`update_signature_in_place` patches a signature and refuses any structural
+/// change), so the mismatch would be inert until the first gate that does read
+/// it — at which point context creation breaks in the confusing way documented on
+/// `account_for_group`. Threading it keeps the signing pass gating as the
+/// execution did, which is what the caller already knows.
 pub(crate) fn persist_signed_signatures(
     store: &Store,
     context: &Context,
+    account: AccountId,
     identity_private_key: &PrivateKey,
     actions: &[Action],
 ) -> eyre::Result<()> {
     let callbacks = create_storage_callbacks(store, context.id);
     let context_id_bytes: [u8; 32] = *context.id.as_ref();
     let executor_id_bytes: [u8; 32] = *identity_private_key.public_key().as_ref();
-    // This node's own account for the context — the same resolution the execute
-    // path uses, so the signing pass gates identically to the execution that
-    // produced these actions.
-    let account = calimero_governance_store::account_for_context(store, &context.id)?;
     let env = RuntimeEnv::new(
         callbacks.read,
         callbacks.write,

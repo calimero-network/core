@@ -452,7 +452,7 @@ async fn create_context(
                 bail!("Failed to sign init actions: {:?}", e);
             }
             if let Err(e) =
-                persist_signed_signatures(&datastore, &context, &identity_secret, &actions)
+                persist_signed_signatures(&datastore, &context, account, &identity_secret, &actions)
             {
                 error!(?e, %context.id, "Failed to persist signed init signatures");
                 bail!("Failed to persist signed init signatures: {:?}", e);

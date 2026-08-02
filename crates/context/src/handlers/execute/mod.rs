@@ -2179,7 +2179,7 @@ async fn internal_execute(
                 // change (variant flip, writer-set or owner change),
                 // so the merkle hash and the entity's
                 // access-control triple stay invariant.
-                persist_signed_signatures(&store, context, identity_private_key, &actions)
+                persist_signed_signatures(&store, context, account, identity_private_key, &actions)
                     .wrap_err("Failed to persist signed signature_data after execute")?;
 
                 // Re-serialize the *signed* actions into a new artifact
