@@ -52,6 +52,6 @@ runs:
         merobox --version
         HAVE_MEROBOX="$(merobox --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
         if [ "$(printf '%s\n%s\n' "$MIN_MEROBOX" "$HAVE_MEROBOX" | sort -V | head -1)" != "$MIN_MEROBOX" ]; then
-          echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX} (account steps that actually export their outputs)"
+          echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX} (node_exec + account steps that export their outputs)"
           exit 1
         fi
