@@ -28,6 +28,7 @@ use calimero_store::key::{
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use rand::Rng as _;
+use zeroize::Zeroizing;
 
 use crate::{collect_keys_with_prefix, NamespaceRepository};
 
@@ -92,6 +93,56 @@ impl AccountRoot {
     #[must_use]
     pub fn account_for(&self, namespace: &ContextGroupId) -> AccountId {
         self.genesis_for(namespace).account_id()
+    }
+
+    /// The root as a 24-word BIP-39 mnemonic — the backup an operator writes down.
+    ///
+    /// BIP-39 rather than hex for one reason: it is **checksummed**. A mistyped hex
+    /// root is still a valid key, so recovery would succeed and silently produce a
+    /// different `AccountId` — the operator would learn about it when the account
+    /// they recovered turns out to be one nobody has ever heard of. A mistyped word
+    /// fails the checksum at import instead. That it is also the format every
+    /// hardware wallet and paper-backup habit already uses is a bonus.
+    ///
+    /// The secret is 32 bytes, which is exactly BIP-39's 256-bit entropy case, so
+    /// this is a straight encoding of the key — no derivation, no passphrase, no
+    /// BIP-32 tree. Recovering the words recovers the key itself.
+    ///
+    /// # Errors
+    /// Only if the 32-byte secret is somehow rejected as entropy, which cannot
+    /// happen for a fixed-size array — the `Result` exists to avoid a panic path in
+    /// a function handling key material.
+    pub fn to_mnemonic(&self) -> EyreResult<Zeroizing<String>> {
+        let mnemonic = bip39::Mnemonic::from_entropy(self.secret.as_bytes())
+            .map_err(|e| eyre::eyre!("failed to encode the account root as a mnemonic: {e}"))?;
+        Ok(Zeroizing::new(mnemonic.to_string()))
+    }
+
+    /// Recover a root from the words [`to_mnemonic`](Self::to_mnemonic) produced.
+    ///
+    /// Whitespace between words is normalised, so an operator can retype a backup
+    /// across lines without it mattering.
+    ///
+    /// # Errors
+    /// If the phrase is not a valid 24-word BIP-39 mnemonic (bad word, bad
+    /// checksum, wrong length) — which is the point of using one.
+    pub fn from_mnemonic(phrase: &str) -> EyreResult<Self> {
+        let normalised = phrase.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mnemonic = bip39::Mnemonic::parse_normalized(&normalised).map_err(|e| {
+            eyre::eyre!("not a valid BIP-39 mnemonic (check the words and their order): {e}")
+        })?;
+        let (entropy, len) = mnemonic.to_entropy_array();
+        let bytes: [u8; 32] = entropy
+            .get(..len)
+            .and_then(|slice| <[u8; 32]>::try_from(slice).ok())
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "expected a 24-word mnemonic (256 bits of entropy), got {len} bytes' worth"
+                )
+            })?;
+        Ok(Self {
+            secret: PrivateKey::from(bytes),
+        })
     }
 }
 
@@ -272,6 +323,32 @@ impl<'a> NodeDeviceRepository<'a> {
             },
         )?;
         Ok(AccountRoot { secret })
+    }
+
+    /// Write `root` as this node's account root, replacing any existing one.
+    ///
+    /// The restore half of [`AccountRoot::to_mnemonic`], and the only writer other
+    /// than the generate-once path — which is why it is blunt: it takes the lock
+    /// but does **not** check for an existing root. Deciding whether replacing one
+    /// is acceptable needs an operator, not a repository, because it is
+    /// unrecoverable: a root that has already certified devices has no second copy,
+    /// so overwriting it strands every account it owned. `merod account import`
+    /// makes that decision (refusing without `--force`), and nothing else should
+    /// call this.
+    ///
+    /// # Errors
+    /// Propagates the store write failure.
+    pub fn put_account_root(&self, root: &AccountRoot) -> EyreResult<()> {
+        let _guard = ACCOUNT_ROOT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.store.handle().put(
+            &NodeAccountRoot::new(),
+            &NodeAccountRootValue {
+                root_secret: *root.signing_key().as_bytes(),
+            },
+        )?;
+        Ok(())
     }
 
     /// This node's account root, if one has been generated.
@@ -829,6 +906,135 @@ mod tests {
         assert_eq!(
             root.account_for(&ns_a),
             root.genesis_for(&ns_a).account_id()
+        );
+    }
+
+    /// **The recovery property, end to end: a backup plus a list of namespace ids
+    /// is enough.**
+    ///
+    /// Wipes the store entirely between export and import, which is the case the
+    /// account model exists for — the disk is gone, not just the row. What comes
+    /// back has to be the same `AccountId` in every namespace, and it has to come
+    /// back WITHOUT any stored nonce: the nonce is derived from the root secret and
+    /// the namespace id, which is what makes the backup one secret plus a
+    /// non-secret list rather than a pile of per-namespace key material.
+    #[test]
+    fn an_exported_root_recovers_the_same_account_in_every_namespace() {
+        let namespaces = [
+            ContextGroupId::from([0x11u8; 32]),
+            ContextGroupId::from([0x22u8; 32]),
+            ContextGroupId::from([0x33u8; 32]),
+        ];
+
+        let original_store = test_store();
+        let original = NodeDeviceRepository::new(&original_store)
+            .ensure_account_root()
+            .expect("generate");
+        let before: Vec<AccountId> = namespaces
+            .iter()
+            .map(|ns| original.account_for(ns))
+            .collect();
+        let backup = original.to_mnemonic().expect("export");
+        assert_eq!(
+            backup.split_whitespace().count(),
+            24,
+            "a 32-byte root is BIP-39's 256-bit case, and the word count is what an \
+             operator checks before trusting a transcription"
+        );
+
+        // The disk is gone. A fresh store shares nothing with the old one.
+        drop(original);
+        let recovered_store = test_store();
+        assert!(
+            NodeDeviceRepository::new(&recovered_store)
+                .account_root()
+                .expect("read")
+                .is_none(),
+            "precondition: the new node has no root, so recovery cannot be reading \
+             a leftover"
+        );
+
+        let recovered = AccountRoot::from_mnemonic(&backup).expect("import");
+        let after: Vec<AccountId> = namespaces
+            .iter()
+            .map(|ns| recovered.account_for(ns))
+            .collect();
+
+        assert_eq!(
+            after, before,
+            "the same root must present the same account in every namespace — this \
+             is the whole recovery story, and nothing but the words crossed over"
+        );
+        assert_eq!(
+            recovered.public_key(),
+            original_public(&original_store),
+            "and the recovered root is the same key, not merely one that agrees on \
+             these three ids"
+        );
+    }
+
+    /// Read the stored root's public half, so the assertion above compares keys
+    /// rather than trusting three derived ids to imply key equality.
+    fn original_public(store: &Store) -> calimero_primitives::identity::PublicKey {
+        NodeDeviceRepository::new(store)
+            .account_root()
+            .expect("read")
+            .expect("present")
+            .public_key()
+    }
+
+    /// **A mistyped backup is refused, not silently recovered into a stranger.**
+    ///
+    /// The reason this is BIP-39 and not hex. Every 32-byte string is a valid
+    /// key, so a hex backup with one wrong character recovers *a* root — a
+    /// different one — and the operator finds out when the account they restored
+    /// turns out to be an account nobody has heard of, with no grants and no
+    /// history. The checksum turns that into an error at import.
+    #[test]
+    fn a_corrupted_backup_fails_the_checksum_instead_of_recovering_a_stranger() {
+        let store = test_store();
+        let root = NodeDeviceRepository::new(&store)
+            .ensure_account_root()
+            .expect("generate");
+        let backup = root.to_mnemonic().expect("export");
+
+        let mut words: Vec<&str> = backup.split_whitespace().collect();
+        // Swap the first word for another valid BIP-39 word: still a real word, so
+        // only the checksum can catch it.
+        let replacement = if words[0] == "zoo" { "abandon" } else { "zoo" };
+        words[0] = replacement;
+        let corrupted = words.join(" ");
+
+        assert!(
+            AccountRoot::from_mnemonic(&corrupted).is_err(),
+            "a single wrong word must fail the checksum — recovering a different \
+             root here would be indistinguishable from a successful recovery until \
+             far too late"
+        );
+    }
+
+    /// Whitespace is normalised, because a backup on paper gets retyped across
+    /// lines and an operator should not lose an account to a line break.
+    #[test]
+    fn a_retyped_backup_survives_ragged_whitespace() {
+        let store = test_store();
+        let root = NodeDeviceRepository::new(&store)
+            .ensure_account_root()
+            .expect("generate");
+        let backup = root.to_mnemonic().expect("export");
+        let ragged = backup
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .chunks(4)
+            .map(|line| line.join("  "))
+            .collect::<Vec<_>>()
+            .join("\n  ");
+
+        assert_eq!(
+            AccountRoot::from_mnemonic(&ragged)
+                .expect("import")
+                .public_key(),
+            root.public_key()
         );
     }
 

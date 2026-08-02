@@ -343,10 +343,25 @@ Recovery means *prove who you are, then enrol fresh* — not *restore the old ma
 
 Account operations travel as `GroupOp` variants because that is the transport that exists: broadcast carries namespace governance deltas, not unified operations. The unified-log work becomes live at cutover.
 
+## Recovering an account
+
+A backup is **one secret plus a non-secret list**: the root phrase, and the namespace ids you use it in. The per-namespace nonce is derived (`KDF(root_secret, namespace_id)`), so nothing per-namespace has to be backed up — but nothing records which namespaces you joined either, which is why `export` will print the derived account ids for any namespace you name:
+
+```bash
+merod --node node1 account export --namespace <NAMESPACE_ID>
+```
+
+To recover onto a replacement machine: `merod --node new init`, `merod account import` (paste the phrase), then start the node and enrol a device per namespace. The account id comes back identical because it is `H(genesis)` over a root the phrase restored; the device is new, and a peer delivers the current scope key to it the same way it would to any newly linked device.
+
+Two deliberate limits in that flow:
+
+- **Import refuses to replace an existing root** without `--force`. A root that has already certified devices has no second copy, so overwriting it strands every account it owned.
+- **A recovering account is handed the current scope key only, never the rotated-out history.** Key delivery wraps for `current_key_recipients`; old keys are retained locally (`load_key_by_id`) so a node can still read deltas it already holds, and are never sent to a device. This is the intended policy, not an omission: the root is exactly what an attacker holding a stolen backup also has, so replaying the key history to anyone who proves possession of it would turn one leaked phrase into retroactive decryption of everything ever written. Rotations also frequently happen *because* something was compromised, and handing the old keys back to a "recovered" device would undo the rotation. The practical cost is nil — a recovering node has no local history to decrypt anyway, and re-syncs current state exactly as a cold joiner does.
+
 ## Known limits
 
 - **Root-key compromise is unrecoverable.** A stolen root signs its own handoff. Whoever holds the root is the account.
-- **The root is not yet exportable.** It is generated into the node's own store, plaintext unless at-rest encryption is enabled. Until an export exists, calling it a recovery key overstates it — tracked in [#3335](https://github.com/calimero-network/core/issues/3335).
+- **The root is exportable, and recovery is manual.** `merod account export` prints it as a 24-word BIP-39 phrase; `merod account import` restores it. BIP-39 for the checksum rather than the wordlist aesthetics: every 32-byte string is a valid key, so a mistyped *hex* backup recovers a different root and the operator finds out when the account they restored turns out to be one nobody has heard of. A wrong word fails at import instead. Both open the store directly, so the node must be stopped, and neither can read a KMS-encrypted store. What remains manual is the rest of the recovery: after importing, a device has to be enrolled per namespace before a peer will deliver the scope key. See [Recovering an account](#recovering-an-account).
 - **Revocation latency is per scope.** A scope that has not folded the revocation still honours the old binding. Inherent to causal revocation.
 - **Self-service revocation cannot rotate.** The device stops writing at once but can read until an admin rotates.
 - **Pairing is only as good as the channel the confirmation code travels on.** `pair-init` signs a statement over the account, the device id and both keys, and `pair-complete` refuses to certify key material that does not carry it — so nobody can swap the KEM key under a captured device id, which is what previously made the exchange only as safe as the channel carrying it. What a signature cannot settle is a *wholesale* substitution: an attacker that replaces both keys and re-signs with its own produces a statement that verifies, because nothing on the certifying side commits to the genuine keys in advance. Binding the keys into the `DeviceId` would fix it and is deliberately unavailable — the id excludes them so a device survives key rotation. What closes it instead is the confirmation code: a 64-bit value over exactly what gets certified, which `pair-complete` **requires** and checks against the keys that arrived, so the comparison cannot be skipped. It is 64 bits and not the six digits that would be pleasant to read aloud because the attacker knows the genuine code and can grind its own keypairs offline until one matches — the width is the work factor. What remains is not a gap in the check but in the channel: a code pasted alongside the keys it describes was rewritten by the same hand, so the code has to reach the account holder some other way — read out, or over a channel the payload did not take.

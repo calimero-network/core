@@ -28,6 +28,8 @@ cargo test -p merod
 
 ```
 merod --node <name> <subcommand>
+├── account       # Back up / restore the account root (export, import).
+│                 # Opens the store directly — the node must be STOPPED.
 ├── init          # Initialize node configuration (mints the embedded-auth
 │                 # admin root key from --admin-user + password via
 │                 # file/stdin/env; --no-admin defers)
@@ -49,6 +51,7 @@ src/
 │   ├── config.rs     # Config modifications
 │   ├── auth.rs       # `merod auth set-admin` (offline admin-key mint)
 │   ├── admin_creds.rs# Shared --admin-user/password-file/stdin resolution
+│   ├── account.rs    # `merod account export|import` (recovery phrase)
 │   ├── kms.rs        # KMS subcommand
 │   ├── validation.rs # Validation helpers
 │   └── auth_mode.rs  # Authentication mode handling
