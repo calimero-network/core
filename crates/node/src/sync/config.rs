@@ -82,6 +82,27 @@ pub const DEFAULT_MESH_RETRIES_UNINITIALIZED: u32 = 10;
 /// Default mesh discovery retry delay for uninitialized nodes (milliseconds).
 pub const DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED: u64 = 1_000;
 
+/// How many times the open-subgroup key fetch re-walks the mesh when a round
+/// ended with at least one peer never answering.
+///
+/// A key-less reply is an ANSWER — that peer genuinely does not hold the key, and
+/// asking again cannot change it. A transport failure is not an answer at all, so
+/// a round containing one has an incomplete picture of who holds the key. With a
+/// single holder (the normal shape right after a subgroup is created, before
+/// anyone has inherited) one dropped stream to that holder otherwise reads as
+/// "nobody has the key" and fails the join permanently.
+///
+/// Small on purpose: this only covers a transient stream failure, not a peer that
+/// is genuinely down — the mesh-discovery retries above already cover the latter.
+pub const OPEN_SUBGROUP_JOIN_KEY_ROUNDS: u32 = 3;
+
+/// Delay between open-subgroup key-fetch rounds (milliseconds).
+///
+/// Short: the failure being ridden out is a dropped or half-open substream, which
+/// the next dial re-establishes immediately. Rounds × this delay is the worst-case
+/// latency added to a join that was going to fail anyway.
+pub const OPEN_SUBGROUP_JOIN_KEY_RETRY_DELAY_MS: u64 = 300;
+
 /// Per-attempt timeout for opening a stream to a mesh peer (milliseconds).
 /// A peer can be in the gossipsub mesh while its transport connection is
 /// stale, so the substream negotiation can stall until the connection

@@ -23,6 +23,40 @@ use tracing::{debug, info, warn};
 use super::SyncManager;
 use crate::sync::MAX_BACKFILL_OPS;
 
+/// What one walk over the mesh learned about who holds a subgroup key.
+///
+/// The two failure variants exist to keep a distinction the old single-pass code
+/// collapsed: whether the round's picture of "who holds the key" is COMPLETE.
+/// A key-less reply and a rejection are answers, and re-asking yields the same
+/// ones. A peer that never answered leaves a gap that a retry can close — and
+/// with a single key holder, that gap is the difference between a join that
+/// succeeds a moment later and one that fails permanently.
+enum KeyFetchRound {
+    /// A peer served the key envelope.
+    Key(Vec<u8>),
+    /// Every peer answered, and none held the key. Terminal.
+    NobodyHasIt {
+        tally: String,
+        last_rejection: Option<String>,
+    },
+    /// At least one peer never answered (stream open, send, or recv failed), so
+    /// the round cannot rule out that the holder is simply unreachable right now.
+    Unanswered {
+        tally: String,
+        last_rejection: Option<String>,
+    },
+}
+
+impl KeyFetchRound {
+    /// The per-peer tally, for logging a round that is about to be retried.
+    fn tally(&self) -> &str {
+        match self {
+            Self::Key(_) => "key served",
+            Self::NobodyHasIt { tally, .. } | Self::Unanswered { tally, .. } => tally,
+        }
+    }
+}
+
 impl SyncManager {
     /// Actively request governance catch-up from a specific peer whose
     /// identity we don't yet recognize as a context member.
@@ -852,132 +886,20 @@ impl SyncManager {
             );
         }
 
-        // Try every mesh peer, not just the first. Only peers that
-        // already hold the subgroup key can serve the request — for an
-        // `Open` subgroup that is the creator plus anyone who has
-        // already inherited in. A freshly-joined namespace member
-        // (which is also on the `ns/<hex>` topic) replies with an empty
-        // envelope ("responder did not hold the subgroup key"); picking
-        // `peers.first()` would fail the whole join whenever that peer
-        // happened to be key-less. Walk the list: return on the first
-        // peer that yields a key, skip key-less peers, and remember the
-        // last authorization rejection so it surfaces if NO peer
-        // accepts (a rejection from one peer can be a stale cold-start
-        // view while another peer accepts).
-        let mut last_rejection: Option<String> = None;
-        let mut keyless_peers = 0usize;
-        let mut transport_errors = 0usize;
-
-        for peer in &peers {
-            let mut stream = match self.sync_network.open_stream(*peer).await {
-                Ok(s) => s,
-                Err(e) => {
-                    debug!(
-                        peer = %peer,
-                        subgroup_id = %hex::encode(params.subgroup_id),
-                        error = %e,
-                        "open-subgroup join: failed to open stream, trying next peer"
-                    );
-                    transport_errors += 1;
-                    continue;
-                }
-            };
-
-            let msg = StreamMessage::Init {
-                context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
-                party_id: params.joiner_public_key,
-                payload: InitPayload::OpenSubgroupJoinRequest {
-                    namespace_id: params.namespace_id,
-                    subgroup_id: params.subgroup_id,
-                    joiner_public_key: params.joiner_public_key,
-                },
-                next_nonce: rand::thread_rng().gen(),
-                pop: join_pop,
-            };
-
-            if let Err(e) = crate::sync::stream::send(&mut stream, &msg, None).await {
-                debug!(
-                    peer = %peer,
-                    error = %e,
-                    "open-subgroup join: send failed, trying next peer"
-                );
-                transport_errors += 1;
-                continue;
-            }
-
-            match crate::sync::stream::recv(&mut stream, None, self.sync_config.timeout).await {
-                Ok(Some(StreamMessage::Message {
-                    payload: MessagePayload::OpenSubgroupJoinResponse { key_envelope_bytes },
-                    ..
-                })) => {
-                    if key_envelope_bytes.is_empty() {
-                        // Peer is on the namespace topic but doesn't
-                        // hold the subgroup key — try the next one.
-                        keyless_peers += 1;
-                        continue;
-                    }
-                    return Ok(key_envelope_bytes);
-                }
-                Ok(Some(StreamMessage::Message {
-                    payload: MessagePayload::OpenSubgroupJoinRejected { reason },
-                    ..
-                })) => {
-                    // A rejection may be a stale cold-start view on this
-                    // peer; keep trying others before surfacing it.
-                    debug!(
-                        peer = %peer,
-                        reason = %reason,
-                        "open-subgroup join: peer rejected, trying next peer"
-                    );
-                    last_rejection = Some(reason);
-                    continue;
-                }
-                Ok(other) => {
-                    debug!(
-                        peer = %peer,
-                        "open-subgroup join: unexpected response {:?}, trying next peer",
-                        other.as_ref().map(std::mem::discriminant)
-                    );
-                    transport_errors += 1;
-                    continue;
-                }
-                Err(e) => {
-                    debug!(
-                        peer = %peer,
-                        error = %e,
-                        "open-subgroup join: recv failed, trying next peer"
-                    );
-                    transport_errors += 1;
-                    continue;
-                }
-            }
-        }
-
-        // No peer yielded the key. Surface the most informative cause,
-        // always including the full per-peer tally so a mixed failure
-        // (some peers key-less, one peer rejecting, some transport
-        // errors) is fully diagnosable from a single line.
-        let tally = format!(
-            "{} peer(s): {} key-less, {} transport error(s)",
-            peers.len(),
-            keyless_peers,
-            transport_errors
-        );
-        if let Some(reason) = last_rejection {
-            eyre::bail!(
-                "open-subgroup join for {} served by no peer — last rejection: {} [{}]",
-                hex::encode(params.subgroup_id),
-                reason,
-                tally
-            );
-        }
-        eyre::bail!(
-            "no mesh peer held the subgroup key for {} [{}]",
-            hex::encode(params.subgroup_id),
-            tally
-        );
+        fetch_open_subgroup_key(
+            self.sync_network.as_ref(),
+            &topic,
+            &params,
+            join_pop,
+            peers,
+            self.sync_config.timeout,
+            crate::sync::config::OPEN_SUBGROUP_JOIN_KEY_ROUNDS,
+            std::time::Duration::from_millis(
+                crate::sync::config::OPEN_SUBGROUP_JOIN_KEY_RETRY_DELAY_MS,
+            ),
+        )
+        .await
     }
-
     /// Collect all governance ops for a namespace (reused by the join responder).
     ///
     /// Returns bare `SignedNamespaceOp` bytes (not `StoredNamespaceEntry` wrapped)
@@ -1763,6 +1685,242 @@ impl SyncManager {
     }
 }
 
+/// Walk the mesh for the subgroup key, in bounded ROUNDS.
+///
+/// Split out of `initiate_open_subgroup_join`, and parameterised on `rounds` /
+/// `retry_delay` rather than reading the constants directly, so a test can drive
+/// the retry on a virtual clock (the shape `sync::peers`' discovery loop uses).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every knob is injected so the retry is testable without booting a node"
+)]
+async fn fetch_open_subgroup_key(
+    network: &dyn crate::sync::network::SyncNetwork,
+    topic: &libp2p::gossipsub::TopicHash,
+    params: &OpenSubgroupJoinParams,
+    join_pop: Option<InitProof>,
+    mut peers: Vec<PeerId>,
+    recv_timeout: std::time::Duration,
+    rounds: u32,
+    retry_delay: std::time::Duration,
+) -> eyre::Result<Vec<u8>> {
+    // Walk the mesh in bounded ROUNDS, not once.
+    //
+    // The distinction the rounds exist for: a key-less reply is an ANSWER —
+    // that peer genuinely does not hold the subgroup key, and asking again
+    // cannot change it. A transport failure is not an answer at all. Treating
+    // the two alike made one dropped stream to the sole key holder
+    // indistinguishable from "nobody has the key", which fails the join
+    // permanently — and right after a subgroup is created there IS exactly one
+    // holder (the creator), so that is the normal shape rather than an edge.
+    //
+    // So a round that ends with every peer having answered fails immediately
+    // (no latency added to the genuine "nobody has it" case), and only a round
+    // left incomplete by a transport failure is retried.
+    let mut last_round: Option<KeyFetchRound> = None;
+    for round in 1..=rounds {
+        if round > 1 {
+            time::sleep(retry_delay).await;
+            // Re-read the subscriber set: the holder may have only just joined
+            // the mesh, and a peer that transport-failed may be gone from it.
+            // Keep the previous list if the fresh read is empty rather than
+            // turning a retry into an immediate "no mesh peers" failure.
+            let fresh = network.subscribed_peers(topic.clone()).await;
+            if !fresh.is_empty() {
+                peers = fresh;
+            }
+        }
+
+        match fetch_open_subgroup_key_once(network, params, join_pop, &peers, recv_timeout).await {
+            KeyFetchRound::Key(bytes) => return Ok(bytes),
+            // Everybody answered, and nobody has it. Retrying would re-ask the
+            // same peers the same question and get the same answer.
+            outcome @ KeyFetchRound::NobodyHasIt { .. } => {
+                last_round = Some(outcome);
+                break;
+            }
+            outcome @ KeyFetchRound::Unanswered { .. } => {
+                debug!(
+                    subgroup_id = %hex::encode(params.subgroup_id),
+                    round,
+                    rounds = rounds,
+                    tally = %outcome.tally(),
+                    "open-subgroup join: round left unanswered by a transport \
+                     failure, retrying"
+                );
+                last_round = Some(outcome);
+            }
+        }
+    }
+
+    // No peer yielded the key. Surface the most informative cause, always
+    // including the full per-peer tally so a mixed failure (some peers
+    // key-less, one rejecting, some transport errors) is diagnosable from a
+    // single line — and say how many rounds were spent, so a retried failure
+    // is distinguishable from a fail-fast one.
+    let (tally, last_rejection) = match last_round {
+        Some(KeyFetchRound::NobodyHasIt {
+            tally,
+            last_rejection,
+        })
+        | Some(KeyFetchRound::Unanswered {
+            tally,
+            last_rejection,
+        }) => (tally, last_rejection),
+        // Unreachable: the loop runs at least once and the `Key` arm returns.
+        _ => (String::from("no rounds run"), None),
+    };
+    if let Some(reason) = last_rejection {
+        eyre::bail!(
+            "open-subgroup join for {} served by no peer — last rejection: {} [{}]",
+            hex::encode(params.subgroup_id),
+            reason,
+            tally
+        );
+    }
+    eyre::bail!(
+        "no mesh peer held the subgroup key for {} [{}]",
+        hex::encode(params.subgroup_id),
+        tally
+    );
+}
+
+/// One walk over `peers`, asking each for the subgroup key.
+///
+/// Returns on the first peer that yields one. The caller decides whether to walk
+/// again, which is why the outcome distinguishes "everybody answered and nobody
+/// has it" from "somebody never answered" — see [`KeyFetchRound`].
+///
+/// A free function over the [`SyncNetwork`] trait rather than a `SyncManager`
+/// method, so a test can drive it with a scripted mock instead of booting a node
+/// (the same shape `sync::peers`' discovery loop uses).
+async fn fetch_open_subgroup_key_once(
+    network: &dyn crate::sync::network::SyncNetwork,
+    params: &OpenSubgroupJoinParams,
+    join_pop: Option<InitProof>,
+    peers: &[PeerId],
+    recv_timeout: std::time::Duration,
+) -> KeyFetchRound {
+    // Try every mesh peer, not just the first. Only peers that
+    // already hold the subgroup key can serve the request — for an
+    // `Open` subgroup that is the creator plus anyone who has
+    // already inherited in. A freshly-joined namespace member
+    // (which is also on the `ns/<hex>` topic) replies with an empty
+    // envelope ("responder did not hold the subgroup key"); picking
+    // `peers.first()` would fail the whole join whenever that peer
+    // happened to be key-less. Walk the list: return on the first
+    // peer that yields a key, skip key-less peers, and remember the
+    // last authorization rejection so it surfaces if NO peer
+    // accepts (a rejection from one peer can be a stale cold-start
+    // view while another peer accepts).
+    let mut last_rejection: Option<String> = None;
+    let mut keyless_peers = 0usize;
+    let mut transport_errors = 0usize;
+
+    for peer in peers {
+        let mut stream = match network.open_stream(*peer).await {
+            Ok(s) => s,
+            Err(e) => {
+                debug!(
+                    peer = %peer,
+                    subgroup_id = %hex::encode(params.subgroup_id),
+                    error = %e,
+                    "open-subgroup join: failed to open stream, trying next peer"
+                );
+                transport_errors += 1;
+                continue;
+            }
+        };
+
+        let msg = StreamMessage::Init {
+            context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
+            party_id: params.joiner_public_key,
+            payload: InitPayload::OpenSubgroupJoinRequest {
+                namespace_id: params.namespace_id,
+                subgroup_id: params.subgroup_id,
+                joiner_public_key: params.joiner_public_key,
+            },
+            next_nonce: rand::thread_rng().gen(),
+            pop: join_pop,
+        };
+
+        if let Err(e) = crate::sync::stream::send(&mut stream, &msg, None).await {
+            debug!(
+                peer = %peer,
+                error = %e,
+                "open-subgroup join: send failed, trying next peer"
+            );
+            transport_errors += 1;
+            continue;
+        }
+
+        match crate::sync::stream::recv(&mut stream, None, recv_timeout).await {
+            Ok(Some(StreamMessage::Message {
+                payload: MessagePayload::OpenSubgroupJoinResponse { key_envelope_bytes },
+                ..
+            })) => {
+                if key_envelope_bytes.is_empty() {
+                    // Peer is on the namespace topic but doesn't
+                    // hold the subgroup key — try the next one.
+                    keyless_peers += 1;
+                    continue;
+                }
+                return KeyFetchRound::Key(key_envelope_bytes);
+            }
+            Ok(Some(StreamMessage::Message {
+                payload: MessagePayload::OpenSubgroupJoinRejected { reason },
+                ..
+            })) => {
+                // A rejection may be a stale cold-start view on this
+                // peer; keep trying others before surfacing it.
+                debug!(
+                    peer = %peer,
+                    reason = %reason,
+                    "open-subgroup join: peer rejected, trying next peer"
+                );
+                last_rejection = Some(reason);
+                continue;
+            }
+            Ok(other) => {
+                debug!(
+                    peer = %peer,
+                    "open-subgroup join: unexpected response {:?}, trying next peer",
+                    other.as_ref().map(std::mem::discriminant)
+                );
+                transport_errors += 1;
+                continue;
+            }
+            Err(e) => {
+                debug!(
+                    peer = %peer,
+                    error = %e,
+                    "open-subgroup join: recv failed, trying next peer"
+                );
+                transport_errors += 1;
+                continue;
+            }
+        }
+    }
+
+    let tally = format!(
+        "{} peer(s): {} key-less, {} transport error(s)",
+        peers.len(),
+        keyless_peers,
+        transport_errors
+    );
+    if transport_errors == 0 {
+        KeyFetchRound::NobodyHasIt {
+            tally,
+            last_rejection,
+        }
+    } else {
+        KeyFetchRound::Unanswered {
+            tally,
+            last_rejection,
+        }
+    }
+}
+
 /// Pure trigger predicate for the #2625 governance-pending backfill: the
 /// interval sync should pull the namespace governance DAG iff the context
 /// has at least one delta parked in the governance-pending buffer.
@@ -1801,4 +1959,235 @@ pub(super) fn resolve_namespace_id(
         ))
         .map(|id| id.to_bytes())
         .ok()
+}
+
+#[cfg(test)]
+mod open_subgroup_key_tests {
+    //! The distinction the round loop exists for: a key-less reply is an ANSWER,
+    //! a transport failure is not.
+    //!
+    //! These drive [`fetch_open_subgroup_key_once`] against a scripted
+    //! [`MockSyncNetwork`] rather than a booted node — the shape `sync::peers`
+    //! uses — so the classification is asserted directly instead of inferred from
+    //! whether a join happened to succeed.
+
+    use std::time::Duration;
+
+    use calimero_network_primitives::stream::Stream;
+    use calimero_primitives::identity::PublicKey;
+
+    use libp2p::gossipsub::TopicHash;
+
+    use super::{
+        fetch_open_subgroup_key, fetch_open_subgroup_key_once, KeyFetchRound, MessagePayload,
+        OpenSubgroupJoinParams, PeerId, StreamMessage,
+    };
+    use crate::sync::network::mock::MockSyncNetwork;
+
+    fn peer(n: u8) -> PeerId {
+        let kp = libp2p::identity::Keypair::ed25519_from_bytes([n; 32]).expect("valid seed");
+        PeerId::from_public_key(&kp.public())
+    }
+
+    fn params() -> OpenSubgroupJoinParams {
+        OpenSubgroupJoinParams {
+            namespace_id: [0xAA; 32],
+            subgroup_id: [0xBB; 32],
+            joiner_public_key: PublicKey::from([0xCC; 32]),
+        }
+    }
+
+    /// Answer one join request on `end` with `key_envelope_bytes`, mirroring what
+    /// `handle_open_subgroup_join_request` puts on the wire.
+    fn spawn_responder(
+        mut end: Stream,
+        key_envelope_bytes: Vec<u8>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let _req = crate::sync::stream::recv(&mut end, None, Duration::from_secs(5))
+                .await
+                .expect("responder: recv the join request");
+            let reply = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::OpenSubgroupJoinResponse { key_envelope_bytes },
+                next_nonce: [0; 12],
+            };
+            crate::sync::stream::send(&mut end, &reply, None)
+                .await
+                .expect("responder: send the reply");
+        })
+    }
+
+    /// **A round left incomplete by a transport failure is not "nobody has it".**
+    ///
+    /// The regression: with one key-less peer and one transport error — the exact
+    /// tally from the CI failure that filed this — the old code bailed. The holder
+    /// never answered, so the round cannot rule it out.
+    #[tokio::test]
+    async fn a_transport_failure_leaves_the_round_unanswered() {
+        let mock = MockSyncNetwork::default();
+        let keyless_end = mock.push_open_stream_ok_with_peer();
+        let responder = spawn_responder(keyless_end, Vec::new()); // empty == key-less
+        mock.push_open_stream_err("connection reset");
+
+        let outcome = fetch_open_subgroup_key_once(
+            &mock,
+            &params(),
+            None,
+            &[peer(1), peer(2)],
+            Duration::from_secs(5),
+        )
+        .await;
+
+        responder.await.expect("responder task");
+        assert!(
+            matches!(outcome, KeyFetchRound::Unanswered { .. }),
+            "a peer that never answered must leave the round retryable, not \
+             terminal: {:?}",
+            outcome.tally()
+        );
+        assert_eq!(
+            outcome.tally(),
+            "2 peer(s): 1 key-less, 1 transport error(s)",
+            "the per-peer tally is what makes this diagnosable in a log"
+        );
+    }
+
+    /// **Every peer answering key-less is terminal.**
+    ///
+    /// The other half, and the one that keeps the fix from costing latency: when
+    /// nobody holds the key, re-asking the same peers cannot change the answer, so
+    /// the join must fail on the first round.
+    #[tokio::test]
+    async fn everybody_answering_key_less_is_terminal() {
+        let mock = MockSyncNetwork::default();
+        let a = mock.push_open_stream_ok_with_peer();
+        let b = mock.push_open_stream_ok_with_peer();
+        let ra = spawn_responder(a, Vec::new());
+        let rb = spawn_responder(b, Vec::new());
+
+        let outcome = fetch_open_subgroup_key_once(
+            &mock,
+            &params(),
+            None,
+            &[peer(1), peer(2)],
+            Duration::from_secs(5),
+        )
+        .await;
+
+        ra.await.expect("responder a");
+        rb.await.expect("responder b");
+        assert!(
+            matches!(outcome, KeyFetchRound::NobodyHasIt { .. }),
+            "authoritative key-less answers must not be retried: {:?}",
+            outcome.tally()
+        );
+    }
+
+    /// **A holder later in the list is found despite an earlier transport error.**
+    ///
+    /// Within a single round: one dropped peer must not stop the walk, which is
+    /// the behaviour the round loop then generalises across rounds.
+    #[tokio::test]
+    async fn a_key_holder_after_a_failed_peer_still_serves() {
+        let mock = MockSyncNetwork::default();
+        mock.push_open_stream_err("connection reset");
+        let holder = mock.push_open_stream_ok_with_peer();
+        let responder = spawn_responder(holder, b"the-key-envelope".to_vec());
+
+        let outcome = fetch_open_subgroup_key_once(
+            &mock,
+            &params(),
+            None,
+            &[peer(1), peer(2)],
+            Duration::from_secs(5),
+        )
+        .await;
+
+        responder.await.expect("responder task");
+        match outcome {
+            KeyFetchRound::Key(bytes) => assert_eq!(bytes, b"the-key-envelope"),
+            other => panic!("the second peer held the key: {:?}", other.tally()),
+        }
+    }
+
+    /// **The regression: the sole key holder transport-fails, and the join still
+    /// succeeds.**
+    ///
+    /// The observed CI shape — one legitimately key-less peer and the creator (the
+    /// only holder) dropping its stream — which the old single pass reported as
+    /// "no mesh peer held the subgroup key" and failed permanently. Re-running the
+    /// identical commit passed, which is what identified it as transient.
+    ///
+    /// Round 2 is where the holder answers, so this fails if the retry is removed.
+    #[tokio::test(start_paused = true)]
+    async fn a_join_survives_a_transport_failure_to_the_only_key_holder() {
+        let mock = MockSyncNetwork::default();
+
+        // Round 1: peer 1 answers key-less, peer 2 (the holder) drops.
+        let keyless_end = mock.push_open_stream_ok_with_peer();
+        let keyless = spawn_responder(keyless_end, Vec::new());
+        mock.push_open_stream_err("connection reset by peer");
+
+        // Round 2: the same two peers, and this time the holder answers.
+        let keyless_again = mock.push_open_stream_ok_with_peer();
+        let keyless2 = spawn_responder(keyless_again, Vec::new());
+        let holder_end = mock.push_open_stream_ok_with_peer();
+        let holder = spawn_responder(holder_end, b"the-key-envelope".to_vec());
+
+        let key = fetch_open_subgroup_key(
+            &mock,
+            &TopicHash::from_raw("ns/test"),
+            &params(),
+            None,
+            vec![peer(1), peer(2)],
+            Duration::from_secs(5),
+            3,
+            Duration::from_millis(300),
+        )
+        .await
+        .expect("the holder answered on the second round");
+
+        keyless.await.expect("keyless responder");
+        keyless2.await.expect("keyless responder, round 2");
+        holder.await.expect("holder responder");
+        assert_eq!(key, b"the-key-envelope");
+    }
+
+    /// **Fail-fast is preserved: nobody holding the key costs exactly one round.**
+    ///
+    /// The cost of the fix has to be zero for the genuine "nobody has it" case, so
+    /// this scripts only ONE round's worth of responses. A second round would draw
+    /// from an exhausted queue — the mock errors on exhaust — and the assertion on
+    /// the tally would see a transport error that the test never scripted.
+    #[tokio::test(start_paused = true)]
+    async fn nobody_holding_the_key_fails_without_a_second_round() {
+        let mock = MockSyncNetwork::default();
+        let a = mock.push_open_stream_ok_with_peer();
+        let b = mock.push_open_stream_ok_with_peer();
+        let ra = spawn_responder(a, Vec::new());
+        let rb = spawn_responder(b, Vec::new());
+
+        let err = fetch_open_subgroup_key(
+            &mock,
+            &TopicHash::from_raw("ns/test"),
+            &params(),
+            None,
+            vec![peer(1), peer(2)],
+            Duration::from_secs(5),
+            3,
+            Duration::from_millis(300),
+        )
+        .await
+        .expect_err("nobody held the key");
+
+        ra.await.expect("responder a");
+        rb.await.expect("responder b");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("2 peer(s): 2 key-less, 0 transport error(s)"),
+            "the per-peer tally must survive into the final error, and must show \
+             the single round that actually ran: {msg}"
+        );
+    }
 }
