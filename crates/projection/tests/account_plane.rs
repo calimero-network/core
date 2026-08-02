@@ -1324,6 +1324,286 @@ fn a_device_cannot_be_moved_between_accounts() {
     );
 }
 
+// -------------------------------------------- the fold under attack --------
+
+/// How many forged candidates the padding shape files into one epoch slot.
+///
+/// Deliberately well above `MAX_HANDOFF_CANDIDATES` (private to the projection,
+/// 8 at the time of writing): the point is to overflow the slot so the cap has to
+/// evict, and overshooting means tightening the cap cannot silently defang this
+/// test. Raising the cap past this number would, so the two are worth keeping
+/// apart by an order of magnitude.
+const SLOT_PAD: u8 = 32;
+
+/// The victim's slice of the account plane — everything a fold could write on
+/// their behalf.
+///
+/// Compared as a whole rather than field by field, so an arm added later that
+/// writes some new per-account map is covered by this test without anyone
+/// remembering to extend it.
+#[derive(Debug, PartialEq)]
+struct AccountPlaneSlice {
+    binding: Option<calimero_authz::AccountBinding>,
+    devices: BTreeMap<DeviceId, calimero_authz::DeviceBinding>,
+    revoked: Vec<DeviceId>,
+}
+
+fn account_plane_slice(log: &[Op], victim: AccountId) -> AccountPlaneSlice {
+    let view = ScopeState::from_ops(log).acl_view();
+    AccountPlaneSlice {
+        binding: view.accounts.get(&victim).copied(),
+        devices: view
+            .devices
+            .iter()
+            .filter(|(_, b)| b.account == victim)
+            .map(|(d, b)| (*d, *b))
+            .collect(),
+        revoked: view.revoked_devices.iter().copied().collect(),
+    }
+}
+
+/// **No unauthorized op writes another account's plane state.**
+///
+/// The mechanical version of the `absorb_handoff` bug: a precondition enforced
+/// in a different layer than the invariant depending on it is not a
+/// precondition. `authorize` refuses every op below — but the fold is reachable
+/// without it (`from_ops` and the sync convergence path both fold raw logs), so
+/// any arm that trusts the authz layer for a *security* property is only as safe
+/// as the next caller that folds a log directly.
+///
+/// So each shape is checked twice: `authorize` refuses it, AND folding it raw
+/// leaves the victim's account-plane slice untouched. The second half is the one
+/// that would have caught the original bug without a reviewer noticing it.
+///
+/// Each shape is also folded in two delivery orders. The bug being guarded
+/// against was order-sensitive in the worst way — it converged, so it produced
+/// no divergence to notice.
+#[test]
+fn no_unauthorized_op_writes_another_accounts_plane_state() {
+    let mut fx = Fixture::new();
+
+    // The victim: a member, one linked device, one legitimate root-key rotation
+    // (so there is a *superseded* epoch for an attacker to try to roll back to).
+    let mut victim = Account::new(10);
+    let phone = victim.enroll(11, 0);
+    fx.push(grant_membership(&fx.admin, victim.id, 30, fx.head.clone()));
+    fx.push(victim.link_op(&phone, 40, fx.head.clone()));
+    let genuine_handoff = victim.rotate_to(12);
+    fx.push(phone.sign_op(
+        50,
+        fx.head.clone(),
+        OpPayload::AccountKeysRotated {
+            handoff: genuine_handoff,
+        },
+    ));
+    // A device certified under the NEW root. The rotation supersedes any binding
+    // certified by the old one, so without this the victim would hold no live
+    // device and the fold would have nothing to protect.
+    let post_rotation = victim.enroll(13, 1);
+    fx.push(victim.link_op(&post_rotation, 55, fx.head.clone()));
+
+    // Mallory: a member with a linked device, so her ops carry a resolvable
+    // authorship. Without that she would be refused for being nobody, which
+    // proves nothing about the account plane.
+    let mallory = Account::new(20);
+    let mallory_device = mallory.enroll(21, 0);
+    fx.push(grant_membership(&fx.admin, mallory.id, 60, fx.head.clone()));
+    fx.push(mallory.link_op(&mallory_device, 70, fx.head.clone()));
+
+    let baseline = account_plane_slice(&fx.log, victim.id);
+    assert!(
+        baseline.binding.is_some_and(|b| b.epoch == 1),
+        "precondition: the victim's own rotation took effect, so there is a \
+         superseded epoch 0 to be rolled back to"
+    );
+    assert_eq!(
+        baseline.devices.len(),
+        1,
+        "precondition: the victim holds exactly one live device"
+    );
+
+    // A handoff that cannot verify but only has to WIN THE SLOT: the slot is
+    // capped and evicts by key order, so a ground key crowds the real rotation
+    // out and the chain walk stops before reaching it.
+    let mut forged = genuine_handoff;
+    forged.new_root_sign_pk = calimero_primitives::identity::PublicKey::from([0u8; 32]);
+
+    // Grouped, because the sharpest shape needs more than one op: a single forged
+    // candidate is absorbed harmlessly (the walk skips what does not verify), so
+    // the attack only bites once the slot is padded to its cap and the real
+    // rotation is evicted by key order.
+    let shapes: Vec<(&str, Vec<Op>)> = vec![
+        (
+            "a stranger rotates the victim's root key",
+            vec![mallory_device.sign_op(
+                80,
+                fx.head.clone(),
+                OpPayload::AccountKeysRotated { handoff: forged },
+            )],
+        ),
+        (
+            // Genuinely signed by the victim's root, just replayed by somebody
+            // else. Gated on authorship rather than on validity, so this is
+            // refused too — the narrower rule would be "does it verify", and
+            // that rule cannot stop the forged one above.
+            "a stranger replays the victim's own genuine handoff",
+            vec![mallory_device.sign_op(
+                90,
+                fx.head.clone(),
+                OpPayload::AccountKeysRotated {
+                    handoff: genuine_handoff,
+                },
+            )],
+        ),
+        (
+            // A genesis is public data, so naming the victim's account is free.
+            // Absorption runs BEFORE the credential is verified, which is what
+            // made this reachable at all.
+            "a stranger carries a forged handoff on a link naming the victim",
+            vec![mallory_device.sign_op(
+                100,
+                fx.head.clone(),
+                OpPayload::DeviceLinked {
+                    genesis: victim.genesis,
+                    chain: vec![forged],
+                    cert: phone.cert,
+                },
+            )],
+        ),
+        (
+            "a stranger links their own device under the victim's genesis",
+            vec![mallory_device.sign_op(
+                110,
+                fx.head.clone(),
+                OpPayload::DeviceLinked {
+                    genesis: victim.genesis,
+                    chain: vec![],
+                    cert: mallory_device.cert,
+                },
+            )],
+        ),
+        (
+            // The full bug: fill the victim's epoch-0 slot to its cap with keys
+            // that sort below the real one. Absorption keys by (new key,
+            // signature) so nothing is displaced, but the cap has to evict
+            // something, and it evicts by key order. The victim's rotation is
+            // then unreachable and their chain freezes at the root key they
+            // rotated AWAY from — permanently, on every replica, with no
+            // divergence to notice.
+            "a stranger pads the victim's epoch slot to the cap",
+            (0..SLOT_PAD)
+                .map(|i| {
+                    let mut pad = genuine_handoff;
+                    let mut key_bytes = [0u8; 32];
+                    // Low bytes, so every one of these sorts below a real key and
+                    // the eviction keeps them over the victim's rotation.
+                    key_bytes[31] = i;
+                    pad.new_root_sign_pk =
+                        calimero_primitives::identity::PublicKey::from(key_bytes);
+                    mallory_device.sign_op(
+                        120 + u64::from(i),
+                        fx.head.clone(),
+                        OpPayload::AccountKeysRotated { handoff: pad },
+                    )
+                })
+                .collect(),
+        ),
+    ];
+
+    for (what, ops) in shapes {
+        for op in &ops {
+            assert!(
+                decide(&fx.log, op).is_err(),
+                "{what}: authorize must refuse it — if this ever starts passing, \
+                 the fold assertion below is guarding a door that is no longer \
+                 locked"
+            );
+        }
+
+        for order in ["appended", "prepended"] {
+            let mut log = fx.log.clone();
+            if order == "appended" {
+                log.extend(ops.iter().cloned());
+            } else {
+                log.splice(0..0, ops.iter().cloned());
+            }
+            assert_eq!(
+                account_plane_slice(&log, victim.id),
+                baseline,
+                "{what} ({order}): folding it raw must not touch the victim's \
+                 account-plane state"
+            );
+        }
+    }
+}
+
+/// **The one documented exception: a revocation tombstone lands unconditionally,
+/// so `authorize` is the only thing standing between a stranger and permanently
+/// spending somebody else's device id.**
+///
+/// Asserted rather than left as a comment, because it is the sole arm where the
+/// test above would fail, and a reader finding it absent cannot tell "safe" from
+/// "untested".
+///
+/// It genuinely cannot be gated in the fold, and the asymmetry with
+/// `AccountKeysRotated` is the point. A rotation has exactly one legitimate
+/// author — the account itself — which is a property of the op, so the fold can
+/// check it. A revocation has two (the account, or any root admin), and whether
+/// the author is an admin is a question about the *cut*: the admin set is not
+/// final mid-fold, and a streaming fold that answered it would answer
+/// differently depending on how much had folded, which is a split root.
+#[test]
+fn a_revocation_tombstone_is_written_unconditionally_and_only_authz_stops_it() {
+    let mut fx = Fixture::new();
+    let victim = Account::new(10);
+    let phone = victim.enroll(11, 0);
+    fx.push(grant_membership(&fx.admin, victim.id, 30, fx.head.clone()));
+    fx.push(victim.link_op(&phone, 40, fx.head.clone()));
+
+    let mallory = Account::new(20);
+    let mallory_device = mallory.enroll(21, 0);
+    fx.push(grant_membership(&fx.admin, mallory.id, 50, fx.head.clone()));
+    fx.push(mallory.link_op(&mallory_device, 60, fx.head.clone()));
+
+    let baseline = account_plane_slice(&fx.log, victim.id);
+    assert_eq!(
+        baseline.devices.len(),
+        1,
+        "precondition: the victim's device is live"
+    );
+
+    let steal = mallory_device.sign_op(
+        70,
+        fx.head.clone(),
+        OpPayload::DeviceRevoked {
+            account: victim.id,
+            device: phone.id,
+        },
+    );
+
+    // The gate that actually holds. If this ever returns `Ok`, a stranger can
+    // permanently withdraw anyone's device — the fold will not stop them.
+    assert!(
+        decide(&fx.log, &steal).is_err(),
+        "authorize is the ONLY thing refusing a stranger's revocation"
+    );
+
+    // And the fold, given the op anyway, writes the tombstone.
+    let mut log = fx.log.clone();
+    log.push(steal);
+    let after = account_plane_slice(&log, victim.id);
+    assert!(
+        after.revoked.contains(&phone.id),
+        "the tombstone is unconditional by design — a revocation that folds \
+         before its link must still win"
+    );
+    assert!(
+        after.devices.is_empty(),
+        "and it withdraws the binding, which is exactly why the authz gate above \
+         is load-bearing rather than defence in depth"
+    );
+}
+
 // ------------------------------------------------------------ convergence --
 
 #[test]
