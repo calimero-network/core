@@ -185,6 +185,22 @@ impl MockSyncNetwork {
         self
     }
 
+    /// Queue a successful open and hand the PEER end back, so the test can act
+    /// as the responder.
+    ///
+    /// [`push_open_stream_ok`](Self::push_open_stream_ok) drops the peer end,
+    /// which is right for code that only needs the open to succeed — but a
+    /// dropped end EOFs the dialer's first read, so any code that then waits for
+    /// a reply sees a transport error rather than an answer. Tests that need to
+    /// script a real reply keep this end and write to it.
+    pub(crate) fn push_open_stream_ok_with_peer(&self) -> Stream {
+        let (stream, peer_end) = Stream::test_pair();
+        self.open_stream_responses
+            .lock()
+            .push_back(OpenStreamResponse::Ok(stream));
+        peer_end
+    }
+
     /// Queue a response for the next `open_stream` call.
     pub(crate) fn push_open_stream_err(&self, msg: impl Into<String>) -> &Self {
         self.open_stream_responses
