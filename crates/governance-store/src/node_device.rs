@@ -325,30 +325,49 @@ impl<'a> NodeDeviceRepository<'a> {
         Ok(AccountRoot { secret })
     }
 
-    /// Write `root` as this node's account root, replacing any existing one.
+    /// Import `root` as this node's account root, returning the one it replaced.
     ///
-    /// The restore half of [`AccountRoot::to_mnemonic`], and the only writer other
-    /// than the generate-once path — which is why it is blunt: it takes the lock
-    /// but does **not** check for an existing root. Deciding whether replacing one
-    /// is acceptable needs an operator, not a repository, because it is
-    /// unrecoverable: a root that has already certified devices has no second copy,
-    /// so overwriting it strands every account it owned. `merod account import`
-    /// makes that decision (refusing without `--force`), and nothing else should
-    /// call this.
+    /// The restore half of [`AccountRoot::to_mnemonic`]. Refuses to replace an
+    /// existing root unless `force`, **in the repository rather than in the
+    /// caller**: overwriting a root that has already certified devices is
+    /// unrecoverable — there is no second copy, and every account it owned is
+    /// stranded — so the check belongs where it cannot be skipped by forgetting to
+    /// make it. An earlier version left it to `merod account import` and said
+    /// "nothing else should call this", which is a convention, not a boundary.
+    ///
+    /// Returns `Some(previous)` when a root was replaced, so a caller cannot
+    /// destroy one without being handed what it destroyed.
     ///
     /// # Errors
-    /// Propagates the store write failure.
-    pub fn put_account_root(&self, root: &AccountRoot) -> EyreResult<()> {
+    /// If a root exists and `force` is false, or the store read/write fails.
+    pub fn try_import_account_root(
+        &self,
+        root: &AccountRoot,
+        force: bool,
+    ) -> EyreResult<Option<AccountRoot>> {
         let _guard = ACCOUNT_ROOT_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let existing = self.account_root()?;
+        if let Some(previous) = &existing {
+            if !force {
+                eyre::bail!(
+                    "this node already has an account root ({}), and replacing it \
+                     cannot be undone: a root that has already certified devices \
+                     has no second copy",
+                    previous.public_key()
+                );
+            }
+        }
+
         self.store.handle().put(
             &NodeAccountRoot::new(),
             &NodeAccountRootValue {
                 root_secret: *root.signing_key().as_bytes(),
             },
         )?;
-        Ok(())
+        Ok(existing)
     }
 
     /// This node's account root, if one has been generated.
@@ -906,6 +925,64 @@ mod tests {
         assert_eq!(
             root.account_for(&ns_a),
             root.genesis_for(&ns_a).account_id()
+        );
+    }
+
+    /// **Replacing a root is refused by the REPOSITORY, not by whoever calls it.**
+    ///
+    /// The check used to live in `merod account import`, with a doc comment
+    /// saying nothing else should call the raw setter. That is a convention, not
+    /// a boundary — and the same "precondition enforced in a different layer than
+    /// the invariant depending on it" shape this codebase has been burned by
+    /// before. Any future caller (meroctl, an RPC handler, a test helper) would
+    /// have silently destroyed an unrecoverable key.
+    #[test]
+    fn importing_over_an_existing_root_is_refused_unless_forced() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let original = repo.ensure_account_root().expect("generate");
+        let original_pk = original.public_key();
+
+        let incoming = AccountRoot::from_mnemonic(
+            &NodeDeviceRepository::new(&test_store())
+                .ensure_account_root()
+                .expect("generate")
+                .to_mnemonic()
+                .expect("export"),
+        )
+        .expect("import");
+
+        let refused = repo.try_import_account_root(&incoming, false);
+        assert!(
+            refused.is_err(),
+            "an unforced import over an existing root must be refused"
+        );
+        assert_eq!(
+            repo.account_root()
+                .expect("read")
+                .expect("present")
+                .public_key(),
+            original_pk,
+            "and the refusal must leave the original root in place — a partial \
+             overwrite here strands every account it owned"
+        );
+
+        // Forced, it goes through AND hands back what it destroyed, so a caller
+        // cannot lose track of the fact that a replacement happened.
+        let replaced = repo
+            .try_import_account_root(&incoming, true)
+            .expect("forced import");
+        assert_eq!(
+            replaced.map(|r| r.public_key()),
+            Some(original_pk),
+            "the replaced root is returned, not silently dropped"
+        );
+        assert_eq!(
+            repo.account_root()
+                .expect("read")
+                .expect("present")
+                .public_key(),
+            incoming.public_key()
         );
     }
 

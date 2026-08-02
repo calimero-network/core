@@ -201,29 +201,20 @@ impl ImportCommand {
         let store = open_store(root_args).await?;
         let repo = NodeDeviceRepository::new(&store);
 
-        if let Some(existing) = repo
-            .account_root()
-            .wrap_err("Failed to read the account root")?
-        {
-            if !self.force {
-                bail!(
-                    "This node already has an account root ({}). Importing would \
-                     replace it, and a root that has already certified devices \
-                     cannot be recovered from anywhere else — there is no second \
-                     copy. Export the existing one first if you have not, then pass \
-                     --force.",
-                    existing.public_key()
-                );
-            }
+        // The repository owns the refusal, so no caller can skip it by forgetting
+        // to check first. `--force` only decides what this one asks for.
+        let replaced = repo.try_import_account_root(&root, self.force).wrap_err(
+            "Failed to import the account root. If one already exists, export it \
+             first and then pass --force to replace it.",
+        )?;
+
+        if let Some(previous) = replaced {
             eprintln!(
-                "Replacing the existing account root {}. Every account it owned is \
-                 now reachable only from ITS phrase, not this one.",
-                existing.public_key()
+                "Replaced the account root {}. Every account it owned is now \
+                 reachable only from ITS phrase, not this one.",
+                previous.public_key()
             );
         }
-
-        repo.put_account_root(&root)
-            .wrap_err("Failed to write the imported account root")?;
 
         println!("Imported account root {}", root.public_key());
         println!(
