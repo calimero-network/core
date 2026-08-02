@@ -198,6 +198,15 @@ macro_rules! content_address_id {
             }
         }
 
+        /// Same fixed-size-bytes ABI shape the syn verifier assigns these ids.
+        impl ::calimero_wasm_abi::abi_type::AbiType for $name {
+            fn type_ref(
+                _reg: &mut ::calimero_wasm_abi::abi_type::TypeRegistry,
+            ) -> ::calimero_wasm_abi::schema::TypeRef {
+                ::calimero_wasm_abi::schema::TypeRef::bytes_with_size(32, None)
+            }
+        }
+
         impl core::fmt::Display for $name {
             fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 write!(f, "{}", hex::encode(self.0))

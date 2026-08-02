@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
@@ -29,7 +30,7 @@ pub struct KvStore {
 }
 
 // Nested map type for `user_items_nested`.
-#[derive(Debug, BorshSerialize, BorshDeserialize, Default, Mergeable)]
+#[derive(Debug, BorshSerialize, BorshDeserialize, Default, Mergeable, AbiType)]
 #[borsh(crate = "calimero_sdk::borsh")]
 struct NestedMap {
     map: UnorderedMap<String, LwwRegister<String>>,

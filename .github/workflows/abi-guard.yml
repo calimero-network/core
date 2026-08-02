@@ -47,10 +47,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
           
-      - name: Build abi_conformance
+      - name: Build the conformance apps
         run: |
           cargo build -p abi_conformance --target wasm32-unknown-unknown
-          
+          cargo build -p abi_conformance_resolved --target wasm32-unknown-unknown
+
       - name: Build calimero-abi extractor
         run: |
           cargo build --manifest-path tools/calimero-abi/Cargo.toml

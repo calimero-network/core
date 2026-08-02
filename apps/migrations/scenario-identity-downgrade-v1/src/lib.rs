@@ -8,7 +8,7 @@ use calimero_storage::collections::{AuthoredMap, LwwRegister};
 ///
 /// This pair is NOT run by merobox (a downgrade migration is intentionally unsafe
 /// at runtime). It exists only so the schema-downgrade CI guard has a real,
-/// emitter-produced `state-schema.json` pair to diff.
+/// built `state-schema.json` pair to diff.
 #[app::state]
 pub struct ScenarioIdentityDowngradeV1 {
     wiki: AuthoredMap<String, LwwRegister<String>>,

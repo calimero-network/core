@@ -103,7 +103,7 @@ A dedicated guard already runs in CI: the **`schema-downgrade-guard`** job in
 (`AuthoredMap`) and `-v2` (`UnorderedMap`) crates, emits their real
 `state-schema.json`, runs `mero-abi diff v2 v1`, and **fails the build** unless
 the tool exits `1` with an `UNSAFE_IDENTITY_DOWNGRADE` finding - proving the lint
-catches a real, emitter-produced downgrade.
+catches a real, app-produced downgrade.
 
 Generalising this to **every** app - diffing each build against its previous
 release's schema and failing on any `BREAKING`-without-migration or

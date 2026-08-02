@@ -41,8 +41,10 @@ meroctl app install --path dist/<package>.mpk ...   # 5. install on a node (mero
 Scaffolds a crate: `Cargo.toml` (SDK pins, the `[package.metadata.calimero]` app id, and the `app-release` / `app-profiling` profiles), `src/lib.rs` (state, events, logic, and a `#[cfg(test)]` TestHost test), and `tests/converge.rs`. No build script: the ABI is emitted by `build` below.
 
 **2. `cargo mero build`**
-Emits the ABI from the crate's `src/*.rs`, compiles to `wasm32-unknown-unknown`, copies the wasm into `res/`, size-optimizes it with `wasm-opt -Oz` (release only), and embeds the (canonicalized) full ABI as the wasm `calimero_abi_v1` custom section.
+Takes the ABI manifest the app itself builds, compiles to `wasm32-unknown-unknown`, copies the wasm into `res/`, size-optimizes it with `wasm-opt -Oz` (release only), and embeds the (canonicalized) full ABI as the wasm `calimero_abi_v1` custom section.
+The manifest has one producer: the `__calimero_abi()` that `#[app::logic]` generates from the `AbiType` impls the app's types carry, so the compiler resolves aliases, macro-generated and re-exported types before anything is described.
 Artifacts: `res/<name>.wasm` (the built, ABI-embedded wasm) plus `res/abi.json` and `res/state-schema.json`. An app needs no `build.rs` for any of this.
+An app whose SDK predates `__calimero_abi` builds no manifest of its own; the build then warns, writes no `res/abi.json` or `res/state-schema.json`, and embeds no section. The wasm is still produced, but `bundle` refuses it - every bundle entry names an `abi.json`.
 
 **3. `cargo mero test`**
 Runs the native test suite - the in-crate TestHost unit tests plus the `tests/converge.rs` convergence test.
@@ -82,7 +84,9 @@ pub struct State { /* ... */ }
 pub struct StateV2 { /* ... */ }
 ```
 
-A `#[cfg]` on a struct field, an enum variant, or a method inside an `#[app::logic]` block is *not* applied to the ABI, so express a variant as whole gated items rather than gated members.
+A `#[cfg]` on a method inside an `#[app::logic]` block does not reach the ABI, which then describes a method the wasm may not export; express a variant as whole gated items rather than gated members.
+
+ABI extraction compiles on the host, so an ABI-visible item gated on `target_arch` describes its host form rather than the wasm one; gate on features (which extraction shares with the wasm build) instead of the target.
 
 In a multi-service workspace all services compile in one `cargo build`, so a feature only one service declares is fine: it applies to that service and is ignored by the rest.
 
@@ -143,16 +147,15 @@ crate = "mero-index-service"
 
 ## Two ABI payloads
 
-A built app carries the ABI in two distinct places. They hold the same *full* manifest but differ in ordering.
+A built app carries the same *full* manifest in two places.
 
-The wasm's embedded `calimero_abi_v1` custom section holds the **canonicalized full ABI** - every method (with its per-method metadata such as `xcall_callable`) and event, plus the state schema (`state_root` and its transitive types).
+The wasm's embedded `calimero_abi_v1` custom section holds it as compact JSON - every method (with its per-method metadata such as `xcall_callable`) and event, plus the state schema (`state_root` and its transitive types).
 The node's xcall entry-point gate reads the per-method flags from this embedded section, and its migration / identity-downgrade gate reads the same section's state fields (it tolerates the extra methods/events), so `cargo mero abi diff` also compares it between versions.
 
-The bundle's `abi.json` sidecar is the same full ABI **as emitted** by the SDK, i.e. methods and events in source-declaration order.
+The bundle's `abi.json` sidecar is the same manifest, pretty-printed.
 
-"Canonicalized" means the embedded copy has its `methods` and `events` arrays sorted by name.
-The SDK emitter writes them in source order, but the node's `validate_manifest` requires them name-sorted and silently discards a section that fails validation, so `cargo mero build` sorts the arrays before embedding.
-This sort is a workaround for that emitter/validator ordering mismatch (a core bug being filed upstream); once core accepts source-order manifests it can be dropped and the two payloads become byte-identical.
+`cargo mero build` name-sorts `methods` and `events` before embedding, which the node's `validate_manifest` requires (it silently discards a section that fails validation).
+An app built against today's SDK already carries them sorted, so the sort only bites for one built against an older one.
 
 ## Links
 
@@ -178,6 +181,7 @@ The scaffolded SDK version has a single source of truth; a bump moves it and the
 
 - `DEFAULT_SDK_VERSION` in `tools/cargo-mero/src/main.rs` - the one value `cargo mero new` substitutes into the scaffolded `Cargo.toml` (the SDK git tag) and that `cargo mero test`'s example dev-dep hint prints.
 - the version assertion in `tools/cargo-mero/src/new.rs` tests, which hardcodes the expected tag and so must be bumped in lockstep.
+- `new_build_test_bundle_ladder` in `tools/cargo-mero/tests/pipeline.rs`: it asserts the degraded no-ABI path, because every tag released so far predates `__calimero_abi`. Bumping to a tag that carries it turns those last assertions back into "bundle succeeds and writes the `.mpk`".
 
 Scaffolded apps carry no build script, so they no longer pin `calimero-wasm-abi`; the ABI comes from whichever `cargo mero` builds them.
 

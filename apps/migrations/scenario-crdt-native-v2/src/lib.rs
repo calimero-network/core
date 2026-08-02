@@ -1,3 +1,4 @@
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::borsh::BorshDeserialize;
 use calimero_sdk::serde::Serialize;
@@ -7,7 +8,7 @@ use calimero_storage::collections::{LwwRegister, UnorderedMap, Vector};
 const SCHEMA_VERSION_V1: &str = "1.0.0";
 const SCHEMA_VERSION_V2: &str = "2.0.0";
 
-#[app::state(version = 2, emits = for<'a> Event<'a>)]
+#[app::state(version = 2, migration = migrate_v1_to_v2, emits = for<'a> Event<'a>)]
 pub struct ScenarioCrdtNativeV2 {
     items: UnorderedMap<String, LwwRegister<String>>,
     title: LwwRegister<String>,
@@ -22,7 +23,7 @@ pub enum Event<'a> {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct SchemaInfo {
     pub schema_version: String,

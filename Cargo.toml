@@ -13,6 +13,7 @@ version = "0.11.0-rc.19"
 exclude = [
     "./crates/git-hooks",
     "./apps/abi_conformance",
+    "./apps/abi_conformance_resolved",
     "./apps/blobs",
     "./apps/collaborative-editor",
     "./apps/kv-store",
@@ -182,6 +183,7 @@ members = [
     "./apps/blobs",
     "./apps/collaborative-editor",
     "./apps/abi_conformance",
+    "./apps/abi_conformance_resolved",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
     "./tools/calimero-abi",

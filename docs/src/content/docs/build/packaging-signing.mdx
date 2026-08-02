@@ -32,9 +32,9 @@ detail.
 1. **Build the WASM and extract the ABI.**
 
    Compile your app to `wasm32-unknown-unknown`, then produce the ABI artifacts.
-   The ABI manifest (methods, events, types) and the state schema are generated
-   from your annotated source at build time — see
-   [App interface (ABI)](/build/app-abi/).
+   The ABI manifest (methods, events, types) and the state schema are
+   [built from your types' own descriptions](/build/abi/) at build time; see
+   [App interface (ABI)](/build/app-abi/) for what they contain.
 
    ```bash
    cargo mero build   # compile, wasm-opt, embed the ABI into the wasm

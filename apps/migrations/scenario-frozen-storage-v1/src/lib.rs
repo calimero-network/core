@@ -1,3 +1,4 @@
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::serde::Serialize;
 use calimero_storage::collections::{FrozenStorage, LwwRegister};
@@ -16,7 +17,7 @@ pub struct ScenarioFrozenStorageV1 {
     last_hash: LwwRegister<Vec<u8>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct SchemaInfo {
     pub schema_version: String,

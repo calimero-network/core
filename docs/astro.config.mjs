@@ -91,6 +91,7 @@ export default defineConfig({
                 'build/collections',
                 'build/state-modeling',
                 'build/app-abi',
+                'build/abi',
                 'build/error-handling',
               ],
             },

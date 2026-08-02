@@ -4,6 +4,7 @@ use camino::Utf8PathBuf;
 use clap::Parser;
 use eyre::bail;
 
+mod abi;
 mod build;
 mod bundle;
 mod guide;

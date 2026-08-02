@@ -240,7 +240,7 @@ fn validate_event(event: &Event, _types: &BTreeMap<String, TypeDef>) {
     }
 }
 
-fn collect_refs_from_manifest(manifest: &Manifest, refs: &mut Vec<(String, String)>) {
+pub(crate) fn collect_refs_from_manifest(manifest: &Manifest, refs: &mut Vec<(String, String)>) {
     for (name, type_def) in &manifest.types {
         collect_refs_from_type_def(type_def, name, refs);
     }

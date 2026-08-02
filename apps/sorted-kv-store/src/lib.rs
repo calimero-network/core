@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::serde::Serialize;
 use calimero_storage::collections::{LwwRegister, SortedMap};
@@ -37,7 +38,7 @@ pub enum Error<'a> {
 
 /// A single key/value pair, returned by `first`/`last`. (A record rather than a
 /// tuple because the ABI represents named-field records, not tuples.)
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct Entry {
     pub key: String,

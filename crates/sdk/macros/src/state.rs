@@ -13,12 +13,13 @@ use crate::macros::infallible;
 use crate::reserved::idents;
 use crate::sanitizer::{Action, Case, Func, Sanitizer};
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct StateImpl<'a> {
     ident: &'a Ident,
     generics: &'a Generics,
     emits: &'a Option<MaybeBoundEvent>,
     version: Option<u32>,
+    migration_method: Option<String>,
     orig: &'a StructOrEnumItem,
 }
 
@@ -29,13 +30,23 @@ impl ToTokens for StateImpl<'_> {
             generics,
             emits,
             version,
+            migration_method,
             orig,
-        } = *self;
+        } = self;
+        let (ident, generics, emits, version, orig) = (*ident, *generics, *emits, *version, *orig);
 
         // `#[app::state(version = N)]` overrides the AppState::SCHEMA_VERSION
         // default (0). This is the target the owner-driven convert +
         // migrate_my_entries() compare each identity-gated entry against.
         let schema_version_const = version.map(|v| quote! { const SCHEMA_VERSION: u32 = #v; });
+
+        // The generated ABI manifest declares the migration edge from this.
+        let migration_method_const = migration_method.as_ref().map(|method| {
+            quote! {
+                const MIGRATION_METHOD: ::core::option::Option<&'static str> =
+                    ::core::option::Option::Some(#method);
+            }
+        });
 
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
@@ -91,6 +102,7 @@ impl ToTokens for StateImpl<'_> {
             #[derive(
                 ::calimero_sdk::borsh::BorshSerialize,
                 ::calimero_sdk::borsh::BorshDeserialize,
+                ::calimero_sdk::abi::AbiType,
             )]
             #[borsh(crate = "::calimero_sdk::borsh")]
             #orig
@@ -98,6 +110,7 @@ impl ToTokens for StateImpl<'_> {
             impl #impl_generics ::calimero_sdk::state::AppState for #ident #ty_generics #where_clause {
                 type Event<#lifetime> = #event;
                 #schema_version_const
+                #migration_method_const
             }
 
             // Auto-generated CRDT merge support
@@ -267,12 +280,17 @@ pub struct StateArgs {
     /// The owner-driven convert + `migrate_my_entries()` compare against this,
     /// so a v2 binary that omits it would never convert its identity-gated data.
     version: Option<u32>,
+    /// The migrate entrypoint, for an app whose migration is a free
+    /// `#[app::migrate] fn` rather than `#[derive(Migrate)]`. Nothing else tells
+    /// the state type its own migration edge, so the ABI would otherwise miss it.
+    migration: Option<Ident>,
 }
 
 impl Parse for StateArgs {
     fn parse(input: ParseStream<'_>) -> SynResult<Self> {
         let mut emits = None;
         let mut version = None;
+        let mut migration = None;
 
         // Comma-separated `key = value` pairs. `emits` consumes the rest of the
         // stream (its event type may itself contain commas, e.g. generics), so
@@ -319,6 +337,15 @@ impl Parse for StateArgs {
                     }
                     version = Some(input.parse::<syn::LitInt>()?.base10_parse::<u32>()?);
                 }
+                "migration" => {
+                    if input.is_empty() {
+                        return Err(SynError::new_spanned(
+                            eq,
+                            "expected a migrate function name after `=`",
+                        ));
+                    }
+                    migration = Some(input.parse::<Ident>()?);
+                }
                 _ => {
                     return Err(SynError::new_spanned(
                         &ident,
@@ -334,7 +361,11 @@ impl Parse for StateArgs {
             }
         }
 
-        Ok(Self { emits, version })
+        Ok(Self {
+            emits,
+            version,
+            migration,
+        })
     }
 }
 
@@ -357,6 +388,41 @@ pub fn inject_migrate_state_version(item: &mut StructOrEnumItem, args: &StateArg
     }
     let lit = proc_macro2::Literal::u32_unsuffixed(version);
     attrs.push(syn::parse_quote! { #[migrate(state_version = #lit)] });
+}
+
+/// The migrate entrypoint declared by a `#[migrate(...)]` attribute on the
+/// state struct, for `AppState::MIGRATION_METHOD`. The attribute's presence is
+/// the declaration; `method = ident` names the export, defaulting exactly like
+/// `#[derive(Migrate)]` (versioned past v1, else a bare `migrate`).
+fn migration_method(attrs: &[syn::Attribute], version: Option<u32>) -> SynResult<Option<String>> {
+    let Some(attr) = attrs.iter().find(|attr| attr.path().is_ident("migrate")) else {
+        return Ok(None);
+    };
+
+    let mut method = None;
+    attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("method") {
+            let path = meta.value()?.parse::<syn::Path>()?;
+            let Some(ident) = path.get_ident() else {
+                // A qualified path parses but names no export; silently taking
+                // the default name here would declare an edge that cannot run.
+                return Err(meta.error("`method` must be a bare function name"));
+            };
+            method = Some(ident.to_string());
+        } else if meta.input.peek(Token![=]) {
+            // Consume `= <value>` for the keys this doesn't read (from, emit,
+            // state_version) so iteration reaches `method` whatever the order.
+            // An `Expr` stops at the separating comma; a `TokenStream` would
+            // swallow the rest of the list, `method` included.
+            let _: syn::Expr = meta.value()?.parse()?;
+        }
+        Ok(())
+    })?;
+
+    Ok(Some(method.unwrap_or_else(|| match version {
+        Some(to) if to > 1 => format!("migrate_v{}_to_v{to}", to - 1),
+        _ => "migrate".to_owned(),
+    })))
 }
 
 /// Whether any `#[derive(...)]` on the item names a `Migrate` derive — by
@@ -504,6 +570,39 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
             }
         }
 
+        // A malformed `#[migrate(...)]` must fail the build, not silently fall
+        // back to the default method name and declare the wrong edge.
+        let migration_method = match migration_method(attrs, input.args.version) {
+            Ok(from_attr) => {
+                if let (Some(_), Some(migration)) = (&from_attr, &input.args.migration) {
+                    // Two sources naming the edge cannot tie-break silently;
+                    // whichever loses would declare an export that never runs.
+                    errors.subsume(SynError::new(
+                        migration.span(),
+                        "a #[migrate(...)] attribute already declares the migration method; \
+                         remove `migration = ...` or the attribute",
+                    ));
+                }
+                from_attr.or_else(|| input.args.migration.as_ref().map(ToString::to_string))
+            }
+            Err(err) => {
+                errors.subsume(err);
+                None
+            }
+        };
+
+        // An explicit `migration = f` with no version past 1 would be silently
+        // dropped by the manifest codegen; surface the contradiction instead.
+        if let Some(migration) = &input.args.migration {
+            if input.args.version.unwrap_or(1) <= 1 {
+                errors.subsume(SynError::new(
+                    migration.span(),
+                    "`migration` declares an edge from a prior version, \
+                     but `version` is 1; declare `version = N` with N > 1",
+                ));
+            }
+        }
+
         errors.check()?;
 
         Ok(StateImpl {
@@ -511,6 +610,7 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
             generics,
             emits: &input.args.emits,
             version: input.args.version,
+            migration_method,
             orig: input.item,
         })
     }
@@ -1619,6 +1719,7 @@ mod tests {
             generics: &item.generics,
             emits: &None,
             version: Some(2),
+            migration_method: None,
             orig: &orig,
         }
         .to_token_stream()
@@ -1627,6 +1728,41 @@ mod tests {
             rendered.contains("const SCHEMA_VERSION : u32 = 2"),
             "version=2 must emit the SCHEMA_VERSION const, got:\n{rendered}",
         );
+    }
+
+    #[test]
+    fn migration_method_matches_the_migrate_derive_default() {
+        // The ABI declares the migration edge from this const, so the name has
+        // to be the one `#[derive(Migrate)]` actually exports.
+        let explicit: Vec<syn::Attribute> =
+            vec![parse_quote! { #[migrate(from = Old, method = hop)] }];
+        assert_eq!(
+            migration_method(&explicit, Some(2)).unwrap().as_deref(),
+            Some("hop")
+        );
+
+        let defaulted: Vec<syn::Attribute> = vec![parse_quote! { #[migrate(from = Old)] }];
+        assert_eq!(
+            migration_method(&defaulted, Some(3)).unwrap().as_deref(),
+            Some("migrate_v2_to_v3")
+        );
+        assert_eq!(
+            migration_method(&defaulted, None).unwrap().as_deref(),
+            Some("migrate")
+        );
+
+        // No `#[migrate(...)]` attribute means the app declares no migration.
+        let none: Vec<syn::Attribute> = vec![parse_quote! { #[derive(Clone)] }];
+        assert_eq!(migration_method(&none, Some(2)).unwrap(), None);
+    }
+
+    #[test]
+    fn malformed_migrate_attribute_is_an_error_not_a_default_name() {
+        // A parse failure inside #[migrate(...)] must surface, or the manifest
+        // would silently declare the default method name instead of the typo'd
+        // one and the node would call an export that does not exist.
+        let malformed: Vec<syn::Attribute> = vec![parse_quote! { #[migrate(method = 123)] }];
+        assert!(migration_method(&malformed, Some(2)).is_err());
     }
 
     #[test]
@@ -1695,6 +1831,7 @@ mod tests {
         let args = StateArgs {
             emits: None,
             version: None,
+            migration: None,
         };
         let accepted = match StateImpl::try_from(StateImplInput {
             item: &item,

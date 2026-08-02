@@ -9,6 +9,12 @@ use flate2::read::GzDecoder;
 
 /// A freshly scaffolded app must walk the whole new -> build -> test -> bundle
 /// ladder cleanly.
+///
+/// `cargo mero new` pins `DEFAULT_SDK_VERSION`, a released tag whose SDK builds
+/// no `__calimero_abi`. That is the degraded path: the wasm still builds, it
+/// just carries no ABI, and `bundle` then has nothing to ship. The two
+/// assertions at the end flip back once that pin names an SDK with the entry
+/// point (see "Bumping the SDK version" in the README).
 #[test]
 #[ignore = "slow: scaffolds and compiles a fresh app (needs network for git SDK deps)"]
 fn new_build_test_bundle_ladder() {
@@ -26,9 +32,13 @@ fn new_build_test_bundle_ladder() {
     let build = Command::new(bin)
         .args(["mero", "build", "--manifest-path"])
         .arg(app_dir.join("Cargo.toml"))
-        .status()
+        .output()
         .unwrap();
-    assert!(build.success(), "cargo mero build failed");
+    assert!(
+        build.status.success(),
+        "cargo mero build failed:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
 
     let test = Command::new(bin)
         .args(["mero", "test", "--manifest-path"])
@@ -37,15 +47,29 @@ fn new_build_test_bundle_ladder() {
         .unwrap();
     assert!(test.success(), "cargo mero test failed");
 
+    // A build that can extract no ABI says so and writes none, rather than
+    // shipping a wasm whose embedded section came from somewhere else.
+    assert!(
+        String::from_utf8_lossy(&build.stderr).contains("SDK provides no ABI entry point"),
+        "the build must name the missing entry point:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    assert!(!app_dir.join("res/abi.json").exists());
+
     let bundle = Command::new(bin)
         .args(["mero", "bundle", "--dev", "--manifest-path"])
         .arg(app_dir.join("Cargo.toml"))
-        .status()
+        .output()
         .unwrap();
-    assert!(bundle.success(), "cargo mero bundle failed");
-
-    let mpk = app_dir.join("dist/com.example.ladder-app.mpk");
-    assert!(mpk.exists(), "expected bundle at {}", mpk.display());
+    assert!(
+        !bundle.status.success(),
+        "bundling an app with no ABI must fail"
+    );
+    assert!(
+        String::from_utf8_lossy(&bundle.stderr).contains("cannot be bundled"),
+        "bundle must say why:\n{}",
+        String::from_utf8_lossy(&bundle.stderr)
+    );
 }
 
 /// The `calimero_abi_v1` section read back off the built wasm - the only copy
@@ -80,7 +104,7 @@ fn wasm_exports(wasm_path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// `--features` has to reach the compile AND the ABI emit, or the bundle ships
+/// `--features` has to reach the compile AND the ABI extraction, or the bundle ships
 /// bytecode and a `calimero_abi_v1` section that describe different schemas -
 /// which surfaces as a silently wrong migration plan, not a build error.
 #[test]
@@ -135,7 +159,14 @@ fn build_produces_embedded_abi_wasm() {
         "embedded ABI must carry a non-empty methods array (full ABI, not state schema)"
     );
     assert!(fixture.join("res/abi.json").exists());
-    assert!(fixture.join("res/state-schema.json").exists());
+
+    let schema: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture.join("res/state-schema.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        schema["schema_version"], "wasm-abi/1",
+        "the state schema must be stamped with the version the node reads"
+    );
 }
 
 /// Multi-service bundling from a virtual workspace root with no --manifest-path,

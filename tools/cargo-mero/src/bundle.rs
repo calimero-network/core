@@ -195,7 +195,7 @@ fn stage(
             );
         };
         let wasm = stage_file(&one.wasm, staging, "app.wasm")?;
-        let abi = stage_file(&one.abi_json, staging, "abi.json")?;
+        let abi = stage_file(abi_of(one)?, staging, "abi.json")?;
         return Ok(vec![StagedArtifact {
             service_name: None,
             wasm,
@@ -224,7 +224,7 @@ fn stage(
             &format!("services/{}.wasm", service.name),
         )?;
         let abi = stage_file(
-            &build.abi_json,
+            abi_of(build)?,
             staging,
             &format!("services/{}-abi.json", service.name),
         )?;
@@ -235,6 +235,18 @@ fn stage(
         });
     }
     Ok(staged)
+}
+
+/// Every entry in `manifest.json` names an `abi.json`, so an app whose SDK
+/// generates no ABI entry point has nothing to bundle.
+fn abi_of(build: &BuiltWasm) -> Result<&std::path::Path> {
+    build.abi_json.as_deref().ok_or_else(|| {
+        eyre!(
+            "`{}` was built without an ABI, so it cannot be bundled; \
+             its SDK generates no `__calimero_abi` entry point",
+            build.crate_name
+        )
+    })
 }
 
 /// Copy one source file to `staging/<rel>` and describe it (path, size, hash).

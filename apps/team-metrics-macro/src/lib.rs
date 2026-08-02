@@ -8,6 +8,7 @@
     reason = "Dependencies used in build process"
 )]
 
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::{Counter, Mergeable, UnorderedMap};
@@ -16,7 +17,7 @@ use calimero_storage::collections::{Counter, Mergeable, UnorderedMap};
 ///
 /// This struct demonstrates #[derive(Mergeable)] - zero boilerplate!
 /// All fields are CRDTs, so the macro just calls merge on each.
-#[derive(Debug, Default, Mergeable, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, Default, Mergeable, BorshSerialize, BorshDeserialize, AbiType)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct TeamStats {
     pub wins: Counter,

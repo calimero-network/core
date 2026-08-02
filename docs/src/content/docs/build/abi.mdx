@@ -1,0 +1,203 @@
+---
+title: How your app describes its ABI
+description: Every type in an ABI position implements AbiType and describes itself, so an app's manifest is assembled by the compiler rather than parsed out of its source.
+sidebar:
+  label: Describing your ABI
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Your app's **ABI** is a machine-readable description of everything it exposes:
+its methods with their argument and return types, the events it emits, and the
+shape and version of its persistent state.
+It ships with the code, embedded in the compiled wasm.
+
+Three consumers read it.
+A caller - `meroctl`, a frontend, any client - reads `methods` to build a
+correctly typed request and decode the reply without ever seeing your Rust.
+A code generator reads the same entries to emit a typed client.
+And the node reads it on **upgrade**: the state portion is what the
+no-silent-downgrade rail and the migration replay compare between the installed
+version and the new one, so an ABI that describes the wrong state shape is not a
+documentation bug, it is a wrong migration plan.
+
+This page is about how that description is produced from your code.
+For the manifest's field-by-field format, see
+[App interface (ABI)](/build/app-abi/).
+
+## Every type describes itself
+
+There is no schema file to maintain and nothing parses your source.
+Each type that can appear in an ABI position implements the `AbiType` trait,
+which answers two questions: how a use site refers to the type, and what named
+definition (if any) it contributes to the manifest.
+Because the compiler picks the impls, an alias is already the aliased type, a
+re-export resolves to its definition, and a macro-generated type has already
+expanded by the time it is asked to describe itself.
+
+The SDK covers everything you do not own - the std scalars and collections, the
+CRDT collections from `calimero-storage`, and the id types (`AccountId`,
+`ContextId`, `BlobId`, `PublicKey`).
+Your own types are covered like this:
+
+| Item | Where its `AbiType` impl comes from |
+|------|-------------------------------------|
+| `#[app::state]` struct | derived for you by the attribute |
+| `#[app::event]` enum | derived for you by the attribute |
+| any other struct or enum in a method signature, an event payload, or a state field | one line: `#[derive(AbiType)]` |
+
+```rust
+use calimero_sdk::abi::AbiType;
+
+#[derive(AbiType)]
+pub struct Profile {
+    display_name: Option<String>,
+    joined_at: u64,
+}
+```
+
+`#[app::private]` is deliberately absent from that table: node-local state is
+never synchronized and never described.
+
+## From the derive to the wasm
+
+`#[app::logic]` generates a hidden `__calimero_abi()` that walks those impls and
+assembles the manifest.
+It is `cfg`-gated and compiled in only when the toolchain asks for it, which a
+wasm build never does - so **your bytecode is unaffected**, and an app pays
+nothing at runtime for describing itself.
+
+`cargo mero build` extracts the manifest by compiling and running that entry
+point **on the host**, writes it to `res/abi.json`, and embeds a canonicalized
+copy into the wasm as the `calimero_abi_v1` custom section.
+The section is part of the module's bytes, so it is covered by the blob's
+content hash and cannot drift from the code it describes.
+See [the cargo mero toolchain](/build/cargo-mero/) for the rest of the pipeline.
+
+## What you actually do
+
+Usually nothing.
+State and events are covered by their own attributes and every SDK and std type
+already describes itself, so `#[derive(AbiType)]` is for the auxiliary structs
+and enums you introduce.
+
+Forget one and it is a compile error naming the type, not a silent gap in the
+manifest:
+
+```
+error[E0277]: the trait bound `Profile: AbiType` is not satisfied
+   |            ^^^^^^^^^^^^^^ the trait `AbiType` is not implemented for `Profile`
+```
+
+The fix is the derive.
+With it, the `Profile` above lands in the manifest's `types` as:
+
+```json
+"Profile": {
+  "kind": "record",
+  "fields": [
+    { "name": "display_name", "nullable": true, "type": { "kind": "string" } },
+    { "name": "joined_at", "type": { "kind": "u64" } }
+  ]
+}
+```
+
+Note what happened to `Option<String>`: the described type is the unwrapped
+`string`, and the optionality rides a `nullable` flag on the field, while a
+non-optional field carries no `nullable` key at all.
+The same rule applies to parameters and returns, so a client reads nullability
+off the position rather than off the type.
+
+## Naming
+
+A type's manifest name defaults to its Rust identifier.
+`#[abi(name = "...")]` overrides it:
+
+```rust
+#[derive(AbiType)]
+#[abi(name = "UserProfile")]
+pub struct Profile {
+    display_name: Option<String>,
+    joined_at: u64,
+}
+```
+
+A name is the manifest's only handle on a type, so two different shapes may not
+share one.
+If they do, the build fails during extraction with:
+
+```
+ABI type name collision: Profile defined with two different shapes.
+```
+
+There are two ways out, depending on what actually collided:
+
+- **Two distinct types with the same identifier**, say a `Profile` in two
+  modules. Give one of them a different manifest identity with
+  `#[abi(name = "...")]`; the Rust names stay as they are.
+- **One generic used at two argument types.** A generic is described at its
+  instantiation under its bare identifier, so `Wrapper<String>` and
+  `Wrapper<u64>` both want to be `Wrapper`. Define a separate concrete type per
+  instantiation so every shape has its own name.
+
+## Inspecting the ABI
+
+`cargo mero abi` reads a compiled module or the artifacts beside it:
+
+```bash
+cargo mero abi extract res/my_app.wasm --output abi.json  # the full manifest
+cargo mero abi types res/my_app.wasm                      # just the named types
+cargo mero abi state res/my_app.wasm                      # state root + its dependencies
+cargo mero abi inspect res/my_app.wasm                    # the wasm's sections
+cargo mero abi diff res/state-schema.json baseline.json   # breaking + unsafe changes
+```
+
+`diff` is the one worth wiring into CI.
+It applies the same classification the node's upgrade gate does, flagging a
+breaking field change and, more importantly, an unsafe identity downgrade - an
+`AuthoredMap`, `AuthoredVector`, or `SharedStorage` field replaced by a plain
+type, which silently strips per-entry authorship or the writer ACL.
+Catching that before a release is much cheaper than after an install.
+
+<Aside type="caution" title="Known limitations">
+- **A `#[cfg]` on a logic method still lands in the ABI.** An attribute macro
+  sees your item before `cfg` is applied, so a method gated out of an
+  `#[app::logic]` block is still described and the manifest advertises a method
+  the wasm may not export. The same holds for a gated variant of an
+  `#[app::event]` enum. (A gated *struct field* is fine: that description comes
+  from a derive, which runs after `cfg` is applied.) Express a variant as whole
+  gated items instead - see
+  [cargo mero's feature docs](/build/cargo-mero/).
+- **Gate on features, not on the target.** Extraction compiles on the host, so
+  an ABI-visible item gated on `target_arch` describes its *host* form rather
+  than its wasm one. Features are shared between extraction and the wasm build;
+  the target is not.
+- **An older SDK produces no ABI at all.** An app whose SDK predates
+  `__calimero_abi` builds no manifest, so `cargo mero build` warns, writes no
+  `res/abi.json` or `res/state-schema.json`, and embeds no section. The wasm is
+  still produced, but `cargo mero bundle` refuses it, because every bundle entry
+  names an `abi.json`.
+</Aside>
+
+<CardGrid>
+  <LinkCard
+    title="App interface (ABI)"
+    description="The manifest format itself - methods, events, types, state, and migrations."
+    href="/build/app-abi/"
+  />
+  <LinkCard
+    title="SDK macros"
+    description="The #[app::*] attributes whose markers the manifest records."
+    href="/build/sdk-macros/"
+  />
+  <LinkCard
+    title="cargo mero toolchain"
+    description="The build that extracts the manifest and embeds it, plus the feature flags it shares with the wasm."
+    href="/build/cargo-mero/"
+  />
+  <LinkCard
+    title="Upgrades & migration"
+    description="The downgrade rail and migration replay that read the embedded ABI."
+    href="/protocol/upgrades/"
+  />
+</CardGrid>

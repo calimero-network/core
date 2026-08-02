@@ -1,3 +1,4 @@
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::borsh::BorshDeserialize;
 use calimero_sdk::serde::Serialize;
@@ -16,7 +17,7 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// converges with no owner/identity stamp. The new doc's hash is recorded in
 /// `migration_hash` (raw bytes) and fetched back via `get_migration_doc()` — no
 /// hash crosses a workflow variable and no encode/decode codec is needed.
-#[app::state(version = 2, emits = for<'a> Event<'a>)]
+#[app::state(version = 2, migration = migrate_v1_to_v2, emits = for<'a> Event<'a>)]
 pub struct ScenarioFrozenStorageV2 {
     documents: FrozenStorage<String>,
     title: LwwRegister<String>,
@@ -36,7 +37,7 @@ pub enum Event<'a> {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct SchemaInfo {
     pub schema_version: String,

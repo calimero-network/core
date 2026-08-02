@@ -13,6 +13,9 @@ impl S {
     }
 
     pub fn __calimero_internal(&self) {}
+
+    // The manifest entry point `#[app::logic]` generates.
+    pub fn __calimero_abi(&self) {}
 }
 
 fn main() {}

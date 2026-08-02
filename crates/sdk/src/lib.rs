@@ -30,6 +30,16 @@ pub mod state;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod testing;
 pub mod types;
+/// The ABI description surface apps and generated code use.
+pub mod abi {
+    pub use calimero_sdk_macros::AbiType;
+    pub use calimero_wasm_abi::abi_type::{AbiEvents, AbiType, TypeRegistry};
+    pub use calimero_wasm_abi::manifest_builder::ManifestBuilder;
+    pub use calimero_wasm_abi::schema::{
+        CollectionType, CrdtCollectionType, Event, Field, Manifest, Method, MethodIntent,
+        Parameter, ScalarType, TypeDef, TypeRef, Variant, XCallCallers,
+    };
+}
 /// The authorization principal an app names: one person, however many devices.
 ///
 /// Re-exported because app APIs now take accounts wherever they used to take a

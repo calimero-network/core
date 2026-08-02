@@ -1,3 +1,4 @@
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::borsh::BorshDeserialize;
 use calimero_sdk::serde::Serialize;
@@ -13,7 +14,7 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// element ids are `compute_id(set_id, value)` (content-derived, no executor
 /// identity), so every node applying the SAME transform over the SAME old set
 /// produces a byte-identical set — even though migrate emits no sync delta.
-#[app::state(version = 2, emits = for<'a> Event<'a>)]
+#[app::state(version = 2, migration = migrate_v1_to_v2, emits = for<'a> Event<'a>)]
 pub struct ScenarioUnorderedSetV2 {
     tags: UnorderedSet<String>,
     title: LwwRegister<String>,
@@ -28,7 +29,7 @@ pub enum Event<'a> {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct SchemaInfo {
     pub schema_version: String,

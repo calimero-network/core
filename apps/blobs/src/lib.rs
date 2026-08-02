@@ -6,6 +6,7 @@
 
 #![allow(clippy::len_without_is_empty)]
 
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env, BlobId, PublicKey};
@@ -22,7 +23,7 @@ const BYTES_PER_MB: f64 = BYTES_PER_KB * 1024.0;
 // === DATA STRUCTURES ===
 
 /// Represents a file stored in the system
-#[derive(Debug, Clone, BorshSerialize, BorshDeserialize, Serialize)]
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize, Serialize, AbiType)]
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct FileRecord {

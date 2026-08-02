@@ -21,6 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env, AccountId, PublicKey};
@@ -40,7 +41,7 @@ const BASE58_ENCODED_MAX_SIZE: usize = 44;
 // HELPER TYPES
 
 /// Nested map type for user storage.
-#[derive(Debug, BorshSerialize, BorshDeserialize, Default, Mergeable)]
+#[derive(Debug, BorshSerialize, BorshDeserialize, Default, Mergeable, AbiType)]
 #[borsh(crate = "calimero_sdk::borsh")]
 struct NestedMap {
     map: UnorderedMap<String, LwwRegister<String>>,
@@ -48,7 +49,7 @@ struct NestedMap {
 
 /// File record for blob metadata. Atomic whole-record LWW by `uploaded_at`
 /// (see `impl_atomic_lww_leaf!`); not a struct of CRDT fields, so no derive.
-#[derive(Debug, Clone, BorshSerialize, BorshDeserialize, Serialize)]
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize, Serialize, AbiType)]
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct FileRecord {

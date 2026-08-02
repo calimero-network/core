@@ -108,7 +108,7 @@ jobs:
   # deliberate identity-downgrade scenario, emit both versions' state schemas,
   # and assert `calimero-abi diff` catches the AuthoredMap -> UnorderedMap
   # downgrade (UNSAFE_IDENTITY_DOWNGRADE, exit 1). This proves the L2 lint fires
-  # on a real, emitter-produced schema pair — the downgrade pair is intentionally
+  # on a real, app-produced schema pair — the downgrade pair is intentionally
   # NOT in the merobox matrix because a downgrade migration is unsafe at runtime.
   schema-downgrade-guard:
     name: Schema downgrade guard

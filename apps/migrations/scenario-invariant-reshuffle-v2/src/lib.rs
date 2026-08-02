@@ -1,3 +1,4 @@
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::borsh::BorshDeserialize;
 use calimero_sdk::serde::Serialize;
@@ -22,7 +23,7 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 // Inline fields rather than a nested `Stats` substruct: `#[app::state]`
 // requires every top-level field to be `Mergeable`, which collection
 // types satisfy but a plain struct of collections does not.
-#[app::state(version = 2, emits = for<'a> Event<'a>)]
+#[app::state(version = 2, migration = migrate_v1_to_v2, emits = for<'a> Event<'a>)]
 pub struct ScenarioInvariantReshuffleV2 {
     total: LwwRegister<u64>,
     per_item: UnorderedMap<String, LwwRegister<u64>>,
@@ -36,7 +37,7 @@ pub enum Event<'a> {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct SchemaInfo {
     pub schema_version: String,

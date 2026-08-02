@@ -2,6 +2,7 @@ use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{parse_quote, Error as SynError, GenericParam, Generics, Ident, Visibility};
 
+use crate::abi_type::variant_payload;
 use crate::errors::{Errors, ParseError};
 use crate::items::StructOrEnumItem;
 use crate::reserved::{idents, lifetimes};
@@ -31,11 +32,16 @@ impl ToTokens for EventImpl<'_> {
 
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
+        let abi_events_impl = generate_abi_events_impl(ident, source_generics, orig);
+
         quote! {
             #[derive(::calimero_sdk::serde::Serialize)]
+            #[derive(::calimero_sdk::abi::AbiType)]
             #[serde(crate = "::calimero_sdk::serde")]
             #[serde(tag = "kind", content = "data")]
             #orig
+
+            #abi_events_impl
 
             impl #impl_generics ::calimero_sdk::event::AppEvent for #ident #ty_generics #where_clause {
                 // `kind` and `data` are read off the serde-tagged object so the
@@ -101,6 +107,57 @@ impl ToTokens for EventImpl<'_> {
             impl #impl_generics ::calimero_sdk::event::AppEventExt for #ident #ty_generics #where_clause {}
         }
         .to_tokens(tokens);
+    }
+}
+
+/// `AbiEvents` for the event enum: one ABI event entry per variant, carrying
+/// the same synthesized `{Enum}_{Variant}` payload records a type description
+/// would produce. The enum itself is deliberately never a named ABI type.
+fn generate_abi_events_impl(
+    ident: &Ident,
+    source_generics: &Generics,
+    orig: &StructOrEnumItem,
+) -> TokenStream {
+    // A struct never reaches here; `try_from` rejects it.
+    let StructOrEnumItem::Enum(item) = orig else {
+        return quote! {};
+    };
+
+    let mut generics = source_generics.clone();
+    for param in source_generics.type_params() {
+        let param = &param.ident;
+        generics
+            .make_where_clause()
+            .predicates
+            .push(parse_quote!(#param: ::calimero_sdk::abi::AbiType));
+    }
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    let mut synthesized = Vec::new();
+    let events: Vec<_> = item
+        .variants
+        .iter()
+        .map(|variant| {
+            let name = variant.ident.to_string();
+            let payload = variant_payload(&ident.to_string(), variant, &mut synthesized);
+            quote! {
+                ::calimero_sdk::abi::Event {
+                    name: #name.to_owned(),
+                    payload: #payload,
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        impl #impl_generics ::calimero_sdk::abi::AbiEvents for #ident #ty_generics #where_clause {
+            fn abi_events(
+                __reg: &mut ::calimero_sdk::abi::TypeRegistry,
+            ) -> ::std::vec::Vec<::calimero_sdk::abi::Event> {
+                #(#synthesized)*
+                ::std::vec![#(#events),*]
+            }
+        }
     }
 }
 

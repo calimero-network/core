@@ -4,6 +4,12 @@ error: (calimero)> this method name is reserved by the SDK's code generation —
 15 |     pub fn __calimero_internal(&self) {}
    |            ^^^^^^^^^^^^^^^^^^^
 
+error: (calimero)> this method name is reserved by the SDK's code generation — pick another. Names starting with `__calimero` (and the generated runtime exports) collide with emitted symbols.
+  --> tests/macros/error_reserved_method_name.rs:18:12
+   |
+18 |     pub fn __calimero_abi(&self) {}
+   |            ^^^^^^^^^^^^^^
+
 error[E0277]: (calimero)> no method named `#[app::init]` found for type `S`
  --> tests/macros/error_reserved_method_name.rs:6:8
   |

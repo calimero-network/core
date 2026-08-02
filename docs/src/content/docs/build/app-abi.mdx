@@ -95,12 +95,13 @@ The ABI is derived from the same `#[app::*]` macros that define your runtime
 surface — see [SDK macros](/build/sdk-macros/). Marker attributes like
 `#[app::view]` and `#[app::xcall]` are no-ops on the generated code; they exist
 so the build can read them off your methods and record them in the manifest.
-Because the manifest is produced from your annotated source at build time, it
-cannot describe a method your code doesn't have, or omit one it does.
+Every type in the manifest describes *itself* through an `AbiType` impl the
+compiler resolves, so the manifest cannot describe a method your code doesn't
+have, or omit one it does. See [Describing your ABI](/build/abi/) for how that
+works and what you write.
 
-The state-schema subset of the manifest is then written into the WASM as a custom
-section named `calimero_abi_v1` (`crates/wasm-abi/src/embed.rs`). Two consequences
-follow:
+The manifest is then written into the WASM as a custom section named
+`calimero_abi_v1` (`crates/wasm-abi/src/embed.rs`). Two consequences follow:
 
 - **It's covered by the bytecode hash.** A blob is content-addressed by its bytes,
   and the section is part of those bytes — so the embedded schema is fixed to the
@@ -108,11 +109,12 @@ follow:
 - **The node can read it back from any installed blob**, with no external file. The
   read path is fail-open: a missing or malformed section is treated as absent.
 
-<Aside type="note" title="Full ABI vs embedded schema">
-The complete method/event ABI ships as the bundle's `abi` artifact (an
-`abi.json`), while the **state-schema** slice — `state_root` plus its types,
-`state_version`, and `migrations` — is what's embedded in the bytecode itself.
-Both are generated from the same source in one build step, so they stay
+<Aside type="note" title="Two copies of the same manifest">
+The embedded section and the bundle's `abi.json` sidecar carry the **same full
+manifest**, and differ only in ordering: the embedded copy is canonicalized with
+`methods` and `events` sorted by name (the node's validator requires that and
+silently discards a section that fails it), while the sidecar is in
+source-declaration order. Both come out of one build step, so they stay
 consistent. See [Packaging & signing](/build/packaging-signing/) for how the
 artifacts are assembled.
 </Aside>
@@ -127,7 +129,7 @@ straight out of a compiled module with `cargo mero abi`:
 # Extract the full ABI manifest from a compiled app
 cargo mero abi extract app.wasm --output abi.json
 
-# Or inspect just the state schema embedded in the bytecode
+# Or slice out just the state schema
 cargo mero abi state app.wasm
 ```
 

@@ -357,3 +357,11 @@ impl AppEvent for NoEvent {
     }
 }
 impl AppEventExt for NoEvent {}
+
+/// An app that declares no `emits` still names an event type in its ABI
+/// codegen; describing this one yields no entries.
+impl crate::abi::AbiEvents for NoEvent {
+    fn abi_events(_reg: &mut crate::abi::TypeRegistry) -> Vec<crate::abi::Event> {
+        vec![]
+    }
+}

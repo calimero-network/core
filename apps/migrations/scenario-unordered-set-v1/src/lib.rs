@@ -1,3 +1,4 @@
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::serde::Serialize;
 use calimero_storage::collections::{LwwRegister, UnorderedSet};
@@ -17,7 +18,7 @@ pub enum Event<'a> {
     TagAdded { tag: &'a str },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct SchemaInfo {
     pub schema_version: String,
