@@ -177,7 +177,7 @@ steps:
 
   - name: Stop node-2 so its datastore can be opened
     type: stop_node
-    node: backup-node-2
+    nodes: backup-node-2
 
   - name: Export node-2's account root
     type: node_exec
@@ -264,7 +264,7 @@ steps:
 
   - name: Start the recovered node
     type: start_node
-    node: backup-node-2
+    nodes: backup-node-2
 
   # A fresh node auto-creates its admin on the first user_password login, so the
   # recovered machine needs no credential plumbing.
