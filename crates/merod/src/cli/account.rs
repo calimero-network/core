@@ -25,6 +25,7 @@ use calimero_store::Store;
 use calimero_store_rocksdb::RocksDB;
 use clap::{Parser, Subcommand};
 use eyre::{bail, Result as EyreResult, WrapErr};
+use zeroize::Zeroizing;
 
 use crate::cli::RootArgs;
 
@@ -147,9 +148,9 @@ impl ExportCommand {
         }
 
         if let Some(path) = self.out {
-            std::fs::write(&path, format!("{}\n", phrase.as_str()))
+            write_owner_only(&path, &format!("{}\n", phrase.as_str()))
                 .wrap_err_with(|| format!("Failed to write the recovery phrase to {path}"))?;
-            println!("Recovery phrase written to {path}");
+            println!("Recovery phrase written to {path} (owner-only, 0600)");
             println!("It is unencrypted. Move it somewhere safe and delete this copy.");
         } else {
             println!("{}", phrase.as_str());
@@ -173,12 +174,19 @@ impl ExportCommand {
 
 impl ImportCommand {
     async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
-        let phrase = match &self.from {
-            Some(path) => std::fs::read_to_string(path)
-                .wrap_err_with(|| format!("Failed to read the recovery phrase from {path}"))?,
+        // `Zeroizing` so the words are wiped when this scope ends, matching what
+        // `to_mnemonic` hands back on the export side. It covers the buffer we
+        // own, not every copy: `read_to_string` allocates and grows its own
+        // internally, and a shell that echoed the paste has it too. Wiping ours
+        // is still worth doing — it is the copy that lives longest.
+        let phrase: Zeroizing<String> = match &self.from {
+            Some(path) => Zeroizing::new(
+                std::fs::read_to_string(path)
+                    .wrap_err_with(|| format!("Failed to read the recovery phrase from {path}"))?,
+            ),
             None => {
                 eprintln!("Paste the 24-word recovery phrase, then press Ctrl-D:");
-                let mut buf = String::new();
+                let mut buf = Zeroizing::new(String::new());
                 std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
                     .wrap_err("Failed to read the recovery phrase from stdin")?;
                 buf
@@ -226,6 +234,40 @@ impl ImportCommand {
 
         Ok(())
     }
+}
+
+/// Write `contents` to `path`, owner-readable only.
+///
+/// Created with mode `0600` rather than written and then chmod-ed, because the
+/// gap between the two is exactly long enough for another local user to read a
+/// recovery key — and this file *is* the account. `set_permissions` afterwards
+/// covers the other case: `.mode()` applies only when the file is created, so an
+/// existing world-readable file at this path would otherwise keep its mode.
+///
+/// The node home gets the same treatment at `init` (`restrict_to_owner`), which
+/// chmods after the fact; that is fine for a directory tree being built, and not
+/// for a single secret written on demand.
+#[cfg(unix)]
+fn write_owner_only(path: &camino::Utf8Path, contents: &str) -> EyreResult<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(contents.as_bytes())?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+/// Non-Unix fallback: no mode bits to set, so this is a plain write.
+#[cfg(not(unix))]
+fn write_owner_only(path: &camino::Utf8Path, contents: &str) -> EyreResult<()> {
+    std::fs::write(path, contents)?;
+    Ok(())
 }
 
 /// Parse a hex namespace id, with a message that says which argument was wrong —
