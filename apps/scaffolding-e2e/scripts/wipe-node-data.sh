@@ -24,6 +24,11 @@
 # explicit second argument. Being a host bind mount, it outlives the container,
 # which is exactly why the wipe works at all.
 #
+# What is left behind is an EMPTY node home directory — the same state merobox
+# leaves before it runs `merod init`. Nothing informative survives (no config, no
+# identity, no datastore, no blobs), so "only the phrase survived" still holds; the
+# directory exists so that `merod init` and `node_exec` find what they expect.
+#
 # Refuses if a container of that name is still running, if the path looks
 # dangerous, or if it does not contain the node home it claims to. An `rm -rf`
 # assembled from arguments earns every one of those.
@@ -96,4 +101,12 @@ if [ "${remaining}" != "0" ]; then
     exit 1
 fi
 
-echo "${node}'s data directory is empty — the disk is gone"
+# Recreate the node's home as an EMPTY directory, the state merobox itself leaves
+# before running `merod init` (`run_node` makedirs it, then inits into it). An
+# empty directory carries nothing — no config, no identity, no datastore, no blobs
+# — so the recovery claim ("only the phrase survived") still holds, while
+# `merod init` and `node_exec` both have the directory they expect to find.
+mkdir -p "${abs}/${node}"
+chmod 700 "${abs}" "${abs}/${node}"
+
+echo "${node}'s data is gone; an empty home remains at ${abs}/${node}"

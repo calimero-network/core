@@ -36,8 +36,9 @@ description: >
 
     5. WIPE node-2's data directory. Everything above proves the encoding round
        trips; restoring a key into the store it came from proves nothing about
-       recovery. Nothing of node-2 survives here except the phrase — no config,
-       no identity, no datastore.
+       recovery. Nothing informative about node-2 survives here except the phrase
+       — no config, no identity, no datastore, no blobs. What remains is an empty
+       home directory, the same state merobox leaves before `merod init`.
 
        Then re-init, import (with NO `--force`: an empty store has no root to
        refuse to replace, and needing the flag would be a bug), restart, and log
