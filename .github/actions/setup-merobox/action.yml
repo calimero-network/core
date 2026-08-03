@@ -14,7 +14,7 @@ runs:
         #   0.6.44 — the `download_blob` step, used by
         #            apps/blobs/workflows/blob-cross-node-{transfer,sizes}.yml to
         #            read bytes back off a node and assert size + sha256.
-        MIN_MEROBOX="0.6.49"
+        MIN_MEROBOX="0.6.50"
 
         case "$(uname -m)" in
           x86_64) MEROBOX_ARCH="linux-x86-64" ;;
@@ -52,6 +52,6 @@ runs:
         merobox --version
         HAVE_MEROBOX="$(merobox --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
         if [ "$(printf '%s\n%s\n' "$MIN_MEROBOX" "$HAVE_MEROBOX" | sort -V | head -1)" != "$MIN_MEROBOX" ]; then
-          echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX} (node_exec invokes merod with the entrypoint cleared, and logs what it resolved)"
+          echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX} (node_exec runs as root, so it can read the node's 0700 data dir)"
           exit 1
         fi
