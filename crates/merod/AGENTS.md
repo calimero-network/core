@@ -39,6 +39,33 @@ merod --node <name> <subcommand>
 └── kms           # Key management service
 ```
 
+## Account root backup (`merod account`)
+
+The account root is the only key that can certify a replacement device after every
+device is lost, so these two commands are the whole recovery story. Both open the
+datastore directly, which means the node must be **stopped** (RocksDB's lock is
+exclusive) and a KMS-encrypted store is refused rather than misread.
+
+```bash
+# Print the 24-word phrase to stdout. Add --namespace (repeatable, optional) to
+# also print the account id derived for that namespace.
+merod --node node1 account export [--namespace <NAMESPACE_ID>]…
+
+# Write it to a file instead. Refused without the second flag; created 0600.
+merod --node node1 account export --out backup.txt --allow-plaintext-file
+
+# Restore. Reads stdin by default, or --from PATH. Refuses to replace an
+# existing root without --force.
+merod --node node1 account import [--from backup.txt] [--force]
+```
+
+Export prints the phrase on the **first line** (so `head -1` is the secret),
+then the root's public key, then any derived account ids. Only the first line is
+sensitive; the account ids are what writer sets already name.
+
+Full model, the recovery procedure, and what does *not* come back:
+[protocol/accounts](../../docs/src/content/docs/protocol/accounts.mdx#backing-up-and-recovering-an-account).
+
 ## File Organization
 
 ```

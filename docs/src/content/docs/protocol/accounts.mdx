@@ -343,25 +343,149 @@ Recovery means *prove who you are, then enrol fresh* — not *restore the old ma
 
 Account operations travel as `GroupOp` variants because that is the transport that exists: broadcast carries namespace governance deltas, not unified operations. The unified-log work becomes live at cutover.
 
-## Recovering an account
+## Backing up and recovering an account
 
-A backup is **one secret plus a non-secret list**: the root phrase, and the namespace ids you use it in. The per-namespace nonce is derived (`KDF(root_secret, namespace_id)`), so nothing per-namespace has to be backed up — but nothing records which namespaces you joined either, which is why `export` will print the derived account ids for any namespace you name:
+### What a backup is
+
+**One secret plus a non-secret list.** The secret is the account root, printed as a
+24-word BIP-39 phrase. The list is the namespace ids you use it in.
+
+Nothing per-namespace needs backing up: the genesis nonce is
+`KDF(root_secret, namespace_id)`, so every account id this root owns is
+*recomputable* from the phrase alone. But that derivation only runs forwards —
+nothing on the node records which namespaces a root has been used in, and an
+account id cannot be reversed into one. So the phrase restores your ability to be
+those accounts, while the list is what tells you which accounts to expect back.
+
+Losing the phrase is terminal. The `AccountId` is `H(genesis)` over a root key that
+no longer exists, so nobody can ever certify a device into that account again — the
+account is dead, and the member grants attached to it with it.
+
+### Exporting
 
 ```bash
-merod --node node1 account export --namespace <NAMESPACE_ID>
+merod --node node1 account export
 ```
 
-To recover onto a replacement machine: `merod --node new init`, `merod account import` (paste the phrase), then start the node and enrol a device per namespace. The account id comes back identical because it is `H(genesis)` over a root the phrase restored; the device is new, and a peer delivers the current scope key to it the same way it would to any newly linked device.
+```
+legal winner thank year wave sausage worth useful legal winner thank year wave
+sausage worth useful legal winner thank year wave sausage worth title
 
-Two deliberate limits in that flow:
+Account root public key: D2RGSD4paRbDANmHeUC2L9Ljaon7vXy6HzaNeHnoQ7Tg
 
-- **Import refuses to replace an existing root** without `--force`. A root that has already certified devices has no second copy, so overwriting it strands every account it owned.
-- **A recovering account is handed the current scope key only, never the rotated-out history.** Key delivery wraps for `current_key_recipients`; old keys are retained locally (`load_key_by_id`) so a node can still read deltas it already holds, and are never sent to a device. This is the intended policy, not an omission: the root is exactly what an attacker holding a stolen backup also has, so replaying the key history to anyone who proves possession of it would turn one leaked phrase into retroactive decryption of everything ever written. Rotations also frequently happen *because* something was compromised, and handing the old keys back to a "recovered" device would undo the rotation. The practical cost is nil — a recovering node has no local history to decrypt anyway, and re-syncs current state exactly as a cold joiner does.
+Keep the phrase AND the list of namespaces you use it in. …
+```
+
+Three things, and only the first is secret:
+
+| output | what it is for |
+| --- | --- |
+| the 24 words, on the **first line** | the backup. This *is* the account — anyone holding it can certify a device into every account this root owns |
+| the account root **public key** | identifies which root you are holding, so you can tell two backups apart without revealing either |
+| the advisory | a reminder that the namespace list matters too |
+
+`--namespace` is **optional and repeatable**. Pass it to have export derive and
+print the account ids for those namespaces:
+
+```bash
+merod --node node1 account export \
+  --namespace abab…abab \
+  --namespace cdcd…cdcd
+```
+
+```
+  namespace abab…abab -> account 03944a72253996cf87a2ac0680ff52b75143333ea21605e0dd1877dc1b16ecaa
+  namespace cdcd…cdcd -> account b7ba2620ea2b69e81a9b6ffe03e2432f22b9358a94836501e1500240298e37c7
+```
+
+Those ids are not secrets — they are what writer sets and membership rows already
+name — and they are the half of the backup that stops recovery being a guessing
+game about which accounts you had.
+
+By default the phrase goes to **stdout only**, so it need never touch a disk.
+`--out PATH` writes it to a file and is refused without `--allow-plaintext-file`,
+because pairing "write my recovery key down" with a default-permission file is the
+wrong combination. When it does write, the file is created mode `0600` from the
+start rather than chmod-ed afterwards — the gap between the two is long enough for
+another local user to read it.
+
+Two constraints on export:
+
+- **The node must be stopped.** It opens the datastore directly and RocksDB's lock
+  is exclusive.
+- **A KMS-encrypted datastore is refused**, not silently misread. The key is fetched
+  during `run` with the node's TEE identity, which a recovery CLI on a replacement
+  machine generally cannot reproduce.
+
+### Recovering onto a replacement machine
+
+```bash
+merod --node node1 init --server-port 2428 --swarm-port 2528   # fresh node
+merod --node node1 account import                              # paste the phrase
+merod --node node1 run
+```
+
+Then, for each namespace you used, enrol a device (`meroctl account create
+<NAMESPACE_ID>`) and a peer delivers the current scope key to it, exactly as it
+would to any newly linked device.
+
+What comes back, and what does not:
+
+| | after recovery |
+| --- | --- |
+| the account id, per namespace | **identical** — it is derived from the root and the namespace id |
+| writer grants and membership naming that account | **still apply**, because they name the account, not the machine |
+| devices | **gone.** They died with the disk; enrol new ones. The old device ids stay revocable but never return |
+| the node's own identity keypair | **new**, so the old member row is dead and the node needs a fresh invitation to the namespace |
+| local history | **not restored from the phrase** — the node re-syncs current state like any cold joiner |
+
+The ordering constraint that catches people: **enrolling a device requires the
+scope key**, because a device link travels as an encrypted group operation. So
+rejoin the namespace and context *first*, then `account create`. Doing it the other
+way round deadlocks.
+
+### Import's guards
+
+- **It refuses to replace an existing root** unless `--force`. A root that has
+  already certified devices has no second copy, so overwriting it strands every
+  account it owned. The check lives in the repository under the same lock as the
+  write — not in the CLI — so no other caller can skip it, and it hands back the
+  root it replaced so nothing can destroy one silently.
+- **On an empty store no flag is needed.** Recovery onto a fresh machine is the
+  normal path and must not require the flag that exists to protect an existing key.
+- **A mistyped phrase is rejected, not silently accepted.** This is why the backup
+  is BIP-39 words and not hex: every 32-byte string is a valid key, so a hex backup
+  with one wrong character recovers *a* root — a different one — and you would
+  discover it when the account you restored turns out to be one nobody has heard of.
+  A wrong word fails the checksum at import.
+- **Whitespace is normalised**, so a phrase retyped across several lines works.
+
+### Rotated-out keys are not handed back
+
+A recovering account receives the **current** scope key only. Key delivery wraps for
+`current_key_recipients`; old keys are retained locally (`load_key_by_id`) so a node
+can still read deltas it already holds, and are never sent to a device.
+
+This is policy, not an omission. The root is exactly what an attacker holding a
+stolen backup also has, so replaying the key history to anyone who proves possession
+of it would turn one leaked phrase into retroactive decryption of everything ever
+written. Rotations also frequently happen *because* something was compromised, and
+handing the old keys back to a "recovered" device would undo the rotation. The
+practical cost is nil: a recovering node has no local history to decrypt anyway.
+
+### Verified end to end
+
+The `account-root-backup-restore` scenario **deletes the node's data directory** and
+recovers from the phrase alone — re-init, import, rejoin with a new identity, enrol a
+new device — then asserts two things: the account id is unchanged, and a value
+written *before* the wipe reads back. The second is only possible if a peer delivered
+the current scope key to the new device, so it covers the peer-assisted half rather
+than just the key round trip.
 
 ## Known limits
 
 - **Root-key compromise is unrecoverable.** A stolen root signs its own handoff. Whoever holds the root is the account.
-- **The root is exportable, and recovery is manual.** `merod account export` prints it as a 24-word BIP-39 phrase; `merod account import` restores it. BIP-39 for the checksum rather than the wordlist aesthetics: every 32-byte string is a valid key, so a mistyped *hex* backup recovers a different root and the operator finds out when the account they restored turns out to be one nobody has heard of. A wrong word fails at import instead. Both open the store directly, so the node must be stopped, and neither can read a KMS-encrypted store. What remains manual is the rest of the recovery: after importing, a device has to be enrolled per namespace before a peer will deliver the scope key. The whole flow is covered end to end by the `account-root-backup-restore` scenario, which **wipes the node's data directory** and recovers from the phrase alone: re-init, import, rejoin with a new identity, enrol a new device under the restored root, and assert both that the account id is unchanged and that a value written before the wipe reads back — the latter only possible if a peer delivered the current scope key to the new device. See [Recovering an account](#recovering-an-account).
+- **The root is exportable; the rest of recovery is manual.** `merod account export|import` back it up and restore it, but a recovered node still has to rejoin its namespaces and enrol a device before a peer will deliver the scope key — and its old devices are gone for good. Both commands need the node stopped and cannot read a KMS-encrypted store. See [Backing up and recovering an account](#backing-up-and-recovering-an-account).
 - **Revocation latency is per scope.** A scope that has not folded the revocation still honours the old binding. Inherent to causal revocation.
 - **Self-service revocation cannot rotate.** The device stops writing at once but can read until an admin rotates.
 - **Pairing is only as good as the channel the confirmation code travels on.** `pair-init` signs a statement over the account, the device id and both keys, and `pair-complete` refuses to certify key material that does not carry it — so nobody can swap the KEM key under a captured device id, which is what previously made the exchange only as safe as the channel carrying it. What a signature cannot settle is a *wholesale* substitution: an attacker that replaces both keys and re-signs with its own produces a statement that verifies, because nothing on the certifying side commits to the genuine keys in advance. Binding the keys into the `DeviceId` would fix it and is deliberately unavailable — the id excludes them so a device survives key rotation. What closes it instead is the confirmation code: a 64-bit value over exactly what gets certified, which `pair-complete` **requires** and checks against the keys that arrived, so the comparison cannot be skipped. It is 64 bits and not the six digits that would be pleasant to read aloud because the attacker knows the genuine code and can grind its own keypairs offline until one matches — the width is the work factor. What remains is not a gap in the check but in the channel: a code pasted alongside the keys it describes was rewritten by the same hand, so the code has to reach the account holder some other way — read out, or over a channel the payload did not take.
