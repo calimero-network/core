@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
 # gen-blob-fixtures.sh — make the large, RANDOM blob fixtures the cross-node
-# size sweep uploads. Not committed: 141 MiB of binary has no business in git,
+# size sweep uploads. Not committed: 416 MiB of binary has no business in git,
 # and the content must differ per run anyway (see below).
 #
 # Usage (from apps/blobs, or anywhere — paths resolve off this script):
-#   ./scripts/gen-blob-fixtures.sh                      # CI tier: 1 8 32 100 MiB
-#   BLOB_FIXTURE_SIZES_MIB="1 50 250 500" ./scripts/gen-blob-fixtures.sh
+#   ./scripts/gen-blob-fixtures.sh                  # CI tier: 1 5 10 50 100 250
+#   BLOB_FIXTURE_SIZES_MIB="1 250 500" ./scripts/gen-blob-fixtures.sh
 #
 # WHY RANDOM, NOT ZEROS: blobs are content-addressed. A fixture of predictable
 # bytes hashes to the same blob id on every run and on every node, so a node
@@ -14,18 +14,19 @@
 # under test never touches the network — a green run proving nothing. Random
 # content makes each run's blob genuinely absent on the fetching node.
 #
-# WHY THESE SIZES: 1 MiB is a single chunk (CHUNK_SIZE is 1 MiB), so anything
-# above it exercises the chunk-graph walk — 8 MiB is 8 chunks, 32 and 100 push
-# the streaming path. The default tier stops at 100 MiB to keep the CI job fast;
-# the hard ceiling is 500 MiB (MAX_BLOB_SIZE_BYTES,
-# crates/network/src/handlers/commands/request_blob.rs) and anything past it is
-# refused by design, not broken.
+# WHY THESE SIZES: CHUNK_SIZE is 1 MiB, so 1 MiB is the only size that does not
+# walk the chunk graph; 5/10/50/100/250 MiB exercise the streaming path at
+# 5 → 250 chunks. The tier stops at 250 MiB because the hard ceiling is 500 MiB
+# (MAX_BLOB_SIZE_BYTES, crates/network/src/handlers/commands/request_blob.rs) and
+# anything past it is refused by design, not broken — 250 proves bulk transfer
+# works while leaving the refusal path out of this sweep. Keep this default in
+# step with the sizes in workflows/blob-cross-node-sizes.yml.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT_DIR="$SCRIPT_DIR/../static/generated"
-SIZES_MIB="${BLOB_FIXTURE_SIZES_MIB:-1 8 32 100}"
+SIZES_MIB="${BLOB_FIXTURE_SIZES_MIB:-1 5 10 50 100 250}"
 
 mkdir -p "$OUT_DIR"
 

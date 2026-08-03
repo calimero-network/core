@@ -5,26 +5,46 @@ description: >
   covers correctness on small fixtures; this one covers length — where a chunked
   transfer actually breaks.
 
-  SIZES: 1, 8, 32 and 100 MiB. 1 MiB is a single chunk (CHUNK_SIZE is 1 MiB), so
-  every larger size exercises the chunk-graph walk and the streaming path. The
-  tier stops at 100 MiB to keep the CI job fast; for a heavier local sweep, set
-  BLOB_FIXTURE_SIZES_MIB before generating fixtures and edit the steps to match.
+  SIZES: 1, 5, 10, 50, 100 and 250 MiB. CHUNK_SIZE is 1 MiB, so 1 MiB is the
+  only size that does not walk the chunk graph and every larger one exercises
+  the streaming path at a different chunk count (5 → 250 chunks).
 
   THE 500 MiB CEILING: MAX_BLOB_SIZE_BYTES is 500 MiB
-  (crates/network/src/handlers/commands/request_blob.rs). A transfer above it is
-  REFUSED BY DESIGN — "Blob exceeds maximum allowed size of 524288000 bytes" —
-  so a 1 GiB transfer cannot and must not pass. If you want that boundary
-  covered, assert the refusal with `expected_failure: true`, do not assert a
-  success.
+  (crates/network/src/handlers/commands/request_blob.rs). The sweep tops out at
+  250 MiB — comfortably under it — because a transfer ABOVE the ceiling is
+  REFUSED BY DESIGN ("Blob exceeds maximum allowed size of 524288000 bytes").
+  If you want that boundary covered, assert the refusal with
+  `expected_failure: true`; do not assert a success.
 
-  FIXTURES: generated, not committed — run ./scripts/gen-blob-fixtures.sh first.
-  They are random bytes on purpose: blobs are content-addressed, so a predictable
-  fixture would already exist on the fetching node and the network path under
-  test would be skipped entirely.
+  FIXTURES: generated, not committed — run ./scripts/gen-blob-fixtures.sh first
+  (416 MiB, the default tier matches this sweep). They are random bytes on
+  purpose: blobs are content-addressed, so a predictable fixture would already
+  exist on the fetching node and the network path under test would be skipped
+  entirely. For a heavier local sweep, set BLOB_FIXTURE_SIZES_MIB and add steps
+  to match.
 
-  NOT IN THE CI MATRIX YET. Needs merobox's `download_blob` step
-  (calimero-network/merobox#306, lands in 0.6.44) plus a MIN_MEROBOX bump. See
-  blob-cross-node-transfer.yml for the activation steps.
+  RUN IT LOCALLY WITH --e2e-mode. That flag makes merobox clear the public devnet
+  bootstrap list `merod init` writes. Without it the container keeps dialing
+  unreachable public peers, the Kademlia provider lookup burns its rounds on
+  them, and fetches fail `Blob query failed: Timeout` at seemingly arbitrary
+  sizes — a harness artifact, not a blob defect. Note that is a DIFFERENT failure
+  from `NotFound { closest_peers: [] }`, which means the lookup resolved and had
+  nobody to ask:
+
+    cd apps/blobs && ./scripts/gen-blob-fixtures.sh
+    MERO_AUTH_ADMIN_USER=dev MERO_AUTH_ADMIN_PASSWORD=dev-password \
+      merobox bootstrap run workflows/blob-cross-node-sizes.yml --e2e-mode
+
+  Pass `--image merod:local` to test an unreleased fix: the image pinned below is
+  `merod:edge`, built from MASTER, so a fix on your own branch is not in it. CI
+  builds merod:local from the PR and does exactly this.
+
+  WHY THE KAD PRECONDITION: blob bytes ride a Kademlia provider lookup, not
+  gossipsub. Until #3326 seeded kad from identify-discovered peers, a two-node
+  fleet with no bootstrap node left node 2's routing table empty — every fetch
+  failed `NotFound { closest_peers: [] }` with `requests: 0` while gossipsub and
+  CRDT state replicated fine. The RoutingUpdated assertions below fail loudly on
+  that specific regression instead of letting it surface as a mystery timeout.
 
 force_pull_image: true
 
@@ -73,7 +93,27 @@ steps:
     statements:
       - "is_set({{context_id}})"
 
-  # ── 1 MiB (single chunk) ─────────────────────────────────────────
+  - name: Give kad time to populate from identify
+    type: wait
+    seconds: 30
+
+  - name: Precondition — node 1's kad routing table is populated
+    type: assert_log_present
+    nodes:
+      - rust-blob-size-1
+    patterns:
+      - "RoutingUpdated"
+    tail_lines: 20000
+
+  - name: Precondition — node 2's kad routing table is populated
+    type: assert_log_present
+    nodes:
+      - rust-blob-size-2
+    patterns:
+      - "RoutingUpdated"
+    tail_lines: 20000
+
+  # ── 1 MiB (single chunk — CHUNK_SIZE is 1 MiB, so this is the one size that never walks the chunk graph) ──
   - name: Upload 1 MiB on node 1
     type: upload_blob
     node: rust-blob-size-1
@@ -83,10 +123,14 @@ steps:
       blob_1: blob_id
       size_1: size
 
+  # `==` not `equal(..)`: merobox's equal() compares raw, and a template resolves
+  # to an int while a bare literal stays a string, so equal(1048576, '1048576')
+  # is always false. The operator form coerces numerically. Sha asserts below can
+  # use equal() safely — both sides resolve to strings.
   - name: Assert the 1 MiB upload is the expected length
     type: assert
     statements:
-      - "equal({{size_1}}, 1048576)"
+      - "{{size_1}} == 1048576"
 
   - name: Read the 1 MiB blob locally on node 1
     type: download_blob
@@ -104,7 +148,17 @@ steps:
     blob_id: "{{blob_1}}"
     expected_failure: true
 
-  - name: Let the 1 MiB announce propagate
+  # An explicit wait, NOT wait_for_sync alone. A blob announce is a Kademlia
+  # provider PUBLISH; wait_for_sync waits for CRDT state convergence, which a
+  # blob upload does not change — so it returns instantly and gives the DHT
+  # record no time to become findable. CI failed here at 1 MiB with
+  # `Blob query failed: NotFound` ~3s after upload, while slower local runs
+  # passed by accident. Keep both: sync for state, the wait for the record.
+  - name: Let the 1 MiB announce reach the DHT
+    type: wait
+    seconds: 20
+
+  - name: Let node 2 catch up on state for the 1 MiB blob
     type: wait_for_sync
     context_id: "{{context_id}}"
     nodes:
@@ -129,38 +183,52 @@ steps:
     statements:
       - "equal({{dst_sha_1}}, {{src_sha_1}})"
 
-  # ── 8 MiB (8 chunks — the chunk graph) ─────────────────────────────────────────
-  - name: Upload 8 MiB on node 1
+  # ── 5 MiB (5 chunks — smallest multi-chunk fetch) ──
+  - name: Upload 5 MiB on node 1
     type: upload_blob
     node: rust-blob-size-1
-    file_path: static/generated/blob-8mib.bin
+    file_path: static/generated/blob-5mib.bin
     context_id: "{{context_id}}"
     outputs:
-      blob_8: blob_id
-      size_8: size
+      blob_5: blob_id
+      size_5: size
 
-  - name: Assert the 8 MiB upload is the expected length
+  # `==` not `equal(..)`: merobox's equal() compares raw, and a template resolves
+  # to an int while a bare literal stays a string, so equal(1048576, '1048576')
+  # is always false. The operator form coerces numerically. Sha asserts below can
+  # use equal() safely — both sides resolve to strings.
+  - name: Assert the 5 MiB upload is the expected length
     type: assert
     statements:
-      - "equal({{size_8}}, 8388608)"
+      - "{{size_5}} == 5242880"
 
-  - name: Read the 8 MiB blob locally on node 1
+  - name: Read the 5 MiB blob locally on node 1
     type: download_blob
     node: rust-blob-size-1
-    blob_id: "{{blob_8}}"
-    expected_size: 8388608
+    blob_id: "{{blob_5}}"
+    expected_size: 5242880
     outputs:
-      src_sha_8: sha256
+      src_sha_5: sha256
 
   # Negative control: without this, a node that already held these bytes would
   # serve them locally and the fetch below would prove nothing.
-  - name: Node 2 must not already hold the 8 MiB blob
+  - name: Node 2 must not already hold the 5 MiB blob
     type: download_blob
     node: rust-blob-size-2
-    blob_id: "{{blob_8}}"
+    blob_id: "{{blob_5}}"
     expected_failure: true
 
-  - name: Let the 8 MiB announce propagate
+  # An explicit wait, NOT wait_for_sync alone. A blob announce is a Kademlia
+  # provider PUBLISH; wait_for_sync waits for CRDT state convergence, which a
+  # blob upload does not change — so it returns instantly and gives the DHT
+  # record no time to become findable. CI failed here at 1 MiB with
+  # `Blob query failed: NotFound` ~3s after upload, while slower local runs
+  # passed by accident. Keep both: sync for state, the wait for the record.
+  - name: Let the 5 MiB announce reach the DHT
+    type: wait
+    seconds: 20
+
+  - name: Let node 2 catch up on state for the 5 MiB blob
     type: wait_for_sync
     context_id: "{{context_id}}"
     nodes:
@@ -170,53 +238,67 @@ steps:
     check_interval: 2
     trigger_sync: true
 
-  - name: Node 2 fetches the 8 MiB blob over the network
+  - name: Node 2 fetches the 5 MiB blob over the network
     type: download_blob
     node: rust-blob-size-2
-    blob_id: "{{blob_8}}"
+    blob_id: "{{blob_5}}"
     context_id: "{{context_id}}"
-    expected_size: 8388608
-    expected_sha256: "{{src_sha_8}}"
+    expected_size: 5242880
+    expected_sha256: "{{src_sha_5}}"
     outputs:
-      dst_sha_8: sha256
+      dst_sha_5: sha256
 
-  - name: Assert the 8 MiB transfer was byte-exact
+  - name: Assert the 5 MiB transfer was byte-exact
     type: assert
     statements:
-      - "equal({{dst_sha_8}}, {{src_sha_8}})"
+      - "equal({{dst_sha_5}}, {{src_sha_5}})"
 
-  # ── 32 MiB (streaming) ─────────────────────────────────────────
-  - name: Upload 32 MiB on node 1
+  # ── 10 MiB (10 chunks) ──
+  - name: Upload 10 MiB on node 1
     type: upload_blob
     node: rust-blob-size-1
-    file_path: static/generated/blob-32mib.bin
+    file_path: static/generated/blob-10mib.bin
     context_id: "{{context_id}}"
     outputs:
-      blob_32: blob_id
-      size_32: size
+      blob_10: blob_id
+      size_10: size
 
-  - name: Assert the 32 MiB upload is the expected length
+  # `==` not `equal(..)`: merobox's equal() compares raw, and a template resolves
+  # to an int while a bare literal stays a string, so equal(1048576, '1048576')
+  # is always false. The operator form coerces numerically. Sha asserts below can
+  # use equal() safely — both sides resolve to strings.
+  - name: Assert the 10 MiB upload is the expected length
     type: assert
     statements:
-      - "equal({{size_32}}, 33554432)"
+      - "{{size_10}} == 10485760"
 
-  - name: Read the 32 MiB blob locally on node 1
+  - name: Read the 10 MiB blob locally on node 1
     type: download_blob
     node: rust-blob-size-1
-    blob_id: "{{blob_32}}"
-    expected_size: 33554432
+    blob_id: "{{blob_10}}"
+    expected_size: 10485760
     outputs:
-      src_sha_32: sha256
+      src_sha_10: sha256
 
   # Negative control: without this, a node that already held these bytes would
   # serve them locally and the fetch below would prove nothing.
-  - name: Node 2 must not already hold the 32 MiB blob
+  - name: Node 2 must not already hold the 10 MiB blob
     type: download_blob
     node: rust-blob-size-2
-    blob_id: "{{blob_32}}"
+    blob_id: "{{blob_10}}"
     expected_failure: true
 
-  - name: Let the 32 MiB announce propagate
+  # An explicit wait, NOT wait_for_sync alone. A blob announce is a Kademlia
+  # provider PUBLISH; wait_for_sync waits for CRDT state convergence, which a
+  # blob upload does not change — so it returns instantly and gives the DHT
+  # record no time to become findable. CI failed here at 1 MiB with
+  # `Blob query failed: NotFound` ~3s after upload, while slower local runs
+  # passed by accident. Keep both: sync for state, the wait for the record.
+  - name: Let the 10 MiB announce reach the DHT
+    type: wait
+    seconds: 20
+
+  - name: Let node 2 catch up on state for the 10 MiB blob
     type: wait_for_sync
     context_id: "{{context_id}}"
     nodes:
@@ -226,22 +308,92 @@ steps:
     check_interval: 2
     trigger_sync: true
 
-  - name: Node 2 fetches the 32 MiB blob over the network
+  - name: Node 2 fetches the 10 MiB blob over the network
     type: download_blob
     node: rust-blob-size-2
-    blob_id: "{{blob_32}}"
+    blob_id: "{{blob_10}}"
     context_id: "{{context_id}}"
-    expected_size: 33554432
-    expected_sha256: "{{src_sha_32}}"
+    expected_size: 10485760
+    expected_sha256: "{{src_sha_10}}"
     outputs:
-      dst_sha_32: sha256
+      dst_sha_10: sha256
 
-  - name: Assert the 32 MiB transfer was byte-exact
+  - name: Assert the 10 MiB transfer was byte-exact
     type: assert
     statements:
-      - "equal({{dst_sha_32}}, {{src_sha_32}})"
+      - "equal({{dst_sha_10}}, {{src_sha_10}})"
 
-  # ── 100 MiB (bulk; CI ceiling) ─────────────────────────────────────────
+  # ── 50 MiB (50 chunks — streaming in earnest) ──
+  - name: Upload 50 MiB on node 1
+    type: upload_blob
+    node: rust-blob-size-1
+    file_path: static/generated/blob-50mib.bin
+    context_id: "{{context_id}}"
+    outputs:
+      blob_50: blob_id
+      size_50: size
+
+  # `==` not `equal(..)`: merobox's equal() compares raw, and a template resolves
+  # to an int while a bare literal stays a string, so equal(1048576, '1048576')
+  # is always false. The operator form coerces numerically. Sha asserts below can
+  # use equal() safely — both sides resolve to strings.
+  - name: Assert the 50 MiB upload is the expected length
+    type: assert
+    statements:
+      - "{{size_50}} == 52428800"
+
+  - name: Read the 50 MiB blob locally on node 1
+    type: download_blob
+    node: rust-blob-size-1
+    blob_id: "{{blob_50}}"
+    expected_size: 52428800
+    outputs:
+      src_sha_50: sha256
+
+  # Negative control: without this, a node that already held these bytes would
+  # serve them locally and the fetch below would prove nothing.
+  - name: Node 2 must not already hold the 50 MiB blob
+    type: download_blob
+    node: rust-blob-size-2
+    blob_id: "{{blob_50}}"
+    expected_failure: true
+
+  # An explicit wait, NOT wait_for_sync alone. A blob announce is a Kademlia
+  # provider PUBLISH; wait_for_sync waits for CRDT state convergence, which a
+  # blob upload does not change — so it returns instantly and gives the DHT
+  # record no time to become findable. CI failed here at 1 MiB with
+  # `Blob query failed: NotFound` ~3s after upload, while slower local runs
+  # passed by accident. Keep both: sync for state, the wait for the record.
+  - name: Let the 50 MiB announce reach the DHT
+    type: wait
+    seconds: 20
+
+  - name: Let node 2 catch up on state for the 50 MiB blob
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - rust-blob-size-1
+      - rust-blob-size-2
+    timeout: 120
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node 2 fetches the 50 MiB blob over the network
+    type: download_blob
+    node: rust-blob-size-2
+    blob_id: "{{blob_50}}"
+    context_id: "{{context_id}}"
+    expected_size: 52428800
+    expected_sha256: "{{src_sha_50}}"
+    outputs:
+      dst_sha_50: sha256
+
+  - name: Assert the 50 MiB transfer was byte-exact
+    type: assert
+    statements:
+      - "equal({{dst_sha_50}}, {{src_sha_50}})"
+
+  # ── 100 MiB (100 chunks) ──
   - name: Upload 100 MiB on node 1
     type: upload_blob
     node: rust-blob-size-1
@@ -251,10 +403,14 @@ steps:
       blob_100: blob_id
       size_100: size
 
+  # `==` not `equal(..)`: merobox's equal() compares raw, and a template resolves
+  # to an int while a bare literal stays a string, so equal(1048576, '1048576')
+  # is always false. The operator form coerces numerically. Sha asserts below can
+  # use equal() safely — both sides resolve to strings.
   - name: Assert the 100 MiB upload is the expected length
     type: assert
     statements:
-      - "equal({{size_100}}, 104857600)"
+      - "{{size_100}} == 104857600"
 
   - name: Read the 100 MiB blob locally on node 1
     type: download_blob
@@ -272,7 +428,17 @@ steps:
     blob_id: "{{blob_100}}"
     expected_failure: true
 
-  - name: Let the 100 MiB announce propagate
+  # An explicit wait, NOT wait_for_sync alone. A blob announce is a Kademlia
+  # provider PUBLISH; wait_for_sync waits for CRDT state convergence, which a
+  # blob upload does not change — so it returns instantly and gives the DHT
+  # record no time to become findable. CI failed here at 1 MiB with
+  # `Blob query failed: NotFound` ~3s after upload, while slower local runs
+  # passed by accident. Keep both: sync for state, the wait for the record.
+  - name: Let the 100 MiB announce reach the DHT
+    type: wait
+    seconds: 20
+
+  - name: Let node 2 catch up on state for the 100 MiB blob
     type: wait_for_sync
     context_id: "{{context_id}}"
     nodes:
@@ -297,15 +463,99 @@ steps:
     statements:
       - "equal({{dst_sha_100}}, {{src_sha_100}})"
 
-  # Corroboration: node 1 must have actually served requests. Before #3317 it
-  # bailed at the auth gate and never reached this line at any size.
-  - name: Node 1 served the blob requests
+  # ── 250 MiB (250 chunks — half the 500 MiB wire ceiling, the CI top tier) ──
+  - name: Upload 250 MiB on node 1
+    type: upload_blob
+    node: rust-blob-size-1
+    file_path: static/generated/blob-250mib.bin
+    context_id: "{{context_id}}"
+    outputs:
+      blob_250: blob_id
+      size_250: size
+
+  # `==` not `equal(..)`: merobox's equal() compares raw, and a template resolves
+  # to an int while a bare literal stays a string, so equal(1048576, '1048576')
+  # is always false. The operator form coerces numerically. Sha asserts below can
+  # use equal() safely — both sides resolve to strings.
+  - name: Assert the 250 MiB upload is the expected length
+    type: assert
+    statements:
+      - "{{size_250}} == 262144000"
+
+  - name: Read the 250 MiB blob locally on node 1
+    type: download_blob
+    node: rust-blob-size-1
+    blob_id: "{{blob_250}}"
+    expected_size: 262144000
+    outputs:
+      src_sha_250: sha256
+
+  # Negative control: without this, a node that already held these bytes would
+  # serve them locally and the fetch below would prove nothing.
+  - name: Node 2 must not already hold the 250 MiB blob
+    type: download_blob
+    node: rust-blob-size-2
+    blob_id: "{{blob_250}}"
+    expected_failure: true
+
+  # An explicit wait, NOT wait_for_sync alone. A blob announce is a Kademlia
+  # provider PUBLISH; wait_for_sync waits for CRDT state convergence, which a
+  # blob upload does not change — so it returns instantly and gives the DHT
+  # record no time to become findable. CI failed here at 1 MiB with
+  # `Blob query failed: NotFound` ~3s after upload, while slower local runs
+  # passed by accident. Keep both: sync for state, the wait for the record.
+  - name: Let the 250 MiB announce reach the DHT
+    type: wait
+    seconds: 20
+
+  - name: Let node 2 catch up on state for the 250 MiB blob
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - rust-blob-size-1
+      - rust-blob-size-2
+    timeout: 120
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node 2 fetches the 250 MiB blob over the network
+    type: download_blob
+    node: rust-blob-size-2
+    blob_id: "{{blob_250}}"
+    context_id: "{{context_id}}"
+    expected_size: 262144000
+    expected_sha256: "{{src_sha_250}}"
+    outputs:
+      dst_sha_250: sha256
+
+  - name: Assert the 250 MiB transfer was byte-exact
+    type: assert
+    statements:
+      - "equal({{dst_sha_250}}, {{src_sha_250}})"
+
+  # Corroboration that node 1 served over the PEER protocol at all. Before #3317
+  # it bailed at the auth gate and served nothing at any size.
+  #
+  # PRESENCE ONLY — deliberately no min_matches, because no available marker is
+  # reliably one-per-blob:
+  #   "Processing blob request stream" (crates/node/src/handlers/blob_protocol.rs)
+  #     is the libp2p chunk-protocol path. An observed 6-size run logged it TWICE:
+  #     the other four blobs reached node 2 over the sync-stream path (door #2),
+  #     which is a different code path with different lines. Counting it asserts
+  #     a transport split that is not guaranteed.
+  #   "Serving blob" (crates/server/src/admin/handlers/blob.rs) is the HTTP admin
+  #     handler, so it fires on node 1's OWN local read-back of each fixture.
+  #     Asserting it 6x on the uploader passes with zero cross-node traffic —
+  #     vacuous, which is exactly how it slipped through review here.
+  #
+  # The sha256 asserts above, each preceded by a negative control proving node 2
+  # did not already hold the bytes, are the real proof that data crossed.
+  - name: Node 1 served blob requests over the peer protocol
     type: assert_log_present
     nodes:
       - rust-blob-size-1
     patterns:
       - "Processing blob request stream"
-    min_matches: 4
     tail_lines: 20000
 
   - name: No size was rejected or lost
@@ -319,4 +569,4 @@ steps:
 
 stop_all_nodes: false
 restart: false
-wait_timeout: 300
+wait_timeout: 600
