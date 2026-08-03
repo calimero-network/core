@@ -45,7 +45,11 @@ pub fn derive(input: DeriveInput) -> TokenStream {
     }
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
+    // ABI description runs only on the host (extraction, tests). Compiling it
+    // into the wasm is dead weight that pushed unoptimized profiling builds
+    // past the runtime's module size limit.
     quote! {
+        #[cfg(not(target_arch = "wasm32"))]
         impl #impl_generics ::calimero_sdk::abi::AbiType for #ident #ty_generics #where_clause {
             fn type_ref(
                 __reg: &mut ::calimero_sdk::abi::TypeRegistry,

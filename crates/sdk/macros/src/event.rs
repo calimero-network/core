@@ -150,6 +150,8 @@ fn generate_abi_events_impl(
         .collect();
 
     quote! {
+        // Host-only like every ABI description impl: never in the wasm.
+        #[cfg(not(target_arch = "wasm32"))]
         impl #impl_generics ::calimero_sdk::abi::AbiEvents for #ident #ty_generics #where_clause {
             fn abi_events(
                 __reg: &mut ::calimero_sdk::abi::TypeRegistry,

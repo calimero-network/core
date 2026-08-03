@@ -73,7 +73,7 @@ impl LogicImpl<'_> {
             #[allow(unexpected_cfgs, non_snake_case)]
             #[doc(hidden)]
             pub mod #module {
-                #[cfg(any(calimero_abi, test))]
+                #[cfg(all(any(calimero_abi, test), not(target_arch = "wasm32")))]
                 #[doc(hidden)]
                 pub fn __calimero_abi() -> ::calimero_sdk::abi::Manifest {
                     use super::*;
@@ -125,7 +125,7 @@ impl LogicImpl<'_> {
                 /// are `cdylib`s and cannot be run, so extraction rides the
                 /// test harness; without the variable set this is a no-op, so
                 /// an app's own `cargo test` is unaffected.
-                #[cfg(test)]
+                #[cfg(all(test, not(target_arch = "wasm32")))]
                 #[test]
                 fn __calimero_abi_dump() {
                     let ::core::result::Result::Ok(__path) =

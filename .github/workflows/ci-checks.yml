@@ -11,6 +11,7 @@ on:
       - "apps/**"
       - "e2e-tests/**"
       - "tools/**"
+      - "scripts/check-wasm-size.sh"
       - ".github/workflows/ci-checks.yml"
 
 env:
@@ -132,3 +133,38 @@ jobs:
       # env -u CARGO_TARGET_DIR: each fixture must build into its own cached target dir.
       - name: Run pipeline e2e
         run: env -u CARGO_TARGET_DIR cargo test -p cargo-mero --test pipeline -- --ignored --test-threads 1
+
+  # The fuzzy suite installs profiling-built wasms but never runs on a PR;
+  # this is the PR-time guard against a module merod refuses to load.
+  wasm-size:
+    name: WASM size gate
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          shared-key: wasm-size
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
+      # WASM_PROFILING skips wasm-opt, so these are the largest builds of these
+      # apps anyone ships, matching what fuzzy-load-test.yml hands to a node.
+      - name: Build the fuzzy apps with profiling
+        env:
+          WASM_PROFILING: "true"
+        run: |
+          cargo mero build --manifest-path apps/kv-store/Cargo.toml
+          cargo mero build --manifest-path apps/kv-store-with-handlers/Cargo.toml
+          cargo mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
+
+      - name: Check wasm sizes against the runtime module-size limit
+        run: ./scripts/check-wasm-size.sh

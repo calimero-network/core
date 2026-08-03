@@ -198,6 +198,7 @@ macro_rules! content_address_id {
             }
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         ::calimero_wasm_abi::impl_bytes32_abi!($name);
 
         impl core::fmt::Display for $name {
