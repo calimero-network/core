@@ -188,6 +188,31 @@ impl std::fmt::Debug for DeviceSecret {
     }
 }
 
+/// What importing an account root did.
+///
+/// Returned rather than a bare `Option<AccountRoot>` because a forced import has
+/// consequences beyond the root row, and an operator who cannot see them cannot
+/// act on them: the devices this node held under the replaced root are gone, and
+/// any it holds under somebody else's are not.
+///
+/// Not `Clone`, because [`AccountRoot`] is not: the fewer copies of a root secret
+/// exist, the fewer there are to wipe.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct ImportedRoot {
+    /// The root that was replaced, if there was one. `None` on a fresh store,
+    /// which is the ordinary recovery case and needs no `--force`.
+    pub replaced: Option<AccountRoot>,
+    /// Namespaces whose device row was dropped because it belonged to
+    /// [`Self::replaced`]. Re-enrolling in each mints a fresh device under the
+    /// imported root.
+    pub released: Vec<ContextGroupId>,
+    /// Namespaces whose device row was kept because it names an account this
+    /// root never owned — a device paired into somebody else's account, which is
+    /// unaffected by replacing this node's own root.
+    pub retained: Vec<ContextGroupId>,
+}
+
 /// This node's full enrollment for one namespace.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -335,8 +360,8 @@ impl<'a> NodeDeviceRepository<'a> {
     /// make it. An earlier version left it to `merod account import` and said
     /// "nothing else should call this", which is a convention, not a boundary.
     ///
-    /// Returns `Some(previous)` when a root was replaced, so a caller cannot
-    /// destroy one without being handed what it destroyed.
+    /// Reports what a forced replacement destroyed, so a caller cannot do it
+    /// without being handed the consequences.
     ///
     /// # Errors
     /// If a root exists and `force` is false, or the store read/write fails.
@@ -344,7 +369,7 @@ impl<'a> NodeDeviceRepository<'a> {
         &self,
         root: &AccountRoot,
         force: bool,
-    ) -> EyreResult<Option<AccountRoot>> {
+    ) -> EyreResult<ImportedRoot> {
         let _guard = ACCOUNT_ROOT_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -367,7 +392,53 @@ impl<'a> NodeDeviceRepository<'a> {
                 root_secret: *root.signing_key().as_bytes(),
             },
         )?;
-        Ok(existing)
+
+        // A forced replacement invalidates every device the discarded root
+        // certified, and the rows have to go with it.
+        //
+        // A device row is keyed by namespace alone, and
+        // [`stored_identity_still_serves`](Self::stored_identity_still_serves)
+        // refuses to replace a *linked* row that names a different account — right,
+        // because that row holds the namespace's replica state. But after a forced
+        // import every such row names an account derived from the key just
+        // discarded, so enrolment under the new root was refused with "revoke the
+        // existing device first": advice the operator cannot take, since revoking
+        // needs the root they replaced. Recovering onto a machine that had not been
+        // wiped locked it out of the namespaces it recovered the root *for*.
+        //
+        // Only the rows this root owned. A paired row names an account belonging to
+        // another node's root; replacing this one says nothing about it, and
+        // dropping it would strand a device that still opens scope keys wrapped for
+        // it. Ownership is decided the only way it can be — by re-deriving the
+        // account from the root being discarded.
+        //
+        // **Deliberately not holding `NODE_DEVICE_MINT_LOCK` here.**
+        // `ensure_enrolled` takes that lock and then calls `ensure_account_root`,
+        // which takes this one, so acquiring them in the opposite order is an ABBA
+        // deadlock. Serializing against a concurrent enrolment is not worth it
+        // anyway: this runs from a CLI that opens the datastore directly, which
+        // requires the node to be stopped, so there is nothing to race.
+        let mut released = Vec::new();
+        let mut retained = Vec::new();
+        if let Some(previous) = &existing {
+            for namespace in self.enrolled_namespaces()? {
+                let Some(row) = self.get(&namespace)? else {
+                    continue;
+                };
+                if row.account == previous.account_for(&namespace) {
+                    self.delete(&namespace)?;
+                    released.push(namespace);
+                } else {
+                    retained.push(namespace);
+                }
+            }
+        }
+
+        Ok(ImportedRoot {
+            replaced: existing,
+            released,
+            retained,
+        })
     }
 
     /// This node's account root, if one has been generated.
@@ -973,7 +1044,7 @@ mod tests {
             .try_import_account_root(&incoming, true)
             .expect("forced import");
         assert_eq!(
-            replaced.map(|r| r.public_key()),
+            replaced.replaced.map(|r| r.public_key()),
             Some(original_pk),
             "the replaced root is returned, not silently dropped"
         );
@@ -1067,6 +1138,135 @@ mod tests {
     /// different one — and the operator finds out when the account they restored
     /// turns out to be an account nobody has heard of, with no grants and no
     /// history. The checksum turns that into an error at import.
+    /// A forced import is the "recover onto a machine that is already running"
+    /// case, and it used to leave the node unable to use the root it just
+    /// recovered.
+    ///
+    /// The device row for a namespace is keyed by namespace alone, and
+    /// `stored_identity_still_serves` refuses to replace a **linked** row naming a
+    /// different account — correctly, since that row holds the namespace's replica
+    /// state. After a forced import every such row names an account derived from
+    /// the *discarded* root, so enrolment under the new one was refused with
+    /// "revoke the existing device first" — advice the operator cannot take,
+    /// because revoking needs the root they just replaced. A lockout, reachable by
+    /// following the documented recovery procedure on a node that had not been
+    /// wiped.
+    #[test]
+    fn a_forced_import_releases_the_replaced_roots_device_slots() {
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        // Enrol under this node's own root, and LINK it: an unlinked row yields
+        // anyway, so only a linked one exercises the refusal.
+        let discarded = repo.ensure_account_root().expect("generate");
+        let mine = repo.ensure_enrolled(&ns).expect("enroll");
+        let cert = calimero_account::sign_device_cert(
+            discarded.signing_key(),
+            mine.account,
+            mine.device(),
+            &root(9),
+            &mine.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("sign the certificate");
+        let _binding = AccountBindingRepository::new(&store)
+            .apply_link(&ns, &mine.genesis, &[], &cert)
+            .expect("store")
+            .expect("the credential must be admissible");
+        assert!(
+            AccountBindingRepository::new(&store)
+                .is_device_linked(&ns, mine.device())
+                .expect("read"),
+            "the row has to be linked for this test to mean anything"
+        );
+
+        let incoming = AccountRoot::from_mnemonic(
+            &NodeDeviceRepository::new(&test_store())
+                .ensure_account_root()
+                .expect("generate")
+                .to_mnemonic()
+                .expect("export"),
+        )
+        .expect("import");
+
+        let replaced = repo
+            .try_import_account_root(&incoming, true)
+            .expect("a forced import must succeed");
+        assert_eq!(
+            replaced
+                .replaced
+                .as_ref()
+                .expect("must report the root it replaced")
+                .public_key(),
+            discarded.public_key()
+        );
+        assert_eq!(
+            replaced.released,
+            vec![ns],
+            "the namespace whose device belonged to the discarded root must be released"
+        );
+        assert!(replaced.retained.is_empty());
+
+        // The whole point: the recovered root has to be usable here.
+        let after = repo
+            .ensure_enrolled(&ns)
+            .expect("enrolling under the freshly imported root must not be refused");
+        assert_eq!(
+            after.account,
+            incoming.account_for(&ns),
+            "the new device must speak for the imported root's account"
+        );
+        assert_ne!(
+            after.device(),
+            mine.device(),
+            "and it must be a fresh replica id, not the one bound to the old account"
+        );
+    }
+
+    /// The other half, and the reason the slots cannot just be cleared wholesale: a
+    /// **paired** row names an account belonging to somebody else's root. Replacing
+    /// this node's root says nothing about it, and dropping it would strand a
+    /// working device — the node would stop being able to open scope keys wrapped
+    /// for it.
+    #[test]
+    fn a_forced_import_keeps_device_rows_belonging_to_another_root() {
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let _discarded = repo.ensure_account_root().expect("generate");
+
+        // Adopted into an account this node's root does not own, as pairing does.
+        let elsewhere = AccountGenesis::new(root(3), [0xCDu8; 16]);
+        let paired = repo
+            .ensure_enrolled_into(&ns, elsewhere)
+            .expect("adopt the foreign account");
+
+        let incoming = AccountRoot::from_mnemonic(
+            &NodeDeviceRepository::new(&test_store())
+                .ensure_account_root()
+                .expect("generate")
+                .to_mnemonic()
+                .expect("export"),
+        )
+        .expect("import");
+        let _replaced = repo
+            .try_import_account_root(&incoming, true)
+            .expect("a forced import must succeed");
+
+        let still_there = repo
+            .get(&ns)
+            .expect("read")
+            .expect("a row for another root's account must survive the import");
+        assert_eq!(
+            still_there.device(),
+            paired.device(),
+            "a paired device is not this root's to discard"
+        );
+    }
+
     #[test]
     fn a_corrupted_backup_fails_the_checksum_instead_of_recovering_a_stranger() {
         let store = test_store();

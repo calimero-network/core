@@ -203,12 +203,12 @@ impl ImportCommand {
 
         // The repository owns the refusal, so no caller can skip it by forgetting
         // to check first. `--force` only decides what this one asks for.
-        let replaced = repo.try_import_account_root(&root, self.force).wrap_err(
+        let outcome = repo.try_import_account_root(&root, self.force).wrap_err(
             "Failed to import the account root. If one already exists, export it \
              first and then pass --force to replace it.",
         )?;
 
-        if let Some(previous) = replaced {
+        if let Some(previous) = &outcome.replaced {
             eprintln!(
                 "Replaced the account root {}. Every account it owned is now \
                  reachable only from ITS phrase, not this one.",
@@ -217,11 +217,46 @@ impl ImportCommand {
         }
 
         println!("Imported account root {}", root.public_key());
-        println!(
-            "Devices are not restored: this node holds none in any namespace yet. \
-             Enrol one per namespace (`meroctl account create <NAMESPACE_ID>`) and a \
-             peer will deliver the current scope key."
-        );
+
+        // Report what the store actually holds rather than asserting the clean
+        // case. On a wiped node there are no rows and "none yet" is true; on a
+        // forced import over a live node it is exactly wrong, and that is the
+        // situation where an operator most needs to know which namespaces just lost
+        // their device.
+        if outcome.released.is_empty() && outcome.retained.is_empty() {
+            println!(
+                "Devices are not restored: this node holds none in any namespace yet. \
+                 Enrol one per namespace (`meroctl account create <NAMESPACE_ID>`) and \
+                 a peer will deliver the current scope key."
+            );
+        } else {
+            if !outcome.released.is_empty() {
+                println!();
+                println!(
+                    "Dropped {} device(s) that belonged to the replaced root — their ids \
+                     are spent, and each namespace needs a fresh enrolment:",
+                    outcome.released.len()
+                );
+                for namespace in &outcome.released {
+                    println!("  {namespace:?}");
+                }
+                println!(
+                    "Enrol again per namespace (`meroctl account create <NAMESPACE_ID>`); \
+                     a peer delivers the current scope key to the new device."
+                );
+            }
+            if !outcome.retained.is_empty() {
+                println!();
+                println!(
+                    "Kept {} device(s) paired into an account this root does not own — \
+                     replacing this node's root does not affect them:",
+                    outcome.retained.len()
+                );
+                for namespace in &outcome.retained {
+                    println!("  {namespace:?}");
+                }
+            }
+        }
 
         Ok(())
     }

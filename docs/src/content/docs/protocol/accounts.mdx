@@ -482,6 +482,17 @@ way round deadlocks.
   discover it when the account you restored turns out to be one nobody has heard of.
   A wrong word fails the checksum at import.
 - **Whitespace is normalised**, so a phrase retyped across several lines works.
+- **A forced replacement releases the discarded root's device slots.** A device row
+  is keyed by namespace alone, and enrolment refuses to replace a *linked* row that
+  names a different account — correctly, because that row holds the namespace's
+  replica state. But after a forced import every such row names an account derived
+  from the key just discarded, so without this the node was refused enrolment under
+  the root it had *just recovered*, and told to "revoke the existing device first" —
+  advice needing the key it replaced. Rows belonging to the replaced root are
+  therefore dropped, and each namespace needs a fresh enrolment. Rows naming an
+  account this root never owned — a device [paired](#pairing-a-second-device) into
+  somebody else's account — are kept, because replacing this node's root says
+  nothing about them. Import reports both lists.
 
 ### Rotated-out keys are not handed back
 
