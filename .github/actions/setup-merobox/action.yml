@@ -14,6 +14,10 @@ runs:
         #   0.6.44 — the `download_blob` step, used by
         #            apps/blobs/workflows/blob-cross-node-{transfer,sizes}.yml to
         #            read bytes back off a node and assert size + sha256.
+        #   0.6.50 — `node_exec` runs its one-shot container as root, like node
+        #            containers do, so it can traverse the node's 0700 home. Below
+        #            this, `account export` reports the node as uninitialised —
+        #            account-root-backup-restore needs it.
         MIN_MEROBOX="0.6.50"
 
         case "$(uname -m)" in
