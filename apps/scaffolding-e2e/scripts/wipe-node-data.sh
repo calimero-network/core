@@ -69,8 +69,26 @@ if [ ! -d "${abs}/${node}" ]; then
     exit 1
 fi
 
+# The node container runs as ROOT (merobox overrides the image's user), so some of
+# what it wrote into this bind mount — `blobs/*`, `auth.kek` — is root-owned and
+# the user running this script cannot remove it:
+#
+#     rm: cannot remove '.../blobs/7Stwoeo6…': Permission denied
+#
+# So: try as ourselves, and escalate only if that fails and passwordless sudo is
+# available. Plain removal is enough where the Docker file-sharing layer maps
+# ownership back to the local user (macOS); CI is the case that needs sudo.
 echo "wiping ${abs} (contents only; the bind-mount point stays)"
-find "${abs}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+if ! find "${abs}" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null; then
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        echo "some entries are root-owned (written by the node container); using sudo"
+        sudo find "${abs}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    else
+        echo "cannot remove root-owned entries under ${abs} and passwordless sudo \
+is unavailable; the node container runs as root and its blob files are owned by it" >&2
+        exit 1
+    fi
+fi
 
 remaining=$(find "${abs}" -mindepth 1 | wc -l | tr -d ' ')
 if [ "${remaining}" != "0" ]; then
