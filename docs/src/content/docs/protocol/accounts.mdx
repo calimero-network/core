@@ -345,6 +345,29 @@ Account operations travel as `GroupOp` variants because that is the transport th
 
 ## Backing up and recovering an account
 
+### One root, one account per namespace
+
+Worth being precise about the cardinalities, because `meroctl account create` /
+merobox's `account_create` read as if they mint something new each time, and they
+do not:
+
+| | scope |
+| --- | --- |
+| account **root** — the secret you back up | **one per node.** Node-level, no namespace in its key |
+| account **id** | **one per namespace**, derived: `H(genesis(root_pk, KDF(root_secret, namespace_id)))` |
+| **device** | **one per namespace.** `NodeDeviceIdentity` is keyed by namespace |
+
+So a node does present several account ids — one for each namespace it takes part
+in, and mutually unlinkable to anyone without the root — but never two accounts in
+the *same* namespace. What is genuinely many-to-one is **devices per account**, via
+[pairing](#pairing-a-second-device): several machines, one account, one grant.
+
+`account create` is therefore an *ensure*, not a create. It derives the account for
+the namespace from the root that already exists and mints a device only if that
+namespace has none, so calling it twice returns the same id. The one ordering rule:
+run it **after** joining, because enrolment publishes an encrypted `GroupOp` and
+encrypting it needs the scope key the node only holds once it has joined.
+
 ### What a backup is
 
 **One secret plus a non-secret list.** The secret is the account root, printed as a

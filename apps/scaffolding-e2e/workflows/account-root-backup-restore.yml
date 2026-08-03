@@ -136,8 +136,17 @@ steps:
       - backup-node-2
     context_id: '{{context_id}}'
 
-  # After the context join, never before: a device link is an encrypted group op,
-  # so the node needs the scope key to publish one.
+  # `account_create` does not create a second account — the name is a bit
+  # misleading. A node has ONE account root (node-level) from which it derives one
+  # account id PER NAMESPACE, and holds at most one device in each. This step is
+  # `ensure_enrolled`: it derives the account for this namespace from the existing
+  # root, mints a device if this namespace has none, and is idempotent — call it
+  # twice and the same `accountId` comes back.
+  #
+  # It must run AFTER the context join, never before: enrolment publishes an
+  # `AccountDeviceLinked` op, that op is an *encrypted* GroupOp, and encrypting it
+  # needs the namespace scope key the node only has once it has joined. Placed
+  # earlier it deadlocks — it cannot publish the link that would get it the key.
   - name: Node-2 enrols an account
     type: account_create
     node: backup-node-2
