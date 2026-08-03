@@ -481,8 +481,8 @@ overflow-checks = true
 [profile.app-profiling]
 inherits = "release"
 opt-level = 2
-debug = true
-strip = false"#;
+debug = false
+strip = "debuginfo""#;
 
 #[cfg(test)]
 mod tests {

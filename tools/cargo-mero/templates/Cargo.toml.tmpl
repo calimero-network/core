@@ -34,12 +34,16 @@ strip = "symbols"
 panic = "abort"
 overflow-checks = true
 
-# Used by `cargo mero build --profiling`: keeps debug info, skips wasm-opt.
+# Used by `cargo mero build --profiling`: skips wasm-opt. Keeps the wasm
+# `name` section - wasmer's perfmap resolves guest frames from it - but no
+# DWARF, which nothing in the profiling path reads and which is big enough to
+# push an app past the node's 20 MiB module limit. Never `strip = "symbols"`:
+# that drops the `name` section and profiles lose guest function names.
 [profile.app-profiling]
 inherits = "release"
 opt-level = 2
-debug = true
-strip = false
+debug = false
+strip = "debuginfo"
 
 # Own workspace root: without this, scaffolding inside another workspace would
 # fold the app into it and the app-* profiles above would be ignored.

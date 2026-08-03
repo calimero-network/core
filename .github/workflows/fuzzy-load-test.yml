@@ -135,7 +135,7 @@ jobs:
         env:
           WASM_PROFILING: "true"
 
-      - name: Verify WASM files exist
+      - name: Verify WASM files exist and fit the node's module limit
         run: |
           ls -la apps/kv-store/res/
           ls -la apps/kv-store-with-handlers/res/
@@ -143,6 +143,26 @@ jobs:
           test -f apps/kv-store/res/kv_store.wasm
           test -f apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
           test -f apps/scaffolding-e2e/res/scaffolding_e2e.wasm
+          # A wasm over the node's max_module_size is rejected at
+          # create_context, which surfaces an hour later as an opaque
+          # "create_context failed" in a fuzzy run. Fail here instead, where
+          # the number and the cause are both in front of you. Must track
+          # DEFAULT_MAX_MODULE_SIZE_MIB in crates/runtime/src/logic.rs - the
+          # limit is not operator-tunable, so CI cannot raise it.
+          max=$((20 * 1024 * 1024))
+          over=0
+          for wasm in apps/kv-store/res/kv_store.wasm \
+                      apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm \
+                      apps/scaffolding-e2e/res/scaffolding_e2e.wasm; do
+            size=$(wc -c <"$wasm")
+            printf '%s: %s bytes (%d%% of the %s-byte limit)\n' \
+              "$wasm" "$size" "$((size * 100 / max))" "$max"
+            if [ "$size" -gt "$max" ]; then
+              echo "::error file=$wasm::$wasm is $size bytes, over the node's ${max}-byte max_module_size; the node will reject it at create_context"
+              over=1
+            fi
+          done
+          exit "$over"
 
       # Use artifacts for same-run handoff between jobs (faster than cache for this use case)
       - name: Upload build artifacts

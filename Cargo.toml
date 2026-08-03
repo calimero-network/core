@@ -385,13 +385,22 @@ strip = false
 lto = false
 codegen-units = 1
 
-# Profile for WASM apps with profiling support
+# Profile for WASM apps with profiling support.
+#
+# No DWARF: wasmer's perfmap resolves guest frames from the wasm `name`
+# section, and the flamegraph pipeline runs perf with frame pointers and
+# `--no-inline`, so nothing here consumes `.debug_*`. Carrying it is not
+# free - it is the bulk of the module, and the node rejects any app over
+# `max_module_size` (20 MiB, DEFAULT_MAX_MODULE_SIZE_MIB in
+# crates/runtime/src/logic.rs), which is not operator-tunable. `strip`
+# must stay `"debuginfo"`, never `"symbols"`: the latter drops the `name`
+# section and profiles lose every guest function name.
 [profile.app-profiling]
 inherits = "release"
 codegen-units = 1
 opt-level = 2
 lto = true
-debug = true
-strip = false
+debug = false
+strip = "debuginfo"
 panic = "abort"
 overflow-checks = true
