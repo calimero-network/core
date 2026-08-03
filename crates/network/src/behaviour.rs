@@ -215,6 +215,36 @@ impl Behaviour {
 
                         let mut kad = kad::Behaviour::with_config(peer_id, store, kad_config);
 
+                        // Serve kad unconditionally. libp2p starts every node in
+                        // `Mode::Client` and only promotes to `Mode::Server` once it has a
+                        // CONFIRMED EXTERNAL ADDRESS (libp2p-kad `behaviour.rs`:
+                        // `determine_mode_from_external_addresses` — no external addresses
+                        // means client, always). A client denies the inbound kad upgrade
+                        // outright (`handler.rs`: `Mode::Client => DeniedUpgrade`), so it
+                        // answers no queries at all.
+                        //
+                        // On a private network that promotion can never happen: we leave
+                        // external-address promotion to AutoNAT v2 (see the identify
+                        // handler, which deliberately does not assert `observed_addr`), and
+                        // AutoNAT cannot confirm a dial-back on a Docker bridge or a NAT'd
+                        // LAN. So every node stayed a client forever and NOBODY served
+                        // lookups. A provider record would be published, stored in the
+                        // publisher's own store, and then be unfindable: every
+                        // `GetProviders`/`GetRecord` ended `NotFound { closest_peers: [] }`
+                        // while gossipsub and CRDT state replicated perfectly well. That is
+                        // exactly why cross-node blob transfer could not work in a two-node
+                        // fleet — blob metadata rides gossipsub, blob BYTES ride kad.
+                        //
+                        // Serving is not advertising, which is why this is unconditional and
+                        // not gated on reachability. `Mode::Server` only decides whether we
+                        // answer on connections that ALREADY exist; it claims no address and
+                        // adds us to nobody's routing table. A peer that cannot reach us
+                        // never opens the connection, so an unreachable node in server mode
+                        // costs the network nothing — auto-mode was gating the wrong thing.
+                        // Inbound records are still not trusted: `StoreInserts::FilterBoth`
+                        // above surfaces them for validation instead of writing them blind.
+                        kad.set_mode(Some(kad::Mode::Server));
+
                         for (peer_id, addr) in bootstrap_peers {
                             let _ = kad.add_address(&peer_id, addr);
                         }
