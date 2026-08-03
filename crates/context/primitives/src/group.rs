@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use actix::Message;
-use calimero_account::{AccountGenesis, AccountId, DeviceId, KemPublicKey};
+use calimero_account::{AccountGenesis, AccountId, DeviceId, KemPublicKey, SignedDeviceRevocation};
 use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
@@ -921,15 +921,33 @@ impl PairDeviceCompleteResponse {
 
 /// Withdraw a device from an account, terminally.
 ///
-/// Authorized either by this node being a group admin, or by it holding the
-/// account root that owns the device — the latter mints a self-certifying proof
-/// so the owner never needs an admin to disown their own lost machine.
+/// Three ways to be authorized, and the third is why `proof` exists:
+///
+/// - this node is a group **admin**;
+/// - this node holds the **account root** that owns the device, so it can mint a
+///   self-certifying proof itself;
+/// - a proof minted **elsewhere** is supplied here. The root stays wherever it is
+///   — on paper, on a replacement laptop — and this node only publishes.
+///
+/// The third case is the lost-device story. Without it the authority to revoke
+/// existed but could only be exercised from a node that already held the root in
+/// its store, which is precisely the machine that is gone.
 #[derive(Debug)]
 pub struct RevokeDeviceRequest {
     /// The namespace the device is being withdrawn from.
     pub namespace_id: ContextGroupId,
     /// The device losing its binding. Its id is spent for good.
     pub device: DeviceId,
+    /// A revocation proof minted outside this node, if the caller has one.
+    ///
+    /// `None` keeps the original behaviour: the node mints a proof when it owns
+    /// the account, and otherwise revokes on its admin authority.
+    ///
+    /// Supplying one does not widen what a revocation can do. The proof only
+    /// attests that its signer holds the root of the account it *names*; tying
+    /// that account to this device is the stored binding's job, checked here and
+    /// again by every replica that applies the op.
+    pub proof: Option<SignedDeviceRevocation>,
 }
 
 /// What the revocation withdrew.
