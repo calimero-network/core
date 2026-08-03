@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
@@ -24,6 +25,7 @@ pub use custom_types::{CustomRecord, NestedRecord, Status};
     Deserialize,
     BorshSerialize,
     BorshDeserialize,
+    AbiType,
 )]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
@@ -40,13 +42,14 @@ pub struct UserId32([u8; 32]);
     Deserialize,
     BorshSerialize,
     BorshDeserialize,
+    AbiType,
 )]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct Hash64(Vec<u8>);
 
 // Records
-#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct Person {
@@ -55,7 +58,7 @@ pub struct Person {
     age: u32,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct Profile {
@@ -65,7 +68,7 @@ pub struct Profile {
 }
 
 // Update payload type
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct UpdatePayload {
@@ -73,7 +76,7 @@ pub struct UpdatePayload {
 }
 
 // Variants
-#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub enum Action {
@@ -421,7 +424,7 @@ impl InternalData {
 }
 
 // Public struct that uses internal struct - SHOULD appear in ABI
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, BorshSerialize, BorshDeserialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct InternalResult {

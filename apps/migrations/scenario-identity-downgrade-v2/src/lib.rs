@@ -9,7 +9,7 @@ use calimero_storage::collections::{AuthoredMap, LwwRegister, UnorderedMap};
 /// catch (`UNSAFE_IDENTITY_DOWNGRADE`). merobox workflow 22 also exercises it as a
 /// negative-path test: the upgrade is expected to be REJECTED by the emitter-side
 /// gate, so the v2 migrate body never runs.
-#[app::state(version = 2)]
+#[app::state(version = 2, migration = migrate_v1_to_v2)]
 pub struct ScenarioIdentityDowngradeV2 {
     wiki: UnorderedMap<String, LwwRegister<String>>,
 }

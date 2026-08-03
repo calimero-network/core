@@ -12,6 +12,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "abi_conformance_resolved"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+]
+
+[[package]]
 name = "actix"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1124,6 +1132,7 @@ version = "0.0.0"
 dependencies = [
  "borsh",
  "calimero-primitives",
+ "calimero-wasm-abi",
  "hex",
  "serde",
  "sha2 0.10.9",
@@ -1600,6 +1609,7 @@ dependencies = [
  "bs58",
  "calimero-git-hooks",
  "calimero-primitives",
+ "calimero-wasm-abi",
  "ed25519-dalek",
  "eyre",
  "hex",
@@ -1772,6 +1782,7 @@ dependencies = [
  "calimero-primitives",
  "calimero-sdk",
  "calimero-storage-macros",
+ "calimero-wasm-abi",
  "claims",
  "ed25519-dalek",
  "eyre",
@@ -1880,11 +1891,10 @@ dependencies = [
 name = "calimero-wasm-abi"
 version = "0.0.0"
 dependencies = [
+ "indexmap 2.13.0",
  "jsonschema",
- "proc-macro2",
  "serde",
  "serde_json",
- "syn 2.0.117",
  "thiserror 1.0.69",
  "wasmparser 0.118.2",
 ]
@@ -1949,7 +1959,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "syn 2.0.117",
  "tar",
  "tempfile",
  "toml 0.8.23",

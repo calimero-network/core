@@ -218,8 +218,7 @@ fn parse_struct_args(input: &DeriveInput) -> syn::Result<StructArgs> {
 }
 
 /// `version = N` from `#[app::state(version = N, ...)]` on the same struct,
-/// if present. Mirrors the wasm-abi emitter's parsing so the generated
-/// export name and the declared ABI edge always agree.
+/// if present, so the generated export name and the declared ABI edge agree.
 fn app_state_version(attrs: &[syn::Attribute]) -> Option<u32> {
     for attr in attrs {
         let segs: Vec<_> = attr.path().segments.iter().collect();
@@ -416,7 +415,7 @@ mod tests {
         // (rustc orders macro attributes ahead of derives), so `#[app::state]`
         // re-emits the version as a `#[migrate(state_version = N)]` helper.
         // The generated export must take the versioned default so it matches
-        // the edge name the wasm-abi emitter declares in the embedded ABI.
+        // the edge name declared in the embedded ABI.
         let out = expand(quote! {
             #[migrate(from = AppV1)]
             #[migrate(state_version = 2)]

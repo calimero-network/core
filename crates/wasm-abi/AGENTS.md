@@ -1,12 +1,12 @@
-# calimero-wasm-abi - WASM ABI v1 Schema, Emitter, and Embedder
+# calimero-wasm-abi - WASM ABI v1 Schema, Description, and Embedder
 
-Defines the `wasm-abi/1` manifest format that describes a Calimero app's methods, events, and state shape, and the tooling to emit it from Rust source, validate it, and embed/read it as a wasm custom section.
+Defines the `wasm-abi/1` manifest format that describes a Calimero app's methods, events, and state shape, plus the trait an app's types implement to describe themselves into one, and the tooling to validate it and embed/read it as a wasm custom section.
 
 ## Package Identity
 
 - **Crate**: `calimero-wasm-abi`
-- **Entry**: `src/lib.rs` (re-exports `emitter::*`, `normalize::*`, `schema::*`, `validate::*`; `downgrade` and `embed` stay namespaced, e.g. `calimero_wasm_abi::embed::write_embedded_state_schema`)
-- **Key deps**: `syn` (`features = ["full", "visit"]`, parses app source with a `Visit` implementation), `wasmparser` 0.118 (reads/writes the wasm custom-section container), `serde`/`serde_json` (manifest (de)serialization), `thiserror` (error enums), `jsonschema` (dev-only, validates `wasm-abi.schema.json` in tests)
+- **Entry**: `src/lib.rs` (re-exports `schema::*`, `validate::*`, `AbiType`/`TypeRegistry`, `ManifestBuilder`; `downgrade` and `embed` stay namespaced, e.g. `calimero_wasm_abi::embed::write_embedded_state_schema`)
+- **Key deps**: `wasmparser` 0.118 (reads the wasm custom-section container), `serde`/`serde_json` (manifest (de)serialization), `thiserror` (`ValidationError`), `jsonschema` (dev-only, validates `wasm-abi.schema.json` in tests)
 
 ## Commands
 
@@ -18,7 +18,7 @@ cargo build -p calimero-wasm-abi
 cargo test -p calimero-wasm-abi
 
 # One integration test file
-cargo test -p calimero-wasm-abi --test normalize
+cargo test -p calimero-wasm-abi --test abi_type_std
 cargo test -p calimero-wasm-abi --test schema_validation
 cargo test -p calimero-wasm-abi --test identity_downgrade_real_scenarios
 
@@ -26,15 +26,15 @@ cargo test -p calimero-wasm-abi --test identity_downgrade_real_scenarios
 cargo test -p calimero-wasm-abi authored_map_to_unordered_is_downgrade -- --nocapture
 ```
 
-`tests/` holds ~1.5K lines of integration coverage on top of the ~1K lines of `#[cfg(test)]` unit tests inside `src/*.rs`: `abi_conformance.rs`, `normalize.rs`, `schema_validation.rs` (validates real manifests against `wasm-abi.schema.json` via `jsonschema`), `invariants.rs`, `identity_downgrade_real_scenarios.rs`.
+`tests/` holds the integration coverage on top of the `#[cfg(test)]` unit tests inside `src/*.rs`: `abi_type_std.rs` and `abi_type_registry.rs` (the std-type descriptions and the registry's recursion guard), `abi_manifest_builder.rs`, `schema_validation.rs` (validates real manifests against `wasm-abi.schema.json` via `jsonschema`), `invariants.rs`, `identity_downgrade_real_scenarios.rs`. The app-level shapes are locked by the goldens in `apps/abi_conformance*` instead, diffed by `scripts/verify-abi.sh` in CI.
 
 ## Module Map
 
 | Module | Purpose |
 | --- | --- |
 | `schema` | The `Manifest` wire format: `TypeDef`, `TypeRef`, `Method`, `Event`, `MethodIntent`, `XCallCallers`, `CrdtCollectionType`, `collection_category()` |
-| `emitter` | `emit_manifest_from_crate()` / `emit_manifest()` - parses app source (via `syn`) into a `Manifest` |
-| `normalize` | `normalize_type()` - maps a `syn::Type` to a `TypeRef`, unwrapping CRDT wrapper generics |
+| `abi_type` | The `AbiType` / `AbiEvents` traits each described type implements, plus `TypeRegistry`, which collects named `TypeDef`s and guards recursion |
+| `manifest_builder` | `ManifestBuilder` - what generated `__calimero_abi()` code accumulates a `Manifest` into, applying the name sort `validate_manifest` requires |
 | `validate` | `validate_manifest()` - schema-version, sort-order, dangling-ref, and shape checks |
 | `embed` | `write_embedded_state_schema()` / `read_embedded_state_schema[_versioned]()` - the `calimero_abi_v1` wasm custom section |
 | `downgrade` | `identity_downgrades()` - detects a root state field losing identity-gated CRDT semantics across two manifests |
@@ -62,10 +62,10 @@ cargo test -p calimero-wasm-abi authored_map_to_unordered_is_downgrade -- --noca
 
 `Manifest::extract_state_schema()` slices out just `state_root` plus its transitive type dependencies (walking `TypeDef`/`TypeRef` recursively) - the form the node embeds and reads, separate from the full method/event ABI.
 
-## Mental Model: emit -> normalize -> validate -> embed
+## Mental Model: describe -> validate -> embed
 
-1. **Emit** (`emitter::emit_manifest_from_crate`): given `(filename, source)` pairs including a `lib.rs`, `syn::parse_file` each, pre-scan every struct/enum name into `local_types` (so cross-module references resolve), then do a mark-and-sweep over the type graph starting from the `#[app::state]` struct, method signatures, and the `Event` enum - iterating until no new referenced type names are added - so only types actually reachable from the public surface get emitted. Newtypes (single-field tuple structs) are processed first as `TypeDef::Alias`. Methods are then visited from `lib.rs` only (an `AbiEmitter::visit_item_impl` pass), reading `#[app::view]` -> `MethodIntent::ReadOnly`, `#[app::xcall(from_same_app)]` -> `XCallCallers::SameApp`, and `#[app::state(version = N)]` / `#[migrate(method = ..., from = ...)]` / a free `#[app::migrate] fn` -> `state_version` and a `MigrationEdgeAbi`. Per-field/param/return normalization errors are accumulated in `normalize_errors` (not raised immediately, so the visitor can keep running and report every offending type in one pass) and returned together as a single joined error at the end.
-2. **Normalize** (`normalize::normalize_type`): maps a `syn::Type` to a `TypeRef`. `Option<T>` unwraps to `T` (nullability lives on the containing `Field`/`Parameter`/`Method.returns_nullable`, not on `TypeRef` itself - `TypeRefExt::set_nullable` is a no-op left over from that). `Vec<u8>`/`[u8; N]` become `bytes`; other `Vec`/`VecDeque`/`LinkedList`/`HashSet`/`BTreeSet`/`IndexSet` become `list`. `BTreeMap`/`HashMap`/`IndexMap` require a `String` key; `UnorderedMap`/`SortedMap`/`AuthoredMap` don't (the CRDT layer keys internally) and always emit a `string` ABI key while preserving `crdt_type`. CRDT wrapper generics (`LwwRegister<T>`, `Vector<T>`, `UnorderedSet<T>`, `SortedSet<T>`, `AuthoredVector<T>`, `SharedStorage<T>`/`PermissionedStorage<T, A>`/`Ownable<T>`) unwrap to a `Collection` carrying both the unwrapped shape and a `crdt_type` tag so a deserializer downstream knows the real wire format (e.g. `LwwRegister<T>` normalizes to an empty `Record` + `inner_type: T`, since its wire format is `(value, timestamp, node_id)` that the ABI itself doesn't spell out). `Counter` and `ReplicatedGrowableArray` have no useful generic shape and become an opaque empty-`Record` placeholder tagged with their `crdt_type`. Unknown local names fall back to `TypeResolver::resolve_local` (populated by the pre-scan).
+1. **Describe** (`abi_type::AbiType`): every type in an ABI position implements `type_ref` (how a use site names it) and `register` (the named `TypeDef` it contributes, if any). The compiler picks the impls, so an alias is already the aliased type, a macro has already expanded, and a re-export resolves to its definition. `#[derive(AbiType)]` writes the impl for app structs and enums; this crate covers the std types, `calimero-storage` the CRDT wrappers, `calimero-primitives`/`calimero-account` the id types. `TypeRegistry::define` is idempotent by name and marks a name in progress before building its body, so a self-referential type terminates. `Option<T>` describes as `T` - nullability lives on the containing `Field`/`Parameter`/`Method.returns_nullable`. `Vec<u8>`/`[u8; N]` become `bytes`; other sequences become `list`; `BTreeMap`/`HashMap`/`IndexMap` are keyed by `String` only. A CRDT wrapper describes as a `Collection` carrying both the unwrapped shape and a `crdt_type` tag, so a downstream deserializer knows the real wire format (`LwwRegister<T>` is an empty `Record` + `inner_type: T`, since its wire format is `(value, timestamp, node_id)` the ABI does not spell out; `Counter` and `ReplicatedGrowableArray` have no useful generic shape and are opaque empty-`Record` placeholders tagged with their `crdt_type`).
+2. **Assemble** (`manifest_builder::ManifestBuilder`): the `__calimero_abi()` that `#[app::logic]` generates registers types, methods, events, the state root/version and any migration edge into a builder; `finish()` stable-sorts methods and events by name. `cargo mero build` extracts the result by running that generated entry point (see `tools/cargo-mero`), which is the only producer of an app's manifest.
 3. **Validate** (`validate::validate_manifest`): checks `schema_version` parses as `wasm-abi/<major>[.<minor>]` and that the major matches `SUPPORTED_SCHEMA_MAJOR` (currently 1) - a *different* major is `UnsupportedSchemaVersion` (distinct from a malformed tag's `InvalidSchemaVersion`), so callers can tell "newer toolchain" from "garbage". Also checks `methods`/`events` are name-sorted, map keys are `string`, non-zero `bytes` sizes, and that every `$ref` resolves to a declared type (no dangling references).
 4. **Embed** (`embed::write_embedded_state_schema` / `read_embedded_state_schema[_versioned]`): the writer walks the wasm binary's section stream by hand (LEB128-decoding section headers, `wasmparser` isn't used for writing), drops any pre-existing `calimero_abi_v1` custom section, and appends exactly one fresh one carrying the JSON-serialized manifest - so re-embedding is idempotent replace, not append. The reader uses `wasmparser::Parser` to scan for `calimero_abi_v1` custom sections and returns a three-way `EmbeddedSchema`: `Supported(Manifest)`, `UnsupportedVersion(String)` (parses, but a future major - `validate_manifest` was called and returned `UnsupportedSchemaVersion`), or `Absent` (missing, malformed JSON, or fails validation for any other reason). Multiple sections resolve last-`Supported`-wins, and a `Supported` section is never overwritten by a later `UnsupportedVersion` one - a security property the identity-downgrade gate depends on (an opaque section must never demote a usable one). The convenience `read_embedded_state_schema()` collapses `UnsupportedVersion` to `None` (fail-open) for callers that only consume a schema they understand; security-sensitive callers must use the `_versioned` form to fail closed instead.
 
@@ -76,13 +76,13 @@ cargo test -p calimero-wasm-abi authored_map_to_unordered_is_downgrade -- --noca
 | Path | What's there |
 | --- | --- |
 | `src/schema.rs` (~1.1K lines) | `Manifest` and all wire types; unit tests including an `_is_exhaustive` compile tripwire pair (`method_intent_is_exhaustive`, `crdt_type_is_exhaustive`) that cross-checks the Rust enums against `wasm-abi.schema.json`'s `enum` lists |
-| `src/emitter.rs` (~1.1K lines) | `AbiEmitter` (implements `syn::visit::Visit`), `emit_manifest_from_crate` / `emit_manifest`; unit tests for xcall and migration attribute parsing |
-| `src/normalize.rs` (~580 lines) | `normalize_type`, `TypeResolver` trait, `ResolvedLocal` |
+| `src/abi_type.rs` (~300 lines) | `AbiType`, `AbiEvents`, `TypeRegistry`, and the std-type impls |
+| `src/manifest_builder.rs` | `ManifestBuilder` |
 | `src/validate.rs` (~420 lines) | `validate_manifest`, `ValidationError` |
 | `src/embed.rs` (~425 lines) | `write_embedded_state_schema`, `read_embedded_state_schema[_versioned]`, `EmbeddedSchema`, hand-rolled LEB128 read/write |
 | `src/downgrade.rs` (~290 lines) | `identity_downgrades`, `IdentityDowngrade` |
 | `wasm-abi.schema.json` | Hand-maintained JSON Schema mirror of the Rust types, checked for enum-completeness by `schema.rs`'s tests |
-| `tests/*.rs` | Integration coverage: `abi_conformance.rs`, `normalize.rs`, `schema_validation.rs` (validates against `wasm-abi.schema.json` via `jsonschema`), `invariants.rs`, `identity_downgrade_real_scenarios.rs` |
+| `tests/*.rs` | Integration coverage: `abi_type_std.rs`, `abi_type_registry.rs`, `abi_manifest_builder.rs`, `schema_validation.rs` (validates against `wasm-abi.schema.json` via `jsonschema`), `invariants.rs`, `identity_downgrade_real_scenarios.rs` |
 
 ## Relation to `tools/calimero-abi` (binary `mero-abi`)
 
@@ -102,6 +102,6 @@ The `mero-abi` CLI (package name `mero-abi`, binary/command `calimero-abi`) is t
 - **The embed writer hand-parses the wasm section stream** rather than using `wasmparser` to rebuild it, so it can preserve every other section byte-for-byte; it fails closed (returns `EmbedError::MalformedWasm`) on a truncated LEB128, an overlong (>5-byte) LEB128, or a section that would run past the input - it never emits a corrupt module on bad input.
 - **`identity_downgrades` only inspects root state fields**, not the whole type graph - it is the specific "did this top-level field lose identity-gating" check, not a general schema diff (that's `mero-abi diff`'s broader job).
 - **Migration method naming**: an explicit `#[migrate(method = ...)]` is used verbatim; when omitted, the default is versioned (`migrate_v{N-1}_to_v{N}`) once `state_version > 1`, and only the bare `migrate` for the first migration - avoiding a name collision across releases.
-- **`emit_manifest_from_crate` requires a file literally named `"lib.rs"`** in the `sources` slice; method processing (the fourth pass) only runs on that file, so methods defined in an `impl` block outside `lib.rs` are silently skipped even though their referenced types are still picked up.
+- **`TypeRegistry::define` panics on a name redefined with a different shape.** Two distinct types describing under one name would otherwise silently emit a manifest describing the wrong one; a generic instantiated at two argument types is the way to hit this.
 
 Part of [crates/](../AGENTS.md).

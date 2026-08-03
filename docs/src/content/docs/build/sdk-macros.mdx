@@ -189,9 +189,10 @@ pub fn get(&self, key: String) -> app::Result<Option<String>> {
   nonetheless produces a non-empty state artifact is rejected
   (defence-in-depth), since a shared read lock must not mutate shared state.
   `#[app::init]` is **always** treated as mutating regardless of any attribute —
-  the macro already rejects `#[app::view]` + `#[app::init]`, and the ABI emitter
-  hard-codes init as non-read-only so a rogue annotation from a non-SDK toolchain
-  can't trick the node into taking a read lock for an initializer.
+  the macro already rejects `#[app::view]` + `#[app::init]`, and the
+  [generated ABI manifest](/build/abi/) hard-codes init as non-read-only so a
+  rogue annotation can't trick the node into taking a read lock for an
+  initializer.
 </Aside>
 
 ### `#[app::destroy]`

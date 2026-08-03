@@ -156,20 +156,6 @@
         }
       ]
     },
-    "ConformanceError": {
-      "kind": "variant",
-      "variants": [
-        {
-          "name": "BadInput"
-        },
-        {
-          "name": "NotFound",
-          "payload": {
-            "kind": "string"
-          }
-        }
-      ]
-    },
     "CustomRecord": {
       "kind": "record",
       "fields": [

@@ -1,6 +1,6 @@
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::ToTokens;
-use syn::{parse2, Path, Type};
+use syn::{parse2, Lifetime, Path, Type};
 
 use crate::errors::{Errors, ParseError};
 use crate::macros::infallible;
@@ -10,6 +10,27 @@ use crate::sanitizer::{Action, Case, Sanitizer};
 pub struct LogicTy {
     pub ty: Type,
     pub ref_: bool,
+}
+
+impl LogicTy {
+    /// The type with the reserved input lifetime instantiated at `'static`.
+    ///
+    /// The ABI describes a type's shape, for which any lifetime does, and the
+    /// reserved one is not in scope in the free function that names it.
+    pub fn abi_ty(&self) -> Type {
+        let mut sanitizer = infallible!({ parse2::<Sanitizer<'_>>(self.ty.to_token_stream()) });
+
+        let reserved = lifetimes::input();
+        let static_ = Lifetime::new("'static", Span::call_site());
+        let cases = [(
+            Case::Lifetime(Some(&reserved)),
+            Action::ReplaceWith(&static_),
+        )];
+
+        let _ = sanitizer.sanitize(&cases).check();
+
+        infallible!({ parse2(sanitizer.into_token_stream()) })
+    }
 }
 
 impl ToTokens for LogicTy {

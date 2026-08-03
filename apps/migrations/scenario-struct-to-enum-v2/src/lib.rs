@@ -1,3 +1,4 @@
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
@@ -9,7 +10,7 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 // v2 promotes `Status` from a struct (where `active = true` could
 // illegally coexist with `reason = Some(_)`) to a tagged enum that
 // makes the impossible state unrepresentable.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize, Serialize)]
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize, Serialize, AbiType)]
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]
 pub enum Status {
@@ -49,7 +50,7 @@ pub enum Event<'a> {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct SchemaInfo {
     pub schema_version: String,

@@ -1,0 +1,7 @@
+error: (calimero)> `#[derive(AbiType)]` is not supported on unions - a union's active field is not known statically, so it has no single shape to describe in the ABI.
+
+       Model the alternatives as an enum instead.
+ --> tests/macros/error_abi_type_union.rs:4:7
+  |
+4 | union Value {
+  |       ^^^^^

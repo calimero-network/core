@@ -4,12 +4,7 @@ set -euo pipefail
 # Add WASM target if not present
 rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
 
-# Built through cargo mero: it emits res/abi.json and embeds the ABI section,
-# both of which the extractor below reads.
-echo "Building abi_conformance..."
 PATH="$(scripts/setup-cargo-mero.sh):$PATH"
-cargo mero build --manifest-path apps/abi_conformance/Cargo.toml
-WASM="apps/abi_conformance/res/abi_conformance.wasm"
 
 # Build the extractor if not present
 EXTRACTOR="${ROOT:-$(git rev-parse --show-toplevel)}/target/debug/mero-abi"
@@ -18,22 +13,27 @@ if [ ! -x "$EXTRACTOR" ]; then
     cargo build --manifest-path tools/calimero-abi/Cargo.toml
 fi
 
-# Extract ABI to temporary file
-OUT="/tmp/abi_conformance.json"
-echo "Extracting ABI..."
-"$EXTRACTOR" extract "$WASM" -o "$OUT"
+# Build an app through cargo mero (which embeds the ABI section), read that
+# section back off the wasm, and diff it against the golden committed beside it.
+verify_golden() {
+    local app="$1"
+    echo "Building $app..."
+    cargo mero build --manifest-path "apps/$app/Cargo.toml"
+    echo "Extracting $app ABI and comparing with its golden file..."
+    "$EXTRACTOR" extract "apps/$app/res/$app.wasm" -o "/tmp/$app.abi.json"
+    if ! diff -u <(jq . "apps/$app/abi.expected.json") <(jq . "/tmp/$app.abi.json"); then
+        echo "ERROR: $app ABI output differs from its golden file"
+        exit 1
+    fi
+}
 
-# Format both files for comparison
-echo "Formatting files for comparison..."
-jq . "$OUT" > "/tmp/abi_conformance.formatted.json"
-jq . apps/abi_conformance/abi.expected.json > "/tmp/abi_expected.formatted.json"
+verify_golden abi_conformance
+# Aliases, macro-generated and re-exported types: only the compiler resolves
+# these, so this golden is what proves they are described correctly.
+verify_golden abi_conformance_resolved
 
-# Compare with golden file
-echo "Comparing with golden file..."
-if ! diff -u "/tmp/abi_expected.formatted.json" "/tmp/abi_conformance.formatted.json"; then
-    echo "ERROR: ABI output differs from golden file"
-    exit 1
-fi
+WASM="apps/abi_conformance/res/abi_conformance.wasm"
+OUT="/tmp/abi_conformance.abi.json"
 
 # Spot checks with jq
 echo "Running jq spot checks..."
@@ -80,7 +80,7 @@ fi
 # Exercise the identity-downgrade lint (the gate's L2 implementation) so a build
 # break or panic in the diff path fails here too. A state schema diffed against
 # itself must report NO unsafe downgrade (exit 0). The positive case — a real
-# AuthoredMap->UnorderedMap downgrade IS caught — is gated on an emitter-produced
+# AuthoredMap->UnorderedMap downgrade IS caught — is gated on a real built
 # pair in .github/workflows/app-migration-e2e.yml (schema-downgrade-guard).
 echo "Exercising identity-downgrade lint (self-diff must be clean)..."
 STATE="/tmp/abi_conformance.state.json"

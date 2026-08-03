@@ -24,6 +24,7 @@ tracing.workspace = true
 
 calimero-sdk.workspace = true
 calimero-storage-macros.workspace = true
+calimero-wasm-abi.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ed25519-dalek.workspace = true

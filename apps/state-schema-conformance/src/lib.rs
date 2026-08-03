@@ -1,5 +1,6 @@
 #![allow(clippy::len_without_is_empty)]
 
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
@@ -21,13 +22,14 @@ use calimero_storage::collections::{
     Deserialize,
     BorshSerialize,
     BorshDeserialize,
+    AbiType,
 )]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct UserId32([u8; 32]);
 
 // Record types - these are used in LwwRegister for CRDT semantics
-#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct Person {
@@ -37,7 +39,9 @@ pub struct Person {
 }
 
 // Profile with all CRDT fields (can be used directly in UnorderedMap).
-#[derive(Debug, BorshSerialize, BorshDeserialize, calimero_storage::collections::Mergeable)]
+#[derive(
+    Debug, BorshSerialize, BorshDeserialize, calimero_storage::collections::Mergeable, AbiType,
+)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct Profile {
     bio: LwwRegister<Option<String>>,
@@ -45,7 +49,7 @@ pub struct Profile {
 }
 
 // Variant types
-#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub enum Status {

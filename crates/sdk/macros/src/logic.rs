@@ -1,5 +1,5 @@
 use proc_macro2::TokenStream;
-use quote::{quote, ToTokens};
+use quote::{format_ident, quote, ToTokens};
 use syn::{parse2, Attribute, Error as SynError, GenericParam, ImplItem, ItemImpl, Path};
 
 use crate::errors::{Errors, ParseError};
@@ -25,7 +25,6 @@ fn has_init_attr(attrs: &[Attribute]) -> bool {
 }
 
 pub struct LogicImpl<'a> {
-    #[expect(dead_code, reason = "This will be used in future")]
     type_: Path,
     methods: Vec<PublicLogicMethod<'a>>,
     orig: &'a ItemImpl,
@@ -35,12 +34,115 @@ impl ToTokens for LogicImpl<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let LogicImpl { orig, methods, .. } = self;
 
+        let abi = self.abi_manifest();
+
         quote! {
             #orig
 
             #(#methods)*
+
+            #abi
         }
         .to_tokens(tokens);
+    }
+}
+
+impl LogicImpl<'_> {
+    /// The ABI extraction entry point: `__calimero_abi()` builds this app's
+    /// manifest from the same `AbiType`/`AbiEvents` impls the types carry, and
+    /// the `__calimero_abi_dump` test writes it to `$CALIMERO_ABI_OUT`.
+    ///
+    /// Both are absent from a wasm build (which sets neither `cfg` name), so an
+    /// app pays nothing for them.
+    ///
+    /// The wrapper module carries the `allow` because a lint level on the
+    /// `cfg`-ed item itself does not suppress `unexpected_cfgs`, and apps
+    /// compile without `--check-cfg cfg(calimero_abi)`. It is named after the
+    /// state type so a crate holding several `#[app::logic]` impls still
+    /// compiles.
+    fn abi_manifest(&self) -> TokenStream {
+        let self_ = &self.type_;
+        let Some(ident) = self.type_.segments.last().map(|segment| &segment.ident) else {
+            return quote! {};
+        };
+        let state_root = ident.to_string();
+        let module = format_ident!("__calimero_abi_{}", ident);
+        let methods = self.methods.iter().map(PublicLogicMethod::abi_method);
+
+        quote! {
+            #[allow(unexpected_cfgs, non_snake_case)]
+            #[doc(hidden)]
+            pub mod #module {
+                #[cfg(any(calimero_abi, test))]
+                #[doc(hidden)]
+                pub fn __calimero_abi() -> ::calimero_sdk::abi::Manifest {
+                    use super::*;
+
+                    let mut __builder = ::calimero_sdk::abi::ManifestBuilder::new();
+
+                    __builder.state_root(#state_root);
+                    <#self_ as ::calimero_sdk::abi::AbiType>::register(__builder.registry());
+
+                    // An app that declares no version carries SCHEMA_VERSION 0
+                    // (what legacy identity-gated entries hold); the ABI floors
+                    // a described state at 1.
+                    let __version = ::core::cmp::max(
+                        <#self_ as ::calimero_sdk::state::AppState>::SCHEMA_VERSION,
+                        1,
+                    );
+                    __builder.state_version(__version);
+
+                    // An edge from version 0 would be dead weight: readers of an
+                    // unversioned manifest default to 1, so no lookup ever asks
+                    // for it. Baseline migrations (see migration-harness-example)
+                    // run via migrate_my_entries, not the edge table.
+                    if let ::core::option::Option::Some(__method) =
+                        <#self_ as ::calimero_sdk::state::AppState>::MIGRATION_METHOD
+                    {
+                        if __version > 1 {
+                            __builder.migration(__method, __version - 1);
+                        }
+                    }
+
+                    // The event lifetime is only instantiated to name the type;
+                    // an app with no `emits` resolves to `NoEvent`, which
+                    // describes no events.
+                    let __events = <
+                        <#self_ as ::calimero_sdk::state::AppState>::Event<'static>
+                        as ::calimero_sdk::abi::AbiEvents
+                    >::abi_events(__builder.registry());
+                    for __event in __events {
+                        __builder.event(__event);
+                    }
+
+                    #(#methods)*
+
+                    // `finish` sorts methods and events by name.
+                    __builder.finish()
+                }
+
+                /// Writes this app's ABI manifest to `$CALIMERO_ABI_OUT`. Apps
+                /// are `cdylib`s and cannot be run, so extraction rides the
+                /// test harness; without the variable set this is a no-op, so
+                /// an app's own `cargo test` is unaffected.
+                #[cfg(test)]
+                #[test]
+                fn __calimero_abi_dump() {
+                    let ::core::result::Result::Ok(__path) =
+                        ::std::env::var("CALIMERO_ABI_OUT")
+                    else {
+                        return;
+                    };
+
+                    ::std::fs::write(
+                        __path,
+                        ::calimero_sdk::serde_json::to_string(&__calimero_abi())
+                            .expect("a manifest serializes"),
+                    )
+                    .expect("CALIMERO_ABI_OUT must name a writable path");
+                }
+            }
+        }
     }
 }
 

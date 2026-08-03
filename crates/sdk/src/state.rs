@@ -21,6 +21,12 @@ pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
     /// [`app::schema_version`](crate::app::schema_version), registered at
     /// install/migrate alongside the event emitter.
     const SCHEMA_VERSION: u32 = 0;
+
+    /// The migrate entrypoint this build exports, from the `#[migrate(...)]`
+    /// attribute on the `#[app::state]` struct. `None` when the app declares no
+    /// migration; the generated ABI manifest reads it to declare the
+    /// `SCHEMA_VERSION - 1 → SCHEMA_VERSION` edge.
+    const MIGRATION_METHOD: Option<&'static str> = None;
 }
 
 pub trait Identity<This = Self> {}

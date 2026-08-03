@@ -5,6 +5,7 @@
 //! to `T`, so the `&self.field` accessors compile unchanged; mutation goes
 //! through `.set(...)`.
 
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::LwwRegister;
@@ -47,14 +48,14 @@ impl StateWithNestedOptions {
 
 // Test nested struct types — user types nested inside CRDT fields must be
 // borsh-(de)serializable and `Clone` (the `LwwRegister<T>: Mergeable` bound).
-#[derive(Clone, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, BorshSerialize, BorshDeserialize, AbiType)]
 #[borsh(crate = "calimero_sdk::borsh")]
 struct InnerData {
     value: String,
     count: u64,
 }
 
-#[derive(Clone, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, BorshSerialize, BorshDeserialize, AbiType)]
 #[borsh(crate = "calimero_sdk::borsh")]
 struct MiddleLayer {
     data: InnerData,

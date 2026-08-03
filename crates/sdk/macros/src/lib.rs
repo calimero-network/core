@@ -41,6 +41,7 @@ use crate::logic::{LogicImpl, LogicImplInput};
 use crate::private::{PrivateArgs, PrivateImpl, PrivateImplInput};
 use crate::state::{StateArgs, StateImpl, StateImplInput};
 
+mod abi_type;
 mod errors;
 mod event;
 mod forbidden_types;
@@ -107,8 +108,10 @@ pub fn logic(args: TokenStream, input: TokenStream) -> TokenStream {
 /// # Parameters
 ///
 /// The macro accepts optional parameters to customize behavior:
-/// - `storage_key` - Custom storage key for the state
 /// - `version` - State version for migration support
+/// - `migration` - The free `#[app::migrate] fn` this version migrates through
+///   (unnecessary with `#[derive(app::Migrate)]`, which declares its own)
+/// - `emits` - The event enum `app::emit!` accepts; must come last
 #[proc_macro_attribute]
 pub fn state(args: TokenStream, input: TokenStream) -> TokenStream {
     reserved::init();
@@ -440,6 +443,26 @@ pub fn bail(input: TokenStream) -> TokenStream {
 pub fn derive_mergeable(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     mergeable::derive(input).into()
+}
+
+/// Describes a type in the application's ABI manifest.
+///
+/// Generates `AbiType`, whose `register` adds the type's definition to a
+/// `TypeRegistry` and whose `type_ref` yields the `$ref` a use site carries.
+/// Field types are described by delegating to their own `AbiType` impls, so a
+/// nested type registers itself.
+///
+/// `#[app::state]` and `#[app::event]` inject this derive; apply it by hand to
+/// a type that reaches the ABI only through a method signature.
+///
+/// The shapes mirror the ABI manifest's own vocabulary: a struct is a record, a
+/// one-field tuple struct an alias to its inner type, an enum a variant whose
+/// multi-field payloads become synthesized `{Enum}_{Variant}` records. Unions
+/// are rejected.
+#[proc_macro_derive(AbiType, attributes(abi))]
+pub fn derive_abi_type(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    abi_type::derive(input).into()
 }
 
 /// Generates a `#[app::migrate]` migration function from the new state struct,

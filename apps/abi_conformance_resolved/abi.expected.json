@@ -1,0 +1,126 @@
+{
+  "schema_version": "wasm-abi/1",
+  "types": {
+    "Real": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "tag",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ]
+    },
+    "ResolvedConformance": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "messages",
+          "type": {
+            "kind": "map",
+            "key": {
+              "kind": "string"
+            },
+            "value": {
+              "kind": "record",
+              "fields": [],
+              "crdt_type": "lww_register",
+              "inner_type": {
+                "kind": "string"
+              }
+            },
+            "crdt_type": "unordered_map"
+          }
+        }
+      ]
+    },
+    "RoomId": {
+      "kind": "alias",
+      "target": {
+        "kind": "bytes",
+        "size": 32
+      }
+    }
+  },
+  "methods": [
+    {
+      "name": "describe",
+      "params": [
+        {
+          "name": "what",
+          "type": {
+            "$ref": "Real"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "string"
+      }
+    },
+    {
+      "name": "init",
+      "params": [],
+      "returns": {
+        "kind": "unit"
+      }
+    },
+    {
+      "name": "join",
+      "params": [
+        {
+          "name": "room",
+          "type": {
+            "$ref": "RoomId"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "unit"
+      }
+    },
+    {
+      "name": "record",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "body",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "string"
+      }
+    },
+    {
+      "name": "tally",
+      "params": [
+        {
+          "name": "counts",
+          "type": {
+            "kind": "map",
+            "key": {
+              "kind": "string"
+            },
+            "value": {
+              "kind": "u32"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "kind": "u32"
+      }
+    }
+  ],
+  "events": [],
+  "state_root": "ResolvedConformance",
+  "state_version": 1
+}

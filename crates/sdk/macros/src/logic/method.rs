@@ -6,6 +6,7 @@ use syn::{
     ReturnType, Type, Visibility,
 };
 
+use crate::abi_type::nullable;
 use crate::errors::{Errors, ParseError};
 use crate::logic::arg::{LogicArg, LogicArgInput, LogicArgTyped, SelfType};
 use crate::logic::ty::{LogicTy, LogicTyInput};
@@ -41,7 +42,11 @@ pub enum Modifer {
     /// point. Stored in the compiled ABI (`Method.xcall_callable`) so the node
     /// can restrict `xcall` dispatch to declared entry points. Mutually
     /// exclusive with `Init` (an initializer is never an xcall target).
-    XCall,
+    XCall {
+        /// `#[app::xcall(from_same_app)]` - only contexts running the same
+        /// application id may call (`XCallCallers::SameApp` in the ABI).
+        from_same_app: bool,
+    },
 }
 
 pub struct PublicLogicMethod<'a> {
@@ -343,6 +348,130 @@ impl ToTokens for PublicLogicMethod<'_> {
     }
 }
 
+impl PublicLogicMethod<'_> {
+    /// The `ManifestBuilder::method` call describing this method, for the
+    /// `__calimero_abi()` body. Reads a builder bound as `__builder`.
+    ///
+    /// Params keep signature order, nullability is syntactic, `Result` unwraps
+    /// to its ok type, and no method declares errors.
+    pub fn abi_method(&self) -> TokenStream {
+        let name = self.name.to_string();
+
+        let params = self.args.iter().map(|arg| {
+            let arg_name = arg.ident.to_string();
+            let ty = arg.ty.abi_ty();
+            let nullable = nullable(&arg.ty.ty);
+            quote! {
+                ::calimero_sdk::abi::Parameter {
+                    name: #arg_name.to_owned(),
+                    type_: <#ty as ::calimero_sdk::abi::AbiType>::type_ref(__reg),
+                    nullable: #nullable,
+                }
+            }
+        });
+
+        let is_init = self
+            .modifiers
+            .iter()
+            .any(|modifier| matches!(modifier, Modifer::Init));
+
+        // An initializer's declared return is the state itself, which the host
+        // never sees: it is written to storage, not returned.
+        let (returns, returns_nullable) = match (&self.ret, is_init) {
+            (Some(ret), false) => {
+                let abi_ty = ret.abi_ty();
+                let ty = unwrap_result(&abi_ty);
+                (
+                    quote! { <#ty as ::calimero_sdk::abi::AbiType>::type_ref(__reg) },
+                    // Only the OUTERMOST written type sets this, so an
+                    // `app::Result<Option<T>>` does not - an emitter wart kept
+                    // for byte-equality.
+                    nullable(&ret.ty),
+                )
+            }
+            _ => (
+                quote! { <() as ::calimero_sdk::abi::AbiType>::type_ref(__reg) },
+                quote! { ::core::option::Option::None },
+            ),
+        };
+
+        // `#[app::init]` is mutually exclusive with both of these (rejected
+        // above), so an initializer always lands on the defaults.
+        let intent = if self
+            .modifiers
+            .iter()
+            .any(|modifier| matches!(modifier, Modifer::View))
+        {
+            quote! { ::calimero_sdk::abi::MethodIntent::ReadOnly }
+        } else {
+            quote! { ::calimero_sdk::abi::MethodIntent::Unspecified }
+        };
+
+        let policy = self.modifiers.iter().find_map(|modifier| match modifier {
+            Modifer::XCall { from_same_app } => Some(*from_same_app),
+            _ => None,
+        });
+        let xcall_callable = policy.is_some();
+        let xcall_callers = if policy == Some(true) {
+            quote! { ::calimero_sdk::abi::XCallCallers::SameApp }
+        } else {
+            quote! { ::calimero_sdk::abi::XCallCallers::AnyInNamespace }
+        };
+
+        quote! {
+            {
+                let __params = {
+                    let __reg = __builder.registry();
+                    ::std::vec![#(#params),*]
+                };
+                let __returns = {
+                    let __reg = __builder.registry();
+                    #returns
+                };
+                __builder.method(::calimero_sdk::abi::Method {
+                    name: #name.to_owned(),
+                    params: __params,
+                    returns: ::core::option::Option::Some(__returns),
+                    returns_nullable: #returns_nullable,
+                    errors: ::std::vec![],
+                    intent: #intent,
+                    xcall_callable: #xcall_callable,
+                    xcall_callers: #xcall_callers,
+                });
+            }
+        }
+    }
+}
+
+/// `T` for a return type written as `Result<T>`, `Result<T, E>` or
+/// `app::Result<T>`; the type itself otherwise. The ABI carries no error side
+/// (the emitter unwraps the same way), so a fallible method describes its
+/// success type.
+fn unwrap_result(ty: &Type) -> &Type {
+    let Type::Path(path) = ty else {
+        return ty;
+    };
+
+    let Some(segment) = path.path.segments.last() else {
+        return ty;
+    };
+    if segment.ident != "Result" {
+        return ty;
+    }
+
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return ty;
+    };
+
+    args.args
+        .iter()
+        .find_map(|arg| match arg {
+            GenericArgument::Type(ty) => Some(ty),
+            _ => None,
+        })
+        .unwrap_or(ty)
+}
+
 /// Detects a bare `Result<T, String>` return type and returns the span of the
 /// `String` error type, so app logic methods can be steered towards
 /// `app::Result<T>` (which carries `app::Error`).
@@ -448,16 +577,17 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                         modifiers.push(Modifer::View);
                     }
                     "xcall" => {
-                        modifiers.push(Modifer::XCall);
                         // Validate the optional caller-policy arg so a typo is a
                         // compile error rather than silently falling back to the
-                        // open `AnyInNamespace` default in the ABI emitter — a
+                        // open `AnyInNamespace` default in the ABI — a
                         // fail-open on a security policy. A bare `#[app::xcall]`
                         // is a path attribute (no list), so only inspect args
                         // when they're present.
+                        let mut from_same_app = false;
                         if matches!(attr.meta, syn::Meta::List(_)) {
                             if let Err(err) = attr.parse_nested_meta(|meta| {
                                 if meta.path.is_ident("from_same_app") {
+                                    from_same_app = true;
                                     Ok(())
                                 } else {
                                     Err(meta.error(
@@ -468,6 +598,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                                 errors.subsume(err);
                             }
                         }
+                        modifiers.push(Modifer::XCall { from_same_app });
                     }
                     _ => {}
                 }
@@ -482,7 +613,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             ));
         }
 
-        let is_xcall = modifiers.iter().any(|m| matches!(m, Modifer::XCall));
+        let is_xcall = modifiers.iter().any(|m| matches!(m, Modifer::XCall { .. }));
         if is_init && is_xcall {
             errors.subsume(SynError::new_spanned(
                 input.item,
@@ -627,12 +758,46 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
 
 #[cfg(test)]
 mod tests {
-    use syn::{parse_quote, Type};
+    use syn::{parse_quote, ImplItemFn, Path, Type};
 
-    use super::string_error_result_span;
+    use super::{string_error_result_span, LogicMethod, LogicMethodImplInput, Modifer};
 
     fn flags(ty: Type) -> bool {
         string_error_result_span(&ty).is_some()
+    }
+
+    /// The caller policy of a method's `#[app::xcall]`, or `None` when the
+    /// method declares no xcall.
+    fn xcall_policy(item: ImplItemFn) -> Option<bool> {
+        crate::reserved::init();
+        let type_: Path = parse_quote!(S);
+        let LogicMethod::Public(method) = LogicMethod::try_from(LogicMethodImplInput {
+            item: &item,
+            type_: &type_,
+        })
+        .map_err(|_| "the method must parse")
+        .unwrap() else {
+            panic!("a `pub fn` is a public logic method")
+        };
+        method.modifiers.iter().find_map(|m| match m {
+            Modifer::XCall { from_same_app } => Some(*from_same_app),
+            _ => None,
+        })
+    }
+
+    /// The ABI's `xcall_callers` is a security policy the node enforces, so the
+    /// tightening argument has to survive parsing - dropping it fails open.
+    #[test]
+    fn xcall_carries_its_caller_policy() {
+        assert_eq!(
+            xcall_policy(parse_quote! { #[app::xcall(from_same_app)] pub fn f(&self) {} }),
+            Some(true)
+        );
+        assert_eq!(
+            xcall_policy(parse_quote! { #[app::xcall] pub fn f(&self) {} }),
+            Some(false)
+        );
+        assert_eq!(xcall_policy(parse_quote! { pub fn f(&self) {} }), None);
     }
 
     #[test]

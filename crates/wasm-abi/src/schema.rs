@@ -52,7 +52,7 @@ impl Default for Manifest {
 }
 
 /// Type definition for complex types (records, variants)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum TypeDef {
     #[serde(rename = "record")]
@@ -81,7 +81,7 @@ pub struct Field {
 }
 
 /// Variant in a variant type
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Variant {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]

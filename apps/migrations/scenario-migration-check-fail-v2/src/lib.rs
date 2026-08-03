@@ -1,3 +1,4 @@
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
@@ -16,7 +17,7 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// the mismatch makes it return `false`, so the runtime **logically aborts** —
 /// the staged child writes are dropped, the v1 root is never mutated, and the
 /// context keeps serving v1 state with **zero residue**.
-#[app::state(version = 2, emits = for<'a> Event<'a>)]
+#[app::state(version = 2, migration = migrate_v1_to_v2, emits = for<'a> Event<'a>)]
 pub struct ScenarioMigrationCheckFailV2 {
     items: UnorderedMap<String, LwwRegister<String>>,
     title: LwwRegister<String>,
@@ -40,7 +41,7 @@ pub enum Event<'a> {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct SchemaInfo {
     pub schema_version: String,

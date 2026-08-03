@@ -161,7 +161,8 @@ pub struct State { /* ... */ }
 pub struct StateV2 { /* ... */ }
 ```
 
-A `#[cfg]` on a struct field, an enum variant, or a method inside an `#[app::logic]` block is *not* applied to the ABI, so express a variant as whole gated items rather than gated members.
+A `#[cfg]` on a method inside an `#[app::logic]` block, or on a variant of an `#[app::event]` enum, is *not* applied to the ABI - an attribute macro sees the item before `cfg` is - so express a variant as whole gated items rather than gated members.
+See [Describing your ABI](/build/abi/) for the rule in full.
 
 In a multi-service workspace all services compile in one `cargo build`, so a feature only one service declares is fine: it applies to that service and is ignored by the rest.
 

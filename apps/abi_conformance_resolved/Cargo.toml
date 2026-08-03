@@ -1,0 +1,19 @@
+[package]
+name = "abi_conformance_resolved"
+description = "Calimero ABI conformance for types only the compiler can resolve"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk.workspace = true
+calimero-storage.workspace = true
+
+[package.metadata.workspaces]
+independent = true

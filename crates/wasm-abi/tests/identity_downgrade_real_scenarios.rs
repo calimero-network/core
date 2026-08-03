@@ -1,34 +1,62 @@
 //! End-to-end (in-process) proof of the identity-downgrade pipeline on the REAL
-//! scenario apps: real emitter -> embed -> read-back -> detect. No wasm build,
-//! no actor, no network. The full actor/RPC refusal path is covered separately
-//! by the merobox workflow `21-scenario-identity-downgrade`.
+//! scenario shapes: embed -> read-back -> detect. No wasm build, no actor, no
+//! network. The full actor/RPC refusal path is covered separately by the merobox
+//! workflow `21-scenario-identity-downgrade`.
+//!
+//! The two schemas below are what `apps/migrations/scenario-identity-downgrade-v1`
+//! and `-v2` build: one `wiki` field, `AuthoredMap` in v1 and `UnorderedMap` in
+//! v2. They are spelled out here because this is a test of the downgrade logic,
+//! not of how a manifest is produced.
 
 use calimero_wasm_abi::downgrade::identity_downgrades;
 use calimero_wasm_abi::embed::{
     read_embedded_state_schema, read_embedded_state_schema_versioned, write_embedded_state_schema,
     EmbeddedSchema,
 };
-use calimero_wasm_abi::emitter::emit_manifest;
 use calimero_wasm_abi::schema::Manifest;
+use serde_json::json;
 
 fn empty_module() -> Vec<u8> {
     vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]
 }
 
-const V1_SRC: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../apps/migrations/scenario-identity-downgrade-v1/src/lib.rs"
-));
-const V2_SRC: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../apps/migrations/scenario-identity-downgrade-v2/src/lib.rs"
-));
+/// One `wiki` field of `map_kind`, keyed by string, holding an `LwwRegister<String>`.
+fn wiki_schema(root: &str, version: u32, map_kind: &str) -> Manifest {
+    serde_json::from_value(json!({
+        "schema_version": "wasm-abi/1",
+        "types": {
+            root: {
+                "kind": "record",
+                "fields": [{
+                    "name": "wiki",
+                    "type": {
+                        "kind": "map",
+                        "key": { "kind": "string" },
+                        "value": {
+                            "kind": "record",
+                            "fields": [],
+                            "crdt_type": "lww_register",
+                            "inner_type": { "kind": "string" },
+                        },
+                        "crdt_type": map_kind,
+                    },
+                }],
+            },
+        },
+        "methods": [],
+        "events": [],
+        "state_root": root,
+        "state_version": version,
+    }))
+    .expect("the scenario schema parses")
+}
 
-fn state_schema(src: &str) -> Manifest {
-    let manifest = emit_manifest(src).expect("emit_manifest on scenario source");
-    manifest
-        .extract_state_schema()
-        .expect("extract_state_schema")
+fn v1() -> Manifest {
+    wiki_schema("ScenarioIdentityDowngradeV1", 1, "authored_map")
+}
+
+fn v2() -> Manifest {
+    wiki_schema("ScenarioIdentityDowngradeV2", 2, "unordered_map")
 }
 
 /// Embed a schema into a minimal valid module, then read it back — exercising the
@@ -40,9 +68,8 @@ fn embed_then_read(schema: &Manifest) -> Manifest {
 
 #[test]
 fn real_scenarios_round_trip_through_the_wasm_section() {
-    // Sanity: the real emitter produces a state schema with the `wiki` field,
-    // and it survives embed -> read.
-    let v1 = embed_then_read(&state_schema(V1_SRC));
+    // Sanity: the `wiki` field survives embed -> read.
+    let v1 = embed_then_read(&v1());
     let root = v1.state_root.as_deref().expect("v1 has a state_root");
     let fields = match v1.types.get(root) {
         Some(calimero_wasm_abi::schema::TypeDef::Record { fields }) => fields,
@@ -56,8 +83,8 @@ fn real_scenarios_round_trip_through_the_wasm_section() {
 
 #[test]
 fn real_v1_to_v2_is_flagged_as_identity_downgrade() {
-    let v1 = embed_then_read(&state_schema(V1_SRC));
-    let v2 = embed_then_read(&state_schema(V2_SRC));
+    let v1 = embed_then_read(&v1());
+    let v2 = embed_then_read(&v2());
 
     let downgrades = identity_downgrades(&v1, &v2);
     assert_eq!(downgrades.len(), 1, "exactly one downgrade: {downgrades:?}");
@@ -68,7 +95,7 @@ fn real_v1_to_v2_is_flagged_as_identity_downgrade() {
 
 #[test]
 fn real_carry_through_is_not_a_downgrade() {
-    let v1 = embed_then_read(&state_schema(V1_SRC));
+    let v1 = embed_then_read(&v1());
     assert!(
         identity_downgrades(&v1, &v1).is_empty(),
         "v1 -> v1 (carry-through) must not be flagged"
@@ -82,7 +109,7 @@ fn real_carry_through_is_not_a_downgrade() {
 /// `calimero-context`; here we pin the wasm-section read that feeds it.)
 #[test]
 fn future_major_schema_reads_as_unsupported_not_absent() {
-    let mut schema = state_schema(V2_SRC);
+    let mut schema = v2();
     schema.schema_version = "wasm-abi/2".to_owned();
     let wasm = write_embedded_state_schema(&empty_module(), &schema).expect("embed");
 

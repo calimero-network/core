@@ -1,3 +1,4 @@
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
@@ -9,7 +10,7 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 // Appending `Archived` at the END preserves the v1 indices
 // (Active=0, Paused=1) so v1-encoded state bytes deserialize
 // unchanged under v2 — no migration function required.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize, Serialize)]
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize, Serialize, AbiType)]
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]
 pub enum Status {
@@ -24,7 +25,7 @@ pub struct ScenarioNewEnumVariantV2 {
     status: LwwRegister<Status>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct SchemaInfo {
     pub schema_version: String,

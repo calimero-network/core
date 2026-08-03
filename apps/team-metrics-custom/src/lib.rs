@@ -8,6 +8,7 @@
     reason = "Dependencies used in build process"
 )]
 
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::crdt_meta::MergeError;
@@ -17,7 +18,7 @@ use calimero_storage::collections::{Counter, Mergeable, UnorderedMap};
 ///
 /// This struct demonstrates CUSTOM Mergeable implementation.
 /// You have full control and can add custom logic!
-#[derive(Debug, Default, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, Default, BorshSerialize, BorshDeserialize, AbiType)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct TeamStats {
     pub wins: Counter,

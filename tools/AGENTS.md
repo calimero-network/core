@@ -77,8 +77,8 @@ cargo-mero/
 - The `tests/pipeline.rs` end-to-end tests are all `#[ignore]`d because they scaffold and compile fresh crates (slow, and `new_build_test_bundle_ladder` needs network for the git SDK deps). Run them with `cargo test -p cargo-mero -- --ignored`.
 - Bumping the scaffolded SDK version touches two files in lockstep: `DEFAULT_SDK_VERSION` in `src/main.rs` and the version assertions in `src/new.rs` tests.
 - `services` is a workspace-only key: it is rejected under a `[package.metadata.calimero]` table, only accepted under `[workspace.metadata.calimero]`.
-- `--features` is resolved once and used for both the compile and the ABI emit (`workspace::FeatureArgs` feeds `cargo build` and `cargo metadata`). Keep them together: a wasm and an embedded ABI that disagree fail silently, as a wrong migration plan.
-- The ABI emitter cfg-filters top-level items only. A `#[cfg]` on a struct field, enum variant, or `#[app::logic]` method still lands in the ABI.
+- `--features` is resolved once and used for both the compile and the ABI extraction (`workspace::FeatureArgs` feeds `cargo build` and `cargo metadata`). Keep them together: a wasm and an embedded ABI that disagree fail silently, as a wrong migration plan.
+- A `#[cfg]` on an `#[app::logic]` method still lands in the ABI: the attribute macro sees the method before cfg is applied. Struct fields and enum variants are cfg-stripped before the derive runs, so those are honored.
 
 ## merodb - Database Tool
 

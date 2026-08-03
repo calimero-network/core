@@ -43,6 +43,7 @@ pub use crdt_meta::{CrdtMeta, CrdtType, Decomposable, Mergeable, StorageKey, Sto
 // silently breaking, and `tests/derive_mergeable.rs` exercises the re-exported
 // derive through this exact path.
 pub use calimero_sdk::app::Mergeable;
+mod abi_type;
 pub mod composite_key;
 mod crdt_impls;
 mod decompose_impls;
