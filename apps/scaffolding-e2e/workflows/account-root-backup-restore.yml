@@ -252,6 +252,13 @@ steps:
       - '2428'
       - '--auth-mode'
       - 'embedded'
+      # `--auth-mode embedded` refuses to init without admin credentials, so the
+      # admin exists before the node ever listens — and deliberately makes you
+      # say which you mean. Deferring is right here: the login step below is a
+      # first `user_password` auth against a fresh node, which auto-provisions
+      # the admin root key. Passing credentials instead would mean writing a
+      # password file into the node's data directory and leaving it there.
+      - '--no-admin'
 
   # No --force: the store is empty, so there is no root to refuse to replace.
   # That the plain import succeeds here is itself the assertion — recovery must
