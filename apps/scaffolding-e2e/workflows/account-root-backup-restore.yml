@@ -34,6 +34,13 @@ description: >
        `json_assert` has no inequality operator — proving the root changed by
        showing what it changed *to*.
 
+       Node-2 is enrolled and linked by this point, so this is also the one place
+       the suite exercises a forced import over a LIVE store: the device row
+       belonging to the replaced root is released here. The assertion for that
+       behaviour is a unit test rather than a step, because checking it over the
+       wire would mean restarting the node purely to read its device back — the
+       phase wipes it moments later regardless.
+
     5. WIPE node-2's data directory. Everything above proves the encoding round
        trips; restoring a key into the store it came from proves nothing about
        recovery. Nothing informative about node-2 survives here except the phrase

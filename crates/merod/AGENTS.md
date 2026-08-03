@@ -59,6 +59,15 @@ merod --node node1 account export --out backup.txt --allow-plaintext-file
 merod --node node1 account import [--from backup.txt] [--force]
 ```
 
+`--force` **drops the device rows belonging to the root it replaces**, and reports
+which namespaces they were in. Not housekeeping: a device row is keyed by namespace
+alone and enrolment refuses to replace a *linked* row naming a different account, so
+leaving them made the node refuse enrolment under the root it had just recovered —
+telling the operator to revoke first, which needs the key they replaced. Rows naming
+an account this root never owned (a device paired into somebody else's account) are
+kept and reported separately. An import onto an empty store needs no flag and drops
+nothing.
+
 Export prints the phrase on the **first line** (so `head -1` is the secret),
 then the root's public key, then any derived account ids. Only the first line is
 sensitive; the account ids are what writer sets already name.
