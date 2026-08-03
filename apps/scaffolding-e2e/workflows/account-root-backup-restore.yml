@@ -179,15 +179,6 @@ steps:
     type: stop_node
     nodes: backup-node-2
 
-  # TEMPORARY: three inference rounds on "Node is not initialized" have each been
-  # wrong; print the host layout and let the log answer it.
-  - name: DEBUG print the node's on-disk layout
-    type: script
-    script: scripts/debug-node-layout.sh
-    target: local
-    args:
-      - backup-node-2
-
   - name: Export node-2's account root
     type: node_exec
     node: backup-node-2
