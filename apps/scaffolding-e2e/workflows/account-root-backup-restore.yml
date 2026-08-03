@@ -51,11 +51,27 @@ description: >
        was backed up, because the nonce is derived from the root secret and the
        namespace id.
 
+       Then the assertion the account model is actually FOR: the recovered
+       device writes a value guarded by a writer set granted before the wipe, with
+       no new grant and no rotation. Id equality only proves the account is
+       recomputable; this proves it is usable. node-1 admits the write solely by
+       resolving a signing key it has never seen to the granted account, via the
+       link op the recovered node published when it rejoined — so an
+       implementation keyed by device, or one resolving a signer from anything
+       but its binding at the write's cut, fails here and nowhere earlier. Paired
+       with an assertion that the writer set is unchanged, which is what
+       separates "the gate admitted the right account" from "the gate gave up".
+
        Finally it reads a value written before the wipe. That is the
        peer-assisted half: a node holding no scope key of its own can only read
        that if a peer delivered the current key to its new device. A recovery
        that restored the identity but not access passes the account assertion
        and fails this one.
+
+  Deliberately NOT asserted: that `account show` reports the same id before and
+  after enrolment. It does not (#3366) — before enrolment the read API reports the
+  op-adapter's stand-in — so this scenario reads its account only from enrolment,
+  which is the value writes attribute to.
 
 force_pull_image: false
 near_devnet: false
@@ -162,6 +178,76 @@ steps:
     context_id: '{{context_id}}'
     timeout: 60
     trigger_sync: true
+
+  # ── The grant recovery has to preserve ────────────────────────────
+  #
+  # Reading back a value proves the recovered node can still SEE the context. It
+  # does not prove anything about the account, because a re-invited member can
+  # read via member-addressed key delivery alone. What only an account can carry
+  # is a WRITER GRANT: the set names an account, so a device minted after the
+  # grant was made — which is every device the recovered node has — is admitted
+  # only by resolving its key to that account. That is the property rooting
+  # grants at accounts instead of devices exists for, and nothing else in the
+  # suite exercises it across a loss of the disk (#3344 pairs a live second
+  # device; it never loses one).
+  - name: Node-1 grants node-2's account write access to the shared value
+    type: call
+    node: backup-node-1
+    context_id: '{{context_id}}'
+    method: shared_add_writer
+    args:
+      writer: '{{original_account}}'
+
+  - name: Settle so the rotation reaches node-2
+    type: wait_for_sync
+    nodes:
+      - backup-node-1
+      - backup-node-2
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: The writer set before the disk dies
+    type: call
+    node: backup-node-1
+    context_id: '{{context_id}}'
+    method: shared_get_writers
+    outputs:
+      writers_before_wipe: result
+
+  # Also the check that `original_account` is the account this node's writes
+  # actually attribute to, and not merely what the enrolment API reported: if the
+  # two disagreed, the grant would name a principal node-2 is not and this write
+  # would be refused right here, before the wipe muddies the diagnosis.
+  - name: Node-2 writes the guarded value under that grant
+    type: call
+    node: backup-node-2
+    context_id: '{{context_id}}'
+    method: shared_set
+    args:
+      value: written-by-the-original-device
+
+  - name: Settle so the guarded write reaches node-1
+    type: wait_for_sync
+    nodes:
+      - backup-node-1
+      - backup-node-2
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-1 accepted the granted device's write
+    type: call
+    node: backup-node-1
+    context_id: '{{context_id}}'
+    method: shared_get
+    outputs:
+      shared_before_wipe: result
+
+  - name: The grant worked before the disk died
+    type: json_assert
+    statements:
+      - 'json_equal({{shared_before_wipe}}, {"output": "written-by-the-original-device"})'
 
   # Something to come back to. If recovery only restored the key and not access to
   # the context, this is the read that would fail.
@@ -356,6 +442,63 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{recovered_account}}, {{original_account}})'
+
+  # ── The grant outlived the disk ───────────────────────────────────
+  #
+  # The assertion above proves the account id is recomputable. This proves the
+  # account is USABLE: a device that did not exist when the grant was made writes
+  # under it, with no new grant and no rotation. node-1 admits the write only by
+  # resolving a signing key it has never seen to the granted account, through the
+  # link op the recovered node published on rejoining.
+  #
+  # An implementation that keyed the writer set by device — or that resolved a
+  # signer from anything other than its binding at the write's causal cut — passes
+  # every assertion above this line and fails here.
+  - name: The recovered device writes the guarded value under the original grant
+    type: call
+    node: backup-node-2
+    context_id: '{{context_id}}'
+    method: shared_set
+    args:
+      value: written-by-the-recovered-device
+
+  - name: Settle so the recovered device's write reaches node-1
+    type: wait_for_sync
+    nodes:
+      - backup-node-1
+      - backup-node-2
+    context_id: '{{context_id}}'
+    timeout: 90
+    trigger_sync: true
+
+  - name: What node-1 holds after the recovered device wrote
+    type: call
+    node: backup-node-1
+    context_id: '{{context_id}}'
+    method: shared_get
+    outputs:
+      shared_after_recovery: result
+
+  - name: Node-1 accepted the write from a device it had never seen granted
+    type: json_assert
+    statements:
+      - 'json_equal({{shared_after_recovery}}, {"output": "written-by-the-recovered-device"})'
+
+  - name: The writer set after recovery
+    type: call
+    node: backup-node-1
+    context_id: '{{context_id}}'
+    method: shared_get_writers
+    outputs:
+      writers_after_recovery: result
+
+  # Nothing was granted on the new device's behalf. Without this, a receiver that
+  # quietly added the unknown signer to the set would satisfy the write assertion
+  # while having abandoned the gate — the account indirection would be decoration.
+  - name: No grant was added for the recovered device
+    type: json_assert
+    statements:
+      - 'json_equal({{writers_after_recovery}}, {{writers_before_wipe}})'
 
   # And the peer-assisted half: a node that holds no scope key of its own can only
   # read this if a peer delivered the current key to its new device. A recovery
