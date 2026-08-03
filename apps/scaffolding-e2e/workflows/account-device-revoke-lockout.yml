@@ -194,12 +194,14 @@ steps:
   # the node needs the scope key before it can publish one.
 
   - name: Node-2 enrolls a device for a fresh account
-    type: script
-    script: scripts/account-create.sh
-    target: local
-    args:
-      - account-revoke-node-2
-      - '{{namespace_id}}'
+    type: account_create
+    node: account-revoke-node-2
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      alice_account: accountId
+      laptop_device: deviceId
+      root_key: accountRootKey
+      nonce: accountNonce
 
   - name: Settle after the link op
     type: wait_for_sync
@@ -249,21 +251,30 @@ steps:
   # route in is being a device of Alice's account.
   - name: Pair node-3 onto Alice's account
     type: script
-    script: scripts/account-pair.sh
+    script: scripts/account-pair-refusals.sh
     target: local
     args:
       - account-revoke-node-2
       - account-revoke-node-3
       - '{{namespace_id}}'
-    # NOTE: no `outputs:` — merobox script steps do not support custom outputs
-    # (see "Wiring" below). The script writes the new device id to a file that
-    # `account-revoke.sh` reads.
+      - '{{root_key}}'
+      - '{{nonce}}'
 
-  # Following a context is a separate act from being certified into an account:
-  # it writes the keyless identity marker that makes this node "own" an identity
-  # there, which is what the RPC layer resolves an executor from. A paired device
-  # is a member of nothing, so this only works because the join gate accepts a
-  # live device of an account a member endorsed.
+  # The sanctioned exchange, after the two refusals above. One step for both
+  # halves because the ordering is forced: node-3 cannot mint its DeviceId
+  # without the account, and node-2 cannot certify it without the id and both
+  # keys. The step also compares the confirmation code the two sides derive.
+  - name: Pair node-3 onto Alice's account
+    type: account_pair
+    node: account-revoke-node-3
+    holder: account-revoke-node-2
+    namespace_id: '{{namespace_id}}'
+    root_key: '{{root_key}}'
+    nonce: '{{nonce}}'
+    outputs:
+      paired_account: accountId
+      paired_device: deviceId
+      key_delivered: keyDelivered
   - name: Node-3 follows the context as a device of Alice's account
     type: join_context
     node: account-revoke-node-3
@@ -319,21 +330,48 @@ steps:
 
   # One identity, two replicas — the whole point of the feature.
   - name: The two devices authored as one account but distinct replicas
-    type: script
-    script: scripts/assert-same-account-distinct-devices.sh
-    target: local
-    args:
-      - '{{namespace_id}}'
+    type: account_show
+    node: account-revoke-node-2
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      laptop_shown: accountId
+
+  - name: What the phone speaks for
+    type: account_show
+    node: account-revoke-node-3
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      phone_shown: accountId
+
+  # The feature in two assertions, now readable in the scenario instead of buried
+  # in a shell script comparing temp files. Same account means the second device
+  # needed no membership of its own; distinct devices mean they stay distinct CRDT
+  # replicas — sharing a device id would have them share counter slots and an HLC
+  # seed and silently lose each other's writes.
+  - name: One account, two distinct devices
+    type: json_assert
+    statements:
+      - 'json_equal({{laptop_shown}}, {{phone_shown}})'
+      - 'json_equal({{laptop_shown}}, {{alice_account}})'
+      - 'json_equal({{paired_account}}, {{alice_account}})'
+      - 'json_equal({{key_delivered}}, true)'
 
   # ── Phase 5: revoke the paired device ─────────────────────────────
 
   - name: Admin revokes node-3's device
-    type: script
-    script: scripts/account-revoke.sh
-    target: local
-    args:
-      - account-revoke-node-1
-      - '{{namespace_id}}'
+    type: account_revoke
+    node: account-revoke-node-1
+    namespace_id: '{{namespace_id}}'
+    device_id: '{{paired_device}}'
+    outputs:
+      key_rotated: keyRotated
+
+  # Asserted, not assumed: a revocation that did not rotate leaves the device
+  # able to keep READING, which is the failure this whole scenario exists for.
+  - name: Revoking rotated the scope key
+    type: json_assert
+    statements:
+      - 'json_equal({{key_rotated}}, true)'
 
   - name: Settle after the revocation and its key rotation
     type: wait_for_sync
@@ -458,46 +496,35 @@ steps:
 #
 # Wired into `.github/workflows/e2e-rust-apps.yml`.
 #
-# Helper scripts under `apps/scaffolding-e2e/scripts/`:
-#   * account-api.sh    — shared URL resolution, auth, and admin-api POST
-#   * account-create.sh — enrol a node's device under a fresh account
-#   * account-pair.sh   — the full two-way exchange between two nodes
-#   * account-revoke.sh — revoke the paired device, asserting the key rotated
-#   * assert-same-account-distinct-devices.sh — one account, two replica ids
+# The account operations are NATIVE merobox steps (>= 0.6.45): `account_create`,
+# `account_pair`, `account_revoke`, `account_show`. They replaced four shell
+# scripts that drove the same admin-api endpoints. The scripts worked, but a
+# `script` step cannot export custom `outputs:` — it only sets
+# `script_output_local`, which the next script step overwrites — so every value
+# one script minted for the next (device ids, the account genesis halves) had to
+# travel through a temp file keyed by namespace. The scenario then read as a
+# sequence of side effects, and the interesting assertions lived inside shell
+# where nobody reading this file could see them. They are `json_assert`
+# statements now.
 #
-# THREE code gaps this workflow depended on, beyond the CLI itself:
+# One script remains, deliberately: `account-pair-refusals.sh`. It offers the
+# holder two payloads a real attacker would — somebody else's KEM key under the
+# real device id, and an honest payload with a mismatched confirmation code — and
+# asserts both are refused. `account_pair` cannot express that, and should not:
+# it runs the sanctioned exchange and passes what `pair-init` minted through
+# verbatim, which is exactly the thing an attacker does not do. Crafting hostile
+# payloads is script territory. (If merobox later exposes `pair_device_init` and
+# `pair_device_complete` as separate steps, these two cases can move into the
+# scenario as `expected_failure` steps — the client bindings already exist.)
 #
-#   1. Per-device AUTHORIZATION on the governance bridge. `DeviceBinding.sign_pk`
-#      is stored and hashed today but never consulted, so a device whose key is
-#      not itself a member cannot author — node-3's writes would be refused. The
-#      membership resolver needs to accept a key that is the `sign_pk` of a live
-#      binding whose account is a member. This is NOT the 96-file re-key onto
-#      `AccountId` that the design doc defers to the cutover; it is one resolver
-#      change, and it also stops `sign_pk` being a written-but-never-read field.
+# `account-api.sh` stays as its shared URL/auth/POST helper: nothing in the e2e
+# suite invokes `meroctl`, merobox drives nodes through its own client, and the
+# merod image does not ship the CLI — so a `target: local` script talks to the
+# admin API directly. The CLI commands are thin wrappers over the same endpoints.
 #
-#   2. Enrolling into an EXISTING account. `ensure_enrolled` always mints a fresh
-#      account rooted at the node's own namespace identity. Pairing needs the
-#      opposite: adopt an account whose genesis arrives from another node.
+# The three code gaps this workflow was written ahead of — per-device
+# authorization on the governance bridge, enrolling into an EXISTING account, and
+# on-link key backfill with revoke-triggered rotation — are all closed.
 #
-#   3. On-link key backfill and revoke-triggered rotation, which have no
-#      publisher until the CLI exists.
-#
-# STATUS: all three gaps above are CLOSED and the helper scripts exist. Two
-# integration facts shaped how they had to be written, neither visible from the
-# code:
-#
-#   a. `outputs:` on a `script` step does NOT work in merobox 0.3.8. Custom
-#      outputs are extracted from a step's `response_data`, which the script
-#      step never produces — it exports only `script_output_local` and friends,
-#      and every later script step overwrites that. So the scripts hand values
-#      to each other through files keyed by namespace instead. Deterministic,
-#      and it needs nothing from merobox.
-#
-#   b. Nothing in the e2e suite invokes `meroctl`; merobox drives nodes through
-#      its own API client and the merod image does not ship the CLI. So the
-#      scripts talk to the admin API directly with curl, mirroring merobox's own
-#      `/auth/token` payload. The CLI commands are thin wrappers over these same
-#      endpoints, so this exercises the same code paths.
-#
-# One device per node still means no merobox change is needed to choose WHICH
-# device authors — the node selects it implicitly.
+# One device per node means nothing has to choose WHICH device authors: the node
+# selects it implicitly.
