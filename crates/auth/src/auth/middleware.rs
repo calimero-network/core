@@ -871,24 +871,113 @@ mod tests {
         key.revoke();
         key_manager.set_key("test_key_revoke", &key).await.unwrap();
 
-        // Verify token fails after revocation
-        // Note: The current implementation of get_key() returns None for revoked keys,
-        // so the error will be "Key not found" rather than "Key has been revoked"
-        let result = token_manager.verify_token_from_headers(&headers).await;
-        assert!(result.is_err(), "Token should fail after key revocation");
+        let err = token_manager
+            .verify_token_from_headers(&headers)
+            .await
+            .expect_err("a revoked key must not authenticate");
+        assert!(
+            matches!(err, crate::AuthError::TokenRevoked),
+            "a revoked key must surface as TokenRevoked so the caller receives \
+             X-Auth-Error: token_revoked instead of an unactionable 401: {err:?}"
+        );
+    }
 
-        let err = result.unwrap_err();
-        match &err {
-            crate::AuthError::InvalidToken(msg) => {
-                // The system treats revoked keys as "not found" since get_key()
-                // filters them out. This is the actual system behavior.
-                assert!(
-                    msg.contains("not found") || msg.contains("revoked"),
-                    "Error should indicate key is invalid: {msg}"
-                );
-            }
-            _ => panic!("Expected InvalidToken error"),
-        }
+    /// A revoked *client* key must carry the same signal as a revoked root key.
+    /// Client keys are what programs hold, so this is the path that decides
+    /// whether a long-lived process can tell "reconnect" from "retry".
+    #[tokio::test]
+    async fn test_revoked_client_key_token_verification() {
+        let (storage, token_manager, _) = create_test_setup().await;
+        let key_manager = KeyManager::new(Arc::clone(&storage));
+
+        let root = crate::storage::models::Key::new_root_key_with_permissions(
+            "test_public_key".to_string(),
+            "test_method".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        key_manager.set_key("root_of_client", &root).await.unwrap();
+
+        let mut client = crate::storage::models::Key::new_client_key(
+            "root_of_client".to_string(),
+            "agent".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        key_manager
+            .set_key("client_key_revoke", &client)
+            .await
+            .unwrap();
+
+        let (access_token, _) = token_manager
+            .generate_mock_token_pair(
+                "client_key_revoke".to_string(),
+                vec!["admin".to_string()],
+                None,
+                Some(3600),
+            )
+            .await
+            .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "Authorization",
+            HeaderValue::from_str(&format!("Bearer {access_token}")).unwrap(),
+        );
+        assert!(
+            token_manager
+                .verify_token_from_headers(&headers)
+                .await
+                .is_ok(),
+            "Token should work before revocation"
+        );
+
+        client.revoke();
+        key_manager
+            .set_key("client_key_revoke", &client)
+            .await
+            .unwrap();
+
+        let err = token_manager
+            .verify_token_from_headers(&headers)
+            .await
+            .expect_err("a revoked client key must not authenticate");
+        assert!(
+            matches!(err, crate::AuthError::TokenRevoked),
+            "a revoked client key must surface as TokenRevoked: {err:?}"
+        );
+    }
+
+    /// The other direction: an id that never existed must NOT claim revocation.
+    /// If absence and revocation collapse either way round, the signal stops
+    /// carrying information and clients are back to guessing.
+    #[tokio::test]
+    async fn test_unknown_key_id_is_not_reported_as_revoked() {
+        let (_storage, token_manager, _) = create_test_setup().await;
+
+        let (access_token, _) = token_manager
+            .generate_mock_token_pair(
+                "never_provisioned".to_string(),
+                vec!["admin".to_string()],
+                None,
+                Some(3600),
+            )
+            .await
+            .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "Authorization",
+            HeaderValue::from_str(&format!("Bearer {access_token}")).unwrap(),
+        );
+
+        let err = token_manager
+            .verify_token_from_headers(&headers)
+            .await
+            .expect_err("an unknown key id must not authenticate");
+        assert!(
+            matches!(err, crate::AuthError::InvalidToken(_)),
+            "an unknown key id must stay a generic rejection, not a revocation \
+             hint: {err:?}"
+        );
     }
 
     // ==========================================================================
