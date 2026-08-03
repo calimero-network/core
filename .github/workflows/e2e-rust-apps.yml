@@ -683,12 +683,17 @@ jobs:
               count=$(grep -rho "gov_divergence_pull_triggered" docker-logs/ | wc -l | tr -d ' ')
               echo "::notice::scope_root governance pulls in ${{ matrix.workflow }} — $count trigger(s)"
               echo "per-context trigger counts (watch for a single context dominating = storm):"
-              # base58, NOT hex: `%context_id` Displays a ContextId through Hash,
-              # which is bs58-encoded. A [0-9a-f] class silently matched nothing, so
-              # this block printed an empty list on every run it was supposed to
-              # diagnose — including the two 2026-08-03 runs where a scenario hung
-              # for 180s and the count was the only thing worth reading.
+              # Two reasons this used to match nothing, and the first is the one
+              # that made every character class hopeless:
+              #
+              #   1. tracing writes these logs with ANSI styling on, so the bytes are
+              #      `context_id<ESC>[0m<ESC>[2m=<ESC>[0m<value>` — the `=` is not
+              #      adjacent to the field name at all. Hence the sed.
+              #   2. the value is bs58 (`%context_id` Displays a ContextId through
+              #      Hash), so a [0-9a-f] class would still have failed after
+              #      stripping.
               per_context=$(grep -rho 'gov_divergence_pull_triggered.*' docker-logs/ \
+                | sed -E $'s/\x1B\\[[0-9;]*[mK]//g' \
                 | grep -oE 'context_id=[A-Za-z0-9]+' | sort | uniq -c | sort -rn | head -10)
               if [ -n "$per_context" ]; then
                   echo "$per_context"
