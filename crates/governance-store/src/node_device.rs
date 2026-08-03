@@ -25,6 +25,8 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     NodeAccountRoot, NodeAccountRootValue, NodeDeviceIdentity, NodeDeviceIdentityValue,
 };
+use calimero_store::slice::Slice;
+use calimero_store::tx::Transaction;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use rand::Rng as _;
@@ -127,7 +129,12 @@ impl AccountRoot {
     /// If the phrase is not a valid 24-word BIP-39 mnemonic (bad word, bad
     /// checksum, wrong length) — which is the point of using one.
     pub fn from_mnemonic(phrase: &str) -> EyreResult<Self> {
-        let normalised = phrase.split_whitespace().collect::<Vec<_>>().join(" ");
+        // Wiped on drop like every other copy of the words in this file: joining
+        // the whitespace-split parts allocates a fresh String holding the whole
+        // phrase, and a plain one would sit in freed heap until something reused
+        // the pages.
+        let normalised: Zeroizing<String> =
+            Zeroizing::new(phrase.split_whitespace().collect::<Vec<_>>().join(" "));
         let mnemonic = bip39::Mnemonic::parse_normalized(&normalised).map_err(|e| {
             eyre::eyre!("not a valid BIP-39 mnemonic (check the words and their order): {e}")
         })?;
@@ -386,12 +393,16 @@ impl<'a> NodeDeviceRepository<'a> {
             }
         }
 
-        self.store.handle().put(
-            &NodeAccountRoot::new(),
-            &NodeAccountRootValue {
-                root_secret: *root.signing_key().as_bytes(),
-            },
-        )?;
+        // Re-importing the SAME root is a no-op, and must be treated as one. It
+        // reaches here whenever an operator re-runs a restore, or passes `--force`
+        // defensively — and because every device row would then match
+        // `previous.account_for(namespace)`, the cleanup below would delete every
+        // device this node holds while nothing about the root changed. Destroying
+        // live enrolments to reinstall the key they already depend on is the
+        // opposite of what the caller asked for.
+        let same_root = existing
+            .as_ref()
+            .is_some_and(|previous| previous.public_key() == root.public_key());
 
         // A forced replacement invalidates every device the discarded root
         // certified, and the rows have to go with it.
@@ -420,19 +431,47 @@ impl<'a> NodeDeviceRepository<'a> {
         // requires the node to be stopped, so there is nothing to race.
         let mut released = Vec::new();
         let mut retained = Vec::new();
+        let mut doomed = Vec::new();
         if let Some(previous) = &existing {
-            for namespace in self.enrolled_namespaces()? {
-                let Some(row) = self.get(&namespace)? else {
-                    continue;
-                };
-                if row.account == previous.account_for(&namespace) {
-                    self.delete(&namespace)?;
-                    released.push(namespace);
-                } else {
-                    retained.push(namespace);
+            if !same_root {
+                for namespace in self.enrolled_namespaces()? {
+                    let Some(row) = self.get(&namespace)? else {
+                        continue;
+                    };
+                    if row.account == previous.account_for(&namespace) {
+                        doomed.push(namespace);
+                    } else {
+                        retained.push(namespace);
+                    }
                 }
             }
         }
+
+        // One batch, so the new root and the removal of the rows it invalidates
+        // either both land or neither does. Split across two writes there is a
+        // window where a crash leaves the NEW root beside the OLD root's device
+        // rows — precisely the state that makes `ensure_enrolled` refuse, and the
+        // one this cleanup exists to prevent. It would be silently persistent
+        // rather than transient, because nothing re-runs the cleanup afterwards.
+        // Keys are declared before the transaction on purpose: `Transaction<'a>`
+        // borrows them, so anything it references has to outlive it.
+        let root_key = NodeAccountRoot::new();
+        let doomed_keys: Vec<_> = doomed
+            .iter()
+            .map(|namespace| NodeDeviceIdentity::new(namespace.to_bytes()))
+            .collect();
+        let root_bytes: Slice<'_> = borsh::to_vec(&NodeAccountRootValue {
+            root_secret: *root.signing_key().as_bytes(),
+        })?
+        .into();
+
+        let mut tx = Transaction::default();
+        tx.put(&root_key, root_bytes);
+        for key in &doomed_keys {
+            tx.delete(key);
+        }
+        self.store.apply(&tx)?;
+        released.extend(doomed);
 
         Ok(ImportedRoot {
             replaced: existing,
@@ -1222,6 +1261,45 @@ mod tests {
             after.device(),
             mine.device(),
             "and it must be a fresh replica id, not the one bound to the old account"
+        );
+    }
+
+    /// Re-importing the root that is already installed must change nothing.
+    ///
+    /// The regression this pins was introduced by the fix above it: the cleanup
+    /// deletes rows whose account re-derives from the root being replaced, and when
+    /// the "replaced" root IS the incoming one, that matches every row this node
+    /// holds. So a defensive `--force` on a re-run — or simply restoring the same
+    /// backup twice — destroyed every live enrolment in order to reinstall the key
+    /// those enrolments already depend on.
+    #[test]
+    fn re_importing_the_same_root_keeps_every_device() {
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let root = repo.ensure_account_root().expect("generate");
+        let mine = repo.ensure_enrolled(&ns).expect("enroll");
+
+        // Round-tripped through the mnemonic, because that is how an operator
+        // re-supplies it: same key, different `AccountRoot` value.
+        let same = AccountRoot::from_mnemonic(&root.to_mnemonic().expect("export"))
+            .expect("import the same root");
+
+        let outcome = repo
+            .try_import_account_root(&same, true)
+            .expect("a forced re-import of the same root must succeed");
+
+        assert!(
+            outcome.released.is_empty(),
+            "re-importing the same root released {:?} — nothing changed, so nothing \
+             may be destroyed",
+            outcome.released
+        );
+        assert_eq!(
+            repo.get(&ns).expect("read").expect("present").device(),
+            mine.device(),
+            "the device must survive untouched"
         );
     }
 

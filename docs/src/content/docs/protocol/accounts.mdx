@@ -476,6 +476,14 @@ way round deadlocks.
   root it replaced so nothing can destroy one silently.
 - **On an empty store no flag is needed.** Recovery onto a fresh machine is the
   normal path and must not require the flag that exists to protect an existing key.
+- **`--out` refuses an existing file.** `O_CREAT | O_EXCL`, which is what makes the
+  owner-only mode meaningful: the mode applies only on *creation*, so reusing a path
+  would write the phrase into whatever permissions that file already had, and a
+  pre-planted symlink could redirect it somewhere readable. Refusing removes the
+  window instead of narrowing it — and declining to truncate whatever is already
+  there is the right instinct for the one key that cannot be regenerated. On a
+  platform with no owner-only mode to set, the command says so rather than printing
+  a permission it did not apply.
 - **A mistyped phrase is rejected, not silently accepted.** This is why the backup
   is BIP-39 words and not hex: every 32-byte string is a valid key, so a hex backup
   with one wrong character recovers *a* root — a different one — and you would
@@ -492,7 +500,12 @@ way round deadlocks.
   therefore dropped, and each namespace needs a fresh enrolment. Rows naming an
   account this root never owned — a device [paired](#pairing-a-second-device) into
   somebody else's account — are kept, because replacing this node's root says
-  nothing about them. Import reports both lists.
+  nothing about them. Import reports both lists. Re-importing the root that is
+  already installed releases **nothing** — it changed nothing, so a defensive
+  `--force` on a re-run cannot cost you your enrolments. The new root and the
+  removal of the rows it invalidates land as one atomic write, because the
+  half-applied state (new root beside old rows) is exactly the one that makes
+  enrolment refuse.
 
 ### Rotated-out keys are not handed back
 

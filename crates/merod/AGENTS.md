@@ -66,7 +66,14 @@ leaving them made the node refuse enrolment under the root it had just recovered
 telling the operator to revoke first, which needs the key they replaced. Rows naming
 an account this root never owned (a device paired into somebody else's account) are
 kept and reported separately. An import onto an empty store needs no flag and drops
-nothing.
+nothing, and neither does re-importing the root that is already installed — the
+root write and the row removals are one atomic write, so there is no half-applied
+state where a new root sits beside the old root's rows.
+
+`--out` refuses an existing file (`O_CREAT | O_EXCL`): the 0600 mode only applies on
+creation, so reusing a path would write the phrase into whatever permissions were
+already there, and a pre-planted symlink could redirect it. On a platform with no
+mode to set, the command says so instead of claiming owner-only.
 
 Export prints the phrase on the **first line** (so `head -1` is the secret),
 then the root's public key, then any derived account ids. Only the first line is

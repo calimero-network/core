@@ -148,9 +148,25 @@ impl ExportCommand {
         }
 
         if let Some(path) = self.out {
-            write_owner_only(&path, &format!("{}\n", phrase.as_str()))
+            // `Zeroizing`, because `format!` would otherwise leave a second full
+            // copy of the 24 words in heap that nothing wipes — the one thing the
+            // rest of this command is careful about.
+            let contents = Zeroizing::new(format!("{}\n", phrase.as_str()));
+            let restricted = write_owner_only(&path, &contents)
                 .wrap_err_with(|| format!("Failed to write the recovery phrase to {path}"))?;
-            println!("Recovery phrase written to {path} (owner-only, 0600)");
+            if restricted {
+                println!("Recovery phrase written to {path} (owner-only, 0600)");
+            } else {
+                // Do not claim a permission this platform did not set. The words
+                // are the whole account, and an operator who believes the file is
+                // owner-only will treat it accordingly.
+                println!("Recovery phrase written to {path}");
+                println!(
+                    "WARNING: this platform has no owner-only mode to set, so the \
+                     file has whatever permissions your umask gives it. Check them \
+                     before leaving it there."
+                );
+            }
             println!("It is unencrypted. Move it somewhere safe and delete this copy.");
         } else {
             println!("{}", phrase.as_str());
@@ -262,38 +278,78 @@ impl ImportCommand {
     }
 }
 
-/// Write `contents` to `path`, owner-readable only.
+/// Write `contents` to a **new** file at `path`, owner-readable only.
 ///
-/// Created with mode `0600` rather than written and then chmod-ed, because the
-/// gap between the two is exactly long enough for another local user to read a
-/// recovery key — and this file *is* the account. `set_permissions` afterwards
-/// covers the other case: `.mode()` applies only when the file is created, so an
-/// existing world-readable file at this path would otherwise keep its mode.
+/// Returns whether the owner-only permission was actually applied, so the caller
+/// can avoid promising one this platform cannot set.
 ///
-/// The node home gets the same treatment at `init` (`restrict_to_owner`), which
-/// chmods after the fact; that is fine for a directory tree being built, and not
+/// `create_new` — i.e. `O_CREAT | O_EXCL` — rather than create-and-truncate, and
+/// that single choice closes two holes at once:
+///
+/// - **Symlink follow.** `O_EXCL` fails if the path exists at all, including as a
+///   symlink, so a pre-planted link cannot redirect a recovery key into a file
+///   somebody else can read.
+/// - **The mode window.** `.mode()` applies only when the file is *created*, so an
+///   existing world-readable file kept its mode and the secret was written into it
+///   before any chmod could tighten it. Refusing to reuse a path removes the
+///   window rather than narrowing it; a `set_permissions` afterwards only ever
+///   shortened it.
+///
+/// Refusing an existing file is also the better behaviour on its own terms:
+/// silently truncating whatever is already there is a poor way to treat the one
+/// key that cannot be regenerated.
+///
+/// The node home gets chmod-after-the-fact treatment at `init`
+/// (`restrict_to_owner`), which is fine for a directory tree being built and not
 /// for a single secret written on demand.
 #[cfg(unix)]
-fn write_owner_only(path: &camino::Utf8Path, contents: &str) -> EyreResult<()> {
+fn write_owner_only(path: &camino::Utf8Path, contents: &str) -> EyreResult<bool> {
     use std::io::Write as _;
-    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+    use std::os::unix::fs::OpenOptionsExt as _;
 
     let mut file = std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
-        .open(path)?;
+        .open(path)
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::AlreadyExists {
+                eyre::eyre!(
+                    "{path} already exists, and this refuses to overwrite it: the \
+                     existing file may be a symlink pointing somewhere readable, and \
+                     its permissions are whatever they already are. Remove it or \
+                     choose another path."
+                )
+            } else {
+                eyre::Report::new(err)
+            }
+        })?;
     file.write_all(contents.as_bytes())?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    Ok(())
+    Ok(true)
 }
 
-/// Non-Unix fallback: no mode bits to set, so this is a plain write.
+/// Non-Unix fallback: no mode bits to set, so the caller is told the file is
+/// unrestricted rather than being allowed to claim otherwise.
+///
+/// Still `create_new`, because refusing to clobber an existing key backup is not
+/// platform-specific.
 #[cfg(not(unix))]
-fn write_owner_only(path: &camino::Utf8Path, contents: &str) -> EyreResult<()> {
-    std::fs::write(path, contents)?;
-    Ok(())
+fn write_owner_only(path: &camino::Utf8Path, contents: &str) -> EyreResult<bool> {
+    use std::io::Write as _;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::AlreadyExists {
+                eyre::eyre!("{path} already exists, and this refuses to overwrite it")
+            } else {
+                eyre::Report::new(err)
+            }
+        })?;
+    file.write_all(contents.as_bytes())?;
+    Ok(false)
 }
 
 /// Parse a hex namespace id, with a message that says which argument was wrong —
