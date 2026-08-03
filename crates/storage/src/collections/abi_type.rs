@@ -32,13 +32,13 @@ fn list_ref<T: AbiType>(reg: &mut TypeRegistry, crdt: CrdtCollectionType) -> Typ
 
 /// Payload in `Map.value`. The key is always `string`: the CRDT layer keys
 /// entries internally, so the Rust key type never reaches the ABI.
-fn map_ref<V: AbiType>(reg: &mut TypeRegistry, crdt: CrdtCollectionType) -> TypeRef {
+fn map_ref<V: AbiType>(reg: &mut TypeRegistry, crdt: Option<CrdtCollectionType>) -> TypeRef {
     TypeRef::Collection {
         collection: CollectionType::Map {
             key: Box::new(TypeRef::string()),
             value: Box::new(<V as AbiType>::type_ref(reg)),
         },
-        crdt_type: Some(crdt),
+        crdt_type: crdt,
         inner_type: None,
     }
 }
@@ -108,7 +108,7 @@ where
 
 impl<K, V: AbiType, S: StorageAdaptor> AbiType for UnorderedMap<K, V, S> {
     fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
-        map_ref::<V>(reg, CrdtCollectionType::UnorderedMap)
+        map_ref::<V>(reg, Some(CrdtCollectionType::UnorderedMap))
     }
 
     fn register(reg: &mut TypeRegistry) {
@@ -118,7 +118,7 @@ impl<K, V: AbiType, S: StorageAdaptor> AbiType for UnorderedMap<K, V, S> {
 
 impl<K, V: AbiType, S: StorageAdaptor> AbiType for SortedMap<K, V, S> {
     fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
-        map_ref::<V>(reg, CrdtCollectionType::SortedMap)
+        map_ref::<V>(reg, Some(CrdtCollectionType::SortedMap))
     }
 
     fn register(reg: &mut TypeRegistry) {
@@ -133,7 +133,7 @@ where
     S: StorageAdaptor,
 {
     fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
-        map_ref::<V>(reg, CrdtCollectionType::AuthoredMap)
+        map_ref::<V>(reg, Some(CrdtCollectionType::AuthoredMap))
     }
 
     fn register(reg: &mut TypeRegistry) {
@@ -191,14 +191,7 @@ macro_rules! keyed_storage_impl {
             S: StorageAdaptor,
         {
             fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
-                TypeRef::Collection {
-                    collection: CollectionType::Map {
-                        key: Box::new(TypeRef::string()),
-                        value: Box::new(<T as AbiType>::type_ref(reg)),
-                    },
-                    crdt_type: None,
-                    inner_type: None,
-                }
+                map_ref::<T>(reg, None)
             }
 
             fn register(reg: &mut TypeRegistry) {

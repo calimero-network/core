@@ -172,6 +172,10 @@ Catching that before a release is much cheaper than after an install.
   an ABI-visible item gated on `target_arch` describes its *host* form rather
   than its wasm one. Features are shared between extraction and the wasm build;
   the target is not.
+- **Do not gate ABI-visible items on `cfg(test)`.** Extraction runs through the
+  test harness, so a test-gated field or type would be described even though the
+  shipped wasm omits it (and it would break borsh parity between test and
+  production builds anyway).
 - **An older SDK produces no ABI at all.** An app whose SDK predates
   `__calimero_abi` builds no manifest, so `cargo mero build` warns, writes no
   `res/abi.json` or `res/state-schema.json`, and embeds no section. The wasm is

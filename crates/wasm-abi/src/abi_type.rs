@@ -91,6 +91,21 @@ pub trait AbiEvents {
     fn abi_events(reg: &mut TypeRegistry) -> Vec<Event>;
 }
 
+/// `AbiType` for 32-byte identity newtypes, described as fixed-size bytes.
+/// Exported because the orphan rule makes each crate impl beside its own types.
+#[macro_export]
+macro_rules! impl_bytes32_abi {
+    ($($ty:ty),* $(,)?) => {
+        $(impl $crate::abi_type::AbiType for $ty {
+            fn type_ref(
+                _reg: &mut $crate::abi_type::TypeRegistry,
+            ) -> $crate::schema::TypeRef {
+                $crate::schema::TypeRef::bytes_with_size(32, None)
+            }
+        })*
+    };
+}
+
 macro_rules! scalar_impl {
     ($($ty:ty => $variant:expr),* $(,)?) => {
         $(impl AbiType for $ty {
