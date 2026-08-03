@@ -61,6 +61,10 @@ merod --node node1 account export --out backup.txt --allow-plaintext-file
 merod --node node1 account import [--from backup.txt] [--force]
 ```
 
+Export prints the phrase on the **first line** (so `head -1` is the secret),
+then the root's public key, then any derived account ids. Only the first line is
+sensitive; the account ids are what writer sets already name.
+
 `--force` **drops the device rows belonging to the root it replaces**, and reports
 which namespaces they were in. Not housekeeping: a device row is keyed by namespace
 alone and enrolment refuses to replace a *linked* row naming a different account, so
@@ -76,10 +80,6 @@ state where a new root sits beside the old root's rows.
 creation, so reusing a path would write the phrase into whatever permissions were
 already there, and a pre-planted symlink could redirect it. On a platform with no
 mode to set, the command says so instead of claiming owner-only.
-
-Export prints the phrase on the **first line** (so `head -1` is the secret),
-then the root's public key, then any derived account ids. Only the first line is
-sensitive; the account ids are what writer sets already name.
 
 ### Revoking a device with only the root
 
