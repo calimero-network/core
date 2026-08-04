@@ -17,29 +17,73 @@ impl KeyManager {
         Self { storage }
     }
 
-    /// Get a key by ID
-    pub async fn get_key(&self, key_id: &str) -> Result<Option<Key>, StorageError> {
-        // Try root key prefix first
+    /// Check validity of key
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - an immutable referecnce to the raw key
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Option<Key>, StorageError>` - The key if valid
+    fn check_key_validity(data: &[u8]) -> Result<Option<Key>, StorageError> {
+        let key: Key = deserialize(data)?;
+        if key.is_valid() {
+            return Ok(Some(key));
+        }
+        Ok(None)
+    }
+
+    /// Get a key by ID, **including** revoked or expired keys.
+    ///
+    /// # Arguments
+    ///
+    /// * `key_id` - The key ID
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Option<Key>, StorageError>`
+    ///
+    /// * Unlike [`Self::get_key`], this does not filter on validity: a revoked or
+    /// expired key is returned as `Some(key)` so callers can tell it apart from a
+    /// key that never existed (`None`). This explicitly returns a revoked key as
+    /// `403 TokenRevoked` instead of a generic `401` "key not found" (issue #3069).
+    /// Callers which only ever want a usable key must keep using [`Self::get_key`].
+    pub async fn get_key_including_invalid(
+        &self,
+        key_id: &str,
+    ) -> Result<Option<Key>, StorageError> {
+        // Root prefix first, then client — the same precedence `get_key` uses.
         let root_key = format!("{}{}", prefixes::ROOT_KEY, key_id);
         if let Some(data) = self.storage.get(&root_key).await? {
-            let key: Key = deserialize(&data)?;
-            if key.is_valid() {
-                return Ok(Some(key));
-            }
-            return Ok(None);
+            return Ok(Some(deserialize(&data)?));
         }
 
-        // Try client key prefix
         let client_key = format!("{}{}", prefixes::CLIENT_KEY, key_id);
         if let Some(data) = self.storage.get(&client_key).await? {
-            let key: Key = deserialize(&data)?;
-            if key.is_valid() {
-                return Ok(Some(key));
-            }
-            return Ok(None);
+            return Ok(Some(deserialize(&data)?));
         }
 
         Ok(None)
+    }
+
+    /// Get a valid key by ID.
+    ///
+    /// # Arguments
+    ///
+    /// * `key_id` - The key ID
+    ///
+    /// # Returns
+    ///
+    /// * Returns `None` for a key that is absent **or** revoked/expired — the two
+    /// are deliberately indistinguishable here, because most call sites only ever
+    /// want a usable key. Use [`Self::get_key_including_invalid`] where the
+    /// difference matters (e.g. reporting a revoked token as `403`).
+    pub async fn get_key(&self, key_id: &str) -> Result<Option<Key>, StorageError> {
+        Ok(self
+            .get_key_including_invalid(key_id)
+            .await?
+            .filter(|key| key.is_valid()))
     }
 
     /// Get a key for a specific node
@@ -239,12 +283,10 @@ impl KeyManager {
         // Iterate through keys, deserializing one at a time until we find a match
         for key_path in keys {
             if let Some(data) = self.storage.get(&key_path).await? {
-                let key_data: Key = deserialize(&data)?;
-
                 // Skip revoked/invalid keys (consistent with get_key() behavior)
-                if !key_data.is_valid() {
+                let Some(key_data) = Self::check_key_validity(&data)? else {
                     continue;
-                }
+                };
 
                 // If no auth_method filter, any valid key counts as a match
                 let matches = if let Some(auth_methods) = auth_methods {
@@ -576,6 +618,57 @@ mod tests {
         assert!(key_manager.get_key("test_key").await.unwrap().is_none());
         assert!(key_manager
             .find_root_key_by_public_key("test_pub_key")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn get_key_including_invalid_surfaces_revoked_key_that_get_key_hides() {
+        // Regression for issue #3069: `get_key` collapses a revoked key into
+        // `None`, indistinguishable from "never existed". `get_key_including_invalid`
+        // must still return it so verification can report a revoked token as 403.
+        let storage = Arc::new(MemoryStorage::new());
+        let key_manager = KeyManager::new(storage);
+
+        let mut root = Key::new_root_key_with_permissions(
+            "admin".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        key_manager.set_key("root-1", &root).await.unwrap();
+
+        // While valid, both lookups return it.
+        assert!(key_manager.get_key("root-1").await.unwrap().is_some());
+        assert!(key_manager
+            .get_key_including_invalid("root-1")
+            .await
+            .unwrap()
+            .is_some());
+
+        // Revoke and persist.
+        root.revoke();
+        key_manager.set_key("root-1", &root).await.unwrap();
+
+        // `get_key` hides the revoked key; the raw lookup still returns it and
+        // reports it as revoked.
+        assert!(
+            key_manager.get_key("root-1").await.unwrap().is_none(),
+            "get_key must hide a revoked key"
+        );
+        let raw = key_manager
+            .get_key_including_invalid("root-1")
+            .await
+            .unwrap()
+            .expect("get_key_including_invalid must still return a revoked key");
+        assert!(raw.is_revoked(), "returned key must report as revoked");
+
+        // A genuinely absent id is `None` through both lookups — that is how a
+        // revoked key (Some) stays distinguishable from "not found" (None).
+        assert!(key_manager.get_key("ghost").await.unwrap().is_none());
+        assert!(key_manager
+            .get_key_including_invalid("ghost")
             .await
             .unwrap()
             .is_none());

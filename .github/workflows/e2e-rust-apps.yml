@@ -142,6 +142,59 @@ jobs:
         if: always()
         run: merobox stop --no-docker --all || true
 
+  # Revoked-token 403 seam (issue #3069): a token whose key was revoked must
+  # surface as 403 + `X-Auth-Error: token_revoked` — not the generic 401 it
+  # used to collapse into — through the calimero-server guard, the embedded
+  # auth middleware, and the proxy-shaped validate_handler. Same binary-mode
+  # embedded-auth shape as auth-seam; assertions in scripts/e2e-auth-revocation.sh.
+  auth-revocation:
+    name: Auth revocation (revoked-token 403 e2e)
+    needs: build-image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v8
+        with:
+          name: merod-image
+          path: /tmp
+
+      - name: Extract merod binary from image
+        run: |
+          zstd -d /tmp/merod-local.tar.zst --stdout | docker load
+          id=$(docker create merod:local)
+          docker cp "$id:/usr/local/bin/merod" ./merod
+          docker rm "$id"
+          chmod +x ./merod
+
+      - name: Setup merobox
+        uses: ./.github/actions/setup-merobox
+
+      - name: Run auth-revocation e2e (merobox, embedded auth)
+        env:
+          # Admin credentials minted AT INIT, matching MERO_E2E_USER /
+          # MERO_E2E_PASS the script logs in with (see the auth-seam job for
+          # the full rationale). CI-only values for an ephemeral localhost node.
+          MERO_AUTH_ADMIN_USER: dev
+          MERO_AUTH_ADMIN_PASSWORD: dev-password
+          MERO_E2E_USER: dev
+          MERO_E2E_PASS: dev-password
+        run: |
+          merobox bootstrap run workflows/auth-revocation.yml \
+            --no-docker --binary-path ./merod --auth-mode embedded
+
+      - name: Logs on failure
+        if: failure()
+        run: cat data/auth-revocation-1/logs/*.log || true
+
+      - name: Stop nodes
+        if: always()
+        run: merobox stop --no-docker --all || true
+
   # ── Build WASM apps (runs in parallel with image build) ──
   build-apps:
     name: Build Apps
@@ -737,16 +790,16 @@ jobs:
   # ── Report phase: notify on PR failure ──
   comment:
     name: Report Failed Workflow
-    needs: [test, auth-seam]
+    needs: [test, auth-seam, auth-revocation]
     runs-on: ubuntu-latest
     if: always() && github.event_name == 'pull_request'
     steps:
       - name: Check if main job failed or was cancelled
         id: check_status
         run: |
-          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ]; then
+          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ] || [ "${{ needs.auth-revocation.result }}" != "success" ]; then
             echo "job_failed=true" >> $GITHUB_OUTPUT
-            if [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ]; then
+            if [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ] || [ "${{ needs.auth-revocation.result }}" == "cancelled" ]; then
               echo "was_cancelled=true" >> $GITHUB_OUTPUT
             else
               echo "was_cancelled=false" >> $GITHUB_OUTPUT

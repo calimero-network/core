@@ -359,16 +359,19 @@ impl TokenManager {
         permissions: Vec<String>,
         node_url: Option<String>,
     ) -> Result<(String, String), AuthError> {
-        // Verify the key exists and is valid
+        // Verify the key exists and is valid. Explicit on status of key validity
         let key = self
             .key_manager
-            .get_key(&key_id)
+            .get_key_including_invalid(&key_id)
             .await
             .map_err(|e| AuthError::StorageError(e.into()))?
             .ok_or_else(|| AuthError::InvalidToken("Key not found".to_string()))?;
 
-        if !key.is_valid() {
+        if key.is_revoked() {
             return Err(AuthError::TokenRevoked);
+        }
+        if key.is_expired() {
+            return Err(AuthError::TokenExpired);
         }
 
         let access_expiry = Duration::seconds(self.config.access_token_expiry as i64);
@@ -562,16 +565,21 @@ impl TokenManager {
             }
         }
 
-        // Verify the key exists and is valid
+        // Verify the key exists and is valid. Explicit lookup for key validity
         let key = self
             .key_manager
-            .get_key(&claims.sub)
+            .get_key_including_invalid(&claims.sub)
             .await
             .map_err(|e| AuthError::StorageError(e.into()))?
             .ok_or_else(|| AuthError::InvalidToken("Key not found".to_string()))?;
 
-        if !key.is_valid() {
+        // Check if the key has been revoked or expired since more explicit
+        // `get_key_including_invalid` was used
+        if key.is_revoked() {
             return Err(AuthError::TokenRevoked);
+        }
+        if key.is_expired() {
+            return Err(AuthError::TokenExpired);
         }
 
         // Re-derive effective permissions from the LIVE key rather than trusting
@@ -1238,6 +1246,102 @@ mod tests {
             !resp.permissions.contains(&"context".to_string()),
             "permission removed from the live key must NOT be granted, got {:?}",
             resp.permissions
+        );
+    }
+
+    // ==========================================================================
+    // REVOKED / EXPIRED / ABSENT KEY DISTINCTION (issue #3069)
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn verify_token_string_reports_revoked_key_as_token_revoked() {
+        let (tm, _sm) = test_manager().await;
+
+        let mut key = crate::storage::models::Key::new_root_key_with_permissions(
+            "pk".to_string(),
+            "method".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        tm.get_key_manager().set_key("key-1", &key).await.unwrap();
+
+        let (access, _refresh) = tm
+            .generate_token_pair("key-1".to_string(), vec!["admin".to_string()], None)
+            .await
+            .unwrap();
+
+        // Valid before revocation.
+        assert!(tm.verify_token_string(&access, None).await.is_ok());
+
+        // Revoke the key and persist.
+        key.revoke();
+        tm.get_key_manager().set_key("key-1", &key).await.unwrap();
+
+        // The presented token must now be rejected as revoked (→ 403), NOT as a
+        // generic invalid/absent key (→ 401). This is the reachability gap the
+        // issue tracks: `get_key` used to hide the revoked key.
+        let err = tm
+            .verify_token_string(&access, None)
+            .await
+            .expect_err("revoked key token must be rejected");
+        assert!(
+            matches!(err, AuthError::TokenRevoked),
+            "revoked key must surface as TokenRevoked, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_token_string_reports_absent_key_as_invalid_token() {
+        let (tm, _sm) = test_manager().await;
+
+        // Mint a token whose subject key is never stored.
+        let (access, _refresh) = tm
+            .generate_mock_token_pair("ghost".to_string(), vec!["admin".to_string()], None, None)
+            .await
+            .unwrap();
+
+        let err = tm
+            .verify_token_string(&access, None)
+            .await
+            .expect_err("token for an absent key must be rejected");
+        assert!(
+            matches!(err, AuthError::InvalidToken(_)),
+            "absent key must surface as InvalidToken (401), not TokenRevoked, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_token_string_reports_expired_key_as_token_expired() {
+        let (tm, _sm) = test_manager().await;
+
+        // Key whose own lifetime has already lapsed (distinct from the JWT `exp`).
+        let mut key = crate::storage::models::Key::new_root_key_with_permissions(
+            "pk".to_string(),
+            "method".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        key.set_expires_at(Some(1)); // Unix second 1 — long past.
+        tm.get_key_manager().set_key("key-1", &key).await.unwrap();
+
+        // Mint a token that is itself unexpired, so only the KEY expiry can fail.
+        let (access, _refresh) = tm
+            .generate_mock_token_pair(
+                "key-1".to_string(),
+                vec!["admin".to_string()],
+                None,
+                Some(3600),
+            )
+            .await
+            .unwrap();
+
+        let err = tm
+            .verify_token_string(&access, None)
+            .await
+            .expect_err("token backed by an expired key must be rejected");
+        assert!(
+            matches!(err, AuthError::TokenExpired),
+            "expired key must surface as TokenExpired (401), got {err:?}"
         );
     }
 

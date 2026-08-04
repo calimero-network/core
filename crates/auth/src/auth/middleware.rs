@@ -871,24 +871,50 @@ mod tests {
         key.revoke();
         key_manager.set_key("test_key_revoke", &key).await.unwrap();
 
-        // Verify token fails after revocation
-        // Note: The current implementation of get_key() returns None for revoked keys,
-        // so the error will be "Key not found" rather than "Key has been revoked"
+        // Verify token fails after revocation. Verification looks the key up with
+        // `get_key_including_invalid`, so a revoked key now surfaces as the
+        // dedicated `TokenRevoked` variant (mapped to 403) instead of being
+        // collapsed into a generic "key not found" 401 (issue #3069).
         let result = token_manager.verify_token_from_headers(&headers).await;
-        assert!(result.is_err(), "Token should fail after key revocation");
+        let err = result.expect_err("Token should fail after key revocation");
+        assert!(
+            matches!(err, crate::AuthError::TokenRevoked),
+            "revoked key must surface as TokenRevoked (403), got {err:?}"
+        );
+    }
 
-        let err = result.unwrap_err();
-        match &err {
-            crate::AuthError::InvalidToken(msg) => {
-                // The system treats revoked keys as "not found" since get_key()
-                // filters them out. This is the actual system behavior.
-                assert!(
-                    msg.contains("not found") || msg.contains("revoked"),
-                    "Error should indicate key is invalid: {msg}"
-                );
-            }
-            _ => panic!("Expected InvalidToken error"),
-        }
+    #[tokio::test]
+    async fn test_absent_key_token_verification_is_not_revoked() {
+        // The complement of the revoked case: a token whose key genuinely never
+        // existed must stay a generic invalid-token (401), NOT a revocation (403).
+        let (storage, token_manager, _) = create_test_setup().await;
+
+        // Mint a token for a key id we never store.
+        let (access_token, _) = token_manager
+            .generate_mock_token_pair(
+                "never_stored".to_string(),
+                vec!["admin".to_string()],
+                None,
+                Some(3600),
+            )
+            .await
+            .unwrap();
+        drop(storage);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "Authorization",
+            HeaderValue::from_str(&format!("Bearer {access_token}")).unwrap(),
+        );
+
+        let err = token_manager
+            .verify_token_from_headers(&headers)
+            .await
+            .expect_err("token for a non-existent key must be rejected");
+        assert!(
+            matches!(err, crate::AuthError::InvalidToken(_)),
+            "absent key must surface as InvalidToken (401), got {err:?}"
+        );
     }
 
     // ==========================================================================
