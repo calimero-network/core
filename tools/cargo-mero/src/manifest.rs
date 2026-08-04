@@ -1,9 +1,10 @@
-//! `manifest.json` rendering for `cargo mero bundle`. The shape is the contract
-//! read by the node's bundle deserializer (`calimero-node-primitives`, the
-//! `BundleManifest` struct), not the hand-written `build-bundle.sh` heredocs.
+//! `manifest.json` rendering for `cargo mero bundle`: constructs the node's own
+//! `BundleManifest` type directly, so a new node-side field is a compile error here.
 
+use calimero_bundle::{
+    BundleArtifact, BundleHandlers, BundleLinks, BundleManifest, BundleMetadata, BundleService,
+};
 use eyre::Result;
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::meta::BundleMeta;
@@ -11,36 +12,24 @@ use crate::meta::BundleMeta;
 /// Manifest schema version; `"1.0"` is the only value the node accepts.
 const MANIFEST_VERSION: &str = "1.0";
 
-/// One bundle file: bundle-relative path, byte size, and lowercase-hex SHA-256.
-/// The node requires this hash and checks the artifact bytes against it, so a
-/// wrong value here makes the bundle uninstallable.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Artifact {
-    pub path: String,
-    pub size: u64,
-    pub hash: String,
-}
-
-impl Artifact {
-    pub fn from_bytes(path: impl Into<String>, bytes: &[u8]) -> Self {
-        let hash = Sha256::digest(bytes);
-        Self {
-            path: path.into(),
-            size: bytes.len() as u64,
-            hash: hex_lower(&hash),
-        }
-    }
-}
-
 /// A staged service: its wasm and abi already copied under the bundle root.
 /// `service_name` is `None` for a single-service bundle (top-level `wasm`/`abi`),
 /// `Some(name)` for a member of a multi-service `services[]`.
 #[derive(Debug, Clone)]
 pub struct StagedArtifact {
     pub service_name: Option<String>,
-    pub wasm: Artifact,
-    pub abi: Artifact,
+    pub wasm: BundleArtifact,
+    pub abi: Option<BundleArtifact>,
+}
+
+/// Hashes `bytes` into the manifest's `{path, hash, size}` shape; the node
+/// checks artifact bytes against this hash, so a wrong value is uninstallable.
+pub fn artifact_from_bytes(rel: impl Into<String>, bytes: &[u8]) -> BundleArtifact {
+    BundleArtifact {
+        path: rel.into(),
+        hash: hex_lower(&Sha256::digest(bytes)),
+        size: bytes.len() as u64,
+    }
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -51,105 +40,68 @@ fn hex_lower(bytes: &[u8]) -> String {
     s
 }
 
-/// The `metadata` block; `name` is required whenever it is present. The node has
-/// no `author` field but tolerates unknown keys, so it round-trips unread.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MetadataJson {
-    name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    author: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ServiceJson<'a> {
-    name: &'a str,
-    wasm: &'a Artifact,
-    abi: &'a Artifact,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LinksJson {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    frontend: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ManifestJson<'a> {
-    version: &'static str,
-    package: &'a str,
-    app_version: &'a str,
-    min_runtime_version: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    metadata: Option<MetadataJson>,
-    /// Single-service top-level wasm/abi; omitted when `services` is populated.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    wasm: Option<&'a Artifact>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    abi: Option<&'a Artifact>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    services: Option<Vec<ServiceJson<'a>>>,
-    migrations: Vec<Artifact>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    links: Option<LinksJson>,
-}
-
 /// Render `manifest.json`: a single service uses top-level `wasm`/`abi`, anything
 /// else emits `services[]`, matching how the node reads them. Signing adds
 /// `signerId`/`signature` afterwards.
+///
+/// No `..` in `BundleManifest::artifacts()`: a node-side field addition must
+/// break this build until handled.
 pub fn render(meta: &BundleMeta, artifacts: &[StagedArtifact]) -> Result<serde_json::Value> {
     let single = match artifacts {
         [only] if only.service_name.is_none() => Some(only),
         _ => None,
     };
-
     let (wasm, abi, services) = match single {
-        Some(a) => (Some(&a.wasm), Some(&a.abi), None),
+        Some(a) => (Some(a.wasm.clone()), a.abi.clone(), None),
         None => {
             let services = artifacts
                 .iter()
-                .map(|a| ServiceJson {
-                    name: a.service_name.as_deref().unwrap_or_default(),
-                    wasm: &a.wasm,
-                    abi: &a.abi,
+                .map(|a| BundleService {
+                    name: a.service_name.clone().unwrap_or_default(),
+                    wasm: a.wasm.clone(),
+                    abi: a.abi.clone(),
                 })
                 .collect();
             (None, None, Some(services))
         }
     };
 
-    let metadata = meta.name.clone().map(|name| MetadataJson {
-        name,
-        description: meta.description.clone(),
-        author: meta.author.clone(),
-    });
-
-    let manifest = ManifestJson {
-        version: MANIFEST_VERSION,
-        package: &meta.package,
-        app_version: &meta.app_version,
-        min_runtime_version: &meta.min_runtime_version,
-        metadata,
+    let manifest = BundleManifest {
+        version: MANIFEST_VERSION.to_owned(),
+        package: meta.package.clone(),
+        app_version: meta.app_version.clone(),
+        min_runtime_version: meta.min_runtime_version.clone(),
+        signer_id: None,
+        metadata: meta.name.clone().map(|name| BundleMetadata {
+            name,
+            description: meta.description.clone(),
+            author: meta.author.clone(),
+            icon: meta.icon.clone(),
+            tags: meta.tags.clone(),
+            license: meta.license.clone(),
+        }),
+        // Sibling of `metadata` so it stays outside app-id derivation. Defaults
+        // to the package, which is what the deep-link resolver matches on.
+        handlers: Some(BundleHandlers {
+            slug: Some(meta.slug.clone().unwrap_or_else(|| meta.package.clone())),
+        }),
+        interfaces: None,
         wasm,
         abi,
         services,
-        migrations: Vec::new(),
-        links: meta
-            .frontend
-            .clone()
-            .map(|f| LinksJson { frontend: Some(f) }),
+        links: Some(BundleLinks {
+            frontend: meta.frontend.clone(),
+            github: meta.github.clone(),
+            docs: meta.docs.clone(),
+        }),
+        signature: None,
     };
-
     Ok(serde_json::to_value(manifest)?)
 }
 
 #[cfg(test)]
 mod tests {
+    use camino::Utf8PathBuf;
     use serde_json::json;
 
     use super::*;
@@ -160,10 +112,17 @@ mod tests {
             name: Some("demo".into()),
             description: Some("A demo app".into()),
             author: Some("Alice".into()),
+            icon: None,
+            slug: None,
+            license: None,
+            tags: vec![],
+            github: None,
+            docs: None,
             min_runtime_version: "0.1.0".into(),
             frontend: None,
             app_version: "1.0.0".into(),
             services: vec![],
+            manifest_dir: Utf8PathBuf::new(),
         }
     }
 
@@ -172,8 +131,8 @@ mod tests {
         let meta = single_meta();
         let artifacts = vec![StagedArtifact {
             service_name: None,
-            wasm: Artifact::from_bytes("app.wasm", b"wasm-bytes"),
-            abi: Artifact::from_bytes("abi.json", b"abi-bytes"),
+            wasm: artifact_from_bytes("app.wasm", b"wasm-bytes"),
+            abi: Some(artifact_from_bytes("abi.json", b"abi-bytes")),
         }];
 
         let manifest = render(&meta, &artifacts).unwrap();
@@ -188,19 +147,21 @@ mod tests {
                 "metadata": {
                     "name": "demo",
                     "description": "A demo app",
-                    "author": "Alice"
+                    "author": "Alice",
+                    "tags": []
                 },
+                "handlers": { "slug": "com.example.demo" },
                 "wasm": {
                     "path": "app.wasm",
-                    "size": 10,
-                    "hash": "7db53183cb05feb146262096c5622eb295fe8cdc909dcdcbad8fadb89b6898f7"
+                    "hash": "7db53183cb05feb146262096c5622eb295fe8cdc909dcdcbad8fadb89b6898f7",
+                    "size": 10
                 },
                 "abi": {
                     "path": "abi.json",
-                    "size": 9,
-                    "hash": "56f2026ee3bf797d070812922ff571bb1b6dbd83965d5f693240c56f47b6700f"
+                    "hash": "56f2026ee3bf797d070812922ff571bb1b6dbd83965d5f693240c56f47b6700f",
+                    "size": 9
                 },
-                "migrations": []
+                "links": {}
             })
         );
     }
@@ -212,21 +173,34 @@ mod tests {
             name: Some("suite".into()),
             description: None,
             author: None,
+            icon: None,
+            slug: None,
+            license: None,
+            tags: vec![],
+            github: None,
+            docs: None,
             min_runtime_version: "0.0.0".into(),
             frontend: Some("https://example.com".into()),
             app_version: "0.5.0".into(),
             services: vec![],
+            manifest_dir: Utf8PathBuf::new(),
         };
         let artifacts = vec![
             StagedArtifact {
                 service_name: Some("store-a".into()),
-                wasm: Artifact::from_bytes("services/store-a.wasm", b"store-a-wasm"),
-                abi: Artifact::from_bytes("services/store-a-abi.json", b"store-a-abi"),
+                wasm: artifact_from_bytes("services/store-a.wasm", b"store-a-wasm"),
+                abi: Some(artifact_from_bytes(
+                    "services/store-a-abi.json",
+                    b"store-a-abi",
+                )),
             },
             StagedArtifact {
                 service_name: Some("store-b".into()),
-                wasm: Artifact::from_bytes("services/store-b.wasm", b"store-b-wasm"),
-                abi: Artifact::from_bytes("services/store-b-abi.json", b"store-b-abi"),
+                wasm: artifact_from_bytes("services/store-b.wasm", b"store-b-wasm"),
+                abi: Some(artifact_from_bytes(
+                    "services/store-b-abi.json",
+                    b"store-b-abi",
+                )),
             },
         ];
 
@@ -239,36 +213,39 @@ mod tests {
                 "package": "com.example.suite",
                 "appVersion": "0.5.0",
                 "minRuntimeVersion": "0.0.0",
-                "metadata": { "name": "suite" },
+                "metadata": {
+                    "name": "suite",
+                    "tags": []
+                },
+                "handlers": { "slug": "com.example.suite" },
                 "services": [
                     {
                         "name": "store-a",
                         "wasm": {
                             "path": "services/store-a.wasm",
-                            "size": 12,
-                            "hash": "61e8d9e2e1f7dc925781bb55a64d09a0c4867dda8fdcafb465b3004f5724619d"
+                            "hash": "61e8d9e2e1f7dc925781bb55a64d09a0c4867dda8fdcafb465b3004f5724619d",
+                            "size": 12
                         },
                         "abi": {
                             "path": "services/store-a-abi.json",
-                            "size": 11,
-                            "hash": "5f6b00fd7bd4f7c3c663fd8987eaf1f18da171a7ff33ef89b6870b1af4a381b4"
+                            "hash": "5f6b00fd7bd4f7c3c663fd8987eaf1f18da171a7ff33ef89b6870b1af4a381b4",
+                            "size": 11
                         }
                     },
                     {
                         "name": "store-b",
                         "wasm": {
                             "path": "services/store-b.wasm",
-                            "size": 12,
-                            "hash": "4de4533b94fe6acf6dc3e5936c0b4d101cf38fcb5ee8a2e27ff2682e77594a8f"
+                            "hash": "4de4533b94fe6acf6dc3e5936c0b4d101cf38fcb5ee8a2e27ff2682e77594a8f",
+                            "size": 12
                         },
                         "abi": {
                             "path": "services/store-b-abi.json",
-                            "size": 11,
-                            "hash": "926a02f053b02970015607052148c4cbdccda06a6c60ca837bec6c3a4790db23"
+                            "hash": "926a02f053b02970015607052148c4cbdccda06a6c60ca837bec6c3a4790db23",
+                            "size": 11
                         }
                     }
                 ],
-                "migrations": [],
                 "links": { "frontend": "https://example.com" }
             })
         );

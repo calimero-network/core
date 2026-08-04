@@ -2,7 +2,8 @@ use std::str::FromStr;
 
 use serde_json::{from_value as from_json_value, json, to_string as to_json_string};
 
-use super::{AppKey, InvalidAppKey, InvalidSignerId, SignerId};
+use super::{AppKey, ApplicationId, InvalidAppKey, InvalidSignerId, SignerId};
+use crate::hash::Hash;
 
 // -----------------------------------------------------------------------------
 // SignerId Tests
@@ -324,4 +325,19 @@ fn test_app_key_complex_app_id() {
     // With underscores and numbers
     let k3 = AppKey::new("my_app_v2", signer_id).unwrap();
     assert_eq!(k3.app_id(), "my_app_v2");
+}
+
+// -----------------------------------------------------------------------------
+// ApplicationId::for_bundle Tests
+// -----------------------------------------------------------------------------
+
+#[test]
+fn for_bundle_matches_the_inline_derivation() {
+    let package: Box<str> = "com.example.demo".into();
+    let signer: Box<str> = "did:key:z6MkExample".into();
+    let inline = ApplicationId::from(*Hash::hash_borsh(&(&package, &signer)).expect("hash"));
+    assert_eq!(
+        ApplicationId::for_bundle(&package, &signer).expect("helper"),
+        inline
+    );
 }

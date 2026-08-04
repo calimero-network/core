@@ -21,6 +21,7 @@ calimero-storage = { path = "../../../../../crates/storage", features = ["testin
 package = "com.example.demo-app"
 name = "Demo App"
 description = "cargo-mero pipeline fixture"
+icon = "default"
 
 [profile.app-release]
 inherits = "release"

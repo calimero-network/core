@@ -66,9 +66,7 @@ jobs:
         run: cargo mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
 
       - name: Build scaffolding-e2e multi-service bundle
-        run: |
-          cd apps/scaffolding-e2e
-          ./build-multi-service-bundle.sh
+        run: cargo mero bundle --dev --no-icon --app-version 0.1.0 --manifest-path apps/scaffolding-e2e/Cargo.toml
 
       - name: Build xcall-example app
         run: cargo mero build --manifest-path apps/xcall-example/Cargo.toml
@@ -79,7 +77,7 @@ jobs:
           name: e2e-rust-apps-release-build-artifacts
           path: |
             apps/scaffolding-e2e/res/*.wasm
-            apps/scaffolding-e2e/res/*.mpk
+            apps/scaffolding-e2e/dist/*.mpk
             apps/scaffolding-e2e/res/abi.json
             apps/xcall-example/res/*.wasm
             apps/xcall-example/res/abi.json
@@ -381,7 +379,7 @@ jobs:
           path: |
             apps/scaffolding-e2e/res/*.wasm
             apps/scaffolding-e2e/res/abi.json
-            apps/scaffolding-e2e/res/*.mpk
+            apps/scaffolding-e2e/dist/*.mpk
             apps/scaffolding-e2e/res/state-schema.json
             apps/scaffolding-e2e/data/
             apps/xcall-example/res/*.wasm

@@ -89,8 +89,8 @@ The normal path is not to call `mero-sign` by hand.
 `cargo mero bundle` builds the app, stages the wasm/abi, writes `manifest.json`, signs it (via this crate), and packages the `.mpk`:
 
 ```bash
-cargo mero bundle --key my-key.json     # production
-cargo mero bundle --dev                  # local, not publishable
+cargo mero bundle --key my-key.json --no-icon     # production
+cargo mero bundle --dev --no-icon                  # local, not publishable
 ```
 
 Reach for the `mero-sign` binary directly only to re-sign an existing `manifest.json`, or to generate and inspect keys outside a build.

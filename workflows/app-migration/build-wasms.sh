@@ -2,9 +2,8 @@
 # Build + bundle the migration fixtures the workflows in this directory install.
 #
 # Each pair shares one `--package` so both versions resolve to the same
-# ApplicationId, which is the upgrade shape under test. That also means the
-# default dist/<package>.mpk path would collide, so each suite passes its own
-# `-o`.
+# ApplicationId, the upgrade shape under test; the versioned output name keeps
+# the two dist/ files from colliding.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,22 +62,11 @@ SUITES=(
 mkdir -p dist
 PATH="$(scripts/setup-cargo-mero.sh):$PATH"
 
-# The missing-ABI scenario needs one bundle with no embedded ABI, which cargo mero
-# cannot produce. Built by hand BEFORE the loop below, which overwrites this same
-# res/ wasm with an embedded copy. Its own package keeps the ApplicationId distinct.
-NOABI_SUITE="apps/migrations/migration-suite-v2-add-field"
-NOABI_WASM="migration_suite_v2_add_field.wasm"
-NOABI_TARGET="${CARGO_TARGET_DIR:-target}"
-echo ">>> Building unembedded migration-suite-v2 (missing-ABI scenario fixture)"
-cargo build --target wasm32-unknown-unknown --profile app-release -p migration-suite-v2-add-field
-mkdir -p "$NOABI_SUITE/res"
-cp "$NOABI_TARGET/wasm32-unknown-unknown/app-release/$NOABI_WASM" "$NOABI_SUITE/res/$NOABI_WASM"
-if command -v wasm-opt > /dev/null; then
-    wasm-opt -Oz --enable-bulk-memory "$NOABI_SUITE/res/$NOABI_WASM" -o "$NOABI_SUITE/res/$NOABI_WASM"
-fi
+# The missing-ABI scenario needs one bundle with no embedded ABI. Its own
+# package keeps the ApplicationId distinct from the embedded migration-suite-v2.
 echo ">>> Bundling unembedded migration-suite-v2 (com.calimero.migration-suite-noabi @ 2.0.0)"
-bash apps/migrations/bundle-wasm.sh \
-    "$NOABI_SUITE" "$NOABI_WASM" "com.calimero.migration-suite-noabi" "2.0.0"
+(cd apps/migrations/migration-suite-v2-add-field && cargo mero bundle --dev --no-abi --no-icon \
+    --package com.calimero.migration-suite-noabi --app-version 2.0.0)
 
 for suite in "${SUITES[@]}"; do
     if [ ! -d "$suite" ]; then
@@ -90,12 +78,12 @@ for suite in "${SUITES[@]}"; do
     # `scenario-user-storage-v2`       -> base `scenario-user-storage`, version 2.
     base="${dir_name%%-v[0-9]*}"
     v_num="$(printf '%s' "$dir_name" | sed -E 's/.*-v([0-9]+).*/\1/')"
-    echo ">>> Bundling $suite (com.calimero.${base} @ ${v_num}.0.0) -> dist/${dir_name}.mpk"
-    cargo mero bundle --dev \
-        --manifest-path "$suite/Cargo.toml" \
+    echo ">>> Bundling $suite (com.calimero.${base} @ ${v_num}.0.0)"
+    # cd, not --manifest-path: without it the output dir is the workspace root,
+    # so bundles land in the top-level dist/ these scenarios install from.
+    (cd "$suite" && cargo mero bundle --dev --no-icon \
         --package "com.calimero.${base}" \
-        --app-version "${v_num}.0.0" \
-        -o "dist/${dir_name}.mpk"
+        --app-version "${v_num}.0.0")
 done
 
 echo ">>> All migration-suite fixtures built and bundled under dist/."

@@ -1,7 +1,7 @@
 //! Bundle metadata parsing from `[package.metadata.calimero]` /
 //! `[workspace.metadata.calimero]` tables.
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{eyre, Result};
 use serde::Deserialize;
 use serde_json::Value;
@@ -15,13 +15,24 @@ pub struct BundleMeta {
     pub name: Option<String>,
     pub description: Option<String>,
     pub author: Option<String>,
+    /// Unresolved path from `[..metadata.calimero]`; not yet encoded.
+    pub icon: Option<String>,
+    pub slug: Option<String>,
+    pub license: Option<String>,
+    pub tags: Vec<String>,
+    pub github: Option<String>,
+    pub docs: Option<String>,
     pub min_runtime_version: String,
     pub frontend: Option<String>,
     pub app_version: String,
     pub services: Vec<ServiceMeta>,
+    /// Directory of the table that supplied this metadata, so a relative
+    /// `icon` path resolves against the right root.
+    pub manifest_dir: Utf8PathBuf,
 }
 
-/// One entry of a workspace-level `services` table; empty on the single-crate side.
+/// One entry of a `services` table (workspace-level, or package-level when no
+/// workspace table is present); empty for a single-service app.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceMeta {
     pub name: String,
@@ -38,6 +49,13 @@ struct RawCalimeroMeta {
     name: Option<String>,
     description: Option<String>,
     author: Option<String>,
+    icon: Option<String>,
+    slug: Option<String>,
+    license: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    github: Option<String>,
+    docs: Option<String>,
     min_runtime_version: Option<String>,
     frontend: Option<String>,
     #[serde(default)]
@@ -95,6 +113,18 @@ fn validate_service_name(name: &str) -> Result<()> {
     validate_path_safe("service name", name, &[])
 }
 
+/// Matches the desktop's accepted slug charset: reverse-DNS-safe, capped at
+/// the length the deep-link resolver indexes on.
+fn validate_slug(slug: &str) -> Result<()> {
+    validate_path_safe("slug", slug, b".")?;
+    if slug.len() > 128 {
+        return Err(eyre!(
+            "invalid slug `{slug}`: must be at most 128 characters"
+        ));
+    }
+    Ok(())
+}
+
 fn parse_table(value: &Value) -> Result<RawCalimeroMeta> {
     serde_json::from_value(value.clone())
         .map_err(|e| eyre!("invalid [..metadata.calimero] table: {e}"))
@@ -115,7 +145,9 @@ fn calimero_subtable(metadata: Option<&Value>) -> Option<&Value> {
 ///
 /// Workspace-level `[workspace.metadata.calimero]` wins over the crate's own
 /// `[package.metadata.calimero]` when both are present (multi-service apps
-/// configure services at the workspace root).
+/// configure services at the workspace root). A crate that cannot declare a
+/// workspace table of its own (e.g. a member of a larger workspace) may
+/// instead declare `services` in its own package table.
 pub fn load(metadata: &cargo_metadata::Metadata, manifest_dir: &Utf8Path) -> Result<BundleMeta> {
     let package = metadata
         .packages
@@ -129,7 +161,23 @@ pub fn load(metadata: &cargo_metadata::Metadata, manifest_dir: &Utf8Path) -> Res
     let package_value = calimero_subtable(resolved.map(|p| &p.metadata));
     let workspace_value = calimero_subtable(Some(&metadata.workspace_metadata));
 
-    match resolved {
+    // A relative `icon` path resolves against whichever table actually
+    // supplied the metadata: the workspace root for [workspace.metadata.calimero],
+    // or the *resolved* package's own directory for [package.metadata.calimero].
+    // `manifest_dir` is the bundle's base dir, which is the workspace root
+    // whenever `--manifest-path` is omitted - not necessarily where the
+    // resolved package actually lives (e.g. a workspace member built from
+    // its own directory with no --manifest-path).
+    let table_dir = if workspace_value.is_some() {
+        metadata.workspace_root.clone()
+    } else {
+        resolved
+            .and_then(|p| p.manifest_path.parent())
+            .map(Utf8Path::to_owned)
+            .unwrap_or_else(|| manifest_dir.to_owned())
+    };
+
+    let mut bundle_meta = match resolved {
         Some(p) => load_from_values(
             workspace_value,
             package_value,
@@ -150,7 +198,9 @@ pub fn load(metadata: &cargo_metadata::Metadata, manifest_dir: &Utf8Path) -> Res
             let name = manifest_dir.file_name().unwrap_or("app");
             load_from_values(workspace_value, package_value, name, &version)
         }
-    }
+    }?;
+    bundle_meta.manifest_dir = table_dir;
+    Ok(bundle_meta)
 }
 
 /// Read `[workspace.package].version` from the virtual-workspace root manifest.
@@ -179,19 +229,27 @@ fn load_from_values(
         None => package_value.ok_or(MissingCalimeroPackage)?,
     };
 
-    // `services` is workspace-level only. Check the package table whether or not
-    // it won, so a stray array there is rejected instead of silently unread.
-    if let Some(package_table) = package_value {
-        if !parse_table(package_table)?.services.is_empty() {
-            return Err(eyre!(
-                "`services` belongs under [workspace.metadata.calimero], not [package.metadata.calimero]"
-            ));
+    // A workspace table, when present, always wins - so a package table's own
+    // `services` alongside it is misplaced (it would never be read). With no
+    // workspace table, the package table IS the value in use, so its own
+    // `services` is legitimate (e.g. two service names built from the crate
+    // declaring the table itself).
+    if workspace_value.is_some() {
+        if let Some(package_table) = package_value {
+            if !parse_table(package_table)?.services.is_empty() {
+                return Err(eyre!(
+                    "`services` belongs under [workspace.metadata.calimero], not [package.metadata.calimero]"
+                ));
+            }
         }
     }
 
     let raw = parse_table(value)?;
     let package = raw.package.ok_or(MissingCalimeroPackage)?;
     validate_package_id(&package)?;
+    if let Some(slug) = &raw.slug {
+        validate_slug(slug)?;
+    }
 
     let services = raw
         .services
@@ -222,12 +280,20 @@ fn load_from_values(
         name: raw.name.or_else(|| Some(crate_name.to_string())),
         description: raw.description,
         author: raw.author,
+        icon: raw.icon,
+        slug: raw.slug,
+        license: raw.license,
+        tags: raw.tags,
+        github: raw.github,
+        docs: raw.docs,
         min_runtime_version: raw
             .min_runtime_version
             .unwrap_or_else(|| "0.1.0".to_string()),
         frontend: raw.frontend,
         app_version: crate_version.to_string(),
         services,
+        // Set by `load`, which knows which table (workspace vs. package) won.
+        manifest_dir: Utf8PathBuf::new(),
     })
 }
 
@@ -254,20 +320,19 @@ mod tests {
     }
 
     #[test]
-    fn missing_table_is_typed_but_misplaced_services_is_not() {
+    fn missing_table_is_typed_but_a_malformed_table_is_not() {
         // No calimero table at all -> the downcastable missing-table error.
         let absent = load_from_values(None, None, "app", "0.1.0").unwrap_err();
         assert!(absent.downcast_ref::<MissingCalimeroPackage>().is_some());
 
-        // A present-but-misconfigured table (services under the package table) is
-        // a real error, NOT missing-table, so `build`'s fallback won't swallow it.
-        let misplaced = json!({
+        // A present-but-malformed table (an unrecognized key) is a real error,
+        // NOT missing-table, so `build`'s fallback won't swallow it.
+        let malformed = json!({
             "package": "com.example.app",
-            "services": [{ "name": "api", "crate": "api-service" }],
+            "not_a_real_field": true,
         });
-        let err = load_from_values(None, Some(&misplaced), "app", "0.1.0").unwrap_err();
+        let err = load_from_values(None, Some(&malformed), "app", "0.1.0").unwrap_err();
         assert!(err.downcast_ref::<MissingCalimeroPackage>().is_none());
-        assert!(err.to_string().contains("[workspace.metadata.calimero]"));
     }
 
     #[test]
@@ -313,18 +378,28 @@ mod tests {
         assert!(err.contains(r#"package = "com.example.my-app""#));
     }
 
+    // With no workspace table, `services` in the package table IS the value in
+    // use, so it's now legitimate: a workspace member that cannot declare its
+    // own `[workspace.metadata.calimero]` can still ship several named
+    // services, including two pointing at the crate declaring the table itself.
     #[test]
-    fn services_in_package_table_rejected() {
+    fn package_table_services_allowed_with_no_workspace_table() {
         let package_value = json!({
-            "package": "com.example.my-app",
-            "services": [{ "name": "api", "crate": "api-service" }],
+            "package": "com.example.suite",
+            "services": [
+                { "name": "store-a", "crate": "suite" },
+                { "name": "store-b", "crate": "suite" },
+            ],
         });
 
-        let err = load_from_values(None, Some(&package_value), "my-app", "1.0.0")
-            .unwrap_err()
-            .to_string();
+        let meta = load_from_values(None, Some(&package_value), "suite", "0.1.0").unwrap();
 
-        assert!(err.contains("[workspace.metadata.calimero]"));
+        assert_eq!(meta.package, "com.example.suite");
+        assert_eq!(meta.services.len(), 2);
+        assert_eq!(meta.services[0].name, "store-a");
+        assert_eq!(meta.services[0].crate_name, "suite");
+        assert_eq!(meta.services[1].name, "store-b");
+        assert_eq!(meta.services[1].crate_name, "suite");
     }
 
     #[test]
@@ -449,5 +524,148 @@ mod tests {
         .unwrap();
 
         assert_eq!(meta.package, "com.example.workspace-wins");
+    }
+
+    /// Drives `load_from_values` from a real `[package.metadata.calimero]` TOML
+    /// table, the same shape `load` extracts from a crate's `Cargo.toml`.
+    fn parse_for_test(toml_str: &str) -> Result<BundleMeta> {
+        let doc: toml::Value = toml::from_str(toml_str)?;
+        let calimero = doc
+            .get("package")
+            .and_then(|p| p.get("metadata"))
+            .and_then(|m| m.get("calimero"))
+            .ok_or_else(|| eyre!("fixture must declare [package.metadata.calimero]"))?;
+        let package_value = serde_json::to_value(calimero)?;
+        load_from_values(None, Some(&package_value), "test-app", "0.1.0")
+    }
+
+    #[test]
+    fn parses_the_full_metadata_table() {
+        let toml = r#"
+            [package.metadata.calimero]
+            package = "com.example.demo"
+            icon = "assets/icon.png"
+            slug = "demo"
+            license = "MIT"
+            tags = ["social", "chat"]
+            github = "https://github.com/acme/demo"
+            docs = "https://docs.acme.com"
+        "#;
+        let meta = parse_for_test(toml).expect("parses");
+        assert_eq!(meta.icon.as_deref(), Some("assets/icon.png"));
+        assert_eq!(meta.slug.as_deref(), Some("demo"));
+        assert_eq!(meta.license.as_deref(), Some("MIT"));
+        assert_eq!(meta.tags, vec!["social".to_owned(), "chat".to_owned()]);
+        assert_eq!(meta.github.as_deref(), Some("https://github.com/acme/demo"));
+        assert_eq!(meta.docs.as_deref(), Some("https://docs.acme.com"));
+    }
+
+    #[test]
+    fn rejects_a_slug_with_illegal_characters() {
+        let toml = r#"
+            [package.metadata.calimero]
+            package = "com.example.demo"
+            slug = "not a slug"
+        "#;
+        assert!(parse_for_test(toml).is_err());
+    }
+
+    /// A two-crate workspace (root + `member/`) on disk, so `load` can be driven
+    /// through real `cargo metadata` instead of the pure `load_from_values` core.
+    fn write_workspace(root: &Utf8Path, root_toml: &str, member_toml: &str) {
+        std::fs::write(root.join("Cargo.toml"), root_toml).unwrap();
+        std::fs::create_dir_all(root.join("member/src")).unwrap();
+        std::fs::write(root.join("member/Cargo.toml"), member_toml).unwrap();
+        std::fs::write(root.join("member/src/lib.rs"), "").unwrap();
+    }
+
+    fn cargo_metadata_for(root: &Utf8Path) -> cargo_metadata::Metadata {
+        cargo_metadata::MetadataCommand::new()
+            .manifest_path(root.join("Cargo.toml"))
+            .no_deps()
+            .other_options(["--offline".to_owned()])
+            .exec()
+            .expect("cargo metadata on the fixture workspace")
+    }
+
+    fn member_dir(metadata: &cargo_metadata::Metadata) -> Utf8PathBuf {
+        metadata
+            .packages
+            .iter()
+            .find(|p| p.name.as_str() == "member")
+            .expect("member package present")
+            .manifest_path
+            .parent()
+            .unwrap()
+            .to_owned()
+    }
+
+    // Guards against the two branches in `load` being swapped: package-level
+    // metadata must resolve against the member's dir, workspace-level against the root.
+    #[test]
+    fn manifest_dir_resolves_from_the_table_that_supplied_the_metadata() {
+        let package_tmp = tempfile::tempdir().unwrap();
+        let package_root = Utf8Path::from_path(package_tmp.path()).unwrap();
+        write_workspace(
+            package_root,
+            "[workspace]\nmembers = [\"member\"]\n",
+            "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [package.metadata.calimero]\npackage = \"com.example.member\"\n",
+        );
+        let package_metadata = cargo_metadata_for(package_root);
+        let package_member_dir = member_dir(&package_metadata);
+
+        let package_bundle = load(&package_metadata, &package_member_dir).unwrap();
+        assert_eq!(package_bundle.manifest_dir, package_member_dir);
+        assert_ne!(package_bundle.manifest_dir, package_metadata.workspace_root);
+
+        let workspace_tmp = tempfile::tempdir().unwrap();
+        let workspace_root = Utf8Path::from_path(workspace_tmp.path()).unwrap();
+        write_workspace(
+            workspace_root,
+            "[workspace]\nmembers = [\"member\"]\n\n\
+             [workspace.metadata.calimero]\npackage = \"com.example.workspace\"\n",
+            "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        let workspace_metadata = cargo_metadata_for(workspace_root);
+        let workspace_member_dir = member_dir(&workspace_metadata);
+
+        let workspace_bundle = load(&workspace_metadata, &workspace_member_dir).unwrap();
+        assert_eq!(
+            workspace_bundle.manifest_dir,
+            workspace_metadata.workspace_root
+        );
+        assert_ne!(workspace_bundle.manifest_dir, workspace_member_dir);
+    }
+
+    // Guards the real `bundle::base_dir()` shape: with no --manifest-path it
+    // passes the *workspace root* as `manifest_dir`, not the member's own
+    // directory. `cargo metadata` still resolves the member as the current
+    // package (via cwd), so `load` must resolve a package-table icon against
+    // that member's directory, not the workspace root it was called with.
+    #[test]
+    fn package_table_dir_resolves_from_the_resolved_package_not_the_passed_in_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        write_workspace(
+            root,
+            "[workspace]\nmembers = [\"member\"]\n",
+            "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [package.metadata.calimero]\npackage = \"com.example.member\"\n",
+        );
+
+        // No --manifest-path and no --no-deps: cargo resolves the *current*
+        // package from cwd, the same shape `workspace::metadata_for` produces
+        // when `cargo mero bundle` is invoked from inside the app directory.
+        let metadata = cargo_metadata::MetadataCommand::new()
+            .current_dir(root.join("member"))
+            .other_options(["--offline".to_owned()])
+            .exec()
+            .expect("cargo metadata on the fixture workspace");
+        let member_dir = member_dir(&metadata);
+        assert_ne!(member_dir, metadata.workspace_root);
+
+        let bundle = load(&metadata, &metadata.workspace_root).unwrap();
+        assert_eq!(bundle.manifest_dir, member_dir);
     }
 }

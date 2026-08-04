@@ -8,6 +8,10 @@ pub use signature::{
 
 use serde::{Deserialize, Serialize};
 
+/// The node refuses a bundle's `manifest.json` above this size, before any
+/// signature check. `cargo mero` derives its icon budget from this.
+pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+
 /// Represents an artifact within a bundle (WASM, ABI, migration)
 ///
 /// `hash` is what binds the artifact bytes to the manifest signature, so a
@@ -25,10 +29,15 @@ pub struct BundleArtifact {
 #[serde(rename_all = "camelCase")]
 pub struct BundleMetadata {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
 }
 
@@ -46,8 +55,11 @@ pub struct BundleInterfaces {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BundleLinks {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub frontend: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub github: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub docs: Option<String>,
 }
 
@@ -64,7 +76,7 @@ pub struct BundleLinks {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BundleHandlers {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slug: Option<String>,
 }
 
@@ -114,20 +126,22 @@ pub struct BundleManifest {
 
     pub min_runtime_version: String,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<BundleMetadata>,
 
     /// Deep-link handler declarations. Sibling of `metadata`, so it does not
     /// participate in the raw-wasm application-id derivation.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handlers: Option<BundleHandlers>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interfaces: Option<BundleInterfaces>,
 
     /// Single-service WASM (backward compat). Ignored when `services` is non-empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub wasm: Option<BundleArtifact>,
     /// Single-service ABI (backward compat). Ignored when `services` is non-empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub abi: Option<BundleArtifact>,
 
     /// Named services. When present, each context specifies which service it runs.
@@ -135,13 +149,10 @@ pub struct BundleManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub services: Option<Vec<BundleService>>,
 
-    #[serde(default)]
-    pub migrations: Vec<BundleArtifact>,
-
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub links: Option<BundleLinks>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<BundleSignature>,
 }
 
@@ -202,7 +213,6 @@ impl BundleManifest {
             wasm,
             abi,
             services,
-            migrations,
             version: _,
             package: _,
             app_version: _,
@@ -228,9 +238,6 @@ impl BundleManifest {
                 artifacts.push((format!("services[{i}].abi"), abi));
             }
         }
-        for (i, migration) in migrations.iter().enumerate() {
-            artifacts.push((format!("migrations[{i}]"), migration));
-        }
         artifacts
     }
 
@@ -254,6 +261,9 @@ impl BundleManifest {
             obj.insert("name".into(), serde_json::Value::String(m.name.clone()));
             if let Some(ref v) = m.description {
                 obj.insert("description".into(), serde_json::Value::String(v.clone()));
+            }
+            if let Some(ref v) = m.author {
+                obj.insert("author".into(), serde_json::Value::String(v.clone()));
             }
             if let Some(ref v) = m.icon {
                 obj.insert("icon".into(), serde_json::Value::String(v.clone()));
@@ -315,8 +325,25 @@ mod tests {
                     "name": "Mero Chat"
                 }},
                 {handlers_block}
-                "wasm": {{ "path": "app.wasm", "hash": "00", "size": 10 }},
-                "migrations": []
+                "wasm": {{ "path": "app.wasm", "hash": "00", "size": 10 }}
+            }}"#
+        )
+    }
+
+    /// Like `manifest_json`, but splices the given fragment into the
+    /// `metadata` object instead of the top-level `handlers` block.
+    fn manifest_json_with_metadata(metadata_fragment: &str) -> String {
+        format!(
+            r#"{{
+                "version": "1.0",
+                "package": "com.example.deeplink",
+                "appVersion": "1.0.0",
+                "minRuntimeVersion": "0.1.0",
+                "metadata": {{
+                    {metadata_fragment}
+                    "name": "Mero Chat"
+                }},
+                "wasm": {{ "path": "app.wasm", "hash": "00", "size": 10 }}
             }}"#
         )
     }
@@ -373,8 +400,8 @@ mod tests {
         );
 
         // 2. Re-derive the raw-wasm application-id the same way
-        //    `NodeClient::install_raw_wasm` does — hash(bytecode, size, source,
-        //    metadata) — and assert it is identical for both manifests.
+        //    `NodeClient::install_raw_wasm` does - hash(bytecode, size, source,
+        //    metadata) - and assert it is identical for both manifests.
         let bytecode = Hash::new(b"fake wasm bytecode");
         let size: u64 = 18;
         // `install_raw_wasm` stores the source as a string in `ApplicationMeta`,
@@ -390,6 +417,20 @@ mod tests {
             derive(&meta_with),
             derive(&meta_without),
             "handlers must not change the derived raw-wasm application-id"
+        );
+    }
+
+    #[test]
+    fn author_does_not_shift_the_bundle_app_id() {
+        let with: BundleManifest =
+            serde_json::from_str(&manifest_json_with_metadata(r#""author": "Acme","#))
+                .expect("with author");
+        let without: BundleManifest =
+            serde_json::from_str(&manifest_json_with_metadata("")).expect("without author");
+        // Bundle ids derive from (package, signerId), never from metadata.
+        assert_eq!(
+            ApplicationId::for_bundle(&with.package, "did:key:z6MkExample").expect("with"),
+            ApplicationId::for_bundle(&without.package, "did:key:z6MkExample").expect("without"),
         );
     }
 }
