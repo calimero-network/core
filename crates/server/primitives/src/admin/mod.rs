@@ -2144,6 +2144,19 @@ pub struct PairDeviceCompleteApiResponse {
 pub struct RevokeDeviceApiRequest {
     /// Hex-encoded `DeviceId` to withdraw (32 bytes).
     pub device_id: String,
+    /// A hex-encoded, borsh-serialized `SignedDeviceRevocation` minted elsewhere.
+    ///
+    /// Present when the account root that owns the device is not on this node —
+    /// the lost-device case, where the proof is signed offline (`merod account
+    /// revoke-proof`) and this node only publishes it. Omit it to keep the
+    /// original behaviour: the node mints its own proof if it owns the account,
+    /// and otherwise revokes as an admin.
+    ///
+    /// Not a credential, and not a secret: it authorises this one revocation of
+    /// this one device, and only alongside a stored binding that already names the
+    /// same account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<String>,
 }
 
 impl Validate for RevokeDeviceApiRequest {
@@ -2160,6 +2173,24 @@ impl Validate for RevokeDeviceApiRequest {
                 field: "deviceId",
                 reason: "not valid hex".to_owned(),
             });
+        }
+        // Hex only. Whether the bytes decode as a proof, and whether that proof
+        // verifies, are checked where the account is known — validation here has no
+        // access to it, and a "valid" verdict that only meant "decodes" would be
+        // more misleading than no check at all. An empty string is rejected because
+        // it is always a caller mistake: omit the field instead.
+        if let Some(proof) = &self.proof {
+            if proof.is_empty() {
+                errors.push(ValidationError::InvalidHexEncoding {
+                    field: "proof",
+                    reason: "empty; omit the field entirely if you have no proof".to_owned(),
+                });
+            } else if hex::decode(proof).is_err() {
+                errors.push(ValidationError::InvalidHexEncoding {
+                    field: "proof",
+                    reason: "not valid hex".to_owned(),
+                });
+            }
         }
         errors
     }

@@ -1,0 +1,529 @@
+name: E2E Account Root - Back Up and Restore
+description: >
+  The acceptance test for `merod account export|import` (#3335). The account root
+  is the one key that can certify a replacement device after every device is lost,
+  and until these commands existed the recovery property the account model is
+  built around was structurally available but not deliverable: the key survives a
+  namespace-identity rotation and does not survive losing the disk.
+
+  Offline by necessity, which is what shapes the whole scenario: `account export`
+  opens the datastore directly and RocksDB's lock is exclusive, so the node is
+  stopped and a one-shot container (`node_exec`) runs the command over the same
+  data directory. `docker exec` cannot do it — that needs a *running* container —
+  and the admin api deliberately does not serve the recovery key.
+
+  What each phase proves, and why it is not redundant:
+
+    1. Enrol an account on node-2 so there is a real root to back up, and settle
+       so the device link has actually propagated.
+
+    2. Export it. The phrase is captured through the step's `stdout_first_line`
+       output — a single-value command prints its value first and advisory text
+       after.
+
+    3. Importing over an existing root is REFUSED without `--force`
+       (`expected_failure: true`). A root that has already certified devices has
+       no second copy, so a silent overwrite strands every account it owned. The
+       guard lives in the repository, under the same lock as the write, so this
+       asserts the real boundary rather than a CLI convenience.
+
+    4. Force-import a DIFFERENT, known phrase, then export again and assert the
+       export now returns that phrase. This is what makes phase 5 mean anything:
+       without it, "the account came back" would also be true of an import that
+       did nothing at all. Asserted by equality against a literal, because
+       `json_assert` has no inequality operator — proving the root changed by
+       showing what it changed *to*.
+
+       Node-2 is enrolled and linked by this point, so this is also the one place
+       the suite exercises a forced import over a LIVE store: the device row
+       belonging to the replaced root is released here. The assertion for that
+       behaviour is a unit test rather than a step, because checking it over the
+       wire would mean restarting the node purely to read its device back — the
+       phase wipes it moments later regardless.
+
+    5. WIPE node-2's data directory. Everything above proves the encoding round
+       trips; restoring a key into the store it came from proves nothing about
+       recovery. Nothing informative about node-2 survives here except the phrase
+       — no config, no identity, no datastore, no blobs. What remains is an empty
+       home directory, the same state merobox leaves before `merod init`.
+
+       Then re-init, import (with NO `--force`: an empty store has no root to
+       refuse to replace, and needing the flag would be a bug), restart, and log
+       in — a fresh node auto-creates its admin on first login.
+
+    6. Rejoin and prove it came back as itself. The node's IDENTITY is new, so it
+       needs a fresh invitation; the ACCOUNT is not, which is the whole point.
+       Enrolling mints a NEW device under the RESTORED root, and the account id
+       it derives must equal the one from before the wipe — nothing per-namespace
+       was backed up, because the nonce is derived from the root secret and the
+       namespace id.
+
+       Then the assertion the account model is actually FOR: the recovered
+       device writes a value guarded by a writer set granted before the wipe, with
+       no new grant and no rotation. Id equality only proves the account is
+       recomputable; this proves it is usable. node-1 admits the write solely by
+       resolving a signing key it has never seen to the granted account, via the
+       link op the recovered node published when it rejoined — so an
+       implementation keyed by device, or one resolving a signer from anything
+       but its binding at the write's cut, fails here and nowhere earlier. Paired
+       with an assertion that the writer set is unchanged, which is what
+       separates "the gate admitted the right account" from "the gate gave up".
+
+       Finally it reads a value written before the wipe. That is the
+       peer-assisted half: a node holding no scope key of its own can only read
+       that if a peer delivered the current key to its new device. A recovery
+       that restored the identity but not access passes the account assertion
+       and fails this one.
+
+  Deliberately NOT asserted: that `account show` reports the same id before and
+  after enrolment. It does not (#3366) — before enrolment the read API reports the
+  op-adapter's stand-in — so this scenario reads its account only from enrolment,
+  which is the value writes attribute to.
+
+force_pull_image: false
+near_devnet: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: backup-node
+
+steps:
+  - name: Login on backup-node-1
+    type: login
+    node: backup-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on backup-node-2
+    type: login
+    node: backup-node-2
+    username: dev
+    password: dev-password
+
+  # ── Phase 1: a real account to back up ────────────────────────────
+
+  - name: Install application on backup-node-1
+    type: install_application
+    node: backup-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on backup-node-2
+    type: install_application
+    node: backup-node-2
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Node-1 creates the namespace
+    type: create_namespace
+    node: backup-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2
+    type: create_namespace_invitation
+    node: backup-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation: invitation
+
+  - name: Node-2 joins the namespace
+    type: join_namespace
+    node: backup-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation}}'
+
+  - name: Node-1 creates the context
+    type: create_context
+    node: backup-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      context_id: contextId
+
+  - name: Node-2 joins the context
+    type: join_context
+    node: backup-node-2
+    context_id: '{{context_id}}'
+
+  - name: Settle before enrolling
+    type: wait_for_sync
+    nodes:
+      - backup-node-1
+      - backup-node-2
+    context_id: '{{context_id}}'
+
+  # `account_create` does not create a second account — the name is a bit
+  # misleading. A node has ONE account root (node-level) from which it derives one
+  # account id PER NAMESPACE, and holds at most one device in each. This step is
+  # `ensure_enrolled`: it derives the account for this namespace from the existing
+  # root, mints a device if this namespace has none, and is idempotent — call it
+  # twice and the same `accountId` comes back.
+  #
+  # It must run AFTER the context join, never before: enrolment publishes an
+  # `AccountDeviceLinked` op, that op is an *encrypted* GroupOp, and encrypting it
+  # needs the namespace scope key the node only has once it has joined. Placed
+  # earlier it deadlocks — it cannot publish the link that would get it the key.
+  - name: Node-2 enrols an account
+    type: account_create
+    node: backup-node-2
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      original_account: accountId
+
+  - name: Settle after the link op
+    type: wait_for_sync
+    nodes:
+      - backup-node-1
+      - backup-node-2
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  # ── The grant recovery has to preserve ────────────────────────────
+  #
+  # Reading back a value proves the recovered node can still SEE the context. It
+  # does not prove anything about the account, because a re-invited member can
+  # read via member-addressed key delivery alone. What only an account can carry
+  # is a WRITER GRANT: the set names an account, so a device minted after the
+  # grant was made — which is every device the recovered node has — is admitted
+  # only by resolving its key to that account. That is the property rooting
+  # grants at accounts instead of devices exists for, and nothing else in the
+  # suite exercises it across a loss of the disk (#3344 pairs a live second
+  # device; it never loses one).
+  - name: Node-1 grants node-2's account write access to the shared value
+    type: call
+    node: backup-node-1
+    context_id: '{{context_id}}'
+    method: shared_add_writer
+    args:
+      writer: '{{original_account}}'
+
+  - name: Settle so the rotation reaches node-2
+    type: wait_for_sync
+    nodes:
+      - backup-node-1
+      - backup-node-2
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: The writer set before the disk dies
+    type: call
+    node: backup-node-1
+    context_id: '{{context_id}}'
+    method: shared_get_writers
+    outputs:
+      writers_before_wipe: result
+
+  # Also the check that `original_account` is the account this node's writes
+  # actually attribute to, and not merely what the enrolment API reported: if the
+  # two disagreed, the grant would name a principal node-2 is not and this write
+  # would be refused right here, before the wipe muddies the diagnosis.
+  - name: Node-2 writes the guarded value under that grant
+    type: call
+    node: backup-node-2
+    context_id: '{{context_id}}'
+    method: shared_set
+    args:
+      value: written-by-the-original-device
+
+  - name: Settle so the guarded write reaches node-1
+    type: wait_for_sync
+    nodes:
+      - backup-node-1
+      - backup-node-2
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-1 accepted the granted device's write
+    type: call
+    node: backup-node-1
+    context_id: '{{context_id}}'
+    method: shared_get
+    outputs:
+      shared_before_wipe: result
+
+  - name: The grant worked before the disk died
+    type: json_assert
+    statements:
+      - 'json_equal({{shared_before_wipe}}, {"output": "written-by-the-original-device"})'
+
+  # Something to come back to. If recovery only restored the key and not access to
+  # the context, this is the read that would fail.
+  - name: Node-2 writes a value before losing the disk
+    type: call
+    node: backup-node-2
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: survives-the-wipe
+      value: written-before-the-disk-died
+
+  - name: Settle so the write reaches node-1
+    type: wait_for_sync
+    nodes:
+      - backup-node-1
+      - backup-node-2
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  # ── Phase 2: export, which needs the node stopped ─────────────────
+
+  - name: Stop node-2 so its datastore can be opened
+    type: stop_node
+    nodes: backup-node-2
+
+  - name: Export node-2's account root
+    type: node_exec
+    node: backup-node-2
+    args: ['account', 'export']
+    outputs:
+      original_phrase: stdout_first_line
+
+  # ── Phase 3: the guard ────────────────────────────────────────────
+
+  # Importing over an existing root is unrecoverable, so it is refused unless
+  # forced. The check lives in the repository under the same lock as the write,
+  # so this asserts the boundary itself rather than a CLI courtesy.
+  - name: Importing over an existing root is refused without --force
+    type: node_exec
+    node: backup-node-2
+    files:
+      /app/data/recovery.txt: '{{original_phrase}}'
+    args: ['account', 'import', '--from', '/app/data/recovery.txt']
+    expected_failure: true
+
+  # ── Phase 4: prove an import actually replaces the root ───────────
+  #
+  # Without this, phase 5's "the account came back" would be equally true of an
+  # import that did nothing whatsoever.
+
+  - name: Force-import a different, known root
+    type: node_exec
+    node: backup-node-2
+    files:
+      /app/data/other.txt: 'legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title'
+    args: ['account', 'import', '--from', '/app/data/other.txt', '--force']
+
+  - name: Export again — it must return the root just imported
+    type: node_exec
+    node: backup-node-2
+    args: ['account', 'export']
+    outputs:
+      swapped_phrase: stdout_first_line
+
+  - name: The import replaced the root
+    type: json_assert
+    statements:
+      - 'json_equal({{swapped_phrase}}, "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title")'
+
+  # ── Phase 5: the disk is gone ─────────────────────────────────────
+  #
+  # Everything above proves the encoding round trips. This is the part that proves
+  # RECOVERY: nothing of node-2 survives except the phrase, and it has to come back
+  # as the same account with access to what it wrote.
+
+  - name: The disk is gone
+    type: script
+    script: scripts/wipe-node-data.sh
+    target: local
+    args:
+      - backup-node-2
+
+  # A wiped node is a new machine: no config, no identity, no store. Re-init with
+  # the ports merobox mapped, or the container comes back unreachable.
+  - name: Re-initialise the empty node
+    type: node_exec
+    node: backup-node-2
+    args:
+      - 'init'
+      - '--server-host'
+      - '0.0.0.0'
+      - '--server-port'
+      - '2528'
+      - '--swarm-port'
+      - '2428'
+      - '--auth-mode'
+      - 'embedded'
+      # `--auth-mode embedded` refuses to init without admin credentials, so the
+      # admin exists before the node ever listens — and deliberately makes you
+      # say which you mean. Deferring is right here: the login step below is a
+      # first `user_password` auth against a fresh node, which auto-provisions
+      # the admin root key. Passing credentials instead would mean writing a
+      # password file into the node's data directory and leaving it there.
+      - '--no-admin'
+
+  # No --force: the store is empty, so there is no root to refuse to replace.
+  # That the plain import succeeds here is itself the assertion — recovery must
+  # not require the flag that exists to protect an existing key.
+  - name: Import the backed-up root into the empty node
+    type: node_exec
+    node: backup-node-2
+    files:
+      /app/data/restore.txt: '{{original_phrase}}'
+    args: ['account', 'import', '--from', '/app/data/restore.txt']
+
+  - name: Start the recovered node
+    type: start_node
+    nodes: backup-node-2
+
+  # A fresh node auto-creates its admin on the first user_password login, so the
+  # recovered machine needs no credential plumbing.
+  - name: Log in to the recovered node
+    type: login
+    node: backup-node-2
+    username: dev
+    password: dev-password
+
+  # ── Phase 6: rejoin as the same account ───────────────────────────
+  #
+  # The node's IDENTITY is new — the old member row belongs to a keypair that no
+  # longer exists — so it needs a fresh invitation. The ACCOUNT is not new, and
+  # that is the whole point: grants naming the account still name this node.
+
+  - name: Reinstall the application on the recovered node
+    type: install_application
+    node: backup-node-2
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Invite the recovered node back
+    type: create_namespace_invitation
+    node: backup-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      rejoin_invitation: invitation
+
+  - name: The recovered node rejoins the namespace
+    type: join_namespace
+    node: backup-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{rejoin_invitation}}'
+
+  - name: The recovered node rejoins the context
+    type: join_context
+    node: backup-node-2
+    context_id: '{{context_id}}'
+
+  - name: Settle after the rejoin
+    type: wait_for_sync
+    nodes:
+      - backup-node-1
+      - backup-node-2
+    context_id: '{{context_id}}'
+    timeout: 90
+    trigger_sync: true
+
+  # Enrolling now mints a NEW device — the old one died with the disk — but under
+  # the RESTORED root, so the account id it derives is the one from before.
+  - name: Enrol a device into the recovered account
+    type: account_create
+    node: backup-node-2
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      recovered_account: accountId
+
+  - name: Settle after the new device link
+    type: wait_for_sync
+    nodes:
+      - backup-node-1
+      - backup-node-2
+    context_id: '{{context_id}}'
+    timeout: 90
+    trigger_sync: true
+
+  # The recovery property, end to end: a phrase plus a namespace id is enough to
+  # come back as yourself. Nothing per-namespace was backed up — the nonce is
+  # derived from the root secret and the namespace id — and this is the id every
+  # writer grant and membership row already names.
+  - name: The recovered node owns the same account as before the wipe
+    type: json_assert
+    statements:
+      - 'json_equal({{recovered_account}}, {{original_account}})'
+
+  # ── The grant outlived the disk ───────────────────────────────────
+  #
+  # The assertion above proves the account id is recomputable. This proves the
+  # account is USABLE: a device that did not exist when the grant was made writes
+  # under it, with no new grant and no rotation. node-1 admits the write only by
+  # resolving a signing key it has never seen to the granted account, through the
+  # link op the recovered node published on rejoining.
+  #
+  # An implementation that keyed the writer set by device — or that resolved a
+  # signer from anything other than its binding at the write's causal cut — passes
+  # every assertion above this line and fails here.
+  - name: The recovered device writes the guarded value under the original grant
+    type: call
+    node: backup-node-2
+    context_id: '{{context_id}}'
+    method: shared_set
+    args:
+      value: written-by-the-recovered-device
+
+  - name: Settle so the recovered device's write reaches node-1
+    type: wait_for_sync
+    nodes:
+      - backup-node-1
+      - backup-node-2
+    context_id: '{{context_id}}'
+    timeout: 90
+    trigger_sync: true
+
+  - name: What node-1 holds after the recovered device wrote
+    type: call
+    node: backup-node-1
+    context_id: '{{context_id}}'
+    method: shared_get
+    outputs:
+      shared_after_recovery: result
+
+  - name: Node-1 accepted the write from a device it had never seen granted
+    type: json_assert
+    statements:
+      - 'json_equal({{shared_after_recovery}}, {"output": "written-by-the-recovered-device"})'
+
+  - name: The writer set after recovery
+    type: call
+    node: backup-node-1
+    context_id: '{{context_id}}'
+    method: shared_get_writers
+    outputs:
+      writers_after_recovery: result
+
+  # Nothing was granted on the new device's behalf. Without this, a receiver that
+  # quietly added the unknown signer to the set would satisfy the write assertion
+  # while having abandoned the gate — the account indirection would be decoration.
+  - name: No grant was added for the recovered device
+    type: json_assert
+    statements:
+      - 'json_equal({{writers_after_recovery}}, {{writers_before_wipe}})'
+
+  # And the peer-assisted half: a node that holds no scope key of its own can only
+  # read this if a peer delivered the current key to its new device. A recovery
+  # that restored the identity but not access would pass the assertion above and
+  # fail here.
+  - name: The recovered node can read what it wrote before the wipe
+    type: call
+    node: backup-node-2
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: survives-the-wipe
+    outputs:
+      recovered_value: result
+
+  - name: Its pre-wipe data came back with it
+    type: json_assert
+    statements:
+      - 'json_equal({{recovered_value}}, {"output": "written-before-the-disk-died"})'
+
+stop_all_nodes: false
