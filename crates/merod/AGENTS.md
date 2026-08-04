@@ -28,8 +28,9 @@ cargo test -p merod
 
 ```
 merod --node <name> <subcommand>
-├── account       # Back up / restore the account root (export, import).
-│                 # Opens the store directly — the node must be STOPPED.
+├── account       # Account root: export, import, revoke-proof.
+│                 # export/import open the store directly — node must be STOPPED.
+│                 # revoke-proof needs no node at all with --from.
 ├── init          # Initialize node configuration (mints the embedded-auth
 │                 # admin root key from --admin-user + password via
 │                 # file/stdin/env; --no-admin defers)
@@ -39,12 +40,13 @@ merod --node <name> <subcommand>
 └── kms           # Key management service
 ```
 
-## Account root backup (`merod account`)
+## Account root: backup, restore, offline revocation (`merod account`)
 
 The account root is the only key that can certify a replacement device after every
-device is lost, so these two commands are the whole recovery story. Both open the
-datastore directly, which means the node must be **stopped** (RocksDB's lock is
-exclusive) and a KMS-encrypted store is refused rather than misread.
+device is lost, so this family of commands is the whole recovery story. `export`
+and `import` open the datastore directly, which means the node must be **stopped**
+(RocksDB's lock is exclusive) and a KMS-encrypted store is refused rather than
+misread; `revoke-proof` needs no store at all when given `--from`.
 
 ```bash
 # Print the 24-word phrase to stdout. Add --namespace (repeatable, optional) to
@@ -58,6 +60,10 @@ merod --node node1 account export --out backup.txt --allow-plaintext-file
 # existing root without --force.
 merod --node node1 account import [--from backup.txt] [--force]
 ```
+
+Export prints the phrase on the **first line** (so `head -1` is the secret),
+then the root's public key, then any derived account ids. Only the first line is
+sensitive; the account ids are what writer sets already name.
 
 `--force` **drops the device rows belonging to the root it replaces**, and reports
 which namespaces they were in. Not housekeeping: a device row is keyed by namespace
@@ -75,9 +81,26 @@ creation, so reusing a path would write the phrase into whatever permissions wer
 already there, and a pre-planted symlink could redirect it. On a platform with no
 mode to set, the command says so instead of claiming owner-only.
 
-Export prints the phrase on the **first line** (so `head -1` is the secret),
-then the root's public key, then any derived account ids. Only the first line is
-sensitive; the account ids are what writer sets already name.
+### Revoking a device with only the root
+
+```bash
+# Sign a device revocation offline. --from reads the phrase, so this needs no
+# node, no home and no init — the lost-device case. Prints a hex proof.
+merod account revoke-proof --namespace <NS> --device <DEVICE_ID> --from phrase.txt
+
+# Without --from, the root comes from this node's store (so: stopped).
+merod --node node1 account revoke-proof --namespace <NS> --device <DEVICE_ID>
+```
+
+The proof is self-certifying, so any member node can publish it and needs no
+authority of its own: `meroctl account revoke <NS> --device-id <D> --proof @file`.
+It is not a secret — it authorises exactly one revocation of one device. What it
+cannot do is name a device the account does not own (the stored binding is checked
+before publishing and again on every replica) or rotate the scope key (admin only).
+
+`--namespace` is required because an account id is per-namespace: the same root
+owns a different account in each, and a proof for the wrong one verifies against
+its own genesis while authorising nothing.
 
 Full model, the recovery procedure, and what does *not* come back:
 [protocol/accounts](../../docs/src/content/docs/protocol/accounts.mdx#backing-up-and-recovering-an-account).
@@ -94,7 +117,7 @@ src/
 │   ├── config.rs     # Config modifications
 │   ├── auth.rs       # `merod auth set-admin` (offline admin-key mint)
 │   ├── admin_creds.rs# Shared --admin-user/password-file/stdin resolution
-│   ├── account.rs    # `merod account export|import` (recovery phrase)
+│   ├── account.rs    # `merod account export|import|revoke-proof`
 │   ├── kms.rs        # KMS subcommand
 │   ├── validation.rs # Validation helpers
 │   └── auth_mode.rs  # Authentication mode handling
