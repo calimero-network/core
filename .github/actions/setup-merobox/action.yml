@@ -18,7 +18,15 @@ runs:
         #            containers do, so it can traverse the node's 0700 home. Below
         #            this, `account export` reports the node as uninitialised —
         #            account-root-backup-restore needs it.
-        MIN_MEROBOX="0.6.50"
+        #   0.6.51 — `account_revoke` takes a `proof:`, so a revocation signed from
+        #            the account root elsewhere can be published by a node holding
+        #            no authority of its own.
+        #   0.6.52 — `json_not_equal`, and a fix to the statement argument splitter.
+        #            account-revoke-lost-device asserts that a re-enrolled device
+        #            does NOT reuse the revoked id, which has no literal to compare
+        #            against; below this the statement is unrecognised, which reads
+        #            as a failing assertion rather than an unsupported one.
+        MIN_MEROBOX="0.6.52"
 
         case "$(uname -m)" in
           x86_64) MEROBOX_ARCH="linux-x86-64" ;;

@@ -536,6 +536,24 @@ impl BorshDeserialize for OpMask {
     }
 }
 
+/// A short, stable name for a [`StorageType`] variant, for logs.
+///
+/// Exists because [`StorageError::InvalidSignature`](crate::error::StorageError)
+/// is returned by three different arms of snapshot verification and cannot say
+/// which. Naming the variant at the rejection site is what turns "invalid
+/// signature somewhere" into something actionable — see core#3376, where the
+/// error's own text pointed at the wrong arm.
+#[must_use]
+pub const fn storage_type_name(storage_type: &StorageType) -> &'static str {
+    match storage_type {
+        StorageType::Public => "Public",
+        StorageType::Frozen => "Frozen",
+        StorageType::User { .. } => "User",
+        StorageType::Shared { .. } => "Shared",
+        StorageType::SharedMember { .. } => "SharedMember",
+    }
+}
+
 /// Defines the type of storage and its associated authorization rules.
 /// Enum to define the storage domain and its associated data.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]

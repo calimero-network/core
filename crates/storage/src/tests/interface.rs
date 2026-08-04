@@ -1871,6 +1871,168 @@ mod shared_storage_rotation_authentication {
             "a leaf whose signature does not cover its data must be rejected"
         );
     }
+
+    /// **Falsification test for core#3376 — the hypothesis it tests is WRONG, and
+    /// this pins why.**
+    ///
+    /// The hypothesis was: a `SharedMember` whose stored value is a CRDT *merge
+    /// output* keeps the earlier writer's signature over bytes nobody signed,
+    /// because the receiver-side coupling in `apply_action` re-couples
+    /// `{data, signature}` only when the stored bytes equal the INCOMING write's,
+    /// and a merge output equals neither input.
+    ///
+    /// It does not happen, for a reason worth recording: the built-in mergeable
+    /// CRDTs are **collection-backed**. `Counter` is two `UnorderedMap` handles, so
+    /// its serialized form is a pair of ids and a merge mutates *child* entities,
+    /// never the entity's own bytes. The parent's `data` is therefore stable across
+    /// a merge, so data and signature cannot decouple this way — there is no third
+    /// value for the gate to miss.
+    ///
+    /// So this test asserts the coupling HOLDS, and exists to stop a future change
+    /// from quietly introducing the decoupling it was written to look for: an
+    /// inline-valued mergeable type, or a merge that rewrites the parent's bytes,
+    /// would break it and should be considered against #3376 before landing.
+    ///
+    /// What remains unexplained about #3376, and where to look next: the coupling
+    /// patch is **best-effort** — the comment at the call site says an
+    /// "identity/placeholder mismatch returns `Err`, which means this was not a
+    /// same-record signed update — leave the stored signature". The data has
+    /// already been written by then. Any path that changes the bytes and then fails
+    /// to patch leaves exactly the decoupled leaf #3376 observes.
+    #[test]
+    fn a_mergeable_shared_member_keeps_its_data_and_signature_coupled() {
+        use calimero_primitives::crdt::CrdtType;
+
+        use crate::collections::Counter;
+        use crate::entities::{Metadata, SignatureData};
+
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let alice_sk = make_signing_key(0xA1);
+        let alice = account_of_key(&alice_sk);
+        let bob_sk = make_signing_key(0xB0);
+        let bob = account_of_key(&bob_sk);
+
+        let anchor = Id::new([0xA0; 32]);
+        let member = Id::new([0x3E; 32]);
+        let writers: BTreeSet<_> = [alice, bob].into_iter().collect();
+
+        let n0 = env::time_now();
+        MainInterface::apply_action(
+            build_signed_shared_action(
+                true,
+                anchor,
+                b"anchor".to_vec(),
+                writers,
+                n0,
+                &alice_sk,
+                vec![root.clone()],
+            ),
+            &apply_ctx_for(alice),
+        )
+        .expect("anchor bootstrap must apply");
+
+        // Two disjoint GCounter contributions — different handles, and a merge
+        // would union their children.
+        let counter_bytes = |device: u8, count: u64| -> Vec<u8> {
+            env::set_device_id([device; 32]);
+            let mut counter = Counter::<false>::new();
+            for _ in 0..count {
+                counter.increment().expect("increment");
+            }
+            borsh::to_vec(&counter).expect("counter must serialize")
+        };
+        let alice_data = counter_bytes(0xA1, 3);
+        let bob_data = counter_bytes(0xB0, 5);
+        assert_ne!(
+            alice_data, bob_data,
+            "the two contributions must differ or nothing is being merged"
+        );
+
+        // A `SharedMember` carrying a MERGEABLE crdt_type. The shared helper
+        // hardcodes `crdt_type: None`, which takes the LWW path and never reaches a
+        // merge, so the metadata is built locally.
+        let signed_member = |data: Vec<u8>, hlc: u64, sk: &SigningKey| {
+            let metadata = Metadata {
+                created_at: hlc,
+                updated_at: hlc.into(),
+                storage_type: StorageType::SharedMember {
+                    anchor,
+                    signature_data: Some(SignatureData {
+                        signature: [0; 64],
+                        nonce: hlc,
+                        signer: Some(pubkey_of(sk)),
+                    }),
+                },
+                crdt_type: Some(CrdtType::GCounter),
+                field_name: None,
+                schema_version: None,
+            };
+            let mut action = crate::action::Action::Add {
+                id: member,
+                data,
+                // Every applied member action needs an ancestor chain; without one
+                // the index has nothing to attach to and apply fails
+                // `IndexNotFound`.
+                ancestors: vec![root.clone()],
+                metadata,
+            };
+            let payload = action.payload_for_signing();
+            let signature = {
+                use ed25519_dalek::Signer as _;
+                sk.sign(&payload).to_bytes()
+            };
+            if let crate::action::Action::Add { metadata, .. } = &mut action {
+                if let StorageType::SharedMember {
+                    signature_data: Some(sd),
+                    ..
+                } = &mut metadata.storage_type
+                {
+                    sd.signature = signature;
+                }
+            }
+            action
+        };
+
+        // Alice writes, then Bob writes concurrently at the SAME HLC — the case the
+        // coupling comment names ("two writers stamp the same HLC on different
+        // content").
+        let hlc = n0 + 1_000_000;
+        MainInterface::apply_action(
+            signed_member(alice_data.clone(), hlc, &alice_sk),
+            &apply_ctx_for(alice),
+        )
+        .expect("alice's member write must apply");
+        MainInterface::apply_action(
+            signed_member(bob_data.clone(), hlc, &bob_sk),
+            &apply_ctx_for(bob),
+        )
+        .expect("bob's concurrent member write must apply");
+
+        let stored_data =
+            MainInterface::find_by_id_raw(member).expect("the member entity must exist");
+        let stored_meta = <Index<MainStorage>>::get_metadata(member)
+            .expect("index read")
+            .expect("the member must be indexed");
+
+        // The load-bearing observation: the parent's own bytes are still one
+        // writer's, not a third value. A merge moved children, not this.
+        assert!(
+            stored_data == alice_data || stored_data == bob_data,
+            "a collection-backed CRDT's parent bytes are a handle and must survive a \
+             merge unchanged; a third value here means the premise of this test \
+             changed and #3376's merge-output hypothesis needs re-testing"
+        );
+
+        // And therefore the leaf still verifies: whichever side's bytes are stored,
+        // the coupling left (or patched) the matching signature.
+        MainInterface::verify_snapshot_entity_signature(member, &stored_data, &stored_meta).expect(
+            "a merged SharedMember leaf must still verify — if this starts failing, \
+             the data/signature coupling has been broken and #3376's cause may now \
+             genuinely be a merge output",
+        );
+    }
 }
 
 /// Tests for Frozen storage verification.

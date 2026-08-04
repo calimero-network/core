@@ -496,9 +496,10 @@ async fn post_rotation_forgery_by_revoked_writer_rejected() {
     // authorization at the cut rather than a mismatched principal.
     applier.set_author(bob).await;
     let result = dag.add_delta(d3, &applier).await;
-    // `StorageError::InvalidSignature` displays as "Invalid signature for
-    // user-owned data" — match on the rejection, not the exact prose, so
-    // doc-string changes don't break this probe.
+    // Match on the rejection, not the exact prose, so a change to
+    // `StorageError::InvalidSignature`'s Display text does not break this probe.
+    // That text HAS changed (it used to name "user-owned data", which misdescribed
+    // every real occurrence), and this assertion survived it — which is the point.
     assert!(
         matches!(&result, Err(calimero_dag::DagError::ApplyFailed(ApplyError::Application(msg))) if msg.contains("Invalid signature")),
         "post-rotation forgery by revoked writer must be rejected with InvalidSignature; got {result:?}"

@@ -3,10 +3,9 @@ use std::sync::Arc;
 use axum::extract::{Extension, Path};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use chrono::Utc;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use tracing::error;
+use uuid::Uuid;
 use validator::Validate;
 
 use super::auth::{error_response, success_response};
@@ -131,23 +130,6 @@ pub async fn generate_client_key_handler(
         None => "".to_string(),
     };
 
-    //TODO decide final approach for context ID and Identity
-    // // Check if admin permission is requested
-    // let has_admin_permission = request
-    //     .permissions
-    //     .as_ref()
-    //     .map(|perms| perms.contains(&"admin".to_string()))
-    //     .unwrap_or(false);
-
-    // // Allow empty context_id and context_identity only if admin permission is requested
-    // if !has_admin_permission && (context_id.is_empty() || context_identity.is_empty()) {
-    //     return error_response(
-    //         StatusCode::BAD_REQUEST,
-    //         "Context ID and context identity must contain valid characters",
-    //         None,
-    //     );
-    // }
-
     // Get and validate root key
     let root_key = match state.0.key_manager.get_key(&root_key_id).await {
         Ok(Some(key)) if !key.is_valid() => {
@@ -167,12 +149,7 @@ pub async fn generate_client_key_handler(
         Ok(Some(key)) => key,
     };
 
-    let timestamp = Utc::now().timestamp();
-
-    let mut hasher = Sha256::new();
-    hasher.update(format!("client:{context_id}:{context_identity}:{timestamp}").as_bytes());
-    let hash = hasher.finalize();
-    let client_id = hex::encode(hash);
+    let client_id = Uuid::new_v4().to_string();
 
     // Build permissions list starting with required context permission
     // Only add context permission if context_id and context_identity are not empty
@@ -291,6 +268,103 @@ pub async fn delete_client_handler(
                 "Failed to get client key",
                 None,
             )
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{header, HeaderValue};
+
+    use super::*;
+    use crate::auth::rate_limit::LoginRateLimiter;
+    use crate::auth::token::TokenManager;
+    use crate::embedded::default_config;
+    use crate::secrets::SecretManager;
+    use crate::storage::{KeyManager, MemoryStorage, Storage};
+    use crate::utils::AuthMetrics;
+    use crate::AuthService;
+
+    async fn admin_state() -> (Arc<AppState>, HeaderMap) {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        secret_manager.initialize().await.unwrap();
+
+        let config = default_config();
+        let token_manager =
+            TokenManager::new(config.jwt.clone(), Arc::clone(&storage), secret_manager);
+        let key_manager = KeyManager::new(Arc::clone(&storage));
+
+        let root = Key::new_root_key_with_permissions(
+            "test-public-key".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        let _ = key_manager.set_key("root-1", &root).await.unwrap();
+
+        let (access, _refresh) = token_manager
+            .generate_token_pair("root-1".to_string(), vec!["admin".to_string()], None)
+            .await
+            .unwrap();
+
+        let mut headers = HeaderMap::new();
+        let _ = headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {access}")).unwrap(),
+        );
+
+        let state = Arc::new(AppState {
+            auth_service: AuthService::new(vec![], token_manager.clone()),
+            storage,
+            key_manager,
+            token_generator: token_manager,
+            config,
+            metrics: AuthMetrics::new(),
+            login_rate_limiter: Arc::new(LoginRateLimiter::default()),
+        });
+
+        (state, headers)
+    }
+
+    #[tokio::test]
+    async fn back_to_back_mints_do_not_overwrite_each_other() {
+        let (state, headers) = admin_state().await;
+
+        for _ in 0..2 {
+            let response = generate_client_key_handler(
+                Extension(Arc::clone(&state)),
+                headers.clone(),
+                ValidatedJson(GenerateClientKeyRequest {
+                    context_id: None,
+                    context_identity: None,
+                    permissions: Some(vec!["admin".to_string()]),
+                    target_node_url: None,
+                }),
+            )
+            .await
+            .into_response();
+
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
+        assert_eq!(
+            clients.len(),
+            2,
+            "two admin-scoped mints in the same second must yield two distinct keys, got {clients:?}"
+        );
+
+        for (client_id, _) in &clients {
+            assert!(
+                state
+                    .key_manager
+                    .get_key(client_id)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "minted key {client_id} must be retrievable"
+            );
         }
     }
 }
