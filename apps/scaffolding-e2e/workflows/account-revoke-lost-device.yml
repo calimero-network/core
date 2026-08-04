@@ -34,10 +34,20 @@ description: >
        genuinely live before it was revoked — a revocation that "works" against a
        device that never functioned proves nothing.
 
-    2. Export node-2's root, then stop it. `account export` opens the datastore
+    2. Stop node-2 and export its root. `account export` opens the datastore
        directly and RocksDB's lock is exclusive, so the node is stopped and a
-       one-shot container reads the same data directory. From here node-2 is
-       simply gone, which is the situation being modelled.
+       one-shot container reads the same data directory.
+
+       node-2 then comes back BEFORE the revocation is published, which looks like
+       it weakens the scenario and does not. Nothing about the revocation involves
+       this node — the proof is minted from the phrase on a machine that does not
+       hold the account, and published by a node with no authority — and that
+       independence is the whole property. But a tombstone can only be OBSERVED by
+       a node that folds it, and the sharpest observation available is that a
+       re-enrolment mints a fresh replica id. So the device has to come back to be
+       asked. Online first rather than after, because a node restarting into an
+       already-published tombstone must pull governance to catch up, and that path
+       is slow and independently flaky.
 
     3. Mint the proof on node-3 with `--from`. This is the step that would be
        impossible without the offline path: node-3 does not hold the account root
@@ -256,6 +266,45 @@ steps:
     outputs:
       recovery_phrase: stdout_first_line
 
+  # Back online BEFORE the revocation is published, and the reason is worth being
+  # precise about, because it looks like it weakens the scenario.
+  #
+  # Nothing about the revocation involves this node: the proof is minted from the
+  # phrase on a machine that does not hold the account, and published by a node with
+  # no authority. Whether node-2 is reachable is irrelevant to any of that — which
+  # is exactly why a truly lost device can be retired at all.
+  #
+  # But a tombstone can only be OBSERVED by a node that folds it, and the sharpest
+  # available observation is that a re-enrolment mints a fresh replica id. So the
+  # device has to come back to be asked. It is here rather than after the
+  # revocation because a node that restarts into a published tombstone has to pull
+  # governance to catch up, and that path is slow and independently flaky (a
+  # restarted node can park on "No peers" for minutes behind the rendezvous
+  # throttle). Online first, it folds the op from live gossip like any other peer.
+  - name: The laptop comes back to be asked about the tombstone
+    type: start_node
+    nodes: revoke-node-2
+
+  - name: Log back in to node-2
+    type: login
+    node: revoke-node-2
+    username: dev
+    password: dev-password
+
+  - name: Settle so node-2 is back in the mesh before the revocation is published
+    type: wait_for_sync
+    nodes:
+      - revoke-node-1
+      - revoke-node-2
+      - revoke-node-3
+    context_id: '{{context_id}}'
+    timeout: 120
+    trigger_sync: true
+
+  - name: Brief settle so libp2p has re-meshed node-2
+    type: wait
+    seconds: 5
+
   # ── Phase 3: mint the proof somewhere that holds no account ───────
   #
   # node-3 does not have this account root and never will. `--from` reads the
@@ -296,44 +345,32 @@ steps:
       key_rotated: keyRotated
 
   # Only an admin may rotate, so a proof-published revocation leaves the rotation
-  # owed: the device loses the right to WRITE immediately and could still read if
-  # it came back before an admin rotated. Asserted so the asymmetry cannot be
-  # quietly turned into a rotation every peer would refuse.
+  # owed: the device loses the right to WRITE immediately and could still read until
+  # an admin rotates. Asserted so the asymmetry cannot be quietly turned into a
+  # rotation every peer would refuse.
   - name: The proof revoked without rotating the scope key
     type: json_assert
     statements:
       - 'json_equal({{key_rotated}}, false)'
 
-  - name: Settle so the tombstone propagates
-    type: wait_for_sync
-    nodes:
-      - revoke-node-1
-      - revoke-node-3
-    context_id: '{{context_id}}'
-    timeout: 60
-    trigger_sync: true
-
   # ── Phase 5: the tombstone is real ───────────────────────────────
   #
   # Proved by what it forbids. A revocation is terminal, so the spent DeviceId can
-  # never be linked again — and nothing except the tombstone releases the node's
-  # own device slot, so a fresh id on re-enrolment is only possible because the
+  # never be linked again — and nothing except the tombstone releases the node's own
+  # device slot, so a fresh id on re-enrolment is only possible because the
   # revocation landed and node-2 folded it.
 
-  - name: The recovered laptop comes back
-    type: start_node
-    nodes: revoke-node-2
+  # A plain `wait`, deliberately, and NOT `wait_for_sync`: the tombstone is a
+  # GOVERNANCE op, and wait_for_sync compares context state. It gates nothing here
+  # — the first version of this scenario used it and it returned in 18ms, so
+  # node-2 was asked about its device before it had folded anything and handed back
+  # the row it already had. The assertion then failed for a reason that had nothing
+  # to do with the tombstone.
+  - name: Let the revocation reach node-2 over gossip
+    type: wait
+    seconds: 20
 
-  - name: Log back in to node-2
-    type: login
-    node: revoke-node-2
-    username: dev
-    password: dev-password
-
-  # Generous, and load-bearing: node-2 must have FOLDED the revocation before it
-  # enrols. Unfolded, `stored_identity_still_serves` hands back the old row and the
-  # assertion below fails for a reason unrelated to the tombstone.
-  - name: Settle until node-2 has folded its own revocation
+  - name: Settle after the tombstone
     type: wait_for_sync
     nodes:
       - revoke-node-1
