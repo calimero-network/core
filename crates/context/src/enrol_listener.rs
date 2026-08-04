@@ -24,16 +24,31 @@
 //! for exactly that and is already consumed by `join_group` as its wake-up signal;
 //! this listener is a second subscriber, not a new mechanism.
 //!
-//! # Liveness: the event is not enough
+//! # Liveness: the event is an optimisation, the sweep is the guarantee
 //!
-//! A node that received its key while this listener was not running — an older
-//! binary, a crash between delivery and enrolment, a restart — has no event coming.
-//! So there is also a **startup sweep**, and the useful property here is that it
-//! needs no persisted worklist: the condition is derivable from state the node
-//! already keeps. "I hold a key for this namespace, I have a namespace identity
-//! there, and I hold no device" IS the work item. `rotation_listener` needs a
-//! durable `GroupPendingKeyRotation` row for the same reason this does not — what it
-//! owes is not otherwise visible.
+//! **`GroupKeyDelivered` does not fire on every path that gives this node a key**,
+//! and that is not a bug to fix here — it is why the sweep is periodic rather than
+//! startup-only. The event is emitted from `apply_received_group_key_envelope`, i.e.
+//! when a `RootOp::KeyDelivery` is applied. But a joiner normally obtains its key
+//! from the direct join response and the joiner-side pull
+//! (`recover_missing_group_keys`), which stores it and emits nothing; a namespace
+//! creator mints its own and never receives one at all. Measured, not assumed: a
+//! three-node scenario that demonstrably had keys logged **zero** deliveries.
+//!
+//! An event-only trigger therefore does nothing in the common case, which is how the
+//! first version of this listener passed its unit tests and enrolled nobody.
+//!
+//! So the design is: react to the event for latency when it does fire, and sweep on
+//! an interval for correctness. The sweep is what makes this work regardless of which
+//! path delivered the key — and it needs no persisted worklist, because the condition
+//! is derivable from state the node already keeps. "I hold a key for this namespace
+//! and hold no device" IS the work item. `rotation_listener` needs a durable
+//! `GroupPendingKeyRotation` row for the same reason this does not: what it owes is
+//! not otherwise visible.
+//!
+//! Enumerating every key-acquisition path and emitting from each would be the other
+//! option. It was rejected: that list is exactly what this listener got wrong, it has
+//! grown before, and a missed path fails silently rather than late.
 //!
 //! # What makes this delicate
 //!
@@ -63,6 +78,14 @@ use calimero_store::Store;
 use tokio::task::AbortHandle;
 use tracing::{debug, info, warn};
 
+/// How often to re-derive the pending set.
+///
+/// The sweep is three cheap store reads per namespace and returns nothing in the
+/// steady state, so this is not a hot path. It is the interval a node waits to enrol
+/// when no event fires — the common case — so it is short enough not to be felt and
+/// long enough that a node with many namespaces is not re-scanning constantly.
+const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
 struct HandleState {
     abort: AbortHandle,
 }
@@ -84,10 +107,25 @@ pub fn spawn(store: Store, context_client: ContextClient) {
     }
     let rx = op_events::subscribe();
     let abort = tokio::spawn(async move {
-        // Sweep first: a node holding a key from before this listener existed has no
-        // event coming, and without this it would never enrol at all.
+        // Sweep immediately, then keep sweeping. The event stream is a latency
+        // optimisation over this, not a substitute for it.
         sweep(&store, &context_client).await;
+        let sweeper = tokio::spawn({
+            let store = store.clone();
+            let context_client = context_client.clone();
+            async move {
+                let mut ticker = tokio::time::interval(SWEEP_INTERVAL);
+                // The immediate tick is already spent above.
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    sweep(&store, &context_client).await;
+                }
+            }
+        });
         run(rx, store, context_client).await;
+        // Only reached when the op-event channel closes, i.e. shutdown.
+        sweeper.abort();
     })
     .abort_handle();
     *slot = Some(HandleState { abort });
@@ -244,8 +282,14 @@ async fn enrol(context_client: &ContextClient, namespace_id: ContextGroupId) {
             // land here is a race this listener is designed to lose — the key arrived
             // but the namespace identity or the keyring is not readable *yet*, or
             // another trigger enrolled first. All of those are retried by the next
-            // event or the next startup sweep. Warning on each would make a healthy
-            // node look broken every time it joined something.
+            // sweep. Warning on each would make a healthy node look broken every time
+            // it joined something.
+            //
+            // The counterpart to keeping this quiet is that a SUCCESS is `info!`, so
+            // "did automatic enrolment happen" is answerable from an ordinary log.
+            // The first version of this listener was silent on both paths, and the
+            // only way to tell it had enrolled nobody was to notice the absence of
+            // something that was never printed.
             debug!(
                 ?namespace_id,
                 %err,
