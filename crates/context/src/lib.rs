@@ -33,6 +33,7 @@ pub(crate) mod apply_authorizer;
 pub mod auto_follow;
 mod cache;
 pub mod config;
+pub mod enrol_listener;
 pub mod error;
 pub mod governance_dag;
 pub mod handlers;
@@ -782,6 +783,21 @@ impl Actor for ContextManager {
         // rationale as the TEE-admit listener above.
         rotation_listener::shutdown();
         rotation_listener::spawn(self.datastore.clone(), self.context_client.clone());
+
+        // Enrolment listener — reacts to `OpEvent::GroupKeyDelivered` and enrols this
+        // node's account into the namespace, so enrolling is never something an
+        // operator has to remember. Also sweeps on startup, which is what covers a
+        // node that received its key while this listener was not running (an older
+        // binary, or a crash between delivery and enrolment); unlike the rotation
+        // worklist that sweep needs no persisted row, because "holds a key, holds no
+        // device" is already derivable from stored state.
+        //
+        // Order relative to the listeners above does not matter: like them it
+        // subscribes to `op_events` synchronously before spawning, so it cannot miss
+        // an event fired by another listener's startup work. Same
+        // shutdown-then-spawn rebinding rationale.
+        enrol_listener::shutdown();
+        enrol_listener::spawn(self.datastore.clone(), self.context_client.clone());
     }
 }
 
