@@ -28,6 +28,8 @@ cargo test -p merod
 
 ```
 merod --node <name> <subcommand>
+├── account       # Back up / restore the account root (export, import).
+│                 # Opens the store directly — the node must be STOPPED.
 ├── init          # Initialize node configuration (mints the embedded-auth
 │                 # admin root key from --admin-user + password via
 │                 # file/stdin/env; --no-admin defers)
@@ -36,6 +38,49 @@ merod --node <name> <subcommand>
 ├── auth          # Embedded-auth accounts (set-admin: offline admin-key mint)
 └── kms           # Key management service
 ```
+
+## Account root backup (`merod account`)
+
+The account root is the only key that can certify a replacement device after every
+device is lost, so these two commands are the whole recovery story. Both open the
+datastore directly, which means the node must be **stopped** (RocksDB's lock is
+exclusive) and a KMS-encrypted store is refused rather than misread.
+
+```bash
+# Print the 24-word phrase to stdout. Add --namespace (repeatable, optional) to
+# also print the account id derived for that namespace.
+merod --node node1 account export [--namespace <NAMESPACE_ID>]…
+
+# Write it to a file instead. Refused without the second flag; created 0600.
+merod --node node1 account export --out backup.txt --allow-plaintext-file
+
+# Restore. Reads stdin by default, or --from PATH. Refuses to replace an
+# existing root without --force.
+merod --node node1 account import [--from backup.txt] [--force]
+```
+
+`--force` **drops the device rows belonging to the root it replaces**, and reports
+which namespaces they were in. Not housekeeping: a device row is keyed by namespace
+alone and enrolment refuses to replace a *linked* row naming a different account, so
+leaving them made the node refuse enrolment under the root it had just recovered —
+telling the operator to revoke first, which needs the key they replaced. Rows naming
+an account this root never owned (a device paired into somebody else's account) are
+kept and reported separately. An import onto an empty store needs no flag and drops
+nothing, and neither does re-importing the root that is already installed — the
+root write and the row removals are one atomic write, so there is no half-applied
+state where a new root sits beside the old root's rows.
+
+`--out` refuses an existing file (`O_CREAT | O_EXCL`): the 0600 mode only applies on
+creation, so reusing a path would write the phrase into whatever permissions were
+already there, and a pre-planted symlink could redirect it. On a platform with no
+mode to set, the command says so instead of claiming owner-only.
+
+Export prints the phrase on the **first line** (so `head -1` is the secret),
+then the root's public key, then any derived account ids. Only the first line is
+sensitive; the account ids are what writer sets already name.
+
+Full model, the recovery procedure, and what does *not* come back:
+[protocol/accounts](../../docs/src/content/docs/protocol/accounts.mdx#backing-up-and-recovering-an-account).
 
 ## File Organization
 
@@ -49,6 +94,7 @@ src/
 │   ├── config.rs     # Config modifications
 │   ├── auth.rs       # `merod auth set-admin` (offline admin-key mint)
 │   ├── admin_creds.rs# Shared --admin-user/password-file/stdin resolution
+│   ├── account.rs    # `merod account export|import` (recovery phrase)
 │   ├── kms.rs        # KMS subcommand
 │   ├── validation.rs # Validation helpers
 │   └── auth_mode.rs  # Authentication mode handling

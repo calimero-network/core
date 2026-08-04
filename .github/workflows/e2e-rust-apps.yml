@@ -277,6 +277,9 @@ jobs:
           - workflow: account-device-revoke-lockout
             file: workflows/account-device-revoke-lockout.yml
             app: scaffolding-e2e
+          - workflow: account-root-backup-restore
+            file: workflows/account-root-backup-restore.yml
+            app: scaffolding-e2e
           - workflow: group-leave-context
             file: workflows/group-leave-context.yml
             app: scaffolding-e2e
@@ -680,8 +683,26 @@ jobs:
               count=$(grep -rho "gov_divergence_pull_triggered" docker-logs/ | wc -l | tr -d ' ')
               echo "::notice::scope_root governance pulls in ${{ matrix.workflow }} — $count trigger(s)"
               echo "per-context trigger counts (watch for a single context dominating = storm):"
-              grep -rho 'gov_divergence_pull_triggered.*' docker-logs/ \
-                | grep -oE 'context_id=[0-9a-f]+' | sort | uniq -c | sort -rn | head -10
+              # Two reasons this used to match nothing, and the first is the one
+              # that made every character class hopeless:
+              #
+              #   1. tracing writes these logs with ANSI styling on, so the bytes are
+              #      `context_id<ESC>[0m<ESC>[2m=<ESC>[0m<value>` — the `=` is not
+              #      adjacent to the field name at all. Hence the sed.
+              #   2. the value is bs58 (`%context_id` Displays a ContextId through
+              #      Hash), so a [0-9a-f] class would still have failed after
+              #      stripping.
+              per_context=$(grep -rho 'gov_divergence_pull_triggered.*' docker-logs/ \
+                | sed -E $'s/\x1B\\[[0-9;]*[mK]//g' \
+                | grep -oE 'context_id=[A-Za-z0-9]+' | sort | uniq -c | sort -rn | head -10)
+              if [ -n "$per_context" ]; then
+                  echo "$per_context"
+              else
+                  # Never silently print nothing again: an empty breakdown beside a
+                  # non-zero count means the field moved or stopped being emitted.
+                  echo "::warning::$count trigger(s) but no context_id parsed from them — the marker's fields changed shape, so this breakdown is blind"
+                  grep -rho 'gov_divergence_pull_triggered.*' docker-logs/ | head -2
+              fi
           else
               echo "no gov_divergence_pull_triggered markers — no scope_root governance divergence pulled this run"
           fi

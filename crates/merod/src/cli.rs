@@ -7,6 +7,7 @@ use eyre::Result as EyreResult;
 
 use crate::defaults;
 
+mod account;
 mod admin_creds;
 mod auth;
 mod auth_mode;
@@ -17,6 +18,7 @@ mod run;
 mod tee;
 mod validation;
 
+use account::AccountCommand;
 use auth::AuthCommand;
 use config::ConfigCommand;
 use init::InitCommand;
@@ -75,6 +77,7 @@ pub struct RootCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SubCommands {
+    Account(AccountCommand),
     Auth(AuthCommand),
     Config(ConfigCommand),
     Init(InitCommand),
@@ -112,6 +115,7 @@ pub(crate) fn resolve_node_relative_path(node_home: &Path, path: PathBuf) -> Pat
 impl RootCommand {
     pub async fn run(self) -> EyreResult<()> {
         match self.action {
+            SubCommands::Account(account) => account.run(&self.args).await,
             SubCommands::Auth(auth) => auth.run(&self.args).await,
             SubCommands::Config(config) => config.run(&self.args).await,
             SubCommands::Init(init) => init.run(self.args).await,
