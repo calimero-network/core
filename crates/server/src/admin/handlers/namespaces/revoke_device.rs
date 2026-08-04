@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_account::DeviceId;
+use calimero_account::{DeviceId, SignedDeviceRevocation};
 use calimero_context_client::group::RevokeDeviceRequest;
 use calimero_server_primitives::admin::{
     RevokeDeviceApiRequest, RevokeDeviceApiResponse, RevokeDeviceApiResponseData,
@@ -15,12 +15,31 @@ use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
 
+/// Decode a hex, borsh-encoded [`SignedDeviceRevocation`].
+///
+/// The error text names the stage that failed, because the two are different
+/// mistakes: bad hex is a transport or copy-paste problem, while hex that is not a
+/// proof usually means the wrong blob was pasted.
+fn decode_proof(raw: &str) -> Result<SignedDeviceRevocation, String> {
+    let bytes = hex::decode(raw.trim()).map_err(|err| format!("proof is not valid hex: {err}"))?;
+    borsh::from_slice(&bytes).map_err(|err| {
+        format!(
+            "proof is valid hex but not a revocation proof: {err}. It should be the \
+             output of `merod account revoke-proof`."
+        )
+    })
+}
+
 /// Withdraw a device from an account, terminally.
 ///
 /// An admin may revoke any device; the account holder may revoke its own with a
 /// root-signed proof. Only the admin path rotates the scope key, so a
 /// self-service revocation stops the device writing at once and leaves it able
 /// to read until an admin rotates — reported back rather than hidden.
+///
+/// The proof may also arrive from the **caller**, minted offline by whoever holds
+/// the account root. That is the lost-device path: the root never reaches a node,
+/// and the node publishing the revocation needs no authority of its own.
 pub async fn handler(
     Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
@@ -45,13 +64,34 @@ pub async fn handler(
         }
     };
 
-    info!(namespace_id = %namespace_id_str, device = %req.device_id, "revoking a device");
+    // Decoded here rather than in `validate`, which cannot see the account and so
+    // could only confirm the string is hex. A proof that does not deserialize is a
+    // caller error worth naming precisely — the alternative is publishing an op
+    // whose proof every replica silently declines to honour.
+    let proof = match req.proof.as_deref().map(decode_proof).transpose() {
+        Ok(proof) => proof,
+        Err(message) => {
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message,
+            }
+            .into_response();
+        }
+    };
+
+    info!(
+        namespace_id = %namespace_id_str,
+        device = %req.device_id,
+        with_proof = proof.is_some(),
+        "revoking a device"
+    );
 
     let result = state
         .ctx_client
         .revoke_device(RevokeDeviceRequest {
             namespace_id,
             device: DeviceId::from(device),
+            proof,
         })
         .await
         .map_err(parse_api_error);

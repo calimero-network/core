@@ -1620,7 +1620,15 @@ impl SyncManager {
                     // flags a pull that delivered nothing (best-effort failure or an
                     // already-converged peer), which the `Ok(None)` below would
                     // otherwise hide as "entities already in sync".
-                    debug!(
+                    //
+                    // `info!`, matching the trigger above it, because a correlation
+                    // is worthless when only one of the pair is visible: the e2e
+                    // filter is `calimero_=info` and no scenario raises it, so at
+                    // `debug!` this never reached the logs it was written for. A
+                    // storm showed 178 triggers on one context with no way to tell
+                    // whether a single pull moved any ops. Same volume as the
+                    // trigger, and both are only frequent when something is wrong.
+                    info!(
                         marker = "gov_divergence_pull_complete",
                         %context_id,
                         %chosen_peer,
@@ -1737,7 +1745,10 @@ impl SyncManager {
                                 let ops_pulled = self
                                     .pull_namespace_governance(context_id, chosen_peer)
                                     .await;
-                                debug!(
+                                // `info!` for the same reason as the pre-sync
+                                // site: the outcome has to be visible wherever the
+                                // trigger is, or the pair cannot be correlated.
+                                info!(
                                     marker = "gov_divergence_pull_complete",
                                     %context_id,
                                     %chosen_peer,

@@ -12,17 +12,16 @@ description: >
   never even logged "Processing blob request stream" — it bailed at the auth
   gate before looking for a blob it was holding.
 
-  NOT IN THE CI MATRIX YET. It needs merobox's `download_blob` step
-  (calimero-network/merobox#306), which is unreleased. To activate:
-    1. bump MIN_MEROBOX to 0.6.44 in .github/actions/setup-merobox/action.yml
-    2. add to the matrix in .github/workflows/e2e-rust-apps.yml:
-         - workflow: blob-cross-node-transfer
-           file: workflows/blob-cross-node-transfer.yml
-           app: blobs
+  Needs merobox >= 0.6.44 for the `download_blob` step (floor enforced in
+  .github/actions/setup-merobox/action.yml) and a node build carrying #3326,
+  without which the kad preconditions below fail.
 
-  Run locally against a merobox that has the step:
-    cd apps/blobs && merobox bootstrap run workflows/blob-cross-node-transfer.yml \
-      --image merod:local
+  Run locally — --e2e-mode is REQUIRED, it clears the public devnet bootstrap
+  list `merod init` writes; without it the provider lookup times out on
+  unreachable public peers:
+    cd apps/blobs
+    MERO_AUTH_ADMIN_USER=dev MERO_AUTH_ADMIN_PASSWORD=dev-password \
+      merobox bootstrap run workflows/blob-cross-node-transfer.yml --e2e-mode
 
   ON THE NEGATIVE CONTROLS: blobs are content-addressed, so a node already
   holding identical bytes serves them from local storage and never touches the
@@ -78,6 +77,31 @@ steps:
     statements:
       - "is_set({{context_id}})"
 
+  # Blob bytes ride a Kademlia provider lookup, not gossipsub. Before #3326 a
+  # two-node fleet with no bootstrap node left both routing tables empty, so
+  # every fetch below died `NotFound { closest_peers: [] }` while the mesh above
+  # converged normally. Assert kad populated, so that regression fails here with
+  # a named cause instead of as a timeout inside a download step.
+  - name: Give kad time to populate from identify
+    type: wait
+    seconds: 30
+
+  - name: Precondition — node 1's kad routing table is populated
+    type: assert_log_present
+    nodes:
+      - rust-blob-xfer-1
+    patterns:
+      - "RoutingUpdated"
+    tail_lines: 20000
+
+  - name: Precondition — node 2's kad routing table is populated
+    type: assert_log_present
+    nodes:
+      - rust-blob-xfer-2
+    patterns:
+      - "RoutingUpdated"
+    tail_lines: 20000
+
   # ── Blob 1 ─────────────────────────────────────────────────────────────
   - name: Upload the PNG on node 1
     type: upload_blob
@@ -104,6 +128,15 @@ steps:
     node: rust-blob-xfer-2
     blob_id: "{{png_blob_id}}"
     expected_failure: true
+
+  # An explicit wait, NOT wait_for_sync alone. A blob announce is a Kademlia
+  # provider PUBLISH; wait_for_sync waits for CRDT state convergence, which a
+  # blob upload does not change — so it returns instantly and gives the DHT
+  # record no time to become findable (CI failed exactly there with
+  # `Blob query failed: NotFound` ~3s after upload).
+  - name: Let the announce reach the DHT
+    type: wait
+    seconds: 20
 
   - name: Let the announce propagate
     type: wait_for_sync
@@ -162,6 +195,15 @@ steps:
     node: rust-blob-xfer-2
     blob_id: "{{txt_blob_id}}"
     expected_failure: true
+
+  # An explicit wait, NOT wait_for_sync alone. A blob announce is a Kademlia
+  # provider PUBLISH; wait_for_sync waits for CRDT state convergence, which a
+  # blob upload does not change — so it returns instantly and gives the DHT
+  # record no time to become findable (CI failed exactly there with
+  # `Blob query failed: NotFound` ~3s after upload).
+  - name: Let the announce reach the DHT
+    type: wait
+    seconds: 20
 
   - name: Let the second announce propagate
     type: wait_for_sync

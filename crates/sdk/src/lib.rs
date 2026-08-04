@@ -32,9 +32,17 @@ pub mod testing;
 pub mod types;
 /// The ABI description surface apps and generated code use.
 pub mod abi {
+    // The derive stays on every target: `#[app::state]` and `#[app::event]`
+    // name it unconditionally, and its output is what carries the host gate.
     pub use calimero_sdk_macros::AbiType;
+
+    // The manifest is assembled by a host build (`cargo mero build` runs the
+    // app's extraction entry point), so none of this belongs in the wasm.
+    #[cfg(not(target_arch = "wasm32"))]
     pub use calimero_wasm_abi::abi_type::{AbiEvents, AbiType, TypeRegistry};
+    #[cfg(not(target_arch = "wasm32"))]
     pub use calimero_wasm_abi::manifest_builder::ManifestBuilder;
+    #[cfg(not(target_arch = "wasm32"))]
     pub use calimero_wasm_abi::schema::{
         CollectionType, CrdtCollectionType, Event, Field, Manifest, Method, MethodIntent,
         Parameter, ScalarType, TypeDef, TypeRef, Variant, XCallCallers,

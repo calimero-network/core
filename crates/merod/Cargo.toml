@@ -17,6 +17,7 @@ const_format.workspace = true
 dirs.workspace = true
 ed25519-consensus.workspace = true
 eyre.workspace = true
+borsh.workspace = true
 hex.workspace = true
 ic-agent.workspace = true
 libp2p.workspace = true
@@ -53,6 +54,8 @@ calimero-primitives = { workspace = true, features = ["borsh"] }
 mero-auth = { path = "../auth" }
 sigstore = { version = "0.13.0", default-features = false, features = ["verify", "cosign", "sigstore-trust-root", "rustls-tls"] }
 x509-cert = "0.2.5"
+calimero-account = { version = "0.0.0", path = "../account" }
+calimero-governance-store = { version = "0.0.0", path = "../governance-store" }
 
 [build-dependencies]
 calimero-build-utils.workspace = true

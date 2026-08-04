@@ -24,9 +24,10 @@ tracing.workspace = true
 
 calimero-sdk.workspace = true
 calimero-storage-macros.workspace = true
-calimero-wasm-abi.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Host-only: ABI extraction runs against a native build, never inside the wasm.
+calimero-wasm-abi.workspace = true
 ed25519-dalek.workspace = true
 rand.workspace = true
 

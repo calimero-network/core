@@ -36,6 +36,8 @@ on:
   # via `scripts/determine-image-tag.sh`. Other PR paths skip both —
   # they keep their cheap default behaviour. Same-repo PRs only;
   # `prepare.outputs.docker_push` keeps fork PRs from pushing.
+  # `crates/**`/`apps/**` stay off on purpose (cost); the size regression a PR
+  # must catch is covered by ci-checks.yml's `wasm-size` job.
   pull_request:
     paths:
       - "scripts/profiling/**"
@@ -135,14 +137,14 @@ jobs:
         env:
           WASM_PROFILING: "true"
 
-      - name: Verify WASM files exist
+      # Covers existence too; an oversized module fails here with a size,
+      # not 20 minutes later as an opaque context-creation error.
+      - name: Verify WASM files exist and fit the runtime module-size limit
         run: |
           ls -la apps/kv-store/res/
           ls -la apps/kv-store-with-handlers/res/
           ls -la apps/scaffolding-e2e/res/
-          test -f apps/kv-store/res/kv_store.wasm
-          test -f apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
-          test -f apps/scaffolding-e2e/res/scaffolding_e2e.wasm
+          ./scripts/check-wasm-size.sh
 
       # Use artifacts for same-run handoff between jobs (faster than cache for this use case)
       - name: Upload build artifacts

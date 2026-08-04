@@ -46,6 +46,7 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
         RevokeDeviceRequest {
             namespace_id,
             device,
+            proof: supplied_proof,
         }: RevokeDeviceRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -82,18 +83,53 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
         };
         let account = target.account;
 
-        if !is_admin && !target.self_service {
+        // A proof minted elsewhere is verified HERE, before anything is published,
+        // against the account the group's own binding names. Refusing beats
+        // publishing: the apply path treats an unverifiable proof as a deterministic
+        // refusal that records nothing and returns `Ok`, so a bad one would leave the
+        // operator with a successful-looking call, no revocation on any replica, and
+        // nothing anywhere saying why.
+        //
+        // Verifying against `target.account` rather than the account inside the proof
+        // is what stops a proof for one account authorising a device bound to
+        // another — the same tie the apply path enforces, checked early so the error
+        // reaches whoever can act on it.
+        let supplied_proof = match supplied_proof {
+            Some(proof) => match proof.authorises(account, device) {
+                Ok(()) => Some(proof),
+                Err(err) => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "the supplied revocation proof does not authorise withdrawing \
+                         {device} from {account}: {err}. A proof is only valid for the \
+                         one account and device it names, and {namespace_id:?} has this \
+                         device bound to {account}"
+                    )))
+                }
+            },
+            None => None,
+        };
+
+        // Three ways to be authorized. The proof is checked first because it is the
+        // only one that needs no authority from this node at all — it carries its own.
+        if supplied_proof.is_none() && !is_admin && !target.self_service {
             return ActorResponse::reply(Err(eyre::eyre!(
                 "this node is neither an admin of {namespace_id:?} nor the holder of the \
-                 account that owns {device}; revoking somebody else's device requires admin"
+                 account that owns {device}, and no revocation proof was supplied. Either \
+                 revoke as an admin, or mint a proof from the account root \
+                 (`merod account revoke-proof`) and pass it here"
             )));
         }
 
-        // Mint the proof only on the self-service path, which is the only one that
-        // needs it — an admin revokes on the group's authority and may hold no
+        // A supplied proof is used as given — re-minting would need the root, which
+        // is the thing this path exists to do without.
+        //
+        // Otherwise mint one only on the self-service path, which is the only one
+        // that needs it: an admin revokes on the group's authority and may hold no
         // account root at all, so consulting one unconditionally refused every
         // admin that had never run `account create`.
-        let proof = if target.self_service {
+        let proof = if let Some(proof) = supplied_proof {
+            Some(proof)
+        } else if target.self_service {
             match device_repo.account_root() {
                 Ok(Some(root)) => {
                     let genesis = root.genesis_for(&namespace_id);
