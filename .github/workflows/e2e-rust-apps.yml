@@ -280,6 +280,9 @@ jobs:
           - workflow: account-root-backup-restore
             file: workflows/account-root-backup-restore.yml
             app: scaffolding-e2e
+          - workflow: account-revoke-lost-device
+            file: workflows/account-revoke-lost-device.yml
+            app: scaffolding-e2e
           - workflow: group-leave-context
             file: workflows/group-leave-context.yml
             app: scaffolding-e2e
