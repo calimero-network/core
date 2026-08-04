@@ -1,0 +1,407 @@
+name: E2E Account - Revoke a Lost Device From the Root Alone
+description: >
+  The acceptance test for root-side revocation (#3354). Revoking a device is the
+  ACCOUNT's authority, and someone who has merely lost a device still holds it —
+  but until `merod account revoke-proof` existed, the only code path that minted a
+  proof read the root from the acting node's own store. Which is the machine that
+  is gone. The authority existed and could not be exercised.
+
+  What makes an offline route possible is that the proof is self-certifying: it
+  carries the genesis and the root-key chain and verifies from the account id
+  alone, so nothing about it depends on where it was minted. This scenario is the
+  only thing that proves that over the real wire, where three nodes hold different
+  amounts of the binding history.
+
+  Distinct from `account-device-revoke-lockout`, which revokes through a node that
+  HAS authority (an admin, or the account holder itself). Here the publisher has
+  neither, and that is the whole point.
+
+  The cast, and why each one exists:
+
+    * node-1 — admin and context creator. Deliberately NOT the publisher: if an
+      admin published, the test would pass on the pre-existing admin path and
+      prove nothing about proofs.
+    * node-2 — the device that gets lost. Enrols an account, writes something,
+      then goes away and never comes back to publish anything.
+    * node-3 — a plain member. Not an admin, does not hold the account, and never
+      pairs into it. Its only route to revoking node-2's device is a proof it did
+      not mint. Before #3367 this step failed with "neither an admin ... nor the
+      holder of the account".
+
+  What each phase is load-bearing for:
+
+    1. node-2 enrols and writes. The write matters only as evidence the device was
+       genuinely live before it was revoked — a revocation that "works" against a
+       device that never functioned proves nothing.
+
+    2. Stop node-2 and export its root. `account export` opens the datastore
+       directly and RocksDB's lock is exclusive, so the node is stopped and a
+       one-shot container reads the same data directory.
+
+       node-2 then comes back BEFORE the revocation is published, which looks like
+       it weakens the scenario and does not. Nothing about the revocation involves
+       this node — the proof is minted from the phrase on a machine that does not
+       hold the account, and published by a node with no authority — and that
+       independence is the whole property. But a tombstone can only be OBSERVED by
+       a node that folds it, and the sharpest observation available is that a
+       re-enrolment mints a fresh replica id. So the device has to come back to be
+       asked. Online first rather than after, because a node restarting into an
+       already-published tombstone must pull governance to catch up, and that path
+       is slow and independently flaky.
+
+    3. Mint the proof on node-3 with `--from`. This is the step that would be
+       impossible without the offline path: node-3 does not hold the account root
+       and never will — it reads the phrase from a file. `allow_running: true` is
+       correct rather than a shortcut, because `--from` makes the command skip
+       `open_store` entirely, so there is no datastore to contend for.
+
+    4. node-3 publishes the revocation with `proof:`, holding no authority of its
+       own. The step succeeding IS the feature.
+
+       `keyRotated` must be **false**. Only an admin may rotate the scope key
+       (peers accept a rotation sidecar only from an admin at the cut), so a
+       proof-published revocation withdraws the right to write immediately and
+       leaves the key rotation owed. That asymmetry is documented and deliberate,
+       and asserting it here is what stops it being quietly "fixed" into a
+       rotation that every peer would refuse.
+
+    5. The tombstone is real, proved by what it forbids: node-2 comes back and
+       enrols again, and the device id it gets must be DIFFERENT from the revoked
+       one. A revocation is terminal, so the spent id can never be linked again —
+       and nothing else releases the node's own device slot, so "re-enrolling
+       mints a fresh one" is only true because the tombstone made it true. The
+       account id must be the SAME, because revoking a device says nothing about
+       the account that owned it.
+
+       Ordering matters here: node-2 has to have FOLDED the revocation before it
+       enrols, or it hands back the old row and the assertion fails for a reason
+       that has nothing to do with the tombstone. Hence the settle with a generous
+       timeout after it restarts.
+
+  User-visible failure mode this guards against: "I lost my laptop, I have my
+  recovery phrase, and there is no way to stop that machine from writing."
+
+force_pull_image: false
+near_devnet: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: revoke-node
+
+steps:
+  - name: Login on revoke-node-1
+    type: login
+    node: revoke-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on revoke-node-2
+    type: login
+    node: revoke-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on revoke-node-3
+    type: login
+    node: revoke-node-3
+    username: dev
+    password: dev-password
+
+  # ── Phase 1: a live device to lose ────────────────────────────────
+
+  - name: Install application on revoke-node-1
+    type: install_application
+    node: revoke-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on revoke-node-2
+    type: install_application
+    node: revoke-node-2
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Install application on revoke-node-3
+    type: install_application
+    node: revoke-node-3
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Node-1 creates the namespace
+    type: create_namespace
+    node: revoke-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2
+    type: create_namespace_invitation
+    node: revoke-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation_2: invitation
+
+  - name: Node-2 joins the namespace
+    type: join_namespace
+    node: revoke-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation_2}}'
+
+  - name: Invite node-3
+    type: create_namespace_invitation
+    node: revoke-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation_3: invitation
+
+  - name: Node-3 joins the namespace
+    type: join_namespace
+    node: revoke-node-3
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation_3}}'
+
+  - name: Node-1 creates the context
+    type: create_context
+    node: revoke-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      context_id: contextId
+
+  - name: Node-2 joins the context
+    type: join_context
+    node: revoke-node-2
+    context_id: '{{context_id}}'
+
+  - name: Node-3 joins the context
+    type: join_context
+    node: revoke-node-3
+    context_id: '{{context_id}}'
+
+  - name: Settle before enrolling
+    type: wait_for_sync
+    nodes:
+      - revoke-node-1
+      - revoke-node-2
+      - revoke-node-3
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  # After the context join: enrolment publishes an encrypted GroupOp, so the node
+  # needs the scope key it only holds once it has joined.
+  - name: Node-2 enrols the account that will lose its device
+    type: account_create
+    node: revoke-node-2
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      lost_account: accountId
+      lost_device: deviceId
+
+  # node-3 has to fold the device link before it can name the account in a
+  # revocation — `revocation_target` reads the group's own binding, and a node that
+  # has not seen the link has nothing to name. This settle is that dependency, not
+  # padding.
+  - name: Settle so node-3 folds the device link
+    type: wait_for_sync
+    nodes:
+      - revoke-node-1
+      - revoke-node-2
+      - revoke-node-3
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  # Evidence the device was genuinely live. Revoking something that never worked
+  # would assert nothing.
+  - name: The soon-to-be-lost device writes a value
+    type: call
+    node: revoke-node-2
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: written-before-the-loss
+      value: from-the-lost-laptop
+
+  - name: Settle so the write reaches the others
+    type: wait_for_sync
+    nodes:
+      - revoke-node-1
+      - revoke-node-2
+      - revoke-node-3
+    context_id: '{{context_id}}'
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-1 saw the lost laptop's write
+    type: call
+    node: revoke-node-1
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: written-before-the-loss
+    outputs:
+      before_loss: result
+
+  - name: The device was live before it was revoked
+    type: json_assert
+    statements:
+      - 'json_equal({{before_loss}}, {"output": "from-the-lost-laptop"})'
+
+  # ── Phase 2: the laptop is gone, but the phrase is not ────────────
+
+  - name: Stop node-2 so its root can be read
+    type: stop_node
+    nodes: revoke-node-2
+
+  - name: Export the lost device's account root
+    type: node_exec
+    node: revoke-node-2
+    args: ['account', 'export']
+    outputs:
+      recovery_phrase: stdout_first_line
+
+  # Back online BEFORE the revocation is published, and the reason is worth being
+  # precise about, because it looks like it weakens the scenario.
+  #
+  # Nothing about the revocation involves this node: the proof is minted from the
+  # phrase on a machine that does not hold the account, and published by a node with
+  # no authority. Whether node-2 is reachable is irrelevant to any of that — which
+  # is exactly why a truly lost device can be retired at all.
+  #
+  # But a tombstone can only be OBSERVED by a node that folds it, and the sharpest
+  # available observation is that a re-enrolment mints a fresh replica id. So the
+  # device has to come back to be asked. It is here rather than after the
+  # revocation because a node that restarts into a published tombstone has to pull
+  # governance to catch up, and that path is slow and independently flaky (a
+  # restarted node can park on "No peers" for minutes behind the rendezvous
+  # throttle). Online first, it folds the op from live gossip like any other peer.
+  - name: The laptop comes back to be asked about the tombstone
+    type: start_node
+    nodes: revoke-node-2
+
+  - name: Log back in to node-2
+    type: login
+    node: revoke-node-2
+    username: dev
+    password: dev-password
+
+  - name: Settle so node-2 is back in the mesh before the revocation is published
+    type: wait_for_sync
+    nodes:
+      - revoke-node-1
+      - revoke-node-2
+      - revoke-node-3
+    context_id: '{{context_id}}'
+    timeout: 120
+    trigger_sync: true
+
+  - name: Brief settle so libp2p has re-meshed node-2
+    type: wait
+    seconds: 5
+
+  # ── Phase 3: mint the proof somewhere that holds no account ───────
+  #
+  # node-3 does not have this account root and never will. `--from` reads the
+  # phrase from a file, so the command skips `open_store` entirely — which is why
+  # `allow_running: true` is correct here and not a way around the guard: there is
+  # no datastore being touched to contend for.
+
+  - name: Node-3 signs the revocation from the phrase alone
+    type: node_exec
+    node: revoke-node-3
+    allow_running: true
+    files:
+      /app/data/recovery.txt: '{{recovery_phrase}}'
+    args:
+      - 'account'
+      - 'revoke-proof'
+      - '--namespace'
+      - '{{namespace_id}}'
+      - '--device'
+      - '{{lost_device}}'
+      - '--from'
+      - '/app/data/recovery.txt'
+    outputs:
+      revocation_proof: stdout_first_line
+
+  # ── Phase 4: publish it from a node with no authority ─────────────
+
+  # The feature, in one step. node-3 is not an admin, does not hold the account,
+  # and never paired into it — before #3367 this failed with "this node is neither
+  # an admin of ... nor the holder of the account that owns ...".
+  - name: Node-3 publishes the revocation holding no authority of its own
+    type: account_revoke
+    node: revoke-node-3
+    namespace_id: '{{namespace_id}}'
+    device_id: '{{lost_device}}'
+    proof: '{{revocation_proof}}'
+    outputs:
+      key_rotated: keyRotated
+
+  # Only an admin may rotate, so a proof-published revocation leaves the rotation
+  # owed: the device loses the right to WRITE immediately and could still read until
+  # an admin rotates. Asserted so the asymmetry cannot be quietly turned into a
+  # rotation every peer would refuse.
+  - name: The proof revoked without rotating the scope key
+    type: json_assert
+    statements:
+      - 'json_equal({{key_rotated}}, false)'
+
+  # ── Phase 5: the tombstone is real ───────────────────────────────
+  #
+  # Proved by what it forbids. A revocation is terminal, so the spent DeviceId can
+  # never be linked again — and nothing except the tombstone releases the node's own
+  # device slot, so a fresh id on re-enrolment is only possible because the
+  # revocation landed and node-2 folded it.
+
+  # A plain `wait`, deliberately, and NOT `wait_for_sync`: the tombstone is a
+  # GOVERNANCE op, and wait_for_sync compares context state. It gates nothing here
+  # — the first version of this scenario used it and it returned in 18ms, so
+  # node-2 was asked about its device before it had folded anything and handed back
+  # the row it already had. The assertion then failed for a reason that had nothing
+  # to do with the tombstone.
+  - name: Let the revocation reach node-2 over gossip
+    type: wait
+    seconds: 20
+
+  - name: Settle after the tombstone
+    type: wait_for_sync
+    nodes:
+      - revoke-node-1
+      - revoke-node-2
+      - revoke-node-3
+    context_id: '{{context_id}}'
+    timeout: 120
+    trigger_sync: true
+
+  - name: Node-2 enrols again after losing its device
+    type: account_create
+    node: revoke-node-2
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      replacement_account: accountId
+      replacement_device: deviceId
+
+  # The revoked id is spent for good. Equality here would mean the tombstone never
+  # landed, or landed and was ignored — and the node would go on minting
+  # certificates for an id every peer refuses, locked out by its own revocation
+  # with nothing saying why.
+  - name: The replacement device is not the revoked one
+    type: json_assert
+    statements:
+      - 'json_not_equal({{replacement_device}}, {{lost_device}})'
+
+  # And the account is untouched: revoking a device says nothing about the account
+  # that owned it. Same root, same namespace, same derived account.
+  - name: The account survived the revocation of its device
+    type: json_assert
+    statements:
+      - 'json_equal({{replacement_account}}, {{lost_account}})'
+
+stop_all_nodes: false

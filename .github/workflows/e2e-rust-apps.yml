@@ -280,6 +280,9 @@ jobs:
           - workflow: account-root-backup-restore
             file: workflows/account-root-backup-restore.yml
             app: scaffolding-e2e
+          - workflow: account-revoke-lost-device
+            file: workflows/account-revoke-lost-device.yml
+            app: scaffolding-e2e
           - workflow: group-leave-context
             file: workflows/group-leave-context.yml
             app: scaffolding-e2e
@@ -702,6 +705,22 @@ jobs:
                   # non-zero count means the field moved or stopped being emitted.
                   echo "::warning::$count trigger(s) but no context_id parsed from them — the marker's fields changed shape, so this breakdown is blind"
                   grep -rho 'gov_divergence_pull_triggered.*' docker-logs/ | head -2
+              fi
+              # The outcome, not just the count. `ops_pulled == 0` throughout means
+              # the peer had nothing to give, so the cause is upstream of the pull;
+              # a non-zero value repeating while the scenario still fails means ops
+              # arrive and the fold does not converge on them. That distinction is
+              # the whole diagnosis, and reading it used to require downloading the
+              # docker-logs artifact by hand — the job log carries only this step's
+              # own output, which is easy to mistake for the markers being absent.
+              echo "pull outcomes (ops_pulled), which splits 'nothing to give' from 'ops do not take':"
+              outcomes=$(grep -rho 'gov_divergence_pull_complete.*' docker-logs/ \
+                | sed -E $'s/\x1B\\[[0-9;]*[mK]//g' \
+                | grep -oE 'ops_pulled=[0-9]+' | sort | uniq -c | sort -rn | head -5)
+              if [ -n "$outcomes" ]; then
+                  echo "$outcomes"
+              else
+                  echo "::warning::triggers present but no gov_divergence_pull_complete found — the pull did not return, or the marker moved"
               fi
           else
               echo "no gov_divergence_pull_triggered markers — no scope_root governance divergence pulled this run"
