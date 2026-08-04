@@ -17,26 +17,29 @@ impl KeyManager {
         Self { storage }
     }
 
-    /// Get a key by ID
+    /// Get a key by ID, if it is currently valid.
+    ///
+    /// Revoked and expired keys read as absent, so a caller that never checks
+    /// validity still cannot act on one. Every access decision wants this.
     pub async fn get_key(&self, key_id: &str) -> Result<Option<Key>, StorageError> {
-        // Try root key prefix first
-        let root_key = format!("{}{}", prefixes::ROOT_KEY, key_id);
-        if let Some(data) = self.storage.get(&root_key).await? {
-            let key: Key = deserialize(&data)?;
-            if key.is_valid() {
-                return Ok(Some(key));
-            }
-            return Ok(None);
-        }
+        Ok(self
+            .get_key_including_invalid(key_id)
+            .await?
+            .filter(Key::is_valid))
+    }
 
-        // Try client key prefix
-        let client_key = format!("{}{}", prefixes::CLIENT_KEY, key_id);
-        if let Some(data) = self.storage.get(&client_key).await? {
-            let key: Key = deserialize(&data)?;
-            if key.is_valid() {
-                return Ok(Some(key));
+    /// Get a key by ID whether or not it is still valid.
+    ///
+    /// Only for callers that must tell "revoked" from "never existed" — chiefly
+    /// reporting revocation back to a client. Prefer [`Self::get_key`].
+    pub async fn get_key_including_invalid(
+        &self,
+        key_id: &str,
+    ) -> Result<Option<Key>, StorageError> {
+        for prefix in [prefixes::ROOT_KEY, prefixes::CLIENT_KEY] {
+            if let Some(data) = self.storage.get(&format!("{prefix}{key_id}")).await? {
+                return Ok(Some(deserialize(&data)?));
             }
-            return Ok(None);
         }
 
         Ok(None)
@@ -241,7 +244,8 @@ impl KeyManager {
             if let Some(data) = self.storage.get(&key_path).await? {
                 let key_data: Key = deserialize(&data)?;
 
-                // Skip revoked/invalid keys (consistent with get_key() behavior)
+                // A revoked key must not count as an existing one, or an admin
+                // could never be re-provisioned after revoking the old root.
                 if !key_data.is_valid() {
                     continue;
                 }
@@ -638,6 +642,47 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn get_key_hides_revoked_keys_while_the_raw_lookup_still_finds_them() {
+        let storage = Arc::new(MemoryStorage::new());
+        let key_manager = KeyManager::new(storage);
+
+        let mut root = Key::new_root_key_with_permissions(
+            "admin".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        key_manager.set_key("root-1", &root).await.unwrap();
+        let mut client =
+            Key::new_client_key("root-1".to_string(), "agent".to_string(), vec![], None);
+        key_manager.set_key("client-1", &client).await.unwrap();
+
+        client.revoke();
+        key_manager.set_key("client-1", &client).await.unwrap();
+        root.revoke();
+        key_manager.set_key("root-1", &root).await.unwrap();
+
+        // The valid-only lookup keeps its fail-safe contract: a caller that
+        // forgets to check validity still cannot act on a revoked key.
+        assert!(key_manager.get_key("client-1").await.unwrap().is_none());
+        assert!(key_manager.get_key("root-1").await.unwrap().is_none());
+
+        for id in ["client-1", "root-1"] {
+            let key = key_manager
+                .get_key_including_invalid(id)
+                .await
+                .unwrap()
+                .unwrap_or_else(|| panic!("{id} was revoked, not deleted"));
+            assert!(key.is_revoked());
+        }
+        assert!(key_manager
+            .get_key_including_invalid("never-existed")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

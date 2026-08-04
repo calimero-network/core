@@ -27,11 +27,8 @@ use crate::config::ServerConfig;
 /// - [`AuthError::TokenRevoked`] → `403` with `token_revoked`
 /// - everything else → bare `401`
 ///
-/// Note that a revoked key often still surfaces as a generic "key not found"
-/// because [`KeyManager::get_key`] filters revoked keys out before the
-/// `is_valid` check can run; the dedicated arm here ensures that any path which
-/// *does* produce [`AuthError::TokenRevoked`] is reported as `403` rather than
-/// being collapsed into the generic `401`.
+/// `403` for a revoked token is deliberate: `401` invites the client to
+/// re-authenticate and retry, which is exactly wrong for a dead credential.
 fn unauthorized_response(err: &AuthError) -> Response {
     match err {
         AuthError::TokenExpired => {
@@ -311,9 +308,20 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use axum::body::Body;
-    use axum::http::{Method, Request};
+    use axum::http::{Method, Request, StatusCode};
+    use axum::response::Response;
+    use axum::routing::get;
+    use axum::Router;
     use mero_auth::auth::permissions::PermissionValidator;
+    use mero_auth::auth::token::TokenManager;
+    use mero_auth::config::JwtConfig;
+    use mero_auth::secrets::SecretManager;
+    use mero_auth::storage::{Key, KeyManager, MemoryStorage, Storage};
+    use mero_auth::AuthService;
+    use tower::ServiceExt as _;
 
     /// Build the request the guard hands to the validator: only the method and
     /// the full path are read by `determine_required_permissions`.
@@ -366,6 +374,96 @@ mod tests {
         assert!(
             validator.validate_permissions(&admin, &required),
             "an admin token must pass every permission check",
+        );
+    }
+
+    /// What happens to a key after its token has been minted.
+    enum KeyFate {
+        Revoked,
+        Deleted,
+    }
+
+    /// Drive one request through the real guard over an in-memory auth service,
+    /// so the assertions land on the response a client actually receives.
+    async fn guarded_request(fate: KeyFate) -> Response {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secrets = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        secrets.initialize().await.unwrap();
+        let token_manager = TokenManager::new(
+            JwtConfig {
+                issuer: "test".to_owned(),
+                access_token_expiry: 3600,
+                refresh_token_expiry: 86400,
+                node_host: None,
+            },
+            Arc::clone(&storage),
+            secrets,
+        );
+
+        let key_manager = KeyManager::new(Arc::clone(&storage));
+        let mut key = Key::new_root_key_with_permissions(
+            "owner".to_owned(),
+            "user_password".to_owned(),
+            vec!["admin".to_owned()],
+            None,
+        );
+        key_manager.set_key("k-1", &key).await.unwrap();
+
+        let (access_token, _) = token_manager
+            .generate_token_pair("k-1".to_owned(), vec!["admin".to_owned()], None)
+            .await
+            .unwrap();
+
+        match fate {
+            KeyFate::Revoked => {
+                key.revoke();
+                key_manager.set_key("k-1", &key).await.unwrap();
+            }
+            KeyFate::Deleted => key_manager.delete_key("k-1").await.unwrap(),
+        }
+
+        Router::new()
+            .route("/admin-api/applications", get(|| async { "ok" }))
+            .layer(super::guard_layer(Arc::new(AuthService::new(
+                Vec::new(),
+                token_manager,
+            ))))
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/admin-api/applications")
+                    .header("Authorization", format!("Bearer {access_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    /// A client holding a revoked key must be told so, or a long-lived process
+    /// cannot tell "re-read your credential" from "retry later".
+    #[tokio::test]
+    async fn guard_reports_revocation_to_the_client() {
+        let resp = guarded_request(KeyFate::Revoked).await;
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            resp.headers().get("X-Auth-Error").unwrap(),
+            "token_revoked",
+            "a revoked key must carry the terminal signal the SDK keys on",
+        );
+    }
+
+    /// The other direction: a key id that is genuinely gone must stay a generic
+    /// rejection, or the revocation hint stops carrying information.
+    #[tokio::test]
+    async fn guard_gives_no_revocation_hint_for_an_absent_key() {
+        let resp = guarded_request(KeyFate::Deleted).await;
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            resp.headers().get("X-Auth-Error").is_none(),
+            "an absent key must not be reported as revoked",
         );
     }
 

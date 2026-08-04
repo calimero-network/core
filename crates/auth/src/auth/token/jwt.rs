@@ -359,17 +359,14 @@ impl TokenManager {
         permissions: Vec<String>,
         node_url: Option<String>,
     ) -> Result<(String, String), AuthError> {
-        // Verify the key exists and is valid
+        // `get_key` yields only valid keys, so a revoked or expired one is
+        // already absent by the time we get here.
         let key = self
             .key_manager
             .get_key(&key_id)
             .await
             .map_err(|e| AuthError::StorageError(e.into()))?
             .ok_or_else(|| AuthError::InvalidToken("Key not found".to_string()))?;
-
-        if !key.is_valid() {
-            return Err(AuthError::TokenRevoked);
-        }
 
         let access_expiry = Duration::seconds(self.config.access_token_expiry as i64);
         let refresh_expiry = Duration::seconds(self.config.refresh_token_expiry as i64);
@@ -533,7 +530,8 @@ impl TokenManager {
     /// This is the shared validation path used by both header-based and
     /// query-param authentication. It verifies the JWT signature, checks
     /// the node URL claim (if present and headers are provided), and
-    /// confirms the key exists and has not been revoked.
+    /// confirms the key exists and has not been revoked. A revoked key yields
+    /// [`AuthError::TokenRevoked`]; an unknown one stays a generic rejection.
     ///
     /// # Note
     ///
@@ -562,16 +560,21 @@ impl TokenManager {
             }
         }
 
-        // Verify the key exists and is valid
+        // Look up the key including invalid ones. Collapsing revoked into "not
+        // found" here leaves the client unable to tell "reconnect" from "retry".
         let key = self
             .key_manager
-            .get_key(&claims.sub)
+            .get_key_including_invalid(&claims.sub)
             .await
             .map_err(|e| AuthError::StorageError(e.into()))?
             .ok_or_else(|| AuthError::InvalidToken("Key not found".to_string()))?;
 
-        if !key.is_valid() {
+        if key.is_revoked() {
             return Err(AuthError::TokenRevoked);
+        }
+
+        if key.is_expired() {
+            return Err(AuthError::InvalidToken("Key expired".to_string()));
         }
 
         // Re-derive effective permissions from the LIVE key rather than trusting
