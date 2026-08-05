@@ -32,6 +32,29 @@ use core::num::NonZeroU128;
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 
+/// A joiner credential. Note this test asserts the projection's fold matches the
+/// LIVE membership resolver — and the projection now keys `MemberAdded` by
+/// `cert.account` rather than a key-derived stand-in, so the account here is
+/// load-bearing, not filler.
+fn test_join_account() -> calimero_context_client::local_governance::JoinAccountCredential {
+    use calimero_primitives::identity::PrivateKey;
+    let root = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+    let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
+    calimero_context_client::local_governance::JoinAccountCredential {
+        cert: calimero_account::DeviceCert {
+            account: genesis.account_id(),
+            device: calimero_account::DeviceId::from([0x3E; 32]),
+            sign_pk: PrivateKey::random(&mut rand::rngs::OsRng).public_key(),
+            kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
+            key_epoch: 0,
+            device_epoch: 0,
+            signature: [0x11; 64],
+        },
+        genesis,
+        chain: vec![],
+    }
+}
+
 fn store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }
@@ -214,6 +237,7 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            account: test_join_account(),
         }),
     )
     .expect("sign join_ns");
@@ -231,6 +255,7 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
             group_id: subgroup.to_bytes().into(),
+            account: test_join_account(),
         }),
     )
     .expect("sign join_sub");
@@ -367,6 +392,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            account: test_join_account(),
         }),
     )
     .unwrap();
@@ -387,6 +413,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
             group_id: subgroup.to_bytes().into(),
+            account: test_join_account(),
         }),
     )
     .unwrap();
@@ -445,6 +472,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x43; 32]),
+            account: test_join_account(),
         }),
     )
     .unwrap();
@@ -525,6 +553,7 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            account: test_join_account(),
         }),
     )
     .unwrap();
@@ -537,6 +566,7 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
             group_id: subgroup.to_bytes().into(),
+            account: test_join_account(),
         }),
     )
     .unwrap();
@@ -633,6 +663,7 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            account: test_join_account(),
         }),
     )
     .unwrap();
@@ -645,6 +676,7 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
             group_id: subgroup.to_bytes().into(),
+            account: test_join_account(),
         }),
     )
     .unwrap();

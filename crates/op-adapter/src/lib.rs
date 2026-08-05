@@ -301,36 +301,38 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
         RootOp::PolicyUpdated { policy_bytes } => Some(OpPayload::PolicyUpdated {
             policy_bytes: policy_bytes.clone(),
         }),
-        // These three no longer need the stand-in: the join op carries the
-        // joiner's certified account, so the membership row is keyed by the REAL
-        // `AccountId` from the first op that mentions the member. That is the whole
-        // point of moving the credential onto the join — a member is never
-        // account-addressed later than it is member-addressed, so there is no window
-        // in which a grant made to its real account fails to match its writes
-        // (#3378 is what that window costs).
+        // DELIBERATELY still the stand-in, even though the op now carries the
+        // joiner's certified account.
         //
-        // `member` is deliberately unused here now. It stays on the op because a
-        // signature names a KEY, so the wire still has to say which key this
-        // account joined with.
+        // Switching this to `account.cert.account` is correct and is slice B's job,
+        // not this one — because it cannot be done alone. The projection would then
+        // fold membership keyed by the REAL account while `MembershipRepository`
+        // still keys its rows by member key, so the two planes disagree about who is
+        // a member: `projection_membership_equivalence` fails with projection
+        // `Some(false)` against live `Some(true)`.
+        //
+        // That is the same trap as the abandoned #3346 phase split — assuming a
+        // slice is separable because it compiles, when what matters is whether it
+        // changes what a principal IS. Both planes have to move together.
         RootOp::MemberJoined {
+            member,
             signed_invitation,
-            account,
             ..
         }
         | RootOp::MemberJoinedAt {
+            member,
             signed_invitation,
-            account,
             ..
         } => Some(OpPayload::MemberAdded {
             group: signed_invitation.invitation.group_id,
-            member: account.cert.account,
+            member: legacy_account_id(member),
             role: GroupMemberRole::from_invited_role(signed_invitation.invitation.invited_role),
         }),
         RootOp::MemberJoinedOpen {
-            group_id, account, ..
+            member, group_id, ..
         } => Some(OpPayload::MemberAdded {
             group: *group_id,
-            member: account.cert.account,
+            member: legacy_account_id(member),
             role: GroupMemberRole::Member,
         }),
         RootOp::GroupCreated {

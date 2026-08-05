@@ -191,6 +191,7 @@ async fn sign_apply_and_publish_returns_the_signed_op() {
         member: sk.public_key(),
         signed_invitation: test_signed_invitation(&sk, ContextGroupId::from(ns_id.to_bytes()), 0),
         joined_at: 0,
+        account: crate::test_fixtures::test_join_account(),
     });
 
     let (report, signed) = NamespaceGovernance::new(&store, ns_id)
@@ -6429,6 +6430,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
             group_id: subgroup_id.into(),
+            account: crate::test_fixtures::test_join_account(),
         }),
     )
     .expect("joiner signs MemberJoinedOpen");

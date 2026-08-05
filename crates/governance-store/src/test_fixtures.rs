@@ -8,7 +8,7 @@
 use super::{MembershipRepository, MetaRepository, NamespaceRepository};
 use std::sync::Arc;
 
-use calimero_context_client::local_governance::GroupOp;
+use calimero_context_client::local_governance::{GroupOp, JoinAccountCredential};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
@@ -17,6 +17,32 @@ use calimero_store::db::InMemoryDB;
 use calimero_store::key::{GroupMetaValue, GroupParentRef};
 use calimero_store::Store;
 use rand::rngs::OsRng;
+/// A joiner's account credential for tests that only need a join op to be
+/// well-formed.
+///
+/// Structurally valid but not cryptographically meaningful: the certificate's
+/// signature is filler. Tests that care whether a credential VERIFIES must build a
+/// real one — `apply_link` checks the certificate against the genesis, so this
+/// fixture is refused on that path by design, and the join still applies because a
+/// refused credential is reported rather than propagated.
+pub(super) fn test_join_account() -> JoinAccountCredential {
+    let root = PrivateKey::random(&mut OsRng).public_key();
+    let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
+    JoinAccountCredential {
+        cert: calimero_account::DeviceCert {
+            account: genesis.account_id(),
+            device: calimero_account::DeviceId::from([0x3E; 32]),
+            sign_pk: PrivateKey::random(&mut OsRng).public_key(),
+            kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
+            key_epoch: 0,
+            device_epoch: 0,
+            signature: [0x11; 64],
+        },
+        genesis,
+        chain: vec![],
+    }
+}
+
 pub(super) fn test_store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }

@@ -2069,6 +2069,30 @@ impl ScopeProjections {
 
 #[cfg(test)]
 mod tests {
+    /// A joiner credential for projection tests. These assert what the projection
+    /// FOLDS from an op, so the credential only has to be well-formed — except that
+    /// the account it names is now the membership key, so it must be stable and
+    /// readable, which is why the caller reads `cert.account` back off it.
+    fn test_join_account() -> calimero_context_client::local_governance::JoinAccountCredential {
+        let root =
+            calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+        let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
+        calimero_context_client::local_governance::JoinAccountCredential {
+            cert: calimero_account::DeviceCert {
+                account: genesis.account_id(),
+                device: calimero_account::DeviceId::from([0x3E; 32]),
+                sign_pk: calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng)
+                    .public_key(),
+                kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
+                key_epoch: 0,
+                device_epoch: 0,
+                signature: [0x11; 64],
+            },
+            genesis,
+            chain: vec![],
+        }
+    }
+
     use core::num::NonZeroU128;
 
     use calimero_context_config::types::{
@@ -2119,6 +2143,7 @@ mod tests {
                 application_id: None,
                 app_key: None,
             },
+            account: test_join_account(),
         }
     }
 
@@ -2145,6 +2170,7 @@ mod tests {
                 RootOp::MemberJoinedOpen {
                     member,
                     group_id: group.into(),
+                    account: test_join_account(),
                 },
             ),
             None,
@@ -2189,6 +2215,7 @@ mod tests {
                 RootOp::MemberJoined {
                     member,
                     signed_invitation,
+                    account: test_join_account(),
                 },
             ),
             None,
