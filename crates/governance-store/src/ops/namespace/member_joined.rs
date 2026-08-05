@@ -3,6 +3,7 @@
 
 use super::context::NamespaceApplyCtx;
 use crate::NamespaceMembershipService;
+use calimero_context_client::local_governance::JoinAccountCredential;
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_primitives::identity::PublicKey;
@@ -14,11 +15,27 @@ pub(crate) fn apply(
     member: &PublicKey,
     signed_invitation: &SignedGroupOpenInvitation,
     joined_at: Option<u64>,
+    account: &JoinAccountCredential,
 ) -> EyreResult<()> {
     let events = NamespaceMembershipService::new(ctx.store(), ctx.namespace_id())
         .apply_member_joined(&op.signer, member, signed_invitation, joined_at)?;
     for event in events {
         ctx.queue_event(event);
     }
+
+    // Record the joiner's device binding in the SAME apply as its membership.
+    //
+    // This is what "enrolled by construction" means: there is no ordering in which
+    // this member is known to the group without its account also being known, so no
+    // grant can be made against a stand-in that its writes later fail to present
+    // (#3378 is what that window costs).
+    //
+    // No endorsement is checked, and that is not an omission. `AccountDeviceLinked`
+    // needs one because an account root is a member nowhere, so its gate asks
+    // whether some *member* vouched. Here the op is signed by the joining member and
+    // carries the admin-signed invitation authorising them, so both halves are
+    // already present — `apply_link` verifies the certificate against the genesis,
+    // which is the only question left.
+    super::member_joined_open::record_join_credential(ctx, *member, account);
     Ok(())
 }

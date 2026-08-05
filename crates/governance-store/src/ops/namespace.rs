@@ -74,15 +74,26 @@ pub(crate) fn dispatch_root_op(
         RootOp::MemberJoined {
             member,
             signed_invitation,
-        } => member_joined::apply(ctx, op, member, signed_invitation, None),
+            account,
+        } => member_joined::apply(ctx, op, member, signed_invitation, None, account),
         RootOp::MemberJoinedAt {
             member,
             signed_invitation,
             joined_at,
-        } => member_joined::apply(ctx, op, member, signed_invitation, Some(*joined_at)),
-        RootOp::MemberJoinedOpen { member, group_id } => {
-            member_joined_open::apply(ctx, op, *member, group_id.to_bytes())
-        }
+            account,
+        } => member_joined::apply(
+            ctx,
+            op,
+            member,
+            signed_invitation,
+            Some(*joined_at),
+            account,
+        ),
+        RootOp::MemberJoinedOpen {
+            member,
+            group_id,
+            account,
+        } => member_joined_open::apply(ctx, op, *member, group_id.to_bytes(), account),
         // Self-authorizing namespace genesis. SECURITY residual (#2932): a
         // self-consistent forged genesis on a BARE namespace is not blocked here
         // — see the SECURITY note in `namespace_created::apply`.

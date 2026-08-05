@@ -301,22 +301,36 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
         RootOp::PolicyUpdated { policy_bytes } => Some(OpPayload::PolicyUpdated {
             policy_bytes: policy_bytes.clone(),
         }),
+        // These three no longer need the stand-in: the join op carries the
+        // joiner's certified account, so the membership row is keyed by the REAL
+        // `AccountId` from the first op that mentions the member. That is the whole
+        // point of moving the credential onto the join — a member is never
+        // account-addressed later than it is member-addressed, so there is no window
+        // in which a grant made to its real account fails to match its writes
+        // (#3378 is what that window costs).
+        //
+        // `member` is deliberately unused here now. It stays on the op because a
+        // signature names a KEY, so the wire still has to say which key this
+        // account joined with.
         RootOp::MemberJoined {
-            member,
             signed_invitation,
+            account,
+            ..
         }
         | RootOp::MemberJoinedAt {
-            member,
             signed_invitation,
+            account,
             ..
         } => Some(OpPayload::MemberAdded {
             group: signed_invitation.invitation.group_id,
-            member: legacy_account_id(member),
+            member: account.cert.account,
             role: GroupMemberRole::from_invited_role(signed_invitation.invitation.invited_role),
         }),
-        RootOp::MemberJoinedOpen { member, group_id } => Some(OpPayload::MemberAdded {
+        RootOp::MemberJoinedOpen {
+            group_id, account, ..
+        } => Some(OpPayload::MemberAdded {
             group: *group_id,
-            member: legacy_account_id(member),
+            member: account.cert.account,
             role: GroupMemberRole::Member,
         }),
         RootOp::GroupCreated {

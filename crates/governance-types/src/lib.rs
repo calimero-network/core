@@ -171,6 +171,26 @@ pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 9;
 // variant changes that variant's layout, so every group op's id changes; a flag day,
 // alongside the namespace v4 one already in this change.
 
+/// A joiner's account credential, carried by the cleartext join ops.
+///
+/// Genesis + chain + certificate, i.e. everything a peer needs to verify the
+/// account and the device from the op alone — deliberately self-verifying, so a
+/// receiver never has to have folded a prior op about this account. The cost is
+/// bytes on every join; the benefit is that a join can never be applied by a peer
+/// that would then disagree about who the joiner is.
+///
+/// No endorsement field: see the `account` field's documentation on the join ops.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+pub struct JoinAccountCredential {
+    /// The account's self-certifying root.
+    pub genesis: AccountGenesis,
+    /// Signed root-key rollovers, epoch 0 upward. Empty when the certificate was
+    /// signed by the genesis key.
+    pub chain: Vec<RootKeyHandoff>,
+    /// The root-signed grant for the device the joiner is joining with.
+    pub cert: DeviceCert,
+}
+
 /// Domain separation prefix for Ed25519 signatures over group ops.
 pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
 
@@ -726,6 +746,24 @@ pub enum RootOp {
         /// identity, group_id, expiration, role, and the admin's
         /// signature. Peers use this to verify the join was authorized.
         signed_invitation: SignedGroupOpenInvitation,
+        /// The joiner's self-certifying account root, and the root-signed grant
+        /// for the device it is joining with.
+        ///
+        /// **Why this rides the join and not a separate `AccountDeviceLinked`.**
+        /// That op needs an `AccountMemberEndorsement` because an account root is
+        /// deliberately a member nowhere, so its gate checks that some *member*
+        /// vouched for the account. A join op needs no such bridge: it is signed by
+        /// the joining member's own namespace identity and carries the
+        /// admin-signed invitation authorising that member, so "a member endorses
+        /// this account" and "the root certifies this device" are both already
+        /// present. The endorsement collapses into the op.
+        ///
+        /// Required, not optional — that is the point. While a member could exist
+        /// without a binding, its writes attributed to a stand-in account and every
+        /// account-keyed grant made to its real account silently failed to match
+        /// (see #3378). Carrying the credential here removes the window rather than
+        /// narrowing it.
+        account: JoinAccountCredential,
     },
     /// Delivers a group key to a specific member, ECDH-wrapped so only
     /// the recipient can decrypt it.
@@ -764,6 +802,24 @@ pub enum RootOp {
     MemberJoinedOpen {
         member: PublicKey,
         group_id: ContextGroupId,
+        /// The joiner's self-certifying account root, and the root-signed grant
+        /// for the device it is joining with.
+        ///
+        /// **Why this rides the join and not a separate `AccountDeviceLinked`.**
+        /// That op needs an `AccountMemberEndorsement` because an account root is
+        /// deliberately a member nowhere, so its gate checks that some *member*
+        /// vouched for the account. A join op needs no such bridge: it is signed by
+        /// the joining member's own namespace identity and carries the
+        /// admin-signed invitation authorising that member, so "a member endorses
+        /// this account" and "the root certifies this device" are both already
+        /// present. The endorsement collapses into the op.
+        ///
+        /// Required, not optional — that is the point. While a member could exist
+        /// without a binding, its writes attributed to a stand-in account and every
+        /// account-keyed grant made to its real account silently failed to match
+        /// (see #3378). Carrying the credential here removes the window rather than
+        /// narrowing it.
+        account: JoinAccountCredential,
     },
     /// Invitation-based join carrying the joiner's claimed redemption
     /// time (`joined_at`, unix seconds, covered by the joiner's
@@ -774,6 +830,24 @@ pub enum RootOp {
         member: PublicKey,
         signed_invitation: SignedGroupOpenInvitation,
         joined_at: u64,
+        /// The joiner's self-certifying account root, and the root-signed grant
+        /// for the device it is joining with.
+        ///
+        /// **Why this rides the join and not a separate `AccountDeviceLinked`.**
+        /// That op needs an `AccountMemberEndorsement` because an account root is
+        /// deliberately a member nowhere, so its gate checks that some *member*
+        /// vouched for the account. A join op needs no such bridge: it is signed by
+        /// the joining member's own namespace identity and carries the
+        /// admin-signed invitation authorising that member, so "a member endorses
+        /// this account" and "the root certifies this device" are both already
+        /// present. The endorsement collapses into the op.
+        ///
+        /// Required, not optional — that is the point. While a member could exist
+        /// without a binding, its writes attributed to a stand-in account and every
+        /// account-keyed grant made to its real account silently failed to match
+        /// (see #3378). Carrying the credential here removes the window rather than
+        /// narrowing it.
+        account: JoinAccountCredential,
     },
     /// **Namespace genesis (#2474).** The first op in every namespace DAG:
     /// authoritatively records the namespace's founding administrator/owner.
@@ -1065,7 +1139,7 @@ pub struct SignedNamespaceOp {
 /// `ephemeral_pk` field is gone). Both `RootOp::KeyDelivery` and the rotation on
 /// `NamespaceOp::Group` embed an envelope, so every namespace op's layout and id
 /// changes — another flag-day.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 4;
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 5;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 pub const NAMESPACE_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.namespace.v1";

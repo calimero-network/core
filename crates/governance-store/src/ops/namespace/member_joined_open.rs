@@ -28,6 +28,7 @@ pub(crate) fn apply(
     op: &SignedNamespaceOp,
     member: PublicKey,
     group_id: [u8; 32],
+    account: &calimero_context_client::local_governance::JoinAccountCredential,
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
@@ -105,6 +106,11 @@ pub(crate) fn apply(
                 member,
                 role: None,
             });
+            // The join is accepted, so record the joiner's device binding in the
+            // same apply — see `member_joined::apply` for why no endorsement is
+            // required here and why a refused credential is reported rather than
+            // propagated.
+            record_join_credential(ctx, member, account);
             Ok(())
         }
         AtCutMembershipPath::Direct => {
@@ -131,5 +137,41 @@ fn membership_path_kind(path: &MembershipPath) -> AtCutMembershipPath {
         MembershipPath::Inherited { .. } => AtCutMembershipPath::Inherited,
         MembershipPath::Direct => AtCutMembershipPath::Direct,
         MembershipPath::None => AtCutMembershipPath::None,
+    }
+}
+
+/// Record a joiner's certified account alongside its membership.
+///
+/// Shared by the open-join path and [`super::member_joined::apply`]. Reports a
+/// refusal instead of propagating it: a credential this group cannot admit must not
+/// orphan the membership op behind it. A member with no binding is the pre-#3346
+/// state and survivable; a member the DAG cannot apply at all is not.
+pub(super) fn record_join_credential(
+    ctx: &mut NamespaceApplyCtx<'_>,
+    member: PublicKey,
+    account: &calimero_context_client::local_governance::JoinAccountCredential,
+) {
+    let namespace =
+        calimero_context_config::types::ContextGroupId::from(ctx.namespace_id().to_bytes());
+    match crate::AccountBindingRepository::new(ctx.store()).apply_link(
+        &namespace,
+        &account.genesis,
+        &account.chain,
+        &account.cert,
+    ) {
+        Ok(Ok(_)) => {}
+        Ok(Err(rejected)) => tracing::warn!(
+            ?namespace,
+            %member,
+            ?rejected,
+            "member joined but its account credential was refused; the member is \
+             recorded without a binding, so its writes will attribute to a stand-in"
+        ),
+        Err(err) => tracing::warn!(
+            ?namespace,
+            %member,
+            %err,
+            "member joined but recording its account credential failed"
+        ),
     }
 }
