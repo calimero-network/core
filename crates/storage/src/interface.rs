@@ -743,10 +743,20 @@ impl<S: StorageAdaptor> Interface<S> {
             // session, so it is worth a line: without it the only way to learn
             // which entity failed is to download the node-log artifact and read
             // the DEBUG line that happens to precede the warning.
+            //
+            // `signature_shape` is the discriminator, and it is the field worth
+            // having: "rejected" alone left core#3376 guessing which sub-case it
+            // was, and six hypotheses were spent deciding that from code instead
+            // of from the one place that already knows. `absent` /
+            // `placeholder` / `signed-but-unnamed-signer` each point at a
+            // different producer; `signed` means the bytes and a real signature
+            // genuinely disagree, which is a different investigation entirely.
             tracing::warn!(
                 %id,
                 storage_type = crate::entities::storage_type_name(&metadata.storage_type),
+                signature = crate::entities::signature_shape(&metadata.storage_type),
                 crdt_type = ?metadata.crdt_type,
+                data_len = data.len(),
                 "snapshot entity signature rejected; the HashComparison session \
                  using this leaf cannot complete"
             );
