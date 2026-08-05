@@ -1903,3 +1903,58 @@ fn a_stranger_cannot_freeze_an_account_by_padding_its_epoch_slot() {
         "the victim must resolve to the key it actually rotated onto"
     );
 }
+
+/// A join folds BOTH halves, in either delivery order.
+///
+/// `MemberJoinedWithDevice` exists so a member and the device it joined with can
+/// never be known separately: a node's writer principal is its bound account when
+/// a binding has folded and a key-derived stand-in when it has not, so a cut that
+/// sees one half and not the other resolves that node's own writes to a principal
+/// it is not writing under. Folding through the same helpers the `MemberAdded`
+/// and `DeviceLinked` arms use is what keeps the two halves from drifting; this
+/// pins the atomicity those helpers are there to provide.
+#[test]
+fn a_join_folds_its_membership_and_its_device_together() {
+    let fx = Fixture::new();
+    let joiner = Account::new(0x5A);
+    let device = joiner.enroll(0x5B, 0);
+
+    let join = device.sign_op(
+        50,
+        vec![],
+        OpPayload::MemberJoinedWithDevice {
+            group: group(),
+            member: joiner.id,
+            role: GroupMemberRole::Member,
+            genesis: joiner.genesis,
+            chain: joiner.chain.clone(),
+            cert: device.cert,
+        },
+    );
+
+    let mut log = fx.log.clone();
+    log.push(join);
+
+    let view = ScopeState::from_ops(&log).acl_view();
+    assert!(
+        view.devices.contains_key(&device.id),
+        "the join must bind its device, or the joiner's peers resolve its key to \
+         a stand-in while the joiner writes as its real account"
+    );
+    assert!(
+        view.is_scope_member(&joiner.id),
+        "and must add the member, exactly as the MemberAdded it bridges from"
+    );
+
+    // Order-independent, like every other fold: same op set, reversed delivery,
+    // same state and the same root.
+    let forward = ScopeState::from_ops(&log);
+    let mut backward_ops = log.clone();
+    backward_ops.reverse();
+    let backward = ScopeState::from_ops(&backward_ops);
+    assert_eq!(
+        forward.root(),
+        backward.root(),
+        "a join must not make the projection order-dependent"
+    );
+}
