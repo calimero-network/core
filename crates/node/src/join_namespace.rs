@@ -388,10 +388,17 @@ pub async fn await_namespace_ready(
             "invitation expired".to_string(),
         ));
     }
+    // Same helper the context-side join paths use, deliberately: a joiner that
+    // assembled its credential differently depending on which entry point it came
+    // through would be a joiner whose account depended on how it got in.
+    let join_account =
+        calimero_context::join_credential::build(store, &group_id, &my_pk, &signing_key)
+            .map_err(|e| ReadyError::PublishMemberJoined(format!("join credential: {e}")))?;
     let op = NamespaceOp::Root(RootOp::MemberJoinedAt {
         member: my_pk,
         signed_invitation: invitation,
         joined_at: now_secs,
+        account: join_account,
     });
     let report = NamespaceGovernance::new(store, namespace_id.into())
         .sign_and_publish_without_apply(node_client, ack_router, &signing_key, op, None)

@@ -1393,7 +1393,7 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
     }
 }
 
-// C5.S3b flag-day boundary: an op signed under the OLD schema must be REJECTED on
+// C5.S3b schema boundary: an op signed under the OLD schema must be REJECTED on
 // the new build, never silently misparsed. The `version` field is the first borsh
 // field, so it survives the layout change and the version check fires before any
 // signable-bytes reconstruction. These tests pin that boundary so a future refactor
@@ -1528,6 +1528,40 @@ mod governance_op_storage_roundtrip {
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
 
+    /// A joiner's account credential for wire tests. Values are structurally valid
+
+    /// but not cryptographically meaningful — these tests exercise the codec, and
+
+    /// signature verification has its own coverage.
+
+    fn sample_join_account() -> JoinAccountCredential {
+        let root = PrivateKey::random(&mut OsRng).public_key();
+
+        let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
+
+        JoinAccountCredential {
+            cert: calimero_account::DeviceCert {
+                account: genesis.account_id(),
+
+                device: calimero_account::DeviceId::from([0x3E; 32]),
+
+                sign_pk: PrivateKey::random(&mut OsRng).public_key(),
+
+                kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
+
+                key_epoch: 0,
+
+                device_epoch: 0,
+
+                signature: [0x11; 64],
+            },
+
+            genesis,
+
+            chain: vec![],
+        }
+    }
+
     fn sample_invitation() -> SignedGroupOpenInvitation {
         SignedGroupOpenInvitation {
             invitation: GroupInvitationFromAdmin {
@@ -1584,6 +1618,7 @@ mod governance_op_storage_roundtrip {
             member: PrivateKey::random(&mut OsRng).public_key(),
             signed_invitation: sample_invitation(),
             joined_at: 1_800_000_000,
+            account: sample_join_account(),
         })));
     }
 
@@ -1613,15 +1648,18 @@ mod governance_op_storage_roundtrip {
             RootOp::MemberJoined {
                 member: PrivateKey::random(&mut OsRng).public_key(),
                 signed_invitation: sample_invitation(),
+                account: sample_join_account(),
             },
             RootOp::MemberJoinedOpen {
                 member: PrivateKey::random(&mut OsRng).public_key(),
                 group_id: [7; 32].into(),
+                account: sample_join_account(),
             },
             RootOp::MemberJoinedAt {
                 member: PrivateKey::random(&mut OsRng).public_key(),
                 signed_invitation: sample_invitation(),
                 joined_at: 42,
+                account: sample_join_account(),
             },
         ];
         for root in ops {

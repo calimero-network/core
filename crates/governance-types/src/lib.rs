@@ -161,15 +161,16 @@ id_newtype! {
 /// signable/​signed op. It stopped being an apply gate in C5.S3a (`scope_root`
 /// is the authoritative convergence signal now), so it was pure dead weight in
 /// the signed bytes. Removing it changes every op's content hash (the op id),
-/// hence the version bump and the flag-day re-bootstrap.
+/// hence the version bump — and, because old-shape ops are rejected rather than
+/// migrated, a re-bootstrap of every node.
 pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 9;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
 // member nowhere, so the link gate can no longer ask whether the root is a member.
 // A granted member key signs the account id instead. Adding a field to an existing
-// variant changes that variant's layout, so every group op's id changes; a flag day,
-// alongside the namespace v4 one already in this change.
+// variant changes that variant's layout, so every group op's id changes, so every
+// node re-bootstraps — as does the namespace bump in the same change.
 
 /// A joiner's account credential, carried by the cleartext join ops.
 ///
@@ -1127,18 +1128,18 @@ pub struct SignedNamespaceOp {
 /// v2 (cutover C5.S3b): dropped the vestigial `state_hash` field. It stopped
 /// being an apply gate in C5.S3a (`scope_root` is the convergence signal now);
 /// removing it from the signable/​signed structs changes every op id, hence the
-/// version bump and the flag-day re-bootstrap.
+/// version bump and a re-bootstrap.
 ///
 /// v3: the `KeyEnvelope` carried in a `NamespaceOp::Group` key rotation gained
 /// authenticated `sender` + `signature` fields (and its `ephemeral_pk` became a
 /// true per-envelope ephemeral). That changes the borsh layout of every group
-/// op that carries a rotation, so every op id changes — another flag-day.
+/// op that carries a rotation, so every op id changes — another re-bootstrap.
 ///
 /// v4: `KeyEnvelope::recipient` became [`EnvelopeRecipient`], a discriminated
 /// member-or-device address that carries its own ephemeral key (so the separate
 /// `ephemeral_pk` field is gone). Both `RootOp::KeyDelivery` and the rotation on
 /// `NamespaceOp::Group` embed an envelope, so every namespace op's layout and id
-/// changes — another flag-day.
+/// changes — another re-bootstrap.
 pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 5;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.

@@ -143,9 +143,16 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                 // where they can author group ops but peers can't tell
                 // them apart from any other inherited member — caller
                 // wouldn't know to retry.
+                let join_account = crate::join_credential::build(
+                    &datastore,
+                    &ns_id.to_bytes().into(),
+                    &joiner_identity,
+                    &signer_sk,
+                )?;
                 let op = NamespaceOp::Root(RootOp::MemberJoinedOpen {
                     member: joiner_identity,
                     group_id: group_id.to_bytes().into(),
+                    account: join_account,
                 });
                 calimero_governance_store::sign_apply_and_publish_namespace_op(
                     &datastore,
