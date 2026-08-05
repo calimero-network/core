@@ -1872,6 +1872,110 @@ mod shared_storage_rotation_authentication {
         );
     }
 
+    /// **A re-anchoring member write is refused, which closes core#3376's last
+    /// hypothesis.** Written as a probe expecting the opposite; kept as the
+    /// invariant it actually establishes.
+    ///
+    /// The hypothesis was: the receiver-side signature/data coupling in
+    /// `apply_action` is best-effort —
+    ///
+    /// > an identity/placeholder mismatch returns `Err` … leave the stored signature
+    ///
+    /// — and the data is already written by then. For a `SharedMember` the identity
+    /// in that triple is the **anchor**, and `update_signature_in_place` does return
+    /// `InvalidData("anchor mismatch")` when they differ, with the caller discarding
+    /// it via `let _ =`. So a write that re-anchors a member looked like it should
+    /// land its bytes and keep the previous signature — the unverifiable leaf #3376
+    /// observes.
+    ///
+    /// It cannot, because **apply refuses the write first**: the member's
+    /// authorization is resolved through its stored anchor, so naming a different one
+    /// is rejected before any data is written. The bytes never land, so there is
+    /// nothing for a stale signature to sit over — and the coupling's anchor-mismatch
+    /// branch is unreachable by this route.
+    ///
+    /// Both anchors deliberately name the same writer, so the refusal is about the
+    /// re-anchoring itself and not about who signed.
+    #[test]
+    fn a_member_write_naming_a_different_anchor_is_refused() {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let alice_sk = make_signing_key(0xA1);
+        let alice = account_of_key(&alice_sk);
+
+        let anchor_a = Id::new([0xA0; 32]);
+        let anchor_b = Id::new([0xB0; 32]);
+        let member = Id::new([0x3E; 32]);
+        let writers: BTreeSet<_> = [alice].into_iter().collect();
+
+        let n0 = env::time_now();
+        for anchor in [anchor_a, anchor_b] {
+            MainInterface::apply_action(
+                build_signed_shared_action(
+                    true,
+                    anchor,
+                    b"anchor".to_vec(),
+                    writers.clone(),
+                    n0,
+                    &alice_sk,
+                    vec![root.clone()],
+                ),
+                &apply_ctx_for(alice),
+            )
+            .expect("both anchors must bootstrap");
+        }
+
+        let first = b"under-anchor-a".to_vec();
+        MainInterface::apply_action(
+            build_signed_member_action(
+                true,
+                member,
+                anchor_a,
+                first.clone(),
+                n0 + 1_000_000,
+                &alice_sk,
+                vec![root.clone()],
+            ),
+            &apply_ctx_for(alice),
+        )
+        .expect("the initial member write must apply");
+
+        // The same writer, a higher HLC, and a different anchor.
+        let second = b"re-anchored-to-b".to_vec();
+        let outcome = MainInterface::apply_action(
+            build_signed_member_action(
+                false,
+                member,
+                anchor_b,
+                second.clone(),
+                n0 + 2_000_000,
+                &alice_sk,
+                vec![root.clone()],
+            ),
+            &apply_ctx_for(alice),
+        );
+        assert!(
+            outcome.is_err(),
+            "re-anchoring a member must be refused; silently moving it to another \
+             writer domain would be worse than the decoupled signature this test was \
+             written to look for"
+        );
+
+        // The leaf is untouched, so it is still internally consistent — data and
+        // signature both the original write's.
+        let stored_data =
+            MainInterface::find_by_id_raw(member).expect("the member must still exist");
+        assert_eq!(stored_data, first, "the refused write must not have landed");
+        let stored_meta = <Index<MainStorage>>::get_metadata(member)
+            .expect("index read")
+            .expect("the member must be indexed");
+        MainInterface::verify_snapshot_entity_signature(member, &stored_data, &stored_meta).expect(
+            "a leaf whose write was refused must remain verifiable — if this fails, \
+             something decoupled it that this test does not model",
+        );
+    }
+
     /// **Falsification test for core#3376 — the hypothesis it tests is WRONG, and
     /// this pins why.**
     ///
