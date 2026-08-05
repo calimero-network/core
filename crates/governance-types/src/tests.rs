@@ -599,6 +599,28 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
     0, 0, 0, 0, // signed_invitation.application_id = None:
     0, // signed_invitation.app_key = None:
     0,
+    // account: JoinAccountCredential — appended when the joiner's credential moved
+    // onto the join ops. Decode-only, like every golden vector here, so the field
+    // values only have to be structurally valid: `AccountGenesis::version` is
+    // checked at VERIFY time (`verify_device_cert`), never at decode.
+    1, // AccountGenesis::version = ACCOUNT_GENESIS_VERSION
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // genesis.root_sign_pk [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // genesis.nonce [0u8;16]
+    0, 0, 0, 0, // chain: Vec<RootKeyHandoff> length 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.account [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.device [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.sign_pk [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.kem_pk [0u8;32]
+    0, 0, 0, 0, // cert.key_epoch u32 = 0
+    0, 0, 0, 0, // cert.device_epoch u32 = 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.signature [0u8;64]
 ];
 
 /// NamespaceOp::Root(RootOp::KeyDelivery) — RootOp ordinal 6
@@ -657,6 +679,28 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_OPEN: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // group_id [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // account: JoinAccountCredential — appended when the joiner's credential moved
+    // onto the join ops. Decode-only, like every golden vector here, so the field
+    // values only have to be structurally valid: `AccountGenesis::version` is
+    // checked at VERIFY time (`verify_device_cert`), never at decode.
+    1, // AccountGenesis::version = ACCOUNT_GENESIS_VERSION
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // genesis.root_sign_pk [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // genesis.nonce [0u8;16]
+    0, 0, 0, 0, // chain: Vec<RootKeyHandoff> length 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.account [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.device [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.sign_pk [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.kem_pk [0u8;32]
+    0, 0, 0, 0, // cert.key_epoch u32 = 0
+    0, 0, 0, 0, // cert.device_epoch u32 = 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.signature [0u8;64]
 ];
 
 /// NamespaceOp::Root(RootOp::MemberJoinedAt) — RootOp ordinal 8
@@ -680,6 +724,28 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_AT: &[u8] = &[
     0, // application_id = None
     0, // app_key = None
     0, 0, 0, 0, 0, 0, 0, 0, // joined_at u64 = 0
+    // account: JoinAccountCredential — appended when the joiner's credential moved
+    // onto the join ops. Decode-only, like every golden vector here, so the field
+    // values only have to be structurally valid: `AccountGenesis::version` is
+    // checked at VERIFY time (`verify_device_cert`), never at decode.
+    1, // AccountGenesis::version = ACCOUNT_GENESIS_VERSION
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // genesis.root_sign_pk [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // genesis.nonce [0u8;16]
+    0, 0, 0, 0, // chain: Vec<RootKeyHandoff> length 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.account [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.device [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.sign_pk [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.kem_pk [0u8;32]
+    0, 0, 0, 0, // cert.key_epoch u32 = 0
+    0, 0, 0, 0, // cert.device_epoch u32 = 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.signature [0u8;64]
 ];
 
 /// NamespaceOp::Root(RootOp::NamespaceCreated) — RootOp ordinal 9
