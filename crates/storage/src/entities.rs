@@ -536,6 +536,39 @@ impl BorshDeserialize for OpMask {
     }
 }
 
+/// Why a signature-bearing [`StorageType`] could not be verified, as a short
+/// discriminator for logs — **never** the signature bytes themselves.
+///
+/// Exists because "this leaf failed verification" is not actionable on its own.
+/// core#3376 burned six hypotheses distinguishing exactly these cases by reading
+/// code, when the rejection site knows the answer: is there signature data at all,
+/// does it name a signer (required for `Shared`/`SharedMember`, ignored for `User`
+/// where the owner is known), is it the all-zero placeholder, or did a real
+/// signature simply not verify — the last meaning the bytes and the signature
+/// genuinely disagree.
+#[must_use]
+pub fn signature_shape(storage_type: &StorageType) -> &'static str {
+    let sig = match storage_type {
+        StorageType::Public | StorageType::Frozen => return "n/a",
+        StorageType::User { signature_data, .. }
+        | StorageType::Shared { signature_data, .. }
+        | StorageType::SharedMember { signature_data, .. } => signature_data,
+    };
+    let Some(sig) = sig.as_ref() else {
+        return "absent";
+    };
+    if sig.signature == [0u8; 64] {
+        return "placeholder";
+    }
+    // `signer` is only load-bearing for the writer-set arms; `User` verifies
+    // against `owner`, so a missing signer there is normal and not a finding.
+    match (&storage_type, sig.signer) {
+        (StorageType::User { .. }, _) => "signed",
+        (_, None) => "signed-but-unnamed-signer",
+        (_, Some(_)) => "signed",
+    }
+}
+
 /// A short, stable name for a [`StorageType`] variant, for logs.
 ///
 /// Exists because [`StorageError::InvalidSignature`](crate::error::StorageError)
