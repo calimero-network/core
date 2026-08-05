@@ -1595,17 +1595,14 @@ mod governance_op_storage_roundtrip {
     };
 
     /// A joiner's account credential for wire tests. Values are structurally valid
-
     /// but not cryptographically meaningful — these tests exercise the codec, and
-
     /// signature verification has its own coverage.
-
-    fn sample_join_account() -> JoinAccountCredential {
+    fn sample_join_account() -> Box<JoinAccountCredential> {
         let root = PrivateKey::random(&mut OsRng).public_key();
 
         let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
 
-        JoinAccountCredential {
+        Box::new(JoinAccountCredential {
             cert: calimero_account::DeviceCert {
                 account: genesis.account_id(),
 
@@ -1625,7 +1622,7 @@ mod governance_op_storage_roundtrip {
             genesis,
 
             chain: vec![],
-        }
+        })
     }
 
     fn sample_invitation() -> SignedGroupOpenInvitation {

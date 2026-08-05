@@ -367,6 +367,28 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
 
 #[cfg(test)]
 mod tests {
+    /// A joiner credential for the bridge tests. These assert what
+    /// `payload_from_root_op` FOLDS, and the bridge deliberately still keys
+    /// membership by `legacy_account_id(member)` until slice B moves the live plane
+    /// too — so nothing here reads the credential, it only has to be present.
+    fn test_join_account() -> Box<calimero_governance_types::JoinAccountCredential> {
+        let root = calimero_primitives::identity::PublicKey::from([0x7A; 32]);
+        let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
+        Box::new(calimero_governance_types::JoinAccountCredential {
+            cert: calimero_account::DeviceCert {
+                account: genesis.account_id(),
+                device: calimero_account::DeviceId::from([0x3E; 32]),
+                sign_pk: calimero_primitives::identity::PublicKey::from([0x7B; 32]),
+                kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
+                key_epoch: 0,
+                device_epoch: 0,
+                signature: [0x11; 64],
+            },
+            genesis,
+            chain: vec![],
+        })
+    }
+
     use super::*;
 
     use core::num::NonZeroU128;
@@ -894,6 +916,7 @@ mod tests {
                 &RootOp::MemberJoinedOpen {
                     member: m,
                     group_id: gid.into(),
+                    account: test_join_account(),
                 },
                 PublicKey::from([1u8; 32])
             ),
@@ -924,6 +947,7 @@ mod tests {
                 &RootOp::MemberJoined {
                     member: m,
                     signed_invitation: signed_invitation.clone(),
+                    account: test_join_account(),
                 },
                 PublicKey::from([1u8; 32])
             ),
@@ -941,6 +965,7 @@ mod tests {
                     member: m,
                     signed_invitation,
                     joined_at: 42,
+                    account: test_join_account(),
                 },
                 PublicKey::from([1u8; 32])
             ),

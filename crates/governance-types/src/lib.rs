@@ -759,12 +759,18 @@ pub enum RootOp {
         /// this account" and "the root certifies this device" are both already
         /// present. The endorsement collapses into the op.
         ///
+        /// Boxed because the credential is ~253 bytes and inlining it in three
+        /// variants pushed `RootOp`'s largest variant past clippy's
+        /// `large_enum_variant` threshold, making every `NamespaceOp` that size on
+        /// the stack. Borsh encodes `Box<T>` exactly as `T`, so this is invisible on
+        /// the wire and does not affect the schema version.
+        ///
         /// Required, not optional — that is the point. While a member could exist
         /// without a binding, its writes attributed to a stand-in account and every
         /// account-keyed grant made to its real account silently failed to match
         /// (see #3378). Carrying the credential here removes the window rather than
         /// narrowing it.
-        account: JoinAccountCredential,
+        account: Box<JoinAccountCredential>,
     },
     /// Delivers a group key to a specific member, ECDH-wrapped so only
     /// the recipient can decrypt it.
@@ -820,7 +826,7 @@ pub enum RootOp {
         /// account-keyed grant made to its real account silently failed to match
         /// (see #3378). Carrying the credential here removes the window rather than
         /// narrowing it.
-        account: JoinAccountCredential,
+        account: Box<JoinAccountCredential>,
     },
     /// Invitation-based join carrying the joiner's claimed redemption
     /// time (`joined_at`, unix seconds, covered by the joiner's
@@ -848,7 +854,7 @@ pub enum RootOp {
         /// account-keyed grant made to its real account silently failed to match
         /// (see #3378). Carrying the credential here removes the window rather than
         /// narrowing it.
-        account: JoinAccountCredential,
+        account: Box<JoinAccountCredential>,
     },
     /// **Namespace genesis (#2474).** The first op in every namespace DAG:
     /// authoritatively records the namespace's founding administrator/owner.

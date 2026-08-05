@@ -32,6 +32,12 @@ use eyre::{Result as EyreResult, WrapErr as _};
 
 /// Mint (or recover) this node's device for `namespace` and certify it.
 ///
+/// Returns the credential **boxed**, matching the op field: the credential is ~253
+/// bytes and inlining it in three `RootOp` variants pushed the enum past clippy's
+/// `large_enum_variant` threshold. Borsh encodes `Box<T>` as `T`, so this is
+/// invisible on the wire. Boxing here rather than at each call site keeps all four
+/// publishers identical.
+///
 /// Idempotent: `ensure_enrolled` returns the existing device when there is one, so a
 /// rejoin carries the same credential rather than minting a second replica id and
 /// stranding the CRDT state held under the first.
@@ -46,7 +52,7 @@ pub fn build(
     namespace_id: &ContextGroupId,
     signing_pk: &PublicKey,
     _signing_sk: &PrivateKey,
-) -> EyreResult<JoinAccountCredential> {
+) -> EyreResult<Box<JoinAccountCredential>> {
     let devices = NodeDeviceRepository::new(datastore);
     let root = devices
         .ensure_account_root()
@@ -66,12 +72,12 @@ pub fn build(
     )
     .map_err(|err| eyre::eyre!("join credential: failed to sign the device cert: {err}"))?;
 
-    Ok(JoinAccountCredential {
+    Ok(Box::new(JoinAccountCredential {
         genesis: enrolled.genesis,
         // Epoch 0 with an empty chain: the account root has not rotated, so there
         // are no handoffs for a verifier to walk. Same shape as every other
         // credential this node mints today.
         chain: vec![],
         cert,
-    })
+    }))
 }

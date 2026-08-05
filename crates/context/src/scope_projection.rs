@@ -2073,24 +2073,29 @@ mod tests {
     /// FOLDS from an op, so the credential only has to be well-formed — except that
     /// the account it names is now the membership key, so it must be stable and
     /// readable, which is why the caller reads `cert.account` back off it.
-    fn test_join_account() -> calimero_context_client::local_governance::JoinAccountCredential {
+    fn test_join_account() -> Box<calimero_context_client::local_governance::JoinAccountCredential>
+    {
         let root =
             calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng).public_key();
         let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
-        calimero_context_client::local_governance::JoinAccountCredential {
-            cert: calimero_account::DeviceCert {
-                account: genesis.account_id(),
-                device: calimero_account::DeviceId::from([0x3E; 32]),
-                sign_pk: calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng)
+        Box::new(
+            calimero_context_client::local_governance::JoinAccountCredential {
+                cert: calimero_account::DeviceCert {
+                    account: genesis.account_id(),
+                    device: calimero_account::DeviceId::from([0x3E; 32]),
+                    sign_pk: calimero_primitives::identity::PrivateKey::random(
+                        &mut rand::rngs::OsRng,
+                    )
                     .public_key(),
-                kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
-                key_epoch: 0,
-                device_epoch: 0,
-                signature: [0x11; 64],
+                    kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
+                    key_epoch: 0,
+                    device_epoch: 0,
+                    signature: [0x11; 64],
+                },
+                genesis,
+                chain: vec![],
             },
-            genesis,
-            chain: vec![],
-        }
+        )
     }
 
     use core::num::NonZeroU128;

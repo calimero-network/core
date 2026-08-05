@@ -30,23 +30,25 @@ use rand::rngs::OsRng;
 /// and apply outcomes rather than whether a credential verifies. Structurally valid,
 /// cryptographically filler — `apply_link` refuses it, and the join still applies
 /// because a refused credential is reported rather than propagated.
-fn test_join_account() -> calimero_context_client::local_governance::JoinAccountCredential {
+fn test_join_account() -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
     use calimero_primitives::identity::PrivateKey;
     let root = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
     let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
-    calimero_context_client::local_governance::JoinAccountCredential {
-        cert: calimero_account::DeviceCert {
-            account: genesis.account_id(),
-            device: calimero_account::DeviceId::from([0x3E; 32]),
-            sign_pk: PrivateKey::random(&mut rand::rngs::OsRng).public_key(),
-            kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
-            key_epoch: 0,
-            device_epoch: 0,
-            signature: [0x11; 64],
+    Box::new(
+        calimero_context_client::local_governance::JoinAccountCredential {
+            cert: calimero_account::DeviceCert {
+                account: genesis.account_id(),
+                device: calimero_account::DeviceId::from([0x3E; 32]),
+                sign_pk: PrivateKey::random(&mut rand::rngs::OsRng).public_key(),
+                kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
+                key_epoch: 0,
+                device_epoch: 0,
+                signature: [0x11; 64],
+            },
+            genesis,
+            chain: vec![],
         },
-        genesis,
-        chain: vec![],
-    }
+    )
 }
 use sha2::{Digest, Sha256};
 

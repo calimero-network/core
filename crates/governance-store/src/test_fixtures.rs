@@ -25,10 +25,10 @@ use rand::rngs::OsRng;
 /// real one — `apply_link` checks the certificate against the genesis, so this
 /// fixture is refused on that path by design, and the join still applies because a
 /// refused credential is reported rather than propagated.
-pub(super) fn test_join_account() -> JoinAccountCredential {
+pub(super) fn test_join_account() -> Box<JoinAccountCredential> {
     let root = PrivateKey::random(&mut OsRng).public_key();
     let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
-    JoinAccountCredential {
+    Box::new(JoinAccountCredential {
         cert: calimero_account::DeviceCert {
             account: genesis.account_id(),
             device: calimero_account::DeviceId::from([0x3E; 32]),
@@ -40,7 +40,7 @@ pub(super) fn test_join_account() -> JoinAccountCredential {
         },
         genesis,
         chain: vec![],
-    }
+    })
 }
 
 pub(super) fn test_store() -> Store {
